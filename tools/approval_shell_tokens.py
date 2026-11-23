@@ -138,9 +138,27 @@ def _reverse_shell_gate(exec_re):
     return gate
 
 
-def verb_matcher(cmdpos: str, verbs: str, shutdown: bool = False) -> EndGatedMatcher:
-    """``cmdpos`` + one of ``verbs`` as a whole command word (the shutdown rule's word-end test with ``shutdown``)."""
-    return EndGatedMatcher(cmdpos + verbs, r'\b' + verbs, _shutdown_word_gate if shutdown else _command_word_gate)
+_SEGMENT_BREAK_RE = re.compile(r'[;|&\n]')
+_LINE_BREAK_RE = re.compile(r'\n')
+
+
+def argument_gate(target: str, line: bool = False):
+    """`_command_word_gate` plus an argument tail: a ``target`` match starts in the command's own segment (its line
+    with ``line``), at the latest on the newline that ends it. Targets and breaks are found once per text."""
+    target_re, break_re = re.compile(target, _FLAGS), _LINE_BREAK_RE if line else _SEGMENT_BREAK_RE
+
+    def gate(text: str):
+        word_ends = _command_word_gate(text)
+        found = [m.start() for m in target_re.finditer(text)]
+        breaks = [m.start() for m in break_re.finditer(text)] if found else []
+        return lambda end: bool(found) and word_ends(end) and (
+            _first_from(found, end, len(text) + 1) <= _first_from(breaks, end, len(text)))
+    return gate
+
+
+def verb_matcher(cmdpos: str, verbs: str, gate=_command_word_gate) -> EndGatedMatcher:
+    """``cmdpos`` + one of ``verbs`` as a whole command word whose end ``gate`` passes."""
+    return EndGatedMatcher(cmdpos + verbs, r'\b' + verbs, gate)
 
 
 _REVERSE_SHELLS = {"nc": (_NC_NAME, _NC_EXEC_FLAG_RE), "socat": (_SOCAT_NAME, _SOCAT_EXEC_ADDRESS_RE)}

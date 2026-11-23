@@ -29,7 +29,7 @@ from tools.approval_pipe_launchers import (
 )
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
 from tools.approval_hermes_store import (
-    _HERMES_HOME_ROOT, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT, _HERMES_STORE_ROOT_WORD,
+    _HERMES_HOME_BARE, _HERMES_HOME_ROOT, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT, _HERMES_STORE_ROOT_WORD,
     SqliteStoreWriteMatcher, _NextStart, home_create_target_matcher, link_destination_matcher,
     _COMMAND_TAIL, _CREDENTIAL_FILES, _HERMES_CONFIG_PATH, _HERMES_ENV_PATH, _HOME_PREFIX, 
     _HOME_SENSITIVE_CREATE_TARGET, _PROJECT_ENV_PATH, _PROJECT_SENSITIVE_WRITE_TARGET,
@@ -38,7 +38,9 @@ from tools.approval_hermes_store import (
     _WRITE_TARGET_BOUNDARY,
 )
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
-from tools.approval_shell_tokens import _shell_tokens_with_spans, reverse_shell_matcher, verb_matcher
+from tools.approval_shell_tokens import (
+    _shell_tokens_with_spans, _shutdown_word_gate, argument_gate, reverse_shell_matcher, verb_matcher,
+)
 from tools.approval_windows_hardline import (
     WhatIfExemptMatcher, narrowable_rm_rule, whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns,
 )
@@ -91,11 +93,6 @@ _CMDPOS = (
     + _MULTI_CALL_PREFIX  # other wrappers (nice, timeout, command ...) are peeled by tools.approval_wrappers
     + _CMD_PATH
 )
-# After a _CMDPOS verb: the rest of the verb's own word, then (_VERB_ARGS) its arguments up to a blank. The verb
-# must end as a word (`rmdir` is not `rm`) and its word may not run on into a `/`: in `./install/setup.sh` or
-# `rm-old/x` the verb is a directory of a longer program path, which _CMD_PATH would have consumed.
-_VERB_WORD_REST = r'(?:[^\w\s/)=<>;|&][^\s/)=<>;|&]*)?'
-_VERB_ARGS = _VERB_WORD_REST + r'(?:(?:[^\S\n]|[)=<>])[^;|&\n]*)?\s'
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
@@ -160,7 +157,8 @@ HARDLINE_PATTERNS = [
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
-    (_CMDPOS + r'dd(?:[^\w\s/)=<>][^\s/)=<>]*)?(?:(?:[^\S\n]|[)=<>])(?:[^\n]*[^\w\n])?|[^\w\s/)=<>])of=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # Stdlib: `_CMDPOS dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*` on a possessive `_CMD_PATH`.
+    (verb_matcher(_CMDPOS, r'dd', argument_gate(r'\bof=/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)', line=True)), "dd to raw block device"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -175,7 +173,7 @@ HARDLINE_PATTERNS = [
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
     # Stdlib: `_CMDPOS (shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))` on a possessive `_CMD_PATH`.
-    (verb_matcher(_CMDPOS, r'(?:shutdown|reboot|halt|poweroff)', shutdown=True), "system shutdown/reboot"),
+    (verb_matcher(_CMDPOS, r'(?:shutdown|reboot|halt|poweroff)', _shutdown_word_gate), "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
@@ -775,17 +773,19 @@ DANGEROUS_PATTERNS = [
     (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', _LINK_DESCRIPTION),
     # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
     # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
-    (_CMDPOS + rf'(?:rm|unlink|shred|truncate){_VERB_ARGS}["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
+    # Not compiled (these five rules): _STORE_VERB_MATCHERS, keyed by the pattern text, gates the verb's word end and
+    # its argument target in Python (verb_matcher + argument_gate).
+    (_CMDPOS + rf'(?:rm|unlink|shred|truncate)\b[^;|&\n]*\s["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
     # mv: a store at any operand (moved away or overwritten), the bare home only as a SOURCE, so
     # moving something INTO the home (`mv /tmp/skill ~/.hermes/`) stays clean. The blank that must follow the
     # bare home also ends its shell word, so the bare-home spelling carries no word-end lookahead of its own.
-    (_CMDPOS + rf'mv{_VERB_ARGS}["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_ROOT}/?\*?["\']?(?=\s+[^\s;|&<>]))',
+    (_CMDPOS + rf'mv\b[^;|&\n]*\s["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE}(?=\s+[^\s;|&<>]))',
      "delete/move/wipe Hermes home or session store"),
     # One lookahead for "ends its shell word" AND "is the last operand": a comment or an fd redirect needs a blank first.
-    (_CMDPOS + rf'(?:cp|install|rsync){_VERB_ARGS}["\']?{_HERMES_STORE_ROOT_WORD}["\']?(?=\s+(?:#|\d+[<>])|\s*(?:\Z|[;&|<>\n]))', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}(?=\s*(?:$|[;&|#<>\n]|\d+[<>]))', "overwrite Hermes session/credential store"),
     # `of=` starts a word of its own or follows a non-word character, inside dd's word (`dd,of=x`) or after it.
-    (_CMDPOS + rf'dd(?:[^\w\s/)=<>;|&](?:[^\s/)=<>;|&]*[^\w\s/)=<>;|&])?|{_VERB_WORD_REST}(?:[^\S\n]|[)=<>])(?:[^;|&\n]*[^\w;|&\n])?)of=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
-    (_CMDPOS + rf'tee{_VERB_ARGS}["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'dd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'tee\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     (rf'>[>|]?\s*["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
     # deletes the same rows), and any heredoc into a store prompts (its SQL sits past the newline).
@@ -900,8 +900,26 @@ _GIT_WALKED_DESCRIPTIONS = frozenset({
     "git reset --hard (destroys uncommitted changes)", "git clean with force (deletes untracked files)",
     "git branch force delete", "git branch force delete (long flags)", "git branch force delete (long flags, force-first)",
 })
+# The store rules (several share a description): each verb's argument target, searched on its own with the stdlib
+# rule's word-end lookaheads at its edge; verb_matcher + argument_gate stand in for the table entry of that verb.
+_STORE_VERB_TARGETS = {
+    r'(?:rm|unlink|shred|truncate)': rf'\s["\']?{_HERMES_STORE_FILE}|\s["\']?{_HERMES_HOME_BARE}',
+    r'mv': rf'\s["\']?{_HERMES_STORE_FILE}|\s["\']?{_HERMES_HOME_ROOT}/?\*?["\']?(?=\s+[^\s;|&<>])',
+    r'(?:cp|install|rsync)': rf'\s["\']?{_HERMES_STORE_ROOT_WORD}["\']?(?=\s+(?:#|\d+[<>])|\s*(?:\Z|[;&|<>\n]))',
+    r'dd': rf'\bof=["\']?{_HERMES_STORE_ROOT}',
+    r'tee': rf'\s["\']?{_HERMES_STORE_ROOT}',
+}
+_STORE_VERB_DESCRIPTIONS = frozenset({"delete/move/wipe Hermes home or session store", "overwrite Hermes session/credential store"})
+
+
+def _store_verb_matcher(pattern: str, description: str):
+    return next((verb_matcher(_CMDPOS, verbs, argument_gate(target)) for verbs, target in _STORE_VERB_TARGETS.items()
+                 if description in _STORE_VERB_DESCRIPTIONS and pattern.startswith(_CMDPOS + verbs + r'\b[^;|&\n]*')), None)
+
+
 DANGEROUS_PATTERNS_COMPILED = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS
+     else store if (store := _store_verb_matcher(p, d)) is not None
      else GitCommandMatcher(p.removeprefix(_GIT), _RE_FLAGS) if d in _GIT_WALKED_DESCRIPTIONS
      else GitPushMatcher(p.removeprefix(_GIT_PUSH + _GIT_PUSH_ARGS), _RE_FLAGS) if p.startswith(_GIT_PUSH + _GIT_PUSH_ARGS)
      else re.compile(p, _RE_FLAGS), d)

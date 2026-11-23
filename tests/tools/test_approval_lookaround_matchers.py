@@ -305,12 +305,65 @@ def test_gated_matcher_marks_with_a_character_the_text_lacks():
     assert matcher.search("nc -e sh \ue000\ue001")
     assert not matcher.search("nc\ue000 -e sh")
     assert not matcher.search("echo nc -e \ue000")
+    # A private-use character already in the text never stands for a mark: here it follows a command-position `nc`.
+    assert not matcher.search("nc\ue000 -e x\necho nc -e y")
 
 
 def test_reverse_shell_gate_work_stays_linear_with_many_names():
     # Every `nc` is a candidate end; each reads the next `-e` and the next span break once, by bisection.
     matcher = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if d == _NC)
     command = "x" + " nc" * 100_000 + " ; y -e"
+    started = time.process_time()
+    assert matcher.search(command) is None
+    assert time.process_time() - started < 2
+
+
+# The Hermes store rules (stdlib table text; verb_matcher + argument_gate in DANGEROUS_PATTERNS_COMPILED).
+_STORE_DELETE, _STORE_OVERWRITE = "delete/move/wipe Hermes home or session store", "overwrite Hermes session/credential store"
+_STORE_TARGETS = ["~/.hermes/state.db", '"~/.hermes/state.db"', "~/.hermes/state.db.bak", "$HERMES_HOME/sessions/",
+                  "~/.hermes/sessions/x.jsonl", "~/.hermes", "~/.hermes/", "'~/.hermes/*'", "~/.hermes/rm", "/tmp/x",
+                  "of=~/.hermes/state.db", "of=/dev/sda", "x,of=~/.hermes/state.db"]
+
+
+def _store_cases(verbs):
+    return _sample([["", "sudo ", "x; ", "$(", "a\n", "env A=1 "], ["", "/bin/", "./a/"], verbs,
+                    ["", "x", "-x", "-x/y", ".exe", ",", "=1"], [" ", "  ", "\n", " -f ", " a;b "], _STORE_TARGETS,
+                    ["", " /tmp/y", " 2>/dev/null", " # c", ";", " | z", "\n", ")"]], 30_000, 9)
+
+
+@pytest.mark.parametrize(("verbs", "description", "cases"), [
+    ("(?:rm|unlink|shred|truncate)", _STORE_DELETE, lambda: _store_cases(["rm", "unlink", "RM", "rmx"])),
+    ("mv", _STORE_DELETE, lambda: _store_cases(["mv", "mvx"])),
+    ("(?:cp|install|rsync)", _STORE_OVERWRITE, lambda: _store_cases(["cp", "install", "rsync", "cpx"])),
+    ("dd", _STORE_OVERWRITE, lambda: _store_cases(["dd", "ddx"])),
+    ("tee", _STORE_OVERWRITE, lambda: _store_cases(["tee", "teex"])),
+])
+def test_store_rule_matches_exactly_where_the_stdlib_rule_does(verbs, description, cases):
+    (rule, matcher), = [(p, c) for (p, d), (c, _) in zip(DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED)
+                        if d == description and p.startswith(_CMDPOS + verbs + r"\b")]
+    exact = re.compile(_CMDPOS.replace(_CMD_PATH, _STDLIB_CMD_PATH) + rule.removeprefix(_CMDPOS), re.IGNORECASE | re.DOTALL)
+    original = re.compile(_STDLIB_CMDPOS + rule.removeprefix(_CMDPOS), re.IGNORECASE | re.DOTALL)
+    corpus = cases()
+    assert [c for c in corpus if bool(exact.search(c)) != bool(matcher.search(c))] == []
+    assert [c for c in corpus if original.search(c) and not matcher.search(c)] == []
+    assert any(original.search(c) for c in corpus) and not all(original.search(c) for c in corpus)
+
+
+def test_hardline_dd_matches_exactly_where_the_stdlib_rule_does():
+    rule = r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*'
+    exact = re.compile(_CMDPOS.replace(_CMD_PATH, _STDLIB_CMD_PATH) + rule, re.IGNORECASE | re.DOTALL)
+    original = re.compile(_STDLIB_CMDPOS + rule, re.IGNORECASE | re.DOTALL)
+    matcher = _hardline("dd to raw block device")
+    corpus = _store_cases(["dd", "DD", "ddx"]) + [c.replace(";", " ; ") for c in _store_cases(["dd"])]
+    assert [c for c in corpus if bool(exact.search(c)) != bool(matcher.search(c))] == []
+    assert [c for c in corpus if original.search(c) and not matcher.search(c)] == []
+    assert any(original.search(c) for c in corpus) and not all(original.search(c) for c in corpus)
+
+
+def test_argument_gate_work_stays_linear_with_many_verbs():
+    matcher = next(c for (p, d), (c, _) in zip(DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED)
+                   if d == _STORE_DELETE and p.startswith(_CMDPOS + "(?:rm"))
+    command = "rm" + " rm" * 100_000 + " x; y ~/.hermes/state.db"
     started = time.process_time()
     assert matcher.search(command) is None
     assert time.process_time() - started < 2

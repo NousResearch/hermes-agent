@@ -100,16 +100,16 @@ def test_brokered_opaque_bearer_rotates_on_stored_expiry_and_keeps_the_refresh_t
     assert json.loads((home / "auth.json").read_text())["credential_pool"][name][0]["last_status"] == STATUS_DEAD
 
 
-def test_signed_in_solstice_picker_row_offers_gemini_4_models_hydrogen_first(monkeypatch, tmp_path):
-    """The per-user-quota endpoint has no model listing, so the picker row is the plugin's fixed list;
-    its first entry is the default model."""
+def test_signed_in_solstice_picker_row_is_the_plugin_list_in_order(monkeypatch, tmp_path):
+    """The per-user-quota endpoint has no model listing, so the picker row is the plugin's fixed list,
+    in its order: the first entry is the default model and the last is the per-model quota reserve."""
     home = tmp_path / "hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     _write_pool(home, "solstice", _pool_row("solstice", access="ya29.x", expires_at_ms=int(time.time() * 1000) + 3_600_000))
     from hermes_cli.model_switch_providers import list_authenticated_providers
 
+    profile = providers.get_provider_profile("solstice")
+    assert profile is not None
     row = next(r for r in list_authenticated_providers() if r["slug"] == "solstice")
-    assert row["models"][0] == "gemini-4-hydrogen"
-    assert {"gemini-4-neon", "gemini-4-carbon", "gemini-3.5-flash-lite"} <= set(row["models"])
-    assert row["models"][-1] == "gemini-3.5-flash-lite"  # the per-model quota reserve stays last
+    assert row["models"] == list(profile.fallback_models)

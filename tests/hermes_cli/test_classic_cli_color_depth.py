@@ -39,9 +39,19 @@ def test_explicit_prompt_toolkit_depth_wins(monkeypatch):
     assert out.get_default_color_depth() is ColorDepth.DEPTH_4_BIT
 
 
+@pytest.mark.parametrize("term", ["dumb", "linux"])
+def test_colorterm_does_not_promote_dumb_or_console_term(monkeypatch, term):
+    # COLORTERM is inherited (e.g. Emacs M-x shell); TERM=dumb/linux must not be promoted to 24-bit.
+    monkeypatch.setenv("TERM", term)
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    out = _build_cpr_disabled_output(io.StringIO())
+    assert out.get_default_color_depth() is not ColorDepth.DEPTH_24_BIT
+
+
 def test_dumb_term_is_still_respected(monkeypatch):
     # term is passed through, so prompt_toolkit's TERM=dumb handling keeps working.
     monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setenv("COLORTERM", "truecolor")
     out = _build_cpr_disabled_output(io.StringIO())
     assert out.get_default_color_depth() is ColorDepth.DEPTH_1_BIT
 

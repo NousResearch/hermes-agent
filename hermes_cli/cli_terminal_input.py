@@ -534,7 +534,12 @@ def _classic_cli_color_depth():
     explicit = ColorDepth.from_env()
     if explicit is not None:
         return explicit
-    if os.environ.get("COLORTERM", "").strip().lower() in ("truecolor", "24bit"):
+    from prompt_toolkit.utils import is_dumb_terminal
+
+    term = os.environ.get("TERM", "")
+    # COLORTERM is inherited (Emacs M-x shell, VT console); TERM=dumb/linux must not be promoted.
+    if (not is_dumb_terminal(term) and term != "linux"
+            and os.environ.get("COLORTERM", "").strip().lower() in ("truecolor", "24bit")):
         return ColorDepth.DEPTH_24_BIT
     return None
 

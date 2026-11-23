@@ -168,3 +168,23 @@ def test_an_update_that_gets_a_hosted_profile_refused_says_the_update_is_in_use(
         host = getattr(manager, "_plugin_host_instance", None)
         if host is not None:
             host.shutdown()
+
+
+def test_a_failed_update_is_reported_as_failed_whatever_its_exception_is_called(plugin):
+    """The kind of load result is recorded as data: an import failure whose exception text looks like a
+    refusal still reads as a failed update, word for word as before."""
+    from hermes_cli.plugins_activation import activation_hint, find_activation, plugin_activation_summary
+    from providers import get_provider_profile
+
+    _write(plugin, 1)
+    assert get_provider_profile("demo-provider").create_client().version == "v1"
+    _write(plugin, 2)
+    with (plugin / "__init__.py").open("a", encoding="utf-8") as f:
+        f.write("\nraise type('provider profile unavailable', (Exception,), {})('bad metadata')\n")
+    manager = _forced_sweep()
+    key = next(k for k in manager._plugins if k.endswith("demo-provider"))
+    summary = find_activation([plugin_activation_summary(manager, key)], "demo-provider")
+    assert get_provider_profile("demo-provider").create_client().version == "v1"  # the old release serves
+    assert activation_hint({"gateway_reloaded": True, "activation": summary}) == (
+        "The updated provider plugin failed to load (provider profile unavailable: bad metadata); "
+        "the previous version keeps serving.")

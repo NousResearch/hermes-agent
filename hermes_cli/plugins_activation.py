@@ -60,12 +60,14 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
         now["callbacks"] = callbacks
     if kinds.get("locale"):  # language-pack layers: the i18n caches reset on registration, so live at once
         now["locales"] = sorted(kinds["locale"])
-    load_error = ""
+    load_error, load_refused = "", False
     if getattr(manifest, "kind", None) == "model-provider":
         # providers/ discovery owns these and the forced sweep re-scans them: an updated tree serves new
         # sessions once it imported; a failed import leaves the previous version serving (#153300).
-        from providers import plugin_load_error
-        load_error = plugin_load_error(Path(getattr(manifest, "path", None) or name).name)
+        from providers import plugin_load_error, plugin_load_refused
+        plugin_dir = Path(getattr(manifest, "path", None) or name).name
+        load_error = plugin_load_error(plugin_dir)
+        load_refused = plugin_load_refused(plugin_dir)
         if not load_error:
             now["provider"] = [name]
     deferred: dict[str, list[str]] = {}
@@ -82,6 +84,8 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
     summary = {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}
     if load_error:
         summary["load_error"] = load_error
+        if load_refused:
+            summary["load_refused"] = True
     # Read in the process that loaded the plugin (for a gateway answer, the gateway): a dependency
     # installed after it booted is not importable there until it restarts.
     from hermes_cli.plugins_loader import missing_python_dependencies
@@ -330,9 +334,9 @@ def activation_hint(result: dict[str, Any]) -> str:
     if missing := act.get("missing_dependencies"):
         return "\n".join([*lines, dependency_restart_hint(missing, act.get("missing_in") or [])])
     if error := act.get("load_error"):
-        # Under plugins.isolation: host the updated tree loads with a profile refused (that record starts
-        # "provider profile", an import failure "<ExceptionName>:"): the update is live, the refused profile gone.
-        if error.startswith("provider profile "):
+        # Under plugins.isolation: host the updated tree loads with a profile refused: the update is live,
+        # the refused profile gone.
+        if act.get("load_refused"):
             return "\n".join([*lines, f"The updated provider plugin is in use without the profiles Hermes "
                                       f"refused ({error})."])
         return "\n".join([*lines, f"The updated provider plugin failed to load ({error}); "

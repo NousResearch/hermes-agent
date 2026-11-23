@@ -725,7 +725,7 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str, *
     if refusal is not None:
         logger.warning("%s", refusal)
         if layer is not None:
-            layer.errors[plugin_dir.name] = refusal
+            layer.errors[plugin_dir.name] = ProfileRefusal(refusal)
     elif in_process:
         for name, reason in in_process.items():
             logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
@@ -781,9 +781,21 @@ def _note_load_result(plugin_dir: Path, exc: BaseException | None) -> None:
         layer.errors[plugin_dir.name] = f"{type(exc).__name__}: {exc}"
 
 
+class ProfileRefusal(str):
+    """A plugin dir's recorded load error when ``plugins.isolation: host`` refused some of its profiles while
+    its tree loaded, as opposed to an import that failed. The text is the refusal; the type is the kind of
+    load result, so readers never classify a record by its wording."""
+
+
 def plugin_load_error(plugin: str) -> str:
     """The error the bound home's provider plugin dir *plugin* raised on its last import, else ``""``."""
-    return _home_layer().errors.get(plugin, "")
+    return str(_home_layer().errors.get(plugin, ""))
+
+
+def plugin_load_refused(plugin: str) -> bool:
+    """Whether *plugin*'s recorded load error (:func:`plugin_load_error`) is a refusal of some of its
+    profiles, its tree loaded (:class:`ProfileRefusal`), rather than a failed import."""
+    return isinstance(_home_layer().errors.get(plugin), ProfileRefusal)
 
 
 def _discover_entry_point_providers() -> None:

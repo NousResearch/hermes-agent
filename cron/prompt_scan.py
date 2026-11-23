@@ -7,7 +7,7 @@ import hermes_re as re
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.
 from tools.threat_patterns import EMOJI_TAG_SEQUENCE_RE as _EMOJI_TAG_SEQUENCE_RE
-from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
+from tools.threat_patterns import FORGET_RULES_RAW, ExclusionMatcher, mask_negated_forget
 from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
 
 # Logger parity with the origin module (these functions used to log there).
@@ -37,7 +37,7 @@ _CRON_THREAT_PATTERNS = [
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
     # User prompt only (after the [:4] slice below): "forget" is ordinary prose in skill bodies, which
     # skills_guard already scans with this same rule at install time.
-    (FORGET_RULES_RAW_RE, "forget_rules"),
+    (FORGET_RULES_RAW, "forget_rules"),
 ]
 
 # Looser set for the assembled prompt: command-shape patterns are dropped because skill
@@ -112,7 +112,10 @@ _CRON_PATTERN_REMEDIES = {
 def _first_pattern_error(text: str, *pattern_sets) -> str:
     for patterns in pattern_sets:
         for pattern, pid in patterns:
-            if re.search(pattern, mask_negated_forget(text) if pid == "forget_rules" else text, re.IGNORECASE):
+            subject = mask_negated_forget(text) if pid == "forget_rules" else text
+            # A matcher entry (lookahead applied in Python) is compiled already; the strings compile on first use.
+            if (pattern.search(subject) if isinstance(pattern, ExclusionMatcher)
+                    else re.search(pattern, subject, re.IGNORECASE)):
                 return (
                     f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not "
                     "contain injection or exfiltration payloads." + _CRON_PATTERN_REMEDIES.get(pid, "")

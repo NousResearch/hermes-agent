@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from tools.skills_guard import _COMPILED_THREAT_PATTERNS, Finding
+from tools.threat_patterns import ExclusionMatcher, only_end
 
 # pattern id -> compiled regex, to locate a finding's token on its full source line.
 _PATTERN_BY_ID = {pid: rx for rx, pid, *_ in _COMPILED_THREAT_PATTERNS}
@@ -318,14 +319,22 @@ def is_base64_media(line: str) -> bool:
 # data movement: the archive is CREATED on the line (``tar c…``) and the base64 is an ENCODE feeding a
 # matching DECODE (round-trip), not an opaque embedded blob. Such a line is a note. The embedded-blob
 # attack (decode only, no ``tar c``/no prior ``base64`` encode) keeps full severity.
-# RE2 has no lookahead, so "the first ``base64`` is an ENCODE" is spelled as the text that may follow
-# it: the rest of its command, up to the next ``|`` ``;`` ``&``, in which no ``-`` starts a run of
-# letters that reaches a ``d`` (``-d``, ``-di``, ``--decode``). The word boundary after the first and
-# before the second ``base64`` is spelled as the non-word character that has to stand there.
-_B64_ROUNDTRIP = re.compile(
-    r'\bbase64(?:[^\w\n|;&-][^\n|;&-]*)?(?:-[a-ce-z]*(?:[^\n|;&a-z-][^\n|;&-]*)?)*'
-    r'(?:[;&][^\n]*)?\|(?:[^\n]*[^\w\n])?'
-    r'base64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b', re.IGNORECASE)
+# "The first ``base64`` is an ENCODE" stood as the lookahead ``(?![^\n|;&]*(?:-[a-z]*d[a-z]*|--decode))``
+# right after it: no decode flag in the rest of its command. RE2 has no lookahead, so the rule is the stdlib
+# original without it and ExclusionMatcher checks it there. The word boundary after the first and before the
+# second ``base64`` is spelled as the non-word character that has to stand there (RE2's mid-pattern ``\b`` is
+# ASCII-only); both spellings keep the original's backtracking order.
+_FIRST_BASE64 = re.compile(r'base64', re.IGNORECASE)
+_DECODE_FLAG_AHEAD = re.compile(r'[^\n|;&]*(?:-[a-z]*d[a-z]*|--decode)', re.IGNORECASE)
+
+
+def _first_base64_decodes(text: str, m, end: int) -> bool:
+    return _DECODE_FLAG_AHEAD.match(text, _FIRST_BASE64.match(text, m.start()).end()) is not None
+
+
+_B64_ROUNDTRIP = ExclusionMatcher(
+    r'\bbase64(?:[^\w\n][^\n]*)?\|(?:[^\n]*[^\w\n])?'
+    r'base64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b', only_end, _first_base64_decodes)
 _TAR_CREATE = re.compile(r'\btar\s+(?:-?-?create\b|-?-?c[a-z]*f?\b|c[a-z]*f?\b)', re.IGNORECASE)
 
 

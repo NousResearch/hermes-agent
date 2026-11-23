@@ -42,35 +42,59 @@ _NEGATOR_VERBS = ("do", "does", "did", "ca", "could", "would", "should", "wo", "
                   "ai", "has", "have", "had")
 _NEGATOR_PLAIN = ("cannot", "not", "never")
 _NEGATOR = rf"(?:(?:{'|'.join(_NEGATOR_VERBS)})n[’']?t|{'|'.join(_NEGATOR_PLAIN)})"
-# Every spelling `_NEGATOR` matches, one by one: the input of `_other_run_re`.
-_NEGATOR_WORDS = tuple(f"{verb}n{quote}t" for verb in _NEGATOR_VERBS for quote in ("’", "'", "")) + _NEGATOR_PLAIN
 
 
-def _other_run_re(words: tuple) -> str:
-    """One whole run of letters, digits and apostrophes that is none of *words*, spelled without lookaround
-    (RE2 has no ``(?!...)``): the word before `forget`, when it is not a negator.
+class ExclusionMatcher:
+    """Stands in for a compiled rule whose stdlib original held negative lookaheads (RE2 has none): the rule is
+    the original without them. From a start, the original tries the ends its quantifiers reach in backtracking
+    order and keeps the first that its lookaheads let through; ``ends(text, match)`` lists those ends in that
+    order and ``excluded(text, match, end)`` evaluates the lookaheads for one end (a lookahead at a fixed point of
+    the match, such as its start, is evaluated there). A start with no such end is no match, and the search goes
+    on one character later; a match resumes the search at its end, as in stdlib. Offers ``search`` and
+    ``finditer``, all the scanners call on a rule, and yields real match objects."""
 
-    Two cases, so that the large Unicode letter class is written twice instead of once per letter of every word
-    (RE2 copies it each time): a run holding a non-ASCII letter or digit (no negator does; under IGNORECASE
-    ``ſ``, ``ı``, ``İ`` and the Kelvin sign count as their ASCII letters), or a run of ASCII letters, digits and
-    apostrophes that leaves the letter tree of *words*."""
-    plain = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz’'"
+    def __init__(self, pattern: str, ends, excluded):
+        self._pattern = re.compile(pattern, re.IGNORECASE)
+        self._ends, self._excluded = ends, excluded
 
-    def after(prefix: str) -> str:
-        nxt = sorted({w[len(prefix)] for w in words if w.startswith(prefix) and len(w) > len(prefix)})
-        taken = {c for letter in nxt for c in (letter.lower(), letter.upper())}
-        longer = ["[" + "".join(c for c in plain if c not in taken) + rf"][{plain}]*"]
-        longer += [c + after(prefix + c) for c in nxt]
-        return "(?:" + "|".join(longer) + ")" + ("" if prefix in words or not prefix else "?")
-    return rf"(?:[{plain}]*[^\W\x00-\x7f](?:[^\W_]|[’'])*|{after('')})"
+    def finditer(self, text: str):
+        pos = 0
+        while (m := self._pattern.search(text, pos)) is not None:
+            hit = next((hit for end in self._ends(text, m) if not self._excluded(text, m, end)
+                        and (hit := self._pattern.fullmatch(text, m.start(), end)) is not None), None)
+            if hit is None:
+                pos = m.start() + 1
+            else:
+                yield hit
+                pos = hit.end()
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
+def only_end(text: str, m) -> tuple:
+    """``ends`` of an ExclusionMatcher rule whose match has one end per start."""
+    return (m.end(),)
+
+
+# The original's `(?!{_NEGATOR}[ \t])` at the start of the first branch. A match that starts on a negator came from
+# that branch: the second one starts on `forget`, a space, a tab or a character that is not a letter.
+_NEGATOR_THEN_SPACE = re.compile(rf"{_NEGATOR}[ \t]", re.IGNORECASE)
+
+
+def _opens_with_negator(text: str, m, end: int) -> bool:
+    return _NEGATOR_THEN_SPACE.match(text, m.start()) is not None
 
 
 # FORGET_RULES_RAW_RE is the unbounded rule for the raw-line scanners (tools/skills_guard.py,
-# cron/prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there.
-FORGET_RULES_RAW_RE = (rf"(?:(?:(?<![\w’'])|(?<=_)){_other_run_re(_NEGATOR_WORDS)}[ \t]+"
+# cron/prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there. It is the stdlib
+# original without its negator lookahead, which FORGET_RULES_EXCLUSION evaluates (see ExclusionMatcher).
+FORGET_RULES_RAW_RE = (r"(?:(?:(?<![\w’'])|(?<=_))(?:[^\W_]|[’'])+[ \t]+"
                        r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]*)"
                        r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
                        r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)(?![^\W_])")
+FORGET_RULES_EXCLUSION = (only_end, _opens_with_negator)
+FORGET_RULES_RAW = ExclusionMatcher(FORGET_RULES_RAW_RE, *FORGET_RULES_EXCLUSION)
 # FORGET_RULES_RE is the same rule bounded for the chunked scan_for_threats (width under _CHUNK_OVERLAP). RE2 has no
 # lookaround, so the negator exclusion is not in this pattern: scan_for_threats first overwrites a `forget` that
 # follows a whole-word negator (_NEGATOR_FORGET), and the prefix here only needs "anything, then spaces or tabs".

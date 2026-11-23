@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
-from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
+from tools.threat_patterns import (
+    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, mask_negated_forget, only_end)
 
 
 SCANNER_VERSION = "skills-guard-v17"
@@ -175,14 +176,11 @@ _SUDO_PREFIX = r'(?:sudo\s+(?:-\S+\s+)*)?'
 
 # Known credential-file paths for the JavaScript and Python read-secrets patterns (a private key,
 # .env, credentials, .netrc, .pgpass, .npmrc, .pypirc; a public key is not a secret), as a literal
-# string argument naming one of those files. RE2 has no mid-pattern lookahead and no exact interior
-# `\b`, so both guards are spelled as the text they allow up to the closing quote: after a key name
-# anything that does not open with `.pub`; after the other names the quote or a non-word character.
-_TO_QUOTE = r'[^"\'\n]*["\']'
-_NOT_PUB_TO_QUOTE = (r'(?:["\']|[^."\'\n]' + _TO_QUOTE + r'|\.(?:["\']|[^p"\'\n]' + _TO_QUOTE
-                     + r'|p(?:["\']|[^u"\'\n]' + _TO_QUOTE + r'|u(?:["\']|[^b"\'\n]' + _TO_QUOTE + r'))))')
-_CRED_FILE_LITERAL = (r'["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)' + _NOT_PUB_TO_QUOTE
-                      + r'|(?:\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)(?:[^\w"\'\n][^"\'\n]*)?["\'])')
+# string argument naming one of those files. The stdlib original guarded the names with `(?!\.pub)` after a
+# key name and `\b` after the others; RE2 has no lookahead (and no Unicode `\b` mid-pattern), so the literal here
+# is the original without the guards and _names_credential_file checks them.
+_CRED_FILE_NAMES = r'(?P<key>\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa))|\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc'
+_CRED_FILE_LITERAL = r'["\'][^"\'\n]*(?:' + _CRED_FILE_NAMES.replace('(?P<key>', '(?:') + r')[^"\'\n]*["\']'
 # Python only: the literal optionally wrapped in `os.path.expanduser(...)`.
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
 
@@ -207,25 +205,7 @@ _PUBLIC_SOLANA_PROGRAM_IDS = frozenset((
 _LOOPBACK_URL_RE = re.compile(r'https?://(?:localhost|127\.0\.0\.1|\[::1\])', re.IGNORECASE)
 
 # destructive_root_rm: the roots under which `rm -rf` is routine cleanup (see the comment at the table entry).
-_RM_SAFE_ROOTS = ('tmp', 'var/tmp', 'dev/shm', 'run', 'var/lib/apt/lists',
-                  'var/cache/apt', 'var/cache/apk', 'var/cache/yum', 'var/cache/dnf')
-
-
-def _opens_with_none_re(stops: dict) -> str:
-    r"""Lookahead body for "the text here opens with none of the keys of *stops*", spelled without a negative
-    lookahead (RE2 has none). A key does not count when the text after it matches its value (``\w``: the key is
-    only the head of a longer word). No key may be the head of another key."""
-    def after(prefix: str) -> str:
-        if prefix in stops:
-            return stops[prefix]
-        chars = sorted({key[len(prefix)] for key in stops if key.startswith(prefix)})
-        return rf'(?:\Z|[^{"".join(chars)}]|' + '|'.join(c + after(prefix + c) for c in chars) + ')'
-    return after('')
-
-
-_RM_SAFE_ROOT_STOPS = dict.fromkeys(_RM_SAFE_ROOTS, r'\w')
-# A parent segment that climbs out of a safe root: `<root>/<segments>/..`.
-_RM_ROOT_ESCAPE = '(?:' + '|'.join(_RM_SAFE_ROOTS) + r')/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$)'
+_RM_SAFE_ROOTS = r'(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -267,7 +247,7 @@ THREAT_PATTERNS = [
     # exclude a write/append/exclusive mode — a literal 2nd-arg string containing w/a/x, or a
     # `mode=` kwarg with the same, tolerating the expanduser wrapper's own `)` — from the
     # `open(...)` branch; `Path(...).read_*()` has no mode argument, so needs no exclusion.
-    # The exclusion stood as two trailing lookaheads; RE2 has none, so _TrailingExclusionMatcher applies it.
+    # The exclusion stood as two trailing lookaheads; RE2 has none, so ExclusionMatcher applies it.
     (r'\bopen\s*\(\s*' + _PY_CRED_FILE_ARG
      + r'|\bPath\s*\(\s*' + _PY_CRED_FILE_ARG + r'\s*\)\.(?:read_text|read_bytes|readlines|readline)\s*\(',
      "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
@@ -282,8 +262,8 @@ THREAT_PATTERNS = [
     # reads, with secret-shaped names scored medium by python_environ_get_secret below (a blanket high here
     # would swamp that). `^[^#\n]*` skips lines with a '#' anywhere before it (full-line or inline comment);
     # scan_file()'s docstring pre-filter skips triple-quoted prose.
-    (r'^[^#\n]*os\.environ'
-     r'(?=\s*\Z|\s+[^\s.]|[^\s.\w]|\s*\.(?:\Z|[^g]|g(?:\Z|[^e]|e(?:\Z|[^t]|t\s*(?:\Z|[^\s(])))))',
+    # The original's `\b(?!\s*\.get\s*\()` after `os.environ` is checked by ExclusionMatcher (RE2 has no lookahead).
+    (r'^[^#\n]*os\.environ',
      "python_os_environ", "high", "exfiltration", "accesses os.environ outside comments/docstrings (potential env dump)"),
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
      "python_environ_get_secret", "medium", "exfiltration", "reads secret via os.environ.get() (normal API-key access; informational)"),
@@ -330,7 +310,7 @@ THREAT_PATTERNS = [
     # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
     # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
     # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
-    # The two exemptions stood as trailing lookaheads; RE2 has none, so _TrailingExclusionMatcher applies them.
+    # The two exemptions stood as trailing lookaheads; RE2 has none, so ExclusionMatcher applies them.
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
@@ -375,11 +355,9 @@ THREAT_PATTERNS = [
     # `rm -rf --no-preserve-root /`), not only the first. A later bare `//` token is a JS/JSONC
     # comment opener (`"rm -rf dist", // clean`), not the root; operands after it are still
     # checked (`rm -rf x // /etc` deletes /etc in a shell). A first-operand `//` is the root.
-    # Two alternatives instead of a conditional: a later operand (group 1 holds the operands before it), where
-    # a bare `//` token is also not the root, then the first operand.
-    (r'rm\s+-rf\s+(?:((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)/(?:(?='
-     + _opens_with_none_re(_RM_SAFE_ROOT_STOPS | {'/': r'\S'}) + ')|' + _RM_ROOT_ESCAPE
-     + ')|/(?:(?=' + _opens_with_none_re(_RM_SAFE_ROOT_STOPS) + ')|' + _RM_ROOT_ESCAPE + '))',
+    # RE2 has no conditional and no lookahead: the entry is the stdlib original without them, and _rm_root_ends
+    # applies the `//` condition, the safe-root lookahead and the `..` escape at each slash the original tries.
+    (r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?:|' + _RM_SAFE_ROOTS + r'/(?:[^/\s]*/)*\.\.)',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     # ``rm`` / ``rmdir`` need a left boundary that excludes letters/digits: without it the ``rm`` in
     # English prose (``the platfoRM rOute to ~/.hermes/config.yaml``) matched a recursive home delete.
@@ -455,7 +433,7 @@ THREAT_PATTERNS = [
     # node:sqlite / better-sqlite3), never code or a shell command line.
     # A method named ``exec`` on an object (``sandbox.exec("tar", ...)``, a Docker/sandbox SDK argv call)
     # is not the Python ``exec()`` builtin running a code string, so require no ``.``/word char before ``exec``.
-    # The SQL exclusion stood as a trailing lookahead; RE2 has none, so _TrailingExclusionMatcher applies it.
+    # The SQL exclusion stood as a trailing lookahead; RE2 has none, so ExclusionMatcher applies it.
     (r'(?<![.\w])exec\s*\(\s*["\']',
      "exec_string", "high", "obfuscation", "exec() with string argument"),
     (rf'echo\s+[^\n]*\|\s*(?:{_SHELL_NAMES_RE}|python|perl|ruby|node)',
@@ -512,11 +490,9 @@ THREAT_PATTERNS = [
     # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain", "PEP 723 inline script metadata with dependencies (verify pinning)"),
-    # One positive lookahead (RE2 has no negative one) for "the rest of the line holds no `==` and does not
-    # open with `-r `": `(?:=?[^=\n])*=?` is a run with no two `=` in a row.
-    (r'pip\s+install\s+(?=(?:(?:[^-=\n]|=[^=\n])(?:=?[^=\n])*=?|=?)(?:\n|\Z)'
-     r'|-(?:(?:(?:[^r=\n]|=[^=\n])(?:=?[^=\n])*=?|=?)(?:\n|\Z)'
-     r'|r(?:(?:(?:[^\s=]|=[^=\n])(?:=?[^=\n])*=?|=)(?:\n|\Z)|\Z)))',
+    # The original's `(?!-r\s)(?!.*==)` (a requirements file, or a pin on the rest of the line) is checked by
+    # ExclusionMatcher at each end of the `\s+` run (RE2 has no lookahead).
+    (r'pip\s+install\s+',
      "unpinned_pip_install", "medium", "supply_chain", "pip install without version pinning"),
     # One positive lookahead (RE2 has no negative one): no `@` + digit on the rest of the line.
     (r'npm\s+install\s+(?=(?:[^@\n]|@+[^@\d\n])*@*(?:\n|\Z))',
@@ -740,34 +716,36 @@ def _line_end(text: str, start: int) -> int:
     return len(text) if end < 0 else end
 
 
-class _TrailingExclusionMatcher:
-    """Stands in for a compiled entry whose stdlib original ended in negative lookaheads (RE2 has none): the entry
-    is the original without them. From a start, the original tries the ends its quantifiers reach in backtracking
-    order and keeps the first that its lookaheads let through; ``ends(text, match)`` lists those ends in that
-    order and ``excluded(text, match, end)`` evaluates the lookaheads at one end. A start with no such end is no
-    match, and the search goes on one character later; a match resumes the search at its end, as in stdlib."""
-
-    def __init__(self, pattern: str, ends, excluded):
-        self._pattern = re.compile(pattern, re.IGNORECASE)
-        self._ends, self._excluded = ends, excluded
-
-    def finditer(self, text: str):
-        pos = 0
-        while (m := self._pattern.search(text, pos)) is not None:
-            hit = next((hit for end in self._ends(text, m) if not self._excluded(text, m, end)
-                        and (hit := self._pattern.fullmatch(text, m.start(), end)) is not None), None)
-            if hit is None:
-                pos = m.start() + 1
-            else:
-                yield hit
-                pos = hit.end()
-
-    def search(self, text: str):
-        return next(self.finditer(text), None)
+def _never(text: str, m, end: int) -> bool:
+    return False
 
 
-def _only_end(text: str, m) -> tuple:
-    return (m.end(),)
+def _every_end(rx):
+    """``ends`` for a rule whose greedy runs reach each hit of *rx* inside the match: stdlib tries the last first."""
+    def ends(text: str, m) -> tuple:
+        return tuple(sorted((hit.end() for hit in rx.finditer(text, m.start(), m.end())), reverse=True))
+    return ends
+
+
+# js_read_secrets_file / py_read_secrets_file: the stdlib original's `(?!\.pub)` after a key name and `\b` after
+# the other names. The literal's content holds no quote, so its end is the next quote whichever name is used.
+_QUOTE_CHAR = re.compile(r'["\']')
+_CRED_FILE_NAME = re.compile(_CRED_FILE_NAMES, re.IGNORECASE)
+_PUB_SUFFIX = re.compile(r'\.pub', re.IGNORECASE)
+
+
+def _names_credential_file(text: str, m) -> bool:
+    """Whether the match's quoted literal (the first quote in the match opens it) holds a name its guard lets
+    through. No name can start inside another, so the non-overlapping hits are every candidate."""
+    opening = _QUOTE_CHAR.search(text, m.start()).start()
+    closing = _QUOTE_CHAR.search(text, opening + 1).start()
+    return any(_PUB_SUFFIX.match(text, name.end()) is None if name['key'] is not None
+               else not _word_char_at(text, name.end())
+               for name in _CRED_FILE_NAME.finditer(text, opening + 1, closing))
+
+
+def _names_no_credential_file(text: str, m, end: int) -> bool:
+    return not _names_credential_file(text, m)
 
 
 # py_read_secrets_file: the stdlib original ended the `open(` branch in
@@ -793,6 +771,10 @@ def _open_ends(text: str, m) -> tuple:
     return tuple(ends)
 
 
+def _reads_no_credential_or_writes(text: str, m, end: int) -> bool:
+    return not _names_credential_file(text, m) or _opens_for_write(text, m, end)
+
+
 def _opens_for_write(text: str, m, end: int) -> bool:
     if m.group()[:1] in 'pP':  # `Path(...).read_*()` has no mode argument and no exclusion
         return False
@@ -806,13 +788,9 @@ def _opens_for_write(text: str, m, end: int) -> bool:
 # and `(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)` (UX guidance on the rest of the line).
 _QUOTED_PHRASE = re.compile('\\s+to\\s+["\'\u201c\u2018]', re.IGNORECASE)
 _UX_GUIDANCE_WORD = re.compile(r'unless|except|until|confirm|diagnos\w*|verify|check', re.IGNORECASE)
-_THE_USER = re.compile(r'the\s+user', re.IGNORECASE)
-
-
-def _the_user_ends(text: str, m) -> tuple:
-    """Every `the user` the entry can end on: its two `(?:\\w+\\s+)*` runs are greedy, so stdlib tries the last
-    one first; fullmatch in the matcher drops those its word run does not reach."""
-    return tuple(sorted((hit.end() for hit in _THE_USER.finditer(text, m.start(), m.end())), reverse=True))
+# Every `the user` the entry can end on: its two `(?:\w+\s+)*` runs are greedy, so stdlib tries the last one
+# first; fullmatch in the matcher drops those its word run does not reach.
+_the_user_ends = _every_end(re.compile(r'the\s+user', re.IGNORECASE))
 
 
 def _is_ux_guidance(text: str, m, end: int) -> bool:
@@ -835,10 +813,72 @@ def _is_sql_statement(text: str, m, end: int) -> bool:
     return _WORD_RUN.match(text, end).group() in _SQL_STATEMENTS
 
 
-_TRAILING_EXCLUSIONS = {
-    "py_read_secrets_file": (_open_ends, _opens_for_write),
+# python_os_environ: the stdlib original ended in `\b(?!\s*\.get\s*\()`; its greedy `[^#\n]*` tries the last
+# `os.environ` first.
+_os_environ_ends = _every_end(re.compile(r'os\.environ', re.IGNORECASE))
+_ENVIRON_GET = re.compile(r'\s*\.get\s*\(', re.IGNORECASE)
+
+
+def _is_environ_get(text: str, m, end: int) -> bool:
+    return _word_char_at(text, end) or _ENVIRON_GET.match(text, end) is not None
+
+
+# unpinned_pip_install: the stdlib original ended in `(?!-r\s)(?!.*==)`, tried at every end of its greedy `\s+`.
+_PIP_INSTALL = re.compile(r'pip\s+install', re.IGNORECASE)
+_REQUIREMENTS_FLAG = re.compile(r'-r\s', re.IGNORECASE)
+_PIN_ON_LINE = re.compile(r'.*==')
+
+
+def _pip_install_ends(text: str, m) -> range:
+    return range(m.end(), _PIP_INSTALL.match(text, m.start()).end(), -1)
+
+
+def _is_pinned_or_requirements(text: str, m, end: int) -> bool:
+    return _REQUIREMENTS_FLAG.match(text, end) is not None or _PIN_ON_LINE.match(text, end) is not None
+
+
+# destructive_root_rm: the stdlib original was `rm\s+-rf\s+((?:<operand>\s+)+?)?/(?(1)(?!/(?:\s|$)))` followed by
+# `(?:(?!<safe root>(?:\b|/))|<safe root>/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))`.
+_RM_HEAD = re.compile(r'rm\s+-rf\s+', re.IGNORECASE)
+_RM_OPERAND = re.compile(r'[^\s;&|<>#][^\s;&|<>]*\s+')
+_RM_SAFE_ROOT = re.compile(_RM_SAFE_ROOTS, re.IGNORECASE)
+# A parent segment that climbs out of a safe root: `<root>/<segments>/..`.
+_RM_ROOT_ESCAPE = re.compile(_RM_SAFE_ROOTS + r'/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$)', re.IGNORECASE)
+
+
+def _rm_root_ends(text: str, m):
+    """The ends the original reaches, in its order. Its lazy group takes one operand, then two, ... (each operand
+    is one whitespace-separated token, so it has one end), and finally none; at each count the slash must follow.
+    After a later operand a bare `//` token is not the root; a slash not opening a safe root ends the match there;
+    one that does needs the `..` escape. A count can give one end, so the conditions are applied here."""
+    first = pos = _RM_HEAD.match(text, m.start()).end()
+    slashes = []
+    while (operand := _RM_OPERAND.match(text, pos)) is not None:
+        pos = operand.end()
+        slashes.append(pos)
+    for slash in (*slashes, first):
+        if text[slash:slash + 1] != '/':
+            continue
+        if slash != first and text[slash + 1:slash + 2] == '/' and (
+                slash + 2 == len(text) or _SPACE_CHAR.match(text, slash + 2)):
+            continue
+        safe = _RM_SAFE_ROOT.match(text, slash + 1)
+        if safe is None or _word_char_at(text, safe.end()):
+            yield slash + 1
+        elif (escape := _RM_ROOT_ESCAPE.match(text, slash + 1)) is not None:
+            yield escape.end()
+
+
+# pattern id -> (ends, excluded) of the rule's ExclusionMatcher.
+_LOOKAHEAD_EXCLUSIONS = {
+    "py_read_secrets_file": (_open_ends, _reads_no_credential_or_writes),
+    "js_read_secrets_file": (only_end, _names_no_credential_file),
     "deception_hide": (_the_user_ends, _is_ux_guidance),
-    "exec_string": (_only_end, _is_sql_statement),
+    "exec_string": (only_end, _is_sql_statement),
+    "forget_rules": FORGET_RULES_EXCLUSION,
+    "python_os_environ": (_os_environ_ends, _is_environ_get),
+    "unpinned_pip_install": (_pip_install_ends, _is_pinned_or_requirements),
+    "destructive_root_rm": (_rm_root_ends, _never),
 }
 
 
@@ -847,8 +887,8 @@ _TRAILING_EXCLUSIONS = {
 _CUSTOM_MATCHERS = {"hardcoded_secret": _HardcodedSecretMatcher, "context_exfil": _VetoGroupPattern,
                     **dict.fromkeys(("env_exfil_curl", "env_exfil_wget", "env_exfil_fetch", "env_exfil_httpx",
                                      "env_exfil_requests"), _LoopbackExemptMatcher),
-                    **{pid: (lambda pattern, rule=rule: _TrailingExclusionMatcher(pattern, *rule))
-                       for pid, rule in _TRAILING_EXCLUSIONS.items()}}
+                    **{pid: (lambda pattern, rule=rule: ExclusionMatcher(pattern, *rule))
+                       for pid, rule in _LOOKAHEAD_EXCLUSIONS.items()}}
 _COMPILED_THREAT_PATTERNS = [
     (_CUSTOM_MATCHERS[pid](pattern) if pid in _CUSTOM_MATCHERS else re.compile(pattern, re.IGNORECASE), pid, *rest)
     for pattern, pid, *rest in THREAT_PATTERNS]

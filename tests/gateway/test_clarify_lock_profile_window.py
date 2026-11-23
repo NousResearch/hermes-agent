@@ -20,6 +20,7 @@ import pytest
 from gateway.config import Platform
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 from tests.gateway.test_ticket_profile_scope import _Transport
+from persistence_assembly import close_stores_under
 
 QUESTIONS = [{'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'multi_select': False},
              {'qid': 'q1', 'question': 'size?', 'choices': None, 'multi_select': False}]
@@ -125,6 +126,6 @@ async def test_an_unnamed_lock_on_a_shared_socket_settles_the_request_its_siblin
             with owner_scope(connection.authority):
                 await connection.close()
         for authority in getattr(runner, 'session_authorities', None) or []:
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(Path(home))

@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -248,19 +247,53 @@ def _unsupported_reason(stamp: dict, root: Path, *, explicit_root: bool, embedde
     return None
 
 
-def _installed_git(git: str) -> str:
-    """``git`` as given, unless it is a bare ``git`` PATH lacks: then the git ``hermes update`` runs.
+def _git_runs(git: str) -> bool:
+    """True when ``git`` is something the OS will actually execute (``git --version`` exits 0).
 
-    A Windows source install's only git is often the copy install.ps1 staged in PM's store, which
-    is on PATH only inside ``hermes update`` (``expose_pm_git``). Desktop and the dashboard pass a
-    bare ``git`` there, it dies with WinError 2, and the check reports ``head-unavailable``, which
-    Desktop shows as "couldn't reach the update server" while ``hermes update`` works.
+    ``shutil.which`` only answers "is a file of that name on PATH", which is not the same question.
+    A staged store entry keeps its path while the OS refuses to open its bytes (an antivirus block
+    leaves ``WinError 5`` on the file), so ``which`` still resolves, every probe afterwards returns
+    nothing, and the check reports ``head-unavailable`` -- Desktop shows that as "couldn't reach the
+    update server" while a perfectly good git sits next to the dead one.
     """
-    if git != "git" or shutil.which(git):
+    result = _git_run(["--version"], timeout=10, git=git)
+    return result is not None and result.returncode == 0
+
+
+def _well_known_git_installs() -> tuple[str, ...]:
+    """Git-for-Windows installs to fall back on when PATH's git exists but cannot run."""
+    if os.name != "nt":
+        return ()
+    roots = (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"))
+    return tuple(candidate for candidate in
+                 (os.path.join(root, "Git", "cmd", "git.exe") for root in roots if root)
+                 if os.path.isfile(candidate))
+
+
+def _installed_git(git: str) -> str:
+    """A git that runs, preferring ``git`` as given.
+
+    An explicit path is the caller's decision and is left untouched. A bare ``git`` is probed,
+    because PATH's copy can exist and still be dead: a store entry the OS refuses to execute answers
+    ``which`` and nothing else. Windows source installs often have no PATH git at all -- the only
+    copy is the one ``install.ps1`` staged in PM's store, on PATH only inside ``hermes update``
+    (``expose_pm_git``). Desktop and the dashboard pass a bare ``git`` there, it dies with
+    WinError 2, and the check reports ``head-unavailable``, which Desktop shows as "couldn't reach
+    the update server" while ``hermes update`` works. So: the updater's git first, then a
+    Git-for-Windows install where it normally lives.
+    """
+    if git != "git":
+        return git
+    if _git_runs(git):
         return git
     from hermes_cli.update_pause_record import _git_executable
 
-    return _git_executable()
+    for candidate in (_git_executable(), *_well_known_git_installs()):
+        if candidate and candidate != git and _git_runs(candidate):
+            logger.debug("git %r cannot run here; reading the checkout through %s", git, candidate)
+            return candidate
+    return git
 
 
 def _read_checkout(root: Path, git: str, embedded: Optional[str]) -> _Checkout:

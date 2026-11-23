@@ -164,6 +164,55 @@ def test_bare_git_off_path_reads_through_the_updaters_git(installation, monkeypa
     assert status["behind"] == 0
 
 
+def test_a_path_git_that_cannot_execute_falls_through_to_one_that_can(installation, monkeypatch):
+    """PATH's git exists but the OS refuses to execute it (``WinError 5`` on open is the block an
+    antivirus leaves on a staged file). ``shutil.which`` still resolves, every probe answers nothing,
+    and the check reported ``head-unavailable`` -- Desktop's "couldn't reach the update server" --
+    while a working git sat one candidate away."""
+    from hermes_cli import source_check, update_pause_record
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, _base, head, responses, _requests, _git = installation
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    dead = str(root / "blocked" / "git.exe")
+    alive = shutil.which("git")
+    assert alive, "this test needs a git that runs"
+    monkeypatch.setattr(update_pause_record, "_git_executable", lambda: dead)
+    monkeypatch.setattr(source_check, "_well_known_git_installs", lambda: (alive,))
+    monkeypatch.setattr(source_check, "_git_runs", lambda candidate: candidate == alive)
+
+    status = check_for_updates(install_root=root, home=home, git="git", force=True)
+
+    assert status.get("error") is None, status
+    assert status["currentSha"] == head
+    assert status["behind"] == 0
+
+
+def test_git_runs_rejects_a_path_the_os_will_not_execute(tmp_path):
+    """The probe asks the OS, not a directory listing: a file that exists and cannot start is not a
+    git even though ``which`` would name it."""
+    import os
+
+    from hermes_cli.source_check import _git_runs
+
+    fake = tmp_path / ("git.exe" if os.name == "nt" else "git")
+    fake.write_bytes(b"not a program")
+    fake.chmod(0o755)
+    assert _git_runs(str(fake)) is False
+
+
+def test_an_explicit_git_path_is_never_second_guessed(monkeypatch):
+    """A caller that names a binary gets that binary; with nothing anywhere runnable the bare name
+    stands, so the failure still names git rather than a silent substitution."""
+    from hermes_cli import source_check
+
+    monkeypatch.setattr(source_check, "_git_runs", lambda candidate: False)
+    monkeypatch.setattr(source_check, "_well_known_git_installs", lambda: ("/opt/git/bin/git",))
+
+    assert source_check._installed_git("/custom/bin/git") == "/custom/bin/git"
+    assert source_check._installed_git("git") == "git"
+
+
 @pytest.mark.parametrize("tip_kind,compare,expected", [
     ("head", None, 0), ("base", None, 0),
     ("unknown", {"ahead_by": 61}, 61), ("unknown", {"ahead_by": 0}, 0),

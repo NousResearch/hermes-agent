@@ -29,8 +29,9 @@ from tools.approval_context import (
     get_current_session_key,
 )
 from tools.approval_detection import (
-    _SCAN_INCOMPLETE_DESCRIPTION, _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys,
-    detect_dangerous_command, detect_hardline_command, hardline_scan_incomplete, SMART_MANUAL_ONLY_DESCRIPTIONS,
+    _SCAN_INCOMPLETE_DESCRIPTION, _approval_key_aliases, _check_sudo_stdin_guard,
+    detect_dangerous_command, detect_hardline_command, detect_independent_consent_keys,
+    hardline_scan_incomplete, SMART_MANUAL_ONLY_DESCRIPTIONS,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -785,15 +786,17 @@ def _unattended_contexts() -> list[_Unattended]:
 
 def _command_findings(command: str) -> list[tuple[str, str]]:
     """``[(pattern_key, description)]`` that each need their own consent; empty when clean. The first
-    match plus every content-level rule (credential upload, invisible Unicode), so an approved
-    pipe-to-shell cannot wave through the credential upload in the same command; overlapping verb
-    rules keep the first key only. A command the hardline scan could not read to the end also
-    carries the scan-incomplete finding, so a remembered grant for its first match cannot run it."""
+    match plus every rule that describes a SECOND action (content-level rules: credential upload,
+    invisible Unicode; effect-based rm rules: glob, ``..``, several targets), so an approved
+    pipe-to-shell cannot wave through the credential upload in the same command, and an approved
+    `git reset --hard` cannot wave through the delete chained after it; overlapping verb rules keep
+    the first key only. A command the hardline scan could not read to the end also carries the
+    scan-incomplete finding, so a remembered grant for its first match cannot run it."""
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return []
     findings = [(pattern_key, description)] + [
-        (key, key) for key in detect_content_rule_keys(command) if key != pattern_key]
+        (key, key) for key in detect_independent_consent_keys(command, pattern_key)]
     if pattern_key != _SCAN_INCOMPLETE_DESCRIPTION and hardline_scan_incomplete(command):
         findings.append((_SCAN_INCOMPLETE_DESCRIPTION, _SCAN_INCOMPLETE_DESCRIPTION))
     return findings

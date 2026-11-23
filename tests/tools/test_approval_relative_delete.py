@@ -6,7 +6,8 @@ command was written rather than on what it removes: `rm /srv/app/x/*.log.gz` pro
 the effect-based rules in BOTH directions, because the two failure modes are not symmetric: a false
 negative deletes files without asking, and a false positive trains people to approve blindly.
 
-The rules are matched by `_RmEffectMatcher`, which walks the existing shell lexer
+The rules are classified by `_rm_effect()` and `_rm_invocations()` in
+`tools/approval_detection_rm.py`, which walk the existing shell lexer
 (`_iter_shell_command_word_spans` + `_read_shell_word` + `_scan_shell`) rather than a regex over raw
 text. Every case below is a spelling that a raw-text regex got wrong: one of the two directions was
 demonstrated by adversarial review of a first attempt.

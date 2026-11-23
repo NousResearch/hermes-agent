@@ -1,16 +1,34 @@
 @import 'tailwindcss';
-/* `fonts.css` must come BEFORE `globals.css`: as of @nous-research/ui 0.14.x,
-   `globals.css` only declares the `--font-*` CSS variables (Collapse, Rules
-   Compressed/Expanded, Mondwest). The `@font-face` registrations live in
-   `fonts.css`, so without this import the DS variables resolve to font
-   families the browser never loads and components fall back to a system
-   stack (Tabs, Segmented, Typography, Buttons, etc. all look unstyled). */
-@import '@nous-research/ui/styles/fonts.css';
+/* The DS `fonts.css` is deliberately NOT imported: it would bundle the
+   Collapse and Rules faces. `globals.css` only declares the `--font-*`
+   variables, which are repointed below. */
 @import '@nous-research/ui/styles/globals.css';
 
 /* Scan the published design-system bundle so its utility classes survive
    Tailwind's JIT purge. */
 @source '../node_modules/@nous-research/ui/dist';
+
+/* ------------------------------------------------------------------ */
+/* Brand type. Oswald (headings, badges) and Mona Sans (body) load     */
+/* from Google Fonts via index.html and fall back to the system sans   */
+/* when it is unreachable. Mondwest is the one DS face kept, served    */
+/* from public/fonts.                                                  */
+/* ------------------------------------------------------------------ */
+@font-face {
+  font-family: 'Mondwest';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Mondwest-Regular.woff2') format('woff2');
+}
+
+/* After the DS `globals.css` import, so these win the cascade: every
+   Rules-family consumer (page headers, DS dialog and card titles, badges)
+   renders Oswald through the existing tokens. */
+:root {
+  --font-rules-compressed: 'Oswald', var(--theme-font-sans);
+  --font-rules-expanded: 'Oswald', var(--theme-font-sans);
+}
 
 /* ------------------------------------------------------------------ */
 /* JetBrains Mono — bundled for the embedded TUI (/chat tab).          */
@@ -61,9 +79,9 @@
   --background-base: #041c1c;
   --background-alpha: 1;
 
-  /* Typography tokens — rewritten by ThemeProvider. Defaults match the
-     system stack so themes that don't override look native. */
-  --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
+  /* Typography tokens — rewritten by ThemeProvider. Mona Sans first, then
+     the system stack when Google Fonts is unreachable. */
+  --theme-font-sans: "Mona Sans", system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
     Consolas, monospace;

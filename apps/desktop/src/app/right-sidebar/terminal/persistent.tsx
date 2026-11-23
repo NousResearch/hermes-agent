@@ -137,8 +137,9 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
         Number.parseFloat(document.documentElement.style.zoom) ||
         1
       const zoom = Number.isFinite(cssZoom) && cssZoom > 0 ? cssZoom : 1
-      // floor top/left + ceil right/bottom: overlay always covers the slot's
-      // full pixel footprint, so half-pixel rects can't leak page bg through.
+      // floor top/left + floor right (width) + ceil bottom (height): overlay
+      // aligns flush with the slot without encroaching 1px onto TerminalRail's
+      // left border under fractional zoom.
       const top = Math.floor(r.top / zoom)
       const left = Math.floor(r.left / zoom)
 
@@ -148,7 +149,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
         hidden: isElementInHiddenPane(slot),
         top,
         left,
-        width: Math.ceil(r.right / zoom) - left,
+        width: Math.max(0, Math.floor(r.right / zoom) - left),
         height: Math.ceil(r.bottom / zoom) - top
       }
 

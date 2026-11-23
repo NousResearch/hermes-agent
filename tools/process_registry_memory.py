@@ -31,7 +31,7 @@ def _configured_worker_memory_max_bytes() -> Optional[int]:
     from tools.process_registry import ProcessRegistry
 
     try:
-        value = ProcessRegistry._config_value("terminal", "worker_memory_max_mb", "auto")
+        value = ProcessRegistry._config_value("terminal", "worker_memory_max_mb")
     except Exception:  # unreadable config must never block a spawn; fall back to auto
         logger.warning("Could not read terminal.worker_memory_max_mb; using auto", exc_info=True)
         return None

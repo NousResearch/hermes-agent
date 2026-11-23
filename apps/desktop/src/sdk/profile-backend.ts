@@ -149,3 +149,6 @@ export async function clearProfileBackend(input: ClearProfileBackendInput): Prom
 
   return { applied }
 }
+
+/** The entries `host` carries for a plugin that runs a profile's backend on this computer. */
+export const profileBackendHost = { clearProfileBackend, profileBackendFeatures, setProfileBackend }

@@ -94,6 +94,8 @@ export const arDiagnostics = {
       rejectAction: 'رفض',
       accessTitle: 'مطلوب الوصول إلى مجلد',
       accessTitleNamed: session => `مطلوب الوصول إلى مجلد — ${session}`,
+      accessReadBody: folder => `قراءة فقط: ${folder}`,
+      accessReadWriteBody: folder => `قراءة وكتابة: ${folder}`,
       networkTitle: 'مطلوب الوصول إلى موقع',
       networkTitleNamed: session => `مطلوب الوصول إلى موقع — ${session}`,
       allowAction: 'السماح',

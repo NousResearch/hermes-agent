@@ -280,6 +280,8 @@ export const zhOverrides = {
       rejectAction: '拒绝',
       accessTitle: '需要文件夹访问权限',
       accessTitleNamed: session => `需要文件夹访问权限 — ${session}`,
+      accessReadBody: folder => `只读：${folder}`,
+      accessReadWriteBody: folder => `读写：${folder}`,
       networkTitle: '需要网站访问权限',
       networkTitleNamed: session => `需要网站访问权限 — ${session}`,
       allowAction: '允许',

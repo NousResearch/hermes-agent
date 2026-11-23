@@ -502,6 +502,8 @@ export const deOverrides = {
       rejectAction: 'Ablehnen',
       accessTitle: 'Ordnerzugriff erforderlich',
       accessTitleNamed: session => `Ordnerzugriff erforderlich — ${session}`,
+      accessReadBody: folder => `Nur lesen: ${folder}`,
+      accessReadWriteBody: folder => `Lesen und schreiben: ${folder}`,
       networkTitle: 'Website-Zugriff erforderlich',
       networkTitleNamed: session => `Website-Zugriff erforderlich — ${session}`,
       allowAction: 'Erlauben',

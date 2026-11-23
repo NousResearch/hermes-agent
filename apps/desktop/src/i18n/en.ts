@@ -487,6 +487,8 @@ export const en: Translations = {
       rejectAction: 'Reject',
       accessTitle: 'Folder access needed',
       accessTitleNamed: session => `Folder access needed — ${session}`,
+      accessReadBody: folder => `Read only: ${folder}`,
+      accessReadWriteBody: folder => `Read and write: ${folder}`,
       networkTitle: 'Website access needed',
       networkTitleNamed: session => `Website access needed — ${session}`,
       allowAction: 'Allow',

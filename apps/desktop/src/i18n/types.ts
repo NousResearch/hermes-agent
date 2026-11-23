@@ -517,6 +517,8 @@ export interface Translations extends NoticeTranslations {
       rejectAction: string
       accessTitle: string
       accessTitleNamed: (session: string) => string
+      accessReadBody: (folder: string) => string
+      accessReadWriteBody: (folder: string) => string
       networkTitle: string
       networkTitleNamed: (session: string) => string
       allowAction: string

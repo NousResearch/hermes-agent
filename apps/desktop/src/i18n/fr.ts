@@ -502,6 +502,8 @@ export const frOverrides = {
       rejectAction: 'Rejeter',
       accessTitle: 'Accès au dossier requis',
       accessTitleNamed: session => `Accès au dossier requis — ${session}`,
+      accessReadBody: folder => `Lecture seule : ${folder}`,
+      accessReadWriteBody: folder => `Lecture et écriture : ${folder}`,
       networkTitle: 'Accès au site requis',
       networkTitleNamed: session => `Accès au site requis — ${session}`,
       allowAction: 'Autoriser',

@@ -74,6 +74,8 @@ export const zhHantDiagnostics = {
       rejectAction: '拒絕',
       accessTitle: '需要資料夾存取權',
       accessTitleNamed: session => `需要資料夾存取權 — ${session}`,
+      accessReadBody: folder => `唯讀：${folder}`,
+      accessReadWriteBody: folder => `讀寫：${folder}`,
       networkTitle: '需要網站存取權',
       networkTitleNamed: session => `需要網站存取權 — ${session}`,
       allowAction: '允許',

@@ -76,8 +76,12 @@ html:root[data-hermes-palette='one-dark'] {
   background: #3e4451;
 }
 
-/* Four One Dark Pro colors in formatted answer typography: red headings,
-   orange strong, blue links, purple lists/checkboxes. */
+/* One Dark Pro formatted answer typography: red headings, orange strong,
+   blue links, neutral #abb2bf list markers, purple checkboxes. */
+:root[data-hermes-palette='one-dark'] .prose {
+  --tw-prose-bullets: #abb2bf;
+  --tw-prose-counters: #abb2bf;
+}
 :root[data-hermes-palette='one-dark'] .aui-md.prose :is(h1,h2,h3,h4,h5,h6) {
   color: #e06c75;
 }
@@ -88,7 +92,7 @@ html:root[data-hermes-palette='one-dark'] {
   color: #61afef;
 }
 :root[data-hermes-palette='one-dark'] .aui-md.prose :is(ul,ol) > li::marker {
-  color: #c678dd;
+  color: #abb2bf;
 }
 :root[data-hermes-palette='one-dark'] .aui-md.prose input[type='checkbox'] {
   accent-color: #c678dd;

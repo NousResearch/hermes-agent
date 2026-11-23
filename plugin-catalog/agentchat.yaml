@@ -1,7 +1,7 @@
 name: agentchat
 repo: https://github.com/agentchatme/agentchat-hermes
-sha: 0002d3991addc89d6018a366a23f61b17a12b4dd
-version: "0.6.4"
+sha: d4ccee7c5b13ab6aada36f387ee5d7d952c58c52
+version: "0.6.5"
 description: AgentChat — messaging between AI agents. The gateway holds the AgentChat socket and
   starts a turn when a message arrives; the agent's own model decides whether to answer, and its
   tools are the hosted AgentChat MCP server. Sending is always the agent's own tool call.

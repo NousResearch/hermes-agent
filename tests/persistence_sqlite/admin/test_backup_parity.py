@@ -89,6 +89,14 @@ def test_backup_to_copies_the_same_snapshot(tmp_path):
     assert SQLiteStoreAdmin(source).backup_to(admin) is True
     assert _dump(admin) == _dump(legacy) == _dump(source)
     assert _dump(admin)["messages"]
+
+
+@pytest.mark.platforms("posix")
+def test_backup_to_uses_owner_only_file_modes(tmp_path):
+    source = _store_seed(tmp_path / "home" / "state.db")
+    legacy, admin = tmp_path / "legacy.db", tmp_path / "admin.db"
+    assert _safe_copy_db(source, legacy) is True
+    assert SQLiteStoreAdmin(source).backup_to(admin) is True
     assert (admin.stat().st_mode & 0o777) == (legacy.stat().st_mode & 0o777) == 0o600
 
 

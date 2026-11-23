@@ -4,7 +4,9 @@ operation may proceed, else a refusal (error dict or message). Origin-owned stat
 so test patches keep working."""
 
 import contextvars as _ctxvars
+import json
 import logging
+import posixpath
 import threading
 from contextlib import suppress
 from pathlib import Path
@@ -221,6 +223,160 @@ def _background_review_read_before_write_guard(
         f"skill_view(name, file_path=...) for a supporting file, then retry the write using the "
         f"content just returned.",
         _read_before_write_required=True)
+
+
+# --- Staging-time duplicate notice for the background review -----------------
+#
+# The review fork fires again every ``skills.creation_nudge_interval`` iterations, so one long
+# session stages many records for the same skill whose patches restate one lesson. Each fork is a
+# fresh context: it cannot see what an earlier fork staged, and the read-before-write guard is
+# satisfied by loading the file rather than by proving the new text is new. On 2026-11-23 one
+# session left 24 such records against a single skill.
+#
+# The duplicate is told, not merged. Appending the second patch to the queued record would re-emit
+# the same anchor, so one approval would write the bullet twice; and a merged record could pass the
+# applier's 20-op ceiling or lose an anchor it consumed. Staging nothing and naming the record that
+# already covers the lesson keeps one approval per rule and one copy of the text.
+
+_DUPLICATE_MIN_ADDED_LINES = 1   # one long bullet repeated verbatim is a restatement
+_DUPLICATE_COVERAGE = 0.6        # share of the new payload's added lines already queued
+_DUPLICATE_MIN_LINE_CHARS = 40   # ignore bullets, headings, fences and one-word re-emissions
+_DUPLICATE_MAX_REPORTED = 6      # uncovered lines named back to the fork
+
+
+def _norm_line(line: str) -> str:
+    return " ".join(line.split())
+
+
+def _payload_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """The operation dicts of a batch payload, or the single op a flat payload describes.
+
+    An op without its own ``name`` inherits the payload's, which is how the batch applier resolves
+    it; carrying that here keeps the guard's targets identical to the writer's.
+    """
+    if payload.get("action") == "batch" and isinstance(payload.get("operations"), list):
+        ops = [op for op in payload["operations"] if isinstance(op, dict)]
+    else:
+        flat = {k: payload[k] for k in ("action", "name", "file_path", "old_string", "new_string",
+                                        "replace_all") if payload.get(k) is not None}
+        ops = [flat] if flat.get("action") == "patch" else []
+    top_name = payload.get("name")
+    return [op if op.get("name") or not top_name else {**op, "name": top_name} for op in ops]
+
+
+def _norm_target(op: dict[str, Any]) -> tuple[str, str]:
+    """(skill, file) for an op, spelled the way the batch applier spells it: ``/x``, ``./x`` and
+    ``x`` are one target, and an omitted ``file_path`` means SKILL.md."""
+    path = (str(op.get("file_path") or "SKILL.md").strip() or "SKILL.md").lstrip("/")
+    return str(op.get("name") or ""), posixpath.normpath(path)
+
+
+def _added_lines(ops: list[dict[str, Any]], min_chars: int = _DUPLICATE_MIN_LINE_CHARS) -> set[str]:
+    """Normalised lines an op adds: ``new_string`` lines that ``old_string`` did not carry.
+
+    For a replacement that keeps nothing, this is the whole body; for an insert anchored on live
+    text the anchor's own lines are excluded, so a repeat of the anchor alone scores zero.
+    """
+    added: set[str] = set()
+    for op in ops:
+        new = op.get("new_string")
+        if not isinstance(new, str) or not new:
+            continue
+        old = {_norm_line(line) for line in (op.get("old_string") or "").splitlines()}
+        for line in new.splitlines():
+            key = _norm_line(line)
+            if len(key) >= min_chars and key not in old:
+                added.add(key)
+    return added
+
+
+def duplicate_background_write_notice(payload: dict[str, Any]) -> Optional[str]:
+    """Refuse a background-review patch already queued for the same skill and file, or ``None``.
+
+    Only the review fork is checked: a foreground write stages its own record, as before. Creation
+    and whole-file writes are left alone — a new skill's duplicates are a different question. The
+    per-record line sets are filtered to the payload's own (skill, file) target, and the coverage
+    test uses their union, so a lesson restated across several queued records is still recognised
+    while a line queued for a sibling reference file never counts as covered.
+
+    Scope: this runs inside the write gate, so it only sees writes that are being staged. On an
+    install with skills auto-approval the gate returns before staging and nothing is checked here.
+    """
+    from tools import write_approval as wa
+    try:
+        if wa.current_origin() != "background_review":
+            return None
+    except Exception:
+        logger.warning("write-origin lookup failed; not checking for a queued duplicate", exc_info=True)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    ops = _payload_ops(payload)
+    if not ops or any(op.get("content") is not None or op.get("file_content") is not None for op in ops):
+        return None
+    added = _added_lines(ops)
+    if len(added) < _DUPLICATE_MIN_ADDED_LINES:
+        return None
+    # Lines below the length floor carry no coverage weight, but they are still text this patch
+    # adds: report them, so a short novel rule is never silently called "already queued".
+    short = sorted(_added_lines(ops, min_chars=1) - added)
+    targets = {_norm_target(op) for op in ops}
+    if len(targets) != 1 or not next(iter(targets))[0]:
+        return None
+    skill, file_path = next(iter(targets))
+    queued_all: set[str] = set()
+    carriers: dict[str, set[str]] = {}
+    for record in wa.list_pending(wa.SKILLS):
+        record_payload = record.get("payload")
+        if record.get("origin") != "background_review" or not isinstance(record_payload, dict):
+            continue
+        record_ops = [op for op in _payload_ops(record_payload)
+                      if _norm_target(op) == (skill, file_path)]
+        if not record_ops:
+            continue
+        queued = _added_lines(record_ops)
+        hits = added & queued
+        if not hits:
+            continue
+        carriers[str(record.get("id") or "")] = hits
+        queued_all |= queued
+    if not carriers:
+        return None
+    coverage = len(added & queued_all) / len(added)
+    if coverage < _DUPLICATE_COVERAGE:
+        return None
+    record_id = max(carriers, key=lambda rid: (len(carriers[rid]), rid))
+    covered = len(added & queued_all)
+    single = len(carriers) == 1
+    # Short lines carry no coverage weight but are still added text: name them with the rest.
+    missing = sorted(added - queued_all) + short
+    counted = "counted " if short else ""
+    spread = "" if single else f" ({len(carriers)} queued records carry these lines)"
+    share = "chiefly" if len(carriers[record_id]) == covered else "partly"
+    taken = "that record's approval" if single else "those records' approvals"
+    if missing:
+        shown = " | ".join(line.rstrip(".") for line in missing[:_DUPLICATE_MAX_REPORTED])
+        more = f" | and {len(missing) - _DUPLICATE_MAX_REPORTED} more" if len(missing) > _DUPLICATE_MAX_REPORTED else ""
+        tail = (f"Not covered: {shown}{more}. If any of those is a rule the queued text lacks, stage a "
+                "patch adding just those lines, anchored on text that is live now — not on lines the "
+                "queued record will add, which will not be there when yours applies. The covered lines "
+                f"come with {taken}.")
+    elif single:
+        tail = ("Every line is already queued, so only the placement differs. If you think the queued "
+                "record puts a rule in the wrong section, say so to the user rather than staging the "
+                "same text under a different heading. The lesson is covered by one approval.")
+    else:
+        tail = ("Every line is already queued across those records, so only the placement differs. If "
+                "you think they put a rule in the wrong section, say so to the user rather than staging "
+                "the same text under a different heading. The lesson is covered once those records are "
+                "approved.")
+    return json.dumps({
+        "success": True, "staged": False, "duplicate_of": record_id,
+        "coverage_pct": int(coverage * 100), "new_lines": missing[:_DUPLICATE_MAX_REPORTED],
+        "message": (
+            f"Not staged: {int(coverage * 100)}% of this patch's {counted}added lines are already queued for "
+            f"{skill}/{file_path}{spread}, {share} in pending record {record_id}. {tail}"),
+    }, ensure_ascii=False)
 
 
 def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:

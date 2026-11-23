@@ -32,8 +32,8 @@ def _configured_worker_memory_max_bytes() -> Optional[int]:
 
     try:
         value = ProcessRegistry._config_value("terminal", "worker_memory_max_mb")
-    except Exception:  # unreadable config must never block a spawn; fall back to auto
-        # No exception text: a config parse error can quote config.yaml lines, which may hold keys.
+    except Exception:  # health: allow BLE001 -- an unreadable config must never block a spawn (auto)
+        # No traceback: a YAML parse error quotes config.yaml lines, which may hold keys.
         logger.warning("Could not read terminal.worker_memory_max_mb; using auto")
         return None
     if value is None or (isinstance(value, str) and value.strip().lower() == "auto"):

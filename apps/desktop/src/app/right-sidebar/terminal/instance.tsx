@@ -18,7 +18,7 @@ const INSTANCE_CLASS = 'absolute inset-0 flex flex-col bg-(--ui-terminal-surface
 // WebGL fast-path paints the canvas from ITheme.background instead) — both
 // resolve to the same token, so the two renderers can't disagree.
 const HOST_CLASS =
-  'h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-terminal-surface-background)! [&_.xterm-viewport]:bg-(--ui-terminal-surface-background)!'
+  'flex-1 h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-terminal-surface-background)! [&_.xterm-viewport]:bg-(--ui-terminal-surface-background)!'
 
 interface TerminalInstanceProps {
   id: string

@@ -2,6 +2,8 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
+import { enApproval } from './en_approval'
+import { enBackupTransfer } from './en_backup_transfer'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalog } from './en_catalog'
@@ -28,6 +30,7 @@ import { enPluginUpdate } from './en_plugin_update'
 import { enPluginUpdateAll } from './en_plugin_update_all'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
+import { enSandbox } from './en_sandbox'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
@@ -37,6 +40,7 @@ import type { Translations } from './types'
 export const en: Translations = {
   externalOpenFailed: enExternalOpenFailed,
   sharedMetrics: enSharedMetrics,
+  sandbox: enSandbox,
   appTour: enAppTour,
   firstRun: enFirstRun,
   // English editorial copy stays in the shipped JSONL; other locales override it.
@@ -483,6 +487,14 @@ export const en: Translations = {
       approvalTitleNamed: session => `Approval needed — ${session}`,
       approveAction: 'Approve',
       rejectAction: 'Reject',
+      accessTitle: 'Folder access needed',
+      accessTitleNamed: session => `Folder access needed — ${session}`,
+      accessReadBody: folder => `Read only: ${folder}`,
+      accessReadWriteBody: folder => `Read and write: ${folder}`,
+      networkTitle: 'Website access needed',
+      networkTitleNamed: session => `Website access needed — ${session}`,
+      allowAction: 'Allow',
+      denyAction: 'Deny',
       inputTitle: 'Input needed',
       inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
@@ -767,6 +779,8 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       sessions: 'Sessions',
+      backup: 'Backup & Transfer',
+      backupOnly: 'Backup',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
@@ -1116,6 +1130,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    backup: enBackupTransfer,
     memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
@@ -1206,6 +1221,9 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
+      desktopReadAloudTitle: 'Read replies aloud in this app',
+      desktopReadAloudDesc:
+        'Speak each finished reply in Desktop. Same switch as the composer button; it applies to every open window, and turning it off stops a reply mid-sentence. "Read Responses Aloud" below is for messaging and the CLI.',
       showOptions: 'Show options'
     },
     hudModifier: {
@@ -2242,10 +2260,6 @@ export const en: Translations = {
       openLog: 'Open log',
       actionLog: 'Action log',
       alreadyInstalled: (name: string) => `"${name}" is already installed`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Browse the full hub',
-      pickerHide: 'Hide the hub browser',
-      pickerHint: 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above.',
       loadFailed: 'Skill hub failed to load',
       previewFailed: 'Skill preview failed',
       scanFailed: 'Security scan failed',
@@ -2477,7 +2491,10 @@ export const en: Translations = {
       backup: 'Create backup',
       backupDesc: 'Zip config, memories, skills, and sessions',
       debugShare: 'Debug share',
-      debugShareDesc: 'Upload a redacted report + logs, get shareable links (auto-deletes in 6h)',
+      debugShareDesc: 'Upload a summary (versions, config keys, error counts; no log text), get a shareable link (auto-deletes in 6h)',
+      debugShareConfirm: 'Upload debug report to a public paste?',
+      debugShareConfirmDesc:
+        'Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.',
       debugShareRunning: 'Uploading debug report...',
       debugShareLinks: 'Share links',
       debugShareFailed: 'Debug share failed',
@@ -2785,6 +2802,14 @@ export const en: Translations = {
     fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
     fieldDeliver: 'Deliver to',
     fieldDeliverOnly: 'Deliver payload only',
+    fieldSignature: 'Signature',
+    fieldSignatureHint: 'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
+    signatureOptions: {
+      generic: 'Generic (timestamped)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instructions for the agent when this webhook fires (optional)',
     nameRequired: 'Name required',
@@ -2850,6 +2875,8 @@ export const en: Translations = {
     remoteOverride: {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,
+      runHere: 'Run on this computer…',
+      sandboxed: 'Sandboxed',
       title: (profile: string) => `Connect ${profile} to a remote host`,
       description: 'Sessions in this profile will run on the remote Hermes you point it at, instead of this computer.',
       urlLabel: 'Remote address',
@@ -3316,7 +3343,10 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
-    wakingProfile: profile => `Waking up ${profile}…`,
+    switchingProfile: profile => `Switching to ${profile}…`,
+    switchingProfileSlow: 'Still connecting. Messages you send now will wait and go to this agent.',
+    switchProfileFailed: profile => `Couldn’t switch to ${profile}`,
+    willSendTo: profile => `Will send to ${profile}`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',
@@ -3451,7 +3481,7 @@ export const en: Translations = {
       '/topup': 'Show your Nous balance and manage billing on the portal',
       '/platform': 'Pause, resume, or list a failing gateway platform',
       '/version': 'Show Hermes Agent version',
-      '/debug': 'Upload debug report (system info + logs) and get shareable links',
+      '/debug': 'Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links',
       '/model': 'Switch the model for this session'
     },
     hotkeyDescs: {
@@ -4484,6 +4514,7 @@ export const en: Translations = {
       branchNewChat: 'Branch in new chat',
       react: 'React',
       dismissError: 'Dismiss error',
+      responseContinuing: 'Continuing…',
       responseStopped: 'Response stopped',
       contentRefusedNotice: "This message was refused by the model's safety filter — try a different query.",
       ...enErrorLayers,
@@ -4560,27 +4591,7 @@ export const en: Translations = {
       sendEdited: 'Send edited message',
       attachingFile: 'Attaching…'
     },
-    approval: {
-      gatewayDisconnected:
-        'Hermes is offline right now. The command is still waiting for your answer (until the approval timeout). Reconnect, then send it again.',
-      sendFailed: 'Could not send your answer',
-      reconnect: 'Reconnect',
-      timedOutSystemLine:
-        'Approval timed out — the command was not run. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.',
-      openSafetySettings: 'Open Safety settings',
-      run: 'Run',
-      command: 'Command',
-      commandDetails: 'Command details',
-      moreOptions: 'More approval options',
-      allowSession: 'Allow this session',
-      alwaysAllowMenu: 'Always allow…',
-      jumpToApproval: 'Approval needed',
-      reject: 'Reject',
-      alwaysTitle: 'Always allow this command?',
-      alwaysDescription: pattern =>
-        `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
-      alwaysAllow: 'Always allow'
-    },
+    approval: enApproval,
     clarify: enClarify,
     themePicker: enThemePicker,
     catalogInstall: enCatalogInstall,

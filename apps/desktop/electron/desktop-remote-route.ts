@@ -27,6 +27,8 @@ export type DesktopRemoteRoute =
       connectionId?: string
       headers?: Record<string, unknown>
       kind: 'cloud' | 'remote'
+      /** A desktop plugin's launcher on this computer serves this profile route. */
+      launcher?: { plugin: string }
       org?: string
       source: RouteSource
       token?: unknown
@@ -67,6 +69,31 @@ export function v1SshTerminalPoolKey(route: { source: string }, profile?: null |
   return ''
 }
 
+/** The route of a per-profile URL or cloud entry. A plugin's launcher route is never a registered source. */
+function profileOverrideRoute(
+  registry: ConnectionRegistry,
+  profileConfig: null | Record<string, any>,
+  override: NonNullable<ReturnType<typeof profileRemoteOverride>>
+): DesktopRemoteRoute {
+  const kind = profileConfig?.mode === 'cloud' ? 'cloud' : 'remote'
+  const authMode = override.authMode === 'oauth' ? 'oauth' : 'token'
+  const route = { ...profileConfig, kind } as StoredRoute
+
+  return withConnectionId(
+    {
+      authMode,
+      headers: override.headers,
+      kind,
+      ...(override.launcher ? { launcher: override.launcher } : {}),
+      org: kind === 'cloud' ? String(profileConfig?.org || '').trim() || undefined : undefined,
+      source: 'profile' as const,
+      token: override.token,
+      url: override.url
+    },
+    override.launcher ? undefined : matchingConnectionId(registry, route, 'unique')
+  )
+}
+
 /**
  * Select one remote route with the existing precedence and freeze any exact
  * registry identity before I/O. A null result means the profile resolves
@@ -100,22 +127,7 @@ export function resolveDesktopRemoteRoute({
   const override = profileRemoteOverride(config, profile)
 
   if (override) {
-    const kind = profileConfig?.mode === 'cloud' ? 'cloud' : 'remote'
-    const authMode = override.authMode === 'oauth' ? 'oauth' : 'token'
-    const route = { ...profileConfig, kind } as StoredRoute
-
-    return withConnectionId(
-      {
-        authMode,
-        headers: override.headers,
-        kind,
-        org: kind === 'cloud' ? String(profileConfig?.org || '').trim() || undefined : undefined,
-        source: 'profile' as const,
-        token: override.token,
-        url: override.url
-      },
-      matchingConnectionId(registry, route, 'unique')
-    )
+    return profileOverrideRoute(registry, profileConfig, override)
   }
 
   const envUrl = String(env.url || '').trim()

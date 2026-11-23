@@ -290,7 +290,6 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     flow = DashboardOAuthFlow(
         flow_id=flow_id,
         server_name=name,
-        profile=profile,
         hermes_home=flow_home,
         redirect_uri=(cfg.get("oauth") or {}).get("redirect_uri") or _mcp_oauth_callback_url(request, name),
         reconnect_live=flow_home == process_home,
@@ -388,7 +387,8 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
                 raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
             if not isinstance(servers[name], dict):
                 raise HTTPException(status_code=400, detail="Malformed server config")
-            servers[name]["enabled"] = bool(body.enabled)
+            from tools.mcp_tool_common import write_mcp_server_enabled
+            write_mcp_server_enabled(servers[name], body.enabled)
             save_config(cfg)
         return {"ok": True, "name": name, "enabled": bool(body.enabled)}
 

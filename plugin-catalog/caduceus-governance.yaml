@@ -1,0 +1,20 @@
+name: caduceus-governance
+title: Caduceus Governance
+description: "Deterministic, model-free admission control for what Hermes writes into its own skills: content lanes, operator-owned executable checks, a provenance lane for writes made after untrusted web/browser/MCP content, a tamper-evident ledger, and operator release/rollback. Observe by default. Disclosure — Records a digest of every skill_manage call in $HERMES_HOME/caduceus (observe mode, default); in opt-in boundary or enforce mode it blocks unadmitted skill_manage calls or deletes and restores files under $HERMES_HOME/skills (and, if enabled, MEMORY.md/USER.md and config.yaml, of which it keeps owner-only copies in its state directory) to the last admitted state, including changes made by `hermes update` skill syncs or hub installs. Operator-registered check commands run sandboxed (macOS Seatbelt, Linux Landlock/seccomp) or are held. The dashboard's POST /approve acts only on a signature from an operator-enrolled device. No network, no model calls."
+repo: https://github.com/Epistetechnician/caduceus
+subdir: plugin/caduceus_governance
+sha: "3d980d823d79a38c741b3f95b1db071e1803f137"
+tier: community
+maintainer: Epistetechnician
+version: "0.1.0"
+category: tools
+docs_url: https://github.com/Epistetechnician/caduceus/blob/3d980d823d79a38c741b3f95b1db071e1803f137/plugin/caduceus_governance/README.md
+known_issues:
+  - Evidence is local-development only (Claude Haiku 4.5, small samples, simulated web read); see docs/CLAIMS.md.
+  - A hostile line written with no untrusted input in the session is not caught by default; the review dial (prose) reaches a human but costs reading every prose change.
+  - A poisoned page on an operator-trusted host (trusted_hosts) is outside the provenance lane.
+  - Phrase detection (authority lane) failed its preregistered gate and ships off.
+capabilities:
+  provides_hooks: [pre_tool_call, transform_tool_result, post_tool_call, on_skill_lifecycle]
+# Disclosure (rule 13): reads and writes only under $HERMES_HOME/skills, memories, config.yaml and $HERMES_HOME/caduceus; the dashboard API's one state-changing route (POST /approve) acts only on a valid signature from an operator-enrolled device; no network, no model calls; optional operator-registered check commands run
+# under macOS Seatbelt (no network, no writes outside a copy) and are Unavailable (quarantined, never passed) elsewhere; boundary mode can restore the skills directory to its last admitted state.

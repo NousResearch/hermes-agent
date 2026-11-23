@@ -24,6 +24,13 @@ from hermes_cli import gateway_migrate_backends as gmb
 from hermes_cli import main_dashboard
 from tests.waiting import wait_until
 
+
+@pytest.fixture(autouse=True)
+def _standard_root(monkeypatch):
+    """The homes here stand for the user's standard Hermes root, so steps say `hermes -p NAME`; the root
+    pin for any other root is tested in test_gateway_migrate_backends_root_pin.py."""
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_plan._is_standard_root", lambda root: True)
+
 _READ_ONLY_SYSTEMCTL = {"show", "list-unit-files"}
 _READ_ONLY_LAUNCHCTL = {"print"}
 
@@ -316,13 +323,28 @@ def test_cli_json_mode_exits_zero_and_never_applies(host, no_writes, capsys):
     (backend,) = report["backends"]
     assert not {"would", "advice"} & backend.keys()
     assert backend["argv"] == _argv("dashboard", "--port", "9119")
-    assert "migration is not available yet" in backend["not_applied"]
+    assert backend["not_applied"] == "Report only: changes no service."  # --apply exists: no "not available"
 
     gm.cmd_migrate(SimpleNamespace(backends=True, json=False, dry_run=True, yes=False, multiplex=False))
     text = capsys.readouterr().out
     assert "detached: PID 4601" in text and "runs:" in text
     assert "No supervisor owns it" in text
     assert "would:" not in text and "advice:" not in text
+
+
+@pytest.mark.platforms("linux")  # "detached" needs a non-launchd init as ppid 1
+@pytest.mark.parametrize("mine", [True, False])
+def test_report_ends_by_pointing_at_the_dry_run_only_for_this_homes_backend(host, no_writes, monkeypatch, capsys,
+                                                                             mine):
+    host.proc(4701, _argv("dashboard", "--port", "9119"), ppid=1)
+    monkeypatch.setattr("hermes_cli.dashboard_procs._hermes_home_for_pid",
+                        lambda pid: str(host.home) if mine else "/other/home")
+
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=False, dry_run=False, yes=False, multiplex=False))
+
+    out = capsys.readouterr().out.rstrip().splitlines()
+    pointer = [line for line in out if " gateway migrate --backends --apply --dry-run" in line]
+    assert pointer == ([out[-1]] if mine else [])  # only for this home's backend, and as the last line
 
 
 def test_cli_text_mode_with_nothing_found(host, no_writes, capsys):
@@ -428,7 +450,10 @@ def _fresh_hermes(tmp_path, name, *cli):
            if not k.startswith(("HERMES_", "TERMUX_")) and k not in {"TMPDIR", "TMP", "TEMP"}}
     env.update({"HERMES_HOME": str(homes["hermes_home"]), "HOME": str(homes["home"]), "PYTHONPATH": _REPO,
                 "PATH": f"{shims}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}", "SHIM_LOG": str(log),
-                "PYTHONDONTWRITEBYTECODE": "1"})
+                "PYTHONDONTWRITEBYTECODE": "1",
+                # The suite's no-fetch rule (conftest): without it the boot spawns the detached
+                # default-plugin installer, which fetches the live catalog after the command exits.
+                "HERMES_DISABLE_LAZY_INSTALLS": "1"})
     proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", *cli], cwd=_REPO, env=env,
                           capture_output=True, text=True, timeout=180, check=False)
     _wait_for_detached_prune(homes["hermes_home"] / "cache" / "scratch")
@@ -463,3 +488,30 @@ def test_real_entry_point_report_writes_only_what_plain_migrate_dry_run_writes(t
 
     assert any(p.startswith("cache/scratch") for p in trees["hermes_home"]), trees  # default startup ran
     assert trees == base_trees
+
+
+def test_the_pointer_names_the_profile_the_report_ran_for(tmp_path, monkeypatch):
+    profile = tmp_path / ".hermes" / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: profile)
+    item = gmb.BackendItem(supervisor="manual", running=True, pid=4701, argv=_argv("dashboard"), this_home=True)
+
+    assert gmb.format_report([item])[-1].endswith(": hermes -p work gateway migrate --backends --apply --dry-run")
+
+
+def test_the_pointer_names_the_default_profile_for_the_default_home(monkeypatch):
+    """A bare `hermes` would follow a sticky `hermes profile use work` choice to another home."""
+    monkeypatch.setattr("hermes_constants.profile_name_for_home", lambda home: "default")
+    item = gmb.BackendItem(supervisor="manual", running=True, pid=4701, argv=_argv("dashboard"), this_home=True)
+
+    assert gmb.format_report([item])[-1].endswith(": hermes -p default gateway migrate --backends --apply --dry-run")
+
+
+def test_the_scan_lists_its_own_process_only_when_that_process_is_a_backend(monkeypatch):
+    me = os.getpid()
+    rows = {"dashboard": [(me, "/venv/bin/python -m hermes_cli.main dashboard --no-open --port 9119")],
+            "cli": [(me, "/venv/bin/python -m hermes_cli.main gateway migrate --backends --json")]}
+    for kind, table in rows.items():
+        monkeypatch.setattr("hermes_cli.dashboard_procs._iter_process_table", lambda table=table: table)
+        # A dashboard that scans from its own pages finds itself; the report's own CLI row never matches.
+        assert [pid for pid, _cmd in gmb._running_backends()] == ([me] if kind == "dashboard" else [])

@@ -17,7 +17,7 @@ def launch(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("model:\n  default: m\n  provider: openrouter\n")
     (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-x\nTELEGRAM_BOT_TOKEN=1:x\n")
     (home / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {}}')
-    monkeypatch.setattr(profiles, "seed_profile_skills", lambda path, quiet=True: {"copied": ["s"]})
+    monkeypatch.setattr(profiles, "seed_profile_skills", lambda path, quiet=True, problems=None: {"copied": ["s"]})
     monkeypatch.setattr(profiles, "check_alias_collision", lambda name: None)
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: Path("/wrapper") / name)
     return home
@@ -96,6 +96,90 @@ def test_a_named_launch_profiles_subscription_login_is_not_copied_and_says_so(la
     assert any("anthropic" in w for w in rpc["warnings"])
 
 
+def _named_source(launch, name="src"):
+    src = launch / "profiles" / name
+    src.mkdir(parents=True)
+    (src / "config.yaml").write_text("model:\n  default: m\n  provider: openrouter\n")
+    (src / ".env").write_text("OPENROUTER_API_KEY=sk-or-src\n")
+    (src / "auth.json").write_text(
+        '{"version": 1, "providers": {}, "credential_pool": {"openrouter": [{"id": "src-key", "auth_type": '
+        '"api_key", "access_token": "sk-or-src"}], "anthropic": [{"id": "g", "auth_type": "oauth", '
+        '"refresh_token": "rt-src", "access_token": "at-src"}]}}')
+    return src
+
+
+@pytest.mark.parametrize("launch_from_source", [False, True], ids=["clone-from", "p-src-clone"])
+def test_a_clone_of_a_named_profile_copies_its_logins_not_the_roots(launch, monkeypatch, launch_from_source):
+    """``--clone-from src`` (and ``-p src ... --clone``) copies src's keys; reading the root's auth.json
+    would pair them with the root's logins, so src's auth.json is copied, single-use grants dropped."""
+    _named_source(launch)
+    if launch_from_source:
+        monkeypatch.setenv("HERMES_HOME", str(launch / "profiles" / "src"))
+    result = provision_profile(ProfileCreateRequest(
+        name="c", clone_from=None if launch_from_source else "src", clone_config=True))
+    auth = (result.path / "auth.json").read_text()
+    assert "src-key" in auth and "rt-src" not in auth
+    assert result.mirrored["auth"] is True
+    assert any("subscription logins not carried over (anthropic)" in w for w in result.warnings)
+    from hermes_cli.auth import read_credential_pool
+    monkeypatch.setenv("HERMES_HOME", str(result.path))
+    assert [e["id"] for e in read_credential_pool("openrouter")] == ["src-key"]
+
+
+def test_a_clone_of_the_root_still_shares_its_logins(launch, monkeypatch):
+    _named_source(launch)
+    monkeypatch.setenv("HERMES_HOME", str(launch / "profiles" / "src"))
+    result = provision_profile(ProfileCreateRequest(name="c", clone_from="default", clone_config=True))
+    assert not (result.path / "auth.json").exists()
+    assert result.mirrored["auth"] == "shared"
+    assert result.warnings == []
+
+
+@pytest.mark.parametrize("launch_from_source", [False, True], ids=["clone-from", "p-src-fresh"])
+def test_isolated_auth_from_a_profile_without_its_own_logins_copies_the_roots_it_reads(
+        launch, monkeypatch, launch_from_source):
+    """A profile with no auth.json signs in with the root's (the auth fallback): sharing keeps reading it,
+    ``--isolated-auth`` copies it."""
+    (launch / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {"openrouter": '
+                                      '[{"id": "root-key", "auth_type": "api_key", "access_token": "sk-or-x"}]}}')
+    (_named_source(launch) / "auth.json").unlink()
+    if launch_from_source:
+        monkeypatch.setenv("HERMES_HOME", str(launch / "profiles" / "src"))
+    source = {} if launch_from_source else {"clone_from": "src", "clone_config": True}
+    assert provision_profile(ProfileCreateRequest(name="shared", **source)).mirrored["auth"] == "shared"
+    isolated = provision_profile(ProfileCreateRequest(name="isolated", share_auth=False, **source))
+    assert isolated.mirrored["auth"] is True
+    assert "root-key" in (isolated.path / "auth.json").read_text()
+    assert isolated.warnings == []
+
+
+@pytest.mark.parametrize("share_auth", [True, False], ids=["shared", "isolated-auth"])
+def test_a_clone_source_gone_before_the_logins_step_copies_no_logins(launch, monkeypatch, share_auth):
+    """The source is re-read for its logins after the core create. If it is gone by then, the profile gets
+    no auth.json: never the named launch profile's, which would sign it in as that profile's account."""
+    _named_source(launch)
+    launch_profile = launch / "profiles" / "lp"
+    launch_profile.mkdir(parents=True)
+    (launch_profile / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {"openrouter": '
+                                              '[{"id": "launch-key", "auth_type": "api_key", "access_token": "x"}]}}')
+    monkeypatch.setenv("HERMES_HOME", str(launch_profile))
+    created, resolve = profiles.create_profile, profiles._resolve_clone_source
+
+    def create_then_lose_the_source(*args, **kwargs):
+        path = created(*args, **kwargs)
+        def gone(clone_from):
+            raise FileNotFoundError(f"Source profile '{clone_from}' does not exist")
+        monkeypatch.setattr(profiles, "_resolve_clone_source", gone)
+        return path
+    monkeypatch.setattr(profiles, "create_profile", create_then_lose_the_source)
+    result = provision_profile(ProfileCreateRequest(name="c", clone_from="src", clone_config=True,
+                                                    share_auth=share_auth))
+    assert not (result.path / "auth.json").exists()
+    assert result.mirrored["auth"] == "shared"
+    assert result.warnings == ["logins source: Source profile 'src' does not exist"]
+    assert resolve is not profiles._resolve_clone_source
+
+
 def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
     (launch / "auth.json").unlink(missing_ok=True)
     result = provision_profile(ProfileCreateRequest(name="work", share_auth=False))
@@ -125,7 +209,7 @@ def test_alias_collision_is_reported_not_written(launch, monkeypatch):
 
 
 def test_a_failing_step_is_a_warning_and_the_profile_stays(launch, monkeypatch):
-    def boom(path, quiet=True):
+    def boom(path, quiet=True, problems=None):
         raise OSError("disk full")
     monkeypatch.setattr(profiles, "seed_profile_skills", boom)
     result = provision_profile(ProfileCreateRequest(name="work"))
@@ -249,6 +333,25 @@ def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
     assert "cannot be combined" in capsys.readouterr().err
     assert not (launch / "profiles" / "cn").exists()
 
+
+
+def test_the_cli_names_the_launch_profile_for_keys_and_the_clone_source_for_logins(launch, monkeypatch, capsys):
+    """``--clone-from src`` copies src's logins, but the keys over src's empty .env and the model come
+    from the launch profile ('work' here), so each line names where its item came from."""
+    from hermes_cli import profile_cmd
+    src = _named_source(launch)
+    (src / ".env").write_text("# no keys\n")
+    (src / "config.yaml").write_text("{}\n")
+    work = launch / "profiles" / "work"
+    work.mkdir()
+    (work / "config.yaml").write_text("model:\n  default: wm\n  provider: openrouter\n")
+    (work / ".env").write_text("OPENROUTER_API_KEY=sk-or-work\n")
+    monkeypatch.setenv("HERMES_HOME", str(work))
+    profile_cmd._profile_create(_cli_args("c", "--no-alias", "--clone-from", "src"))
+    out = capsys.readouterr().out
+    assert "Copied API keys from 'work'" in out
+    assert "Model inherited from 'work'" in out
+    assert "Copied logins from 'src'" in out
 
 
 def test_validating_in_another_home_runs_under_multiplex_semantics(launch, monkeypatch):

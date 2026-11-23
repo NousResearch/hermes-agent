@@ -1,0 +1,9 @@
+name: hermes-phone-control
+repo: https://github.com/jinsu133/hermes-phone-assistant
+sha: f41e2c6755e70946c895c76a341d8a39108f4377
+subdir: plugin
+description: "Preview of a phone-native Android companion with local MCP controls and optional voice. Disclosure — Once `control_enabled` is on, the phone tools tap, type and navigate on your paired Android phone without Hermes' per-action approval prompt (payments, final message sends and calls still wait for a confirmation on the phone or a spoken \"allow\"). During voice turns the model can run short Python programs, after a spoken approval, in a seccomp-restricted child process (Linux/aarch64 only). The voice bridge listens on 127.0.0.1 behind a device token. Recognised speech goes to your configured model provider, and replies go to your configured Hermes text-to-speech provider."
+maintainer: jinsu133
+tier: community
+category: voice
+requires_hermes: ">=0.21.4"

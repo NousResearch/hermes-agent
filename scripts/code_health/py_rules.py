@@ -15,7 +15,9 @@ import itertools
 
 from scripts.code_health.py_ast import _FUNCS, Ctx, _call_name, _deferred_parts, _dotted, _eager
 from scripts.code_health.py_rules_error_predicate import private_error_predicate
+from scripts.code_health.py_rules_log_content import user_content_in_log
 from scripts.code_health.py_rules_sleep import wall_clock_sleep
+from scripts.code_health.py_rules_sqlite import untracked_state_connect
 
 _CAPTURE_CALLS = {
     "get_hermes_home",
@@ -917,5 +919,7 @@ CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX012": raw_thread,
     "HX013": wall_clock_sleep,
     "HX014": private_error_predicate,
+    "HX015": untracked_state_connect,
     "HX016": legacy_profile_setter,
+    "HX017": user_content_in_log,
 }

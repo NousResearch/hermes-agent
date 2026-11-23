@@ -400,9 +400,9 @@ function request(fields: Fields): ChannelRequest {
     throw new Error('Noncanonical request publicBase')
   }
 
-  const releaseTag = fields.optional('releaseTag', /^v\d+\.\d+\.\d+(?:\+canary\.20\d{6}T\d{6}Z)?$/)
+  const releaseTag = fields.optional('releaseTag', /^(?:canary\.20\d{6}T\d{6}Z-)?v\d+\.\d+\.\d+$/)
 
-  const canaryRelease: boolean = /\+canary\./.test(releaseTag || '')
+  const canaryRelease: boolean = /^canary\./.test(releaseTag || '')
 
   const windowsVersion = fields.text('windowsVersion', canaryRelease ? /^\d+\.\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+\.0$/)
 

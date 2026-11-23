@@ -10,6 +10,8 @@ import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 import type { AppTourTranslations } from './types_app_tour'
+import type { ApprovalCopy } from './types_approval'
+import type { BackupTransferTranslations } from './types_backup_transfer'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogTranslations } from './types_catalog'
@@ -31,6 +33,7 @@ import type { PluginPreviewAccessTranslations } from './types_plugin_preview_acc
 import type { PluginUpdateAllTranslations, PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { RightSidebarTranslations } from './types_right_sidebar'
+import type { SandboxCopy } from './types_sandbox'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -94,6 +97,8 @@ interface ModeOptionCopy {
 export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
+  /** A profile a plugin runs in a sandbox: its planned start, restart and stop. */
+  sandbox: SandboxCopy
   appTour: AppTourTranslations
   firstRun: FirstRunCopy
   externalOpenFailed: ExternalOpenFailedCopy
@@ -513,6 +518,14 @@ export interface Translations extends NoticeTranslations {
       approvalTitleNamed: (session: string) => string
       approveAction: string
       rejectAction: string
+      accessTitle: string
+      accessTitleNamed: (session: string) => string
+      accessReadBody: (folder: string) => string
+      accessReadWriteBody: (folder: string) => string
+      networkTitle: string
+      networkTitleNamed: (session: string) => string
+      allowAction: string
+      denyAction: string
       inputTitle: string
       inputTitleNamed: (session: string) => string
       inputBody: string
@@ -625,6 +638,8 @@ export interface Translations extends NoticeTranslations {
       mcp: string
       archivedChats: string
       sessions: string
+      backup: string
+      backupOnly: string
       about: string
       billing: string
       notifications: string
@@ -922,6 +937,7 @@ export interface Translations extends NoticeTranslations {
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
+    backup: BackupTransferTranslations
     memoryLayers: MemoryLayersTranslations
     customEndpoints: {
       active: string
@@ -1005,6 +1021,8 @@ export interface Translations extends NoticeTranslations {
       attachmentSizeLabel: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      desktopReadAloudTitle: string
+      desktopReadAloudDesc: string
       showOptions: string
     }
     hudModifier: {
@@ -2023,10 +2041,6 @@ export interface Translations extends NoticeTranslations {
       openLog: string
       actionLog: string
       alreadyInstalled: (name: string) => string
-      pickerTitle: string
-      pickerBrowse: string
-      pickerHide: string
-      pickerHint: string
       loadFailed: string
       previewFailed: string
       scanFailed: string
@@ -2246,6 +2260,8 @@ export interface Translations extends NoticeTranslations {
       backupDesc: string
       debugShare: string
       debugShareDesc: string
+      debugShareConfirm: string
+      debugShareConfirmDesc: string
       debugShareRunning: string
       debugShareLinks: string
       debugShareFailed: string
@@ -2453,6 +2469,9 @@ export interface Translations extends NoticeTranslations {
     fieldSkillsPlaceholder: string
     fieldDeliver: string
     fieldDeliverOnly: string
+    fieldSignature: string
+    fieldSignatureHint: string
+    signatureOptions: Record<string, string>
     fieldPrompt: string
     fieldPromptPlaceholder: string
     nameRequired: string
@@ -2512,6 +2531,8 @@ export interface Translations extends NoticeTranslations {
     remoteOverride: {
       menuItem: string
       badge: (host: string) => string
+      runHere: string
+      sandboxed: string
       title: (profile: string) => string
       description: string
       urlLabel: string
@@ -2923,7 +2944,10 @@ export interface Translations extends NoticeTranslations {
 
   composer: {
     message: string
-    wakingProfile: (profile: string) => string
+    switchingProfile: (profile: string) => string
+    switchingProfileSlow: string
+    switchProfileFailed: (profile: string) => string
+    willSendTo: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string
@@ -3939,6 +3963,8 @@ export interface Translations extends NoticeTranslations {
       branchNewChat: string
       react: string
       dismissError: string
+      /** A reply paused for an automatic continuation (store/paused-replies.ts). */
+      responseContinuing: string
       responseStopped: string
       /** Greyed notice on a safety-refused turn kept for display, used when the
        *  backend sent none in display_metadata.content_refused.notice. */
@@ -4054,24 +4080,7 @@ export interface Translations extends NoticeTranslations {
       sendEdited: string
       attachingFile: string
     }
-    approval: {
-      gatewayDisconnected: string
-      sendFailed: string
-      reconnect: string
-      timedOutSystemLine: string
-      openSafetySettings: string
-      run: string
-      command: string
-      commandDetails: string
-      moreOptions: string
-      allowSession: string
-      alwaysAllowMenu: string
-      jumpToApproval: string
-      reject: string
-      alwaysTitle: string
-      alwaysDescription: (pattern: string) => string
-      alwaysAllow: string
-    }
+    approval: ApprovalCopy
     clarify: ClarifyCopy
     themePicker: ThemePickerCopy
     catalogInstall: CatalogInstallTranslations

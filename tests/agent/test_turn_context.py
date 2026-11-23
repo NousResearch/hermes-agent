@@ -428,23 +428,25 @@ def test_a_row_rewrite_keeps_a_reaction_another_writer_added(tmp_path, vetoed):
     """A TUI submit row exists before the prologue, so a reaction can land on it while the agent builds;
     the in-place rewrite (stamp backfill or veto) must merge its metadata, not replace the row's."""
     import threading
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from agent.turn_context import _append_multimodal_context, _withhold_blocked_prompt
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s", "cli")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "s", "cli")
     image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
     row = {"role": "user", "content": [{"type": "text", "text": "secret plan"}, image]}
-    row["_row_id"] = db.append_message("s", "user", "secret plan")
-    db.set_message_reaction("s", row["_row_id"], "👍")
-    agent = types.SimpleNamespace(_session_db=db, session_id="s", _session_persist_lock=threading.Lock(),
+    [row["_row_id"]] = seed_messages(db, "s", {"role": "user", "content": "secret plan"})
+    db.messages.set_reaction("s", row["_row_id"], "👍", author="user")
+    agent = types.SimpleNamespace(_session_db=db, persistence=db, session_id="s", _session_persist_lock=threading.Lock(),
                                   _persist_user_message_override=None, _last_compaction_in_place=False)
     _append_multimodal_context(agent, row, "", "PLUGIN NOTE", preflight_compressed=False)
     if vetoed:
         _withhold_blocked_prompt(agent, row, row["content"])
 
-    stored = db.get_messages_as_conversation("s")[-1]["display_metadata"]
-    assert [r["emoji"] for r in stored[db.REACTIONS_METADATA_KEY]] == ["👍"]
+    stored = conversation(db, "s")[-1]["display_metadata"]
+    assert [r["emoji"] for r in stored["reactions"]] == ["👍"]
     assert (TYPED_ASK in stored) is not vetoed  # a veto removes the backfilled stamp from the row too
 
 
@@ -452,21 +454,23 @@ def test_gateway_notes_alone_on_a_stored_image_turn_backfill_the_row(tmp_path):
     """Only gateway notes landed on an already-stored image turn (no memory, no hook context): the row
     still gets the notes and the stamp, or a restart would read the notes back as the ask."""
     import threading
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from agent.turn_context import _append_multimodal_context, _merge_gateway_notes, _previous_user_message_text
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s", "cli")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "s", "cli")
     image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
     row = {"role": "user", "content": [{"type": "text", "text": "look"}, image]}
-    row["_row_id"] = db.append_message("s", "user", "look")
-    agent = types.SimpleNamespace(_session_db=db, session_id="s", _session_persist_lock=threading.Lock(),
+    [row["_row_id"]] = seed_messages(db, "s", {"role": "user", "content": "look"})
+    agent = types.SimpleNamespace(_session_db=db, persistence=db, session_id="s", _session_persist_lock=threading.Lock(),
                                   _persist_user_message_override=None, _last_compaction_in_place=False,
                                   _gateway_turn_context_notes="GATEWAY NOTE")
     plugin_user_context = _merge_gateway_notes(agent, [row], 0, "")
     _append_multimodal_context(agent, row, "", plugin_user_context, preflight_compressed=False)
 
-    reloaded = db.get_messages_as_conversation("s")
+    reloaded = conversation(db, "s")
     assert "GATEWAY NOTE" in reloaded[-1]["content"]
     assert _previous_user_message_text([*reloaded, {"role": "assistant", "content": "x"}]) == "look"
 
@@ -772,3 +776,26 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+
+
+def test_prologue_hands_the_titler_the_agents_writer_handle():
+    from agent import turn_context
+
+    agent = _TitlingAgent("desktop")
+    agent.persistence = types.SimpleNamespace(read_only=False)
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Fix the login button"}])
+    assert titler.call_args.kwargs["persistence"] is agent.persistence
+
+
+def test_prologue_names_a_subagent_run_through_the_writer_handle():
+    from agent import turn_context
+    from persistence.conversation.sessions import TitleSource
+
+    agent = _TitlingAgent("subagent")
+    agent.persistence = types.SimpleNamespace(read_only=False, sessions=MagicMock())
+    agent.persistence.sessions.set_auto_title.return_value = True
+    turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Audit the billing module"}])
+    agent.persistence.sessions.set_auto_title.assert_called_once_with(
+        "sess-1", "Subagent: Audit the billing module", source=TitleSource.DERIVED)
+    assert not agent._session_db.set_auto_title.called

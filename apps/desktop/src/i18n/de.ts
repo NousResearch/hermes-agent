@@ -1,6 +1,7 @@
 // health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { deApproval } from './de_approval'
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
@@ -499,6 +500,14 @@ export const deOverrides = {
       approvalTitleNamed: session => `Freigabe erforderlich — ${session}`,
       approveAction: 'Genehmigen',
       rejectAction: 'Ablehnen',
+      accessTitle: 'Ordnerzugriff erforderlich',
+      accessTitleNamed: session => `Ordnerzugriff erforderlich — ${session}`,
+      accessReadBody: folder => `Nur lesen: ${folder}`,
+      accessReadWriteBody: folder => `Lesen und schreiben: ${folder}`,
+      networkTitle: 'Website-Zugriff erforderlich',
+      networkTitleNamed: session => `Website-Zugriff erforderlich — ${session}`,
+      allowAction: 'Erlauben',
+      denyAction: 'Ablehnen',
       inputTitle: 'Eingabe erforderlich',
       inputTitleNamed: session => `Eingabe erforderlich — ${session}`,
       inputBody: 'Hermes wartet auf Ihre Antwort.',
@@ -773,6 +782,8 @@ export const deOverrides = {
       mcp: 'MCP',
       archivedChats: 'Archivierte Chats',
       sessions: 'Sessions',
+      backup: 'Sicherung & Übertragung',
+      backupOnly: 'Sicherung',
       about: 'Über',
       billing: 'Abrechnung',
       notifications: 'Benachrichtigungen',
@@ -1546,6 +1557,9 @@ export const deOverrides = {
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Ein sehr hoher Wert lädt die gesamte Datei in den Speicher, was die App einfrieren oder abstürzen lassen kann.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximale Vorschau-/Bildladegröße in Megabyte',
+      desktopReadAloudTitle: 'Antworten in dieser App vorlesen',
+      desktopReadAloudDesc:
+        'Liest jede fertige Antwort in Desktop vor. Derselbe Schalter wie im Eingabefeld; er gilt für alle offenen Fenster, und Ausschalten stoppt eine Antwort mitten im Satz. „Antworten vorlesen“ unten gilt für Messaging und die CLI.',
       showOptions: 'Optionen anzeigen'
     },
     hudModifier: {
@@ -2611,11 +2625,6 @@ export const deOverrides = {
       openLog: 'Log öffnen',
       actionLog: 'Aktionsprotokoll',
       alreadyInstalled: (name: string) => `"${name}" ist bereits installiert`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Den ganzen Hub durchstöbern',
-      pickerHide: 'Hub-Durchsucher ausblenden',
-      pickerHint:
-        'Klicken Sie bei einem beliebigen Skill auf „+ Zu diesem Agenten hinzufügen“ – er wird installiert und erscheint in der Liste oben.',
       loadFailed: 'Skill-Hub konnte nicht geladen werden',
       previewFailed: 'Skill-Vorschau fehlgeschlagen',
       scanFailed: 'Sicherheitsscan fehlgeschlagen',
@@ -2873,7 +2882,10 @@ export const deOverrides = {
       backupDesc: 'Konfiguration, Memories, Skills und Sessions als ZIP packen',
       debugShare: 'Debug-Freigabe',
       debugShareDesc:
-        'Einen geschwärzten Bericht + Logs hochladen, teilbare Links erhalten (wird nach 6h automatisch gelöscht)',
+        'Eine Zusammenfassung hochladen (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext), teilbaren Link erhalten (wird nach 6h automatisch gelöscht)',
+      debugShareConfirm: 'Debug-Bericht in ein öffentliches Paste hochladen?',
+      debugShareConfirmDesc:
+        'Lädt eine Zusammenfassung zu einem öffentlichen Paste-Dienst hoch: Hermes-, Python- und OS-Versionen, Namen verbundener Plattformen und Toolsets, Konfigurationsschlüssel (ohne Werte) und Warnungs-/Fehlerzähler. Sie enthält keine Logzeilen und keinen Nachrichtentext. Pastes werden nach 6 Stunden automatisch gelöscht; ist paste.rs nicht erreichbar, bleiben sie beim Ausweichdienst dpaste.com 1 Tag öffentlich und lassen sich nicht vorzeitig löschen.',
       debugShareRunning: 'Debug-Bericht wird hochgeladen...',
       debugShareLinks: 'Freigabelinks',
       debugShareFailed: 'Debug-Freigabe fehlgeschlagen',
@@ -3228,6 +3240,14 @@ export const deOverrides = {
     fieldSkillsPlaceholder: 'durch Kommas getrennte Skill-Namen (optional)',
     fieldDeliver: 'Zustellen an',
     fieldDeliverOnly: 'Nur die Payload zustellen',
+    fieldSignature: 'Signatur',
+    fieldSignatureHint: 'Das einzige Signaturschema, das diese Route akzeptiert. GitHub-, GitLab- und Linear-Zustellungen brauchen ihre eigene Festlegung.',
+    signatureOptions: {
+      generic: 'Generisch (mit Zeitstempel)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Anweisungen für den Agenten, wenn dieser Webhook ausgelöst wird (optional)',
     nameRequired: 'Name erforderlich',
@@ -3294,6 +3314,8 @@ export const deOverrides = {
     remoteOverride: {
       menuItem: 'Mit Remote-Host verbinden…',
       badge: (host: string) => `Läuft auf ${host}`,
+      runHere: 'Auf diesem Computer ausführen…',
+      sandboxed: 'In der Sandbox',
       title: (profile: string) => `${profile} mit einem Remote-Host verbinden`,
       description:
         'Sessions in diesem Profil laufen auf dem von Ihnen festgelegten Remote-Hermes statt auf diesem Computer.',
@@ -3759,7 +3781,10 @@ export const deOverrides = {
   },
   composer: {
     message: 'Nachricht',
-    wakingProfile: profile => `Wecke ${profile}…`,
+    switchingProfile: profile => `Wechsel zu ${profile}…`,
+    switchingProfileSlow: 'Verbindung wird noch hergestellt. Nachrichten, die du jetzt sendest, warten und gehen an diesen Agenten.',
+    switchProfileFailed: profile => `Wechsel zu ${profile} fehlgeschlagen`,
+    willSendTo: profile => `Wird an ${profile} gesendet`,
     placeholderStarting: 'Hermes wird gestartet…',
     placeholderReconnecting: 'Verbindung zu Hermes wird wiederhergestellt…',
     placeholderFollowUp: 'Folge senden',
@@ -3897,7 +3922,7 @@ export const deOverrides = {
       '/topup': 'Ihr Nous-Guthaben anzeigen und die Abrechnung im Portal verwalten',
       '/platform': 'Eine fehlerhafte Gateway-Plattform pausieren, fortsetzen oder auflisten',
       '/version': 'Hermes-Agent-Version anzeigen',
-      '/debug': 'Debug-Bericht (Systeminfos + Logs) hochladen und teilbare Links erhalten',
+      '/debug': 'Debug-Bericht (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links',
       '/model': 'Modell für diese Session wechseln'
     },
     hotkeyDescs: {
@@ -4908,6 +4933,7 @@ export const deOverrides = {
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
+      responseContinuing: 'Wird fortgesetzt…',
       responseStopped: 'Antwort gestoppt',
       ...deErrorLayers,
       errorCodes: {
@@ -5137,25 +5163,7 @@ export const deOverrides = {
       sendEdited: 'Bearbeitete Nachricht senden',
       attachingFile: 'Hängt an…'
     },
-    approval: {
-      gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
-      sendFailed: 'Genehmigungsantwort konnte nicht gesendet werden',
-      reconnect: 'Neu verbinden',
-      timedOutSystemLine:
-        'Die Freigabe ist abgelaufen — der Befehl wurde nicht ausgeführt. Bitten Sie Hermes, es erneut zu versuchen, oder erhöhen Sie das Limit unter Einstellungen → Sicherheit → Freigabe-Timeout.',
-      openSafetySettings: 'Sicherheitseinstellungen öffnen',
-      run: 'Ausführen',
-      command: 'Befehl',
-      moreOptions: 'Weitere Genehmigungsoptionen',
-      allowSession: 'Diese Session erlauben',
-      alwaysAllowMenu: 'Immer erlauben…',
-      jumpToApproval: 'Genehmigung erforderlich',
-      reject: 'Ablehnen',
-      alwaysTitle: 'Diesen Befehl immer erlauben?',
-      alwaysDescription: pattern =>
-        `Dies fügt das Muster „${pattern}“ Ihrer dauerhaften Zulassungsliste hinzu (~/.hermes/config.yaml). Hermes fragt bei solchen Befehlen nicht mehr nach – weder in dieser noch in zukünftigen Sessions.`,
-      alwaysAllow: 'Immer erlauben'
-    },
+    approval: deApproval,
     clarify: deClarify,
     themePicker: deThemePicker,
     catalogInstall: {

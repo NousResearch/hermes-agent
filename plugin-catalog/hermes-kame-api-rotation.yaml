@@ -1,19 +1,20 @@
 name: hermes-kame-api-rotation
 repo: https://github.com/Kame696/kame-api-rotation-for-hermes
-sha: ed4b828f0d8124a7e3f86da33565c9eed7ca13af
+sha: 7583a11c21c985f72b3b421312fbca56e45bc835
 subdir: hermes-kame-api-rotation
 description: "Rotates many API keys per provider so rate limits and quota errors never stop your agent: the healthiest key for every call, the next model when one is busy, and a live line in the chat showing what it did."
+title: "KAME API Rotation"
 maintainer: Kame696
 tier: community
 category: models
 requires_hermes: ">=0.21.6"
 version: "1.9.0.5"
-docs_url: "https://github.com/Kame696/kame-api-rotation-for-hermes/blob/ed4b828f0d8124a7e3f86da33565c9eed7ca13af/hermes-kame-api-rotation/README.md"
-image: https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/ed4b828f0d8124a7e3f86da33565c9eed7ca13af/assets/kame-banner.png
+docs_url: "https://github.com/Kame696/kame-api-rotation-for-hermes/blob/7583a11c21c985f72b3b421312fbca56e45bc835/hermes-kame-api-rotation/README.md"
+image: https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/kame-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/ed4b828f0d8124a7e3f86da33565c9eed7ca13af/assets/panel-overview.png
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/ed4b828f0d8124a7e3f86da33565c9eed7ca13af/assets/panel-events.png
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/ed4b828f0d8124a7e3f86da33565c9eed7ca13af/assets/panel-settings.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/panel-overview.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/panel-events.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/panel-settings.png
 readme: true
 capabilities:
   provides_tools: []

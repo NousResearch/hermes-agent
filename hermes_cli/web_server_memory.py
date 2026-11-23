@@ -19,11 +19,11 @@ def _normalize_memory_provider_name(name: Any) -> str:
     return "" if is_core_memory_provider(provider) else provider
 
 
-def _load_memory_provider(name: str):
+def _load_memory_provider(name: str, *, register_skills: Optional[bool] = None):
     try:
         from plugins.memory import load_memory_provider
 
-        return load_memory_provider(name)
+        return load_memory_provider(name, register_skills=register_skills)
     except Exception:
         _log.debug("Failed to load memory provider %s", name, exc_info=True)
         return None

@@ -138,8 +138,8 @@ def _ts_base(tmp_path: Path, files: dict[str, str | None]) -> tuple[Path, str]:
         pytest.skip("node is not installed")
     repo, _ = _repo(tmp_path)
     # The repo's pin; the measurer resolves (or installs) it into the user cache.
-    lock = {"packages": {"node_modules/typescript": {"version": pinned_typescript(REPO)}}}
-    return repo, _commit(repo, {**files, "package-lock.json": json.dumps(lock)})
+    manifest = {"devDependencies": {"typescript": pinned_typescript(REPO)}}
+    return repo, _commit(repo, {**files, "package.json": json.dumps(manifest)})
 
 
 def _ifs(n: int, k: int = 0, indent: str = "    ") -> str:
@@ -252,9 +252,8 @@ def test_typescript_install_uses_repo_npmrc_and_fails_cleanly(tmp_path, monkeypa
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
-    (repo / "package-lock.json").write_text(
-        json.dumps({"packages": {"node_modules/typescript": {"version": pinned_typescript(REPO)}}}),
-        encoding="utf-8")
+    (repo / "package.json").write_text(
+        json.dumps({"devDependencies": {"typescript": pinned_typescript(REPO)}}), encoding="utf-8")
     # An unreachable registry and an empty npm cache: only the repo's .npmrc can say so.
     (repo / ".npmrc").write_text(
         f"registry=http://127.0.0.1:9/\nfetch-retries=0\ncache={tmp_path / 'npm-cache'}\nmin-release-age=14\n",

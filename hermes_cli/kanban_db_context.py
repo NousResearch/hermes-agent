@@ -107,6 +107,7 @@ def _ctx_header(lines: list[str], task: Task) -> None:
         lines.append("## Body")
         lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))
         lines.append("")
+    _ctx_origin(lines, task)
 
 
 def _ctx_origin(lines: list[str], task: Task) -> None:

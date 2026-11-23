@@ -17,6 +17,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 
@@ -29,10 +30,10 @@ async def _authority_with_old_desktop_chat(tmp_path, monkeypatch, cwd=None):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    db.create_session('old-desktop', source='desktop', model='old-model', cwd=str(cwd or tmp_path))
-    db.append_message('old-desktop', role='user', content='OLD-DESKTOP')
-    db.end_session('old-desktop', 'session_switch')
+    db = store.persistence
+    seed_session(db, 'old-desktop', 'desktop', model='old-model', cwd=str(cwd or tmp_path))
+    seed_messages(db, 'old-desktop', {'role': 'user', 'content': 'OLD-DESKTOP'})
+    db.sessions.end('old-desktop', 'session_switch')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -101,6 +102,17 @@ async def test_a_staged_pick_is_copied_into_the_session_cache_without_retransmis
     assert stored.parent == owner.attachments and stored.parent.name in {rel for rel, _ in _CACHE_DIRS}
     assert stored.read_bytes() == Path(receipt['path']).read_bytes() == b'browser payload'
     assert attached['ref_text'].startswith('@file:')
+
+
+@pytest.mark.asyncio
+async def test_a_staged_pick_attaches_while_another_profile_is_starting(owner):
+    """Hot-serve reserves a starting profile's registry slot before its authority exists. A host-scoped
+    pick from a served profile still attaches meanwhile."""
+    starting = owner.home / 'profiles' / 'starting'
+    starting.mkdir()
+    owner.authority.runner.session_authorities.add(starting, None, name='starting')  # as serve_profile_runtime does
+    attached = await owner.attach(owner.upload())
+    assert isinstance(attached, dict) and attached['attached'] is True, attached
 
 
 @pytest.mark.asyncio

@@ -124,11 +124,14 @@ def _kanban_busy() -> str | None:
 
 def _ledger_busy(runner) -> str | None:
     from gateway.session_authorities import all_authorities
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import StoreUnavailable
     for authority in all_authorities(runner):
-        db = authority.db
-        if db._read_all("SELECT 1 FROM session_admissions WHERE status IN ('queued','started') LIMIT 1"):
+        if (store := authority_persistence(authority)) is None:
+            raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
+        if store.admissions.has_pending(statuses=frozenset({"queued", "started"})):
             return f"admissions pending in {authority.profile_id}"
-        if db._read_all("SELECT 1 FROM worker_executions WHERE status != 'terminal' LIMIT 1"):
+        if store.worker_executions.has_live_worker():
             return f"managed worker live in {authority.profile_id}"
         service = getattr(authority, "hosted_room_service", None)
         if service is not None:
@@ -136,6 +139,15 @@ def _ledger_busy(runner) -> str | None:
             if status.get("current_tasks") or status.get("leased_rooms"):
                 return f"hosted-room work in {authority.profile_id}"
     return None
+
+
+def _profile_start_busy(runner) -> str | None:
+    """A profile hot-serve is still building has no authority to walk yet, but its queued admissions
+    are recovered once it starts; exiting now would cancel that start. A filled or failed start
+    leaves the registry's starting set, so the hold ends with it."""
+    registry = getattr(runner, "session_authorities", None)
+    starting = registry.starting_homes() if registry is not None else ()
+    return f"profile starting in {starting[0]}" if starting else None
 
 
 def _store_gates_busy(homes) -> str | None:
@@ -186,11 +198,12 @@ def busy_reason(runner, *, window: float, count_clients: bool = True) -> str | N
         if runner._scale_to_zero_has_live_background_work():
             return "background work in flight"
         homes = _served_homes(runner)
-        return (_messaging_busy(runner) or _ledger_busy(runner) or _cron_busy(homes) or _kanban_busy()
-                or _store_gates_busy(homes))
+        return (_messaging_busy(runner) or _ledger_busy(runner) or _profile_start_busy(runner)
+                or _cron_busy(homes) or _kanban_busy() or _store_gates_busy(homes))
     except Exception as exc:
+        from storage_user_copy import error_type_name
         logger.debug("idle-exit probe failed; staying up", exc_info=True)
-        return f"idle probe failed ({type(exc).__name__})"
+        return f"idle probe failed ({error_type_name(exc)})"
 
 
 def _begin_idle_exit(runner, window: float, restart: str | None = None) -> None:

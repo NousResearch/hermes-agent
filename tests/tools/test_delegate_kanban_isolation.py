@@ -98,13 +98,14 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
             captured.update(kwargs)
             self.valid_tool_names = {"terminal"}
             self.session_id = "child-session"
+            self._session_db = kwargs.get("session_db")
 
     import run_agent
     from tools import delegate_tool
     from tools import delegate_tool_config
 
     monkeypatch.setattr(run_agent, "AIAgent", FakeAgent)
-    monkeypatch.setattr(delegate_tool, "_load_config", dict)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", dict)
     monkeypatch.setattr(delegate_tool_config, "_load_config", dict)
 
     class Parent:

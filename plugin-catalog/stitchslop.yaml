@@ -1,0 +1,29 @@
+name: stitchslop
+title: Stitch Slop
+repo: https://github.com/mojomast/hermes-stitchslop
+sha: 51c12d0fd957fb4f40f98253570eb33d791c314c
+subdir: ""
+description: "Work on the embroidery design open in Stitch Slop, watch it in a pane, and digitize artwork into machine stitch files. Ships the bridge its tab dials into (loopback WebSocket, protocol 1 of stitchslop.com/agent), a viewer page that streams a dedicated Chrome window and forwards clicks and keys, four tools, an arc-typesetting and art-prep script, and a bundled skill covering the digitizing workflow. Disclosure — writes ~/.stitchslop (pairing, Chrome profile, exports, logs), shared by every Hermes profile on the machine; starts a loopback WebSocket bridge, a token-gated viewer server and a dedicated Chrome (launched with --no-sandbox and Local Network Access checks off) on a private X display; the viewer binds to loopback only unless you set STITCHSLOP_PANE_BIND to a Tailscale address, which exposes the token-gated viewer (live view and click/key control of that Chrome, logged into your Stitch Slop account) to your tailnet; navigation is limited to https://stitchslop.com; first pairing needs you to paste the Agent-panel token by hand."
+maintainer: mojomast
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/mojomast/hermes-stitchslop#readme
+version: "0.2.2"
+image: https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/pane.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/diagram.png
+  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/stitch.jpg
+readme: true
+platforms: [linux]
+known_issues: []
+capabilities:
+  provides_tools:
+    - stitchslop_status
+    - stitchslop_connect
+    - stitchslop_call
+    - stitchslop_browser
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

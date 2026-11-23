@@ -1,0 +1,25 @@
+# eventmem — local event-shaped memory for Hermes agents.
+#
+# Source: https://github.com/wackyju2-beep/eventmem
+# The catalog package is a provider-only build under adapters/hermes-catalog/eventmem;
+# the repository's other adapters, daemon, worker and console are not part of it.
+# `sha` is the exact reviewed commit; `version` matches plugin.yaml at that commit.
+
+name: eventmem
+repo: https://github.com/wackyju2-beep/eventmem
+sha: c4a8d19f758214be38a0877a7b915d913fe47fad
+subdir: adapters/hermes-catalog/eventmem
+description: "Event-shaped local memory in SQLite with FTS5 recall and optional local ONNX embeddings. Records decisions, attempts, results, changes and lessons, and recalls them with stored relations to later corrections. The provider alone needs no daemon; the separately installed eventmem daemon, relation worker and graph console are not included in this catalog package. Turn-end extraction sends redacted excerpts of the turn to Hermes' configured auxiliary model, which may be remote."
+maintainer: wackyju2-beep
+tier: community
+category: memory
+requires_hermes: ">=0.23.1"
+version: "0.2.1"
+docs_url: https://github.com/wackyju2-beep/eventmem/blob/c4a8d19f758214be38a0877a7b915d913fe47fad/adapters/hermes-catalog/eventmem/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

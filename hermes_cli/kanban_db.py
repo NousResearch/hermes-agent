@@ -31,6 +31,7 @@ from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
+from utils import unlink_files_older_than
 
 _log = logging.getLogger(__name__)
 
@@ -653,8 +654,7 @@ class Task:
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
-            skills=skills_value,
-            origin=_json_or(g("origin")) if g("origin") else None,
+            skills=skills_value, origin=_json_or(g("origin")),
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -863,10 +863,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- profile's state.db (kanban_create verifies before stamping). Indexed
     -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
-    -- Structured provenance for agent-created cards: profile/session/message
-    -- anchors, route coordinates, a redacted prompt excerpt, and a dashboard
-    -- session link. NULL preserves compatibility for CLI/dashboard/legacy rows.
-    origin               TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -1169,11 +1165,9 @@ def create_task(
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
-    session_id: Optional[str] = None, origin: Optional[dict] = None,
-    board: Optional[str] = None, project_id: Optional[str] = None,
-    project_source_task_id: Optional[str] = None,
-    creator_task_id: Optional[str] = None,
-    completion_contract: Optional[str] = None,
+    session_id: Optional[str] = None, origin: Optional[dict] = None, board: Optional[str] = None,
+    project_id: Optional[str] = None, project_source_task_id: Optional[str] = None,
+    creator_task_id: Optional[str] = None, completion_contract: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1190,7 +1184,7 @@ def create_task(
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
-    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin, origin_column
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
@@ -1201,10 +1195,6 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
-    if origin is not None and not isinstance(origin, dict):
-        raise ValueError("origin must be an object/dict")
-    from hermes_cli.kanban_db_origin import sanitize_origin
-    origin = sanitize_origin(origin)
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -1287,9 +1277,7 @@ def create_task(
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
-                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id,
-                        json.dumps(origin, ensure_ascii=False, sort_keys=True) if origin is not None else None,
-                        completion_contract,
+                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, origin_column(origin), completion_contract,
                     ),
                 )
                 for pid in parents:
@@ -2135,10 +2123,10 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[int]:
-    """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    """CAS ``source_status -> running`` (and still ``expect_assignee``'s, when given), open a
+    run row, emit ``claimed``; None when the CAS lost. Caller holds the txn."""
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2148,9 +2136,9 @@ def _claim_and_open_run(
                started_at    = COALESCE(started_at, ?)
          WHERE id = ?
            AND status = '{source_status}'
-           AND claim_lock IS NULL
+           AND claim_lock IS NULL AND (? IS NULL OR assignee = ?)
         """,
-        (lock, expires, now, task_id),
+        (lock, expires, now, task_id, expect_assignee, expect_assignee),
     )
     if cur.rowcount != 1:
         return None
@@ -2182,12 +2170,12 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not ``ready``, or no longer ``expect_assignee``'s).
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2207,7 +2195,7 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, expect_assignee=expect_assignee)
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2217,7 +2205,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2239,7 +2227,7 @@ def claim_review_task(
             return None
         run_id = _claim_and_open_run(
             conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
-        )
+            expect_assignee=expect_assignee)
         if run_id is None:
             return None
         return get_task(conn, task_id)
@@ -2365,7 +2353,7 @@ def release_stale_claims(
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill, reclaim_error
     for row in stale:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -2395,7 +2383,7 @@ def release_stale_claims(
             # changes neither claim_lock nor worker_pid, so the CAS below cannot see it.
             if owner_reclaim_blocked_after_kill(conn, row["id"], signalled=bool(termination.get("termination_attempted"))):
                 continue
-            retry_status = _retry_status_for_run(conn, row["id"])
+            retry_status, error = _retry_status_for_run(conn, row["id"]), reclaim_error(conn, row["id"], row["claim_lock"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -2409,7 +2397,7 @@ def release_stale_claims(
                 continue
             run_id = _record_reclaim(
                 conn, row["id"], termination,
-                error=f"stale_lock={row['claim_lock']}",
+                error=error,
                 payload={
                     "stale_lock": row["claim_lock"],
                     "worker_pid": _opt_int(row["worker_pid"]),
@@ -2426,7 +2414,7 @@ def release_stale_claims(
         # the run ended without a verdict, so it counts toward the breaker and a
         # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
         _record_task_failure(
-            conn, row["id"], f"stale_lock={row['claim_lock']}",
+            conn, row["id"], error,
             outcome="reclaimed", failure_limit=failure_limit,
             release_claim=False, end_run=False,
             event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
@@ -3220,10 +3208,6 @@ def block_task(
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
-        if kind == "dependency":
-            # Historical ordering: the dependency lane fires inside the txn.
-            _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-            return True
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
 
@@ -3918,14 +3902,13 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if not task:
         raise ValueError(f"unknown task {task_id}")
     from hermes_cli.kanban_db_context import (
-        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_origin, _ctx_parent_results, _ctx_prior_attempts,
+        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_parent_results, _ctx_prior_attempts,
         _ctx_role_history,
     )
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
     _ctx_header(lines, task)
-    _ctx_origin(lines, task)
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
@@ -4052,14 +4035,7 @@ def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[
     log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0
-    cutoff = time.time() - older_than_seconds
-    removed = 0
-    for p in log_dir.iterdir():
-        with contextlib.suppress(OSError):
-            if p.is_file() and p.stat().st_mtime < cutoff:
-                p.unlink()
-                removed += 1
-    return removed
+    return unlink_files_older_than(log_dir, "*", older_than_seconds)
 
 
 # --- Worker log accessor ---

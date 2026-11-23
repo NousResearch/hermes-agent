@@ -251,8 +251,7 @@ class TestMaybePersistToolResult:
         assert "tc_456.txt" in result
         assert len(result) < len(content)
 
-    def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+    def test_persists_unwrapped_content_via_stdin(self):
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -275,7 +274,7 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args_list[1][1]["stdin_data"] == content
+        assert env.execute.call_args_list[1][1]["stdin_data"].endswith("</tool-result-metadata>\n\n" + raw)
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
@@ -637,10 +636,10 @@ class TestPageableText:
     """Only the MCP handler's own envelope shape is unwrapped; every other JSON stays opaque."""
 
     def test_single_result_envelope_is_unwrapped(self):
-        assert _pageable_text(json.dumps({"result": "line one\nline two"})) == "line one\nline two"
+        assert _pageable_text(json.dumps({"result": "line one\nline two"})).content == "line one\nline two"
 
     def test_envelope_metadata_is_kept_after_the_text(self):
-        out = _pageable_text(json.dumps({"result": "text\n", "structuredContent": {"answer": 42}}))
+        out = _pageable_text(json.dumps({"result": "text\n", "structuredContent": {"answer": 42}})).content
         text, marker, tail = out.partition("\n\n<mcp-result-metadata>\n")
         assert text == "text\n"
         assert marker
@@ -660,7 +659,7 @@ class TestPageableText:
         ],
     )
     def test_unrecognized_content_is_verbatim(self, content):
-        assert _pageable_text(content) == content
+        assert _pageable_text(content).content == content
 
 class TestMcpEnvelopeSpillover:
     """An oversized MCP result spills its pageable text, not one escaped JSON line (#90426)."""
@@ -701,12 +700,75 @@ class TestMcpEnvelopeSpillover:
         assert text == markdown
         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
 
-    def test_non_envelope_json_still_verbatim(self):
-        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
-        maybe_persist_tool_result(
-            content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
+    def test_builtin_tool_spills_newlines_and_metadata(self):
+        output = "terminal output line\n" * 2_000
+        content = json.dumps({"output": output, "exit_code": 0, "error": None})
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_terminal_text",
             env=None, threshold=30_000)
-        assert (get_spillover_dir() / "tc_json_verbatim.txt").read_text(encoding="utf-8") == content
+
+        assert PERSISTED_OUTPUT_TAG in result
+        spill = (get_spillover_dir() / "tc_terminal_text.txt").read_text(encoding="utf-8")
+        head, _, text = spill.partition("\n</tool-result-metadata>\n\n")
+        assert text == output
+        assert json.loads(head.removeprefix("<tool-result-metadata>\n")) == {
+            "error": None, "exit_code": 0, "text_field": "output"}
+        assert '"exit_code": 0' in result
+
+    def test_lists_and_dicts_follow_the_text_so_the_preview_shows_it(self):
+        body = "# Big skill\n\n" + "".join(f"Step {i}: do the thing carefully.\n" for i in range(3_000))
+        payload = {
+            "success": True,
+            "name": "big-skill",
+            "description": "Use when testing spill layout.",
+            "tags": ["Testing", "Spill"],
+            "content": body,
+            "skill_dir": "/srv/skills/testing/big-skill",
+            "linked_files": {"references": [f"references/topic-{i}.md" for i in range(60)]},
+            "usage_hint": "To view linked files, call skill_view(name, file_path).",
+            "metadata": {"hermes": {"tags": ["Testing"], "related_skills": []}},
+        }
+        result = maybe_persist_tool_result(
+            content=json.dumps(payload, ensure_ascii=False), tool_name="skill_view",
+            tool_use_id="tc_skill_layout", env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert body[:1_000] in preview
+        assert '"name": "big-skill"' in preview
+        spill = (get_spillover_dir() / "tc_skill_layout.txt").read_text(encoding="utf-8")
+        head, _, rest = spill.partition("\n</tool-result-metadata>\n\n")
+        text, _, tail = rest.partition("\n\n<tool-result-metadata>\n")
+        assert text == body
+        fields = {**json.loads(head.removeprefix("<tool-result-metadata>\n")),
+                  **json.loads(tail.removesuffix("\n</tool-result-metadata>\n"))}
+        assert fields.pop("text_field") == "content"
+        assert fields == {key: value for key, value in payload.items() if key != "content"}
+
+    def test_long_terminal_notes_stay_in_the_preview(self):
+        note = ("Output exceeded the capture window (head+tail shown). Full output saved to "
+                "/srv/logs/" + "build-" * 40 + "out.log — page it with read_file.")
+        content = json.dumps({"output": "build line\n" * 5_000, "exit_code": 2, "error": None,
+                              "truncation_note": note}, ensure_ascii=False)
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_terminal_note",
+            env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert note in preview
+        assert '"exit_code": 2' in preview
+
+    def test_unpageable_json_strings_still_verbatim(self):
+        cases = {
+            "tc_json_short": {"output": "one line", "exit_code": 0, "error": None},
+            "tc_json_nul": {"output": "abcdefghijklmnop\x00\n" * 2_000, "exit_code": 0},
+            "tc_json_minor": {"output": "line\n" * 100, "rows": list(range(2_000))},
+        }
+        for tool_use_id, payload in cases.items():
+            content = json.dumps(payload)
+            maybe_persist_tool_result(
+                content=content, tool_name="terminal", tool_use_id=tool_use_id,
+                env=None, threshold=1)
+            assert (get_spillover_dir() / f"{tool_use_id}.txt").read_text(encoding="utf-8") == content
 
     def test_structured_content_only_result_still_verbatim(self):
         content = json.dumps({"result": {"blob": "z" * 40_000}})
@@ -742,3 +804,51 @@ class TestMcpEnvelopeSpillover:
 
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
         assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
+
+    def test_failing_build_tail_rides_the_preview(self):
+        """The reporter's test scenario on #126532: a failing build's error line sits at the
+        END of a huge output. The metadata block led the preview, but the tail still needed
+        ``read_file`` — the preview now carries a head window AND a tail window, while the
+        spillover file keeps the full output verbatim."""
+        output = "HEAD_MARKER\n" + ("filler line\n" * 4_000) + "Traceback: TAIL_ERROR_MARKER build failed\n"
+        envelope = json.dumps({"output": output, "exit_code": 2}, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_tail",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "HEAD_MARKER" in result
+        assert "TAIL_ERROR_MARKER" in result
+        assert "chars elided" in result
+        # The elision is preview-only: the spilled file keeps every line.
+        persisted = (get_spillover_dir() / "tc_term_tail.txt").read_text(encoding="utf-8")
+        assert "chars elided" not in persisted
+        assert persisted.count("filler line") == 4_000
+
+    def test_preview_tail_is_the_output_not_the_metadata_after_it(self):
+        output = "".join(f"cell line {i}\n" for i in range(3_000)) + "ZeroDivisionError: LAST_LINE\n"
+        content = json.dumps({"status": "error", "output": output, "exit_code": 1,
+                              "kernel": {"mode": "session", "execution_count": 3}}, ensure_ascii=False)
+        result = maybe_persist_tool_result(
+            content=content, tool_name="execute_code", tool_use_id="tc_exec_tail",
+            env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert "ZeroDivisionError: LAST_LINE" in preview
+        assert '"kernel"' not in preview
+        spill = (get_spillover_dir() / "tc_exec_tail.txt").read_text(encoding="utf-8")
+        assert spill.index("LAST_LINE") < spill.index('"kernel"')
+
+    def test_failed_save_preview_points_to_no_file(self, monkeypatch):
+        """The inline fallback reuses the preview, so its elision marker must not claim a saved file."""
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_write_to_spillover", lambda *a, **k: None)
+        output = "HEAD\n" + ("filler line\n" * 4_000) + "error: LAST_LINE\n"
+        result = maybe_persist_tool_result(
+            content=json.dumps({"output": output, "exit_code": 2}), tool_name="terminal",
+            tool_use_id="tc_term_unsaved", env=None, threshold=30_000)
+
+        assert "could not be saved" in result
+        assert "chars elided" in result and "error: LAST_LINE" in result
+        assert "spillover" not in result

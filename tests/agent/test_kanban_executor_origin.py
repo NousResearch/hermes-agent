@@ -1,5 +1,6 @@
 """Conversation provenance crosses the real executor/dispatcher and durable SQLite boundary."""
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -8,17 +9,20 @@ from agent.session_persistence import SessionPersistenceMixin
 from agent.tool_executor import _ToolCallRef, _resolve_sequential_dispatch
 from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
 def origin_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("conversation", source="telegram")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "conversation", "telegram")
     agent = SessionPersistenceMixin()
-    agent.__dict__.update(session_id="conversation", _session_db=db, _session_db_created=True,
+    agent.__dict__.update(session_id="conversation", _session_db=db, persistence=db, _session_db_created=True,
+                          _session_persist_lock=threading.RLock(),
                           _last_flushed_db_idx=0, _context_engine_tool_names=set(),
                           _memory_manager=None, quiet_mode=False, valid_tool_names={"kanban_create"})
     tokens = set_session_vars(session_id="conversation", profile="default", platform="telegram",
@@ -46,7 +50,7 @@ def test_executor_flushes_user_and_captures_exact_row(origin_agent):
                 {"role": "user", "content": "Release synthetic fixture", "metadata": {"secret": "never copy"}},
                 {"role": "assistant", "content": "creating"}]
     task = create(agent, messages)
-    rows = db.get_messages("conversation")
+    rows = transcript_rows(db, "conversation")
     user = next(row for row in rows if row["content"] == "Release synthetic fixture")
     assert task.origin["message_row_id"] == user["id"]
     assert task.origin["prompt_excerpt"] == user["content"]
@@ -65,15 +69,15 @@ def test_steer_without_native_id_does_not_claim_initial_message(origin_agent):
                 steer_user_row("create the follow-up card instead")]
     task = create(agent, messages)
     assert task is not None and isinstance(task.origin, dict)
-    selected = db.get_messages_around("conversation", task.origin["message_row_id"], window=0)["window"][0]
-    assert not selected.get("platform_message_id")
+    selected = db.messages.read_around("conversation", task.origin["message_row_id"], window=0).window[0]
+    assert not selected.platform_message_id
     assert "message_id" not in task.origin
     assert "create the follow-up card instead" in task.origin["prompt_excerpt"]
 
 
 def test_explicit_different_session_never_borrows_route_or_prompt(origin_agent):
     agent, db = origin_agent
-    db.create_session("other", source="cli")
+    seed_session(db, "other", "cli")
     task = create(agent, [{"role": "user", "content": "private fixture prompt"}], session_id="other")
     assert task.origin["session_id"] == "other"
     assert set(task.origin) == {"profile", "session_id", "session_link"}
@@ -90,7 +94,7 @@ def test_concurrent_invoke_path_captures_durable_user(origin_agent):
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, result["task_id"])
     assert task.origin["prompt_excerpt"] == "parallel fixture"
-    assert db.get_message_role("conversation", task.origin["message_row_id"]) == "user"
+    assert db.messages.message_role("conversation", task.origin["message_row_id"]) == "user"
 
 
 def test_excerpt_is_bounded_redacted_native_text_only(origin_agent):
@@ -137,7 +141,7 @@ def test_sdk_dispatch_cannot_forge_excerpt_or_reuse_executor_context(origin_agen
 
 def test_executor_session_wins_over_unrelated_ambient_session(origin_agent):
     agent, db = origin_agent
-    db.create_session("stale-session", source="telegram")
+    seed_session(db, "stale-session", "telegram")
     tokens = set_session_vars(session_id="stale-session", platform="telegram", chat_id="wrong-route")
     try:
         task = create(agent, [{"role": "user", "content": "actual executor fixture"}])
@@ -162,6 +166,7 @@ def test_full_executor_runs_real_dispatch_and_persistence(origin_agent, monkeypa
         agent = AIAgent(api_key="test-key", base_url="https://fixture.invalid/v1",
                         quiet_mode=True, skip_context_files=True, skip_memory=True)
     agent._session_db = db
+    agent.persistence = db
     agent._session_db_created = True
     agent.session_id = "conversation"
     agent.valid_tool_names = {"kanban_create"}
@@ -181,7 +186,7 @@ def test_full_executor_runs_real_dispatch_and_persistence(origin_agent, monkeypa
     with kbc.connect_closing() as conn:
         origin = kb.get_task(conn, result["task_id"]).origin
     assert origin["prompt_excerpt"] == "full executor fixture"
-    assert origin["message_row_id"] == db.get_messages("conversation")[0]["id"]
+    assert origin["message_row_id"] == transcript_rows(db, "conversation")[0]["id"]
 
 
 def test_literal_json_prompt_is_not_reinterpreted_as_native_parts(origin_agent):
@@ -217,7 +222,7 @@ def test_unavailable_persistence_never_claims_a_durable_message(origin_agent, mo
     task = create(agent, [{"role": "user", "content": "must not persist as origin"}])
     assert "message_row_id" not in task.origin
     assert "prompt_excerpt" not in task.origin
-    assert db.get_messages("conversation") == []
+    assert transcript_rows(db, "conversation") == []
 
 
 def test_last_steering_user_not_ephemeral_scaffolding_is_captured(origin_agent):
@@ -229,4 +234,4 @@ def test_last_steering_user_not_ephemeral_scaffolding_is_captured(origin_agent):
                 {"role": "user", "content": "synthetic internal fixture", "_kanban_stop_synthetic": True}]
     task = create(agent, messages)
     assert task.origin["prompt_excerpt"] == "steering fixture"
-    assert db.get_messages_around("conversation", task.origin["message_row_id"], window=0)["window"][0]["content"] == "steering fixture"
+    assert db.messages.read_around("conversation", task.origin["message_row_id"], window=0).window[0].content == "steering fixture"

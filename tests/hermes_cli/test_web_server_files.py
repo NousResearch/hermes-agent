@@ -1,8 +1,13 @@
 """Tests for the dashboard-managed file browser API."""
 
+import asyncio
 import base64
+import contextlib
+import importlib
 import json
-from types import SimpleNamespace
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -91,6 +96,83 @@ def _seed_file(client, root, name="out/hello.txt"):
     return file_path
 
 
+@pytest.mark.parametrize("endpoint", ["/api/files/upload", "/api/fs/write-text"])
+def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatch, endpoint):
+    import utils.files
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    previous = target.read_bytes()
+    original_replace = utils.files.os.replace
+
+    def fail_target_replace(source, destination):
+        if str(destination) == str(target):
+            assert target.read_bytes() == previous
+            raise OSError("simulated write failure")
+        return original_replace(source, destination)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(utils.files.os, "replace", fail_target_replace)
+        payload = ({"path": str(target), "data_url": "data:text/plain;base64,bmV3"}
+                   if endpoint.endswith("upload") else {"path": str(target), "content": "new"})
+        response = client.post(endpoint, json=payload)
+    assert response.status_code == 500
+    assert target.read_bytes() == previous
+    assert set(target.parent.iterdir()) == {target}
+
+
+@pytest.mark.platforms("posix")
+def test_upload_overwrite_keeps_the_file_group(forced_files_client):
+    """The atomic replace swaps in a new inode; an overwritten file keeps its owner and group."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    other = next((g for g in os.getgroups() if g != target.stat().st_gid), None)
+    if other is None:
+        pytest.skip("needs a supplementary group to tell the groups apart")
+    os.chown(target, -1, other)
+
+    response = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,bmV3", "overwrite": True})
+
+    assert response.status_code == 200, response.text
+    assert target.read_bytes() == b"new"
+    assert target.stat().st_gid == other
+
+
+def test_write_text_does_not_reuse_a_precreated_staging_name(forced_files_client):
+    """The staging file is created exclusively under an unpredictable name: a file another user
+    planted at the old ``.<name>.hermes-tmp-<pid>`` sibling is neither written through nor kept."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    planted = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    planted.write_text("planted", encoding="utf-8")
+
+    response = client.post("/api/fs/write-text", json={"path": str(target), "content": "new"})
+
+    assert response.status_code == 200, response.text
+    assert target.read_text(encoding="utf-8") == "new"
+    assert planted.read_text(encoding="utf-8") == "planted"
+
+
+@pytest.mark.platforms("posix")
+def test_write_text_keeps_the_file_mode(forced_files_client):
+    """The staged temp starts at 0600; an existing file keeps its own bits across the replace."""
+    import stat
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    target.chmod(0o751)
+
+    response = client.post("/api/fs/write-text", json={"path": str(target), "content": "new"})
+
+    assert response.status_code == 200, response.text
+    assert stat.S_IMODE(target.stat().st_mode) == 0o751
+
+
 
 
 @pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
@@ -159,7 +241,8 @@ def test_download_resolves_paths_in_the_originating_profile_session(
     local_files_client, monkeypatch, route,
 ):
     from pathlib import Path
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     client, home = local_files_client
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -178,11 +261,8 @@ def test_download_resolves_paths_in_the_originating_profile_session(
         db_home = hermes_home if profile == "default" else hermes_home / "profiles" / profile
         db_home.mkdir(parents=True, exist_ok=True)
         (db_home / "config.yaml").write_text("{}", encoding="utf-8")
-        db = SessionDB(db_path=db_home / "state.db")
-        try:
-            db.create_session(sid, source="gui", cwd=cwd)
-        finally:
-            db.close()
+        with open_persistence(profile_scope(home=db_home)) as db:
+            seed_session(db, sid, "gui", cwd=cwd)
     for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
         response = client.get(route, params={
             "path": path, "profile": "default", "session_id": "origin-session",
@@ -245,7 +325,7 @@ def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
     forced_files_client, monkeypatch,
 ):
     """A ticket admits exactly the URL it was minted for: reusable for media
-    Range requests, single-use for a download, useless for any other file."""
+    Range requests, a few retries of that same download, useless for any other file."""
     from hermes_cli import web_server_file_tickets
 
     client, root = forced_files_client
@@ -284,7 +364,8 @@ def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
 
     once = {"path": str(video), "ticket": download}
     assert client.get("/api/files/stream", params=once).status_code == 401
-    assert client.get(download_route, params=once).content == b"hello"
+    for _ in range(web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS):
+        assert client.get(download_route, params=once).content == b"hello"
     assert client.get(download_route, params=once).status_code == 401
 
 
@@ -336,7 +417,12 @@ def test_stream_file_uri_uses_host_resolution_without_bypassing_policy(
         200 if locked else 400
     )
     monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
-    assert client.get("/api/files/stream", params=params).status_code == 413
+    # A player source streams one Range at a time, so the whole-file cap that guards the
+    # base64 read and attachment download never stops a long recording from playing.
+    capped = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+    assert capped.status_code == 206, capped.text
+    assert capped.content == b"ell"
+    assert client.get("/api/files/read", params={"path": str(artifact)}).status_code == 413
 
 
 @pytest.mark.platforms("windows")
@@ -726,6 +812,44 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
 
 
 
+def test_home_credential_stores_hidden_and_unreadable(local_files_client):
+    """#95311/#98161: the default managed root is $HOME, so the OS/CLI credential
+    stores file_safety guards (~/.netrc, ~/.npmrc, ~/.ssh/, ~/.config/gh/, ...)
+    must be neither listed nor readable through the Files API."""
+    client, home = local_files_client
+    (home / "notes.txt").write_text("safe")
+    stores = [
+        ".netrc", ".pgpass", ".npmrc", ".pypirc", ".NPMRC",
+        ".ssh/id_custom", ".aws/config", ".gnupg/private-keys-v1.d/k.key",
+        ".kube/config", ".docker/config.json", ".azure/msal_token_cache.json",
+        ".config/gh/hosts.yml", ".config/gcloud/credentials.db", ".Config/GH/hosts.yml",
+    ]
+    for rel in stores:
+        path = home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("secret")
+
+    names = [e["name"] for e in client.get("/api/files", params={"path": str(home)}).json()["entries"]]
+    assert "notes.txt" in names
+    for hidden in (".netrc", ".pgpass", ".npmrc", ".pypirc", ".NPMRC", ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"):
+        assert hidden not in names, hidden
+    config_names = [e["name"] for e in client.get("/api/files", params={"path": str(home / ".config")}).json()["entries"]]
+    assert "gh" not in config_names and "gcloud" not in config_names
+
+    for rel in stores:
+        resp = client.get("/api/files/read", params={"path": str(home / rel)})
+        assert resp.status_code == 403, (rel, resp.status_code)
+
+
+def test_credential_dir_sequence_needs_consecutive_components(local_files_client):
+    """``.config/gh`` is a two-component tree: an unrelated ``gh`` dir elsewhere stays browsable."""
+    client, home = local_files_client
+    (home / "projects" / "gh").mkdir(parents=True)
+    (home / "projects" / "gh" / "readme.md").write_text("ok")
+    resp = client.get("/api/files/read", params={"path": str(home / "projects" / "gh" / "readme.md")})
+    assert resp.status_code == 200
+
+
 def test_other_credential_store_basenames_blocked(forced_files_client):
     """Regression: the managed-files guard must cover the same credential
     basenames as gateway.platforms.base._ROOT_CREDENTIAL_FILES and
@@ -742,11 +866,14 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "config.yaml",
         ".anthropic_oauth.json",
         "google_token.json",
+        "google_client_secret.json",
         "google_oauth_pending.json",
         "google_oauth.json",
         "webhook_subscriptions.json",
         "bws_cache.json",
         "bws_cache.enc.json",
+        "op_cache.json",
+        "photon-sidecar.json",
     ):
         p = root / name
         p.write_text("SECRET=abc123")
@@ -801,6 +928,75 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     # is filtered because the parent component is a credential dir.
     mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
+
+
+_MIGRATION_BACKUPS = ("env.bak", "config.yaml.bak", "launcher-env.json", "launcher-argv.json")
+
+
+def _route_codes(client, path):
+    return [client.get(f"/api/files/{route}", params={"path": str(path)}).status_code
+            for route in ("read", "download", "stream")]
+
+
+def _names(client, folder):
+    return [e["name"] for e in client.get("/api/files", params={"path": str(folder)}).json().get("entries", [])]
+
+
+def test_the_migration_backups_and_record_are_refused_like_env(forced_files_client, monkeypatch):
+    """A backend migration's backups (the copy of .env, a hand-started backend's environment and command line)
+    and its record, directly under a Hermes home or a profile home, are refused exactly as .env is: never
+    listed, read, streamed, downloaded or written. Matched without regard to case."""
+    client, root = forced_files_client
+    home = root / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    profile = home / "profiles" / "work"
+    (home / ".env").parent.mkdir(parents=True)
+    (home / ".env").write_text("OPENAI_API_KEY=fixture-only\n", encoding="utf-8")
+    (home / "notes.txt").write_text("ordinary\n", encoding="utf-8")
+    env = _route_codes(client, home / ".env")
+    assert env == [403, 403, 403]
+    for base, folder_name, record_name in ((home, "backend_migration", "backend_migration.json"),
+                                           (profile, "backend_migration", "backend_migration.json"),
+                                           (home / "profiles" / "case", "Backend_Migration", "BACKEND_MIGRATION.json")):
+        folder = base / folder_name
+        folder.mkdir(parents=True)
+        (base / record_name).write_text('{"state": "done"}\n', encoding="utf-8")
+        for name in _MIGRATION_BACKUPS:
+            (folder / name).write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=fixture-only\n", encoding="utf-8")
+
+        assert folder_name not in _names(client, base) and record_name not in _names(client, base), base
+        assert _names(client, folder) == []
+        for path in (base / record_name, *(folder / n for n in _MIGRATION_BACKUPS)):
+            assert _route_codes(client, path) == env, path
+            written = client.post("/api/fs/write-text", json={"path": str(path), "content": "x"})
+            assert written.status_code == 403, (path, written.text)
+    assert "notes.txt" in _names(client, home)
+    assert client.get("/api/files/read", params={"path": str(home / "notes.txt")}).status_code == 200
+
+
+def test_an_unrelated_projects_backend_migration_names_are_ordinary_files(forced_files_client, monkeypatch):
+    """Outside a Hermes home the two names are a project's own: listed, read, downloaded and written as any file
+    (nothing changes for a user who never migrated)."""
+    client, root = forced_files_client
+    monkeypatch.setenv("HERMES_HOME", str(root / "hermes-home"))
+    project = root / "work" / "some-project"
+    (project / "backend_migration").mkdir(parents=True)
+    readme = project / "backend_migration" / "README.md"
+    record = project / "backend_migration.json"
+    readme.write_text("# how we migrated our backend\n", encoding="utf-8")
+    record.write_text('{"steps": []}\n', encoding="utf-8")
+
+    (project / "OTHER.md").write_text("# ordinary\n", encoding="utf-8")
+    (project / "other.json").write_text("{}\n", encoding="utf-8")
+
+    assert {"backend_migration", "backend_migration.json"} <= set(_names(client, project))
+    assert _names(client, project / "backend_migration") == ["README.md"]
+    for path, ordinary in ((readme, project / "OTHER.md"), (record, project / "other.json")):
+        assert _route_codes(client, path) == _route_codes(client, ordinary), path
+        assert _route_codes(client, path)[:2] == [200, 200], path
+        written = client.post("/api/fs/write-text", json={"path": str(path), "content": "edited\n"})
+        assert written.status_code == 200, written.text
+        assert path.read_text(encoding="utf-8") == "edited\n"
 
 
 def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
@@ -862,3 +1058,295 @@ def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
     # Reading or downloading the broken symlink directly is still an error.
     assert client.get("/api/files/read", params={"path": str(root / "dangling")}).status_code == 404
     assert client.get("/api/files/download", params={"path": str(root / "dangling")}).status_code == 404
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _spy_render(spy):
+    # The multi-MB data URL is rendered off the loop too: returned as a dict, FastAPI serialized it on the loop.
+    from starlette.responses import JSONResponse
+
+    spy(JSONResponse, "render",
+        lambda self, content: isinstance(content, dict) and ({"data_url", "dataUrl"} & content.keys()))
+
+
+def _route_delete(client, seeded, spy):
+    spy(_rt_files.shutil, "rmtree")
+    return client.request("DELETE", "/api/files", json={"path": str(seeded.parent), "recursive": True})
+
+
+def _route_read(client, seeded, spy):
+    _spy_render(spy)
+    spy(Path, "read_bytes", lambda self, *a, **k: self == seeded)
+    return client.get("/api/files/read", params={"path": str(seeded)})
+
+
+def _route_list(endpoint):
+    def _run(client, seeded, spy):
+        spy(_rt_files.os, "scandir", lambda target, *a, **k: Path(target) == seeded.parent)
+        return client.get(endpoint, params={"path": str(seeded.parent)})
+    return _run
+
+
+def _route_data_url(client, seeded, spy):
+    _spy_render(spy)
+    spy(_rt_files, "_fs_read_bytes")
+    return client.get("/api/fs/read-data-url", params={"path": str(seeded)})
+
+
+def _route_default_cwd(client, seeded, spy):
+    spy(_rt_files, "_fs_git_branch")
+    return client.get("/api/fs/default-cwd")
+
+
+def _route_system_stats(client, seeded, spy):
+    psutil = pytest.importorskip("psutil")
+    spy(psutil, "cpu_percent")
+    return client.get("/api/system/stats")
+
+
+_OFF_LOOP_ROUTES = {
+    "delete": _route_delete, "read": _route_read, "list": _route_list("/api/files"),
+    "fs-list": _route_list("/api/fs/list"), "fs-read-data-url": _route_data_url,
+    "fs-default-cwd": _route_default_cwd, "system-stats": _route_system_stats,
+}
+
+
+@pytest.mark.parametrize("route", sorted(_OFF_LOOP_ROUTES))
+def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, monkeypatch, route):
+    """An ``async def`` route runs ON the event loop that also serves /api/ws chat streaming and the PTY: a recursive
+    delete, a multi-MB read, a directory scan, a git subprocess or psutil's 100 ms CPU sample there froze every other
+    request for as long as it ran. The blocking call must happen on a worker thread (#120270; from #120271)."""
+    client, root = forced_files_client
+    seeded = _seed_file(client, root)
+    seen = []
+
+    def spy(owner, name, wanted=lambda *a, **k: True):
+        original = getattr(owner, name)
+
+        def wrapper(*args, **kwargs):
+            if wanted(*args, **kwargs):
+                seen.append(_on_event_loop())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapper)
+
+    response = _OFF_LOOP_ROUTES[route](client, seeded, spy)
+    assert response.status_code == 200, response.text
+    assert seen and not any(seen), seen
+
+
+
+def _refused_writes(client, target):
+    """Status codes of upload and upload-stream overwriting *target*."""
+    upload = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,RVZJTD0x", "overwrite": True,
+    })
+    stream = client.post(
+        "/api/files/upload-stream",
+        files={"file": ("x", b"EVIL=1", "text/plain")},
+        data={"path": str(target), "overwrite": "true"},
+    )
+    return upload.status_code, stream.status_code
+
+
+def test_managed_writes_refuse_sensitive_paths(forced_files_client):
+    """#85387: upload, upload-stream, mkdir and delete refuse the same credential
+    files the read side hides, so an operator who points the managed root at
+    HERMES_HOME cannot have .env / config.yaml overwritten or removed through it."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET=1")
+    config = root / "config.yaml"
+    config.write_text("model: safe\n")
+
+    for target in (env_file, config, root / "mcp-tokens" / "github.json"):
+        assert _refused_writes(client, target) == (403, 403), target
+    assert client.post("/api/files/mkdir", json={"path": str(root / "pairing")}).status_code == 403
+    deleted = client.request("DELETE", "/api/files", json={"path": str(env_file), "recursive": False})
+    assert deleted.status_code == 403
+
+    assert env_file.read_text() == "SECRET=1"
+    assert config.read_text() == "model: safe\n"
+    assert sorted(p.name for p in root.iterdir()) == [".env", "config.yaml"]
+
+    plain = _seed_file(client, root, "plain.txt")
+    assert client.request("DELETE", "/api/files", json={"path": str(plain)}).status_code == 200
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_sensitive_paths_through_symlinks(forced_files_client):
+    """A link in either direction is refused: an ordinary name pointing at a credential file,
+    and a credential name that is itself a link to an ordinary-looking backing file."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    secret = root / "auth.json"
+    secret.write_text("SECRET=1")
+    alias = root / "notes.txt"
+    alias.symlink_to(secret)
+    store = root / "settings-store"
+    store.write_text("model: safe\n")
+    config = root / "config.yaml"
+    config.symlink_to(store)
+
+    for target in (alias, config, "config.yaml", "config.yaml ", f"{config} "):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+
+    dangling = root / "draft.txt"
+    dangling.symlink_to(root / ".env")  # .env is missing: the resolver keeps the link as target
+    assert _refused_writes(client, dangling) == (403, 403)
+    assert not (root / ".env").exists()
+
+    assert secret.read_text() == "SECRET=1"
+    assert store.read_text() == "model: safe\n"
+    assert alias.is_symlink() and config.is_symlink()
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_credential_name_mid_link_chain(forced_files_client):
+    """``alias.txt -> config.yaml -> settings-store``: neither the name sent nor the final target is a
+    credential name, but the write lands on what config.yaml points at, so the hop is checked too."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "settings-store"
+    store.write_text("model: safe\n")
+    (root / "config.yaml").symlink_to(store)
+    alias = root / "alias.txt"
+    alias.symlink_to("config.yaml")  # relative hop, resolved against the link's own directory
+
+    for target in (alias, "alias.txt"):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+
+    assert store.read_text() == "model: safe\n"
+    assert alias.is_symlink()
+
+    plain = root / "plain-alias.txt"  # an ordinary chain is still writable
+    plain.symlink_to(store)
+    assert _refused_writes(client, plain) == (200, 200)
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_credential_dir_behind_a_symlinked_parent(forced_files_client):
+    """``alias2.txt -> d/srv.json`` with ``d -> mcp-tokens``: the hop's raw text names ``d``, not the
+    credential dir, so each hop is also checked with its parent directory canonicalized."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "token-store"
+    store.write_text("TOKEN=1\n")
+    (root / "mcp-tokens").mkdir()
+    (root / "mcp-tokens" / "srv.json").symlink_to("../token-store")
+    (root / "d").symlink_to("mcp-tokens", target_is_directory=True)
+    alias = root / "alias2.txt"
+    alias.symlink_to("d/srv.json")
+
+    for target in (alias, "alias2.txt", root / "d" / "srv.json", "d/srv.json"):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+    assert store.read_text() == "TOKEN=1\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_link_chain_past_the_hop_bound(forced_files_client):
+    """A chain longer than the 40-hop bound cannot be fully checked, so it is refused; 41 links pins
+    the bound itself, not just "somewhere past 40"."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(41):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (403, 403)
+    assert store.read_text() == "safe\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_allow_a_plain_chain_of_exactly_the_hop_bound(forced_files_client):
+    """A chain of exactly 40 links (the kernel's limit) is fully walked, so a plain target stays writable."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(40):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (200, 200)
+
+
+@contextlib.contextmanager
+def _without_files_router():
+    from hermes_cli import web_routers
+
+    saved_mod = sys.modules.pop("hermes_cli.web_routers.files", None)
+    had_attr = hasattr(web_routers, "files")
+    saved_attr = getattr(web_routers, "files", None)
+    if had_attr:
+        del web_routers.files
+    try:
+        yield
+    finally:
+        if saved_mod is not None:
+            sys.modules["hermes_cli.web_routers.files"] = saved_mod
+        else:
+            sys.modules.pop("hermes_cli.web_routers.files", None)
+        if had_attr:
+            web_routers.files = saved_attr
+        elif hasattr(web_routers, "files"):
+            del web_routers.files
+
+
+def test_files_router_loads_and_guards_migration_stores_against_n1_file_safety(tmp_path, monkeypatch):
+    import agent
+    import agent.file_safety as real_file_safety
+
+    home = tmp_path / ".hermes"
+    (home / "backend_migration").mkdir(parents=True)
+    backup = home / "backend_migration" / "config.yaml"
+    backup.write_text("backup\n", encoding="utf-8")
+    record = home / "backend_migration.json"
+    record.write_text('{"state": "done"}\n', encoding="utf-8")
+
+    project = tmp_path / "work" / "project"
+    (project / "backend_migration").mkdir(parents=True)
+    readme = project / "backend_migration" / "README.md"
+    readme.write_text("# docs\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    legacy_safety = ModuleType("agent.file_safety")
+    for attr, val in vars(real_file_safety).items():
+        if attr != "hermes_credential_homes":
+            setattr(legacy_safety, attr, val)
+    monkeypatch.setitem(sys.modules, "agent.file_safety", legacy_safety)
+    monkeypatch.setattr(agent, "file_safety", legacy_safety, raising=False)
+
+    with _without_files_router():
+        files_mod = importlib.import_module("hermes_cli.web_routers.files")
+        assert files_mod._is_local_sensitive_path(backup) is True
+        assert files_mod._is_local_sensitive_path(record) is True
+        assert files_mod._is_local_sensitive_path(readme) is False
+
+
+def test_files_router_does_not_swallow_missing_file_safety_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "agent.file_safety", None)
+    with _without_files_router(), pytest.raises(ModuleNotFoundError):
+        importlib.import_module("hermes_cli.web_routers.files")

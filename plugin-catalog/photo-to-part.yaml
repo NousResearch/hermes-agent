@@ -1,0 +1,37 @@
+name: photo-to-part
+title: Photo to Part
+repo: https://github.com/mojomast/hermes-photo-to-part
+sha: af108f48c2f1ec0e843ce91b480a6caeafed6361
+subdir: plugin
+description: "Photo to Part for Hermes: turn photos, a few measurements, or a messy 3D scan into a parametric printable part, and check the mesh locally before you print. The agent writes the solid in code, checks that it is watertight and the right size, and renders views you can hold next to the original. Six tools: photo_part_template (watertight starting shapes such as plates with holes, an L-bracket, a print-in-place hinge, thread, knurl, hex standoff, bottle cap, spur gear and strap hinge), photo_part_build (runs one local build script after Hermes approval), photo_part_validate (watertightness, shell count, size, bores, printability and spec.json dimension checks), photo_part_render (fitted views, a comparison sheet and a silhouette overlay scored against your photo), photo_part_heal (weld, fill holes and clean up a scan) and photo_part_measure (pixels per millimetre from a coin, a ruler or an ArUco/AprilTag marker). Output is STL or 3MF; a STEP solid needs CadQuery or build123d in the project environment. A millimetre value you state is never replaced by a photo measurement. Hermes Desktop 0.23 or newer can show an optional Part studio pane with the stage, photo and overlay, renders, history and file paths while a run is in progress; the six tools still install and run when that pane is unavailable. It is for makers replacing a broken clip, bracket, knob, cap or gear, printing a fit test, or turning a scan into a clean solid. To start, run hermes plugins install photo-to-part and enable it, then start a new session. Attach a photo with a coin or ruler in frame, give any dimensions you know, and ask for a printable replacement. The skill id is photo-to-part:photo-to-printable-part. Pass that exact string only to skill_view. Do not pass it to skills_list, and do not add a plugin: prefix or a slash. Disclosure — files and network: tools read and write only the paths you pass (STL, 3MF, PNG, JSON), plus progress notes in a .photopart folder inside those project folders and a pane index under the Hermes plugin-data folder. Build scripts run with a minimal environment that carries no provider keys. No credentials and no printer connection. Enabling the plugin installs its Python packages from PyPI after Hermes dependency consent. Installing CadQuery or build123d for a STEP solid downloads packages and can take several minutes. Chat photos still go to your model provider. In a session that uses the plugin, it adds short tool-call budget notes (a 40-call default) to other tools' results. Disclosure — build approval: photo_part_build asks for approval before it runs a local Python file with a timeout. Hermes --yolo auto-approves a build prompt; this plugin does not block that flag."
+maintainer: mojomast
+tier: community
+category: tools
+docs_url: https://github.com/mojomast/hermes-photo-to-part#readme
+version: "0.1.23"
+image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/af108f48c2f1ec0e843ce91b480a6caeafed6361/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/af108f48c2f1ec0e843ce91b480a6caeafed6361/docs/research/pane-complete.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/af108f48c2f1ec0e843ce91b480a6caeafed6361/docs/research/pane-mid-run.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/af108f48c2f1ec0e843ce91b480a6caeafed6361/docs/screenshot-views.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/af108f48c2f1ec0e843ce91b480a6caeafed6361/examples/plate-clip/renders/compare_front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/af108f48c2f1ec0e843ce91b480a6caeafed6361/examples/plate-clip/renders/front.png
+readme: true
+platforms: []
+known_issues: []
+capabilities:
+  provides_tools:
+    - photo_part_validate
+    - photo_part_render
+    - photo_part_heal
+    - photo_part_template
+    - photo_part_measure
+    - photo_part_build
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+    - pre_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

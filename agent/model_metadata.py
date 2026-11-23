@@ -19,12 +19,21 @@ import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
+from agent.process_transport import is_local_server as _is_local_server
+from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_slot, endpoint_memo_key as _endpoint_memo_key
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
+from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
+    _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
+)
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -260,14 +269,12 @@ _FALLBACK_WARNED: set = set()  # the fallback is never cached, so dedupe its war
 def _warn_context_length_fallback(model: str, base_url: str) -> None:
     """Warn once per model+endpoint that detection failed and the hard default is used,
     so small-context models (8K, 32K) don't silently get 256K and fail at the API."""
+    mark_context_defaulted()  # the "fallback" label reads this, not a re-derivation (agent.context_default_record)
     key = (model, base_url or "")
     if key not in _FALLBACK_WARNED:
         _FALLBACK_WARNED.add(key)
-        logger.warning(
-            "Could not determine context length for model %r (base_url=%s) — falling back to %s tokens. "
-            "Set model.context_length in config.yaml to override.",
-            model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
-        )
+        logger.warning("Could not determine context length for model %r (base_url=%s) — falling back to %s tokens. "
+                       "Set model.context_length in config.yaml to override.", model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}")
 
 
 # Sessions, model switches and cron jobs reject models below this (too little working memory).
@@ -292,17 +299,17 @@ _BEDROCK_PROBE_FAILURE_CACHE: dict[tuple, float] = {}
 DEFAULT_CONTEXT_LENGTHS = {
     # Anthropic — bare ids only (prefixed ids resolve via OpenRouter/models.dev
     # and would collide: "anthropic/claude-sonnet-4" ⊂ "anthropic/claude-sonnet-4.6").
-    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000, "claude-haiku-5": 1000000,
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
-    "claude": 200000,  # catch-all for older Claude models
-    # OpenAI — direct-API windows (Codex OAuth caps gpt-5.4+/5.5/5.6 at 272K, resolved by
-    # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
-    # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
+    "claude": 200000,  # catch-all for older Claude models (Haiku 4.5 too; Haiku 5.5 is 1M)
+    # OpenAI direct-API windows (Codex OAuth has its own caps). 5.4-nano/-mini are 400k, not 1.05M;
+    # gpt-5.3-codex-spark is OAuth-only and listed so "gpt-5" (400k) doesn't win; bare gpt-5.6 aliases Sol (1.05M, OpenAI docs).
+    "gpt-6.2-astra": 1050000, "gpt-6.2-sol": 1050000,
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
-    "gpt-6.1-sol": 1050000,  # -pro too (OpenAI model page + OpenRouter live 2026-09-29)
+    "gpt-6.1-sol": 1050000, "gpt-6.1-terra": 1050000,  # Sol -pro too; both live on OpenRouter (Terra also Nous Portal, 2026-10-26)
     "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
-    "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
+    "gpt-5.6": 1050000, "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000, "gpt-5.4-mini": 400000, "gpt-5.4": 1050000,
     "gpt-5.3-codex-spark": 128000, "gpt-5.1-chat": 128000, "gpt-5": 400000,
     "gpt-4.1": 1047576, "gpt-4": 128000,
@@ -325,11 +332,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
-    # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
-    # 5.3-flashx 1,048,576 (2026-09-20; its own key, else the shorter 5.3-flash entry wins by substring);
+    # GLM — 5.3 / -flash / -flashx 1,048,576: Zhipu documents "1M" and the Nous, OpenRouter and NanoGPT
+    # (?detailed=true) catalogs all list exactly 1,048,576 (2026-11-18; the old 1,310,720 overstated, #154406);
     # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
-    "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
+    "glm-5.3": 1_048_576, "glm-5.3-flash": 1_048_576, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
     "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576, "glm-5.3-flashx": 1_048_576,
     "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
     "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
@@ -338,10 +345,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:
     # 200k usable (the /v1/responses ~262144 input+output budget is a separate limit).
     # grok-build-latest aliases grok-4.5; grok-4-fast / grok-4.20 also match their
-    # -(non-)reasoning and -multi-agent variants; "grok" is the catch-all.
+    # -(non-)reasoning and -multi-agent variants (all 1M on docs.x.ai); "grok" is the catch-all.
     "grok-composer": 200000, "grok-build-latest": 500000, "grok-build": 256000, "grok-code-fast": 256000,
-    "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
-    "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
+    "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 1000000,
+    "grok-4.7": 500000, "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
@@ -401,7 +408,7 @@ def is_grok_46_family(model: str) -> bool:
 # Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 # Exact ids, not a family prefix: Opus 4.7 answers the parameter with an error, Opus 4.6 silently
 # runs and bills at standard speed, and a future Opus is unsupported until the docs list it.
-_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"})
+_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"})
 
 
 def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
@@ -413,10 +420,10 @@ def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
     return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
 
 
-_CONTEXT_LENGTH_KEYS = (
-    "context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
-    "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",
-)
+_CONTEXT_LENGTH_KEYS = ("context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
+    "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size")
+# Hosts whose plain /models omits every window but publishes it on request (NanoGPT: ?detailed=true).
+_MODELS_QUERY_BY_HOST = {"nano-gpt.com": {"detailed": "true"}}
 _MAX_COMPLETION_KEYS = ("max_completion_tokens", "max_output_tokens", "max_tokens")
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 # Docker / Podman / Lima DNS names that resolve to the host machine
@@ -438,13 +445,14 @@ def _is_custom_endpoint(base_url: str) -> bool:
     return bool(normalized) and not base_url_host_matches(normalized, "openrouter.ai")
 
 
-# Host substring -> provider. Profiles claim further hosts through ``hostnames`` /
-# ``metadata_hostnames`` (``providers.profile_for_host``), resolved per home at lookup time.
+# Hostname -> provider: a key matches that host or a subdomain; regional <region>-aiplatform Vertex follows.
+# Profiles claim more hosts via ``hostnames``/``metadata_hostnames`` (``providers.profile_for_host``), per home.
 _URL_TO_PROVIDER: dict[str, str] = {
     "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
     "api.z.ai": "zai", "open.bigmodel.cn": "zai",
     "api.moonshot.ai": "kimi-coding", "api.moonshot.cn": "kimi-coding-cn", "api.kimi.com": "kimi-coding",
-    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee", "api.minimax": "minimax",
+    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee",
+    "api.minimax.io": "minimax", "api.minimaxi.com": "minimax", "api.minimax.chat": "minimax",
     "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",
@@ -467,17 +475,16 @@ except Exception:
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """models.dev provider name for a base URL (custom endpoints need no explicit provider)."""
-    parsed = _parse_base_url(base_url, "https")
-    if parsed is None:
+    host = base_url_hostname(base_url)
+    if not host:
         return None
-    host = parsed.netloc.lower() or parsed.path.lower()
     from providers import profile_for_host
-    if (profile := profile_for_host(host, metadata=True)) is not None:  # exact claims beat substring rows
+    if (profile := profile_for_host(base_url, metadata=True)) is not None:  # profile claims beat table rows
         return profile.name
-    for url_part, provider in _URL_TO_PROVIDER.items():
-        if url_part in host:
+    for domain, provider in _URL_TO_PROVIDER.items():
+        if base_url_host_matches(host, domain):
             return provider
-    return None
+    return "vertex" if host.endswith("-aiplatform.googleapis.com") else None
 
 
 def _strip_openrouter_routing_variant(
@@ -833,7 +840,7 @@ _PRICING_UNIT_DIVISORS = {
     "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
 }
 _PER_MILLION_QUOTE_MIN = 0.001
-_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write", "cache_write_1h")
 
 
 def _normalize_token_rates(pricing: dict[str, Any], unit: Any) -> dict[str, Any]:
@@ -872,7 +879,7 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         "request": ("request", "request_cost"),
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
-    }
+        "cache_write_1h": ("cache_write_1h", "input_cache_write_1h"),}
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         pricing: dict[str, Any] = {}
@@ -1005,18 +1012,6 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
-    from agent.credential_persistence import fingerprint_secret_value
-    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
-    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
-
-
-def _remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
-    return cache
-
-
 def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
     for model in payload.get("data", []):
@@ -1037,7 +1032,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         cached = _endpoint_model_metadata_cache.get(memo_key)
         if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
-        memo = _endpoint_disk_cache_get(normalized) if not local else None
+        memo = _endpoint_disk_cache_get(_endpoint_disk_slot(memo_key)) if not local else None
         if memo is not None:
             return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
@@ -1059,11 +1054,11 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         # A connect timeout condemns the host, not the path.
         if _endpoint_blackholed(normalized):
             break
-        # Cache keys stay unrewritten; only the outbound target is IPv4-resolved.
-        request_candidate = _localhost_to_ipv4(candidate)
+        request_candidate = _localhost_to_ipv4(candidate)  # cache keys stay unrewritten; only the target is IPv4
         url = request_candidate.rstrip("/") + "/models"
         try:
-            with model_metadata_http.stream(url, headers=headers, timeout=(5, 10), verify=verify) as response:
+            params = _MODELS_QUERY_BY_HOST.get(base_url_hostname(normalized))
+            with model_metadata_http.stream(url, headers=headers, params=params, timeout=(5, 10), verify=verify) as response:
                 if response.status_code in (401, 403):
                     logger.debug("Model metadata probe received HTTP %s from %s; stopping candidate probing", response.status_code, url)
                     break
@@ -1075,7 +1070,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 with contextlib.suppress(Exception):
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
-                _endpoint_disk_cache_put(normalized, cache)
+                _endpoint_disk_cache_put(_endpoint_disk_slot(memo_key), cache)
             return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
@@ -1512,8 +1507,8 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",  # 1M; "minimax" catch-all persisted 204,800
     "muse-spark-1.3", "muse-spark",  # 1M; pre-entry builds fell through to the 256K fallback
-    "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
-    "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
+    "grok-4.3", "grok-4.6", "grok-4.7",  # 1M / 500K / 500K; "grok-4" catch-all persisted 256,000
+    "grok-4-fast", "grok-4.20", "claude-haiku-5", "gpt-5.6",  # 2M / 1M: 256K fallback; 1M / 1.05M: "claude" / "gpt-5" catch-alls
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
     # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
     "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
@@ -1659,7 +1654,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6.2-astra": 272_000, "gpt-6.2-sol": 500_000, "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1828,11 +1823,13 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
     stamped as if cached ``TTL - NEGATIVE_TTL`` ago, so the shared freshness check expires it after
     ``_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL``. A fresh catalog a concurrent probe just stored is kept, and the
     max cache is left alone so an observed cap survives."""
-    now = time.time()
-    current = _codex_oauth_context_cache.get(cache_key)
-    if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
-        return
-    _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
+    with MEMO_LOCK:
+        now = time.time()
+        current = _codex_oauth_context_cache.get(cache_key)
+        if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+            return
+        bound_codex_caches(cache_key)
+        _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> tuple[dict[str, int], bool]:
@@ -1876,8 +1873,10 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         _remember_no_codex_catalog(cache_key)
         return {}, False
     # Max first: a reader that sees the fresh context entry must also see its cap.
-    _codex_oauth_max_context_cache[cache_key] = max_result
-    _codex_oauth_context_cache[cache_key] = (result, now)
+    with MEMO_LOCK:
+        bound_codex_caches(cache_key)
+        _codex_oauth_max_context_cache[cache_key] = max_result
+        _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
 
 
@@ -1961,18 +1960,18 @@ def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = 
 
 
 def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
-    """Step 1 of get_model_context_length: accept, repair, or drop a persisted entry. Returns the
-    value to use, or None to fall through to live resolution. Order matters: a value must be
-    rejected as bogus before any provider-specific handling."""
-    # Drop rules: (predicate, log level, message, shown value). 0/negative is always a bug (`0 is not
-    # None` would hand the compressor a zero window); Kimi/MiniMax are underreported as 32K by stale
-    # third-party metadata; pre-catalog leftovers persisted a shorter catch-all (see _PRE_CATALOG_STALE_KEYS).
+    """Step 1: reject invalid or stale cached windows before provider-specific handling;
+    return a validated persisted value, or None to re-resolve."""
+    # Drop invalid rows, known 32K underreports, pre-catalog leftovers, and xAI's old 2M Grok 4.20.
     drop_rules = (
         (cached <= 0, logger.warning, "Dropping non-positive cache entry %s@%s -> %s; re-resolving", cached),
         (cached <= 32768 and _model_name_suggests_stale_32k_underreport(model), logger.info,
          "Dropping stale cached context entry %s@%s -> %s (known 32K underreport); re-resolving via hardcoded defaults", f"{cached:,}"),
         (_stale_pre_catalog_cache_entry(model, cached), logger.info,
          "Dropping stale pre-catalog cache entry %s@%s -> %s; re-resolving via hardcoded defaults", f"{cached:,}"),
+        (cached == 2_000_000 and base_url_host_matches(base_url, "api.x.ai")
+         and _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower()) == ("grok-4.20", 1_000_000),
+         logger.info, "Dropping stale native xAI Grok 4.20 cache entry %s@%s -> %s", f"{cached:,}"),
     )
     for hit, log, msg, shown in drop_rules:
         if hit:
@@ -2054,7 +2053,7 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
         return context_length
     # Local endpoints: the num_ctx-aware probe first — _query_ollama_api_show is GGUF-first, which
     # can be larger and create a false-safe compression window.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if is_local_endpoint(base_url) else None
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _is_local_server(base_url, provider) else None
     if local_ctx:
         return local_ctx
     # 2b. Ollama native /api/show (GGUF-first for non-local). Non-Ollama servers 404/405 quickly.
@@ -2206,6 +2205,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     return None
 
 
+@records_context_defaults
 def get_model_context_length(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
     provider: str = "", custom_providers: list | None = None,
@@ -2309,9 +2309,8 @@ def get_model_context_length(
                 logger.info("Rejecting OpenRouter metadata context=%s for %r (known 32K underreport); falling through to hardcoded defaults", or_ctx, model)
             else:
                 return or_ctx
-    # 7. Local server before hardcoded defaults — ``Hermes-3-Llama-3.1-70B`` matches ``llama``
-    # (131072) even when vLLM runs at a lower ``--max-model-len``.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if base_url and is_local_endpoint(base_url) else None
+    # 7. Local server before hardcoded defaults: vLLM's ``--max-model-len`` beats the ``llama`` 131072 row.
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _is_local_server(base_url, provider) else None
     if local_ctx:
         return local_ctx
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
@@ -2380,13 +2379,11 @@ def estimate_messages_tokens_rough(messages: list[dict[str, Any]], *, charge_sta
 
 
 def estimate_native_anthropic_messages_tokens_rough(messages: list[dict[str, Any]]) -> int:
-    """Estimate native Anthropic messages with replayed readable thinking charged exactly once."""
+    """Estimate native Anthropic messages with replayed thinking charged exactly once (at its billed size)."""
     from agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
-    return estimate_messages_tokens_rough(projected) + sum(
-        estimate_tokens_rough(text) for text in replayed_thinking
-    )
+    return estimate_messages_tokens_rough(projected) + sum(replayed_thinking)
 
 
 def estimate_native_anthropic_request_tokens_rough(
@@ -2397,9 +2394,7 @@ def estimate_native_anthropic_request_tokens_rough(
     from agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
-    return estimate_request_tokens_rough(
-        projected, system_prompt=system_prompt, tools=tools
-    ) + sum(estimate_tokens_rough(text) for text in replayed_thinking)
+    return estimate_request_tokens_rough(projected, system_prompt=system_prompt, tools=tools) + sum(replayed_thinking)
 
 
 # Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
@@ -2433,9 +2428,7 @@ def _strip_stale_thinking_for_estimate(messages: list[dict[str, Any]]) -> list[d
 # deep-equal messages built from identical immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical
 # estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
 # same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
-# objects every turn.
-_MSG_TOKENS_CACHE: dict[Any, tuple[list, int, int]] = {}  # pins, text tokens, image count
-_MSG_TOKENS_CACHE_MAX = 4096
+# objects every turn. Storage, LRU + retained-bytes bounds and release live in ``model_metadata_token_memo``.
 
 
 def _msg_fingerprint(value: Any, pins: list) -> Any:
@@ -2459,35 +2452,26 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
     per-image price re-prices cached rows without invalidating them."""
     def _compute() -> tuple[int, int]:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
+    replay = codex_reasoning_replay_tokens(msg)  # stamp lives in display_metadata, outside the memo key
     try:
-        pins: list = []
+        pins = MemoPins()
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
         # out of the key so stamping them neither costs a walk nor misses the memo.
         key = _msg_fingerprint(
             without_persistence_fields(msg) if type(msg) is dict else msg, pins)
-        hash(key)
+        cached = lookup_message_tokens(key)
     except Exception:
         text, images = _compute()
-        return text + images * image_cost
-    cached = _MSG_TOKENS_CACHE.get(key)
+        return text + images * image_cost + replay
     if cached is not None:
-        return cached[1] + cached[2] * image_cost
+        return cached[1] + cached[2] * image_cost + replay
     text, images = _compute()
-    tokens = text + images * image_cost
-    _MSG_TOKENS_CACHE[key] = (pins, text, images)
-    while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
-        try:
-            _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
-        except (StopIteration, KeyError, RuntimeError):
-            break
-    return tokens
+    remember_message_tokens(key, (pins, text, images))
+    return text + images * image_cost + replay
 
 
 def _count_parts(parts: Any, types: set) -> int:
     return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
-
-
-_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 
 
 def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
@@ -2506,18 +2490,6 @@ def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
-def strip_opaque_replay_items(items: Any) -> Any:
-    """``codex_reasoning_items`` with ``encrypted_content`` blanked for local token estimation.
-    The ciphertext is priced by the provider's own count, never by its bytes (a compaction
-    checkpoint alone can be 5M chars, #100611); only real usage prices it."""
-    if not isinstance(items, list):
-        return items
-    return [
-        {k: ("" if k == "encrypted_content" else v) for k, v in item.items()} if isinstance(item, dict) else item
-        for item in items
-    ]
-
-
 def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
@@ -2527,9 +2499,9 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
       ``reasoning_content``); counting both inflated estimates up to +53%.
     * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
-      ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
-      checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
-      prices them, and the usage anchor carries that price forward."""
+      ciphertext, never priced by bytes (a native compaction checkpoint alone can be 5M chars,
+      #100611); replayed reasoning is priced at its provider-reported count by
+      ``replayed_reasoning.codex_reasoning_replay_tokens``."""
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     drop_reasoning_dup = isinstance(_rc := msg.get("reasoning_content"), str) and bool(_rc.strip())

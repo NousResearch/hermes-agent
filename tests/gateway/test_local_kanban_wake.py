@@ -42,8 +42,8 @@ async def test_local_kanban_wake_reaches_owning_profile_without_a_legacy_handler
         await gateway.settled(authority, session_id, 1)
 
         [row] = gateway.rows(authority, session_id)
-        assert (row['status'], row['outcome']) == ('terminal', 'completed')
-        assert 'local_automation_v1' in row['payload']
+        assert (row.status, row.outcome) == ('terminal', 'completed')
+        assert 'local_automation_v1' in row.payload
         [turn] = gateway.turns
         assert (turn.profile, turn.chat, turn.text, turn.policy) == (
             live.source.profile, session_id, 'SYNTHETIC_KANBAN_HANDOFF',

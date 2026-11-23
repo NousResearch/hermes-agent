@@ -58,3 +58,35 @@ def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp
             host.shutdown()
         for name in [m for m in sys.modules if m.endswith("_mixpair")]:
             sys.modules.pop(name, None)
+
+
+@pytest.mark.platforms("any")
+def test_a_rescan_keeps_the_hosted_plugin_it_already_loaded(tmp_path, monkeypatch, caplog):
+    """Another plugin dir landing while the process runs rescans the home: the plugin already loaded
+    is not imported again (no second warning, the same hosted profile object)."""
+    import providers
+
+    home = tmp_path / ".hermes"
+    plugin_dir = home / "plugins" / "model-providers" / "mixpair"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: mixpair\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(TWO_PROFILE_PLUGIN, encoding="utf-8")
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"isolation": "host"}}), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="providers"):
+            first = providers.get_provider_profile("mixhosted")
+            assert providers.get_provider_profile("mixlocal") is not None
+            (home / "plugins" / "model-providers" / "other").mkdir()
+            providers.refresh_bound_home()
+            again = providers.get_provider_profile("mixhosted")
+        assert first is not None and again is first
+        assert len([r for r in caplog.records if "mixlocal" in r.getMessage()]) == 1
+    finally:
+        host = getattr(plugins_mod.get_plugin_manager(), "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+        for name in [m for m in sys.modules if m.endswith("_mixpair")]:
+            sys.modules.pop(name, None)

@@ -1,13 +1,16 @@
 name: vk-platform
 repo: https://github.com/web3blind/hermes-vk-platform
-sha: f922a0fc65bd9ccb0312fd8f394c9d38a503ad8c
-version: "0.2.3"
+sha: 2443f32b38a944f17889fba3efc5243af3b8e875
+version: "0.2.8"
 requires_hermes: ">=0.21.3"
 description: VK Messenger gateway with community Long Poll, media attachments, allowlists, and project-lane routing.
 maintainer: web3blind
 tier: community
 category: platform
-docs_url: https://github.com/web3blind/hermes-vk-platform/blob/f922a0fc65bd9ccb0312fd8f394c9d38a503ad8c/README.md
+docs_url: https://github.com/web3blind/hermes-vk-platform/blob/2443f32b38a944f17889fba3efc5243af3b8e875/README.md
+known_issues:
+  - Uses internal Hermes session and approval helpers, which may change between host releases.
+  - Platform adapters run in-process; host-process plugin isolation is not supported.
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -196,7 +196,9 @@ describe('MarkdownTextContent streaming render path', () => {
     const text = 'Before the listing.\n\n```listing\n{"address":"123 Main St","url":"https://example.com/listing"}\n```'
 
     const content = (running: boolean) => (
-      <I18nProvider><MarkdownTextContent isRunning={running} text={text} /></I18nProvider>
+      <I18nProvider>
+        <MarkdownTextContent isRunning={running} text={text} />
+      </I18nProvider>
     )
 
     // Warm the lazy renderer so the running mount actually reaches its fallback.
@@ -238,22 +240,25 @@ describe('MarkdownTextContent streaming render path', () => {
     expect(cards.at(-1)?.querySelector('[data-testid="shiki-container"]')?.textContent).toContain('const tail = true')
   })
 
-  it.each([false, true])('retains a settled renderer parse when another reply grows from it (streamed: %s)', async streamed => {
-    const text = `Renderer retention ${streamed}.\n\n${'A complete paragraph.\n\n'.repeat(120)}Shared ending.`
-    const { container, rerender } = render(<MarkdownTextContent isRunning={streamed} text={text} />)
-    await settled(container, text)
-    const first = parseMarkdownIntoBlocksCached(text)
+  it.each([false, true])(
+    'retains a settled renderer parse when another reply grows from it (streamed: %s)',
+    async streamed => {
+      const text = `Renderer retention ${streamed}.\n\n${'A complete paragraph.\n\n'.repeat(120)}Shared ending.`
+      const { container, rerender } = render(<MarkdownTextContent isRunning={streamed} text={text} />)
+      await settled(container, text)
+      const first = parseMarkdownIntoBlocksCached(text)
 
-    rerender(<MarkdownTextContent isRunning={false} text={text} />)
-    await pause()
+      rerender(<MarkdownTextContent isRunning={false} text={text} />)
+      await pause()
 
-    const longer = `${text}\n\nAnother reply continues here.`
-    const other = render(<MarkdownTextContent isRunning text={longer} />)
-    await settled(other.container, longer)
+      const longer = `${text}\n\nAnother reply continues here.`
+      const other = render(<MarkdownTextContent isRunning text={longer} />)
+      await settled(other.container, longer)
 
-    expect(parseMarkdownIntoBlocksCached(text)).toBe(first)
-    expect(container.textContent).toContain('Shared ending.')
-  })
+      expect(parseMarkdownIntoBlocksCached(text)).toBe(first)
+      expect(container.textContent).toContain('Shared ending.')
+    }
+  )
 
   it.each(['previewOnly', 'disableArtifacts', 'scratchpad'] as const)(
     'keeps substantial HTML as a source card through settlement in %s mode',
@@ -276,7 +281,9 @@ describe('MarkdownTextContent streaming render path', () => {
 
       rerender(content(false))
 
-      await waitFor(() => expect(container.querySelector('[data-testid="shiki-container"]')?.textContent).toContain(source))
+      await waitFor(() =>
+        expect(container.querySelector('[data-testid="shiki-container"]')?.textContent).toContain(source)
+      )
       expect(container.querySelector('[data-slot="code-card"]')).not.toBeNull()
       expect(container.querySelector('[data-slot="aui_artifact-card"]')).toBeNull()
     }

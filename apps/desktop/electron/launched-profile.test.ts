@@ -18,7 +18,11 @@ import { migrateV1ToRegistry } from './connection-registry'
 import { migrateProfileScopedDesktopPlugins, reconcileUnifiedDesktopHalves } from './desktop-plugins-root'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
 import { createLaunchedProfileHost, launchedProfileHostRequest } from './launched-profile-host'
-import { assertProfileMayRunLocally, PROFILES_RUN_ELSEWHERE_DIR, readRunElsewhereMarker } from './profile-runs-elsewhere'
+import {
+  assertProfileMayRunLocally,
+  PROFILES_RUN_ELSEWHERE_DIR,
+  readRunElsewhereMarker
+} from './profile-runs-elsewhere'
 
 // A profile a desktop plugin's launcher runs (host.setProfileBackend) is a
 // per-profile `mode: 'remote'` entry carrying `launcher`.

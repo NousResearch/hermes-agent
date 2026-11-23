@@ -80,12 +80,20 @@ const cases: [string, Record<string, Error | string>, boolean][] = [
   ['per-user distribution with no machine key', { [HKCU]: registration(HKCU) }, true],
   ['machine distribution fallback', { [HKLM]: registration(HKLM) }, true],
   ['full user hive spelling from reg.exe', { [HKCU]: registration(HKCU.replace('HKCU', 'HKEY_CURRENT_USER')) }, true],
-  ['full machine hive spelling from reg.exe', { [HKLM]: registration(HKLM.replace('HKLM', 'HKEY_LOCAL_MACHINE')) }, true],
+  [
+    'full machine hive spelling from reg.exe',
+    { [HKLM]: registration(HKLM.replace('HKLM', 'HKEY_LOCAL_MACHINE')) },
+    true
+  ],
   ['missing keys', {}, false],
   ['empty machine shell', { [HKLM]: `${HKLM}\n` }, false],
   ['empty user shell and stale default', { [HKCU]: `${HKCU}\n    DefaultDistribution    REG_SZ    {stale}\n` }, false],
   ['empty distribution name', { [HKCU]: `${HKCU}\\{guid}\n    DistributionName    REG_SZ    \n` }, false],
-  ['value on root instead of a distribution subkey', { [HKCU]: `${HKCU}\n    DistributionName    REG_SZ    Ubuntu\n` }, false],
+  [
+    'value on root instead of a distribution subkey',
+    { [HKCU]: `${HKCU}\n    DistributionName    REG_SZ    Ubuntu\n` },
+    false
+  ],
   ['registry failure', { [HKCU]: timedOut(), [HKLM]: missingKey() }, false]
 ]
 
@@ -98,7 +106,10 @@ for (const [name, registry, available] of cases) {
     assert.equal(bridge.isWslBridgeActive('local'), available)
 
     if (available) {
-      assert.equal(bridge.resolveLocalReadPath('/home/alex', undefined, 'local'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
+      assert.equal(
+        bridge.resolveLocalReadPath('/home/alex', undefined, 'local'),
+        '\\\\wsl.localhost\\Ubuntu\\home\\alex'
+      )
       assert.equal(
         bridge.resolvePickerDefaultPath('/home/alex', undefined, 'local'),
         '\\\\wsl.localhost\\Ubuntu\\home\\alex'

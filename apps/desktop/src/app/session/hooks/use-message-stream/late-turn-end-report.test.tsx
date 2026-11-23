@@ -28,7 +28,8 @@ const RUNTIME = 'late-turn-end-runtime'
 
 let stream: MessageStreamHarness
 
-const emit = (event: Omit<GatewayEvent, 'session_id'>) => act(() => stream.handleEvent({ ...event, session_id: RUNTIME }))
+const emit = (event: Omit<GatewayEvent, 'session_id'>) =>
+  act(() => stream.handleEvent({ ...event, session_id: RUNTIME }))
 
 const turnEndReport = () => emit({ payload: { running: false, stored_session_id: CHAT }, type: 'session.info' })
 
@@ -76,7 +77,11 @@ const stop = () =>
     })
   })
 
-const reply = () => stream.state(RUNTIME).messages.filter(message => message.role === 'assistant').at(-1)
+const reply = () =>
+  stream
+    .state(RUNTIME)
+    .messages.filter(message => message.role === 'assistant')
+    .at(-1)
 
 function mount() {
   vi.useFakeTimers()
@@ -245,7 +250,7 @@ describe("a turn that starts before the previous turn's end-of-turn report arriv
     expectSettled()
   })
 
-  it("keeps the third turn running when the first of two owed reports came before it started", async () => {
+  it('keeps the third turn running when the first of two owed reports came before it started', async () => {
     mount()
     await completedTurn('first')
     await completedTurn('second')
@@ -389,7 +394,9 @@ describe("what the completed turn's late report leaves to the turn now live", ()
 
     submit('second')
     emit({ payload: {}, type: 'message.start' })
-    act(() => setApprovalRequest({ command: 'rm -rf build', description: 'delete the build folder', sessionId: RUNTIME }))
+    act(() =>
+      setApprovalRequest({ command: 'rm -rf build', description: 'delete the build folder', sessionId: RUNTIME })
+    )
 
     turnEndReport()
 

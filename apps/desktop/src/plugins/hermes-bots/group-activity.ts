@@ -167,18 +167,18 @@ export function groupActivityLabel(event: GroupActivityEntry, group?: null | str
 }
 
 const GROUP_ACTIVITY_LABELS = {
-  'queued': 'activityQueued',
-  'working': 'activityWorking',
-  'replied': 'activityReplied',
-  'passed': 'activityPassed',
+  queued: 'activityQueued',
+  working: 'activityWorking',
+  replied: 'activityReplied',
+  passed: 'activityPassed',
   'timed-out': 'activityTimedOut',
-  'failed': 'activityFailed',
-  'cancelled': 'activityCancelled',
-  'settled': 'activitySettled',
-  'capped': 'activityCapped',
-  'delivered': 'activityDelivered',
-  'held': 'activityHeld',
-  'stopped': 'activityStopped'
+  failed: 'activityFailed',
+  cancelled: 'activityCancelled',
+  settled: 'activitySettled',
+  capped: 'activityCapped',
+  delivered: 'activityDelivered',
+  held: 'activityHeld',
+  stopped: 'activityStopped'
 } satisfies Record<GroupActivityKind, keyof BotsText['group']>
 
 export const GROUP_ACTIVITY_GLYPHS: Record<GroupActivityKind, string> = {

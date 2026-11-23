@@ -372,10 +372,13 @@ _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 def _vision_resize_target_bytes() -> int:
     """Resolve the auxiliary vision retry target for the active profile."""
     try:
-        mb = float(_cfg_auxiliary("vision", "resize_target_mb", default=5))
-        if not 0 < mb <= _MAX_BASE64_BYTES / (1024 * 1024):
+        raw = _cfg_auxiliary("vision", "resize_target_bytes", default=_RESIZE_TARGET_BYTES)
+        if isinstance(raw, bool):
             raise ValueError("invalid retry target")
-        return int(mb * 1024 * 1024) or _RESIZE_TARGET_BYTES
+        target = int(raw)
+        if not 0 < target <= _MAX_BASE64_BYTES:
+            raise ValueError("invalid retry target")
+        return target
     except (TypeError, ValueError, OverflowError):
         return _RESIZE_TARGET_BYTES
 

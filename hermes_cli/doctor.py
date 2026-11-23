@@ -32,8 +32,8 @@ from hermes_cli.doctor_config import (
     _check_relay_plugins,
     _check_xai_retirement,
     _check_retired_session_reset,
+    _check_user_regex_settings,
 )
-from hermes_cli.doctor_regex import _check_user_regex_settings
 from hermes_cli.doctor_platform import (
     _check_certificates,
     _check_command_installation,

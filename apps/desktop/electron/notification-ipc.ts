@@ -125,7 +125,7 @@ export function registerNativeNotifications({
         tag: payload?.tag
       })
     })
-    notifications.retain(notification)
+    notifications.retain(notification, { kind: payload?.kind, sessionId: payload?.sessionId })
 
     // The toast is transient; flash the taskbar/dock entry until the window is focused.
     requestAttention(targetWindow())
@@ -140,6 +140,15 @@ export function registerNativeNotifications({
     }, dedupeIntervalMs).unref()
 
     return delivery
+  })
+
+  // The user opened the session (or answered its prompt) in-app: an OS entry
+  // still saying "approval needed" / "response ready" is now stale.
+  ipcMain.handle('hermes:notify-dismiss', (_event, payload: { sessionId?: unknown; kinds?: unknown }) => {
+    const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
+    const kinds = Array.isArray(payload?.kinds) ? payload.kinds.filter(k => typeof k === 'string') : undefined
+
+    return notifications.dismiss(sessionId, kinds)
   })
 
   return { dispose: () => linux?.dispose() }

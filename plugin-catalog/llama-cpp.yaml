@@ -1,6 +1,6 @@
 name: llama-cpp
 repo: https://github.com/Lazzdaycod/hermes-lang-it
-sha: 9e5d70c51458bd7077186b9bcc2c043ee89ce7f8
+sha: beae27f1ee5cfc1d1191f757958c743c94c0ebf4
 subdir: plugins/llama-cpp
 title: llama.cpp GPU Manager
 description: >-
@@ -25,7 +25,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/llama-cpp
-version: "1.2.0"
+version: "1.2.1"
 platforms: []
 capabilities:
   provides_tools: [llama_server_status]

@@ -39,6 +39,7 @@ def test_generated_files_are_current(gen):
 # names must come from CODE the gateway runs, never from the contract tables themselves.
 _EMIT_HELPERS = ("_emit", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
 _LITERAL_EMIT = re.compile(r"\b(?:{})\(\s*\"([a-z_][a-z0-9_.]*)\"".format("|".join(_EMIT_HELPERS)))
+_OWNER_EMIT = re.compile(r"\b_fd_emit\(\s*\w+,\s*\"([a-z_][a-z0-9_.]*)\"")  # methods_voice: (owner, event, payload)
 _REQUEST_HELPERS = ("server_requests\\.send", "server_requests\\.send_async", "_ask", "_read_block")
 _LITERAL_REQUEST = re.compile(r"\b(?:{})\(\s*\"([a-z_][a-z0-9_.]*)\"".format("|".join(_REQUEST_HELPERS)))
 _LITERAL_FRAME = re.compile(r"\"method\":\s*\"event\".{0,120}?\"type\":\s*\"([a-z_][a-z0-9_.]*)\"", re.DOTALL)
@@ -60,6 +61,7 @@ def emitted_event_names() -> set[str]:
     for src in (REPO / current_path("tui_gateway")).glob("*.py"):
         text = _read(src)
         names.update(_LITERAL_EMIT.findall(text))
+        names.update(_OWNER_EMIT.findall(text))
         names.update(_LITERAL_FRAME.findall(text))
         names.update(_SIDE_AGENT.findall(text))
     from tui_gateway.agent_callbacks import _CHILD_DELTA_EVENTS

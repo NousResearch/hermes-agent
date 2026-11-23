@@ -11,7 +11,7 @@ from hermes_constants import get_hermes_home, reset_hermes_home_override, set_he
 def profile_b(tmp_path, monkeypatch):
     from tui_gateway import server
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
-    monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda: None)
+    monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda *_a, **_k: None)
     home = tmp_path / "profiles" / "b"
     home.mkdir(parents=True)
     token = set_hermes_home_override(str(home))
@@ -60,7 +60,7 @@ def test_voice_tts_rpc_speaks_as_the_requested_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(server, "_profile_home", lambda name: worker if name == "b" else None)
-    monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda: None)
+    monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda *_a, **_k: None)
     for params, expected in (({"text": "hi", "profile": "b"}, worker), ({"text": "hi"}, launch)):
         seen, done = _speaker(monkeypatch)
         resp = server._methods["voice.tts"]("rid", params)
@@ -79,7 +79,7 @@ def two_profiles(tmp_path, monkeypatch):
     monkeypatch.setenv("VOICE_PROFILE_PROBE", "launch")
     monkeypatch.setenv("HERMES_VOICE", "1")
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
-    monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda: None)
+    monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda *_a, **_k: None)
     return home, {"profile_home": str(home)}
 
 

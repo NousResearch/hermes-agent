@@ -24,6 +24,7 @@ class _Mic:
         self.tmp_path, self.lock = tmp_path, threading.Lock()
         self.listens, self.trip, self.started = [], threading.Event(), threading.Event()
         self.deaf = threading.Event()  # set: the listen loop stops polling should_stop (mid-block)
+        self.deaf_seen = threading.Event()  # the loop is past its last should_stop poll
         self.transcribe_gate, self.text = None, None
         self.transcripts, self.emitted = [], []
 
@@ -34,6 +35,8 @@ class _Mic:
             self.listens.append(record)
         self.started.set()
         while self.deaf.is_set() or not should_stop():
+            if self.deaf.is_set():
+                self.deaf_seen.set()
             if self.trip.wait(0.01) and on_trigger is not None:
                 self.trip.clear()
                 on_trigger("generation")
@@ -66,6 +69,7 @@ def mic(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
     monkeypatch.setattr(server, "_voice_emit", lambda event, payload=None: emitted.append((event, "<ptt>", payload)))
     yield fake
+    fake.deaf.clear()  # a test that failed mid-block must not leave the listener deaf to voice-off
     monkeypatch.setenv("HERMES_VOICE", "0")  # any live listener ends
     wait_until(lambda: not server._fd_listener_active, what="the listener to end at teardown")
 
@@ -143,6 +147,32 @@ def test_the_owner_is_dropped_when_its_turn_ends_while_another_runs(mic, tmp_pat
     wait_until(lambda: not server._fd_listener_active)
     assert mic.listens[0]["stopped"] and server._fd_owner is None
     assert other.record["running"] and not other.interrupted.is_set()
+
+
+def test_an_ended_turns_reply_speech_leaves_the_mic_with_the_running_turn(mic, tmp_path, monkeypatch):
+    """A turn that ended speaks its reply on a thread in its own context (the non-streaming fallback). That
+    playback arm must not take the mic from a newer voice turn still running, or that turn is left with no
+    listener once the speech ends."""
+    a, b = _session(tmp_path, "sid-a", "a"), _session(tmp_path, "sid-b", "b")
+    speaking = threading.Event()
+    monkeypatch.setitem(sys.modules, "hermes_cli.voice", types.SimpleNamespace(
+        speak_text=lambda text, stop=None: speaking.wait(10)))
+    _arm_as(a)
+    wait_until(lambda: len(mic.listens) == 1)
+    _arm_as(b)
+    wait_until(lambda: len(mic.listens) == 2)
+    a.record["running"] = False
+    token = server._current_runtime_session_record.set(a.record)
+    try:
+        server._speak_text_with_barge("A's reply")
+    finally:
+        server._current_runtime_session_record.reset(token)
+    speaking.set()  # A's reply has played
+    wait_until(lambda: not server._fd_speak_pipelines)
+    mic.trip.set()  # B's user interjects while B generates
+    wait_until(lambda: b.interrupted.is_set(), what="the interjection to interrupt the running turn B")
+    wait_until(lambda: ("voice.transcript", "sid-b", {"text": "said in b"}) in mic.emitted)
+    assert not a.interrupted.is_set()
 
 
 def test_voice_off_cancels_a_pending_hand_off(mic, tmp_path, monkeypatch):
@@ -280,6 +310,23 @@ def test_a_record_removed_with_its_saved_sid_keeps_its_owner_target(mic, tmp_pat
     assert ("voice.interrupted", "sid-a", None) in mic.emitted, "a removed record fell back to the push-to-talk target"
 
 
+def test_a_close_landing_mid_arm_keeps_the_owner_target(mic, tmp_path, monkeypatch):
+    """The close unregisters the record and stamps its sid after the arm read ``_sid`` but before its
+    registry scan: the interjection still goes to that sid, not the push-to-talk target."""
+    a = _session(tmp_path, "sid-a", "a")
+
+    def close_mid_scan(session, sid_hint=""):
+        server._sessions.pop("sid-a", None)
+        session["_sid"] = "sid-a"
+        return ""
+    monkeypatch.setattr(server, "_lifecycle_own_sid", close_mid_scan)
+    _arm_as(a)
+    wait_until(lambda: len(mic.listens) == 1)
+    mic.trip.set()
+    wait_until(lambda: any(e[0] == "voice.interrupted" for e in mic.emitted))
+    assert ("voice.interrupted", "sid-a", None) in mic.emitted
+
+
 def test_multiplexing_without_a_profile_scope_never_opens_the_mic(mic, tmp_path):
     from agent.secret_scope import reset_multiplex_context, set_multiplex_context
     a = _session(tmp_path, "sid-a", "a")
@@ -297,6 +344,7 @@ def test_a_trip_after_the_mic_moved_is_dropped_not_given_to_the_old_owner(mic, t
     _arm_as(a)
     wait_until(lambda: len(mic.listens) == 1)
     mic.deaf.set()  # A's listener is mid-block: it has not seen the hand-off yet
+    wait_until(mic.deaf_seen.is_set)
     _arm_as(b)
     mic.trip.set()  # speech lands in that block
     wait_until(lambda: not mic.trip.is_set())
@@ -305,6 +353,7 @@ def test_a_trip_after_the_mic_moved_is_dropped_not_given_to_the_old_owner(mic, t
     assert mic.transcripts == [] and not a.interrupted.is_set()
     assert not any(e[0] in ("voice.interrupted", "voice.transcript") for e in mic.emitted)
     assert mic.listens[1]["home"] == b.home
+    assert not list(tmp_path.glob("take-*.wav")), "the dropped take was left on disk"
 
 
 def test_a_generation_phase_interjection_interrupts_its_turn_and_is_emitted(mic, tmp_path):

@@ -188,11 +188,17 @@ def test_typed_stop_reads_the_owner_mode(owner, stop_phrase):
     assert owner.runner._voice_mode["owner"] == "off"
 
 
-def test_full_duplex_stop_turns_the_owner_mode_off_not_the_sidecar_flag(owner, stop_phrase, monkeypatch):
+@pytest.mark.parametrize("fd_sid, stopped, kept", [
+    ("owner", "owner", "other"), ("other", "other", "owner"), ("", "owner", "other")],
+    ids=["turn-owner", "other-turn-owner", "sessionless-voice-tts-owner"])
+def test_full_duplex_stop_turns_the_owner_mode_off_not_the_sidecar_flag(
+        owner, stop_phrase, monkeypatch, fd_sid, stopped, kept):
+    """The stop ends the mic owner's chat; a sessionless owner (a ``voice.tts`` arm) ends the push-to-talk target's."""
     owner.slash("owner", "on")
+    owner.slash("other", "on")
     owner.rpc("voice.record", action="start", session_id="owner")
     monkeypatch.setenv("HERMES_VOICE", "1")
-    server._deliver_fd_transcript("stop", {"sid": "owner", "session": None, "transport": owner.sink, "ctx": None})
-    assert owner.runner._voice_mode["owner"] == "off"
+    server._deliver_fd_transcript("stop", {"sid": fd_sid, "session": None, "transport": owner.sink, "ctx": None})
+    assert owner.runner._voice_mode[stopped] == "off" and owner.runner._voice_mode[kept] != "off"
     assert server._voice_mode_enabled() is True
     assert _transcripts(owner.sink)[-1]["stop_phrase"] is True

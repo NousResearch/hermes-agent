@@ -21,6 +21,11 @@ from gateway.session import SessionSource
 # Windows paths that may contain spaces (e.g. "C:\Users\John Doe\image.png").
 _ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
 
+# Zero-width / invisible format characters that copy-paste leaves inside a command token:
+# ZWSP, ZWNJ, ZWJ, BOM/ZWNBSP, WORD JOINER, MONGOLIAN VOWEL SEPARATOR. Stripped from command
+# names only — message text keeps them.
+_ZERO_WIDTH_CHARS_RE = re.compile("[\u200b\u200c\u200d\ufeff\u2060\u180e]")
+
 _MAX_FILENAME_CHARS = 255
 
 
@@ -204,6 +209,11 @@ class MessageEvent:
         if not self.is_command():
             return None
         raw = self._command_text().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        # Zero-width characters survive copy-paste from office suites, some IMEs and the WeCom /
+        # WeChat clients. ``/wxip\u200b`` is not ``/wxip``: the token never resolves back to a
+        # registered command, so the message is treated as prose and the command silently
+        # disappears. Drop them before the name is looked up (they carry no meaning in a name).
+        raw = _ZERO_WIDTH_CHARS_RE.sub("", raw)
         # Reject file paths: valid command names never contain /
         return None if "/" in raw else raw
 

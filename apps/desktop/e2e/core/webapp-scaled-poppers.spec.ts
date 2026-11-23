@@ -316,7 +316,7 @@ test('Dialog-nested, BootFailureModal-nested, and mobile Sheet poppers stay alig
     await page.keyboard.press('Escape')
     await page.keyboard.press('Escape')
 
-    // BootFailureModal-nested Select (fixed inset-0 [contain:layout]): aligned and contained.
+    // Select inside the production BootFailureModal (fixed inset-0 [contain:layout]): aligned and contained.
     await page.getByTestId('open-boot-modal').click()
     const bootSelectTrigger = page.getByTestId('boot-select')
     const bootSelectTriggerBox = (await bootSelectTrigger.boundingBox())!

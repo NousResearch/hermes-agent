@@ -1469,13 +1469,8 @@ jobs:
     name: Assemble and stage the Windows universal bundle
     needs: [validate, build-win32-x64, build-win32-arm64]
     if: >-
-      !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.validate.outputs.win32-bundle == 'true'
-      && (needs.validate.outputs.win32-x64 != 'true' || needs.build-win32-x64.result == 'success')
-      && (needs.validate.outputs.win32-arm64 != 'true' || needs.build-win32-arm64.result == 'success')
-      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
+      github.repository == 'NousResearch/hermes-agent' && (!cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != '' && needs.validate.outputs.win32-bundle == 'true' && (needs.validate.outputs.win32-x64 != 'true' || needs.build-win32-x64.result == 'success') && (needs.validate.outputs.win32-arm64 != 'true' || needs.build-win32-arm64.result == 'success') && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''))
+    runs-on: windows-latest-32-core
     environment: release-signing
     cache-mode: read
     timeout-minutes: 45
@@ -2400,8 +2395,8 @@ jobs:
   stable-publish:
     name: Verify published candidate files
     needs: validate
-    if: inputs.release-phase == 'publish'
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
+    if: github.repository == 'NousResearch/hermes-agent' && (inputs.release-phase == 'publish')
+    runs-on: ubuntu-latest-32-core
     environment: release-signing
     timeout-minutes: 90
     env:
@@ -2425,8 +2420,8 @@ jobs:
   stable-store:
     name: Submit the verified Store package
     needs: [validate, stable-publish]
-    if: inputs.release-phase == 'publish'
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
+    if: github.repository == 'NousResearch/hermes-agent' && (inputs.release-phase == 'publish')
+    runs-on: windows-latest-32-core
     environment: release-signing
     timeout-minutes: 60
     env:

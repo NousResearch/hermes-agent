@@ -37,8 +37,9 @@ concurrency:
 
 jobs:
   venv-holder-e2e:
+    if: github.repository == 'NousResearch/hermes-agent'
     name: venv-holder live E2E (windows-latest)
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
+    runs-on: windows-latest-32-core
     timeout-minutes: 25
     steps:
       - name: Checkout code

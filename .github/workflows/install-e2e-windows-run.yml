@@ -168,13 +168,8 @@ jobs:
     #   * open-app-update needs an OS entry point, which only the
     #     desktop-bearing installs create.
     if: >-
-      (inputs.install-method == 'installer-script'
-        || (contains(fromJSON('["installer-script+desktop", "desktop-installer@latest"]'), inputs.install-method) && inputs.tag-has-desktop))
-      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
-        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
-        || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
-            && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
+      github.repository == 'NousResearch/hermes-agent' && ((inputs.install-method == 'installer-script' || (contains(fromJSON('["installer-script+desktop", "desktop-installer@latest"]'), inputs.install-method) && inputs.tag-has-desktop)) && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method) || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop) || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method))))
+    runs-on: windows-latest-32-core
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:

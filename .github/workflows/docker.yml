@@ -509,7 +509,7 @@ jobs:
   # login/push fails loudly (missing credentials) instead of faking green.
   release-publish:
     name: Publish tested Docker image (${{ matrix.variant }}/${{ matrix.arch }})
-    if: needs.mode.outputs.phase == 'publish'
+    if: github.repository == 'NousResearch/hermes-agent' && (needs.mode.outputs.phase == 'publish')
     needs: [mode]
     environment: container-publish
     strategy:
@@ -517,7 +517,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
         variant: [slim, desktop]
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest-32-core
     timeout-minutes: 45
     env:
       ARCH: ${{ matrix.arch }}

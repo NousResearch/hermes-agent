@@ -6,6 +6,7 @@ on:
 
 jobs:
   check:
+    if: github.repository == 'NousResearch/hermes-agent'
     name: JS & TS checks
     # One 32-core job replaces a 14-leg matrix. The matrix spread about 612s
     # of check payload over 4-core runners. It paid about 371s of repeated
@@ -14,7 +15,7 @@ jobs:
     #
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1

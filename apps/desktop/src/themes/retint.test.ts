@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { hexToOklch, withHue } from './color'
 import { githubTheme, nousTheme } from './presets'
 import { retintTheme } from './retint'
+import { skinToDesktopTheme } from './skin'
 import type { DesktopThemeColors } from './types'
 
 const HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
@@ -40,6 +41,21 @@ describe('the shipped nous accents', () => {
 })
 
 describe('retintTheme', () => {
+  it('retints only the One Dark highlight, leaving primary, neutrals and status colors intact', () => {
+    const base = skinToDesktopTheme({ name: 'one-dark', colors: { ui_accent: '#c678dd' } })!
+    expect(retintTheme(base, '#e06c75')).toBe(base)
+    const picked = retintTheme(base, '#2ea043')
+
+    expect(picked.colors.midground).not.toBe(base.colors.midground)
+    expect(picked.colors.accent).toBe(picked.colors.midground)
+    expect(contrastRatio(picked.colors.midground!, base.colors.background)).toBeGreaterThanOrEqual(4.5)
+    expect(contrastRatio(picked.colors.accent, picked.colors.accentForeground)).toBeGreaterThanOrEqual(4.5)
+    const { midground: _m, midgroundForeground: _mf, accent: _a, accentForeground: _af, ...neutrals } = picked.colors
+    const { midground: _bm, midgroundForeground: _bmf, accent: _ba, accentForeground: _baf, ...original } = base.colors
+    expect(neutrals).toEqual(original)
+    expect(picked.darkColors).toEqual(picked.colors)
+  })
+
   // The load-bearing property: the mix ratios in retint.ts must be the same
   // ones that produced the shipped palette. If they drift, retinting at the
   // theme's OWN hue stops being a no-op — and this catches it.

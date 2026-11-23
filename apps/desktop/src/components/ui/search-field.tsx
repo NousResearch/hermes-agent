@@ -70,6 +70,7 @@ export function SearchField({
 
   return (
     <div
+      data-slot="search-field"
       className={cn(
         // min-w-0 is load-bearing: without it the content-sized input sets the
         // container's flex min-width and the field bulldozes its siblings

@@ -372,13 +372,14 @@ function SidebarSessionRowImpl({
       <SidebarRowShell
         actions={card ? undefined : actionsNode}
         className={cn(
-          'group row-hover relative',
+          'group row-hover relative border-b border-b-(--ui-stroke-tertiary)',
           card && SIDEBAR_ROW_CARD_MIN_H,
           // Density-aware minimum heights for the inline (non-card) row: the
           // metadata / preview lines below need the extra rows (#68119).
           !card && density !== 'compact' && 'min-h-[2.75rem]',
           !card && density === 'detailed' && 'min-h-[3.875rem]',
-          isSelected && 'bg-(--ui-row-active-background)',
+          isSelected &&
+            'border-b-2! border-b-(--pane-tab-active-accent,var(--theme-primary))! bg-(--ui-row-active-background)',
           // Open in another pane: the SAME band, just weaker. Its own mixed
           // token rather than row opacity — dimming the whole row would take
           // the title and the status dot down with it.

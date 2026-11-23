@@ -548,7 +548,7 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
     )
     docker = bindir / "docker"
     docker.write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "{fake.as_posix()}" "$@"\n',
-                      encoding="utf-8")
+                      encoding="utf-8", newline="\n")
     docker.chmod(0o755)
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c",

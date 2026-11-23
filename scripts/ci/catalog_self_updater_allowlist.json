@@ -61,5 +61,12 @@
     "path": "skills/statechart/scripts/run.ts",
     "sha256": "fb6ec4a1835a15e6e72df28bb932b8df5a4c04c5de6f9c270fd63ff5cd148dc7",
     "why": "statechart skill's model-check runner: asks the user's mise to install TLA+ tla2tools v1.7.4 (sha256-pinned in the spec string) and a Temurin JDK into mise's own store, writes only temporary .cfg/.tla files under a mkdtemp dir; never fetches or replaces plugin code (PR #158523)"
+  },
+  {
+    "repo": "LuuMoss/yache-local-voice",
+    "sha": "4c71436df534f3764236b8597b0f84008d169a0a",
+    "path": "dashboard/download.py",
+    "sha256": "cf4672f09c828b673bfac456fdb1d006c484e3b86d1acb6527984041e69c110d",
+    "why": "one-click installers on the plugin's desktop dashboard fetch model weights and the versioned CUDA pack from its own GitHub Releases with SHA-256 + exact-byte-size pins, verify after download, support resume/cancel; worker_env strips provider secrets from subprocess environments"
   }
 ]

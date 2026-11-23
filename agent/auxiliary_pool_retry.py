@@ -20,7 +20,6 @@ def runtime_with_rotated_pool_key(main_runtime: Optional[dict[str, Any]]) -> Opt
         _load_pool_with_credentials,
         _normalize_aux_provider,
         _normalize_main_runtime,
-        _peek_pool_entry,
         _pool_runtime_api_key,
     )
 
@@ -32,7 +31,13 @@ def runtime_with_rotated_pool_key(main_runtime: Optional[dict[str, Any]]) -> Opt
     pool = _load_pool_with_credentials(provider, " (retry)")
     if pool is None or key not in {_pool_runtime_api_key(e) for e in pool.entries()}:
         return main_runtime
-    current = _pool_runtime_api_key(_peek_pool_entry(provider, pool))
+    base_url = runtime.get("base_url")
+    if not isinstance(base_url, str) or not base_url:
+        return main_runtime  # fail closed: without an endpoint we cannot tell whose key this is
+    try:
+        current = _pool_runtime_api_key(pool.peek(endpoint_url=base_url))
+    except Exception:  # health: allow BLE001 -- a broken pool must not break the retry; keep the runtime key
+        return main_runtime
     if not current or current == key:
         return main_runtime
     return {**runtime, "api_key": current}

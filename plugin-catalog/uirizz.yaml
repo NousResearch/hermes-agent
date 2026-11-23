@@ -1,0 +1,73 @@
+# Submitted pin: 98b795a4312f4894a27e85547f5f013d3304dbca
+#   merge of mojomast/uirizz#23 into main; annotated tag v0.1.0 points here
+#   (git rev-parse 'v0.1.0^{commit}'). The catalog loader requires this
+#   40-character commit SHA, not the tag name.
+# Target: NousResearch/hermes-agent, one file: plugin-catalog/uirizz.yaml
+#
+name: uirizz
+title: uirizz
+repo: https://github.com/mojomast/uirizz
+sha: 98b795a4312f4894a27e85547f5f013d3304dbca
+subdir: ""
+description: >-
+  A2UI v1.0 cards in Hermes Desktop and Webapp chat, from one tool:
+  a2ui_render.
+
+  The agent presents official Basic Catalog surfaces (with required
+  fallback_text for the CLI and other clients), then refreshes values
+  in place with a data-only op=update. Declared actions (actions.yaml
+  or register_action) bind a card button to one exact Hermes tool call.
+
+  Disclosure — a click is never approval. Side effects wait for the
+  user's typed yes in chat; high-risk declared actions require yes
+  <code> (the code is the first six characters of the action id after
+  act-). Bare "yes" is ignored for those. Approval is single-use,
+  session-scoped, and expires after 600 seconds. pre_tool_call lets
+  only the bound call through, once; altered arguments and replays
+  are blocked. post_tool_call records completed or failed. The audit
+  log is append-only and hash-chained; op=audit reads it. No
+  credentials, no requires_env, no runtime subprocesses, and no plugin
+  network. Media must be public https (no http, data, or local files).
+  Surfaces stay in the Hermes plugin data directory. Does not register
+  transform_llm_output, so it can sit beside hermes-a2ui. Official
+  Basic Catalog only.
+
+  Quick example: ask for a fictional service-status card, click Deploy,
+  then type yes <code> when the confirm panel asks. Nothing real is
+  deployed unless you bind a real tool in your own actions.yaml.
+
+  Tool: a2ui_render (present, update, delete, describe, audit). Hooks:
+  pre_llm_call, pre_tool_call, post_tool_call. Skill uirizz:uirizz is
+  1365 o200k tokens against a 2000 budget; the tool schema is 447
+  o200k against a 500 budget. Requires Hermes >= 0.23.0.
+maintainer: mojomast
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/mojomast/uirizz/blob/98b795a4312f4894a27e85547f5f013d3304dbca/README.md
+image: https://raw.githubusercontent.com/mojomast/uirizz/98b795a4312f4894a27e85547f5f013d3304dbca/docs/banner-catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/uirizz/98b795a4312f4894a27e85547f5f013d3304dbca/docs/screenshots/catalog/01-hero-card.png
+  - https://raw.githubusercontent.com/mojomast/uirizz/98b795a4312f4894a27e85547f5f013d3304dbca/docs/screenshots/catalog/02-data-update.png
+  - https://raw.githubusercontent.com/mojomast/uirizz/98b795a4312f4894a27e85547f5f013d3304dbca/docs/screenshots/catalog/03-declared-pending.png
+  - https://raw.githubusercontent.com/mojomast/uirizz/98b795a4312f4894a27e85547f5f013d3304dbca/docs/screenshots/catalog/04-completed.png
+  - https://raw.githubusercontent.com/mojomast/uirizz/98b795a4312f4894a27e85547f5f013d3304dbca/docs/screenshots/catalog/05-audit-view.png
+  - https://raw.githubusercontent.com/mojomast/uirizz/98b795a4312f4894a27e85547f5f013d3304dbca/docs/screenshots/catalog/06-cli-fallback.png
+readme: true
+platforms: []
+known_issues:
+  - Official widget Image components often fail to load even public https URLs; omit the image and say so in fallback_text.
+  - View buttons can wrap at typical card widths.
+  - Tall cards can clip under the composer or in the viewport.
+  - Calling present again for the same view still creates a new surface. A new unrelated card without surface_id now gets a distinct id.
+  - "A data-only op=update without a second MEDIA: line was observed to refresh the first card in place. A second MEDIA: line can still mount a second copy."
+capabilities:
+  provides_tools:
+    - a2ui_render
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

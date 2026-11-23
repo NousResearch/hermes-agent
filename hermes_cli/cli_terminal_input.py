@@ -544,6 +544,14 @@ def _classic_cli_color_depth():
     return None
 
 
+def _pt_print(*args, **kwargs):
+    """``print_formatted_text`` at the classic CLI's depth: its default output skips the hand-built one's depth."""
+    from prompt_toolkit import print_formatted_text
+
+    kwargs.setdefault("color_depth", _classic_cli_color_depth())
+    return print_formatted_text(*args, **kwargs)
+
+
 def _select_classic_cli_pt_output(stdout):
     """CPR-disabled ``Vt100_Output`` when CPR may leak, else None (Application keeps pt's default)."""
     from cli import _build_cpr_disabled_output, _terminal_may_leak_cpr

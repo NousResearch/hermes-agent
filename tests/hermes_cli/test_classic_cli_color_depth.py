@@ -76,3 +76,61 @@ def test_menu_scrollbar_ignores_light_mode_remap(monkeypatch):
     monkeypatch.setattr(skin, "get_color", lambda key, default="": "#5C4500")
     monkeypatch.setattr(skin_engine, "get_active_skin", lambda: skin)
     assert get_prompt_toolkit_style_overrides()["scrollbar.button"] == "bg:#B8860B"
+
+
+# --- prints without an explicit output (banner, _cprint, history replay) ---------------------
+
+_SKIN_TEXT = "\x1b[38;2;224;222;244;48;2;39;103;54mhi\x1b[0m"
+
+
+def _emitted(monkeypatch, term, colorterm, paint):
+    """Escape output of ``paint()`` through a bare Vt100_Output (no depth): the one pt's default session would use."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.output.vt100 import Vt100_Output
+
+    monkeypatch.setenv("TERM", term)
+    monkeypatch.setenv("COLORTERM", colorterm)
+    buf = io.StringIO()
+    with create_app_session(output=Vt100_Output(buf, lambda: Size(24, 80), term=term)):
+        paint()
+    return buf.getvalue()
+
+
+def _banner():
+    from hermes_cli.banner import cprint
+    cprint(_SKIN_TEXT)
+
+
+def _cprint_idle():
+    import cli
+    cli._cprint(_SKIN_TEXT)
+
+
+def _replay():
+    import cli
+    saved = list(cli._OUTPUT_HISTORY)
+    cli._OUTPUT_HISTORY.clear()
+    try:
+        cli._record_output_history(_SKIN_TEXT, force=True)
+        cli._replay_output_history()
+    finally:
+        cli._OUTPUT_HISTORY.clear()
+        cli._OUTPUT_HISTORY.extend(saved)
+
+
+_PATHS = [pytest.param(_banner, id="banner.cprint"), pytest.param(_cprint_idle, id="_cprint"),
+          pytest.param(_replay, id="history-replay")]
+
+
+@pytest.mark.parametrize("paint", _PATHS)
+def test_unbound_prints_use_24bit_on_truecolor(monkeypatch, paint):
+    out = _emitted(monkeypatch, "xterm-256color", "truecolor", paint)
+    assert "38;2;224;222;244" in out and "48;2;39;103;54" in out
+    assert "38;5;" not in out and "48;5;" not in out
+
+
+@pytest.mark.parametrize("paint", _PATHS)
+def test_unbound_prints_stay_off_24bit_on_dumb_term(monkeypatch, paint):
+    out = _emitted(monkeypatch, "dumb", "truecolor", paint)
+    assert "38;2;" not in out and "48;2;" not in out

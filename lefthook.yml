@@ -48,3 +48,25 @@ pre-commit:
       root: tests-js/
       glob: "*.{js,ts,tsx}"
       run: "{just} eslint {staged_files}"
+
+    # Owner contract (2026-11-23): the @mention Oracle must run on every change to the
+    # WA/TG adapters, mention routing, memory and the prompt surface. 100% PASS required.
+    - name: mention oracle
+      glob:
+        - "plugins/platforms/telegram/**"
+        - "plugins/platforms/whatsapp*/**"
+        - "gateway/platforms/**"
+        - "gateway/session*.py"
+        - "gateway/run*.py"
+        - "agent/chat_scope.py"
+        - "agent/agent_init*"
+        - "agent/*prompt*"
+        - "agent/inline_tool_executors.py"
+        - "agent/memory*"
+        - "agent/context_*"
+        - "tools/memory*.py"
+        - "tools/session_search*.py"
+        - "tests/mention_oracle/**"
+        - "tests/fakes/fake_llm_provider.py"
+        - "scripts/verify-mention-call.sh"
+      run: scripts/verify-mention-call.sh

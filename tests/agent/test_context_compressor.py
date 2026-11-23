@@ -943,6 +943,34 @@ class TestNonStringContent:
             focus = c._derive_auto_focus_topic([row])
             assert task in focus and "STILL IN PROGRESS" not in focus
 
+    def test_task_snapshot_skips_async_delegation_completion(self):
+        """An async-delegation completion is a runtime notice: the verbatim user block already skips it,
+        so the deterministic anchor must quote the user's request, not the notice."""
+        from agent.context_compressor import _build_verbatim_user_section
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        task = "Refactor the parser and keep the public API unchanged."
+        notice = ("[ASYNC DELEGATION BATCH COMPLETE — deleg_test]\nA background fan-out unit you dispatched "
+                  "earlier — 2 subagent(s) — has finished; its consolidated results are below.")
+        turns = [
+            {"role": "user", "content": task},
+            {"role": "assistant", "content": "Dispatched two subagents."},
+            {"role": "user", "content": notice},
+            {"role": "assistant", "content": "Both finished; merging."},
+        ]
+        snapshot = c._latest_user_task_snapshot(turns)
+        assert snapshot is not None and task in snapshot
+        assert "ASYNC DELEGATION" not in snapshot
+        assert "ASYNC DELEGATION" not in _build_verbatim_user_section(turns)
+        assert c._latest_user_task_snapshot([turns[2]]) is None
+        failed = {"role": "user", "content": "[ASYNC DELEGATION TASK FAILED — deleg_test, task 1/2]\nboom"}
+        assert task in (c._latest_user_task_snapshot([turns[0], failed]) or "")
+        # A user who merely mentions the notice is still quoted.
+        typed = {"role": "user", "content": "why did [ASYNC DELEGATION BATCH COMPLETE] fire twice?"}
+        assert "fire twice" in (c._latest_user_task_snapshot([typed]) or "")
+
     def test_grounding_preserves_following_sections_across_regrounding(self):
         """The snapshot rewrite must keep later headings intact — twice.
 

@@ -4362,6 +4362,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         for msg in reversed(messages):
             if msg.get("role") != "user" or not _is_real_user_message(msg):
                 continue
+            # An async-delegation completion/failure notice is Hermes' own wake-up row, not the user's
+            # words; the verbatim user block already skips it, so the anchor must too.
+            if _content_text_for_contains(msg.get("content")).lstrip().startswith("[ASYNC DELEGATION "):
+                continue
             # A restated request carries Hermes' own replay frame and the gateway's reply pointer;
             # neither is the user's words, so quote only the authored text (#154023).
             text = _redact_compaction_text(_typed_user_text(_authored_request_text(msg.get("content"))).strip())

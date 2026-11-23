@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-23T20:25:00Z",
+  "updated_at": "2026-11-23T20:38:09Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -146,6 +146,10 @@
         },
         {
           "id": "google/gemini-4-hydrogen",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-carbon",
           "description": ""
         },
         {
@@ -440,6 +444,9 @@
         },
         {
           "id": "google/gemini-4-hydrogen"
+        },
+        {
+          "id": "google/gemini-4-carbon"
         },
         {
           "id": "google/gemini-4-argon"

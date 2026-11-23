@@ -1,8 +1,8 @@
-"""The env_exfil_* loopback exemption, spelled for RE2 without a lookahead, against its lookahead original.
+"""The env_exfil_* loopback exemption, checked for RE2 without a lookahead, against its lookahead original.
 
-The RE2 spelling is a prefix automaton of ``https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])`` built from
-coupled fragments (``tools.skills_guard._LB_*``). The original stdlib patterns below are the reference: on
-every generated line the facade spelling must flag what the original flags (a security rule never matches
+On RE2 the exemption is a matcher (``tools.skills_guard._LoopbackExemptMatcher``) that drops a command match
+when a loopback URL starts after it on the same line. The original stdlib patterns below are the reference: on
+every generated line the facade must flag what the original flags (a security rule never matches
 less, so the exemption never covers more) and nothing else (no new false positives). The corpus is every
 sequence of up to three tokens that open, break, restart, complete or nearly complete a loopback URL around
 a secret word, behind each rule's command, plus a seeded sample of longer sequences.

@@ -278,39 +278,10 @@ _PUBLIC_SOLANA_PROGRAM_IDS = frozenset((
     'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
 ))
 
-# Loopback exemption of the env_exfil_* patterns, spelled without a lookahead (RE2 has none): a same-line
-# fragment holding NO scheme-anchored loopback URL (`https?://(?:localhost|127\.0\.0\.1|\[::1\])`), as that
-# URL's prefix automaton. `h` opens a candidate URL; it breaks on a new `h` (_LB_RESTART), breaks on any other
-# unexpected character (_LB_BREAK), or is still an incomplete prefix where the fragment ends (_LB_OPEN).
-# `://localh` + `t` is the prefix `ht` again (_LB_RELOOP). After any edit (a host added or changed),
-# tests/tools/test_skills_guard_loopback_exemption.py compares every env_exfil_* rule with its lookahead
-# original on a generated corpus (add the new host's prefixes to its tokens): it must flag exactly the same lines.
-_LB_RELOOP = r'(?:tps?://localht)*'
-_LB_RESTART = (r'(?:h|t' + _LB_RELOOP +
-               r'(?:t(?:ps?(?::(?:/(?:/(?:l(?:o(?:c(?:a(?:lh(?:o(?:sh|h)|h)|h)|h)|h)|h)|1(?:2(?:7(?:\.(?:0(?:\.(?:0(?'
-               r':\.h|h)|h)|h)|h)|h)|h)|h)|\[(?::(?::(?:1h|h)|h)|h)|h)|h)|h)|h)|h)|h))*')
-_LB_BREAK = (r'(?:[^ht\n]|t' + _LB_RELOOP +
-             r'(?:t(?:p(?:s?:(?:/(?:/(?:l(?:o(?:c(?:a(?:l(?:h(?:o(?:s[^th\n]|[^sh\n])|[^oth\n])|[^h\n])|[^lh\n])|[^ah'
-             r'\n])|[^ch\n])|[^oh\n])|1(?:2(?:7(?:\.(?:0(?:\.(?:0(?:\.[^1h\n]|[^.h\n])|[^0h\n])|[^.h\n])|[^0h\n])|[^.'
-             r'h\n])|[^7h\n])|[^2h\n])|\[(?::(?::(?:1[^\]h\n]|[^1h\n])|[^:h\n])|[^:h\n])|[^l1\[h\n])|[^/h\n])|[^/h\n]'
-             r')|s[^:h\n]|[^s:h\n])|[^ph\n])|[^th\n]))')
-_LB_OPEN = (r'(?:t' + _LB_RELOOP +
-            r'(?:t(?:ps?(?::(?:/(?:/(?:l(?:o(?:c(?:a(?:l(?:h(?:os?)?)?)?)?)?)?|1(?:2(?:7(?:\.(?:0(?:\.(?:0\.?)?)?)?)?'
-            r')?)?|\[(?::(?::1?)?)?)?)?)?)?)?)?)?')
-_LB_OPEN_NOT_LOCALHOS = (r'(?:t' + _LB_RELOOP +
-                         r'(?:t(?:ps?(?::(?:/(?:/(?:l(?:o(?:c(?:a(?:l(?:ho?)?)?)?)?)?|1(?:2(?:7(?:\.(?:0(?:\.(?:0\.?)'
-                         r'?)?)?)?)?)?|\[(?::(?::1?)?)?)?)?)?)?)?)?)?')
-_LB_BODY = r'(?:[^h\n]|h' + _LB_RESTART + _LB_BREAK + r')*'
-_NO_LOOPBACK_URL = _LB_BODY + r'(?:h' + _LB_RESTART + _LB_OPEN + r')?'
-# Trailing guards: the rest of the line holds no loopback URL either (the first is also the word boundary
-# that ends the variable name).
-_WORD_END_NO_LOOPBACK_URL_AFTER = r'(?=(?:[^\w\n]' + _NO_LOOPBACK_URL + r')?(?:\n|\Z))'
-_NO_LOOPBACK_URL_AFTER = r'(?=' + _NO_LOOPBACK_URL + r'(?:\n|\Z))'
-# `<fragment>(KEY|TOKEN|SECRET|PASSWORD)`. A fragment ending in `://localhos` is split off because a
-# following `TOKEN` would complete `localhost` (a loopback URL: exempt); the other words may follow it.
-_NO_LOOPBACK_URL_THEN_SECRET_WORD = (
-    _LB_BODY + r'(?:(?:h' + _LB_RESTART + _LB_OPEN_NOT_LOCALHOS + r')?(KEY|TOKEN|SECRET|PASSWORD)'
-    r'|h' + _LB_RESTART + r't' + _LB_RELOOP + r'tps?://localhos(?:KEY|SECRET|PASSWORD))')
+# Loopback exemption of the env_exfil_* patterns. The stdlib originals put a negative lookahead for a
+# same-line scheme-anchored loopback URL right after the command (`curl\s+(?![^\n]*<URL>)[^\n]*\$...`); RE2 has
+# no lookahead, so their table entries hold the pattern without it and _LoopbackExemptMatcher applies it.
+_LOOPBACK_URL_RE = re.compile(r'https?://(?:localhost|127\.0\.0\.1|\[::1\])', re.IGNORECASE)
 
 # destructive_root_rm: the roots under which `rm -rf` is routine cleanup (see the comment at the table entry).
 _RM_SAFE_ROOTS = ('tmp', 'var/tmp', 'dev/shm', 'run', 'var/lib/apt/lists',
@@ -338,16 +309,17 @@ THREAT_PATTERNS = [
     # env_exfil_* share a loopback exemption: a same-line literal scheme-anchored loopback destination
     # (http(s)://localhost, 127.0.0.1, [::1]) cannot move data off the machine, so a secret-shaped query
     # param there is a local session token. The scheme must immediately precede the host —
-    # `evil.com/?u=localhost` does not qualify.
-    (r'curl\s+' + _NO_LOOPBACK_URL + r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?' + _WORD_END_NO_LOOPBACK_URL_AFTER,
+    # `evil.com/?u=localhost` does not qualify. Each pattern is the original without its lookahead, which
+    # _LoopbackExemptMatcher applies where the pattern's first `[^\n]*` starts.
+    (r'curl\s+[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_curl", "critical", "exfiltration", "curl command interpolating secret environment variable"),
-    (r'wget\s+' + _NO_LOOPBACK_URL + r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?' + _WORD_END_NO_LOOPBACK_URL_AFTER,
+    (r'wget\s+[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_wget", "critical", "exfiltration", "wget command interpolating secret environment variable"),
-    (r'fetch\s*\(' + _NO_LOOPBACK_URL + r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?' + _WORD_END_NO_LOOPBACK_URL_AFTER,
+    (r'fetch\s*\([^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b',
      "env_exfil_fetch", "critical", "exfiltration", "fetch() call interpolating secret environment variable"),
-    (r'httpx?\.(get|post|put|patch)\s*\(' + _NO_LOOPBACK_URL_THEN_SECRET_WORD + _NO_LOOPBACK_URL_AFTER,
+    (r'httpx?\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_httpx", "critical", "exfiltration", "HTTP library call with secret variable"),
-    (r'requests\.(get|post|put|patch)\s*\(' + _NO_LOOPBACK_URL_THEN_SECRET_WORD + _NO_LOOPBACK_URL_AFTER,
+    (r'requests\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_requests", "critical", "exfiltration", "requests library call with secret variable"),
     # ── Exfiltration: reading credential stores ──
     (r'base64[^\n]*env', "encoded_exfil", "high", "exfiltration", "base64 encoding combined with environment access"),
@@ -790,9 +762,53 @@ class _VetoGroupPattern:
         return next(self.finditer(line), None)
 
 
+class _LoopbackExemptMatcher:
+    """Stands in for a compiled ``env_exfil_*`` entry: the entry is its stdlib original without the negative
+    lookahead ``(?![^\\n]*https?://<loopback host>)`` that stood where the entry's first ``[^\\n]*`` starts
+    (RE2 has none). A match of the entry is dropped when a loopback URL starts between that point and the end
+    of its line, exactly the positions the lookahead examined; the search then goes on past that URL.
+
+    The lookahead point is the end of the command part (``curl\\s+``, ``fetch\\s*\\(``, ...). Where the command
+    part ends in ``\\s+``, backtracking could also place it earlier in the whitespace run, but no URL and no
+    secret starts on whitespace, and a point on an earlier line of the run leaves only whitespace before its line
+    end: the outcome is that of the run's end, which the greedy command part gives."""
+
+    def __init__(self, pattern: str):
+        command, guard, _ = pattern.partition(r'[^\n]*')
+        if not guard:
+            raise ValueError(f"no [^\\n]* lookahead point in {pattern!r}")
+        self._command = re.compile(command, re.IGNORECASE)
+        self._pattern = re.compile(pattern, re.IGNORECASE)
+
+    def _last_loopback_url(self, text: str, start: int) -> int:
+        """Start of the last loopback URL in ``text[start:]`` up to the line end, or -1."""
+        end = text.find('\n', start)
+        last = -1
+        for url in _LOOPBACK_URL_RE.finditer(text[start:] if end < 0 else text[start:end]):
+            last = start + url.start()
+        return last
+
+    def finditer(self, text: str):
+        pos = 0
+        while (m := self._pattern.search(text, pos)) is not None:
+            url = self._last_loopback_url(text, self._command.match(text, m.start()).end())
+            if url < 0:
+                yield m
+                pos = m.end()
+            else:
+                # A command starting before that URL ends before it (no command part holds `http:`/`https:`),
+                # so its lookahead sees the URL too: resume after the URL's first character.
+                pos = url + 1
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
 # pattern id -> matcher built from the entry's pattern text, for an entry that needs Python beside its regex.
 # A matcher offers `search` and `finditer` (all the scanners call on a rule) and yields real match objects.
-_CUSTOM_MATCHERS = {"hardcoded_secret": _HardcodedSecretMatcher, "context_exfil": _VetoGroupPattern}
+_CUSTOM_MATCHERS = {"hardcoded_secret": _HardcodedSecretMatcher, "context_exfil": _VetoGroupPattern,
+                    **dict.fromkeys(("env_exfil_curl", "env_exfil_wget", "env_exfil_fetch", "env_exfil_httpx",
+                                     "env_exfil_requests"), _LoopbackExemptMatcher)}
 _COMPILED_THREAT_PATTERNS = [
     (_CUSTOM_MATCHERS[pid](pattern) if pid in _CUSTOM_MATCHERS else re.compile(pattern, re.IGNORECASE), pid, *rest)
     for pattern, pid, *rest in THREAT_PATTERNS]

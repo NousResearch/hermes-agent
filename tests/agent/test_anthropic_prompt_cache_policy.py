@@ -1047,9 +1047,10 @@ class _FakeResp:
 class _FakePresetClient:
     payload: dict = {}
     calls: int = 0
+    last_headers: dict = {}
 
     def __init__(self, *a, **k):
-        pass
+        _FakePresetClient.last_headers = dict(k.get("headers") or {})
 
     def __enter__(self):
         return self
@@ -1108,10 +1109,72 @@ class TestPresetModels:
         monkeypatch.setattr(httpx, "Client", _FakePresetClient)
         agent = _make_agent(model="@preset/unknown-slug")
         agent.api_key = "sk-or-test"
-        # Negative cache: the retry after a miss does not re-fetch within the TTL.
+        agent.base_url = "https://openrouter.ai/api/v1"
+        # Negative cache (keyed failure): the retry after a miss does not re-fetch within the TTL.
         assert agent._anthropic_prompt_cache_policy() == (False, False)
         assert agent._anthropic_prompt_cache_policy() == (False, False)
         assert _FakePresetClient.calls == 1
+
+    def test_init_path_without_api_key_uses_scoped_openrouter_env_key(self, monkeypatch):
+        """The init path runs the policy before _build_client sets agent.api_key; the lookup must
+        ride the scoped OPENROUTER_API_KEY instead of a keyless 401 (@grievertime, #158147)."""
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = _claude_head_payload()
+        _FakePresetClient.calls = 0
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        monkeypatch.setattr("agent.auxiliary_client._scoped_key_env", lambda name: "sk-env-or-123")
+        agent = _make_agent(model="@preset/fast-zdr")  # no api_key attr: the init-time agent
+        resolved, _lower = preset_resolution.effective_family_model("@preset/fast-zdr", agent)
+        assert resolved == "anthropic/claude-haiku-5.5"  # head resolved, not failed keyless
+        assert _FakePresetClient.last_headers.get("Authorization") == "Bearer sk-env-or-123"
+
+    def test_other_provider_key_never_reaches_openrouter(self, monkeypatch):
+        """A key minted for another provider must not ride a request to openrouter.ai."""
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = _claude_head_payload()
+        _FakePresetClient.calls = 0
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        monkeypatch.setattr("agent.auxiliary_client._scoped_key_env", lambda name: "sk-env-or-123")
+        agent = _make_agent(model="@preset/fast-zdr")
+        agent.api_key = "sk-ant-provider-secret"
+        agent.base_url = "https://api.anthropic.com"
+        preset_resolution.effective_family_model("@preset/fast-zdr", agent)
+        assert _FakePresetClient.last_headers.get("Authorization") == "Bearer sk-env-or-123"
+        assert "sk-ant-provider-secret" not in str(_FakePresetClient.last_headers)
+
+    def test_openrouter_agent_uses_its_own_key(self, monkeypatch):
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = _claude_head_payload()
+        _FakePresetClient.calls = 0
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        monkeypatch.setattr("agent.auxiliary_client._scoped_key_env", lambda name: "")
+        agent = _make_agent(model="@preset/fast-zdr")
+        agent.api_key = "sk-or-test"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+        assert _FakePresetClient.last_headers.get("Authorization") == "Bearer sk-or-test"
+
+    def test_keyless_lookup_makes_no_request_at_all(self, monkeypatch):
+        """Without any key the endpoint always answers 401, so the lookup short-circuits: no
+        fetch, no cache entry — a later call with the key can still resolve
+        (@grievertime, #158147 backport)."""
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = {"error": {"code": 401}}
+        _FakePresetClient.calls = 0
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        monkeypatch.setattr("agent.auxiliary_client._scoped_key_env", lambda name: "")
+        agent = _make_agent(model="@preset/fast-zdr")
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+        assert _FakePresetClient.calls == 0  # no doomed network round-trip, no cache pollution
 
     def test_non_claude_head_gets_no_markers(self, monkeypatch):
         import httpx

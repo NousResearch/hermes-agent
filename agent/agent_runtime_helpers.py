@@ -1346,7 +1346,7 @@ def anthropic_prompt_cache_policy(
         eff_model = eff_model.get('model') or eff_model.get('default') or ''
     eff_model = eff_model if isinstance(eff_model, str) else str(eff_model or '')
     from agent.preset_resolution import effective_family_model
-    resolved_model, model_lower = effective_family_model(eff_model, agent)
+    resolved_model, model_lower = effective_family_model(eff_model, agent, eff_base_url)
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
     # Kimi/Moonshot via OpenRouter takes Claude's envelope cache_control — without it kimi-k2.6 served ~1% hits

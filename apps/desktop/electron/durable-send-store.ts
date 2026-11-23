@@ -399,8 +399,9 @@ export class DurableSendStore {
   begin(input: unknown): DurableSendRecord {
     const intent = validateDurableIntent(input)
 
-    if (this.retiredState(intent.id)) {throw new Error('Durable send identity already retired')}
     this.retireReceipts()
+
+    if (this.retiredState(intent.id)) {throw new Error('Durable send identity already retired')}
     const records = this.list()
     const existing = records.find(entry => entry.intent.id === intent.id)
 

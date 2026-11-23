@@ -47,6 +47,25 @@ test('1025 confirmed sends do not exhaust permanent metadata quota; compacted id
   expect(() => reopened.begin(oldest)).toThrow('already retired')
 }, 60_000)
 
+test('an identity compacted by this same begin cannot be recreated in the retirement gap', () => {
+  const { store, intent } = fixture()
+  let oldest!: DurableSendIntent
+
+  for (let i = 0; i < 129; i++) {
+    const item = intent()
+
+    if (!i) {oldest = item}
+    store.begin(item); store.commit(item.id)
+    store.update(item.id, { state: 'confirmed', admissionId: `ack-${i}` })
+    store.cleanup(item.id)
+  }
+
+  expect(store.read(oldest.id).state).toBe('confirmed')
+  expect(() => store.begin(oldest)).toThrow('already retired')
+  expect(store.retiredState(oldest.id)).toBe('confirmed')
+  expect(fs.existsSync(path.join(store.root, oldest.id))).toBe(false)
+})
+
 test('cancelled partial upload retains the only local bytes until a fenced remote cancellation ACK', async () => {
   const { store, intent } = fixture()
   const item = intent()

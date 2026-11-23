@@ -112,7 +112,12 @@ def isolation_mode(config: Optional[Mapping[str, Any]] = None) -> str:
 
 
 def host_launcher(config: Optional[Mapping[str, Any]] = None) -> list[str]:
-    """``plugins.host.launcher``: argv prefix the host process runs under (a sandbox runner)."""
+    """``plugins.host.launcher``: argv prefix the host process runs under (a sandbox runner). For a profile a
+    plugin runs elsewhere only the managed overlay's counts: that backend writes the profile's config.yaml."""
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    if config is None and run_elsewhere_refusal() is not None:
+        from hermes_cli.managed_scope import load_managed_config
+        config = load_managed_config()
     host = _plugins_config(config).get("host")
     launcher = host.get("launcher") if isinstance(host, Mapping) else None
     if not launcher:

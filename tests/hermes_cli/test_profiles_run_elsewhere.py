@@ -407,6 +407,33 @@ def test_ensure_refuses_a_marked_profile_whose_directory_is_a_link_out_of_the_ro
     assert (attached.receipt.reason_code, attached.ticket) == ("profile_runs_elsewhere", None)
 
 
+def test_a_gateway_client_refuses_a_marked_profile_whose_directory_is_a_link_out_of_the_root(root, tmp_path,
+                                                                                             monkeypatch):
+    """``connect_gateway`` resolves this process's home before it ensures a gateway for it. ``hermes
+    sessions discard`` and ``adopt`` and the cron and Kanban clients call it, and none of them passes
+    the command line's own refusal first."""
+    import asyncio
+    from hermes_cli import gateway_client
+    from hermes_cli import gateway_runtime as runtime
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: pytest.fail("discovered"))
+    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
+    outside = tmp_path / "other-disk" / "ops"
+    outside.parent.mkdir()
+    (root / "profiles" / "ops").rename(outside)
+    _link(root / "profiles" / "ops", outside)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+
+    async def connect():
+        async with gateway_client.connect_gateway():
+            pytest.fail("connected")
+
+    with pytest.raises(gateway_client.GatewayUnavailableError) as refused:
+        asyncio.run(connect())
+    assert (refused.value.state, refused.value.reason_code) == ("inaccessible", "profile_runs_elsewhere")
+
+
 def test_gateway_ensure_command_prints_the_refusal(root, monkeypatch, capsys):
     from argparse import Namespace
     from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure

@@ -48,9 +48,11 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
                                                    failure_message, scrub_client_launch_env)
 
     scrub_client_launch_env()
-    # The same attach `hermes gateway attach` runs; Ink keeps its own 30 s start budget.
+    # The same attach `hermes gateway attach` runs; Ink keeps its own 30 s start budget. The home goes in
+    # as the environment names it: attach asks whether a plugin runs the profile elsewhere before it
+    # resolves the path, and resolving a link can lead out of the Hermes root, past its marker.
     try:
-        attached = attach_gateway(get_hermes_home().resolve(), start=start, recover=recover, timeout=30)
+        attached = attach_gateway(get_hermes_home(), start=start, recover=recover, timeout=30)
     except TicketUnavailable as exc:
         # Attachable, then no ticket: the verdict `hermes gateway attach` reports. Ink echoes only its
         # `gateway inaccessible:` lines inline, the refusal's repair command among them.

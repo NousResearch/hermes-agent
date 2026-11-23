@@ -495,6 +495,29 @@ class _RowidRangeSalvage:
         self.insert_sql = f'{insert_prefix} INTO "{table}" ({quoted}) VALUES ({placeholders})'
         self.exact_sql = f'SELECT {quoted} FROM "{table}" WHERE rowid = ?'
         self.stopped_at_query_limit = False
+        self.seen_rowids: set[int] = set()
+
+    def reconcile_short_read(self, low: int, high: int) -> None:
+        """A damaged b-tree can end a range scan without an error; probe the unaccounted keys.
+
+        Source counts are only hints. Keep the query budget and report unproven gaps rather than
+        claiming a short clean scan covered them. Exact lookups cannot advance past an out-of-order cell.
+        """
+        accounted = self.result["copied_rows"] + self.result["excluded_rows"]
+        if self.source_rows is None or accounted >= self.source_rows:
+            return
+        for rowid in range(low, high + 1):
+            if rowid in self.seen_rowids:
+                continue
+            if self.result["range_queries"] >= _MAX_SALVAGE_RANGE_QUERIES:
+                self.stopped_at_query_limit = True
+                self._skip(rowid, high, "salvage range query limit reached")
+                return
+            before = self.result["copied_rows"] + self.result["excluded_rows"]
+            if not self.recover_exact_rowid(rowid):
+                self._skip(rowid, rowid, "exact lookup failed after short range scan")
+            elif self.result["copied_rows"] + self.result["excluded_rows"] == before:
+                self._skip(rowid, rowid, "row unavailable after short range scan")
 
     def _keep(self, values: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
         return values if self.row_filter is None else [r for r in values if self.row_filter(r, self.column_names)]
@@ -510,6 +533,8 @@ class _RowidRangeSalvage:
         advance raises AFTER the row was produced, and the driver discards the already-fetched row.
         """
         result = self.result
+        if rowid in self.seen_rowids:
+            return True
         result["range_queries"] += 1
         try:
             row = self.source.execute(self.exact_sql, (rowid,)).fetchone()
@@ -520,6 +545,7 @@ class _RowidRangeSalvage:
         value = tuple(row)
         if not self._keep([value]):
             result["excluded_rows"] += 1
+            self.seen_rowids.add(rowid)
             return True
         try:
             with _immediate_transaction(self.destination):
@@ -529,9 +555,11 @@ class _RowidRangeSalvage:
             # by the destination schema; report it as a skipped singleton instead of aborting the table.
             result["destination_rejected_rows"] += 1
             self._skip(rowid, rowid, f"destination constraint rejected row: {exc}")
+            self.seen_rowids.add(rowid)
             return True
         result["copied_rows"] += 1
         result["exact_lookup_recovered"] += 1
+        self.seen_rowids.add(rowid)
         return True
 
     def copy_range(self, low: int, high: int) -> None:
@@ -551,6 +579,11 @@ class _RowidRangeSalvage:
                 fetched = cursor.fetchmany(self.chunk_size)
                 if not fetched:
                     return
+                if any(not low <= int(row[0]) <= high for row in fetched):
+                    raise sqlite3.DatabaseError("out-of-range rowid in damaged b-tree")
+                fetched = [row for row in fetched if int(row[0]) not in self.seen_rowids]
+                if not fetched:
+                    continue
                 values = [tuple(row[1:]) for row in fetched]
                 included = self._keep(values)
                 if included:
@@ -558,6 +591,7 @@ class _RowidRangeSalvage:
                         self.destination.executemany(self.insert_sql, included)
                 result["copied_rows"] += len(included)
                 result["excluded_rows"] += len(values) - len(included)
+                self.seen_rowids.update(int(row[0]) for row in fetched)
                 last_committed_rowid = int(fetched[-1][0])
                 if self.progress_cb is not None:
                     self.progress_cb({
@@ -606,6 +640,7 @@ def _copy_table_salvage(
         insert_prefix=insert_prefix, row_filter=row_filter, result=result,
     )
     salvage.copy_range(int(bounds["low"]), int(bounds["high"]))
+    salvage.reconcile_short_read(int(bounds["low"]), int(bounds["high"]))
     skipped_ranges = result["skipped_rowid_ranges"]
     result["skipped_rowid_span"] = sum(item["high"] - item["low"] + 1 for item in skipped_ranges)
     result["query_limit_reached"] = salvage.stopped_at_query_limit

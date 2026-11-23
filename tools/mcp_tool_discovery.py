@@ -832,6 +832,15 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and _server_key(server_name) in _core._parallel_safe_servers)
 
 
+def load_configured_servers() -> dict[str, dict]:
+    """The configured MCP servers ``get_mcp_status()`` reports (native and portable-plugin ones).
+
+    Resolving the portable ones joins plugin discovery (~0.4 s cold), so a caller that knows it will
+    ask for the status can read them ahead of time and pass them back as ``configured``."""
+    with _owner_secret_scope():
+        return _config._load_mcp_config()
+
+
 def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runtime: bool = True) -> list[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
     status (connected / disabled / connecting / failed / lazy / configured) and error for failed.

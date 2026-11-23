@@ -311,6 +311,7 @@ def prefetch_banner_data():
     _banner_data_prefetch_started = True
     _daemon("banner-data-prefetch", lambda: [_quiet(warm) for warm in (
         get_git_banner_state, get_latest_release_tag, get_available_skills)])
+    _prefetch_mcp_servers()  # its own thread: plugin discovery should not queue behind the skills scan
 
 
 def get_update_result(timeout: float = 0.5) -> Optional[int]:
@@ -580,9 +581,43 @@ def _mcp_configured() -> bool:
     return _quiet(_native, True) or _quiet(_portable, True)
 
 
+# The configured-servers read for the banner's MCP section, started early by ``prefetch_banner_data`` so
+# the main thread does not pay plugin discovery inside the banner. Taken exactly once: connection state is
+# read fresh at banner time and the config is never served stale to a later caller.
+_mcp_servers_prefetch = None
+
+
+def _prefetch_mcp_servers() -> None:
+    global _mcp_servers_prefetch
+    from concurrent.futures import Future
+    future: Future = Future()
+    _mcp_servers_prefetch = future
+
+    def _read() -> None:
+        try:
+            if not _mcp_configured():  # the banner shows no MCP section: nothing to resolve
+                future.set_result({})
+                return
+            from tools.mcp_tool_discovery import load_configured_servers
+            future.set_result(load_configured_servers())
+        except BaseException as exc:  # health: allow BLE001 -- the banner then reads them itself
+            future.set_exception(exc)
+
+    _daemon("banner-mcp-servers-prefetch", _read)
+
+
 def _probe_mcp_status() -> list:
+    global _mcp_servers_prefetch
     from tools.mcp_tool_discovery import get_mcp_status
-    return get_mcp_status()
+    future, _mcp_servers_prefetch = _mcp_servers_prefetch, None
+    configured = None
+    if future is not None:
+        try:
+            configured = future.result(timeout=5)
+        except Exception:  # health: allow BLE001 -- the prefetch is an optimisation; the status read below redoes it
+            logger.debug("banner MCP servers prefetch unavailable; reading them here", exc_info=True)
+            configured = None
+    return get_mcp_status(configured)
 
 
 def _codex_runtime_active() -> bool:

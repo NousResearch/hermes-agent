@@ -112,6 +112,9 @@ which data root a process uses.
 | Resumable downloads | `cache/partials/` under that root, not inside a signed payload. |
 | Per-install selection and journal | `installs/INSTALL_KEY/` under the dependency-state root. |
 | Python generations | `installs/INSTALL_KEY/environments/`. |
+| PM runtime generations | `installs/INSTALL_KEY/pm-runtime/generations/`. |
+| Generation leases | `installs/INSTALL_KEY/leases/environments/GENERATION/` and `leases/pm-runtime/GENERATION/`. |
+| Install and runtime-preparation locks | `installs/INSTALL_KEY/locks/`. |
 | Sync and update receipts | `logs/update_receipts/` under the active home. |
 
 The install key derives from the canonical source or payload-repository path.
@@ -123,6 +126,19 @@ Do not edit facts or generation paths manually. Launchers resolve the selected
 environment before third-party imports. Processes retain their existing imports
 until they restart. Garbage collection preserves selected generations and
 lease-managed generations with live readers.
+
+A launch writes its leases and locks beside the generations, never inside
+them. A sandbox (Landlock, a rootless container mount, systemd
+`ReadOnlyPaths=`) can therefore keep `environments/` and
+`pm-runtime/generations/` read-only and grant write access to
+`installs/INSTALL_KEY/leases/` and `installs/INSTALL_KEY/locks/` alone. Those
+two paths do not change between builds, so the policy needs no new exception
+after an update. Both directories exist after the first launch on a writable
+install. Processes started on an earlier release keep leasing inside each
+generation (`.leases/`) and locking `installs/INSTALL_KEY/.install.lock` and
+`pm-runtime/.prepare.lock` until they exit. Garbage collection honours a lease
+in either place, and installers also lock the old files whenever they can open
+them.
 
 Downloads share a lock per partial URL. A failed or paused transfer cannot
 publish a partial destination, and garbage collection cannot delete a live
@@ -144,6 +160,14 @@ membership, and currency checks use the same declaration reader.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
+Core's lock still takes precedence over that seed: when core's `uv.lock` moves a
+package past both the previous environment's pin and the core lock that
+environment was built from (a security release of a transitive, say), the
+package moves to core's version for the installing interpreter's fork
+(`uv lock -P name==version`), and a plugin that cannot accept it is disabled by
+an update like any other plugin that no longer builds. Pins core did not move,
+packages core's lock does not pin, and conflicts between plugins keep the
+incumbent environment's versions.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. Plugin snapshots keep a plugin's runtime dependencies
 and the optional extras this install selects (or the plugin's own requirements name);
@@ -458,8 +482,9 @@ update) or `pnpm fetch`, so another pnpm 12 passes those. The backstop for a
 lockfile written that way is CI: every change to `pnpm-lock.yaml` runs the JS checks,
 which install it with the pinned pnpm under `--frozen-lockfile` (with
 `--lockfile-only` when the installed tree is cached). That proves the lockfile matches
-the manifests and the release-age policy, not which pnpm wrote it. A user agent
-overridden through `pnpm_config_user_agent` is refused as well.
+the manifests and the release-age policy, not which pnpm wrote it. The preinstall
+reads the user agent pnpm reports, so a `pnpm_config_user_agent` override is
+refused unless it names the pinned version.
 
 In the repository root and the JS workspace folders, npm refuses every command that
 installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,

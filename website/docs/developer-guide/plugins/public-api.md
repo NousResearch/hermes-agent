@@ -57,7 +57,41 @@ with a name allows that one name only.
 | `hermes_cli.plugin_provider_requests` | whole module | developer-guide / plugins docs |
 | `hermes_constants` | whole module | developer-guide / plugins docs |
 | `hermes_platform` | whole module | developer-guide / plugins docs |
-| `hermes_state` | whole module | developer-guide / plugins docs |
+| `hermes_state` | `AsyncSessionDB` | developer-guide / plugins docs |
+| `hermes_state` | `DEFAULT_DB_PATH` | developer-guide / plugins docs |
+| `hermes_state` | `DeletedWalGenerationError` | developer-guide / plugins docs |
+| `hermes_state` | `SessionCompressionInProgressError` | developer-guide / plugins docs |
+| `hermes_state` | `SessionDB` | developer-guide / plugins docs |
+| `hermes_state` | `SessionExportTooLargeError` | developer-guide / plugins docs |
+| `hermes_state` | `SessionResumeTooLargeError` | developer-guide / plugins docs |
+| `hermes_state` | `StateDbCorruptError` | developer-guide / plugins docs |
+| `hermes_state` | `StateDbReplacedError` | developer-guide / plugins docs |
+| `hermes_state` | `WriterMutexTimeout` | developer-guide / plugins docs |
+| `hermes_state` | `apply_database_pragmas` | developer-guide / plugins docs |
+| `hermes_state` | `apply_wal_with_fallback` | developer-guide / plugins docs |
+| `hermes_state` | `classify_persistence_error` | developer-guide / plugins docs |
+| `hermes_state` | `divert_session_transcript_jsonl` | developer-guide / plugins docs |
+| `hermes_state` | `format_session_db_unavailable` | developer-guide / plugins docs |
+| `hermes_state` | `get_hermes_home` | developer-guide / plugins docs |
+| `hermes_state` | `get_last_init_error` | developer-guide / plugins docs |
+| `hermes_state` | `holder_pid_checkable` | developer-guide / plugins docs |
+| `hermes_state` | `is_malformed_db_error` | developer-guide / plugins docs |
+| `hermes_state` | `is_sqlite_lock_error` | developer-guide / plugins docs |
+| `hermes_state` | `maintain_after_commit` | developer-guide / plugins docs |
+| `hermes_state` | `make_user_dir` | developer-guide / plugins docs |
+| `hermes_state` | `mkdir_under_hermes_home` | developer-guide / plugins docs |
+| `hermes_state` | `note_read_pool_exhausted` | developer-guide / plugins docs |
+| `hermes_state` | `preflight_db_writability` | developer-guide / plugins docs |
+| `hermes_state` | `read_only_db_uri` | developer-guide / plugins docs |
+| `hermes_state` | `resolved_max_export_messages` | developer-guide / plugins docs |
+| `hermes_state` | `resolved_max_resume_messages` | developer-guide / plugins docs |
+| `hermes_state` | `storage_corrupt_reason` | developer-guide / plugins docs |
+| `hermes_state` | `storage_state` | developer-guide / plugins docs |
+| `hermes_state` | `write_site` | developer-guide / plugins docs |
+| `hermes_state` | `writer_mutex_until` | developer-guide / plugins docs |
+| `hermes_state_registry` | `acquire` | developer-guide / plugins docs |
+| `hermes_state_registry` | `release` | developer-guide / plugins docs |
+| `hermes_state_registry` | `release_or_close` | developer-guide / plugins docs |
 | `plugins.plugin_storage` | whole module | developer-guide / plugins docs |
 | `plugins.plugin_utils` | whole module | developer-guide / plugins docs |
 | `pm` | whole module | developer-guide / plugins docs |
@@ -67,6 +101,27 @@ with a name allows that one name only.
 | `tools.browser_supervisor_capture` | whole module | developer-guide / plugins docs |
 | `tools.computer_use.backend` | whole module | developer-guide / plugins docs |
 | `tools.registry` | whole module | developer-guide / plugins docs |
+| `persistence` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.conversation.messages` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.conversation.search` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.conversation.sessions` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.housekeeping.maintenance` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.housekeeping.state_meta` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence_assembly` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `apply_wal_with_fallback` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `apply_database_pragmas` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `preflight_db_writability` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `read_only_db_uri` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_errors` | `classify_persistence_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_errors` | `is_sqlite_lock_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_errors` | `is_malformed_db_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `session_rescue` | `divert_session_transcript_jsonl` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_user_copy` | `format_session_db_unavailable` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_user_copy` | `get_last_init_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_limits` | `resolved_max_export_messages` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_limits` | `resolved_max_resume_messages` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `process_identity` | `holder_pid_checkable` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `hermes_dir_acl` | `make_user_dir` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `agent.context_references` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.plugin_llm` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.transcription_provider` | whole module | PluginContext (hermes_cli/plugins_context.py) |
@@ -99,6 +154,7 @@ with a name allows that one name only.
 | `tools.clarify_gateway` | `SKIPPED` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.url_safety` | `is_safe_url` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.url_safety` | `create_ssrf_safe_async_client` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `tools.url_safety` | `create_ssrf_safe_client` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.platforms._http_client_limits` | `platform_httpx_limits` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.gateway_setup_wizard` | `print_setup_header` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.gateway_setup_wizard` | `confirm_reconfigure` | adding-platform-adapters.md § Public helpers for platform plugins |
@@ -121,3 +177,18 @@ with a name allows that one name only.
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
+| `agent.file_safety` | `get_read_block_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `agent.file_safety` | `raise_if_read_blocked` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `agent.file_safety` | `is_write_denied` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `agent.file_safety` | `get_write_denied_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `hermes_yaml` | `safe_load` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `hermes_yaml` | `safe_dump` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `hermes_cli.urllib_security` | `open_credentialed_url` | plugins/index.md § Send a credentialed HTTP request without leaking it on redirect |
+| `agent.retry_utils` | `parse_retry_after_seconds` | plugins/index.md § Read a Retry-After header the way Hermes does |
+| `hermes_cli.version_info` | `hermes_user_agent` | plugins/index.md § Send the Hermes User-Agent header |
+| `hermes_cli.chat_launch` | `hermes_command` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.chat_launch` | `print_exit_summary` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.gateway_chat` | `shell_client_env` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `create` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `restore` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `finish` | user-guide/features/plugins.md § A plugin with its own chat client |

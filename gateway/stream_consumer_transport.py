@@ -163,8 +163,15 @@ class StreamTransportMixin:
             logger.debug("supports_native_streaming probe raised", exc_info=True)
             return False
 
+    def _should_push_draft(self) -> bool:
+        """Client animation consumes snapshots; a full buffer must never bypass cadence."""
+        now = time.monotonic()
+        return bool(self._accumulated) and now >= self._draft_retry_until and (
+            self._last_edit_time == 0.0
+            or now - self._last_edit_time >= self._current_edit_interval)
+
     async def _send_draft_frame(self, text: str) -> bool:
-        """Emit one draft frame; any failure permanently disables drafts for this run.
+        """Emit a draft frame; budget deferrals and flood cooldowns keep drafts enabled.
         Drafts have no message_id and clear on the client when the final send lands."""
         if self._draft_id is None:
             # Should never happen (set in tandem with _use_draft_streaming in run()).
@@ -178,7 +185,12 @@ class StreamTransportMixin:
             logger.debug("send_draft raised, disabling draft transport for this run: %s", e)
         else:
             if getattr(result, "success", False):
+                raw_response = getattr(result, "raw_response", None)
+                if isinstance(raw_response, dict) and raw_response.get("skipped"):
+                    self._defer_draft_retry(result)
+                    return True
                 self._last_sent_text = text  # parity with the edit-based no-op skip
+                self._draft_retry_until = 0.0
                 return True
             # P5(b): an AUTHORIZATION decline is terminal for the whole run, not
             # merely "drafts are unusable". Disabling drafts alone routes the
@@ -193,17 +205,31 @@ class StreamTransportMixin:
                     "is not approved for this connection)"
                 )
                 self._egress_declined = True
+            elif self._defer_draft_retry(result):
+                return True
             logger.debug("send_draft returned success=False, disabling draft transport: %s",
                          getattr(result, "error", "unknown"))
         self._draft_failures += 1
         self._use_draft_streaming = False
         return False
 
+    def _defer_draft_retry(self, result) -> bool:
+        """Keep the latest snapshot pending during a server-requested cooldown."""
+        retry_after = getattr(result, "retry_after", None)
+        if not isinstance(retry_after, (int, float)) or retry_after <= 0:
+            return False
+        self._draft_retry_until = max(
+            self._draft_retry_until, time.monotonic() + float(retry_after))
+        return True
+
     async def _abandon_native_stream(self) -> None:
         """Seal an orphaned draft stream on turn death (stale exit / cancel): else the live
         indicator stays forever and armed interception state leaks into the next turn.
-        Never sets delivery flags."""
+        Never sets delivery flags. The edit transport has no draft to seal, but its preview still
+        ends in the live cursor: re-edit the text already on screen without it."""
         if not self._use_draft_streaming:
+            if self.cfg.cursor and self.cfg.cursor in (self._last_sent_text or ""):
+                await self._try_strip_cursor()
             return
         if getattr(type(self.adapter), "abandon_open_draft", None) is None:
             return
@@ -242,6 +268,7 @@ class StreamTransportMixin:
         for mid in (getattr(result, "message_id", None),
                     *(getattr(result, "continuation_message_ids", None) or ()), *(raw_ids or ())):
             self._track_preview_id(mid)
+        self._ceiling_observe(result)
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
         """Adapter's prefers_fresh_final_streaming hook (Telegram's richer send path);
@@ -298,6 +325,7 @@ class StreamTransportMixin:
             self._delivery_ambiguous = is_turn_final
             stale_ids, result = (), None
         new_message_id = getattr(result, "message_id", None)
+        self._ceiling_observe(result)
         if stale_ids:  # best-effort preview cleanup; never delete the message just sent
             await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
             self._preview_message_ids = set()
@@ -319,12 +347,13 @@ class StreamTransportMixin:
             self._message_created_ts = None
 
     @stops_reply_clock
-    async def _send_or_edit(
-        self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
+    async def _send_or_edit(self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+                            redacted: bool = False) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
-        send; a transport returns None to fall through to the next."""
-        text = self._clean_for_display(text)
+        send; a transport returns None to fall through to the next.  ``redacted``: an interim
+        frame already redacted up to its settled boundary; a finalize is redacted whole regardless."""
+        text = self._display_text(text) if redacted and not finalize else self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
         # connector re-appends the whole snapshot.  The final is still fence-closed.
@@ -443,12 +472,19 @@ class StreamTransportMixin:
         stream_is_msg = self._stream_is_message()
         if finalize and not (stream_is_msg and not is_turn_final):
             return None
-        frame_text = pre_fence_text if stream_is_msg else text
-        # Strip the cursor: native streams render their own indicator, and
-        # "...text▉" is never a prefix of "...text more▉", which forces the
-        # connector's whole-text re-append on EVERY tick (stacked copies).
+        # An adapter that previews drafts as raw text (Telegram ``plain_drafts``) gets the
+        # pre-fence text too: a synthetic closing fence would make each frame a non-prefix.
+        preserve_prefix = stream_is_msg or (
+            getattr(self.adapter, "DRAFT_STREAM_PREFIX_STABLE", False) is True)
+        # Strip the cursor BEFORE any display fence closes: native streams render their own
+        # indicator, and "...text▉" is never a prefix of "...text more▉", which forces the
+        # connector's whole-text re-append on EVERY tick (stacked copies). Inside an open code
+        # block the closed text ends in the fence, so a later strip left the cursor in the frame.
+        frame_text = pre_fence_text
         if self.cfg.cursor and frame_text.endswith(self.cfg.cursor):
             frame_text = frame_text[: -len(self.cfg.cursor)]
+        if not preserve_prefix and text != pre_fence_text:
+            frame_text = ensure_closed_code_fences(frame_text)
         if frame_text == self._last_sent_text:
             return True
         # Deliberately NOT _already_sent on success: the gateway's fallback final
@@ -490,6 +526,7 @@ class StreamTransportMixin:
             self._track_preview_ids_from_result(result)
         else:
             # No editable id: fallback mode + sentinel so we don't re-enter first-send.
+            self._ceiling_note_unknown()
             self._enter_fallback_mode(self._visible_prefix())
             self._message_id = "__no_edit__"
         self._notify_new_message()
@@ -550,6 +587,7 @@ class StreamTransportMixin:
         final send from repeating it."""
         logger.warning("Stream send may have landed (timed out after the request left); "
                        "treating it as shown instead of sending it again")
+        self._ceiling_note_unknown()
         self._last_sent_text = text
         if finalize:
             self._delivery_ambiguous = True
@@ -613,6 +651,10 @@ class StreamTransportMixin:
             self._message_id = str(raw_response.get("last_message_id") or result.message_id
                                    or self._message_id)
             delivered_prefix = raw_response.get("delivered_prefix")
+            # A prefix that counts a timed-out part as shown is a guess: the ledger owns redelivery,
+            # and when that part was the last one nothing is resent (``_fallback_when_nothing_unseen``).
+            if raw_response.get("delivery_uncertain"):
+                self._delivery_uncertain = self._preview_uncertain = True
             if isinstance(delivered_prefix, str) and delivered_prefix:
                 self._last_sent_text = delivered_prefix
                 self._fallback_preserve_partial_messages = text.startswith(delivered_prefix)

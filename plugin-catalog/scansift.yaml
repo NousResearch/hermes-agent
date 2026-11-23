@@ -1,0 +1,33 @@
+name: scansift
+repo: https://github.com/rodricksz4h5/scansift
+sha: ace9188d760ec4767240f6c59e3c05ae9dfdc52b
+version: "1.0.0"
+title: Scansift
+description: >-
+  Exact, local triage of SARIF static-analysis results from any SARIF 2.1.0
+  tool (CodeQL, Semgrep, ruff, Bandit, ESLint, Trivy, Checkov, gosec, Snyk
+  Code, Clang, ...), from one file or a directory of them. sarif_diff compares
+  a branch scan with a baseline scan and returns the new and the gone results,
+  matched by SARIF fingerprints or by content across two checkouts (never by
+  line number), plus results whose level rose, with an optional fail_on gate;
+  sarif_summary gives exact counts by level, the rules and files with the most
+  results, suppressions, security-severity bands and analysis errors;
+  sarif_findings lists results with rule, message, location and snippet,
+  filtered and paged. Standard library only: no network, no credentials, no
+  subprocess (never runs an analyzer), no third-party dependencies, no
+  self-update.
+  Disclosure: reads the local SARIF paths you pass it (read-only), only regular
+  files, and honours Hermes' core read denylist.
+maintainer: rodricksz4h5
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/rodricksz4h5/scansift/tree/ace9188d760ec4767240f6c59e3c05ae9dfdc52b
+capabilities:
+  provides_tools:
+    - sarif_summary
+    - sarif_findings
+    - sarif_diff
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -10,7 +10,7 @@ commands package the current desktop build; they do not stage a fresh runtime.
 | Windows x64 / ARM64, sideload | Signed per-architecture MSIX packages, combined into a universal `.msixbundle`; `.appinstaller` descriptor | Windows App Installer |
 | Windows x64 / ARM64, Store | Store-identity MSIX packages and a separate Store bundle | Microsoft Store |
 | macOS ARM64 / x64 | Signed, notarized `Hermes.app` in DMG and ZIP artifacts | `electron-updater` with Squirrel.Mac |
-| Linux x64 / ARM64 | Local builder can produce AppImage | External replacement; Linux desktop release legs are disabled |
+| Linux x64 / ARM64 | AppImage, built on canary tags as an unpublished diagnostic artifact and by the local builder | External replacement; no Linux feed yet |
 
 The current MSIX manifest requires Windows 11 22H2 (`10.0.22621.0`).
 The source-script Windows support range is separate from this package floor.
@@ -67,6 +67,15 @@ The macOS custom signer retains the builder's entitlements and file selection.
 It refreshes digests after child signatures and before the outer app signature.
 Unsigned macOS builds refresh them at the end of `afterPack`.
 Do not refresh facts in `afterSign`: that changes resources covered by the signature.
+
+electron-builder copies the payload with builder-util, whose `walk()` drops
+`.gitkeep` and `.DS_Store` files and whose `copyDir()` never creates empty
+directories. The resource copy, the AppImage stage and the MSIX file map all
+use them, and tool digests cover those files. `run-electron-builder.mjs`
+therefore starts the builder with `scripts/patch-electron-builder-copy.mjs`,
+which removes both omissions in memory. Before relocation, framework repair
+and signing change anything, `afterPack` fails the pack unless the packaged
+payload has the prepared payload's entries, types, file sizes and link targets.
 
 ## Local test build
 
@@ -141,8 +150,8 @@ is the sole packaging configuration. The wrapper disables automatic publishing;
 the release workflow owns uploads and channel promotion.
 
 `pm bundle --out DIR --ref REF` stages the native runtime only.
-`scripts/bundles/stage.py` also builds the TUI/dashboard unless both products
-are supplied explicitly. Both generate launchers; neither creates an Electron installer.
+`scripts/bundles/stage.py` also builds the TUI, dashboard and Webapp unless the
+TUI and dashboard products are supplied explicitly. Both generate launchers; neither creates an Electron installer.
 The launcher stage checks the payload and records its relative launch paths.
 The Electron build bakes these paths into its stamp. Desktop startup does not
 inspect, create, or repair a PM payload. Non-bundled builds carry no placeholder payload.
@@ -239,8 +248,8 @@ It rejects mixed tag, release-phase, channel-publication, and upgrade inputs.
 Builder jobs check out the admitted SHA. Their artifacts and completion receipts
 go to `releases/commit/FULL_SHA/`, separate from tag archives and update channels.
 The run summary lists Windows sideload packages and their universal bundle, macOS DMG/ZIP
-files, and the Termux package. Linux release legs remain disabled and are listed
-as not built. Only receipt-listed artifacts that exist in storage get download
+files, and the Termux package. Commit builds skip the Linux legs, which are listed
+as skipped. Only receipt-listed artifacts that exist in storage get download
 links. Missing receipts show the failed or incomplete leg.
 
 Each commit build also writes a downloads page to

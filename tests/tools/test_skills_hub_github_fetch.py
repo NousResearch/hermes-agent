@@ -44,7 +44,9 @@ def test_unreachable_raw_host_falls_back_to_the_api_and_is_tried_once(monkeypatc
             raise SSRFConnectionBlocked("DNS resolution failed for: raw.githubusercontent.com")
         return httpx.Response(200, content=b"body")
 
-    monkeypatch.setattr(hub, "_skills_hub_http_get", fake_get)
+    monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    monkeypatch.setattr(hub, "_ssrf_safe_http_get", fake_get)
     auth = MagicMock(spec=GitHubAuth)
     auth.get_headers.return_value = {}
     source = GitHubSource(auth)

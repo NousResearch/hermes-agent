@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import threading
 
-import hermes_state
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 
@@ -28,13 +27,12 @@ def _source(user_id: str = "user-1") -> SessionSource:
 
 
 def _make_store(tmp_path, monkeypatch, **config_kwargs) -> SessionStore:
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     # The routing index is pinned to HERMES_HOME's store (#66887 recovery
     # fix); point it at the test tmp so the ambient and routing stores are
     # the same file, matching the store this harness inspects.
     import hermes_constants
 
-    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     return SessionStore(
         sessions_dir=tmp_path / "sessions",
         config=GatewayConfig(**config_kwargs),
@@ -42,7 +40,7 @@ def _make_store(tmp_path, monkeypatch, **config_kwargs) -> SessionStore:
 
 
 def _routing_row(store: SessionStore, session_key: str) -> dict:
-    rows = store._db.load_gateway_routing_entries(scope=store._routing_scope())
+    rows = store.persistence.routing.load_routing_entries(routing_scope=store._routing_scope())
     return json.loads(rows[session_key])
 
 
@@ -57,7 +55,7 @@ class TestChangedValuesAlwaysPersist:
 
         durable = _routing_row(store, entry.session_key)
         assert durable["last_prompt_tokens"] == 54321
-        store._db.close()
+        store.close_all_db_handles()
 
     def test_healthy_path_bump_persists_updated_at_to_db(
         self, tmp_path, monkeypatch
@@ -74,7 +72,7 @@ class TestChangedValuesAlwaysPersist:
         assert after >= before
         # The row reflects the in-memory bump, not a stale copy.
         assert after == again.updated_at.isoformat()
-        store._db.close()
+        store.close_all_db_handles()
 
     def test_fast_path_survives_restart_across_stores(
         self, tmp_path, monkeypatch
@@ -82,13 +80,13 @@ class TestChangedValuesAlwaysPersist:
         store = _make_store(tmp_path, monkeypatch)
         entry = store.get_or_create_session(_source())
         store.update_session(entry.session_key, last_prompt_tokens=777)
-        store._db.close()
+        store.close_all_db_handles()
 
         restarted = _make_store(tmp_path, monkeypatch)
         rebound = restarted.get_or_create_session(_source())
         assert rebound.session_id == entry.session_id
         assert rebound.last_prompt_tokens == 777
-        restarted._db.close()
+        restarted.close_all_db_handles()
 
 
 class TestRestartRebindWithoutMirror:
@@ -108,13 +106,13 @@ class TestRestartRebindWithoutMirror:
         again = store.get_or_create_session(_source())
         assert again.session_id == entry.session_id
         assert not sessions_json.exists()
-        store._db.close()
+        store.close_all_db_handles()
 
         restarted = _make_store(tmp_path, monkeypatch)
         rebound = restarted.get_or_create_session(_source())
         assert rebound.session_id == entry.session_id
         assert rebound.last_prompt_tokens == 42
-        restarted._db.close()
+        restarted.close_all_db_handles()
 
     def test_compression_heal_takes_full_path_and_updates_mirror(
         self, tmp_path, monkeypatch
@@ -141,7 +139,7 @@ class TestRestartRebindWithoutMirror:
         sessions_json = tmp_path / "sessions" / "sessions.json"
         data = json.loads(sessions_json.read_text(encoding="utf-8"))
         assert data[entry.session_key]["session_id"] == healed_id
-        store._db.close()
+        store.close_all_db_handles()
 
     def test_structural_save_still_rewrites_mirror(self, tmp_path, monkeypatch):
         store = _make_store(tmp_path, monkeypatch)
@@ -152,7 +150,7 @@ class TestRestartRebindWithoutMirror:
         sessions_json = tmp_path / "sessions" / "sessions.json"
         data = json.loads(sessions_json.read_text(encoding="utf-8"))
         assert data[fresh.session_key]["session_id"] == fresh.session_id
-        store._db.close()
+        store.close_all_db_handles()
 
 
 class TestFallbacks:
@@ -160,7 +158,7 @@ class TestFallbacks:
         """DB-less installs keep sessions.json durable every turn."""
         store = _make_store(tmp_path, monkeypatch)
         entry = store.get_or_create_session(_source())
-        store._db.close()
+        store.close_all_db_handles()
         store._db = None
 
         store.update_session(entry.session_key, last_prompt_tokens=99)
@@ -178,7 +176,7 @@ class TestFallbacks:
         def boom(*args, **kwargs):
             raise RuntimeError("disk on fire")
 
-        monkeypatch.setattr(store._db, "save_gateway_routing_entry", boom)
+        monkeypatch.setattr(store._routing_persistence.routing, "upsert_routing_entry", boom)
         store.update_session(entry.session_key, last_prompt_tokens=1234)
 
         # The full rewrite carried the change to both stores.
@@ -186,7 +184,7 @@ class TestFallbacks:
         data = json.loads(sessions_json.read_text(encoding="utf-8"))
         assert data[entry.session_key]["last_prompt_tokens"] == 1234
         assert _routing_row(store, entry.session_key)["last_prompt_tokens"] == 1234
-        store._db.close()
+        store.close_all_db_handles()
 
 
 class TestPeerRecordConsistency:
@@ -226,7 +224,7 @@ class TestPeerRecordConsistency:
         assert recorded == [
             (original_id, entry.session_key, entry.display_name)
         ]
-        store._db.close()
+        store.close_all_db_handles()
 
 
 class TestGenerationOrdering:
@@ -244,8 +242,8 @@ class TestGenerationOrdering:
 
         calls = []
         monkeypatch.setattr(
-            store._db,
-            "save_gateway_routing_entry",
+            store._routing_persistence.routing,
+            "upsert_routing_entry",
             lambda *a, **k: calls.append((a, k)),
         )
         store._persisted_routing_generation = store._routing_generation + 1
@@ -253,7 +251,7 @@ class TestGenerationOrdering:
         store._save_entry(entry.session_key)
 
         assert calls == []
-        store._db.close()
+        store.close_all_db_handles()
 
     def test_restart_rebind_after_skipped_idempotent_write(
         self, tmp_path, monkeypatch
@@ -268,19 +266,19 @@ class TestGenerationOrdering:
 
         calls = []
         monkeypatch.setattr(
-            store._db,
-            "save_gateway_routing_entry",
+            store._routing_persistence.routing,
+            "upsert_routing_entry",
             lambda *a, **k: calls.append(a),
         )
         store._persisted_routing_generation = store._routing_generation + 1
         store._save_entry(entry.session_key)
         assert calls == []  # the idempotent write was skipped
-        store._db.close()
+        store.close_all_db_handles()
 
         restarted = _make_store(tmp_path, monkeypatch)
         rebound = restarted.get_or_create_session(_source())
         assert rebound.session_id == entry.session_id
-        restarted._db.close()
+        restarted.close_all_db_handles()
 
     def test_upsert_proceeds_at_current_generation(self, tmp_path, monkeypatch):
         store = _make_store(tmp_path, monkeypatch)
@@ -288,8 +286,8 @@ class TestGenerationOrdering:
 
         calls = []
         monkeypatch.setattr(
-            store._db,
-            "save_gateway_routing_entry",
+            store._routing_persistence.routing,
+            "upsert_routing_entry",
             lambda key, entry_json, **k: calls.append((key, entry_json, k)),
         )
 
@@ -299,8 +297,8 @@ class TestGenerationOrdering:
         key, entry_json, kwargs = calls[0]
         assert key == entry.session_key
         assert json.loads(entry_json)["session_id"] == entry.session_id
-        assert kwargs["scope"] == store._routing_scope()
-        store._db.close()
+        assert kwargs["routing_scope"] == store._routing_scope()
+        store.close_all_db_handles()
 
     def test_missing_key_is_a_noop(self, tmp_path, monkeypatch):
         store = _make_store(tmp_path, monkeypatch)
@@ -308,15 +306,15 @@ class TestGenerationOrdering:
 
         calls = []
         monkeypatch.setattr(
-            store._db,
-            "save_gateway_routing_entry",
+            store._routing_persistence.routing,
+            "upsert_routing_entry",
             lambda *a, **k: calls.append(a),
         )
 
         store._save_entry("agent:main:local:nope")
 
         assert calls == []
-        store._db.close()
+        store.close_all_db_handles()
 
 
 class _GatedSaveLock:
@@ -377,7 +375,7 @@ class TestDelayedWriteOrdering:
         assert not older.is_alive()
 
         assert _routing_row(store, entry.session_key)["last_prompt_tokens"] == 2
-        store._db.close()
+        store.close_all_db_handles()
 
     def test_delayed_full_rewrite_folds_in_newer_fast_save(
         self, tmp_path, monkeypatch
@@ -403,7 +401,7 @@ class TestDelayedWriteOrdering:
         sessions_json = tmp_path / "sessions" / "sessions.json"
         mirror = json.loads(sessions_json.read_text(encoding="utf-8"))
         assert mirror[entry.session_key]["last_prompt_tokens"] == 7
-        store._db.close()
+        store.close_all_db_handles()
 
     def test_delayed_fast_save_skips_after_newer_full_rewrite(
         self, tmp_path, monkeypatch
@@ -417,14 +415,14 @@ class TestDelayedWriteOrdering:
         entry = store.get_or_create_session(_source())
 
         upserts = []
-        real_saver = store._db.save_gateway_routing_entry
+        real_saver = store._routing_persistence.routing.upsert_routing_entry
 
         def counting_saver(session_key, entry_json, **kwargs):
             upserts.append(session_key)
             real_saver(session_key, entry_json, **kwargs)
 
         monkeypatch.setattr(
-            store._db, "save_gateway_routing_entry", counting_saver
+            store._routing_persistence.routing, "upsert_routing_entry", counting_saver
         )
         gate = _GatedSaveLock(store._save_lock)
         store._save_lock = gate
@@ -448,4 +446,4 @@ class TestDelayedWriteOrdering:
 
         assert upserts == []  # the delayed UPSERT was skipped
         assert _routing_row(store, entry.session_key)["last_prompt_tokens"] == 2
-        store._db.close()
+        store.close_all_db_handles()

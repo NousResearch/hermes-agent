@@ -50,7 +50,7 @@ def test_dispatched_child_prompt_matches_depth_capability(
     if legacy_role is not None:
         args["role"] = legacy_role
     with (
-        patch.object(delegate_tool, "_load_config", return_value=config),
+        patch("tools.delegate_tool_config._load_config", return_value=config),
         patch.object(delegate_tool, "_resolve_workspace_hint", return_value=str(tmp_path)),
         patch("run_agent.AIAgent", return_value=child) as agent_class,
     ):

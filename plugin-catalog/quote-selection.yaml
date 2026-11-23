@@ -1,0 +1,17 @@
+name: quote-selection
+repo: https://github.com/00cyre/hermes-quote-selection
+sha: 3037e696b2a7535f72b6e8db5182abc24b5e421d
+title: "Quote in reply"
+description: 'Annotate a chat as you read it in Hermes Desktop: select text, add an optional comment, and the passage is kept in a pill above the reply box instead of being typed into your draft. Collect several, open the pill to edit a comment or remove one, then send as usual: each passage goes out as a Markdown quote with its comment under it, ahead of what you typed. With nothing typed, Enter sends the annotations on their own. A slash command is sent alone and the annotations wait. Desktop-only (desktop/plugin.js inside the plugin SDK surface): no agent tools, hooks or env vars, nothing written to disk, nothing persisted. Disclosure — reads window.getSelection() and the selection rectangle, and the documented data-chat-surface attribute to check that a selection is inside one chat; selections that touch a text field are ignored; a composer middleware (composer.middleware) prepends the pending annotations to the next message you send from that reply box, and only after your own Enter or click there; where the app sends without middleware (an empty reply box, or while the agent is working) it sends through host.composer.submit and clears the draft with host.composer.setDraft, and while the agent is working it handles that Enter itself; annotations live in memory until sent or removed. No model calls, no network calls, no clipboard, no credentials, no telemetry.'
+maintainer: 00cyre
+tier: community
+category: desktop
+version: "0.2.1"
+docs_url: https://github.com/00cyre/hermes-quote-selection#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.23.2"

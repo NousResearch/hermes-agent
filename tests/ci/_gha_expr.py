@@ -222,6 +222,7 @@ def render(text: Any, context: Mapping[str, Any]) -> Any:
     if not isinstance(text, str):
         return text
     whole = _TEMPLATE.fullmatch(text.strip())
-    if whole:
+    # '${{ a }}-${{ b }}' fullmatches too, with the lazy group stretched over '}}-${{'.
+    if whole and "${{" not in whole.group(1):
         return evaluate(whole.group(1), context)
     return _TEMPLATE.sub(lambda m: to_string(evaluate(m.group(1), context)), text)

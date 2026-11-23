@@ -1,0 +1,25 @@
+name: sharelet
+title: Sharelet
+repo: https://github.com/TANGBUDU/sharelet
+sha: d9e62e06dc08e3b8e4351c2625b6daaf96fe2764
+version: "0.5.2"
+requires_hermes: ">=0.23.0"
+description: "Share a Hermes tool as a link anyone can use in a browser. Pick a tool on the local creator page, create the link and send it: guests need no Hermes, account or API key, and the tool runs on your computer. Links have a run limit, expiry and off switch; guests can change only the inputs you leave open. Tools without a read-only hint need a separate confirmation for each share. Works with explicitly allowed native Hermes plugin tools and MCP servers. Default links use a temporary tunnel address; stable links require your own relay or fixed public_origin. Disclosure — while enabled it serves a token-protected creator page and guest pages on 127.0.0.1; when a public link is active it downloads cloudflared 2026.10.7 from Cloudflare's official GitHub release (SHA-256 pinned in code, re-verified before each launch) and runs it as a background process that exposes only the guest port through a Cloudflare quick tunnel; anyone holding a link can run that shared tool on your computer through Hermes with the inputs you leave open, up to its run limit and expiry (tools without a read-only hint need your confirmation per share); relay routing is off by default, and a relay_url you set yourself receives a random host ID, a relay secret and the current tunnel address and serves the guest landing page, so run it yourself; it writes links, run records, uploaded and generated files, its signing keys and any OpenAI key you type into its page (plaintext, owner-only file) to its own data folder; optional image recipes are off until enabled and call api.openai.com with that key or, if you enable it, your Hermes profile's OPENAI_API_KEY, spending its credit. No telemetry, no self-update."
+maintainer: TANGBUDU
+tier: community
+category: tools
+docs_url: https://github.com/TANGBUDU/sharelet/tree/d9e62e06dc08e3b8e4351c2625b6daaf96fe2764#readme
+screenshots:
+  - https://raw.githubusercontent.com/TANGBUDU/sharelet/d9e62e06dc08e3b8e4351c2625b6daaf96fe2764/docs/creator.png
+  - https://raw.githubusercontent.com/TANGBUDU/sharelet/d9e62e06dc08e3b8e4351c2625b6daaf96fe2764/docs/guest-weather.png
+readme: true
+platforms: [windows, linux]
+known_issues:
+  - "Your computer must stay online. Raw tunnel addresses change after reconnects; stable addresses require an explicitly configured self-hosted relay or fixed public_origin."
+  - "Shared tools run with your Hermes setup. Review each tool's output and costs before sharing; anyone holding a link can use its runs."
+  - "Windows ARM64 selects the official Windows AMD64 cloudflared asset using Windows 11 x64 emulation; upstream provides no native ARM64 Windows binary for this pin. This path is not ARM64 hardware-tested."
+capabilities:
+  provides_tools: [sharelet_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [OPENAI_API_KEY]

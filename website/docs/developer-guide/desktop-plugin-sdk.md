@@ -1154,8 +1154,8 @@ Core ships one directive as the reference consumer: `::preview{file="…"}`
 renders the workspace HTML file **live inside the message** — a sandboxed
 `srcdoc` iframe with an opaque origin (scripts run and the widget is fully
 interactive; no reach into the app, its storage, or the bridge). The frame
-sizes itself to the content (height live, width adopted from the content's
-intrinsic span, flush left in the message flow), and a theme prelude hands
+spans the message column up to 960px and follows it on resize, its height
+follows the content live, and a theme prelude hands
 the document the app's resolved tokens (`--foreground`, `--muted-foreground`,
 `--accent`, `--border`, `--card`), the app font, and a transparent
 background — so widget-shaped HTML reads as native while a full page keeps
@@ -2261,7 +2261,7 @@ async def action(body: dict):
 
 Routes mount under `/api/plugins/<id>/` (`GET /api/plugins/<id>/board`, …).
 Backend code runs inside the gateway process, so it can import from the
-hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
+hermes-agent codebase directly (`persistence_assembly`, `hermes_cli.config`, …). See
 [Extending the Dashboard → Backend API routes](../user-guide/features/extending-the-dashboard.md#backend-api-routes)
 for the full backend reference — the mount is identical.
 
@@ -2491,7 +2491,7 @@ pipeline as a trust boundary.
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
-| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches` |
+| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches`, `PROFILE_ID_ARG_RE` (the profile-id grammar) |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.
 

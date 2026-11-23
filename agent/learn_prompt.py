@@ -7,6 +7,18 @@ so it works identically on local, Docker, and remote backends; every surface (CL
 
 from __future__ import annotations
 
+import importlib
+
+# v0.23.3 and earlier gateways cache agent.skill_utils at boot without get_skill_desc_limit.
+_skill_utils = importlib.import_module("agent.skill_utils")
+
+
+def _default_skill_desc_limit() -> int:
+    return getattr(_skill_utils, "SKILL_PROMPT_DESC_LIMIT", 60)
+
+
+get_skill_desc_limit = getattr(_skill_utils, "get_skill_desc_limit", _default_skill_desc_limit)
+
 # House-style rules from AGENTS.md "Skill authoring standards (HARDLINE)".
 _AUTHORING_STANDARDS = """\
 Follow the Hermes skill-authoring standards exactly. These are the same
@@ -14,16 +26,16 @@ HARDLINE rules a maintainer enforces in review:
 
 Frontmatter:
 - name: lowercase-hyphenated, <=64 chars, no spaces.
-- description: ONE sentence, **<=60 characters**, ends with a period. State the
+- description: ONE sentence, **<={desc_limit} characters**, ends with a period. State the
   capability, not the implementation. No marketing words (powerful,
   comprehensive, seamless, advanced, robust). Do NOT repeat the skill name. If
   the description contains a colon, wrap the whole value in double quotes.
   This is the most-violated rule and it is NOT cosmetic: the system-prompt
-  skill index truncates the description to 60 chars and loads it every
-  session, so anything past char 60 is silently cut and never routes. After
-  you write the description, COUNT the characters; if it is over 60, cut it
+  skill index truncates the description to {desc_limit} chars and loads it every
+  session, so anything past char {desc_limit} is silently cut and never routes. After
+  you write the description, COUNT the characters; if it is over {desc_limit}, cut it
   down before saving — do not ship a sentence and hope.
-    Good (<=60): `Search arXiv papers by keyword, author, or ID.`
+    Good (<={desc_limit}): `Search arXiv papers by keyword, author, or ID.`
     Bad (123):   `A comprehensive skill that lets the agent search arXiv for
                   academic papers using keywords, authors, and categories.`
 - version: 0.1.0
@@ -189,7 +201,7 @@ def build_learn_prompt(user_request: str) -> str:
         "the next; finish by reconciling the SKILL.md index with every "
         "reference file you wrote.\n\n"
         f"{_SOURCE_HYGIENE}\n\n"
-        f"{_AUTHORING_STANDARDS}\n\n"
+        f"{_AUTHORING_STANDARDS.format(desc_limit=get_skill_desc_limit())}\n\n"
         f"{_KNOWLEDGE_SKILL_STANDARDS}\n\n"
         "When done, tell the user the skill name, its category, a one-line "
         "summary of what it captured, and — for a knowledge-base skill — the "

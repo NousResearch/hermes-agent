@@ -4,6 +4,8 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from tests.ci.workflow_steps import is_checkout
+
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 LOCAL_CALL = re.compile(r"^\./\.github/workflows/(?P<name>[^/@]+)$")
@@ -71,7 +73,7 @@ def test_every_checkout_follows_the_commit_input():
         key = commit_input(name)
         for job_name, job in (doc.get("jobs") or {}).items():
             for index, step in enumerate(job.get("steps") or []):
-                if not step.get("uses", "").startswith("actions/checkout"):
+                if not is_checkout(step):
                     continue
                 if (name, f"{job_name}[{index}]") in CONTROLLER_CHECKOUTS:
                     continue

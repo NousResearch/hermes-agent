@@ -71,9 +71,6 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
     ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
     _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-    _query_terms = staticmethod(_query_terms)
-    _dedupe_results = staticmethod(_dedupe_results)
-    _search_score = staticmethod(_search_score)
     _get_json = staticmethod(_get_json)
 
     @staticmethod
@@ -390,6 +387,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             delay = 2.0 * (2 ** attempt)
             try:
                 resp = hub()._skills_hub_http_get(url, timeout=20)
+            except hub().SkillsHubFetchBlocked:
+                return None
             except (httpx.HTTPError, OSError):
                 reason = "transport error"
             else:

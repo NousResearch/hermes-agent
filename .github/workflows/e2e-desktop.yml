@@ -96,11 +96,11 @@ jobs:
           # A stable run is on main too, but it tests a candidate. It compares and never rewrites baselines.
           if [ "${{ github.ref_name }}" = "main" ] && [ -z "${{ inputs.commit }}" ]; then
             echo "On main — generating/updating baseline screenshots"
-            pnpm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            just desktop-build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               pnpm exec playwright test --reporter=list --update-snapshots
           else
             echo "On PR — comparing against cached baselines"
-            pnpm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            just desktop-build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               pnpm exec playwright test --reporter=list
           fi
         env:
@@ -124,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-report-${{ github.sha }}
+          name: playwright-report-${{ inputs.commit || github.sha }}
           path: apps/desktop/playwright-report
           retention-days: 14
           overwrite: true
@@ -135,7 +135,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-test-results-${{ github.sha }}
+          name: playwright-test-results-${{ inputs.commit || github.sha }}
           path: apps/desktop/test-results
           retention-days: 14
           overwrite: true
@@ -146,7 +146,7 @@ jobs:
         if: always() && (github.ref_name != 'main' || inputs.commit != '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: visual-diffs-${{ github.sha }}
+          name: visual-diffs-${{ inputs.commit || github.sha }}
           path: |
             apps/desktop/test-results/**/*-diff.png
             apps/desktop/test-results/**/*-actual.png

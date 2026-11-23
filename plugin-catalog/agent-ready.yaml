@@ -1,0 +1,19 @@
+name: agent-ready
+title: Agent Ready Website Audit
+repo: https://github.com/WorkPodsAgents/agent-ready
+sha: aef0165b94c98b8c14123888e0419dbbb9cd384c
+subdir: hermes
+version: "1.0.0"
+description: "SEO and AI search audits of public web pages through WorkPods' hosted Agent Ready MCP server (Streamable HTTP at https://mcp.workpods.ai/mcp, no sign-in, no keys in config): indexing, titles, headings, schema markup, links and image alt text; AI crawler access for GPTBot, ClaudeBot, PerplexityBot and others; robots.txt, sitemaps, llms.txt and agent files; agent readiness and MCP Registry listings; local business details; site crawls of up to 50 pages; and drafted llms.txt, robots.txt rules and JSON-LD. Bundles one workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code. Every tool call goes to mcp.workpods.ai, which fetches the public pages named and records the domain and path checked (never the query string), the tool, failed check codes, the app name and a daily session code, never an IP address or page text. Each check returns a shareable report link, not indexed and deleted after 30 days. Every tool is annotated read-only except request_full_audit, which sends the user's work email and website to WorkPods; the package marks the server untrusted, so Hermes asks before it runs and refuses it in unattended runs. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: WorkPods
+tier: community
+category: tools
+docs_url: https://workpods.ai/tools/agent-ready
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

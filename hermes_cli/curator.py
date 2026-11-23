@@ -204,7 +204,8 @@ _PIN_MESSAGES = {
     True: (
         "cannot pin (only agent-created skills participate in curation)",
         "could not pin '{skill}' — the skill is not curation-eligible (protected built-in or "
-        "external). `hermes curator list-unmanaged` shows which skills the curator tracks.",
+        "external), or skills/.usage.json is damaged or not writable. `hermes curator list-unmanaged` "
+        "shows which skills the curator tracks.",
         # Unmanaged skills are never auto-transitioned, so the pin is recorded but only
         # becomes protective once the skill is adopted — say so and point at `adopt`.
         "pinned '{skill}' (recorded; this skill is unmanaged — auto-transitions never consider "
@@ -213,7 +214,7 @@ _PIN_MESSAGES = {
     False: (
         "there's nothing to unpin (curator only tracks agent-created skills)",
         "could not unpin '{skill}' — the skill is not curation-eligible (protected built-in or "
-        "external).",
+        "external), or skills/.usage.json is damaged or not writable.",
         "unpinned '{skill}' (recorded; this skill is unmanaged — it was never under "
         "auto-transitions to begin with)",
         "unpinned '{skill}'")}
@@ -254,7 +255,8 @@ def _set_lock(args, locked: bool) -> int:
         return 1
     key = existing["path"].name  # directory name: the key the skill_manage guard resolves to
     if not skill_usage.set_locked(key, locked):
-        print(f"curator: could not record the {verb} for '{key}' (skills/.usage.json not writable).")
+        print(f"curator: could not record the {verb} for '{key}': skills/.usage.json is damaged or not "
+              f"writable. Repair it or move it aside.")
         return 1
     if locked:
         print(f"curator: locked '{key}'. The agent can no longer change it: skill_manage, write_file, "
@@ -623,10 +625,11 @@ def _cmd_usage(args) -> int:
         print("curator: no skills found")
         return 0
     provenance = [r.get("provenance", "agent") for r in rows]
-    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub", "external")}
+    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub", "external", "plugin")}
     print(
         f"skills: {len(rows)} total  "
-        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']}  external={counts['external']})\n")
+        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']}  external={counts['external']}"
+        f"  plugin={counts['plugin']})\n")
     print(
         f"  {'skill':40s}  {'origin':8s}  "
         f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity")
@@ -654,12 +657,12 @@ _STORE_TRUE = dict(action="store_true")
 _SUBCOMMANDS = (
     ("status", "Show curator status and skill stats", _cmd_status),
     (
-        "usage", "Show usage telemetry for ALL skills (built-in, hub, agent) with provenance",
+        "usage", "Show usage telemetry for ALL skills (built-in, hub, agent, plugin) with provenance",
         _cmd_usage,
         _arg("--sort", choices=("activity", "recent", "name"), default="activity",
              help="Sort order: activity (most-used first, default), recent "
                   "(most-recently-active first), or name (alphabetical)"),
-        _arg("--provenance", choices=("agent", "bundled", "hub", "external"), default=None,
+        _arg("--provenance", choices=("agent", "bundled", "hub", "external", "plugin"), default=None,
              help="Only show skills of this origin"),
         _arg("--json", **_STORE_TRUE, help="Emit the full report as JSON instead of a table")),
     (

@@ -1,0 +1,28 @@
+name: patchsmith
+repo: https://github.com/icporcincula/patchsmith
+sha: e7b8d09a613a5322bee089ea04c708ca2d8cc7c8
+title: Patchsmith
+description: "Adds `implement_task` and `apply_patch`. The first hands a single well-specified coding task to a local model served through Ollama (the measured backend) and returns the resulting diff. Propose mode runs in an isolated temporary checkout, preserves the source checkout, and saves a full patch for review. The second tool applies an approved saved patch only after hash, base, affected-file and path checks. The local model works inside a fixed toolset with no shell (read, grep, glob, git status/diff, write/edit, run the configured test command, finish) under hard turn and total token budgets shared across up to three fresh-context attempts. An optional local model is used only on the final allowed attempt; failures return a factual handback. Includes a path jail, read-only test files, an auto-finish when tests go green, a repeat-call guard, and revert of partial edits when a run is blocked. Your main model spends tokens only on the instruction and the returned diff. Disclosure — runs git and the owner-configured test command (PS_TEST_COMMAND, never chosen by the model; it executes project code on the host) as subprocesses in the working directory with a minimal child environment plus an owner passthrough list (PS_ENV_PASSTHROUGH); in direct mode a local model writes implementation files inside the given workdir (never .git, node_modules, test files, .env* or .ssh/; the Hermes home, the user home and filesystem roots are refused as workdirs) and a run transcript with file excerpts under <workdir>/.patchsmith/; propose mode copies the checkout to a temporary Git worktree and keeps the patch, provenance record and transcript under <hermes home>/plugin-data/patchsmith/proposals/, with run summaries under <hermes home>/plugin-data/patchsmith/runs/. Task text and file contents go only to the local model endpoint set in PS_ENDPOINT (loopback or private-network address; public and link-local hosts refused). inspect_hardware runs fixed OS probes (nvidia-smi, sysctl, system_profiler, PowerShell CIM) and reads the endpoint's model list. No telemetry, no self-update, no stored credentials."
+maintainer: Bart Porcincula
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.1"
+docs_url: https://github.com/icporcincula/patchsmith#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - implement_task
+    - apply_patch
+    - task_status
+    - inspect_hardware
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PS_ENDPOINT
+    - PS_MODEL
+    - PS_MAX_TURNS
+    - PS_CTX_BUDGET
+    - PS_ENV_PASSTHROUGH
+    - PS_TEST_COMMAND
+

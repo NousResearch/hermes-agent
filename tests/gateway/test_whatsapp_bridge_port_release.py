@@ -103,8 +103,10 @@ def _make_adapter(bridge_script: str, session_path: Path, port: int):
     adapter._bridge_port = port
     adapter._bridge_script = bridge_script
     adapter._session_path = Path(os.path.abspath(os.path.expanduser(str(session_path))))
+    adapter._profile_home = adapter._session_path.parent  # mirror __init__
     adapter._foreign_bridge_session = None
     adapter._bridge_probe_timed_out = False
+    adapter._bridge_holder_unproven = False
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
@@ -142,7 +144,7 @@ def _mock_health_refused():
     """/health probe that fails like a port holder that is not our bridge: a synchronous
     connection error — NOT a timeout (a timeout proves no ownership and connect() must stop)."""
     mock_session = MagicMock()
-    mock_session.get = MagicMock(side_effect=OSError("connection refused"))
+    mock_session.get = MagicMock(side_effect=ConnectionRefusedError("connection refused"))
     mock_session.close = AsyncMock()
     return MagicMock(return_value=_AsyncCM(mock_session))
 

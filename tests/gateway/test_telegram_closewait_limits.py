@@ -137,10 +137,12 @@ def _assert_keepalive_tight(instances):
 
 
 def _assert_updates_pool_never_reuses(instance):
-    """The long-poll pool must not reuse server-closed connections (#87057)."""
+    """Windows never reuses a long-poll socket (#87057); elsewhere one socket is reused so polls
+    stop burning an ephemeral port each into TIME_WAIT (#107880)."""
+    from plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
     limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
     assert isinstance(limits, httpx.Limits)
-    assert limits.max_keepalive_connections == 0
+    assert limits.max_keepalive_connections == getupdates_keepalive_connections()
 
 
 def test_all_ptb_clients_share_the_platform_ssl_context(monkeypatch):
@@ -218,7 +220,8 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
         if index == 0:
             assert limits.max_keepalive_connections >= 1
         else:
-            assert limits.max_keepalive_connections == 0
+            from plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
+            assert limits.max_keepalive_connections == getupdates_keepalive_connections()
 
     for instance in instances:
         asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())

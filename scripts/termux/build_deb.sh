@@ -78,7 +78,13 @@ if [ -n "$COMMIT_MODE" ] || [ -n "$RELEASE_COMMIT" ]; then
     if [ -n "$RELEASE_COMMIT" ]; then
         DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
         export HERMES_PAYLOAD_TAG="$TAG"
-        unset HERMES_BUILD_COMMIT
+        # A commit build's claim (commit.<stamp>-vX.Y.Z) keeps the commit identity: its stamp says
+        # source commit-build, so the installed package refuses updates.
+        if [ "$(python3 "$HERE/deb_version.py" --channel "$TAG")" = commit ]; then
+            export HERMES_BUILD_COMMIT="$COMMIT"
+        else
+            unset HERMES_BUILD_COMMIT
+        fi
     else
         # A tagless commit build reads its version from the checkout.
         PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" <<'PY'

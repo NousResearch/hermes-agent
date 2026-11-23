@@ -77,17 +77,22 @@ const VERSION_CORE = '(?:0|[1-9]\\d{0,2})\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)'
 // canary.<stamp>-v<stable> (hermes_cli/update_channel.py _CANARY_TAG_RE): group 1 is the stamp,
 // group 2 the stable core. A canary's version is <stable>+canary.<stamp> (releaseVersion).
 export const CANARY_TAG_RE = new RegExp(`^canary\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
+// commit.<stamp>-v<core> (update_channel._COMMIT_TAG_RE): a commit build's claim tag, same groups.
+export const COMMIT_TAG_RE = new RegExp(`^commit\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
 export const STABLE_TAG_RE = new RegExp(`^v${VERSION_CORE}$`)
 
-/** The version a stable or canary tag publishes (update_channel.release_version). Never strip a
- * leading `v`: a canary tag starts with its kind.
+/** The version a release identity tag carries (update_channel.release_version): X.Y.Z, or
+ * X.Y.Z+canary.<stamp> / X.Y.Z+commit.<stamp>. Never strip a leading `v`: canary and commit tags
+ * start with their kind.
  * @param {string} tag @returns {string | null}
  */
 export function releaseVersion(tag) {
   const value = String(tag || '')
   if (STABLE_TAG_RE.test(value)) return value.slice(1)
   const canary = CANARY_TAG_RE.exec(value)
-  return canary ? `${canary[2]}+canary.${canary[1]}` : null
+  if (canary) return `${canary[2]}+canary.${canary[1]}`
+  const commit = COMMIT_TAG_RE.exec(value)
+  return commit ? `${commit[2]}+commit.${commit[1]}` : null
 }
 
 /** releaseVersion for a tag already admitted as a release tag; throws on anything else.
@@ -154,7 +159,8 @@ while remaining monotonic across month boundaries.
 @returns {string}
 */
 export function nativeQuad(ref, epochSeconds) {
-  if (CANARY_TAG_RE.test(ref)) return canaryPackageVersionAt(epochSeconds)
+  // A commit build's claim carries its build time exactly as a canary's does.
+  if (CANARY_TAG_RE.test(ref) || COMMIT_TAG_RE.test(ref)) return canaryPackageVersionAt(epochSeconds)
   if (STABLE_TAG_RE.test(ref)) return storePackageVersionAt(epochSeconds)
   throw new Error('Native package version requires a current release tag')
 }
@@ -164,7 +170,7 @@ export function nativeQuad(ref, epochSeconds) {
  * @param {string} tag @param {string} gitRoot @returns {number} epoch seconds
  */
 function releaseEpoch(tag, gitRoot) {
-  const canary = CANARY_TAG_RE.exec(tag)
+  const canary = CANARY_TAG_RE.exec(tag) || COMMIT_TAG_RE.exec(tag)
   if (canary) {
     const stamp = canary[1]
     const epoch = stampToEpoch(stamp)
@@ -270,8 +276,10 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
     if (tag) throw new Error('Channel builds must not select a release tag')
     return { identity, version: request.windowsVersion, fileVersion: request.version, name: identity.artifactNamePascal }
   }
-  // Commit artifacts retain app semver but do not advance an update channel.
-  if (process.env.HERMES_BUILD_COMMIT) {
+  // Commit artifacts retain app semver but do not advance an update channel. A commit build that
+  // runs the release pipeline carries its claim tag (commit.<stamp>-vX.Y.Z) and is versioned from
+  // it below, exactly like a canary; a tagless commit build keeps X.Y.Z.
+  if (process.env.HERMES_BUILD_COMMIT && !(tag && COMMIT_TAG_RE.test(String(tag)))) {
     if (tag) throw new Error('Commit-only builds must not set HERMES_PAYLOAD_TAG')
     const commit = process.env.HERMES_BUILD_COMMIT
     if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Commit builds require an exact full SHA')
@@ -287,7 +295,10 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
     return { identity, version: storePackageVersion(String(tag), repoRoot),
       fileVersion: requireReleaseVersion(String(tag)), name: identity.artifactNamePascal }
   }
-  if (CANARY_TAG_RE.test(String(tag)) || (tag && STABLE_TAG_RE.test(tag))) {
+  if (COMMIT_TAG_RE.test(String(tag)) && !process.env.HERMES_BUILD_COMMIT) {
+    throw new Error('A commit build tag requires HERMES_BUILD_COMMIT (the commit identity)')
+  }
+  if (CANARY_TAG_RE.test(String(tag)) || COMMIT_TAG_RE.test(String(tag)) || (tag && STABLE_TAG_RE.test(tag))) {
     return {
       identity,
       version: nativeQuad(String(tag), releaseEpoch(String(tag), repoRoot)),

@@ -22,10 +22,10 @@ def build_approvals_parser(subparsers, *, cmd_approvals: Callable) -> None:
     suggest_parser = approvals_subparsers.add_parser(
         "suggest", help="Propose command_allowlist entries from past approvals",
         description="Scan the session database for dangerous-classified commands "
-            "that ran with user approval, rank the recurring patterns, and "
+            "you approved at the prompt, rank the recurring patterns, and "
             "print a numbered allowlist proposal. Nothing is written unless "
-            "--apply is given. Destructive classes (recursive delete, sudo, "
-            "disk writes, credential edits, ...) are never proposed.")
+            "--apply is given. Only reviewed routine patterns (docker "
+            "restart/stop/kill) are ever proposed.")
     suggest_parser.add_argument(
         "--apply", dest="apply_indices", metavar="N[,M...]",
         help="Merge the numbered proposals (from a prior run) into "

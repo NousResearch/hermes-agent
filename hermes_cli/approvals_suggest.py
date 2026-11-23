@@ -2,10 +2,14 @@
 
 Hermes has no dedicated approval-decision ledger: ``always`` answers land in ``command_allowlist``
 (config.yaml) via :func:`tools.approval.save_permanent_allowlist`, while ``once``/``session``
-approvals are in-memory only. So this module mines *implied approvals*: a command that matches a
+approvals are in-memory only. So this module mines the approvals a person gave: a command that matches a
 dangerous-command class (the same :func:`tools.approval.detect_dangerous_command` classifier that
-triggers the prompt) AND whose tool result is not a block/denial marker must have been approved by
-the user (once, session, always, smart-approve, or yolo) before it ran.
+triggers the prompt) whose tool result carries the runtime's "approved by the user" note. Runs that
+smart approval, an allowlist entry, a remembered grant, yolo or ``approvals.mode: off`` let through
+are not anyone's decision to repeat, so they are not counted.
+
+Only the classes in :data:`_PROPOSABLE_CLASSES` are ever proposed: a class is out until someone
+decides it is routine enough to approve forever (#158903).
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import fnmatch
 import json
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
@@ -23,10 +28,20 @@ from typing import Iterable, Iterator, Optional
 # Safety exclusions
 # ---------------------------------------------------------------------------
 
-# Dangerous-class descriptions matching ANY of these are never proposed, regardless of approval
-# frequency (matched case-insensitively against tools.approval's DANGEROUS_PATTERNS / execution-flag
-# descriptions). Deliberately conservative: a benign class accidentally excluded costs the user
-# one manual config edit; a destructive class accidentally proposed costs them data.
+# The only dangerous classes ever proposed, each with the exact shape its command glob must have.
+# Nothing else is proposed: not a glob of any other shape (``timeout 30 *``, ``env docker *``,
+# ``docker container *``, ``A=/docker kill *``), not a class key (the runtime matches a class key against
+# the command's first finding only, so it also waves through whatever is chained after it), and no
+# other class (force push, reverse shells, restarts that kill running agents, approval-setting changes,
+# uninstalls, daemon redirects, inline interpreter or shell code, ``compose down -v``, a class nobody
+# reviewed yet): one manual config edit is cheaper than a remembered mistake (#158903).
+_PROPOSABLE_CLASSES: dict[str, re.Pattern] = {
+    "docker restart/stop/kill (container lifecycle)": re.compile(
+        r"(?:/(?:[\w.+-]+/)*)?docker (?:restart|stop|kill) \*"),
+}
+
+# Defence in depth over the list above: descriptions matching ANY of these are never proposed even if
+# someone adds them to it (matched case-insensitively).
 _UNSAFE_CLASS_PATTERNS = [
     # deletion / destruction: recursive delete, find -delete, xargs rm, git reset --hard, mkfs, dd
     r"delete", r"\brm\b", r"destro", r"wipe", r"format", r"\bdisk\b", r"block device", r"\bdd\b",
@@ -57,22 +72,18 @@ _UNSAFE_ROOT_BINARIES = {
 }
 _UNSAFE_ROOT_PREFIXES = ("mkfs",)
 
-# Substrings in a role='tool' result that mean the command did NOT execute with user consent
-# (blocked, denied, timed out, or still pending). Kept in sync with tools/approval.py templates.
-_BLOCK_MARKERS = (
-    "BLOCKED (hardline)", "BLOCKED: User denied", "BLOCKED: Action ",
-    "BLOCKED: Command flagged as dangerous", "BLOCKED: approval required",
-    "BLOCKED: Failed to send approval request", "The user has NOT consented",
-    "Asking the user for approval", "approval_required", "BLOCKED by user deny rule",
-)
+# The note tools/terminal_tool.py records under the result's "approval" key on a command a person
+# approved at the prompt.
+_USER_APPROVED_NOTE = re.compile(
+    r"Command required approval \(.*\) and was approved by the user(?:, then interrupted)?\.", re.DOTALL)
 
 
 @dataclass
 class Proposal:
     """One ranked allowlist proposal."""
 
-    pattern: str            # command glob ("git push *") or class key
-    kind: str               # "glob" | "class"
+    pattern: str            # command glob ("docker restart *")
+    kind: str               # always "glob"; kept in the JSON output for its consumers
     count: int = 0
     classes: set = field(default_factory=set)
     examples: list = field(default_factory=list)
@@ -133,18 +144,21 @@ def _iter_terminal_calls(messages, since_ts: float) -> Iterator[tuple[str, str]]
                 yield (call.get("id") or "", command)
 
 
-def _blocked_tool_call_ids(messages, since_ts: float) -> set:
-    """Collect tool_call_ids whose result shows the command never ran freely."""
-    return {
-        tool_call_id
-        for tool_call_id, content in messages.blocked_tool_result_payloads(since_ts=since_ts)
-        if content and any(marker in content for marker in _BLOCK_MARKERS)
-    }
+def _user_approved_tool_call_ids(messages, since_ts: float) -> set:
+    """tool_call_ids whose result says a person approved the command at the prompt. Only the result's own
+    ``approval`` note counts: the command's output, which the agent controls, may print the same words."""
+    approved = set()
+    for tool_call_id, content in messages.blocked_tool_result_payloads(since_ts=since_ts):
+        payload = _json_or_none(content)
+        note = payload.get("approval") if isinstance(payload, dict) else None
+        if isinstance(note, str) and _USER_APPROVED_NOTE.fullmatch(note):
+            approved.add(tool_call_id)
+    return approved
 
 
 def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> list[tuple[str, str]]:
     """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
-    that actually executed (i.e. carried an implied user approval).
+    a person approved at the prompt and that then ran.
     """
     from persistence_assembly import open_persistence_reader
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command, hardline_scan_incomplete
@@ -156,9 +170,14 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
 
     records: list[tuple[str, str]] = []
     with open_persistence_reader(path) as store:
-        blocked = _blocked_tool_call_ids(store.messages, since_ts)
-        for tool_call_id, command in _iter_terminal_calls(store.messages, since_ts):
-            if tool_call_id in blocked:
+        approved = _user_approved_tool_call_ids(store.messages, since_ts)
+        calls = list(_iter_terminal_calls(store.messages, since_ts))
+        # Call ids are unique within a session only (a provider that sends none gets ids derived from the
+        # call, others number them from call_0), and nothing here ties a result to its session, so an id
+        # used by more than one call could credit one session's approval to another's command.
+        id_uses = Counter(tool_call_id for tool_call_id, _command in calls)
+        for tool_call_id, command in calls:
+            if tool_call_id not in approved or id_uses[tool_call_id] > 1:
                 continue
             # Hardline commands are unconditionally blocked at runtime; never mine them (defense in
             # depth against stale DB rows). Nor commands the hardline scan could not read to the end:
@@ -183,7 +202,7 @@ def normalize_command(command: str) -> str:
 
 def is_unsafe_class(description: str) -> bool:
     """True when a dangerous-class description must never be proposed."""
-    return bool(_UNSAFE_CLASS_RE.search(description or ""))
+    return description not in _PROPOSABLE_CLASSES or bool(_UNSAFE_CLASS_RE.search(description or ""))
 
 
 def _unsafe_root_binary(token: str) -> bool:
@@ -192,7 +211,7 @@ def _unsafe_root_binary(token: str) -> bool:
 
 
 def derive_glob(normalized: str) -> Optional[str]:
-    """Derive a narrow command glob (``git push *``) from a simple command.
+    """Derive a narrow command glob (``docker restart *``) from a simple command.
 
     Returns None for compound commands (shell operators — the runtime allowlist matcher refuses
     those anyway) and for commands anchored on an unsafe root binary.
@@ -228,14 +247,13 @@ def build_proposals(
 ) -> list[Proposal]:
     """Aggregate scan records into a ranked, safety-filtered proposal list.
 
-    Grain: a command glob (``git push *``) for simple commands; the dangerous-class description
-    itself (the same key an interactive ``[a]lways`` answer persists) for compound commands where no
-    safe glob can be derived.
+    Grain: a command glob of the exact shape its class allows (``docker restart *``); a command that
+    yields no such glob is not proposed.
     """
     from agent.redact import redact_sensitive_text
 
     existing = existing or set()
-    by_pattern: dict[tuple[str, str], Proposal] = {}
+    by_pattern: dict[str, Proposal] = {}
 
     for command, description in records:
         if is_unsafe_class(description):
@@ -246,18 +264,17 @@ def build_proposals(
         # still sees the raw command. The glob is derived from the raw command:
         # a redacted `***` inside a persisted pattern would be three fnmatch
         # wildcards, so when redaction touches the tokens the glob embeds, the
-        # command is proposed under its class key instead.
+        # command is not proposed.
         raw = normalize_command(command)
         normalized = redact_sensitive_text(raw, force=True)
         glob = derive_glob(raw)
-        if glob is not None and not _glob_matches_source(glob, command):
-            continue  # the runtime matches the command as written; the class key would widen it
-        if glob is not None and derive_glob(normalized) != glob:
-            glob = None
-        pattern, kind = (glob, "glob") if glob is not None else (description, "class")
-        if pattern in existing:
+        if glob is None or not _PROPOSABLE_CLASSES[description].fullmatch(glob):
+            continue  # `docker *`, `timeout 30 *`, a compound command: wider than the class
+        if not _glob_matches_source(glob, command) or derive_glob(normalized) != glob:
+            continue  # the runtime matches the command as written; a redacted token is three wildcards
+        if glob in existing:
             continue
-        proposal = by_pattern.setdefault((pattern, kind), Proposal(pattern=pattern, kind=kind))
+        proposal = by_pattern.setdefault(glob, Proposal(pattern=glob, kind="glob"))
         proposal.count += 1
         proposal.classes.add(description)
         proposal.add_example(normalized)
@@ -312,8 +329,7 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
         return
     print(f"Proposed command_allowlist additions (from approval history, {window}):\n")
     for i, p in enumerate(proposals, 1):
-        kind = " (class key)" if p.kind == "class" else ""
-        print(f"  {i}. {p.pattern}    — approved {p.count}x{kind}")
+        print(f"  {i}. {p.pattern}    — approved {p.count}x")
         for cls in sorted(p.classes):
             print(f"       class: {cls}")
         for ex in p.examples:

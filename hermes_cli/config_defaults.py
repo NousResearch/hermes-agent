@@ -2131,12 +2131,12 @@ DEFAULT_CONFIG = {
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.
         "profile_routes": [],
-        # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
-        # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
-        # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can
-        # suspend the machine; it wakes on the wakeUrl poke. Enablement is the Labs toggle, never a
-        # config key. 0/negative = default.
-        "scale_to_zero": {"idle_timeout_minutes": 2},
+        # Scale-to-zero timeouts only. When an instance is opted in via the NAS "Labs" toggle
+        # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is registered,
+        # the gateway goes dormant and suspends the machine; it wakes on the wakeUrl poke. Enablement is
+        # the Labs toggle, never a config key. idle_timeout_minutes: 0/negative = default. A background
+        # process with no output or agent action for background_idle_minutes stops blocking it (0 = off).
+        "scale_to_zero": {"idle_timeout_minutes": 2, "background_idle_minutes": 30},
         # Auto-resume restart-loop breaker. A supervisor-revived gateway auto-resumes the
         # SIGTERM-interrupted session; if that turn keeps triggering the kill, boots no more than
         # `max_gap_seconds` apart (floored by `window_seconds`) chain, and after `max_restarts`

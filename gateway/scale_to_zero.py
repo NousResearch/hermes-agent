@@ -35,6 +35,8 @@ _malformed_sleep_url_logged = False
 
 # Short is safe: real work always blocks the suspend, resume is sub-second; longer bills idle RAM.
 DEFAULT_IDLE_TIMEOUT_MINUTES = 2
+# A background process with no new output and no agent action for this long stops holding the box awake.
+DEFAULT_BACKGROUND_IDLE_MINUTES = 30
 _TRUTHY = {"1", "true", "yes", "on"}
 # Dashboard-client liveness marker, touched by every /api/ws client socket on each
 # connect and inbound frame. Folded into the inbound clock so an open client holds the box awake —
@@ -61,6 +63,48 @@ def parse_idle_timeout_seconds(cfg_value: Any,
     except (TypeError, ValueError):
         minutes = 0.0
     return (float(default_minutes) if minutes <= 0 else minutes) * 60.0
+
+
+def parse_background_idle_seconds(cfg_value: Any) -> Optional[float]:
+    """Coerce ``scale_to_zero.background_idle_minutes`` to seconds. ``0`` turns the rule off (None:
+    every running process blocks a suspend, as before); junk, negative or non-finite -> the default."""
+    try:
+        minutes = float(cfg_value)
+    except (TypeError, ValueError):
+        minutes = -1.0
+    if minutes == 0:
+        return None
+    return (minutes if 0 < minutes < float("inf") else float(DEFAULT_BACKGROUND_IDLE_MINUTES)) * 60.0
+
+
+_idle_logged: dict[str, float] = {}  # session id -> the last_activity_at already logged as idle
+
+
+def has_live_background_processes(idle_seconds: Optional[float], now: Optional[float] = None) -> bool:
+    """Whether a background process (or a watcher waiting to be adopted) must block a suspend.
+
+    A running process idle for ``idle_seconds`` (no new output, no ``process_manage`` action) stops
+    counting, so a forgotten dev server cannot pin the host awake forever. It is NOT killed: a suspend
+    keeps it in RAM. ``None`` keeps the old rule (any running process blocks). A pending watcher blocks
+    unless its process is running and idle; an exited process's completion still needs delivering."""
+    from tools.process_registry import process_registry
+    if idle_seconds is None:
+        return bool(process_registry.has_any_active() or process_registry.pending_watchers)
+    now = time.monotonic() if now is None else now
+
+    def idle(session) -> bool:
+        quiet = now - session.last_activity_at
+        if quiet < idle_seconds:
+            return False
+        if _idle_logged.get(session.id) != session.last_activity_at:
+            _idle_logged[session.id] = session.last_activity_at
+            logger.info("scale-to-zero: background process %s idle %.0f min; no longer blocks suspend",
+                        session.id, quiet / 60.0)
+        return True
+    if process_registry.has_any_active(lambda s: not idle(s)):
+        return True
+    return any(not process_registry.has_any_active(lambda s, sid=w.get("session_id"): s.id == sid and idle(s))
+               for w in list(process_registry.pending_watchers))
 
 
 def messaging_is_relay_only_or_absent(platforms: Iterable[Any]) -> bool:

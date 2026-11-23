@@ -154,3 +154,77 @@ def test_unscannable_own_cron_script_raises_named_refusal(tmp_path, shape):
     message = str(excinfo.value)
     assert "could not scan" in message and str(script) in message
     assert "contains a gateway lifecycle command" not in message
+
+
+class TestEnvFlagsAndProcessSubstitutionDataPaths:
+    """Safe ``env`` flags before an allowlisted heredoc consumer and trailing data arguments after
+    process/command substitutions must not be treated as executed scripts."""
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "env -u PYTHONPATH python3 - <<'PY'",
+            "env -i -u PYTHONPATH FOO=1 python3 - <<'PY'",
+            "env --unset=PYTHONPATH -- /usr/bin/python3 - <<'PY'",
+            "cd /tmp && env -u PYTHONPATH python3 - <<'PY'",
+        ],
+    )
+    def test_safe_env_flags_mask_heredoc_data_path(self, tmp_path, prefix):
+        big = _big_file(tmp_path)
+        command = f"{prefix}\nprint(open('{big}'))\nPY"
+        assert guard(command, cwd=str(tmp_path)) is False
+
+    def test_env_split_string_stays_unmasked(self, tmp_path):
+        big = _big_file(tmp_path)
+        command = f"env -S 'bash' python3 - <<'PY'\n{big}\nPY"
+        assert guard(command, cwd=str(tmp_path)) is True
+
+    def test_env_u_python_heredoc_still_blocks_inline_lifecycle(self, tmp_path):
+        command = (
+            "env -u PYTHONPATH python3 - <<'PY'\n"
+            "import os\n"
+            'os.system("launchctl bootout gui/$(id -u)/ai.hermes.gateway")\n'
+            "PY"
+        )
+        assert guard(command, cwd=str(tmp_path)) is True
+
+    def test_diff_process_substitution_trailing_dev_null_allowed(self, tmp_path):
+        command = "diff <(sed -n '1,5p' foo.py) /dev/null"
+        assert guard(command, cwd=str(tmp_path)) is False
+
+    def test_diff_process_substitution_trailing_big_data_file_allowed(self, tmp_path):
+        big = _big_file(tmp_path)
+        command = f"diff <(git show HEAD:a.yml) {big} | head -20"
+        assert guard(command, cwd=str(tmp_path)) is False
+
+    def test_command_substitution_trailing_dev_null_allowed(self, tmp_path):
+        command = "echo $(date) /dev/null"
+        assert guard(command, cwd=str(tmp_path)) is False
+
+    def test_arithmetic_expansion_trailing_dev_null_allowed(self, tmp_path):
+        command = "echo $((1 + 2)) /dev/null"
+        assert guard(command, cwd=str(tmp_path)) is False
+
+    def test_process_substitution_inner_lifecycle_still_blocked(self, tmp_path):
+        script = tmp_path / "gw.sh"
+        script.write_text("launchctl bootout gui/501/ai.hermes.gateway\n", encoding="utf-8")
+        assert guard(f"diff <(bash {script}) /dev/null", cwd=str(tmp_path)) is True
+
+    def test_process_substitution_following_chained_command_still_blocked(self, tmp_path):
+        script = tmp_path / "gw.sh"
+        script.write_text("launchctl bootout gui/501/ai.hermes.gateway\n", encoding="utf-8")
+        assert guard(f"diff <(echo a) /dev/null; bash {script}", cwd=str(tmp_path)) is True
+        assert guard(f"diff <(echo a) /dev/null && {script}", cwd=str(tmp_path)) is True
+
+    def test_command_position_substitution_still_scans_following_script(self, tmp_path):
+        script = tmp_path / "gw.sh"
+        script.write_text("launchctl bootout gui/501/ai.hermes.gateway\n", encoding="utf-8")
+        assert guard(f"$(echo bash) {script}", cwd=str(tmp_path)) is True
+        assert guard(f"sudo $(echo bash) {script}", cwd=str(tmp_path)) is True
+        assert guard(f"FOO=$(date) {script}", cwd=str(tmp_path)) is True
+
+    def test_shell_runner_and_eval_with_procsub_stay_conservative(self, tmp_path):
+        script = tmp_path / "gw.sh"
+        script.write_text("launchctl bootout gui/501/ai.hermes.gateway\n", encoding="utf-8")
+        assert guard(f"bash --rcfile <(echo hi) {script}", cwd=str(tmp_path)) is True
+        assert guard(f"eval $(echo bash) {script}", cwd=str(tmp_path)) is True

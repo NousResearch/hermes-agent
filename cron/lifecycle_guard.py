@@ -652,21 +652,84 @@ def _shlex_tokens(line: str, punctuation_chars: str = ";&|()") -> list[str]:
     return list(lexer)
 
 
+def _is_non_shell_substitution_outer(segment: list[str]) -> bool:
+    """True when *segment* already names a non-shell command before a substitution opener
+    (``<(``, ``>(``, ``$(``). Saving such an outer segment across ``(...)`` keeps trailing data
+    arguments like ``/dev/null`` in ``diff <(cmd) /dev/null`` attached to ``diff`` instead of
+    promoting them into a new command-position segment, while leaving command-position
+    substitutions (``$(echo bash) /tmp/x.sh``) and shell runners (``bash --rcfile <(cmd) /tmp/x``)
+    split conservatively."""
+    if len(segment) < 2 or not segment[-1].endswith(("<", ">", "$")):
+        return False
+    cmd_index = _executed_command_index(segment)
+    if cmd_index is None or cmd_index >= len(segment) - 1:
+        return False
+    exec_name = _executable_name(segment[cmd_index])
+    return exec_name not in _SHELL_EXECUTABLES and exec_name not in {".", "source", "eval"}
+
+
 def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterator[list[str]]:
     """Yield non-empty runs of *tokens* between control-operator tokens; with *keep_controls* each
-    control token is also yielded as its own segment so the line can be rebuilt in order."""
-    segment: list[str] = []
+    control token is also yielded as its own segment so the line can be rebuilt in order.
+
+    When *keep_controls* is False, substitution parentheses (``<(...)``, ``>(...)``, ``$(...)``,
+    ``$((...))``) attached to a non-shell outer command push that outer segment onto a stack and
+    restore it on the matching ``)`` so trailing data arguments stay arguments of the outer
+    command while every inner command is still yielded as its own segment."""
+    if keep_controls:
+        segment: list[str] = []
+        for token in tokens:
+            if token and set(token) <= _CONTROL_CHARS:
+                if segment:
+                    yield segment
+                    segment = []
+                yield [token]
+                continue
+            segment.append(token)
+        if segment:
+            yield segment
+        return
+
+    segment = []
+    stack: list[Optional[list[str]]] = []
     for token in tokens:
         if token and set(token) <= _CONTROL_CHARS:
-            if segment:
-                yield segment
-                segment = []
-            if keep_controls:
-                yield [token]
+            prev_was_subst_open = False
+            for ch in token:
+                if ch == "(":
+                    if _is_non_shell_substitution_outer(segment):
+                        stack.append(segment)
+                        segment = []
+                        prev_was_subst_open = True
+                    elif prev_was_subst_open:
+                        stack.append([])
+                        prev_was_subst_open = False
+                    else:
+                        if segment:
+                            yield segment
+                            segment = []
+                        stack.append(None)
+                        prev_was_subst_open = False
+                elif ch == ")":
+                    prev_was_subst_open = False
+                    if segment:
+                        yield segment
+                        segment = []
+                    saved = stack.pop() if stack else None
+                    if saved is not None:
+                        segment = saved
+                else:
+                    prev_was_subst_open = False
+                    if segment:
+                        yield segment
+                        segment = []
             continue
         segment.append(token)
     if segment:
         yield segment
+    for saved in reversed(stack):
+        if saved:
+            yield saved
 
 
 def _iter_command_segments(command: str) -> Iterator[list[str]]:

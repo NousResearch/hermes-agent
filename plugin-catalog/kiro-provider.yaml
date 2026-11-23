@@ -1,15 +1,15 @@
 name: kiro-provider
 repo: https://github.com/anpicasso/hermes-kiro-provider
-sha: 4e267e8af5d0cc0608f5a1e8aa2c9d2e428a082c
+sha: f1869e15208a686dc61d33f2c8666edcdb9abb02
 subdir: provider
-image: https://raw.githubusercontent.com/anpicasso/hermes-kiro-provider/4e267e8af5d0cc0608f5a1e8aa2c9d2e428a082c/docs/banner.png
+image: https://raw.githubusercontent.com/anpicasso/hermes-kiro-provider/f1869e15208a686dc61d33f2c8666edcdb9abb02/docs/banner.png
 description: "Native Kiro model provider over HTTPS, with control-plane REST calls routed to the account region, and AWS Builder ID / IAM Identity Center / Google / GitHub device login. Disclosure — dynamically registers an AWS OIDC public client named `hermes-kiro` during AWS login; Google/GitHub login uses Kiro's device flow at prod.us-east-1.auth.desktop.kiro.dev and its /refreshToken endpoint. Stores OAuth grants in Hermes' profile-scoped auth.json credential pool; prompts, tool schemas/results and base64 images are sent to the account's Kiro runtime endpoint. Claude and GPT catalog models declare vision, open-weight families and unknown model ids stay text-only."
 maintainer: anpicasso
 tier: community
 category: models
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/anpicasso/hermes-kiro-provider#readme
-version: "1.2.0"
+version: "1.2.1"
 platforms: []
 capabilities:
   provides_tools: []

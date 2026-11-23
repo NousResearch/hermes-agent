@@ -5,7 +5,7 @@ import path from 'node:path'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { useLayoutEffect, useRef, useState } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, expect, test, vi } from 'vitest'
 
 import { registerDurableSendIpc } from '../../../../../electron/durable-send-ipc'
@@ -15,6 +15,10 @@ import type { DurableSendApi, DurableTransportRequest } from '../../../../../ele
 const wire = vi.hoisted(() => ({ rpc: null as null | ((...args: any[]) => Promise<any>) }))
 vi.mock('@/store/gateway', async original => ({
   ...(await original<object>()),
+  leaseGatewayForAgent: async (connectionId: string, profile: string) => ({
+    request: (method: string, params: Record<string, unknown>) => wire.rpc!({ connectionId, profile }, method, params),
+    release: () => {}
+  }),
   requestGatewayForAgent: (connectionId: string, profile: string, method: string, params: Record<string, unknown>) =>
     wire.rpc!({ connectionId, profile }, method, params)
 }))
@@ -31,11 +35,17 @@ afterEach(() => {
 function nativeApi(root: string) {
   const handlers = new Map<string, (...args: any[]) => any>()
   let transport: (request: DurableTransportRequest) => Promise<unknown>
+
+  let changed = () => {}
   const frame = { url: 'https://fixture.test/app' }
 
   const sender = {
     mainFrame: frame,
     send: (_channel: string, request: DurableTransportRequest) => {
+      if (_channel === 'hermes:durable-send:changed') { changed();
+
+ return }
+
       void transport(request).then(
         result => invoke('transport-reply', request.token, { ok: true, result }),
         () => invoke('transport-reply', request.token, { ok: false })
@@ -61,6 +71,10 @@ function nativeApi(root: string) {
   const api: DurableSendApi = {
     negotiate: route => invoke('negotiate', route),
     pump: () => invoke('pump'),
+    onChange: handler => { changed = handler;
+
+ return () => { changed = () => {} } },
+    retired: ids => invoke('retired', ids),
     onTransportRequest: handler => {
       transport = handler
 
@@ -324,3 +338,71 @@ test('startup handoff clears only the committed draft, not a newer attachment wi
   await refreshDurableSends()
   expect(takeSessionDraft(scope)).toMatchObject({ text: '', attachments: [] })
 })
+
+test.each(['origin', 'another-fresh', 'existing'] as const)(
+  'create acknowledgement automatically binds only the origin lifecycle (%s visible)',
+  async visible => {
+    const { rotateFreshDraftKey, stashSessionDraft, takeSessionDraft } = await import('@/store/composer')
+    const { $newChatRoute } = await import('@/store/profile')
+    const { setSessionOwnerHint } = await import('@/store/session')
+    const { sessionRoute } = await import('@/app/routes')
+    const { DurableSendQueue } = await import('../durable-send-queue')
+    const durable = await import('@/store/durable-composer')
+    const peer = createDurableBackendPeer()
+    wire.rpc = peer.rpc
+    const api = nativeApi(peer.root)
+    const originalInterval = window.setInterval.bind(window)
+    vi.spyOn(window, 'setInterval').mockImplementation((handler, delay, ...args) =>
+      (delay === 2000 ? 0 : originalInterval(handler, delay, ...args)) as unknown as ReturnType<typeof window.setInterval>)
+    Object.defineProperty(window.crypto, 'subtle', { configurable: true, value: webcrypto.subtle })
+    const source = path.join(peer.root, 'first.txt')
+    fs.writeFileSync(source, 'first original attachment')
+    window.hermesDesktop = { ...savedBridge, durableSend: api,
+      readFileDataUrlForAttach: async file => 'data:text/plain;base64,' + fs.readFileSync(file).toString('base64') } as typeof window.hermesDesktop
+    const route = { connectionId: 'fixture', profile: 'default' }
+    $newChatRoute.set(route)
+    const origin = rotateFreshDraftKey()
+    durable.startDurableSends()
+    await durable.warmDurableOwner(origin)
+    peer.online(false)
+    const owner = durable.durableComposerOwner(origin)!
+    const first = await durable.enqueueDurableComposer(origin, 'first', [{ id: 'first', kind: 'file', path: source, label: 'first.txt' }], owner)
+    const nextFile = { id: 'next', kind: 'file' as const, path: source, label: 'second.txt' }
+    stashSessionDraft(origin, 'second draft', [nextFile])
+    const initial = visible === 'origin' ? origin : visible === 'another-fresh' ? rotateFreshDraftKey() : 'other-existing'
+
+    if (visible === 'existing') {setSessionOwnerHint(initial, route)}
+
+    if (visible !== 'origin') {stashSessionDraft(initial, 'do not switch me', [])}
+
+    function Page() {
+      const location = useLocation()
+      const records = useStore(durable.$durableSends)
+      const assigned = records.find(entry => entry.sessionId && sessionRoute(entry.sessionId) === location.pathname)?.sessionId
+      const scope = assigned ?? initial
+      const draft = takeSessionDraft(scope)
+
+      return <><output data-testid="route">{location.pathname}</output><output data-testid="draft">{draft.text} {draft.attachments.map(file => file.label).join(',')}</output><DurableSendQueue sessionKey={scope} /></>
+    }
+
+    const page = render(<MemoryRouter><Page /></MemoryRouter>)
+    peer.online(true)
+    await act(async () => { await api.pump(); await durable.refreshDurableSends() })
+    const record = (await api.list()).find(entry => entry.intent.id === first.intent.id)!
+    expect(record.state).toBe('confirmed')
+
+    if (visible === 'origin') {
+      await waitFor(() => expect(page.getByTestId('route').textContent).toBe(sessionRoute(record.sessionId!)))
+      expect(page.getByTestId('draft').textContent).toBe('second draft second.txt')
+      expect(takeSessionDraft(record.sessionId!).attachments).toMatchObject([{ id: 'next' }])
+      const second = await durable.enqueueDurableComposer(record.sessionId!, 'second', [nextFile], owner)
+      await act(async () => { await api.pump(); await durable.refreshDurableSends() })
+      expect((await api.list()).find(entry => entry.intent.id === second.intent.id)).toMatchObject({ state: 'confirmed', sessionId: record.sessionId })
+      expect((await peer.raw('fixture.ledger', { request_id: second.intent.id }))[0].target_session_id).toBe(record.sessionId)
+    } else {
+      expect(page.getByTestId('route').textContent).toBe('/')
+      expect(page.getByTestId('draft').textContent).toContain('do not switch me')
+      expect(takeSessionDraft(origin).attachments).toMatchObject([{ id: 'next' }])
+    }
+  }, 60_000
+)

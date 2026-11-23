@@ -18954,6 +18954,63 @@
         "title": "DurableAttachment",
         "type": "object"
       },
+      "DurableCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/DurableOwner"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/DurableFile"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner",
+          "session_id",
+          "submission_id",
+          "files"
+        ],
+        "title": "DurableCancelParams",
+        "type": "object"
+      },
+      "DurableCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cancelled"
+        ],
+        "title": "DurableCancelResult",
+        "type": "object"
+      },
       "DurableCreateParams": {
         "additionalProperties": false,
         "properties": {
@@ -51304,6 +51361,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CronSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "durable.cancel",
+      "summary": "Reconcile cancellation before admission, tombstone the identity and release unadmitted uploads.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DurableCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DurableCancelResult"
         }
       }
     },

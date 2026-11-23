@@ -1323,6 +1323,42 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
  * `spawnPriority` follows requestGatewayForAgent: the retain is the FIRST dial
  * of a session-create gesture, so a user click passes 'foreground' here.
  */
+/** A transaction owns one physical client. Reconnect invalidates the lease: subscriptions
+ * belong to a socket, so a later pump must negotiate/resume again, never continue on a new one. */
+export async function leaseGatewayForAgent(connectionId: string, profile: string) {
+  const release = await retainGatewayForAgent(connectionId, profile)
+
+  try {
+    const client = gatewayRouteState(connectionId, profile).gateway ??
+      ((await ridesPrimaryBackend(connectionId, normKey(profile))) ? g.primaryGateway : null)
+
+    if (!client || client.connectionState !== 'open') {throw new Error('Gateway lease unavailable')}
+    let valid = true
+    const off = client.onState(state => { if (state !== 'open') {valid = false} })
+
+    return {
+      request: async (method: string, params: Record<string, unknown>) => {
+        if (!valid || client.connectionState !== 'open') {throw new Error('Gateway lease disconnected')}
+
+        try {
+          const result = await client.request(method, params)
+
+          if (!valid) {throw new Error('Gateway lease disconnected')}
+
+          return result
+        } catch (error) {
+          if (!valid) {throw new Error('Gateway lease disconnected')}
+          throw error
+        }
+      },
+      release: () => { valid = false; off(); release() }
+    }
+  } catch (error) {
+    release()
+    throw error
+  }
+}
+
 export async function retainGatewayForAgent(
   connectionId: null | string,
   profile: string,

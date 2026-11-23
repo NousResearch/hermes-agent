@@ -67,12 +67,13 @@ export function registerDurableSendIpc({ ipc, userData, rendererUrl, getOwner }:
     }
   >()
 
-  const rpcFor =
-    (event: IpcMainInvokeEvent): DurableRpc =>
-    (route, method, params) => {
+  const rpcFor = (event: IpcMainInvokeEvent): DurableRpc => {
+    let leaseId: string | undefined
+
+    const rpc: DurableRpc = (route, method, params) => {
       store(event)
 
-      if (!DURABLE_RPC_METHODS.has(method)) {
+      if (!DURABLE_RPC_METHODS.has(method) && !['transport.acquire', 'transport.release'].includes(method)) {
         return Promise.reject(new DurableSendRefusal('RPC denied'))
       }
 
@@ -85,11 +86,30 @@ export function registerDurableSendIpc({ ipc, userData, rendererUrl, getOwner }:
         }, 30_000)
 
         pending.set(token, { sender: event.sender, resolve, reject, timer })
-        event.sender.send('hermes:durable-send:transport', { token, route, method, params })
+        event.sender.send('hermes:durable-send:transport', { token, route, method, params, leaseId })
       })
     }
 
-  ipc.handle('hermes:durable-send:transport-reply', (event, token: string, reply: any) => {
+    rpc.acquire = async owner => {
+      leaseId = randomUUID()
+
+      try {
+        await rpc(owner, 'transport.acquire', {})
+      } catch (error) {
+        await rpc(owner, 'transport.release', {}).catch(() => {})
+        leaseId = undefined
+        throw error
+      }
+
+      return async () => {
+        try { await rpc(owner, 'transport.release', {}) } finally { leaseId = undefined }
+      }
+    }
+
+    return rpc
+  }
+
+  ipc.handle('hermes:durable-send:transport-reply' , (event, token: string, reply: any) => {
     store(event)
     const request = pending.get(token)
 
@@ -132,7 +152,12 @@ export function registerDurableSendIpc({ ipc, userData, rendererUrl, getOwner }:
       return result.owner
     }
   )
-  ipc.handle('hermes:durable-send:pump', event => drainDurableSends(store(event), durableRpcTransport(rpcFor(event))))
+  ipc.handle('hermes:durable-send:pump', event => {
+    const transport = durableRpcTransport(rpcFor(event))
+    transport.progress = () => event.sender.send('hermes:durable-send:changed')
+
+    return drainDurableSends(store(event), transport)
+  })
 
   ipc.handle('hermes:durable-send:begin', (event, intent: unknown) => store(event).begin(intent))
   ipc.handle('hermes:durable-send:append', (event, id: string, fileId: string, offset: number, bytes: Uint8Array) =>
@@ -140,5 +165,12 @@ export function registerDurableSendIpc({ ipc, userData, rendererUrl, getOwner }:
   )
   ipc.handle('hermes:durable-send:commit', (event, id: string) => store(event).commit(id))
   ipc.handle('hermes:durable-send:list', event => store(event).list())
+  ipc.handle('hermes:durable-send:retired', (event, ids: string[]) => {
+    const spool = store(event)
+
+    if (!Array.isArray(ids) || ids.length > 128) {throw new Error('Invalid receipt query')}
+
+    return Object.fromEntries(ids.map(id => [id, spool.retiredState(id)]).filter(([, state]) => state))
+  })
   ipc.handle('hermes:durable-send:cancel', (event, id: string) => store(event).cancel(id))
 }

@@ -121,6 +121,31 @@ test('real owner restart fences a claimed admission UNKNOWN without executing or
   expect(await p.raw('fixture.ledger', { request_id: intent.id })).toHaveLength(1)
 }, 60_000)
 
+test('real cancellation survives lost ACK and restart without dropping the only copy or reviving the intent', async () => {
+  const p = peer()
+  const owner = await ownerOf(p)
+  const { store, intent, content } = enqueue(p.root, owner)
+  const transport = durableRpcTransport(p.rpc)
+  p.drop('durable.upload')
+  await drainDurableSends(store, transport)
+  expect(store.read(intent.id)).toMatchObject({ state: 'waiting', submitStarted: false })
+  expect(store.cancel(intent.id).cancelPending).toBe(true)
+  p.drop('durable.cancel')
+  await drainDurableSends(store, transport)
+  expect(store.read(intent.id).cancelPending).toBe(true)
+  expect(store.bytes(intent.id, intent.files[0].id)).toEqual(content)
+  await p.raw('fixture.restart')
+  const reopened = new DurableSendStore(p.root, 'fixture-origin')
+  await drainDurableSends(reopened, transport)
+  expect(reopened.read(intent.id)).toMatchObject({ state: 'cancelled', cancelPending: false })
+  expect(() => reopened.bytes(intent.id, intent.files[0].id)).toThrow()
+  expect(p.calls.filter(call => call.method === 'durable.cancel')).toHaveLength(2)
+  expect(await p.raw('fixture.ledger', { request_id: intent.id })).toEqual([])
+  const upload = p.calls.find(call => call.method === 'durable.upload')!
+  await expect(p.rpc(owner, 'durable.upload', upload.params as Record<string, unknown>)).rejects.toThrow()
+  expect(await p.raw('fixture.ledger', { request_id: intent.id })).toEqual([])
+}, 60_000)
+
 test('a different authenticated principal cannot drain an existing offline queue', async () => {
   const p = peer()
   const owner = await ownerOf(p)

@@ -476,6 +476,19 @@ class DurableSubmitParams(ProfileParams):
     attachments: list[DurableAttachment]
 
 
+class DurableCancelParams(ProfileParams):
+    owner: DurableOwner
+    session_id: str
+    submission_id: str
+    files: list[DurableFile]
+
+
+class DurableCancelResult(Result):
+    cancelled: bool
+
+
+canonical_method('durable.cancel', params=DurableCancelParams, result=DurableCancelResult,
+                 doc='Reconcile cancellation before admission, tombstone the identity and release unadmitted uploads.')
 canonical_method('durable.describe', params=ProfileParams, result=DurableDescribeResult,
                  doc='Authenticated identity and scoped durable Desktop upload/admission protocol.')
 canonical_method('durable.create', params=DurableCreateParams, result=DurableCreateResult,

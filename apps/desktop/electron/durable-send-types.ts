@@ -38,12 +38,14 @@ export interface DurableSendRecord {
   sessionId?: string
   uploads: Record<string, { reference: string; sha256: string; size: number }>
   submitStarted: boolean
+  cancelPending?: boolean
   admissionId?: string
   problem?: 'connection' | 'capability' | 'integrity' | 'uncertain' | 'refused'
 }
 
 export interface DurableTransportRequest {
   token: string
+  leaseId?: string
   route: Pick<DurableSendOwner, 'connectionId' | 'profile'>
   method: string
   params: Record<string, unknown>
@@ -52,10 +54,12 @@ export interface DurableTransportRequest {
 export interface DurableSendApi {
   negotiate: (route: Pick<DurableSendOwner, 'connectionId' | 'profile'>) => Promise<DurableSendOwner>
   pump: () => Promise<void>
+  onChange?: (handler: () => void) => () => void
   onTransportRequest: (handler: (request: DurableTransportRequest) => Promise<unknown>) => () => void
   begin: (intent: DurableSendIntent) => Promise<DurableSendRecord>
   append: (id: string, fileId: string, offset: number, bytes: Uint8Array) => Promise<number>
   commit: (id: string) => Promise<DurableSendRecord>
   list: () => Promise<DurableSendRecord[]>
+  retired?: (ids: string[]) => Promise<Record<string, 'confirmed' | 'cancelled'>>
   cancel: (id: string) => Promise<DurableSendRecord>
 }

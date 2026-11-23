@@ -14,7 +14,7 @@ import {
   stashSessionDraft,
   takeSessionDraft
 } from './composer'
-import { requestGatewayForAgent } from './gateway'
+import { leaseGatewayForAgent, requestGatewayForAgent } from './gateway'
 import { resolveNewChatOwnerRoute } from './profile'
 import { $projectScope } from './project-scope'
 import { resolveNewSessionCwd } from './projects'
@@ -62,6 +62,31 @@ export async function refreshDurableSends(): Promise<void> {
   }
 
   const records = await api.list()
+
+  if (api.retired) {
+    const ids = Object.keys(localStorage).filter(k => k.startsWith(RETIRE)).map(k => k.slice(RETIRE.length))
+
+    for (let start = 0; start < ids.length; start += 128) {
+      const retired = await api.retired(ids.slice(start, start + 128))
+
+      for (const [id, state] of Object.entries(retired)) {
+        const markerKey = RETIRE + id
+
+        try {
+          const marker = JSON.parse(localStorage.getItem(markerKey) || 'null')
+          const draft = takeSessionDraft(marker.scope)
+
+          if (state === 'confirmed' && draft.text === marker.text && savedDraftAt(marker.scope) === marker.savedAt &&
+              Array.isArray(marker.occurrences) && draft.attachments.every(file => marker.occurrences.some(
+                (sent: {id: string; occurrenceId?: string}) => sent.id === file.id && sent.occurrenceId === file.occurrenceId))) {
+            stashSessionDraft(marker.scope, '', [])
+          }
+
+          localStorage.removeItem(markerKey)
+        } catch { /* Never clear a different draft on malformed handoff. */ }
+      }
+    }
+  }
 
   // A process can close after native commit but before clearing the DOM/stash. Resolve that
   // exact handoff before mounting the editor on restart; never resurrect a queued send as a draft.
@@ -150,12 +175,51 @@ export function startDurableSends(): void {
   }
 
   $durableOwnerVersion.set($durableOwnerVersion.get() + 1)
-  api.onTransportRequest(async ({ route, method, params }) => {
+
+  const leases = new Map<string, {
+    route: string; lease: Awaited<ReturnType<typeof leaseGatewayForAgent>>; timer: ReturnType<typeof setTimeout>
+  }>()
+
+  const release = (id: string) => {
+    const entry = leases.get(id)
+
+    if (entry) { clearTimeout(entry.timer); entry.lease.release(); leases.delete(id) }
+  }
+
+  window.addEventListener('pagehide', () => { for (const id of leases.keys()) {release(id)} })
+  api.onChange?.(() => { void refreshDurableSends() })
+  api.onTransportRequest(async ({ route, method, params, leaseId }) => {
+    if (method === 'transport.release') {
+      if (leaseId && leases.get(leaseId)?.route === key(route)) {release(leaseId)}
+
+      return null
+    }
+
+    if (method === 'transport.acquire') {
+      if (!leaseId || leases.has(leaseId) || leases.size >= 8) {throw new Error('Invalid transport lease')}
+      const lease = await leaseGatewayForAgent(route.connectionId, route.profile)
+      leases.set(leaseId, { route: key(route), lease, timer: setTimeout(() => release(leaseId), 60_000) })
+
+      return null
+    }
+
     if (
-      !['durable.describe', 'durable.create', 'session.resume', 'durable.upload', 'durable.submit'].includes(method)
+      !['durable.describe', 'durable.create', 'session.resume', 'durable.upload', 'durable.submit', 'durable.cancel'].includes(method)
     ) {
       throw new Error('Durable transport method denied')
     }
+
+    if (leaseId) {
+      const entry = leases.get(leaseId)
+
+      if (!entry || entry.route !== key(route)) {throw new Error('Transport lease unavailable')}
+      clearTimeout(entry.timer)
+      entry.timer = setTimeout(() => release(leaseId), 60_000)
+
+      return entry.lease.request(method, { ...params, profile: route.profile })
+    }
+
+    if (method !== 'durable.describe') {throw new Error('Transport lease required')}
 
     return requestGatewayForAgent(route.connectionId, route.profile, method, { ...params, profile: route.profile })
   })

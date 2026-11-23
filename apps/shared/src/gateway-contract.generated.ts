@@ -5097,6 +5097,28 @@ export interface SkinPayload {
   help_header?: string
   [key: string]: unknown
 }
+export interface DurableCancelParams {
+  profile?: string | null
+  owner: DurableOwner
+  session_id: string
+  submission_id: string
+  files: DurableFile[]
+}
+export interface DurableOwner {
+  store_id: string
+  profile_id: string
+  principal_id: string
+}
+export interface DurableFile {
+  id: string
+  name: string
+  mediaType: string
+  size: number
+  sha256: string
+}
+export interface DurableCancelResult {
+  cancelled: boolean
+}
 export interface DurableDescribeResult {
   store_id: string
   instance_id: string
@@ -5109,11 +5131,6 @@ export interface DurableCreateParams {
   owner: DurableOwner
   params: Record<string, unknown>
 }
-export interface DurableOwner {
-  store_id: string
-  profile_id: string
-  principal_id: string
-}
 export interface DurableCreateResult {
   session_id: string
 }
@@ -5125,13 +5142,6 @@ export interface DurableUploadParams {
   file: DurableFile
   offset: number
   data: string
-}
-export interface DurableFile {
-  id: string
-  name: string
-  mediaType: string
-  size: number
-  sha256: string
 }
 export interface DurableUploadResult {
   reference: string
@@ -7293,6 +7303,8 @@ export interface CanonicalRpcMethods {
   'cron.status': { params: CronAdmissionParams; result: CronStatusResult }
   /** Admit one cron firing into the owning profile's durable FIFO. */
   'cron.submit': { params: CronRunParams; result: CronSubmitResult }
+  /** Reconcile cancellation before admission, tombstone the identity and release unadmitted uploads. */
+  'durable.cancel': { params: DurableCancelParams; result: DurableCancelResult }
   /** Owner-fenced exact session.create; no profile or principal retargeting after reconnect. */
   'durable.create': { params: DurableCreateParams; result: DurableCreateResult }
   /** Authenticated identity and scoped durable Desktop upload/admission protocol. */
@@ -7385,6 +7397,7 @@ export const CANONICAL_RPC_METHODS = [
   'cron.recover',
   'cron.status',
   'cron.submit',
+  'durable.cancel',
   'durable.create',
   'durable.describe',
   'durable.submit',

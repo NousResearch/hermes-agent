@@ -484,6 +484,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   durableSend: {
     negotiate: route => ipcRenderer.invoke('hermes:durable-send:negotiate', route),
     pump: () => ipcRenderer.invoke('hermes:durable-send:pump'),
+    onChange: handler => {
+      const listener = () => handler()
+      ipcRenderer.on('hermes:durable-send:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:durable-send:changed', listener)
+    },
     onTransportRequest: handler => {
       const listener = (_event, request) => {
         void Promise.resolve().then(() => handler(request)).then(
@@ -503,6 +509,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     append: (id, fileId, offset, bytes) => ipcRenderer.invoke('hermes:durable-send:append', id, fileId, offset, bytes),
     commit: id => ipcRenderer.invoke('hermes:durable-send:commit', id),
     list: () => ipcRenderer.invoke('hermes:durable-send:list'),
+    retired: ids => ipcRenderer.invoke('hermes:durable-send:retired', ids),
     cancel: id => ipcRenderer.invoke('hermes:durable-send:cancel', id)
   },
   preparedSubmissions: {

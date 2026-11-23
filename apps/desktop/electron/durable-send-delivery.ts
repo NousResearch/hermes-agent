@@ -2,6 +2,9 @@ import type { DurableSendStore } from './durable-send-store'
 import type { DurableSendFile, DurableSendOwner, DurableSendRecord, DurableSendTarget } from './durable-send-types'
 
 export interface DurableSendTransport {
+  acquire?: (owner: DurableSendOwner) => Promise<() => Promise<void>>
+  progress?: () => void
+  cancel?: (owner: DurableSendOwner, request: { sessionId: string; submissionId: string; files: DurableSendFile[] }) => Promise<boolean>
   /** Authenticated, destination-bound negotiation. uploadReplayVerified is set only by an
    * adapter that has verified content-addressed/idempotent upload and exact-ACK reconciliation.
    * It is NOT inferred from a version string or durable-admission-v1 alone. */
@@ -38,7 +41,7 @@ const sameOwner = (a: DurableSendOwner, b: DurableSendOwner) =>
 const lane = (entry: DurableSendRecord) =>
   JSON.stringify([
     entry.intent.owner,
-    'sessionId' in entry.intent.target ? entry.intent.target.sessionId : entry.intent.target.draftId
+    entry.sessionId ?? ('sessionId' in entry.intent.target ? entry.intent.target.sessionId : entry.intent.target.draftId)
   ])
 
 /** Fault-safe delivery engine. No network is performed until the supplied adapter negotiates
@@ -58,7 +61,25 @@ export async function drainDurableSends(
 
   try {
     for (const candidate of store.list()) {
+      if (store.retiredState(candidate.intent.id)) {continue}
       const entry = store.read(candidate.intent.id)
+
+      if (entry.state === 'cancelled' && entry.cancelPending) {
+        let release: (() => Promise<void>) | undefined
+
+        try {
+          release = await transport.acquire?.(entry.intent.owner)
+          const negotiated = await transport.describe(entry.intent.owner)
+
+          if (sameOwner(negotiated.owner, entry.intent.owner) && negotiated.uploadReplayVerified && transport.cancel && entry.sessionId &&
+              await transport.cancel(entry.intent.owner, { sessionId: entry.sessionId, submissionId: entry.intent.id, files: entry.intent.files })) {
+            store.finishCancellation(entry.intent.id)
+          }
+        } catch { /* No ACK: retain both manifest and originals; reconcile on reconnect. */ }
+        finally { await release?.().catch(() => {}) }
+
+        continue
+      }
 
       if (entry.state === 'confirmed' || entry.state === 'cancelled') {
         store.cleanup(entry.intent.id)
@@ -85,7 +106,10 @@ export async function drainDurableSends(
 
       const { id, owner, target, files, text } = entry.intent
 
+      let release: (() => Promise<void>) | undefined
+
       try {
+        release = await transport.acquire?.(owner)
         const negotiated = await transport.describe(owner)
 
         if (
@@ -107,11 +131,22 @@ export async function drainDurableSends(
           // Persist the create result before any upload or prompt; a lost create ACK repeats
           // the SAME request id and frozen parameters on this SAME owner.
           store.update(id, { sessionId })
+
+          for (const sibling of store.list()) {
+            if (!sibling.sessionId && !['confirmed', 'cancelled'].includes(sibling.state) &&
+                !('sessionId' in sibling.intent.target) && JSON.stringify(sibling.intent.target) === JSON.stringify(target) &&
+                sameOwner(sibling.intent.owner, owner)) {store.update(sibling.intent.id, { sessionId })}
+          }
+
+          transport.progress?.()
         }
 
         if (!sessionId) {
           throw new DurableSendRefusal('Missing durable session identity')
         }
+
+        if (!store.read(id).sessionId) {store.update(id, { sessionId })}
+        held.add(lane(store.read(id)))
 
         for (const file of files) {
           let bytes: Uint8Array
@@ -160,6 +195,7 @@ export async function drainDurableSends(
         store.update(id, { state: 'confirmed', admissionId: receipt.admissionId, problem: undefined, retryAt: 0 })
         store.cleanup(id)
         held.delete(scope)
+        held.delete(lane(store.read(id)))
       } catch (error) {
         // Never expose credentials from transport exceptions in persisted UI error text.
         const current = store.read(id)
@@ -180,6 +216,8 @@ export async function drainDurableSends(
           problem,
           retryAt: problem === 'connection' ? now + Math.min(60_000, 1000 * 2 ** Math.min(current.attempts, 6)) : 0
         })
+      } finally {
+        await release?.().catch(() => {})
       }
     }
   } finally {

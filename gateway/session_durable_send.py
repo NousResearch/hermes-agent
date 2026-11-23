@@ -2,7 +2,8 @@
 
 No client paths or principal claims. Upload identities include the authenticated subject,
 profile, session, submission and occurrence. Bytes survive lost replies and owner restarts.
-The bounded staging store is intentionally retained (never age-delete files a queued turn uses).
+Staging bodies retire only after durable admission or reconciled cancellation. Retry evidence
+and documents referenced by live/history context remain; no age-based deletion of queued bytes.
 """
 import asyncio
 import base64
@@ -12,7 +13,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-from functools import partial
+from functools import partial, wraps
+from weakref import WeakValueDictionary
 
 from persistence.core.errors import AuthorityRefusal
 
@@ -27,7 +29,8 @@ def handlers(connection):
     return {'durable.describe': partial(describe, connection),
             'durable.create': partial(create, connection),
             'durable.upload': partial(upload, connection),
-            'durable.submit': partial(submit, connection)}
+            'durable.submit': partial(submit, connection),
+            'durable.cancel': partial(cancel, connection)}
 
 
 async def describe(connection, ref, params):
@@ -116,6 +119,11 @@ def _database(home):
     db.execute('PRAGMA synchronous=FULL')
     db.execute('CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, metadata TEXT NOT NULL, '
                'size INTEGER NOT NULL, body BLOB NOT NULL)')
+    columns = {row[1] for row in db.execute('PRAGMA table_info(uploads)')}
+    for column, declaration in [('path', 'TEXT'), ('image', 'INTEGER'), ('retired', 'INTEGER NOT NULL DEFAULT 0')]:
+        if column not in columns:
+            db.execute(f'ALTER TABLE uploads ADD COLUMN {column} {declaration}')
+    db.execute('CREATE TABLE IF NOT EXISTS cancelled_submissions (id TEXT PRIMARY KEY)')
     db.commit()
     return db
 
@@ -124,16 +132,21 @@ def _append(home, key, metadata, file, offset, data):
     db = _database(home)
     try:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT metadata, body FROM uploads WHERE id=?', (key,)).fetchone()
+        row = db.execute('SELECT metadata, body, path, image, retired FROM uploads WHERE id=?', (key,)).fetchone()
         if row is None:
             reserved = db.execute('SELECT COALESCE(SUM(size), 0) FROM uploads').fetchone()[0]
-            count = db.execute('SELECT COUNT(*) FROM uploads').fetchone()[0]
+            count = db.execute('SELECT COUNT(*) FROM uploads WHERE retired=0').fetchone()[0]
             if reserved + file['size'] > _MAX_TOTAL or count >= 4096:
                 raise AuthorityRefusal('storage_unavailable')
             body = b''
         else:
             if row[0] != metadata:
                 raise AuthorityRefusal('admission_conflict', field='request_id')
+            if row[4]:
+                # The bytes are already owned by a committed admission. Keep the immutable
+                # reference/digest as retry evidence, not another quota-consuming BLOB.
+                return {'reference': key, 'sha256': file['sha256'], 'size': file['size'],
+                        'offset': file['size'], 'complete': True}
             body = bytes(row[1])
         if offset > len(body) or offset + len(data) > file['size']:
             raise AuthorityRefusal('invalid_params')
@@ -144,7 +157,7 @@ def _append(home, key, metadata, file, offset, data):
         complete = len(body) == file['size']
         if complete and hashlib.sha256(body).hexdigest() != file['sha256']:
             raise AuthorityRefusal('invalid_params')
-        db.execute('INSERT OR REPLACE INTO uploads VALUES (?, ?, ?, ?)',
+        db.execute('INSERT INTO uploads (id, metadata, size, body) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET body=excluded.body',
                    (key, metadata, file['size'], body))
         db.commit()
         return {'reference': key, 'sha256': file['sha256'], 'size': file['size'],
@@ -153,9 +166,40 @@ def _append(home, key, metadata, file, offset, data):
         db.close()
 
 
+def _submission_key(connection, ref, params):
+    submission = params.get('submission_id')
+    if not isinstance(submission, str) or not _ID.fullmatch(submission):
+        raise AuthorityRefusal('invalid_params')
+    return hashlib.sha256(json.dumps([connection.authority.profile_id, connection.actor.subject,
+                                     ref.session_id, submission]).encode()).hexdigest()
+
+
+def _serialized(function):
+    @wraps(function)
+    async def dispatch(connection, ref, params):
+        key = _submission_key(connection, ref, params)
+        locks = connection.authority.__dict__.setdefault('_durable_send_locks', WeakValueDictionary())
+        lock = locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            return await function(connection, ref, params)
+    return dispatch
+
+
+def _check_cancelled(connection, ref, params):
+    db = _database(connection.authority.profile_id)
+    try:
+        if db.execute('SELECT 1 FROM cancelled_submissions WHERE id=?',
+                      (_submission_key(connection, ref, params),)).fetchone():
+            raise AuthorityRefusal('admission_conflict', field='request_id')
+    finally:
+        db.close()
+
+
+@_serialized
 async def upload(connection, ref, params):
     await _check_owner(connection, params)
     _authorize(connection, ref, params)
+    _check_cancelled(connection, ref, params)
     if set(params) - {'session_id', 'profile', 'owner', 'submission_id', 'file', 'offset', 'data'}:
         raise AuthorityRefusal('invalid_params')
     key, metadata = _identity(connection, ref, params.get('submission_id'), params.get('file'))
@@ -170,24 +214,42 @@ async def upload(connection, ref, params):
                                    params['file'], offset, data)
 
 
-def _materialize(home, key, metadata, file):
+def _materialize(home, key, metadata, file, session):
     from gateway.session_ingress_media import sniff_image_mime
     from utils import fsync_directory
     import tempfile
     db = _database(home)
     try:
-        row = db.execute('SELECT metadata, body FROM uploads WHERE id=?', (key,)).fetchone()
+        row = db.execute('SELECT metadata, body, path, image, retired FROM uploads WHERE id=?', (key,)).fetchone()
     finally:
         db.close()
     if row is None or row[0] != metadata:
         raise AuthorityRefusal('not_found')
+    if row[4]:
+        # Image admission reconciliation accepts the missing disposable staging path;
+        # documents remain in the established retained attachments root used by context.
+        return row[2], bool(row[3])
     body = bytes(row[1])
     if len(body) != file['size'] or hashlib.sha256(body).hexdigest() != file['sha256']:
         raise AuthorityRefusal('invalid_params')
     image = file['mediaType'].startswith('image/')
     if image and sniff_image_mime(body) != file['mediaType']:
         raise AuthorityRefusal('invalid_params')
-    root = _private_root(home, 'images' if image else 'durable-desktop-uploads')
+    if image:
+        root = _private_root(home, 'images')
+    else:
+        # Same profile-home machinery as file.attach. Do NOT authorize the upload database
+        # directory as a context root: it contains private metadata, not model attachments.
+        from tui_gateway import server
+        from hermes_dir_acl import make_user_dir
+        root = server._session_home_dir(session, 'attachments')
+        base = Path(home) if root.is_relative_to(Path(home)) else Path(session['cwd']).resolve()
+        current = base
+        for part in root.relative_to(base).parts:
+            current = current / part
+            if current.is_symlink():
+                raise AuthorityRefusal('storage_unavailable')
+            make_user_dir(current, mode=0o700, parents=False, exist_ok=True)
     # Preserve a safe extension for document parsers, never a user-controlled path.
     suffix = Path(file['name']).suffix
     suffix = suffix if re.fullmatch(r'\.[a-zA-Z0-9]{1,12}', suffix) else ''
@@ -203,17 +265,79 @@ def _materialize(home, key, metadata, file):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    db = _database(home)
+    try:
+        db.execute('UPDATE uploads SET path=?, image=? WHERE id=?', (str(target), int(image), key))
+        db.commit()
+    finally:
+        db.close()
     return str(target), image
 
 
+def _retire_uploads(home, keys):
+    # Called only AFTER durable admission. A crash before this transaction retains the
+    # original upload; a crash after it reconciles by the same metadata/path and ledger.
+    db = _database(home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        for key in keys:
+            db.execute("UPDATE uploads SET body=x'', size=0, retired=1 WHERE id=? AND path IS NOT NULL", (key,))
+        db.commit()
+        for key in keys:
+            row = db.execute('SELECT path, image, retired FROM uploads WHERE id=?', (key,)).fetchone()
+            if row and row[1] and row[2]:
+                Path(row[0]).unlink(missing_ok=True)
+    finally:
+        db.close()
+
+
+@_serialized
+async def cancel(connection, ref, params):
+    await _check_owner(connection, params)
+    _authorize(connection, ref, params)
+    if set(params) - {'session_id', 'profile', 'owner', 'submission_id', 'files'} or not isinstance(params.get('files'), list) or len(params['files']) > 32:
+        raise AuthorityRefusal('invalid_params')
+    keys = [_identity(connection, ref, params['submission_id'], file)[0] for file in params['files']]
+    from gateway.session_persistence import authority_persistence
+    row = await asyncio.to_thread(authority_persistence(connection.authority).admissions.find,
+                                  principal_id=connection.actor.subject, session_id=ref.session_id,
+                                  request_id=params['submission_id'])
+    if row is not None:
+        # An admitted/unknown execution is not cancellable by deleting its staging bytes.
+        return {'cancelled': False}
+    db = _database(connection.authority.profile_id)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('INSERT OR IGNORE INTO cancelled_submissions VALUES (?)', (_submission_key(connection, ref, params),))
+        paths = []
+        for key in keys:
+            row = db.execute('SELECT path FROM uploads WHERE id=?', (key,)).fetchone()
+            if row and row[0]:
+                paths.append(row[0])
+            db.execute('DELETE FROM uploads WHERE id=?', (key,))
+        db.commit()
+        for path in paths:
+            Path(path).unlink(missing_ok=True)
+    finally:
+        db.close()
+    return {'cancelled': True}
+
+
+@_serialized
 async def submit(connection, ref, params):
     await _check_owner(connection, params)
     _authorize(connection, ref, params)
+    _check_cancelled(connection, ref, params)
     if (set(params) - {'session_id', 'profile', 'owner', 'submission_id', 'text', 'attachments'}
             or not isinstance(params.get('text'), str) or len(params['text'].encode()) > 256 * 1024
             or not isinstance(params.get('attachments'), list) or len(params['attachments']) > 32
             or not isinstance(params.get('submission_id'), str) or not _ID.fullmatch(params['submission_id'])):
         raise AuthorityRefusal('invalid_params')
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(connection.authority.runner, connection.authority.sessions[ref.session_id].source)
+    if policy is None:
+        raise AuthorityRefusal('permission_denied')
+    session = {'cwd': policy.cwd, 'profile_home': connection.authority.profile_id}
     text, images, seen = params['text'], [], set()
     for attachment in params['attachments']:
         if not isinstance(attachment, dict) or 'reference' not in attachment:
@@ -223,7 +347,7 @@ async def submit(connection, ref, params):
         if key != attachment['reference'] or key in seen:
             raise AuthorityRefusal('permission_denied')
         seen.add(key)
-        path, image = await asyncio.to_thread(_materialize, connection.authority.profile_id, key, metadata, file)
+        path, image = await asyncio.to_thread(_materialize, connection.authority.profile_id, key, metadata, file, session)
         if image:
             images.append({'path': path, 'mime': file['mediaType']})
         else:
@@ -235,4 +359,7 @@ async def submit(connection, ref, params):
     if images:
         payload['attachments'] = images
     # Existing authorization, payload conflict detection and UNKNOWN fence are authoritative.
-    return await connection.submit(ref, payload)
+    receipt = await connection.submit(ref, payload)
+    if receipt.get('admission_id') and receipt.get('status') in ('queued', 'started', 'terminal'):
+        await asyncio.to_thread(_retire_uploads, connection.authority.profile_id, seen)
+    return receipt

@@ -254,7 +254,8 @@ export class DurableSendStore {
       entry.attempts < 0 ||
       !Number.isFinite(entry.createdAt) ||
       !Number.isFinite(entry.retryAt) ||
-      typeof entry.submitStarted !== 'boolean'
+      typeof entry.submitStarted !== 'boolean' ||
+      (entry.cancelPending !== undefined && typeof entry.cancelPending !== 'boolean')
     ) {
       throw new Error('Corrupt durable send manifest')
     }
@@ -325,6 +326,55 @@ export class DurableSendStore {
     }
   }
 
+  /** Tiny anti-replay tombstones outlive the bounded full UI receipts. Never recycle IDs. */
+  retiredState(id: string): 'confirmed' | 'cancelled' | undefined {
+    requireId(id)
+    const root = path.join(this.root, 'retired')
+    this.directory(root)
+    const name = path.join(root, id)
+
+    if (!fs.existsSync(name)) {return undefined}
+    const receipt = JSON.parse(this.readFile(name, 256).toString('utf8'))
+
+    if (!['confirmed', 'cancelled'].includes(receipt.state) || !HASH.test(receipt.digest)) {
+      throw new Error('Corrupt retirement receipt')
+    }
+
+    return receipt.state
+  }
+
+  private retireReceipts(): void {
+    const records = this.list().filter(entry => terminal(entry) && !entry.cancelPending)
+    const root = path.join(this.root, 'retired')
+    this.directory(root)
+
+    for (const entry of records.slice(0, Math.max(0, records.length - 128))) {
+      const name = path.join(root, entry.intent.id)
+      const temporary = path.join(root, `.receipt-${randomUUID()}`)
+
+      try {
+        const fd = fs.openSync(temporary, 'wx', 0o600)
+
+        try {
+          fs.writeFileSync(fd, JSON.stringify({ state: entry.state, digest: digest(JSON.stringify(entry.intent)) }))
+          fs.fsyncSync(fd)
+        } finally {
+          fs.closeSync(fd)
+        }
+
+        fs.renameSync(temporary, name)
+        this.syncDirectory(root)
+      } finally {
+        if (fs.existsSync(temporary)) {fs.unlinkSync(temporary)}
+      }
+
+      // Tombstone durable first; a crash cannot revive this intent. No active/unknown entry
+      // is eligible, and no cancelled entry is eligible until remote cleanup reconciles.
+      fs.rmSync(this.itemDir(entry.intent.id), { recursive: true })
+      this.syncDirectory(this.root)
+    }
+  }
+
   list(): DurableSendRecord[] {
     return fs
       .readdirSync(this.root)
@@ -348,6 +398,9 @@ export class DurableSendStore {
 
   begin(input: unknown): DurableSendRecord {
     const intent = validateDurableIntent(input)
+
+    if (this.retiredState(intent.id)) {throw new Error('Durable send identity already retired')}
+    this.retireReceipts()
     const records = this.list()
     const existing = records.find(entry => entry.intent.id === intent.id)
 
@@ -359,10 +412,10 @@ export class DurableSendStore {
       return existing
     }
 
-    const active = records.filter(entry => !terminal(entry))
+    const active = records.filter(record => !terminal(record) || record.cancelPending)
     // Terminal receipts remain as idempotency tombstones. Bound metadata too; never silently
     // evict an unconfirmed message, and finish confirmed-byte cleanup before reserving more.
-    records.filter(terminal).forEach(entry => this.cleanup(entry.intent.id))
+    records.filter(entry => terminal(entry) && !entry.cancelPending).forEach(entry => this.cleanup(entry.intent.id))
     const metadata = records.reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry)), 0)
 
     if (
@@ -408,6 +461,9 @@ export class DurableSendStore {
       version: 1,
       intent,
       state: 'staging',
+      sessionId: 'sessionId' in intent.target ? intent.target.sessionId : records.find(record =>
+        JSON.stringify(record.intent.owner) === JSON.stringify(intent.owner) &&
+        JSON.stringify(record.intent.target) === JSON.stringify(intent.target) && record.sessionId)?.sessionId,
       createdAt: Math.max(this.now(), ...records.map(record => record.createdAt + 1)),
       attempts: 0,
       retryAt: 0,
@@ -525,7 +581,7 @@ export class DurableSendStore {
     changes: Partial<
       Pick<
         DurableSendRecord,
-        'state' | 'attempts' | 'retryAt' | 'sessionId' | 'uploads' | 'submitStarted' | 'admissionId' | 'problem'
+        'state' | 'attempts' | 'retryAt' | 'sessionId' | 'uploads' | 'submitStarted' | 'admissionId' | 'problem' | 'cancelPending'
       >
     >
   ): DurableSendRecord {
@@ -567,16 +623,28 @@ export class DurableSendStore {
       throw new Error('Reconcile uncertain admission before cancellation')
     }
 
-    const cancelled = this.update(id, { state: 'cancelled' })
-    this.cleanup(id)
+    const cancelled = this.update(id, { state: 'cancelled',
+      cancelPending: !!entry.sessionId && entry.attempts > 0 && entry.intent.files.length > 0 })
+
+    if (!cancelled.cancelPending) {this.cleanup(id)}
 
     return cancelled
+  }
+
+  /** Only the delivery consumer calls this after an authenticated remote cancellation ACK. */
+  finishCancellation(id: string): void {
+    const entry = this.read(id)
+
+    if (entry.state !== 'cancelled' || entry.submitStarted) {throw new Error('Unsafe cancellation cleanup')}
+    entry.cancelPending = false
+    this.save(entry)
+    this.cleanup(id)
   }
 
   cleanup(id: string): void {
     const entry = this.read(id)
 
-    if (!terminal(entry)) {
+    if (!terminal(entry) || entry.cancelPending) {
       throw new Error('Unconfirmed attachment cleanup refused')
     }
 

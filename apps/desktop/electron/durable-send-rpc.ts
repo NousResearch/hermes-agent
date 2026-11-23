@@ -2,18 +2,19 @@ import { canonicalCreateParams } from './canonical-create-params'
 import { DurableSendRefusal, type DurableSendTransport } from './durable-send-delivery'
 import type { DurableSendOwner } from './durable-send-types'
 
-export type DurableRpc = (
+export type DurableRpc = ((
   route: Pick<DurableSendOwner, 'connectionId' | 'profile'>,
   method: string,
   params: Record<string, unknown>
-) => Promise<any>
+) => Promise<any>) & { acquire?: DurableSendTransport['acquire'] }
 
 export const DURABLE_RPC_METHODS = new Set([
   'durable.describe',
   'durable.create',
   'session.resume',
   'durable.upload',
-  'durable.submit'
+  'durable.submit',
+  'durable.cancel'
 ])
 
 /** The same scoped RPC protocol as the Python authority fixture. No version-based promises,
@@ -38,6 +39,7 @@ export function durableRpcTransport(rpc: DurableRpc): DurableSendTransport {
   }
 
   return {
+    acquire: rpc.acquire,
     async describe(owner) {
       let result
 
@@ -128,6 +130,12 @@ export function durableRpcTransport(rpc: DurableRpc): DurableSendTransport {
       } while (offset < bytes.length)
 
       throw new DurableSendRefusal('Incomplete upload')
+    },
+    async cancel(owner, { sessionId, submissionId, files }) {
+      await resume(owner, sessionId)
+      const result = await rpc(owner, 'durable.cancel', { owner: fence(owner), session_id: sessionId, submission_id: submissionId, files })
+
+      return result?.cancelled === true
     },
     async submit(owner, { sessionId, submissionId, text, attachments }) {
       await resume(owner, sessionId)

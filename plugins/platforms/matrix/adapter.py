@@ -347,7 +347,7 @@ def _resolve_max_message_length(config) -> int:
 # the multiplex gateway imports this once and a module constant would collide every profile's Olm
 # identity in one crypto.db.
 # Store directory for E2EE keys and sync state. Mirrors the pairing-store fix (a6397c379). See #89168.
-from hermes_constants import get_hermes_dir as _get_hermes_dir
+from hermes_constants import get_hermes_dir as _get_hermes_dir, mkdir_under_hermes_home
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
 
@@ -506,7 +506,7 @@ def _write_matrix_recovery_key_output_file(recovery_key: str) -> Optional[Path]:
     path = _recovery_key_output_path()
     if path is None:
         return None
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -527,7 +527,7 @@ def _get_matrix_recovery_key_output_target() -> tuple[Optional[Path], str]:
     if path.exists():
         return None, "exists"
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(path.parent)
     except Exception as exc:
         return None, f"unusable: {exc}"
     return path, ""
@@ -1058,7 +1058,7 @@ class MatrixAdapter(BasePlatformAdapter):
             from mautrix.crypto import OlmMachine
             from mautrix.crypto.store.asyncpg import PgCryptoStore
             from mautrix.util.async_db import Database
-            self._store_dir.mkdir(parents=True, exist_ok=True)
+            mkdir_under_hermes_home(self._store_dir)
             phase = "create"
             if (self._store_dir / "crypto_store.pickle").exists():  # pre-SQLite era
                 logger.info("Matrix: removing legacy crypto_store.pickle (migrated to SQLite)")
@@ -1185,7 +1185,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: homeserver URL not configured")
             return False
         # Resolved here, inside the profile scope, so multiplexed profiles never share it.
-        self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(self._resolve_store_dir())  # a dead profile home is never recreated
         client_session = _create_matrix_session(self._proxy_url)
         api = HTTPAPI(base_url=self._homeserver, token=self._access_token or "", client_session=client_session)
         state_store = MemoryStateStore()

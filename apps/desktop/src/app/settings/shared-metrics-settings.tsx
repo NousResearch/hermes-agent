@@ -98,7 +98,11 @@ function SharedMetricsSettingsForOwner({ connectionId, profile }: SharedMetricsO
         const applyCurrent = await captureDesktopMetricsGate(`${connectionId ?? ''}|${profile}`)
         const current = await readSharedMetricsConsent(request)
 
-        if (mounted.current && current?.decided && await applyCurrent(current.enabled ? 'on' : 'off', current.decided)) {
+        if (
+          mounted.current &&
+          current?.decided &&
+          (await applyCurrent(current.enabled ? 'on' : 'off', current.decided))
+        ) {
           setConsent(current)
         }
       }

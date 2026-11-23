@@ -179,7 +179,9 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/')
   window.hermesDesktop = {
     getConnection: vi.fn(async (profile: string) => connection(profile)),
-    getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => connection(profile, connectionId)),
+    getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      connection(profile, connectionId)
+    ),
     getConnectionConfig: vi.fn(async () => ({ mode: 'remote' }))
   } as never
 })
@@ -253,10 +255,17 @@ describe('switch assurances follow the send owner', () => {
     expect(view.container.querySelector('[data-slot="chat-switch-indicator"]')?.textContent).toContain('writer')
     vi.useRealTimers()
     const ambient = vi.fn(async () => created as never)
-    await act(async () => { await sendDraft(ambient) })
+    await act(async () => {
+      await sendDraft(ambient)
+    })
     expect(fixture.requestAgent).toHaveBeenCalledWith(
-      'homelab', 'gateway', 'session.create', expect.objectContaining({ profile: 'writer' }),
-      undefined, undefined, { spawnPriority: 'foreground' }
+      'homelab',
+      'gateway',
+      'session.create',
+      expect.objectContaining({ profile: 'writer' }),
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
     )
     expect(ambient).not.toHaveBeenCalled()
 
@@ -271,9 +280,15 @@ describe('switch assurances follow the send owner', () => {
     act(() => vi.advanceTimersByTime(SWITCH_STALLED_MS))
     expect(view.container.querySelector('[data-slot="chat-switch-indicator"]')?.textContent).toContain('ops')
     vi.useRealTimers()
-    await requestForSessionProfile(knownOwnerForSession('stored-existing'), ambient, 'prompt.submit', { session_id: 'runtime', profile: 'shared' })
+    await requestForSessionProfile(knownOwnerForSession('stored-existing'), ambient, 'prompt.submit', {
+      session_id: 'runtime',
+      profile: 'shared'
+    })
     expect(fixture.requestAgent).toHaveBeenLastCalledWith(
-      'other-host', 'shared', 'prompt.submit', expect.objectContaining({ profile: 'ops' })
+      'other-host',
+      'shared',
+      'prompt.submit',
+      expect.objectContaining({ profile: 'ops' })
     )
   })
 
@@ -321,34 +336,39 @@ describe('retry belongs to its fresh-draft intent', () => {
     expect(fixture.ensureProfile).toHaveBeenCalledTimes(calls)
     expect($profileSwitchFailure.get()).toBeNull()
     const request = vi.fn(async () => created as never)
-    await act(async () => { await sendDraft(request) })
+    await act(async () => {
+      await sendDraft(request)
+    })
     expect(request).toHaveBeenCalledWith('session.create', expect.objectContaining({ profile: 'personal' }))
     expect($activeGatewayProfile.get()).toBe('personal')
   })
 
-  it.each(['same-profile draft', 'source change', 'stored conversation'] as const)('revokes a saved retry after a %s', async replacement => {
-    const actions = mountActions()
-    fixture.ensureProfile.mockRejectedValueOnce(new Error('ops unavailable'))
-    act(() => selectProfile('ops'))
-    await vi.waitFor(() => expect($profileSwitchFailure.get()).not.toBeNull())
-    const retry = $profileSwitchFailure.get()!.retry
-    const calls = fixture.ensureProfile.mock.calls.length
+  it.each(['same-profile draft', 'source change', 'stored conversation'] as const)(
+    'revokes a saved retry after a %s',
+    async replacement => {
+      const actions = mountActions()
+      fixture.ensureProfile.mockRejectedValueOnce(new Error('ops unavailable'))
+      act(() => selectProfile('ops'))
+      await vi.waitFor(() => expect($profileSwitchFailure.get()).not.toBeNull())
+      const retry = $profileSwitchFailure.get()!.retry
+      const calls = fixture.ensureProfile.mock.calls.length
 
-    act(() => {
-      if (replacement === 'same-profile draft') {
-        actions.result.current.startFreshSessionDraft()
-      } else if (replacement === 'source change') {
-        pinNewChatRoute({ connectionId: 'new-host', profile: 'ops' })
-      } else {
-        setSelectedStoredSessionId('stored-existing')
-      }
+      act(() => {
+        if (replacement === 'same-profile draft') {
+          actions.result.current.startFreshSessionDraft()
+        } else if (replacement === 'source change') {
+          pinNewChatRoute({ connectionId: 'new-host', profile: 'ops' })
+        } else {
+          setSelectedStoredSessionId('stored-existing')
+        }
 
-      retry()
-    })
-    expect($profileSwitchFailure.get()).toBeNull()
-    expect(fixture.ensureProfile).toHaveBeenCalledTimes(calls)
-    expect(fixture.ensureAgent).not.toHaveBeenCalled()
-  })
+        retry()
+      })
+      expect($profileSwitchFailure.get()).toBeNull()
+      expect(fixture.ensureProfile).toHaveBeenCalledTimes(calls)
+      expect(fixture.ensureAgent).not.toHaveBeenCalled()
+    }
+  )
 
   it('keeps a legitimate retry on the captured registry source after passive gateway activation', async () => {
     fixture.activeConnection = 'homelab'
@@ -362,35 +382,38 @@ describe('retry belongs to its fresh-draft intent', () => {
     expect(fixture.activeConnection).toBe('homelab')
   })
 
-  it.each(['same-profile draft', 'source change', 'direct fresh draft'] as const)('does not resurrect a late failure after a %s', async replacement => {
-    const blocked = Promise.withResolvers<void>()
-    fixture.ensureProfile.mockReturnValueOnce(blocked.promise)
-    const actions = mountActions()
-    render(<SwitchChrome />)
+  it.each(['same-profile draft', 'source change', 'direct fresh draft'] as const)(
+    'does not resurrect a late failure after a %s',
+    async replacement => {
+      const blocked = Promise.withResolvers<void>()
+      fixture.ensureProfile.mockReturnValueOnce(blocked.promise)
+      const actions = mountActions()
+      render(<SwitchChrome />)
 
-    try {
-      act(() => selectProfile('ops'))
-      await vi.waitFor(() => expect(fixture.ensureProfile).toHaveBeenCalledWith('ops'))
-      act(() => {
-        if (replacement === 'same-profile draft') {
-          actions.result.current.selectSidebarItem({ action: 'new-session' } as never)
-        } else if (replacement === 'direct fresh draft') {
-          actions.result.current.startFreshSessionDraft()
-        } else {
-          pinNewChatRoute({ connectionId: 'new-host', profile: 'ops' })
-        }
-      })
-    } finally {
-      await act(async () => {
-        blocked.reject(new Error('late ops failure'))
-        await ensureGatewayProfile(null)
-      })
+      try {
+        act(() => selectProfile('ops'))
+        await vi.waitFor(() => expect(fixture.ensureProfile).toHaveBeenCalledWith('ops'))
+        act(() => {
+          if (replacement === 'same-profile draft') {
+            actions.result.current.selectSidebarItem({ action: 'new-session' } as never)
+          } else if (replacement === 'direct fresh draft') {
+            actions.result.current.startFreshSessionDraft()
+          } else {
+            pinNewChatRoute({ connectionId: 'new-host', profile: 'ops' })
+          }
+        })
+      } finally {
+        await act(async () => {
+          blocked.reject(new Error('late ops failure'))
+          await ensureGatewayProfile(null)
+        })
+      }
+
+      expect($profileSwitchFailure.get()).toBeNull()
+      expect($profileSwitchPending.get()).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     }
-
-    expect($profileSwitchFailure.get()).toBeNull()
-    expect($profileSwitchPending.get()).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
-  })
+  )
 
   it('retries the same intent with a fresh grace period, without losing words or requesting another draft', async () => {
     fixture.ensureProfile.mockRejectedValueOnce(new Error('temporarily unavailable'))

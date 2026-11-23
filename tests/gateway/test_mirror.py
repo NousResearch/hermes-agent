@@ -165,6 +165,49 @@ class TestAppendToSqlite:
         )
 
 
+class TestCachedAgentRebaseline:
+    """An in-process mirror must not make the gateway rebuild the chat's cached agent."""
+
+    def _runner(self, monkeypatch, entries):
+        import threading
+        import gateway.run as run_mod
+        runner = MagicMock()
+        runner._agent_cache_lock = threading.Lock()
+        runner._agent_cache = dict(entries)
+        monkeypatch.setattr(run_mod, "_gateway_runner_ref", lambda: runner)
+        return runner, run_mod
+
+    def test_mirror_row_moves_only_a_matching_snapshot(self, monkeypatch):
+        from gateway.mirror import _append_to_sqlite
+        agent, other = object(), object()
+        runner, run_mod = self._runner(monkeypatch, {})
+        runner._agent_cache.update({
+            "chat": (agent, "sig", 4, "sess_1"),
+            "stale": (other, "sig", 3, "sess_1"),       # already drifted: the guard decides
+            "elsewhere": (other, "sig", 4, "sess_2"),  # another conversation
+            "pending": (run_mod._AGENT_PENDING_SENTINEL, "sig", 4, "sess_1"),
+        })
+        db = MagicMock()
+        counts = iter([4, 5])
+        db.sessions.get.side_effect = lambda sid: MagicMock(message_count=next(counts))
+        with patch("persistence_assembly.open_persistence", _fake_open_persistence(db, [])):
+            _append_to_sqlite("sess_1", {"role": "user", "content": "cron brief"})
+        assert runner._agent_cache["chat"] == (agent, "sig", 5, "sess_1")
+        assert runner._agent_cache["stale"][2] == 3
+        assert runner._agent_cache["elsewhere"][2] == 4
+        assert runner._agent_cache["pending"][2] == 4
+
+    def test_no_runner_is_a_no_op(self, monkeypatch):
+        import gateway.run as run_mod
+        from gateway.mirror import _append_to_sqlite
+        monkeypatch.setattr(run_mod, "_gateway_runner_ref", lambda: None)
+        db = MagicMock()
+        db.sessions.get.side_effect = lambda sid: MagicMock(message_count=1)
+        with patch("persistence_assembly.open_persistence", _fake_open_persistence(db, [])):
+            _append_to_sqlite("sess_1", {"role": "user", "content": "x"})
+        db.messages.append.assert_called_once()
+
+
 class TestSessionsIndexProfileScoping:
     """#112844: the fallback index must follow the active profile, not the launch one."""
 

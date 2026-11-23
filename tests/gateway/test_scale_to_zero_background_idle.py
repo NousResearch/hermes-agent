@@ -41,6 +41,7 @@ def registry(tmp_path, monkeypatch):
     reg = ProcessRegistry()
     monkeypatch.setattr(pr_mod, "process_registry", reg)
     s2z._idle_logged.clear()
+    s2z._future_stamp_seen.clear()
     return reg
 
 
@@ -314,8 +315,29 @@ def test_clock_stepped_back_protects_for_at_most_one_more_window(registry):
     s = _session(registry, last_touched_at=100_000.0)
     stepped = 100_000.0 - 6 * 3600  # the wall clock jumps six hours backwards
     assert s2z.has_live_background_processes(WINDOW, now=stepped) is True
-    assert s.last_touched_at == stepped  # clamped to now, not left six hours in the future
     assert s2z.has_live_background_processes(WINDOW, now=stepped + 31 * MIN) is False
+    assert s2z.has_live_background_processes(WINDOW, now=100_000.0 + 1) is False  # no second window on catch-up
+    assert s.last_touched_at == 100_000.0
+
+
+def test_predicate_never_writes_the_touch_stamp(registry):
+    """The checker must not overwrite a fresh touch an agent thread lands concurrently."""
+    old = _session(registry, sid="proc_old000001", last_touched_at=1000.0)
+    future = _session(registry, sid="proc_future001", last_touched_at=100_000.0)
+    s2z.has_live_background_processes(WINDOW, now=50_000.0)
+    assert (old.last_touched_at, future.last_touched_at) == (1000.0, 100_000.0)
+    future.last_touched_at = 50_000.0 + 31 * MIN  # a fresh touch after the step starts its own window
+    assert s2z.has_live_background_processes(WINDOW, now=50_000.0 + 32 * MIN) is True
+
+
+def test_clock_stepped_back_holds_an_owed_completion_at_most_10_more_minutes(registry):
+    s = _exited(registry, exited_at=100_000.0)
+    _watch(registry, s.id)
+    stepped = 100_000.0 - 6 * 3600
+    assert s2z.has_live_background_processes(WINDOW, now=stepped) is True  # a future exit counts as just exited
+    assert s2z.has_live_background_processes(WINDOW, now=stepped + 11 * MIN) is False
+    assert s2z.has_live_background_processes(WINDOW, now=100_000.0 + 1) is False
+    assert s.exited_at == 100_000.0
 
 
 def test_clock_stepped_forward_just_ages_the_touch(registry):

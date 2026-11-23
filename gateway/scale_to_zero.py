@@ -82,6 +82,17 @@ def parse_background_idle_seconds(cfg_value: Any) -> Optional[float]:
 
 
 _idle_logged: dict[str, float] = {}  # session id -> the last_touched_at already logged as untouched
+_future_stamp_seen: dict[tuple, float] = {}  # (session id, field, stamp) -> now when that stamp was first in the future
+
+
+def _age(session_id: str, field: str, stamp: float, now: float) -> float:
+    """Seconds since ``stamp`` (wall time, so suspended time counts; a forward clock step just ages it).
+    A stamp in the future (clock stepped back) ages from when it was first seen, so the step protects for
+    one more window at most. Never writes the session: a concurrent fresh touch is a new stamp, a new key."""
+    seen = _future_stamp_seen.get((session_id, field, stamp))
+    if seen is None and stamp > now:
+        seen = _future_stamp_seen[(session_id, field, stamp)] = now
+    return now - (stamp if seen is None else seen)
 
 
 def has_live_background_processes(idle_seconds: Optional[float], now: Optional[float] = None,
@@ -100,21 +111,20 @@ def has_live_background_processes(idle_seconds: Optional[float], now: Optional[f
     now = time.time() if now is None else now
 
     def idle(session) -> bool:
-        # Wall time, so suspended time counts. A forward clock step just ages the stamp (accepted); a
-        # touch stamped in the future (clock stepped back) is clamped to now: one more window at most.
-        session.last_touched_at = min(session.last_touched_at, now)
-        quiet = now - session.last_touched_at
+        stamp = session.last_touched_at  # read once: a touch may land concurrently
+        quiet = _age(session.id, "touched", stamp, now)
         if quiet < idle_seconds:
             return False
-        if _idle_logged.get(session.id) != session.last_touched_at:
-            _idle_logged[session.id] = session.last_touched_at
+        if _idle_logged.get(session.id) != stamp:
+            _idle_logged[session.id] = stamp
             logger.info("scale-to-zero: background process %s untouched for %.0f min; no longer blocks suspend",
                         session.id, quiet / 60.0)
         return True
     if process_registry.has_any_active(lambda s: not idle(s)):
         return True
     owed = {w.get("session_id") for w in list(process_registry.pending_watchers)} | set(delivering)
-    return any(s is not None and s.exited_at and now - s.exited_at < COMPLETION_DELIVERY_GRACE_SECONDS  # 0 while running
+    return any(s is not None and s.exited_at  # 0 while running
+               and _age(s.id, "exited", s.exited_at, now) < COMPLETION_DELIVERY_GRACE_SECONDS
                and not process_registry.is_completion_consumed(s.id)
                for s in (process_registry.get(sid) for sid in owed if sid))
 

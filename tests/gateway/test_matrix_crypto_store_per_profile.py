@@ -97,3 +97,21 @@ def test_e2ee_setup_refuses_a_store_under_a_deleted_or_renamed_profile_home(tmp_
     api = MagicMock(session=MagicMock(close=AsyncMock()))
     assert asyncio.run(adapter._connect_setup_e2ee(MagicMock(), api, MagicMock())) is False
     assert not home.exists()
+
+
+@pytest.mark.parametrize("where", ("outside", "profiles-root"))
+def test_recovery_key_dir_outside_every_named_home_gets_no_elevated_grant(tmp_path, monkeypatch, where):
+    """An operator-chosen key path outside every named home stays a plain mkdir: no elevated ACL repair."""
+    import hermes_dir_acl
+    from pathlib import Path
+
+    granted = []
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "_granted", set())
+    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **_k: granted.append(Path(p)) or True)
+    target = tmp_path / {"outside": "secure", "profiles-root": ".hermes/profiles"}[where] / "matrix-recovery-key.txt"
+    target.parent.mkdir(parents=True)
+    monkeypatch.setattr(matrix_adapter, "_recovery_key_output_path", lambda: target)
+    assert matrix_adapter._get_matrix_recovery_key_output_target() == (target, "")
+    assert matrix_adapter._write_matrix_recovery_key_output_file("key") == target
+    assert granted == []

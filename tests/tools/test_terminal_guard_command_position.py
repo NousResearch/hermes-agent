@@ -6,6 +6,10 @@ the command, so a read-only command or a package install that merely mentioned o
 was refused as if it started a watcher: ``ls -d node_modules/vite``,
 ``pip show uvicorn``, ``npm install nodemon``. Both directions matter: over-matching
 blocks ordinary work, under-matching lets a real dev server hang the call.
+
+Regression for #159028: a detached ``docker compose up -d`` followed by a log check
+without follow mode (``docker compose logs --tail 20``) was refused, although
+``docker logs`` prints and returns.
 """
 
 import pytest
@@ -57,6 +61,11 @@ FALSE_POSITIVES = [
     "docker compose up --detach web",
     "docker compose up -d && curl -s localhost:3000/health",
     "docker compose up -d && sleep 5 && docker compose ps",
+    # a log check without follow mode prints and returns
+    "docker compose up -d && sleep 8 && docker compose logs --tail 20",
+    "docker compose up -d; sleep 15; docker logs app 2>&1 | tail -3",
+    "docker compose up -d && docker compose -f dev.yml logs --tail=50 web",
+    "docker compose up -d && docker logs --since 5m -t app",
     ".venv/bin/python -m pip install uvicorn",
     "git switch -c bump-vite",
     "grep -q vite package.json 2>/dev/null && npm run build",
@@ -180,6 +189,11 @@ TRUE_POSITIVES = [
     "case $1 in\n  test ) npm run dev ;;\nesac",
     "docker compose run web npm run dev up -d",
     "docker compose up -d && docker compose --profile dev logs -f",
+    "docker compose up -d; docker logs -f app",
+    "docker compose up -d && docker compose logs --follow app",
+    "docker compose up -d && docker logs --tail 20 -tf app",
+    "docker compose up -d && docker logs app --follow=true",
+    "npm run dev; docker logs app",
     "ssh -p 2222 host uvicorn app:app",
     "docker exec -it app uvicorn app:app",
 ]

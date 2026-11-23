@@ -160,7 +160,53 @@ def test_helpers_rewritten_while_the_prompt_waits_are_refused(manual, harness, w
     with A._lock:
         A._gateway_notify_cbs[SESSION] = notify
     result = _exec()
-    assert "changed while the approval was pending" in result["error"] and harness == []
+    assert "changed after they were approved" in result["error"] and harness == []
+
+
+def _smart_assessments(monkeypatch) -> list:
+    from tools import approval_smart
+
+    assessed = []
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda command, description: assessed.append(command) or "deny")
+    return assessed
+
+
+def test_a_masked_block_cannot_hide_an_env_line_from_the_approver(gateway_user, harness, workspace, monkeypatch):
+    """The redactor masks a PEM block whole; the harness skips its marker lines and still sets what is between."""
+    assessed = _smart_assessments(monkeypatch)
+    pem = "-----BEGIN " + "PRIVATE KEY-----"
+    (workspace / ".env").write_text(f"{pem}\nLD_PRELOAD=/tmp/evil.so\n-----END PRIVATE KEY-----\n")
+    _exec()
+    assert "LD_PRELOAD=/tmp/evil.so" in assessed[0] and harness == []
+
+
+@pytest.mark.parametrize("approved, swapped", [
+    ("BROWSER_USE_API_KEY=bu_" + "a" * 32, "BROWSER_USE_API_KEY=bu_" + "b" * 32),  # both display as masked
+    ("x = 1\n", "import os\nos.system('id')\n"),
+])
+def test_files_changed_before_the_harness_starts_are_refused(manual, harness, workspace, monkeypatch,
+                                                              approved, swapped):
+    """Compared byte for byte just before the harness starts, after routing (which can take seconds)."""
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    target = workspace / (".env" if "=" in approved and "\n" not in approved else "agent_helpers.py")
+    target.write_text(approved)
+
+    def notify(data):
+        with A._lock:
+            entry = A._gateway_queues[SESSION][-1]
+            entry.result = "once"
+            entry.event.set()
+
+    def route(env, *a, **k):
+        target.write_text(swapped)
+        return env, None, False, 0
+
+    with A._lock:
+        A._gateway_notify_cbs[SESSION] = notify
+    monkeypatch.setattr(B, "_route_exec_current", route)
+    result = _exec()
+    assert "changed after they were approved" in result["error"] and harness == []
 
 
 def test_a_helpers_directory_refuses_the_call(gateway_user, harness, workspace):

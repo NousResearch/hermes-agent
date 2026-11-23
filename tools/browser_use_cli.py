@@ -781,8 +781,9 @@ def _no_code_error(code: str) -> Optional[str]:
     return None
 
 
-def _launch_refusal(code: str, session: str, task_id: Optional[str]) -> Optional[str]:
-    """The tool error that stops this call before anything launches, or None.
+def _launch_refusal(code: str, session: str, task_id: Optional[str]) -> tuple[Optional[str], Optional[tuple]]:
+    """``(the tool error that stops this call before anything launches, or None; the workspace files a
+    person approved, or None when nobody was shown them)``.
 
     The user's approval comes last, so a call that would fail anyway never asks. The harness runs
     the code, and what it loads from the workspace first, as Python on this host whatever browser
@@ -791,33 +792,42 @@ def _launch_refusal(code: str, session: str, task_id: Optional[str]) -> Optional
     from tools.registry import tool_error
     if session and not _SESSION_RE.match(session):
         return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
-                          "dashes, or underscores (e.g. 'r7k2').")
+                          "dashes, or underscores (e.g. 'r7k2')."), None
     from tools.approval import check_browser_exec_guard
-    shown: list[str] = []
+    shown: list[tuple] = []
 
     def script() -> str:
-        shown.append(_workspace_listing(task_id))
-        return code + shown[-1]
+        shown.append(_workspace_files(task_id))
+        return code + _workspace_listing(shown[-1])
 
     try:
         guard = check_browser_exec_guard(script)
-        # Another call (a delegated child, a background job) can rewrite the workspace while the prompt waits:
-        # what runs must be what was shown.
-        changed = bool(shown) and guard.get("approved", False) and _workspace_listing(task_id) != shown[-1]
     except _UnshowableWorkspaceFile as exc:
         return tool_error(f"browser_exec was not run: {exc}, so the approval could not show everything "
-                          "this call would run. Remove or fix that file and retry.")
-    if changed:
-        return tool_error("browser_exec was not run: the workspace files it loads changed while the approval "
-                          "was pending, so what was approved is not what would run. Retry to be asked again.")
+                          "this call would run. Remove or fix that file and retry."), None
     if not guard.get("approved", False):
         return tool_error(guard.get("message") or "browser_exec blocked by approval guard.",
-                          **({"user_summary": guard["user_summary"]} if guard.get("user_summary") else {}))
+                          **({"user_summary": guard["user_summary"]} if guard.get("user_summary") else {})), None
     if guard.get("user_approved"):
         # A stale interrupt bit from the approval wait must not kill the just-approved run.
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
-    return None
+    return None, (shown[-1] if shown else None)
+
+
+def _workspace_changed_refusal(task_id: Optional[str], approved: tuple) -> Optional[str]:
+    """Refusal when the workspace files differ, byte for byte, from the ones that were approved. Another call (a
+    delegated child, a background job) can rewrite them while the prompt waits or the route is set up; checked
+    just before the harness starts, so what runs is what was shown."""
+    from tools.registry import tool_error
+    try:
+        unchanged = _workspace_files(task_id) == approved
+    except _UnshowableWorkspaceFile as exc:
+        return tool_error(f"browser_exec was not run: {exc}, so it is no longer what was approved.")
+    if unchanged:
+        return None
+    return tool_error("browser_exec was not run: the workspace files it loads changed after they were approved, "
+                      "so what was approved is not what would run. Retry to be asked again.")
 
 
 class _UnshowableWorkspaceFile(Exception):
@@ -831,32 +841,45 @@ _WORKSPACE_LOADED_FILES = (("agent_helpers.py", "imported before the code"),
 _WORKSPACE_LISTING_MAX_BYTES = 256 * 1024
 
 
-def _workspace_listing(task_id: Optional[str]) -> str:
-    """The workspace files the harness loads, as it will read them, for the approval to show."""
+def _workspace_files(task_id: Optional[str]) -> tuple:
+    """``((path, role, raw bytes or None when absent), ...)`` for each workspace file the harness loads."""
     workspace = _workspace_dir(task_id)
     if not workspace:
         raise _UnshowableWorkspaceFile("no browser workspace could be prepared, so the harness would load "
                                        "the files of its default workspace")
-    return "".join(_loaded_file_listing(Path(workspace).expanduser() / name, role)
-                   for name, role in _WORKSPACE_LOADED_FILES)
+    paths = ((Path(workspace).expanduser() / name, role) for name, role in _WORKSPACE_LOADED_FILES)
+    return tuple((path, role, _read_loaded_file(path)) for path, role in paths)
+
+
+def _workspace_listing(files: tuple) -> str:
+    """The workspace files, as the harness will read them, for the approval to show."""
+    return "".join(_loaded_file_listing(path, role, raw) for path, role, raw in files if raw is not None)
 
 
 def _env_listing(text: str) -> str:
-    """A workspace ``.env`` as the harness splits it (``str.splitlines``), with secret values masked: the
-    listing also goes to the smart approver's model and onto a chat card, and these values were never
-    shown to either."""
+    """A workspace ``.env`` as the harness parses it (``browser_harness.helpers._load_env_file``): one
+    ``KEY=value`` per line it would set, comments and lines without ``=`` dropped. Each line is redacted on its
+    own, so masking a secret value cannot swallow a neighbouring line; the listing also goes to the smart
+    approver's model and onto a chat card, and these values were never shown to either."""
     from agent.redact import redact_sensitive_text
-    return redact_sensitive_text("\n".join(text.splitlines()), force=True, secret_file=True)
+    shown = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        masked = redact_sensitive_text(f"{key}={value.strip(chr(34)).strip(chr(39))}", force=True, secret_file=True)
+        shown.append(masked if masked.startswith(f"{key}=") else f"{key}=***")
+    return "\n".join(shown)
 
 
-def _loaded_file_listing(path: Path, role: str) -> str:
-    """One loaded file's listing ("" when absent). Read without blocking or following a FIFO, capped,
-    and decoded the way the harness reads it (Python source with its coding cookie; ``.env`` split into
-    lines like ``str.splitlines``), never truncated."""
+def _read_loaded_file(path: Path) -> Optional[bytes]:
+    """A loaded file's bytes (None when absent): read without blocking or following a FIFO, capped, never
+    truncated."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except FileNotFoundError:
-        return ""
+        return None
     except OSError as exc:
         raise _UnshowableWorkspaceFile(f"{path} cannot be read ({exc.strerror})") from exc
     try:
@@ -871,8 +894,14 @@ def _loaded_file_listing(path: Path, role: str) -> str:
         os.close(fd)
     if len(raw) > _WORKSPACE_LISTING_MAX_BYTES:
         raise _UnshowableWorkspaceFile(f"{path} is larger than {_WORKSPACE_LISTING_MAX_BYTES // 1024} KB")
+    return raw
+
+
+def _loaded_file_listing(path: Path, role: str, raw: bytes) -> str:
+    """One loaded file's listing, decoded the way the harness reads it (Python source with its coding cookie;
+    ``.env`` as ``_load_env_file`` parses it)."""
     try:
-        text = importlib.util.decode_source(raw) if path.suffix == ".py" else _env_listing(raw.decode("utf-8"))
+        text = importlib.util.decode_source(raw) if path.suffix == ".py" else _env_listing(raw.decode("utf-8-sig"))
     except (SyntaxError, UnicodeDecodeError, LookupError) as exc:
         raise _UnshowableWorkspaceFile(f"{path} cannot be decoded ({exc})") from exc
     return f"\n\n# --- {path} ({role}) ---\n{text}"
@@ -897,7 +926,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if not cmd:
         return tool_error("browser-harness is missing from Hermes's Python environment. "
                           "Run `hermes update` to re-sync it.")
-    if refusal := _launch_refusal(code, session, task_id):
+    refusal, approved_files = _launch_refusal(code, session, task_id)
+    if refusal:
         return refusal
     # One endpoint per call: any private URL sends the whole call to the local sidecar. A call with no URL
     # literal stays on the route the previous call took.
@@ -941,6 +971,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     started = time.time()
 
     def dispatch() -> dict[str, Any]:
+        if approved_files is not None and (changed := _workspace_changed_refusal(task_id, approved_files)):
+            return {"error_result": changed}
         _attach_vault_supervisor(env, task_id)
         with _driven_daemons_lock:
             daemon = daemon_identity(env)

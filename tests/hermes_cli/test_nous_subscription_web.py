@@ -13,7 +13,7 @@ def web_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for name in ("BRAVE_SEARCH_API_KEY", "SEARXNG_URL"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "_has_browser_harness", lambda: False)
 
     def configure(web, *, credentials="", enabled=True, gateway_ready=False):
         (tmp_path / ".env").write_text(credentials, encoding="utf-8")

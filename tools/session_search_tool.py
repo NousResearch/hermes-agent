@@ -226,6 +226,62 @@ def _get_message_storage_state(persistence, message_id) -> Optional[MessageStora
                                   "message storage-state lookup failed for %s", message_id)) or None
 
 
+_RECALL_TOOL_NAMES = frozenset({"session_search", "tool_search"})
+
+
+def _json_or_value(value: Any) -> Any:
+    """``value`` decoded when it is a JSON string (tool-call arguments are stored either way)."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _is_recall_only_call(call: Any) -> bool:
+    """True for a ``session_search``/``tool_search`` call, or a ``tool_call`` bridge whose nested
+    calls are all such lookups. The bridge also runs real deferred work (``write_file``…), so any
+    other nested name keeps the row as history."""
+    fn = call.get("function") if isinstance(call, dict) else None
+    name = fn.get("name") if isinstance(fn, dict) else None
+    if name in _RECALL_TOOL_NAMES:
+        return True
+    if name != "tool_call":
+        return False
+    try:
+        args = _json_or_value(fn.get("arguments"))
+        nested = _json_or_value(args.get("calls")) if isinstance(args, dict) else None
+    except (TypeError, ValueError):
+        return False
+    return isinstance(nested, list) and bool(nested) and all(
+        isinstance(inner, dict) and inner.get("name") in _RECALL_TOOL_NAMES for inner in nested)
+
+
+def _is_search_echo(persistence, hit: SearchHit) -> bool:
+    """True for a text-less assistant row whose tool calls are only recall lookups: it holds the
+    query words because an earlier agent *searched* for them, not because it did the work."""
+    if hit.role != "assistant" or not hit.session_id or not hit.message_id:
+        return False
+    view = _quiet(lambda: persistence.messages.read_around(hit.session_id, hit.message_id, window=0), None,
+                  "search-echo lookup failed for %s", hit.message_id)
+    row = next((m for m in (view.window if view else ()) if m.id == hit.message_id), None)
+    if row is None or _content_text(row.content).strip() or not row.tool_calls:
+        return False
+    return all(_is_recall_only_call(call) for call in row.tool_calls)
+
+
+_FTS_UNIT_RE = re.compile(r'"[^"]*"|\S+')
+
+
+def _any_term_query(query: str) -> Optional[str]:
+    """``query`` rewritten as an any-term FTS ``OR`` query, or None when that does not apply:
+    explicit ``OR``/``NOT`` (exact semantics were asked for) or fewer than two searchable
+    units. Quoted phrases stay whole; the store sanitizes each unit as it does the original."""
+    units = []
+    for unit in _FTS_UNIT_RE.findall(query):
+        if unit in ("OR", "NOT"):
+            return None
+        if unit != "AND" and re.search(r"\w", unit):
+            units.append(unit)
+    return " OR ".join(units) if len(units) >= 2 else None
+
+
 def _is_compacted_state(state: Optional[MessageStorageState]) -> bool:
     """Compaction-archived rows only; rewound (rewind/undo) rows must stay hidden."""
     return state is not None and state.visibility is RowVisibility.COMPACTION_ARCHIVED
@@ -449,8 +505,9 @@ def _hydrate_hit(persistence, lineage_root: str, hit: SearchHit, result_detail: 
 def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[list[str]] = None) -> str:
-    """Discovery shape: FTS5 plus adaptive or full result hydration."""
+              exclude_session_ids: Optional[list[str]] = None, relaxed_from: Optional[str] = None) -> str:
+    """Discovery shape: FTS5 plus adaptive or full result hydration. ``relaxed_from`` is set on the
+    one any-term retry and names the query that matched only rows already in context."""
     current_lineage_root = _resolve_lineage(persistence, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(persistence, exclude_session_ids or [])
     title_result = _title_match_result(persistence, query, current_lineage_root)
@@ -478,7 +535,8 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         return _discover_payload(persistence, query, detail, [], message=(
             "No matching sessions found. FTS5 ANDs all terms by default — "
             "broaden with OR (`alpha OR beta`), exact-match with quoted "
-            "phrases, exclude with NOT, or prefix-match with `deploy*`."))
+            "phrases, exclude with NOT, or prefix-match with `deploy*`."),
+            **({"relaxed_from": relaxed_from} if relaxed_from is not None else {}))
     seen_sessions: dict[str, Optional[SearchHit]] = {}
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
@@ -526,7 +584,19 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
+        if resolved_sid not in seen_sessions and _is_search_echo(persistence, r):
+            continue
         seen_sessions.setdefault(resolved_sid, r)
+    # The asking session's own rows (its prompt, the query it just wrote) and earlier recall
+    # calls often hold the only all-terms match. They are skipped above, but their presence kept
+    # the store's any-term fallback (which runs only on zero rows) from firing, so a fresh
+    # question found nothing. Retry once with an explicit OR query: the retry's query contains
+    # OR, so _any_term_query returns None for it and it cannot recurse again. A hidden-lineage
+    # disclosure is kept as the answer instead: those rows ARE the match.
+    if not seen_sessions and not title_result and not hidden_rows and relaxed_from is None and (
+            any_term := _any_term_query(query)):
+        return _discover(persistence, any_term, role_filter, limit, sort, detail, current_session_id,
+                         link_profile, after_ts, before_ts, exclude_session_ids, relaxed_from=query)
     for lineage_root, hit in seen_sessions.items():
         if hit is None:
             continue
@@ -537,6 +607,9 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(persistence, query, detail, results, sessions_searched=len(seen_sessions),
+        **({"relaxed_from": relaxed_from, "message": (
+            "No other session matched every term; showing sessions that match any term.")}
+           if relaxed_from is not None else {}),
         **({"hidden_same_lineage": {"count": hidden_rows, "sessions": list(hidden_sessions.values()),
             "note": f"{hidden_rows} matching message(s) in {len(hidden_sessions)} same-lineage session(s) "
             "were hidden because they are still treated as live context (unended). This can be a gateway "

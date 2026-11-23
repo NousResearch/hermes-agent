@@ -318,6 +318,58 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_own_echo_does_not_block_or_relaxed_retry(self, db, persistence):
+        # The asking session's own rows (its prompt, the query it just wrote) are often the
+        # only rows that contain EVERY query word. They are skipped as live context, so the
+        # search must still fall back to any-word matching instead of returning nothing.
+        _seed_modpack_sessions(db)
+        seed_session(db, "s_live", "cli")
+        seed_messages(db, "s_live", {"role": "user", "content": "recall the neoforge spawning pipeline decision"})
+        result = json.loads(session_search(query="neoforge spawning pipeline decision", db=db,
+                                           persistence=persistence, current_session_id="s_live"))
+        sids = {r["session_id"] for r in result["results"]}
+        assert "s_live" not in sids
+        assert sids & {"s_oldest", "s_newest"}, result
+        assert result["relaxed_from"] == "neoforge spawning pipeline decision"
+
+    def test_prior_search_call_is_not_a_content_match(self, db, persistence):
+        # An earlier session that only *ran* the same session_search holds every query word
+        # in its tool_calls JSON. It must not count as history, or it shadows the real
+        # sessions and blocks the any-word retry.
+        _seed_modpack_sessions(db)
+        seed_session(db, "s_echo", "cli")
+        seed_messages(db, "s_echo", {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "c1", "type": "function", "function": {
+                "name": "session_search",
+                "arguments": json.dumps({"query": "neoforge spawning pipeline decision"})}}]})
+        db.sessions.end("s_echo", "user_exit")
+        result = json.loads(session_search(query="neoforge spawning pipeline decision", db=db,
+                                           persistence=persistence))
+        sids = {r["session_id"] for r in result["results"]}
+        assert "s_echo" not in sids
+        assert sids & {"s_oldest", "s_newest"}, result
+
+    def test_deferred_action_is_history_not_search_echo(self, db, persistence):
+        # tool_call is the ordinary bridge for deferred work, not just searches.
+        # An earlier file write can hold the only searchable record of the work.
+        query = "neoforge spawning pipeline decision"
+        seed_session(db, "s_action", "cli")
+        seed_messages(db, "s_action", {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "action", "type": "function", "function": {
+                "name": "tool_call", "arguments": json.dumps({"calls": [{
+                    "name": "write_file", "arguments": {"path": "notes/pipeline.md", "content": query}}]})}}]})
+        db.sessions.end("s_action", "user_exit")
+        seed_session(db, "s_echo", "cli")
+        seed_messages(db, "s_echo", {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "lookup", "type": "function", "function": {
+                "name": "tool_call", "arguments": json.dumps({"calls": [{
+                    "name": "session_search", "arguments": {"query": query}}]})}}]})
+        db.sessions.end("s_echo", "user_exit")
+
+        result = json.loads(session_search(query=query, sort="newest", db=db, persistence=persistence))
+        assert result["success"] is True
+        assert [hit["session_id"] for hit in result["results"]] == ["s_action"], result
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db, persistence):

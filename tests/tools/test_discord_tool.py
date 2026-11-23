@@ -296,6 +296,16 @@ class TestCreateThread:
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
 
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_duration_follows_config_unless_explicit(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("DISCORD_THREAD_AUTO_ARCHIVE_DURATION", "10080")
+        mock_req.return_value = {"id": "802", "name": "Long"}
+        discord_core(action="create_thread", channel_id="11", name="Long")
+        assert mock_req.call_args.kwargs["body"]["auto_archive_duration"] == 10080
+        discord_core(action="create_thread", channel_id="11", name="Long", auto_archive_duration=60)
+        assert mock_req.call_args.kwargs["body"]["auto_archive_duration"] == 60
+
 
 # ---------------------------------------------------------------------------
 # Error handling

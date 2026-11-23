@@ -4714,6 +4714,25 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             return 32 * 1024 * 1024
         return max(0, value)
 
+    def _discord_thread_auto_archive_duration(self) -> int:
+        """Auto-archive window (minutes) for threads Hermes creates itself. Default 1440 (24 h)."""
+        configured = self.config.extra.get("thread_auto_archive_duration")
+        if configured is None:
+            configured = _scoped_gate_env("DISCORD_THREAD_AUTO_ARCHIVE_DURATION") or None
+        if configured is None or configured == "":
+            return 1440
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            value = None
+        if value not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            logger.warning(
+                "[Discord] Invalid thread_auto_archive_duration value %r, falling back to 1440",
+                configured,
+            )
+            return 1440
+        return value
+
     @staticmethod
     def _is_discord_voice_message_attachment(att: Any) -> bool:
         """Return True when a Discord audio attachment is a native voice note."""
@@ -5231,13 +5250,18 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         last_fallback_error: Exception | None = None
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(
+                    name=thread_name, auto_archive_duration=self._discord_thread_auto_archive_duration(),
+                )
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
-                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
+                    thread = await seed_msg.create_thread(
+                        name=thread_name, auto_archive_duration=self._discord_thread_auto_archive_duration(),
+                        reason=reason,
+                    )
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
@@ -5334,7 +5358,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(
+                    name=thread_name, auto_archive_duration=self._discord_thread_auto_archive_duration(),
+                    reason=reason,
+                )
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5347,7 +5374,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 return None
             seed_msg = await send(t("platform.discord.thread.handoff_seed", name=thread_name))
             thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
+                name=thread_name, auto_archive_duration=self._discord_thread_auto_archive_duration(),
+                reason=reason,
             )
             return str(thread.id)
         except Exception as fallback_error:
@@ -7010,6 +7038,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
+        ("thread_auto_archive_duration", "DISCORD_THREAD_AUTO_ARCHIVE_DURATION"),
         ("reactions", "DISCORD_REACTIONS"),
     ):
         if key in discord_cfg:

@@ -21,8 +21,19 @@ def _rule(description):
 
 
 def _sample(parts, size, seed):
-    cases = ["".join(c) for c in itertools.product(*parts)]
-    return random.Random(seed).sample(cases, min(size, len(cases)))
+    """``size`` distinct seeded picks from the product of ``parts``, built one by one: the product can hold tens of
+    millions of commands, so pick indexes first (``itertools.product`` order) and join only the picked commands."""
+    total = 1
+    for part in parts:
+        total *= len(part)
+    cases = []
+    for index in random.Random(seed).sample(range(total), min(size, total)):
+        words = []
+        for part in reversed(parts):
+            index, at = divmod(index, len(part))
+            words.append(part[at])
+        cases.append("".join(reversed(words)))
+    return cases
 
 
 _BLANKS = [" ", "  ", "\t", "\n", " \n "]

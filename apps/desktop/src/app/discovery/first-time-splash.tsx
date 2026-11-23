@@ -68,9 +68,9 @@ interface PlacesProps extends StepProps {
 
 /**
  * Step 1 (Figma 18695:17147): what each place in the nav is for, one row each in one card. The row a
- * pointer, focus or tap last reached is the place, and while the pointer or focus is still on the
- * rows it says its example in place of its line (18695:17294) and its place is ringed in the
- * navigation where it sits, with a line from the row, as the rename splash does. Every row reached carries the seen check for the rest of the showing
+ * pointer, focus or tap last reached is the place, Chats from the start: it says its example in place
+ * of its line (18695:17294) and its place is ringed in the navigation where it sits, with a line
+ * from the row, so the card opens already pointing at something. Every row reached carries the seen check for the rest of the showing
  * (18695:17833). Each row's name stays its place and line for assistive tech; the example and
  * the check are its description.
  */
@@ -80,10 +80,6 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
   const place = useStore($firstTimeSplashPlace)
   const seen = useStore($firstTimeSplashSeen)
   const id = useId()
-  // The rows under the pointer or holding focus: the place is pointed at only then.
-  const [pointerOver, setPointerOver] = useState(false)
-  const [focusWithin, setFocusWithin] = useState(false)
-  const pointing = pointerOver || focusWithin
   const activeRowRef = useRef<HTMLButtonElement | null>(null)
 
   // The active row's button, for the spotlight's connector.
@@ -105,10 +101,6 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
       <ul
         aria-label={copy.listLabel}
         className="discovery-welcome-card discovery-welcome-places"
-        onBlur={event => setFocusWithin(event.currentTarget.contains(event.relatedTarget))}
-        onFocus={() => setFocusWithin(true)}
-        onPointerEnter={() => setPointerOver(true)}
-        onPointerLeave={() => setPointerOver(false)}
       >
         {FIRST_TIME_PLACES.map(row => {
           const active = row === place
@@ -166,7 +158,7 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
           {copy.style.action}
         </Button>
       </div>
-      {pointing && place && <NavSpotlight anchor={activeRowRef} key={place} spot={place} />}
+      {place && <NavSpotlight anchor={activeRowRef} key={place} spot={place} />}
     </>
   )
 }

@@ -286,11 +286,12 @@ def _normalize_repo(url: str) -> str:
     scp = _SCP_URL_RE.match(text)
     if scp:
         host, path = scp.group(1), scp.group(2)
-    elif "://" in text:
-        parts = urlsplit(text)
-        host, path = parts.hostname or "", parts.path
     else:
-        host, path = "", text
+        try:
+            parts = urlsplit(text) if "://" in text else None
+        except ValueError:  # a malformed URL (``https://[bad``) is compared as plain text
+            parts = None
+        host, path = (parts.hostname or "", parts.path) if parts else ("", text)
     host = host.lower().removeprefix("www.")
     path = path.strip("/").removesuffix(".git").rstrip("/").lower()
     return f"{host}/{path}" if host else path

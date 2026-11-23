@@ -72,18 +72,22 @@ def test_single_query_approve_does_not_waive_cron_deny(monkeypatch):
 
 
 def test_single_query_approve_does_not_waive_unattended_deny(monkeypatch):
-    """approve on -q plus deny on a webhook session blocks execute_code."""
+    """approve on -q plus deny on a webhook session blocks code, shell, and file writes."""
     _prepare(monkeypatch, single_query="approve", unattended="deny")
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
     tokens = set_session_vars(platform="webhook")
     try:
         code = approval.check_execute_code_guard("import os", "local")
         dangerous = approval.check_dangerous_command("rm -rf /tmp/stuff", "local")
+        write = _check_approval_required_write([os.path.expanduser("~/.ssh/config")])
     finally:
         clear_session_vars(tokens)
 
     assert code["approved"] is False and "unattended_mode" in code["message"]
     assert dangerous["approved"] is False and "unattended_mode" in dangerous["message"]
+    # The write gate words its own refusal, like its cron and -q ones: it names the write and warns the
+    # model off retrying it through another tool.
+    assert "unattended_mode" in (write or "") and "Do NOT retry" in (write or "")
 
 
 def test_first_deny_supplies_the_block_message(monkeypatch):

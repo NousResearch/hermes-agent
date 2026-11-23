@@ -669,6 +669,8 @@ export async function installDesktopPluginFromGit(
             await writeDesktopHalfMarker(staged, {
               package: pluginName,
               repo: gitUrl,
+              sha: head ?? await headSha(gitBin, cloneRoot),
+              ...(catalogName ? { catalogName } : {}),
               // The published folder, not the temp clone. The clone is deleted
               // below; a source that disappears is ghost-pruned on the next
               // reconcile when no local `plugins/<name>/desktop` exists to

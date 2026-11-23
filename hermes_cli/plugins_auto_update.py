@@ -139,7 +139,7 @@ def _clear_check_marker(home: Path) -> None:
 
 # ── update all, unattended ────────────────────────────────────────────────────────────────────
 
-def _apply_one(name: str) -> dict[str, str]:
+def _apply_one(name: str) -> dict[str, Any]:
     """One plan row through the dashboard's non-interactive update. A widened plugin (catalog pin or
     Git update) or a caution scan of a git update is NOT accepted on the user's behalf: the row comes
     back ``needs_review`` (a catalog re-pin accepts caution: a reviewer read that pin at admission).
@@ -157,7 +157,8 @@ def _apply_one(name: str) -> dict[str, str]:
     if not res.get("ok"):
         return {"name": name, "status": "failed", "detail": str(res.get("error") or "")}
     return {"name": str(res.get("name") or name), "status": "current" if res.get("unchanged") else "updated",
-            "detail": ""}
+            "detail": "", **{k: res[k] for k in ("installed_repo", "installed_subdir", "installed_sha",
+                                                    "has_desktop_half") if k in res}}
 
 
 def update_all_unattended() -> dict[str, Any]:

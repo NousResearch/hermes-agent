@@ -1696,6 +1696,7 @@ def _plugin_rows() -> list[dict]:
             # Tools this package's own code registered: Desktop's tool-media renderer ownership check.
             "tools": owned_tools.get(key, []),
             **cat.catalog_row_fields(_dir, pins, versions),
+            **(pc.installed_source_fields(_dir_path) if _dir_path else {}),
             **({"update_available": True, "update_target": target}
                if _dir_path and (target := git_updates.get(_dir_path.name)) else {}),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
@@ -1844,7 +1845,8 @@ def _plugins_update(rid, params):
         return _err(rid, 4021, result.get("error") or "update failed")
     payload = {"ok": True, "unchanged": bool(result.get("unchanged")), "name": result.get("name") or name,
                "warnings": list(result.get("warnings") or []),
-               **{k: result[k] for k in ("sha", "gateway_reloaded", "activation", "restart_required") if k in result}}
+               **{k: result[k] for k in ("sha", "gateway_reloaded", "activation", "restart_required",
+                                          "installed_repo", "installed_subdir", "installed_sha", "has_desktop_half") if k in result}}
     if result.get("unchanged"):
         return _ok(rid, payload)
     return _ok(rid, _with_activation(payload, payload["name"]))

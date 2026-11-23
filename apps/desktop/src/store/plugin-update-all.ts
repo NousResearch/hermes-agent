@@ -1,7 +1,11 @@
 import type { PluginsManageResult, PluginUpdateAllRow } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { type GatewayRequest, loadAgentPlugins } from '@/store/agent-plugins'
+import { notify } from '@/store/notifications'
+import { refreshUpdatedDesktopHalf } from '@/store/plugin-update-desktop'
 
 /**
  * "Update all" and the auto-update switch of the Plugins tab, over `plugins.manage update_all` /
@@ -57,20 +61,38 @@ const countOf = (rows: PluginUpdateAllRow[], status: PluginUpdateAllRow['status'
 
 export async function updateAllAgentPlugins(
   request: GatewayRequest,
-  profile: null | string
+  profile: null | string,
+  remote = false
 ): Promise<PluginUpdateAllSummary> {
   markRunning(profile, true)
 
   try {
+    // Capture this profile's pre-update flags; never use the shared foreground list here.
+    const initial = remote && !isBrowserHostedDesktop()
+      ? await request<PluginsManageResult>('plugins.manage', scoped({ action: 'list' }, profile)).catch(() => undefined)
+      : undefined
+
     const result = await request<PluginsManageResult>(
       'plugins.manage',
       scoped({ action: 'update_all' }, profile),
       UPDATE_ALL_TIMEOUT_MS
     )
 
-    const rows = result?.results ?? []
+    const rows: PluginUpdateAllRow[] = []
 
-    if (countOf(rows, 'updated')) {
+    for (const row of result?.results ?? []) {
+      const previous = initial?.plugins?.find(plugin => plugin.name === row.name)
+
+      if (row.status === 'updated' && !(await refreshUpdatedDesktopHalf(row, remote, previous?.has_desktop_half, previous?.catalog_name ?? undefined))) {
+        const detail = translateNow('skills.plugins.updateDesktopPartial', row.name)
+        notify({ kind: 'warning', message: detail })
+        rows.push({ ...row, status: 'failed', detail })
+      } else {
+        rows.push(row)
+      }
+    }
+
+    if (countOf(result?.results ?? [], 'updated')) {
       await loadAgentPlugins(request, profile)
     }
 

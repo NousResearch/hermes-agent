@@ -718,6 +718,8 @@ class AgentPluginRow(Result):
     servers: list[PluginServerRow]
     catalog_name: str | None = None
     catalog_tier: str | None = None
+    installed_repo: str | None = None
+    installed_subdir: str | None = None
     installed_sha: str | None = None
     catalog_sha: str | None = None
     catalog_version: str | None = None
@@ -833,6 +835,10 @@ class PluginUpdateAllRow(Result):
     name: str
     status: PluginUpdateAllStatus
     detail: str = ""
+    installed_repo: str | None = None
+    installed_subdir: str | None = None
+    installed_sha: str | None = None
+    has_desktop_half: bool | None = None
 
 
 class PluginUpdateAllSkip(Result):
@@ -874,6 +880,10 @@ class PluginsManageResult(Result):
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None
+    installed_repo: str | None = None
+    installed_subdir: str | None = None
+    installed_sha: str | None = None
+    has_desktop_half: bool | None = None
     consent_required: bool | None = None
     delta: dict[str, list[str]] | None = None
     delta_lines: list[str] | None = None

@@ -17,6 +17,7 @@ export const enPluginUpdate: PluginUpdateTranslations = {
   },
   updateToPin: (sha: string) => `Update to ${sha}`,
   updateFailed: (name: string) => `Could not update ${name}`,
+  updateDesktopPartial: (name: string) => `${name} was updated on the agent, but its Desktop half could not be refreshed. Reinstall the Desktop half and try again.`,
   updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
   updateConsentTitle: (name: string) => `${name} asks for more`,
   updateConsentBody: (name: string, sha: string) =>

@@ -15,7 +15,7 @@ import {
   setPluginAutoUpdate,
   updateAllAgentPlugins
 } from '@/store/plugin-update-all'
-import { $gatewayState } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { CatalogSwitch } from '../catalog/catalog-switch'
 
@@ -38,7 +38,7 @@ export function PluginUpdateAllActions({ scope }: { scope: null | string }) {
 
   const updateAll = async () => {
     try {
-      const summary = await updateAllAgentPlugins(requestGateway, scope)
+      const summary = await updateAllAgentPlugins(requestGateway, scope, $connection.get()?.mode === 'remote')
 
       if (!summary.rows.length) {
         notify({ kind: 'success', message: p.updateAllNone })

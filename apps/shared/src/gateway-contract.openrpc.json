@@ -5170,6 +5170,30 @@
             "default": null,
             "title": "Catalog Tier"
           },
+          "installed_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Repo"
+          },
+          "installed_subdir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Subdir"
+          },
           "installed_sha": {
             "anyOf": [
               {
@@ -29134,6 +29158,54 @@
             "default": "",
             "title": "Detail",
             "type": "string"
+          },
+          "installed_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Repo"
+          },
+          "installed_subdir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Subdir"
+          },
+          "installed_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Sha"
+          },
+          "has_desktop_half": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Has Desktop Half"
           }
         },
         "required": [
@@ -29660,6 +29732,54 @@
             ],
             "default": null,
             "title": "Sha"
+          },
+          "installed_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Repo"
+          },
+          "installed_subdir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Subdir"
+          },
+          "installed_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installed Sha"
+          },
+          "has_desktop_half": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Has Desktop Half"
           },
           "consent_required": {
             "anyOf": [

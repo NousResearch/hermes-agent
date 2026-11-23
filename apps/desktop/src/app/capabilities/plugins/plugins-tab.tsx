@@ -843,7 +843,7 @@ export const PluginsTab = memo(function PluginsTab({
               })
             }}
             onAgentUpdate={row => {
-              void runPluginUpdate(requestGateway, row, scope, p).then(outcome => {
+              void runPluginUpdate(requestGateway, row, scope, p, $connection.get()?.mode === 'remote').then(outcome => {
                 if (outcome.kind === 'applied') {
                   void rescanAll(requestGateway, scope)
                 }

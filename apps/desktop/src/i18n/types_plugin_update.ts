@@ -19,6 +19,7 @@ export interface PluginUpdateTranslations {
   folderAccess: PluginFolderAccessTranslations
   updateToPin: (sha: string) => string
   updateFailed: (name: string) => string
+  updateDesktopPartial: (name: string) => string
   updated: (name: string) => string
   updateConsentTitle: (name: string) => string
   updateConsentBody: (name: string, sha: string) => string

@@ -85,6 +85,7 @@ import {
   setTileSessionFocusStartedAt,
   setTurnStartedAt
 } from './session'
+import { $sessionsWaitingOnCard, sessionNeedsInput } from './session-card-wait'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
@@ -207,7 +208,7 @@ export function liveSessionScopes(): Set<string> {
   const scopes = new Set<string>()
 
   for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
-    if (!state || (!state.busy && !state.needsInput)) {
+    if (!state || (!state.busy && !sessionNeedsInput(state, runtimeId))) {
       continue
     }
 
@@ -1136,12 +1137,12 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
 const storedIds = (
   states: Record<string, ClientSessionState>,
   sessions: readonly SessionInfo[],
-  pred: (s: ClientSessionState) => boolean
+  pred: (s: ClientSessionState, runtimeId: string) => boolean
 ) => {
   const ids = new Set<string>()
 
   for (const [runtimeId, state] of Object.entries(states)) {
-    if (!pred(state)) {
+    if (!pred(state, runtimeId)) {
       continue
     }
 
@@ -1165,12 +1166,8 @@ export const $workingSessionIds = computed(
 
 let attentionIds: readonly string[] = []
 export const $attentionSessionIds = computed(
-  [$sessionStates, $sessions],
-  (states, sessions) =>
-    (attentionIds = stableArray(
-      attentionIds,
-      storedIds(states, sessions, s => s.needsInput)
-    ))
+  [$sessionStates, $sessions, $sessionsWaitingOnCard],
+  (states, sessions) => (attentionIds = stableArray(attentionIds, storedIds(states, sessions, sessionNeedsInput)))
 )
 
 // An open session nothing has ever been sent to — the ⌘T tab whose backend

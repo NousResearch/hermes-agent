@@ -4,6 +4,7 @@ import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
+import { setSessionsWaitingOnCard } from './session-card-wait'
 import { ambientRequestFor } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
 
@@ -229,6 +230,16 @@ export interface VaultUnlockRequest extends KeyedPrompt {
 
 const EMPTY_APPROVALS: ApprovalRequest[] = []
 const $approvalQueues = atom<Record<string, ApprovalRequest[]>>({})
+
+// A folder or site card marks its session as waiting for as long as it is parked. Whatever
+// parks or removes a card, the set of waiting sessions follows the queues.
+$approvalQueues.listen(queues => {
+  setSessionsWaitingOnCard(
+    Object.entries(queues)
+      .filter(([sessionId, queue]) => sessionId && queue.some(request => !isCommandApproval(request)))
+      .map(([sessionId]) => sessionId)
+  )
+})
 const $approvalStackSizes = atom<Record<string, number>>({})
 // A replay started before a response/reset cannot resurrect the answered card.
 let approvalRevision = 0

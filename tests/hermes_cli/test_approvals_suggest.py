@@ -280,9 +280,9 @@ class TestRankingAndSafety:
     def test_every_proposable_class_is_one_the_detector_produces(self):
         """A renamed description must not leave a dead entry in the proposable list."""
         from hermes_cli.approvals_suggest import _PROPOSABLE_CLASSES
-        from tools.approval_detection import detect_dangerous_command
+        from tools.approval_detection import DANGEROUS_PATTERNS
 
-        assert {detect_dangerous_command("docker restart web")[2]} == set(_PROPOSABLE_CLASSES)
+        assert set(_PROPOSABLE_CLASSES) <= {description for _pattern, description in DANGEROUS_PATTERNS}
 
 
 # ---------------------------------------------------------------------------

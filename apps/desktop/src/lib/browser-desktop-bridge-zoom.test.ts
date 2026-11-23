@@ -39,6 +39,7 @@ describe('browser UI scale', () => {
 
     expect((await zoom.get()).percent).toBe(150)
     expect(document.documentElement.style.zoom).toBe('1.5')
+    expect(document.documentElement.style.getPropertyValue('--browser-ui-scale')).toBe('1.5')
     expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ percent: 150 }))
     stop()
     zoom.setPercent(125)

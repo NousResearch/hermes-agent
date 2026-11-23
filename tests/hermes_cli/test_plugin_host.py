@@ -142,6 +142,25 @@ def test_the_host_never_imports_a_package_planted_in_the_profile_home(tmp_path, 
         manager._plugin_host().shutdown()
 
 
+def test_an_empty_pythonpath_entry_does_not_put_the_profile_home_back_on_the_hosts_path(tmp_path, monkeypatch):
+    """``-P`` keeps the home the host starts in off its import path, but an empty ``PYTHONPATH`` entry means
+    the current directory again (``export PYTHONPATH=$PYTHONPATH:/x`` with it unset writes one)."""
+    home = _home_with_plugins(tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    planted = tmp_path / "planted.ran"
+    (home / "json.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    userlib = tmp_path / "userlib"
+    userlib.mkdir()
+    monkeypatch.setenv("PYTHONPATH", os.pathsep + str(userlib))
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
 def test_a_marked_profiles_own_launcher_is_not_used(tmp_path, monkeypatch):
     """``plugins.host.launcher`` is an argv prefix the host starts under. The backend of a profile a plugin
     runs elsewhere writes that profile's config.yaml, so only the managed overlay's launcher counts there."""

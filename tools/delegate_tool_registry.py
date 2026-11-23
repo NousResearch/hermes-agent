@@ -193,7 +193,7 @@ def steer_subagent(
         if agent is None:
             return False
         try:
-            return bool(agent.steer(text))
+            return bool(agent.steer(text, origin={"platform": "delegate-tool"}))
         except Exception as exc:
             logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
             return False

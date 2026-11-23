@@ -130,7 +130,8 @@ def _deliver(authority, session_id, generation, agent, admission_id, text):
     if not entry[1][admission_id]:
         # Ticketed by its admission id: settlement withdraws exactly it if no drain of the turn consumed it.
         ticketed = callable(getattr(agent, 'withdraw_steer', None))
-        entry[1][admission_id] = bool(agent.steer(text, ticket=admission_id) if ticketed else agent.steer(text))
+        entry[1][admission_id] = bool(agent.steer(text, ticket=admission_id, origin={"platform": "gateway-queued"})
+                                      if ticketed else agent.steer(text, origin={"platform": "gateway-queued"}))
     return entry[1][admission_id]
 
 

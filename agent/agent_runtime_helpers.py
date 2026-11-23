@@ -2655,6 +2655,28 @@ def _realign_tool_result_names(messages: list[dict[str, Any]]) -> list[dict[str,
     return aligned
 
 
+_TOOL_STEER_CLOSE_SENTINEL = "[/OUT-OF-BAND USER MESSAGE]"
+_TOOL_STEER_OPEN_SENTINEL = "[OUT-OF-BAND USER MESSAGE"
+
+
+def _neutralize_steer_sentinels(content: str) -> str:
+    """Relabel byte-exact steer sentinels quoted inside ``role:"tool"`` content.
+
+    The steer trust boundary is (role, position): only a standalone ``role:"user"`` steer row
+    appended right after the newest tool result is trusted. A marker quoted inside tool output is
+    therefore already positional - but the exact [STEER_MARKER_OPEN]/[STEER_MARKER_CLOSE] bytes
+    surviving in tool content relied on the model ignoring lookalikes (advisory). This makes the
+    containment mechanical at the pre-call choke point: the trusted shape can never reassemble from
+    tool rows. Uses the same relabel convention as the hosted-room republish layer
+    (``[member-quoted ...``); idempotent; user rows untouched (gateway origin JSON already
+    bracket-escapes itself).
+    """
+    if "OUT-OF-BAND USER MESSAGE" not in content:
+        return content
+    content = content.replace(_TOOL_STEER_CLOSE_SENTINEL, "[/tool-quoted OUT-OF-BAND USER MESSAGE]")
+    return content.replace(_TOOL_STEER_OPEN_SENTINEL, "[tool-quoted OUT-OF-BAND USER MESSAGE")
+
+
 def sanitize_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call; runs unconditionally (not
     gated on the compressor). Order matters: empty non-final messages are healed first so the
@@ -2666,7 +2688,25 @@ def sanitize_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]
     messages = _drop_results_without_ids(messages)
     messages = _pair_tool_calls_positionally(messages)
     messages = _dedupe_tool_call_ids(messages)
-    return _realign_tool_result_names(messages)
+    messages = _realign_tool_result_names(messages)
+    for _msg in messages:
+        if not isinstance(_msg, dict) or _msg.get("role") != "tool":
+            continue
+        _content = _msg.get("content")
+        if isinstance(_content, str):
+            _msg["content"] = _neutralize_steer_sentinels(_content)
+        elif isinstance(_content, list):
+            # Rebuild the text parts instead of mutating the (possibly shared) nested list:
+            # shallow-copied rows (chat_completion_helpers iteration summary) must not see their
+            # relabel persist into the stored history (the no-in-place-mutation class the
+            # comments of this file already call out).
+            _msg["content"] = [
+                {**_part, "text": _neutralize_steer_sentinels(_part["text"])}
+                if (isinstance(_part, dict) and _part.get("type") == "text"
+                    and isinstance(_part.get("text"), str)) else _part
+                for _part in _content
+            ]
+    return messages
 
 
 _ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
@@ -3239,9 +3279,10 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     """
     if num_tool_msgs <= 0 or not messages:
         return
-    steer_text = agent._drain_pending_steer()
-    if not steer_text:
+    steer_parts = agent._drain_steer_parts()
+    if not steer_parts:
         return
+    steer_text = "\n".join(text for text, _origin in steer_parts)
     # Skip non-tool messages in the tail in case something else is appended at the boundary.
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
     target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
@@ -3251,7 +3292,8 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # user message (which persists like any other user turn).
         _requeue_pending_steer(agent, steer_text)
         return
-    messages.append(steer_user_row(steer_text))
+    for part_text, part_origin in steer_parts:
+        messages.append(steer_user_row(part_text, part_origin))
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),

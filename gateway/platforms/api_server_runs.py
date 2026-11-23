@@ -1480,7 +1480,7 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
             _mark_run_event(self, run_id, "run.steered", accepted=True)
             return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
     try:
-        accepted = bool(agent.steer(steer_text))
+        accepted = bool(agent.steer(steer_text, origin={"platform": "api-server"}))
     except Exception as exc:
         logger.exception("[api_server] steer failed for run %s", run_id)
         return _json_error(_openai_error, _api_server._redact_api_error_text(exc), code="steer_failed", status=500)

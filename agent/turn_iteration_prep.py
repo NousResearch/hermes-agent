@@ -176,9 +176,9 @@ def prepare_iteration(
     # standalone user row after the newest tool result (never smeared onto the tool row: that
     # row is already persisted append-only, so replay would diverge from the live request and
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
-    _pre_api_steer = agent._drain_pending_steer()
-    if _pre_api_steer:
-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+    _pre_api_steer_parts = agent._drain_steer_parts()
+    if _pre_api_steer_parts:
+        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer_parts)
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -281,18 +281,20 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
+def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_parts: list) -> None:
+    """Append one steer marker row per drained ``(text, origin)`` part after the newest tool message;
+    with no tool message, put the text back so the post-tool-execution drain delivers it later."""
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import steer_user_row
-            messages.insert(_si + 1, steer_user_row(steer_text))
-            logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
+            for _offset, (part_text, part_origin) in enumerate(steer_parts):
+                messages.insert(_si + 1 + _offset, steer_user_row(part_text, part_origin))
+            logger.debug("Pre-API-call steer drain: appended %d user row(s) after tool msg at index %d",
+                         len(steer_parts), _si)
             return
     from agent.agent_runtime_helpers import _requeue_pending_steer
-    _requeue_pending_steer(agent, steer_text)
+    _requeue_pending_steer(agent, "\n".join(text for text, _origin in steer_parts))
 
 
 @dataclass

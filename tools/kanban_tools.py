@@ -670,7 +670,7 @@ def inject_new_comments_from_env(agent: Any) -> bool:
             + " on your kanban task from the operator (delivered mid-run). "
             + "Take it into account for the work you're doing right now:\n" + "\n".join(lines))
     try:
-        return bool(agent.steer(note))
+        return bool(agent.steer(note, origin={"platform": "kanban-comment"}))
     except Exception:
         logger.debug("comment-inject: steer failed", exc_info=True)
         return False

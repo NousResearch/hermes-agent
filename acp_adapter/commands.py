@@ -294,7 +294,7 @@ class SlashCommandsMixin:
 
         if state.is_running and hasattr(state.agent, "steer"):
             try:
-                if state.agent.steer(steer_text):
+                if state.agent.steer(steer_text, origin={"platform": "acp"}):
                     preview = steer_text[:80] + ("..." if len(steer_text) > 80 else "")
                     return f"⏩ Steer queued for the active turn: {preview}"
             except Exception as exc:

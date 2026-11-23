@@ -37,24 +37,47 @@ class _FakeTimer:
         self.cancelled = True
 
 
+class _SignallingLock:
+    """Wraps a held lock; ``acquire()`` sets ``entered`` before it blocks, so a test sees the attempt."""
+
+    def __init__(self, lock, entered):
+        self._lock, self._entered = lock, entered
+
+    def acquire(self, blocking=True, timeout=-1):
+        self._entered.set()
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc):
+        self._lock.release()
+
+
 @pytest.mark.parametrize("path", ["reuse", "activate", "resume"])
 def test_resume_of_idle_chat_is_not_stalled_by_busy_chat_history_lock(monkeypatch, path):
     # "resume" is session.resume with no state.db row: the live session is found by key (unpersisted path).
-    # A bound transport is required: the unpersisted path only touches the history_lock when it rebinds.
+    # A bound transport makes that path rebind. At baseline the rebind took history_lock under the resume
+    # lock; the fix attaches without history_lock, so the busy "resume" may finish without ever reaching it.
     monkeypatch.setattr(server, "current_transport", lambda: object())
-    busy, idle = _live_session("busy"), _live_session("idle")
+    holder, busy_entered = threading.Lock(), threading.Event()
+    busy, idle = dict(_live_session("busy"), history_lock=_SignallingLock(holder, busy_entered)), _live_session("idle")
     monkeypatch.setattr(server, "_sessions", {"busy": busy, "idle": idle})
     monkeypatch.setattr(server, "_pending_ws_reaps", {})
     results = {}
-    busy["history_lock"].acquire()  # the long holder: a turn or compression that keeps its lock
+    holder.acquire()  # the long holder: a turn or compression that keeps its lock
     try:
         busy_thread = threading.Thread(
             target=lambda: results.update(busy=_resume(path, "busy", busy)), daemon=True)
         busy_thread.start()
-        # The busy resume has started and is still running, so it is parked on the history_lock we hold
-        # (or, at baseline, already holds the resume lock while it waits).
-        wait_until(lambda: server._session_resume_lock.locked() or busy_thread.is_alive(),
-                   what="busy resume started")
+        # Start the idle resume only once the busy one has provably reached contention: it attempted the
+        # history_lock we hold, or it holds the resume lock, or it already finished (nothing left to stall).
+        wait_until(lambda: busy_entered.is_set() or server._session_resume_lock.locked()
+                   or not busy_thread.is_alive(),
+                   what="busy resume reached history_lock, held the resume lock, or finished")
         idle_thread = threading.Thread(
             target=lambda: results.update(idle=_resume(path, "idle", idle)), daemon=True)
         idle_thread.start()

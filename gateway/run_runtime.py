@@ -339,8 +339,17 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     from persistence.core.errors import AuthorityRefusal
     signalled = 0
     workers = getattr(authority, '_managed_workers', {})
-    for worker in list(workers.values()):
+    for sid, worker in list(workers.items()):
         if worker.closed.is_set() or (getattr(worker, 'stop', None) is not None and worker.stop.is_set()):
+            continue
+        if getattr(worker, 'detachable', False):
+            # gateway.detached_workers: the turn keeps running and the next owner re-adopts it.
+            if not worker.handed_off:
+                live = authority.sessions.get(sid)
+                if live is not None:
+                    live.handed_off_generation = live.event_stream.execution.get('execution_generation')
+                worker.hand_off()
+            signalled += 1
             continue
         worker.stop_cause = reason
         try:
@@ -351,6 +360,11 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
             logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
         signalled += 1
     signalled += _stop_spawning_managed(authority, workers, reason)
+    reattaching = getattr(authority, '_managed_reattaching', {})
+    # Do not turn a shutdown during a live worker handshake into a user Stop.
+    for sid in reattaching:
+        reattaching[sid] = True
+        signalled += 1
     if not in_process:
         return signalled
     from agent.interrupt_compat import request_hard_interrupt
@@ -358,7 +372,9 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):
         generation = live.event_stream.execution.get('execution_generation')
-        if generation is None or sid in workers or sid in getattr(authority, '_managed_spawning', {}):
+        if (generation is None or sid in workers or sid in reattaching
+                or sid in getattr(authority, '_managed_spawning', {})
+                or generation == getattr(live, 'handed_off_generation', None)):
             continue
         adopted_generation, agent = authority.adopted.get(sid, (None, None))
         if adopted_generation != generation:
@@ -493,12 +509,13 @@ async def serve_profile_runtime(runner, name, home):
             _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
             await _ensure_hosted_service(runner, authority)
+        _publish_served_set(runner)
+        _start_detached_resumes(runner, authority)
+        start_ready_hosted_services(runner)
     except BaseException:
         if await _retire_profile_authority(authority):
             registry.remove(home)
         raise
-    _publish_served_set(runner)
-    start_ready_hosted_services(runner)
     return authority
 
 
@@ -691,6 +708,20 @@ async def recover_profile_native_sessions(runner, authority):
     return outcome
 
 
+def _start_detached_resumes(runner, authority):
+    if not getattr(authority, 'detached_resume_slots', None):
+        return
+    from gateway.session_authorities import owner_scope
+    from gateway.session_detached_workers import start_reserved_resume_slots
+    if (runner.session_runtime_descriptor['state'] == 'ready'
+            and runner._running and not runner._draining
+            and not runner.session_api.task.done() and not authority.retiring
+            and any(candidate is authority for candidate in _authorities(runner))
+            and authority.profile_id in runner.session_ticket_store.profile_ids):
+        with owner_scope(authority):
+            start_reserved_resume_slots(authority)
+
+
 def publish_gateway_runtime_ready(runner):
     descriptor = runner.session_runtime_descriptor
     if runner.session_api.task.done() or not runner._running or runner._draining:
@@ -699,6 +730,8 @@ def publish_gateway_runtime_ready(runner):
         'session-authority-v1', 'durable-admission-v1', 'event-replay-v1'])
     from gateway.session_hosted_service import start_ready_hosted_services
     start_ready_hosted_services(runner)
+    for authority in _authorities(runner):
+        _start_detached_resumes(runner, authority)
 
 
 async def wait_gateway_runtime(runner):

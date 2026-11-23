@@ -372,10 +372,11 @@ def retarget_local_automation(holder, *, epoch: int, session_id: str, principal_
 
 
 def recover_session_inputs(holder, *, epoch: int) -> int:
-    """Never replay started work. Live worker adoption is a separate explicit operation."""
+    """Never replay started work. Spare only the declared surviving worker for the same turn."""
     def write(conn):
         _epoch(conn, epoch)
-        from ..workers._runtime_workers import retire_stale_children
+        from ..workers._runtime_workers import retire_stale_children, transfer_detached_workers
+        transfer_detached_workers(conn, epoch)
         retire_stale_children(conn, epoch)
         conn.execute("UPDATE worker_executions SET status='unknown' WHERE status IN ('registered','running') AND owner_epoch!=?", (epoch,))
         # A steer handed to a lost claim may or may not have reached its agent: never replayed.

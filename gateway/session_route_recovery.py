@@ -125,6 +125,9 @@ def restore_routed_session(authority, sid):
         if routed is None and _names_another_conversation(authority, sid, route):
             from gateway.session_detached import detach
             detach(authority, live, sid)  # the lane moved past it: its turns stay off the chat
+    if sid in getattr(authority, 'detached_resume_slots', ()):
+        from gateway.run_runtime import _start_detached_resumes
+        _start_detached_resumes(authority.runner, authority)
     return SessionRef(authority.profile_id, sid)
 
 

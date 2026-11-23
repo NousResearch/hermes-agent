@@ -29,6 +29,7 @@ __all__ = [
     "AdmissionWorkerScope",
     "ChildExecution",
     "ChildReservation",
+    "DetachedWorkerReservation",
     "WorkerAuxiliaryUsage",
     "WorkerExecutionId",
     "WorkerExecutionRecord",
@@ -109,6 +110,18 @@ class ChildReservation:
     child: ChildExecution | None = None
 
 
+class DetachedWorkerReservation(TypedDict):
+    """Private owner-side listener identity, without a bootstrap or adoption secret."""
+
+    admission_id: AdmissionId
+    execution_id: WorkerExecutionId
+    session_id: SessionId
+    generation: ExecutionGeneration
+    pid: int
+    birth: float
+    socket: str
+
+
 class WorkerMainUsage(TypedDict, total=False):
     """A ``usage.main`` payload as the worker sends it (agent/turn_usage.py:264, agent/codex_runtime.py:144): any subset of these keys, each absent key absent from the digest."""
 
@@ -160,6 +173,10 @@ class WorkerTurnLease:
 class WorkerExecutionRepository(WorkerSessionVerbs, WorkerCompressionRepository, WorkerCompactionVerbs, WorkerCompressionReads, WorkerDelegationLedger, WorkerReceiptReads, Protocol):
     """The worker execution verbs of one profile's store; the store's ``worker_executions`` repository also implements the six other worker protocols. The runtime check is an assembly diagnostic only."""
 
+    def detached_reservations(self, *, epoch: AuthorityEpoch) -> tuple[DetachedWorkerReservation, ...]:
+        """Read this profile's active detached reservations under the current epoch. No claims or secrets."""
+        ...
+
     def register(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, kind: WorkerKind, adoption_secret: str, require_idle: bool = False) -> WorkerExecutionRecord:
         """Register an execution on ``session_id``.
 
@@ -174,7 +191,7 @@ class WorkerExecutionRepository(WorkerSessionVerbs, WorkerCompressionRepository,
         """
         ...
 
-    def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: AdmissionId, principal_id: str, profile_id: str, pid: int, birth: float, secret: str, owner: OwnerRule | None, worker_subject: str | None = None) -> AdmissionWorkerScope:
+    def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: AdmissionId, principal_id: str, profile_id: str, pid: int, birth: float, secret: str, owner: OwnerRule | None, worker_subject: str | None = None, detach_socket: str | None = None) -> AdmissionWorkerScope:
         """Reserve a private compute worker for an admission ``epoch`` started (gateway/session_worker_reservation.py:251-293). The caller verifies the process identity (``pid``, ``birth``) and mints ``secret`` before the call.
 
         In one write: epoch fence; the admission (live or tombstone, else ``not_found``); not ``started`` under ``epoch`` is ``producer_not_started``; a stored principal that does not belong to ``principal_id`` under ``owner`` (``session_rules.legacy_local.same_owner``; without a rule only the equal stamp) is ``permission_denied``; the target's runtime generation differing from the admission's is ``stale_generation`` (a missing target ``not_found``); the physical target is resolved (an invalid binding receipt is ``storage_unavailable``); an existing ``admission-worker:<admission_id>`` execution is ``admission_conflict``; a non-terminal worker on the physical target ``stale_generation``. Then the physical target takes the admission's generation, joins the admission's lineage when it differs from the target, and a ``registered`` compute execution is inserted whose digest is the SHA-256 of ``admission_fingerprint`` over the scope and the principal the worker authenticates as (``worker_subject``, else ``principal_id``). Returns the scope and ``epoch``.

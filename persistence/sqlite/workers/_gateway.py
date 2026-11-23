@@ -23,7 +23,7 @@ from session_rules.legacy_local import same_owner
 
 from ..authority._runtime import _admission, _epoch, _secret_digest, _session
 from ._receipt import apply_worker_receipt
-from ._runtime_workers import compact_terminal_receipts, descendant_range
+from ._runtime_workers import compact_terminal_receipts, descendant_range, declare_detached_worker
 
 
 def verify_claim(holder, params, claim):
@@ -45,7 +45,7 @@ def verify_claim(holder, params, claim):
 
 
 def reserve_admission_worker(holder, *, epoch, admission_id, principal_id, profile_id, pid, birth, secret, rule,
-                             worker_subject=None):
+                             worker_subject=None, detach_socket=None):
     """Return a private bootstrap scope; never accept caller-selected kind/target.
 
     Only the owner process may reserve its live direct exec child. The admission
@@ -82,6 +82,8 @@ def reserve_admission_worker(holder, *, epoch, admission_id, principal_id, profi
         conn.execute("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
                      "VALUES(?,?,'compute',?,?,'registered',?)",
                      (execution_id, sid, epoch, generation, _secret_digest(claim)))
+        if detach_socket is not None:
+            declare_detached_worker(conn, scope, admission_id, detach_socket)
         return scope | {'epoch': epoch}
 
     return holder._execute_write(write)

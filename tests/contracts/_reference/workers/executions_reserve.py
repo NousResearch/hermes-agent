@@ -13,7 +13,7 @@ from persistence.conversation.sessions import NewSession, SessionLineageKind
 from persistence.core.fences import AuthorityEpoch, ExecutionGeneration
 from persistence.core.identity import SessionId
 from persistence.workers.delegations import WorkerDelegationPayload
-from persistence.workers.executions import AdmissionWorkerScope, ChildExecution, ChildReservation, WorkerExecutionId
+from persistence.workers.executions import AdmissionWorkerScope, ChildExecution, ChildReservation, DetachedWorkerReservation, WorkerExecutionId
 from persistence.workers.vocabulary import CHILD_SEPARATOR
 from session_rules.legacy_local import same_owner
 from session_rules.session_ids import new_session_id
@@ -59,8 +59,25 @@ class ReservationVerbs:
 
     _backend: Any
 
+    def detached_reservations(self, *, epoch: AuthorityEpoch) -> tuple[DetachedWorkerReservation, ...]:
+        state = authority_state(self._backend, self._backend.scope)
+        with state.transaction() as staged:
+            authority = staged.authority
+            state.require_epoch(authority, epoch)
+            records = []
+            for worker in authority['workers'].values():
+                declaration = worker.get('detached')
+                if declaration is None or worker['owner_epoch'] != epoch or worker['status'] not in ('registered', 'running'):
+                    continue
+                admission = authority['admissions'].get(declaration['admission_id'])
+                if (admission is not None and admission['status'] == 'started'
+                        and admission['owner_epoch'] == epoch and admission['generation'] == worker['generation']):
+                    records.append(dict(declaration))
+            return tuple(sorted(records, key=lambda record: record['execution_id']))
+
     def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: Any, principal_id: str, profile_id: str, pid: int, birth: float, secret: str,
-                              owner: OwnerRule | None, worker_subject: str | None = None) -> AdmissionWorkerScope:
+                              owner: OwnerRule | None, worker_subject: str | None = None,
+                              detach_socket: str | None = None) -> AdmissionWorkerScope:
         state = authority_state(self._backend, self._backend.scope)
         with state.transaction() as staged:
             authority = staged.authority
@@ -91,6 +108,10 @@ class ReservationVerbs:
                 "execution_id": execution_id, "session_id": physical, "kind": "compute", "owner_epoch": epoch,
                 "generation": generation, "status": "registered", "secret_digest": secret_digest(claim), "last_sequence": 0,
             }
+            if detach_socket is not None:
+                authority['workers'][execution_id]['detached'] = dict(
+                    admission_id=admission_id, execution_id=execution_id, session_id=physical,
+                    generation=generation, pid=pid, birth=birth, socket=detach_socket)
             return AdmissionWorkerScope(**scope, epoch=epoch)
 
     def lose_reservation(self, *, epoch: AuthorityEpoch, admission_id: Any, execution_id: WorkerExecutionId, generation: ExecutionGeneration) -> None:

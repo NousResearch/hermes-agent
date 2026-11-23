@@ -765,7 +765,7 @@ class TestSteerSurvivesRedirectRebuild:
             ({"failed": True, "compression_exhausted": True}, False),
         ],
     )
-    def test_early_exit_keeps_the_steer_when_a_stop_or_gateway_settlement_comes_first(self, result, interrupted):
+    def test_early_exit_does_not_hand_back_after_a_stop_or_before_a_gateway_settlement(self, result, interrupted):
         """A Stop that landed after the error handler's check drops the steer; a refusal's rewind or an
         exhausted-session reset runs before any follow-up. None of them gets the steer as pending_steer."""
         from agent.conversation_loop import _hand_back_leftover_steer
@@ -776,11 +776,11 @@ class TestSteerSurvivesRedirectRebuild:
         out = _hand_back_leftover_steer(agent, dict(result))
         assert out.get("pending_steer") is None
         agent._interrupt_requested = False
-        assert agent._drain_pending_steer() == self.STEER_TEXT  # left for the stop or the settlement to decide
+        # The stopped turn's steer is gone; a settlement's is left for the gateway to decide.
+        assert agent._drain_pending_steer() == (None if interrupted else self.STEER_TEXT)
 
-    def test_a_stop_published_during_the_drain_puts_the_steer_back(self, monkeypatch):
-        """The Stop lands after the helper's first check but before its drain returns: the steer goes
-        back to the buffer instead of out as pending_steer."""
+    def test_a_stop_published_during_the_drain_drops_the_steer(self, monkeypatch):
+        """The Stop lands while the helper drains: the steer is dropped, not handed back."""
         from agent.conversation_loop import _hand_back_leftover_steer
 
         agent = self._loop_agent()
@@ -797,21 +797,52 @@ class TestSteerSurvivesRedirectRebuild:
         out = _hand_back_leftover_steer(agent, {"failed": True})
         assert out.get("pending_steer") is None
         agent._interrupt_requested = False
-        assert agent._drain_pending_steer() == self.STEER_TEXT
+        assert agent._drain_pending_steer() is None
 
-    def test_the_restored_steer_takes_no_ticket_and_keeps_its_place(self):
-        """The put-back text is ticketless (a consumed transfer with the same text stays settled) and goes
-        ahead of a steer accepted since the drain."""
-        from agent.interrupt_control import restore_leftover_steer
+    def test_a_late_stop_on_a_failed_first_call_does_not_bring_the_steer_back_next_turn(self, monkeypatch):
+        """A Stop published after the API error handler's own interrupt check (from inside its error
+        routing): the stopped turn's steer must not come back as the next turn's pending_steer."""
+        from unittest.mock import MagicMock
+
+        from agent import turn_api_error
+        from tests.agent.test_run_agent import _mock_response
+
+        class _Rejected(Exception):
+            status_code = 401
 
         agent = self._loop_agent()
-        assert agent.steer("same text", ticket="t1") is True
-        assert agent._drain_pending_steer() == "same text"  # the ticketed transfer is consumed
-        assert agent.withdraw_steer("t1") is False
-        assert agent.steer("newer") is True
-        restore_leftover_steer(agent, "same text")
-        assert agent.withdraw_steer("t1") is False
-        assert agent._drain_pending_steer() == "same text\nnewer"
+        history = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "prior_call", "type": "function",
+                "function": {"name": _STEER_SURVIVAL_TOOL, "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "prior_call", "content": "previous result"},
+            {"role": "assistant", "content": "previous final answer"},
+        ]
+        real_route = turn_api_error.route_classified_error
+
+        def route_after_stop(*args, **kwargs):
+            agent.hard_interrupt("stop")
+            return real_route(*args, **kwargs)
+
+        def failing_call(api_kwargs):
+            raise _Rejected("HTTP 401: rejected")
+
+        monkeypatch.setattr(turn_api_error, "route_classified_error", route_after_stop)
+        agent._interruptible_api_call = failing_call
+        for method in ("_flush_messages_to_session_db", "_persist_session", "_save_trajectory", "_cleanup_task_resources"):
+            monkeypatch.setattr(agent, method, MagicMock())
+        assert agent.steer(self.STEER_TEXT) is True
+        first = agent.run_conversation("new question", conversation_history=history)
+        assert first["failed"] is True and first.get("pending_steer") is None
+
+        monkeypatch.setattr(turn_api_error, "route_classified_error", real_route)
+        agent.clear_interrupt()  # the host's soft clear of a stale Stop before the next turn
+        agent._interruptible_api_call = lambda api_kwargs: _mock_response(content="second answer", finish_reason="stop")
+        second = agent.run_conversation("next question", conversation_history=list(first["messages"]))
+        assert second.get("pending_steer") is None
+        assert all(self.STEER_TEXT not in str(m.get("content")) for m in second["messages"])
 
     def test_early_exit_hands_back_on_an_ordinary_failure(self):
         from agent.conversation_loop import _hand_back_leftover_steer

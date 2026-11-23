@@ -1618,24 +1618,18 @@ def _hand_back_leftover_steer(agent, result):
     """A loop exit that skips ``finalize_turn`` (a terminal API error, a preflight refusal) would leave a
     steer the pre-API drain requeued buffered on the agent; hand it back as the finalizer does.
 
-    Not after a Stop that landed once the error handler had checked for one: a stop drops the steer
-    (``clear_interrupt(hard_cancel=True)``), so a host must not run it as the next turn. Not on a
-    failure the gateway settles before the session takes more input (a content-policy refusal's
-    rewind, a compression-exhausted reset): a follow-up there would run first."""
+    Not after a Stop that landed once the error handler had checked for one: the stopped turn's steer
+    is dropped, as ``abort_turn_on_interrupt`` drops it when the Stop lands first (ticketed transfers
+    stay buffered for their settlement). Not on a failure the gateway settles before the session takes
+    more input (a content-policy refusal's rewind, a compression-exhausted reset): a follow-up there
+    would run first."""
     if not isinstance(result, dict) or result.get("pending_steer"):
-        return result
-    if getattr(agent, "_interrupt_requested", False):
         return result
     if result.get("failure_reason") == "content_policy_blocked" or result.get("compression_exhausted"):
         return result
-    if leftover := agent._drain_leftover_steer():
-        if getattr(agent, "_interrupt_requested", False):
-            # A Stop published between the check above and this drain: put the steer back, so the
-            # stop's own clear (hard or soft) decides whether it survives, exactly as before the drain.
-            from agent.interrupt_control import restore_leftover_steer
-            restore_leftover_steer(agent, leftover)
-        else:
-            result["pending_steer"] = leftover
+    leftover = agent._drain_leftover_steer()
+    if leftover and not getattr(agent, "_interrupt_requested", False):
+        result["pending_steer"] = leftover
     return result
 
 

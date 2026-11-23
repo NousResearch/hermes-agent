@@ -4,6 +4,8 @@
   queued it into the CLI REPL.
 * Approval hooks report a CLI session's ``surface='cli'`` (as on main);
   ``ctx.session_cwd()`` / ``ctx.session_surface()`` read the session, never the daemon's cwd.
+* ``ctx.live_sessions()`` lists the live local sessions of the plugin's profile from the gateway and
+  from a TUI/desktop host, each key once.
 """
 import asyncio
 import contextvars
@@ -266,3 +268,84 @@ def test_plugin_context_reads_the_calling_sessions_cwd_and_surface(tmp_path):
     # The classic CLI process itself still runs in the user's launch directory.
     manager._cli_ref = SimpleNamespace()
     assert (ctx.session_cwd(), ctx.session_surface()) == (os.getcwd(), "cli")
+
+
+
+def _tui_session(key, home, **extra):
+    """A live TUI/desktop host session record whose state.db row holds no title."""
+    agent = SimpleNamespace(session_id=key, _session_db=SimpleNamespace(get_session_list_row=lambda _sid: None))
+    return {"agent": agent, "session_key": key, "source": "gui", "profile_home": str(home), "cwd": str(home),
+            "running": True, **extra}
+
+
+def _tui_row(key, home):
+    return {"session_key": key, "session_id": key, "title": "", "cwd": str(home), "surface": "desktop",
+            "busy": True}
+
+
+def test_live_sessions_lists_a_tui_hosts_live_sessions_of_the_plugins_profile(tmp_path, monkeypatch):
+    from tui_gateway import server
+    from tui_gateway.plugin_inject import clear_tui_message_injector, install_tui_message_injector
+
+    ctx, manager = _context(tmp_path)
+    assert ctx.live_sessions() == []
+    monkeypatch.setattr(server, "_sessions", {
+        "a": _tui_session("desk-1", tmp_path),
+        "b": _tui_session("lazy", tmp_path, lazy=True),
+        "c": _tui_session("closing", tmp_path, _closing=True),
+        "d": _tui_session("chat", tmp_path, source="telegram"),
+        "e": _tui_session("beta", tmp_path / "profiles" / "beta"),
+        "f": {"session_key": "no-agent-yet", "source": "tui", "profile_home": str(tmp_path)},
+    })
+    install_tui_message_injector(manager)
+    try:
+        assert ctx.live_sessions() == [_tui_row("desk-1", tmp_path)]
+    finally:
+        clear_tui_message_injector(manager)
+
+
+@pytest.mark.asyncio
+async def test_live_sessions_lists_the_gateways_live_local_sessions_each_key_once(tmp_path, monkeypatch):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from gateway.session_authority import LiveSession, SessionAuthority, initialize_session_authority
+    from gateway.session_contract import SessionActor
+    from gateway.session_local import create_local_session
+    from tui_gateway import server
+    from tui_gateway.plugin_inject import clear_tui_message_injector, install_tui_message_injector
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    try:
+        actor = SessionActor("test-owner", "default", frozenset({"session:create", "session:submit", "session:read"}),
+                             "fixture")
+        live_ref, ended_ref = (create_local_session(authority, actor, dict(
+            request_id=name, source="cli", cwd=str(workspace), model="fixture", toolsets=[])) for name in ("a", "b"))
+        authority.persistence.sessions.set_title(live_ref.session_id, "Fixture chat")
+        authority.persistence.sessions.end(ended_ref.session_id, "user_exit")
+        chat = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42")
+        authority.sessions["chat-42"] = LiveSession(chat, "agent:main:telegram:dm:42")
+        live_key = authority.sessions[live_ref.session_id].route
+        ctx, manager = _context(tmp_path)
+        _publish(runner, manager)
+
+        gateway_row = {"session_key": live_key, "session_id": live_ref.session_id, "title": "Fixture chat",
+                       "cwd": str(workspace), "surface": "cli", "busy": False}
+        assert ctx.live_sessions() == [gateway_row]
+
+        # A TUI/desktop host in the same process: its own session is added, a key the gateway already
+        # listed is not repeated.
+        monkeypatch.setattr(server, "_sessions", {
+            "a": _tui_session("desk-1", tmp_path), "b": _tui_session(live_key, tmp_path)})
+        install_tui_message_injector(manager)
+        try:
+            assert ctx.live_sessions() == [gateway_row, _tui_row("desk-1", tmp_path)]
+        finally:
+            clear_tui_message_injector(manager)
+    finally:
+        runner.session_store.close_all_db_handles()

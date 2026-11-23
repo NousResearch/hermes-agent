@@ -1,6 +1,6 @@
 name: galaxymem
 repo: https://github.com/k1ng0mar/galaxymem
-sha: 887403ecef9bebb771e7a6136b1499de50fb8b32
+sha: b64913ce4108fbfa384814a195b6a4c48bfcf758
 description: "Entity-scoped memory provider with four epistemic networks (world, experience, opinion, observation), decay, hybrid vector and keyword recall, temporal queries, spreading activation and autonomous reflection, all in one local SQLite file. Exposes 18 gm_* tools and injects bright memories into the prompt. Disclosure: batched extraction, reflection, query expansion and reasoning call the LLM configured for auxiliary.galaxymem through Hermes credentials; the task follows the active model unless overridden. Embeddings run locally with fastembed; first use downloads BAAI/bge-small-en-v1.5 from Hugging Face, about 100 MB. The optional reranker downloads cross-encoder/ms-marco-MiniLM-L-6-v2 from Hugging Face. Data lives in $HERMES_HOME/galaxymem/db or GALAXYMEM_DB_PATH. No telemetry, no self-updater."
 maintainer: k1ng0mar
 tier: community

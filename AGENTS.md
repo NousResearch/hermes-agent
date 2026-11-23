@@ -5,7 +5,7 @@ loads automatically when you work in that directory; read it before editing ther
 `python scripts/check` caps this file at 12k chars and every root-to-area chain at 30k: long form
 goes in `website/docs/developer-guide/`.
 
-**Never give up on the right solution.**
+**Bounded retries. Fix the root cause.**
 
 ## What Hermes Is
 

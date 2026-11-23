@@ -216,6 +216,27 @@ def test_card_declined_after_the_ack_window_releases_with_the_declined_notice(lo
     assert adapter.sent_text == []
 
 
+def test_card_refused_as_unanswerable_after_the_ack_window_says_no_viewer_and_never_reasks(loop, monkeypatch):
+    """A surface that refuses the question because nobody there can answer it (#159160) is as
+    definitive late as at once: no plain-text re-ask, and the notice says no viewer can answer it,
+    not that a destination refused it."""
+    from gateway import run_turn_runner_clarify_delivery as delivery
+
+    monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
+
+    async def late_refusal():
+        await asyncio.sleep(0.6)  # health: allow HX013 -- resolving past the ack window IS the case under test
+        return delivery.unanswerable_result("Clarification is unavailable: no viewer can answer this chat")
+
+    adapter = _CardAdapter(late_refusal)
+    started = time.monotonic()
+    response, answered = _runner(adapter, loop, monkeypatch, timeout=30)._ask_clarify_question(
+        "Pick?", ["alpha", "beta"], False)
+    assert (response, answered) == (delivery.UNDELIVERED_NO_VIEWER, False)
+    assert time.monotonic() - started < 10
+    assert adapter.sent_text == []
+
+
 # --- Atom: no chat surface at all -----------------------------------------------------------
 
 

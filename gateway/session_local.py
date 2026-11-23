@@ -11,6 +11,7 @@ from contextlib import contextmanager
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.run_turn_runner_clarify_delivery import unanswerable_result
 from gateway.session import SessionSource
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from gateway.session_persistence import authority_persistence
@@ -103,12 +104,10 @@ class LocalSessionAdapter(BasePlatformAdapter):
         error = self._unanswerable_clarify(chat_id)
         if error is not None:
             # Acknowledging this question would park the turn on an answer nobody can submit.
-            # A structured decline releases the wait at once and skips the plain-text re-ask
+            # The unanswerable result releases the wait at once and skips the plain-text re-ask
             # (an ordinary failure would fall back to a send() that ACKs, and the turn would
-            # wait the whole clarify timeout).
-            from gateway.relay.egress import EGRESS_DECLINE_CODE
-            return SendResult(success=False, error=error, error_kind='forbidden',
-                              raw_response={'success': False, 'code': EGRESS_DECLINE_CODE, 'error': error})
+            # wait the whole clarify timeout). No connector refused it, so it is not an egress decline.
+            return unanswerable_result(error)
         # Local sessions keep the base prompt: a choice question also captures typed text.
         return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
 
@@ -119,7 +118,8 @@ class LocalSessionAdapter(BasePlatformAdapter):
         author is a remote peer with no prompt surface) never have an answering viewer. Any
         other chat can be answered by an attached viewer holding ``session:respond``; with none
         attached, a producer turn (Bot Chat DM, plugin/heartbeat injection) declines, while a
-        viewer's own turn keeps waiting so its author can re-attach and answer."""
+        viewer's own turn keeps waiting so its author can re-attach and answer. That decline names
+        the turn and the viewers attached when it was made: attach state is never persisted."""
         policy = self.policies.get(chat_id)
         if policy is None:
             return None
@@ -132,12 +132,15 @@ class LocalSessionAdapter(BasePlatformAdapter):
         if live is None:
             return None
         with live.event_stream.lock:
-            if any('session:respond' in member.capabilities for member in live.subscribers.values()):
-                return None
+            held = [sorted(member.capabilities) for member in live.subscribers.values()]
+        if any('session:respond' in capabilities for capabilities in held):
+            return None
         started = next((row for row in authority_persistence(self.authority).admissions.list(session_id=chat_id)
                         if row.status == 'started'), None)
         if started is not None and 'local_automation_v1' in started.payload:
-            return 'Clarification is unavailable: no viewer can answer this chat'
+            attached = '; '.join(' '.join(capabilities) or '-' for capabilities in held) or 'none'
+            return ('Clarification is unavailable: no viewer can answer this chat (automation turn '
+                    f'{started.admission_id}; {len(held)} viewer(s) attached, capabilities: {attached})')
         return None
 
 

@@ -36,7 +36,7 @@ def _resume_live_unpersisted(ctx: "_Resume", live_sid: str, live: dict) -> dict:
 def _resume_reuse_live(ctx: "_Resume", sid: str, session: dict) -> dict:
     """Reattach an already-live session. The resume lock covers only the grace-atomic part (client-gone check,
     transport attach, reap cancel) so expiry stays atomic; the payload is built after release because it waits
-    on the session's history_lock, which the global lock must never wait on. _live_session_payload ATTACHES this
+    on the session's history_lock, which the global lock must never wait on. _rebind_live_transport ATTACHES this
     caller alongside the client(s) already streaming instead of taking the slot from them."""
     with _session_resume_lock:
         if (refusal := _resume_attach_live_locked(ctx, sid, session)) is not None:

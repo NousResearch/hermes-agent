@@ -224,7 +224,8 @@ def _mapping_value(mapping, name):
     if not isinstance(mapping, ast.Dict) or not all(isinstance(k, ast.Constant) and isinstance(k.value, str)
                                                     for k in mapping.keys):
         return UNKNOWN  # a name, a call, or a dict with `**inner` / computed keys: any key may be there
-    return next((v for k, v in zip(mapping.keys, mapping.values) if k.value == name), None)
+    # a dict display keeps the last value of a repeated key
+    return next((v for k, v in zip(reversed(mapping.keys), reversed(mapping.values)) if k.value == name), None)
 
 
 def argument(node, name, index):

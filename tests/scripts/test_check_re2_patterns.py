@@ -219,8 +219,10 @@ def test_a_non_literal_limit_still_reports_a_refused_pattern(tmp_path):
         # one substitution / split, as the literal mapping says; unlimited ones differ
         'import hermes_re as re\nre.sub("a*?", "-", "x", **{"count": 1})\n',
         'import hermes_re as re\nre.split("a*?", "x", **{"maxsplit": 1, "flags": 0})\n',
+        # a repeated key: the dict display keeps its last value, ASCII here
+        'import hermes_re as re\nre.compile(r"x\\b.", **{"flags": 0, "flags": re.ASCII})\n',
     ],
-    ids=["mapping-flags", "mapping-count", "mapping-maxsplit"],
+    ids=["mapping-flags", "mapping-count", "mapping-maxsplit", "mapping-repeated-key"],
 )
 def test_a_literal_mapping_supplies_its_arguments(tmp_path, source):
     code, out = _gate(tmp_path, source)

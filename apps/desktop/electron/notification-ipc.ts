@@ -143,7 +143,8 @@ export function registerNativeNotifications({
     return delivery
   })
   // Read-only, so the renderer can tell ahead of time whether `hermes:notify` could show anything.
-  ipcMain.handle('hermes:notify:supported', supported)
+  // Linux asks the session bus for a notification service each time it is asked.
+  ipcMain.handle('hermes:notify:supported', () => (linux ? linux.available() : supported()))
 
   return { dispose: () => linux?.dispose() }
 }

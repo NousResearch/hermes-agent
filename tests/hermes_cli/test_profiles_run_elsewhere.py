@@ -619,6 +619,10 @@ def test_a_marker_folder_that_has_been_quiet_is_not_listed_again(root, linked, m
     """Value reads come by the hundred: once the folder's time can be relied on, each asking costs
     stats (the home, its marker paths, the home of each marked profile), no listing and no resolve."""
     pre.mark_profile_run_elsewhere("linked", "sandbox-plugin")
+    # The clock stands at the folder's own time: "a moment after the marker was written" for as
+    # long as the first loop takes, however slowly this test runs.
+    written = pre.run_elsewhere_dir().stat().st_mtime_ns
+    monkeypatch.setattr(pre.time, "time_ns", lambda: written)
     homes = (linked, root / "profiles" / "ops", root)
     answers = [pre.home_runs_elsewhere(home) for home in homes]
     assert answers == [True, False, False]

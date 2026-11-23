@@ -6,8 +6,8 @@ import { MemoryRouter } from 'react-router'
 
 import { ProfileRail } from '@/app/chat/sidebar/profile-switcher'
 import { AppContextMenu } from '@/app/context-menu/app-context-menu'
+import { BootFailureModal } from '@/components/boot-failure-modal'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,7 +70,6 @@ Object.assign(window, { setTestZoom: zoom.setPercent })
 function Fixture() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [bootModalOpen, setBootModalOpen] = useState(false)
-  const [bootNode, setBootNode] = useState<HTMLDivElement | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
 
   return (
@@ -277,28 +276,22 @@ function Fixture() {
           </Dialog>
 
           {bootModalOpen ? (
-            <div
-              className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6 [contain:layout]"
-              data-glass-opaque=""
-              ref={setBootNode}
-            >
-              <DialogPortalContainerContext.Provider value={bootNode}>
-                <div className="rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) p-6">
-                  <Select defaultValue="b-1">
-                    <SelectTrigger className="w-48" data-testid="boot-select">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Array.from({ length: 20 }, (_, index) => (
-                        <SelectItem key={index} value={`b-${index + 1}`}>
-                          Boot Option {index + 1}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </DialogPortalContainerContext.Provider>
-            </div>
+            <BootFailureModal onDismiss={() => setBootModalOpen(false)} title="Boot failure">
+              <div className="rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) p-6">
+                <Select defaultValue="b-1">
+                  <SelectTrigger className="w-48" data-testid="boot-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Array.from({ length: 20 }, (_, index) => (
+                      <SelectItem key={index} value={`b-${index + 1}`}>
+                        Boot Option {index + 1}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </BootFailureModal>
           ) : null}
 
           <Sheet onOpenChange={setSheetOpen} open={sheetOpen}>

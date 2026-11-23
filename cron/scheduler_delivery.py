@@ -1522,7 +1522,9 @@ def _ledger_lost_cron_delivery(t: _TargetDelivery, content: str, err: str) -> No
     sweep two rows for one payload, so this lane takes only the errors that helper leaves unkept.
 
     ``send_path_degraded`` is stored verbatim as the error: ``retry_not_before`` classifies exactly
-    that string as reconnect-only (due at once, no backoff). Best-effort — ledger failures must
+    that string as reconnect-only (due at once, no backoff). Nothing is ledgered while the
+    standalone send may still have delivered — the same no-duplication fail-safe
+    ``_queue_for_live_reconnect`` gets at the call site. Best-effort — ledger failures must
     never mask the delivery error the run status reports."""
     try:
         from gateway.delivery_ledger import (
@@ -1531,6 +1533,11 @@ def _ledger_lost_cron_delivery(t: _TargetDelivery, content: str, err: str) -> No
         if not ledger_enabled() or not content.strip():
             return
         if is_reconnect_only(t.live_error):
+            return
+        if t.standalone_in_flight:
+            # The standalone send may have delivered (timeout, lost answer, unclassified failure):
+            # a ledger row would let the sweep post the payload twice. Same fail-safe the caller
+            # applies to ``_queue_for_live_reconnect`` — possible loss over certain duplication.
             return
         job = t.job
         session_key = f"cron:{job.get('id', '')}:{job.get('execution_id', '')}"

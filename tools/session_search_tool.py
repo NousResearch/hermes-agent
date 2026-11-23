@@ -17,6 +17,7 @@ from pathlib import Path
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
+from agent.chat_scope import GROUP_CHAT_TYPES
 from agent.redact import redact_derived_text
 from hermes_time import safe_strftime
 from persistence import RowVisibility
@@ -90,6 +91,14 @@ def _format_timestamp(ts: float | str | None) -> str:
         return ts
     return _quiet(lambda: safe_strftime(datetime.fromtimestamp(float(ts)), "%B %d, %Y at %I:%M %p"), str(ts),
                   "Failed to format timestamp %s: %s", ts, with_exc=True)
+
+
+def _scope_visible(meta: Optional[SessionRecord], chat_scope: Optional[str]) -> bool:
+    """True when the session may surface under the caller's ``chat_scope``. A group-scoped turn
+    sees only multi-user sessions; every other scope keeps the historical unrestricted view."""
+    if chat_scope != "group":
+        return True
+    return bool(meta) and str(getattr(meta, "chat_type", None) or "").strip().lower() in GROUP_CHAT_TYPES
 
 
 def _get_session_meta(persistence, session_id: str) -> Optional[SessionRecord]:
@@ -449,11 +458,15 @@ def _hydrate_hit(persistence, lineage_root: str, hit: SearchHit, result_detail: 
 def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[list[str]] = None) -> str:
+              exclude_session_ids: Optional[list[str]] = None, chat_scope: Optional[str] = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(persistence, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(persistence, exclude_session_ids or [])
     title_result = _title_match_result(persistence, query, current_lineage_root)
+    if chat_scope == "group" and title_result:
+        title_meta = _get_session_meta(persistence, title_result["session_id"])
+        if not _scope_visible(title_meta, chat_scope):
+            title_result = None
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
     # query, so it is the one place the window is re-checked in Python.
     if title_result:
@@ -469,6 +482,17 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
+    # Scope gate before ranking: a group-scoped turn never sees DM/CLI/session rows — the
+    # filter runs on the owning session's own chat_type, not on any caller hint.
+    if chat_scope == "group":
+        _scope_meta: dict[str, Optional[SessionRecord]] = {}
+
+        def _visible(hit) -> bool:
+            sid = hit.session_id
+            if sid not in _scope_meta:
+                _scope_meta[sid] = _get_session_meta(persistence, sid)
+            return _scope_visible(_scope_meta[sid], chat_scope)
+        raw_results = [r for r in raw_results if _visible(r)]
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.
@@ -610,7 +634,7 @@ def _read_session(persistence, session_id: str, head: int = 20, tail: int = 10, 
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 
 
-def _read_scoped(persistence, sid: str, profile: Optional[str]) -> str:
+def _read_scoped(persistence, sid: str, profile: Optional[str], chat_scope: Optional[str] = None) -> str:
     """Read shape scoped to ONE store: the caller's profile, or the profile it named.
 
     A miss is a miss. Profiles are isolated islands, so a bare id never falls through to
@@ -618,6 +642,8 @@ def _read_scoped(persistence, sid: str, profile: Optional[str]) -> str:
     transcript to any caller holding the id (#106761). The hint tells the model how to
     ask properly: ``@session:<profile>/<id>`` or ``profile=``.
     """
+    if chat_scope == "group" and not _scope_visible(_get_session_meta(persistence, sid), chat_scope):
+        return tool_error(f"session_id not visible in this chat scope: {sid}", success=False)
     result = _read_session(persistence, sid, link_profile=profile)
     if json.loads(result).get("success") is not False or profile:
         return result
@@ -636,7 +662,8 @@ def _derived_preview(preview: Any) -> str:
     return redact_derived_text(text)
 
 
-def _list_recent_sessions(persistence, limit: int, current_session_id: str | None = None, link_profile: str | None = None) -> str:
+def _list_recent_sessions(persistence, limit: int, current_session_id: str | None = None,
+                          link_profile: str | None = None, chat_scope: Optional[str] = None) -> str:
     """Browse shape: metadata for the most recent sessions (no LLM, no FTS5)."""
     def _browse():
         # Never use the rich session listing ordered by last activity here: it walks every
@@ -644,9 +671,12 @@ def _list_recent_sessions(persistence, limit: int, current_session_id: str | Non
         # monopolise a gateway callback for minutes on a multi-GB state.db. The
         # bounded browse query preselects an indexed candidate set and carries a
         # cooperative SQLite VM cancellation deadline.
-        sessions = persistence.sessions.list_recent_sessions(RecentBrowseQuery(
+        # RecentSessionEntry carries no chat_type — resolve the row's own meta for the scope gate.
+        sessions = [s for s in persistence.sessions.list_recent_sessions(RecentBrowseQuery(
             limit=limit + 15,  # extra so we can skip current / compression roots
             exclude_sources=_HIDDEN_SESSION_SOURCES, timeout_seconds=3.0))
+            if chat_scope != "group"
+            or _scope_visible(_get_session_meta(persistence, s.session_id), chat_scope)]
         current_root, has_compression_hop = (
             _resolve_to_parent(persistence, current_session_id) if current_session_id else (None, False))
         # Compression continuation: the root was summarised into the live child, so hide
@@ -686,7 +716,7 @@ def _anchor_in_live_context(persistence, anchor_state, anchor_sid: str, current_
 
 
 def _scroll(persistence, session_id: str, around_message_id: int, window: int = 5,
-            current_session_id: str | None = None) -> str:
+            current_session_id: str | None = None, chat_scope: Optional[str] = None) -> str:
     """Scroll shape: a window centered on an anchor (no FTS5, no bookends)."""
     try:
         around_message_id = int(around_message_id)
@@ -701,6 +731,8 @@ def _scroll(persistence, session_id: str, around_message_id: int, window: int = 
     session_meta = _get_session_meta(persistence, session_id)
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    if chat_scope == "group" and not _scope_visible(session_meta, chat_scope):
+        return tool_error(f"session_id not visible in this chat scope: {session_id}", success=False)
     view, err = _loud(lambda: persistence.messages.read_around(session_id, around_message_id, window=window),
                       "get_messages_around failed: %s", "failed to load messages")
     if err:
@@ -733,17 +765,19 @@ def _scroll(persistence, session_id: str, around_message_id: int, window: int = 
 
 def _dispatch(query, role_filter, limit, persistence, current_session_id, session_id,
               around_message_id, window, sort, profile, detail,
-              after=None, before=None, exclude_session_ids=None) -> str:
+              after=None, before=None, exclude_session_ids=None, chat_scope=None) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
-            return _scroll(persistence, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_scoped(persistence, session_id.strip(), profile)
+            return _scroll(persistence, session_id.strip(), around_message_id, window,
+                           current_session_id, chat_scope=chat_scope)
+        return _read_scoped(persistence, session_id.strip(), profile, chat_scope=chat_scope)
     browse = not query or not isinstance(query, str) or not query.strip()
     # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
     limit = _clamp_int(limit, 10 if browse else 3, 1, 10)
     if browse:
-        return _list_recent_sessions(persistence, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(persistence, limit, current_session_id, link_profile=profile,
+                                     chat_scope=chat_scope)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
@@ -754,14 +788,15 @@ def _dispatch(query, role_filter, limit, persistence, current_session_id, sessio
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
-        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
+        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids),
+        chat_scope=chat_scope)
 
 
 def session_search(query: str = "", role_filter: str | None = None, limit: int | None = None, db=None,
                    current_session_id: str | None = None, session_id: str | None = None, around_message_id: int | None = None,
                    window: int = 5, sort: str | None = None, profile: str | None = None, detail: str = "adaptive",
                    after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None,
-                   persistence=None) -> str:
+                   persistence=None, chat_scope: str | None = None) -> str:
     """Run session search through the ``persistence`` handle, or a reader over ``db``'s file without one, closing
     stores opened here. Positional order is frozen for old callers; new parameters are appended after ``detail``."""
     from hermes_constants import get_hermes_home
@@ -802,7 +837,8 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
                 return tool_error(format_session_db_unavailable(), success=False)
         return _dispatch(query, role_filter, limit, persistence, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail,
-                         after=after, before=before, exclude_session_ids=exclude_session_ids)
+                         after=after, before=before, exclude_session_ids=exclude_session_ids,
+                         chat_scope=chat_scope)
     finally:
         _quiet(handles.close, None, "Failed to close the session_search store")
 
@@ -957,6 +993,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "", limit=args.get("limit"), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
+        chat_scope=kw.get("chat_scope"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
                                     "after", "before", "exclude_session_ids")}),
     check_fn=check_session_search_requirements,

@@ -746,9 +746,9 @@ class SystemHost:
                 words += [w for w in _systemd_words(value) if w.lstrip('"').split("=", 1)[0] not in _GATEWAY_UNIT_ENV]
             elif key == "EnvironmentFiles":
                 files += [(path, flag == "yes") for path, flag in _ENV_FILE_ENTRY.findall(value)]
-        # show prints values already expanded, so a literal % is doubled back for Environment=.
+        # show prints values and paths already expanded, so a literal % is doubled back for systemd.
         lines = ["Environment=" + " ".join(w.replace("%", "%%") for w in words)] if words else []
-        return lines + [f"EnvironmentFile={'-' if optional else ''}{path}" for path, optional in files]
+        return lines + [f"EnvironmentFile={'-' if optional else ''}{path.replace('%', '%%')}" for path, optional in files]
 
     def gateway_env_dropin_path(self, name: str) -> str:
         from hermes_cli import gateway as gw

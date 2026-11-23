@@ -6,6 +6,7 @@ import {
   approvalKindFields,
   approvalNamesNothing,
   type ApprovalRequest,
+  isCommandApproval,
   networkTarget,
   networkTargetName,
   receiveApprovalRequest
@@ -56,7 +57,15 @@ export const approval: Handler = ctx => {
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, parked).catch(() => undefined)
-  markNeedsInput(ctx)
+
+  // A command approval blocks its turn, and the turn lowers the flag again. A folder or site
+  // card marks its session by being parked, for as long as it is parked.
+  if (isCommandApproval(parked)) {
+    markNeedsInput(ctx)
+  } else if (sessionId) {
+    // The store's views find the chat through its published state.
+    ctx.deps.updateSessionState(sessionId, state => ({ ...state }))
+  }
 
   if (!request.replayed) {
     const notice = approvalNotice(parked)

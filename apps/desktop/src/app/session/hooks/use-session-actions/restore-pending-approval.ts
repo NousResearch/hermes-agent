@@ -2,17 +2,21 @@ import { $gateway } from '@/store/gateway'
 import {
   approvalKindFields,
   approvalNamesNothing,
+  isCommandApproval,
   receiveApprovalRequest,
   replayPendingApproval
 } from '@/store/prompts'
 import type { SessionResumeResult } from '@/types/hermes'
 
-/** Re-park a resume snapshot's pending approval; true when one was restored. */
+/** Re-park a resume snapshot's pending approval. True when the session's turn waits on it: a
+ *  command approval. A folder or site card marks its session by being parked. */
 export function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
   const pending = response.pending_approval
 
+  const kindFields = approvalKindFields(pending as Record<string, unknown>)
+
   // A folder or site request that names no folder or site is refused, as a live one is.
-  if (!pending || approvalNamesNothing(approvalKindFields(pending as Record<string, unknown>))) {
+  if (!pending || approvalNamesNothing(kindFields)) {
     return false
   }
 
@@ -27,9 +31,9 @@ export function restorePendingApproval(response: SessionResumeResult, sessionId:
     requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
     sessionId,
     smartDenied: pending.smart_denied === true,
-    ...approvalKindFields(pending as Record<string, unknown>)
+    ...kindFields
   })
   void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 
-  return true
+  return isCommandApproval(kindFields)
 }

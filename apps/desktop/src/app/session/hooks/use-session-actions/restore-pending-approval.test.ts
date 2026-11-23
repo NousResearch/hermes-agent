@@ -29,7 +29,10 @@ describe('restorePendingApproval', () => {
       risk: 'The agent can read every file in this folder.'
     }
 
-    expect(restorePendingApproval(resumed(pending), 's1')).toBe(true)
+    // The return value says whether the session's TURN waits on the approval. A folder card marks
+    // its session by being parked, so it does not raise the turn's flag (which nothing would lower
+    // once the card is answered).
+    expect(restorePendingApproval(resumed(pending), 's1')).toBe(false)
     expect(sessionApprovalRequests('s1').get()).toEqual([
       expect.objectContaining({
         kind: 'access',
@@ -37,6 +40,15 @@ describe('restorePendingApproval', () => {
         risk: 'The agent can read every file in this folder.',
         target: { access: 'read', path: 'C:\\ref' }
       })
+    ])
+  })
+
+  it('restores a command approval and says that the turn waits on it', () => {
+    const pending = { command: 'rm -rf build', description: 'delete the build folder', request_id: 'apr-1' }
+
+    expect(restorePendingApproval(resumed(pending), 's1')).toBe(true)
+    expect(sessionApprovalRequests('s1').get()).toEqual([
+      expect.objectContaining({ command: 'rm -rf build', requestId: 'apr-1' })
     ])
   })
 })

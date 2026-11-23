@@ -82,6 +82,24 @@ def test_a_plain_env_takes_the_line_by_line_path(dotenv, monkeypatch, data):
     assert calls == [{"preserve_mode": True}]
 
 
+@pytest.mark.parametrize("data", [
+    ("A=1\nNOTE=\"line one\nline two\"\n" + f"'{_KEY}'=old\n" + "B=2\n").encode(),  # beside a value over several lines
+    f"A=1\n'{_KEY}'=old\r\nB=2\n".encode(),  # a plain file: the line reader does not see the quoted name
+])
+def test_a_quoted_name_the_loader_reads_is_removed_whole(dotenv, data):
+    """python-dotenv reads 'KEY'=value as KEY, so removing KEY removes it; every other byte stays."""
+    from dotenv import dotenv_values
+    _write(dotenv, data)
+    assert dotenv_values(dotenv)[_KEY] == "old"
+
+    assert config.remove_env_value(_KEY) is True
+
+    assert dotenv.read_bytes() == data.replace(f"'{_KEY}'=old\r\n".encode(), b"").replace(
+        f"'{_KEY}'=old\n".encode(), b"")
+    assert _KEY not in dotenv_values(dotenv)
+    assert stat.S_IMODE(dotenv.stat().st_mode) == 0o640
+
+
 def test_dashboard_password_removes_its_overrides_through_remove_env_value(dotenv, monkeypatch):
     from hermes_cli import dashboard_password
     _write(dotenv, ("A=1\n" + _PEM + f'{_KEY}="first\nsecond"\n').encode())

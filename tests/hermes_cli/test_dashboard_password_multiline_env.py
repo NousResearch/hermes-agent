@@ -105,6 +105,23 @@ def test_a_multiline_env_that_is_not_utf8_with_nothing_to_remove_is_left_alone(t
     assert stat.S_IMODE(dotenv.stat().st_mode) == 0o640
 
 
+@pytest.mark.parametrize("multiline", [True, False])
+def test_a_quoted_password_name_the_loader_reads_is_removed(tmp_path, multiline):
+    """'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD'=old is the password to python-dotenv (the gateway's loader), so the
+    command removes it instead of reporting success while it still overrides the new hash."""
+    home, env = _home(tmp_path)
+    # A value over several lines with no look-alike line in it (which the line reader would also see).
+    kept = ("PLAIN_SETTING=first\n" + ('NOTE="line one\nline two"\n' if multiline else "") + "OTHER_SETTING=kept\n").encode()
+    dotenv = _write_env(home, kept + b"'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD'=old-pass\n")
+
+    result = _set_password(env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Removed HERMES_DASHBOARD_BASIC_AUTH_PASSWORD from .env" in result.stdout
+    assert dotenv.read_bytes() == kept
+    assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" not in dotenv_values(dotenv)
+
+
 def test_a_plain_env_is_cleaned_line_by_line_as_before(tmp_path):
     """Control: a .env with no value over several lines takes the unchanged line-by-line path."""
     home, env = _home(tmp_path)

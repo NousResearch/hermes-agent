@@ -268,7 +268,11 @@ def _clear_dotenv_shadows() -> tuple[list[str], list[str]]:
     name the line reader saw only inside another value there is not one to remove."""
     from hermes_cli.config import get_env_path, load_env, remove_env_value
     from hermes_cli.env_loader import dotenv_assigned, dotenv_multiline
-    in_dotenv = [name for name in SHADOWING_ENV if name in load_env()]
+    try:  # the names the loader (python-dotenv) assigns, which a quoted name ('KEY'=value) hides from load_env
+        assigned = set(dotenv_assigned(get_env_path().read_bytes()))
+    except OSError:
+        assigned = set()
+    in_dotenv = [name for name in SHADOWING_ENV if name in load_env() or name in assigned]
     removed, left = [], []
     for name in in_dotenv:
         try:

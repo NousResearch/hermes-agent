@@ -59,9 +59,13 @@ def codex_watchdog_deadline(*, stale_timeout: float, ttfb_enabled: bool, ttfb_ti
     elif math.isfinite(stale_timeout):
         deadlines.append(("wall-clock stale", stale_timeout))
     attempt_offset = max(0.0, retry_started_ts - call_start) if retry_started_ts is not None else 0.0
-    if last_event_ts is None:
+    # Non-phase-aware reconnect before its first event: bounded like a first attempt (as the poll loop).
+    reconnecting = retry_started_ts is not None and not idle_requires_progress and last_event_ts is not None
+    if last_event_ts is None or reconnecting:
         if ttfb_enabled and math.isfinite(ttfb_timeout):
             deadlines.append(("TTFB", attempt_offset + ttfb_timeout))
+        elif reconnecting and idle_enabled and math.isfinite(idle_timeout):
+            deadlines.append(("stream idle", attempt_offset + idle_timeout))
     elif progress_timeout > 0 and last_progress_ts is None:
         deadlines.append(("first progress", attempt_offset + progress_timeout))
     elif (not idle_requires_progress or last_progress_ts is not None) and idle_enabled and math.isfinite(idle_timeout):

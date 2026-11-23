@@ -464,9 +464,14 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
 
 
 def _provider_preferences_for_agent(agent) -> dict[str, Any]:
-    """Build the validated provider-routing object shared by request paths. ``provider_routing.models.<id>``
-    overlays the flat values for the CURRENT ``agent.model``; unrecognized ``provider_routing`` keys are
-    forwarded verbatim (typed keys win on conflict) via ``hermes_constants.merge_provider_routing_prefs``."""
+    """Build the validated provider-routing object shared by request paths.
+
+    ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
+    ``agent.model`` (so ``/model`` switches, fallbacks, and delegated children on another
+    model each get their own pins without any surface re-plumbing the kwargs).
+
+    Unrecognized ``provider_routing`` keys are forwarded verbatim (typed keys win on conflict)
+    via ``hermes_constants.merge_provider_routing_prefs``."""
     flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
         "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
         "data_collection": agent.provider_data_collection}

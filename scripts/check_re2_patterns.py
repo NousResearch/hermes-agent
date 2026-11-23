@@ -15,7 +15,8 @@ For every call `<alias>.compile/search/match/fullmatch/findall/finditer/split/su
   UNCHECKED  stdlib `re` did not finish the comparison within DEADLINE seconds (catastrophic backtracking on the
              generated strings), so nothing says the swap keeps the results; review the pattern and waive it
   DYNAMIC    not checked, with the reason (listed with --verbose): the pattern is not a string literal, or the
-             flags are not a literal (a clean result with flags=0 says nothing about the real flags)
+             flags are not a literal (every verdict depends on the flags, so such a call reports only a REJECTED
+             or SURROGATE that holds under every combination of ASCII, I, M, S and X)
 Any finding except DYNAMIC makes the exit status 1. One call is waived with a comment on its first or last line
 (a real comment token: the marker inside a string literal waives nothing):
     # re2: reviewed -- <reason>
@@ -57,6 +58,8 @@ FUNCS = {"compile": 1, "search": 2, "match": 2, "fullmatch": 2, "findall": 2, "f
 FLAGS = {"I": 2, "IGNORECASE": 2, "M": 8, "MULTILINE": 8, "S": 16, "DOTALL": 16, "A": 256, "ASCII": 256, "U": 32,
          "UNICODE": 32, "X": 64, "VERBOSE": 64, "L": 4, "LOCALE": 4, "DEBUG": 128, "NOFLAG": 0}
 WAIVER = "# re2: reviewed --"
+# What a non-literal flags argument may hold: ASCII first, so a pattern that builds only with it is found early.
+UNKNOWN_FLAG_BITS = (256, 2, 8, 16, 64)  # ASCII, IGNORECASE, MULTILINE, DOTALL, VERBOSE
 EXTRA = " \n\t-_.,:;/|@=\"'()aZ09\u00e9\u00df\u0436\u65e5\u017f\u0130"
 SAMPLES = 160
 DEADLINE = 2.0
@@ -212,6 +215,30 @@ def keyword(node, name):
     return next((k.value for k in node.keywords if k.arg == name), None)
 
 
+def build_error(facade, pattern, flags):
+    """Why hermes_re cannot build the pattern with these flags, or None when it builds."""
+    try:
+        facade.build(pattern, flags)
+    except Exception as exc:  # health: allow BLE001 -- every way a pattern fails to build is reported as a finding
+        return f"{type(exc).__name__}: {exc}"[:110]
+    return None
+
+
+def classify_unknown_flags(facade, pattern):
+    """A finding that holds under EVERY flag combination the call could pass, else DYNAMIC.
+
+    Every other verdict depends on the flags: ASCII makes `\\b` exact and shrinks `\\w` programs under the memory
+    budget, VERBOSE turns text into comments."""
+    combos = [sum(bit for i, bit in enumerate(UNKNOWN_FLAG_BITS) if mask >> i & 1)
+              for mask in range(1 << len(UNKNOWN_FLAG_BITS))]
+    if isinstance(pattern, str) and all(names_surrogate(pattern, flags) for flags in combos):
+        return "SURROGATE", "the pattern names a lone surrogate (with any flags)"
+    first = build_error(facade, pattern, 0)
+    if first and all(build_error(facade, pattern, flags) for flags in combos[1:]):
+        return "REJECTED", first + " (with any flags)"
+    return "DYNAMIC", "not checked (flags not a literal)"
+
+
 def classify(facade, node, fn, pattern):
     """(kind, detail) for one call with a literal pattern, or None when it is clean."""
     flag_node = keyword(node, "flags")
@@ -219,18 +246,15 @@ def classify(facade, node, fn, pattern):
     if flag_node is None and len(node.args) > index:
         flag_node = node.args[index]
     flags = flag_value(flag_node)
-    note = "" if flags is not None else " (flags not a literal: checked with flags=0)"
-    flags = flags or 0
+    if flags is None:
+        return classify_unknown_flags(facade, pattern)
     if isinstance(pattern, str) and names_surrogate(pattern, flags):
         return "SURROGATE", "the pattern names a lone surrogate"
-    try:
-        facade.build(pattern, flags)
-    except Exception as exc:  # health: allow BLE001 -- every way a pattern fails to build is reported as a finding
-        return "REJECTED", f"{type(exc).__name__}: {exc}"[:110] + note
+    error = build_error(facade, pattern, flags)
+    if error:
+        return "REJECTED", error
     if isinstance(pattern, str) and facade.inexact_boundaries(pattern, flags):
-        return "INEXACT", "ASCII-only word boundary" + note
-    if note:
-        return "DYNAMIC", "not checked (flags not a literal)"
+        return "INEXACT", "ASCII-only word boundary"
     repl_node = node.args[1] if len(node.args) > 1 else keyword(node, "repl")
     marker = b"<>" if isinstance(pattern, bytes) else "<>"
     repl = repl_node.value if fn in ("sub", "subn") and isinstance(repl_node, ast.Constant) \

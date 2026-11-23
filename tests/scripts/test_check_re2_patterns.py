@@ -145,6 +145,24 @@ def test_non_literal_flags_still_report_a_refused_pattern(tmp_path):
     assert "REJECTED" in out
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        # exact under the ASCII flag the call really passes; flags=0 would make the boundary INEXACT
+        'import hermes_re as re\nf = re.ASCII\nre.compile(r"x\\b.", f)\n',
+        # over RE2's memory budget with Unicode \w, small with the ASCII flag the call really passes
+        'import hermes_re as re\nf = re.ASCII\nre.compile(r"' + "\\w{1000}" * 5 + '", f)\n',
+        # a surrogate escape inside a VERBOSE comment names no surrogate with the real flags
+        'import hermes_re as re\nf = re.X\nre.compile(r"a  # \\ud800", flags=f)\n',
+    ],
+    ids=["ascii-boundary", "ascii-memory-budget", "verbose-comment-surrogate"],
+)
+def test_non_literal_flags_never_give_a_flag_dependent_finding(tmp_path, source):
+    code, out = _gate(tmp_path, source, "--verbose")
+    assert code == 0, out
+    assert "not checked (flags not a literal)" in out
+
+
 def test_missing_engine_exits_2_with_one_line(tmp_path):
     blocker = (
         "import sys, runpy\n"

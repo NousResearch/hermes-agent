@@ -44,21 +44,17 @@ def sleeper():
     proc.wait()
 
 
-def _creation_time(pid: int) -> str | None:
-    """The pid's CIM creation time in marker format, or None when the pid died
-    or WMI refused the query — a busy runner's short-lived SYSTEM processes
-    vanish between the scan that picked them and this read."""
+def _creation_time(pid: int) -> str:
     # Limited query rights (what Python/Rust readers use): works for every process.
-    try:
-        out = subprocess.run(
-            ['powershell', '-NoProfile', '-Command',
-             f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-             "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()"],
-            capture_output=True, text=True, timeout=60, check=True,
-        ).stdout.strip()
-        return f'{int(out) / 1000:.3f}'
-    except (subprocess.CalledProcessError, ValueError):
-        return None
+    # Raises on a failed read: a marker written with ``ct:None`` parses as v1 and passes
+    # the creation-time cases on liveness alone.
+    out = subprocess.run(
+        ['powershell', '-NoProfile', '-Command',
+         f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
+         "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()"],
+        capture_output=True, text=True, timeout=60, check=True,
+    ).stdout.strip()
+    return f'{int(out) / 1000:.3f}'
 
 
 def _protected_pid(exclude: set[int] | frozenset[int] = frozenset()) -> int:
@@ -116,10 +112,10 @@ def _live_protected_owner() -> tuple[int, str]:
     excluded: set[int] = set()
     for _ in range(5):
         owner = _protected_pid(exclude=excluded)
-        creation_time = _creation_time(owner)
-        if creation_time is not None:
-            return owner, creation_time
-        excluded.add(owner)
+        try:
+            return owner, _creation_time(owner)
+        except (subprocess.CalledProcessError, ValueError):
+            excluded.add(owner)
     pytest.fail('no live SYSTEM/protected process stayed CIM-readable across attempts: '
                 + ', '.join(str(pid) for pid in sorted(excluded)))
 

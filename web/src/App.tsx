@@ -71,6 +71,8 @@ import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
+import { SessionFilterMenu } from "@/components/SessionFilterMenu";
+import { SessionFilterProvider } from "@/contexts/session-filter-context";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
 import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
@@ -582,6 +584,7 @@ export default function App() {
       <SharedMetricsConsentBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <SessionFilterProvider>
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
@@ -653,6 +656,8 @@ export default function App() {
             </div>
 
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
+
+            <SessionFilterMenu collapsed={isDesktopCollapsed} />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
@@ -806,6 +811,7 @@ export default function App() {
             </div>
           </PageHeaderProvider>
         </div>
+        </SessionFilterProvider>
       </div>
 
       <PluginSlot name="overlay" />

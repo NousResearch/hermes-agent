@@ -99,6 +99,8 @@ export const en: Translations = {
     webUi: "Web UI",
     managingProfile: "Managing profile",
     currentProfileOption: "this dashboard ({name})",
+    filters: "Filters",
+    sessionFilters: "Session filters",
     managingProfileBanner:
       "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
     memoryOomRestartBanner:
@@ -181,6 +183,8 @@ export const en: Translations = {
     filterChats: "Chats",
     filterAutomation: "Automation",
     filterAll: "All",
+    filterType: "Type",
+    filterSources: "Sources",
     sourceFilter: "Session source",
     anySource: "Any source",
     searchPlaceholder: "Search message content...",

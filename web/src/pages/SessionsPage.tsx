@@ -18,7 +18,6 @@ import {
   Search,
   Trash2,
   Clock,
-  Terminal,
   Globe,
   X,
   Play,
@@ -40,7 +39,6 @@ import type {
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
-  SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
@@ -49,10 +47,7 @@ import {
   AUTOMATION_SESSION_SOURCES,
   NO_MATCHING_SESSION_SOURCE,
   SOURCE_CONFIG,
-  type SessionFilterCategory,
-  type SourceSelectionsByCategory,
   isAutomationSource,
-  sourceBelongsToCategory,
   sourceLabel,
 } from "./SessionsPage_sources";
 import { StructuredReasoning } from "@/components/StructuredReasoning";
@@ -81,6 +76,7 @@ import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useSessionFilters } from "@/contexts/session-filter-context";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
@@ -754,16 +750,19 @@ export default function SessionsPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
   const [view, setView] = useState<SessionsView>("overview");
-  const [sessionCategory, setSessionCategory] =
-    useState<SessionFilterCategory>("chats");
-  const [sourceSelectionsByCategory, setSourceSelectionsByCategory] =
-    useState<SourceSelectionsByCategory>({
-      chats: null,
-      automation: null,
-      all: null,
-    });
-  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
-  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  // The session filter (category + per-category source subset) is global
+  // state owned by SessionFilterContext — the sidebar's Filters dropdown
+  // (next to the profile switcher) drives it, and this page reacts.
+  const {
+    category: sessionCategory,
+    setCategory: setSessionCategory,
+    selectedSources,
+    allSourceOptions,
+    clearSources,
+    stats,
+    refreshStats,
+    activeCount,
+  } = useSessionFilters();
   const sessionsRequestRef = useRef(0);
   // Count of empty (no-message, ended, non-archived) sessions across the
   // entire DB, populated by /api/sessions/empty/count. Used to:
@@ -789,7 +788,6 @@ export default function SessionsPage() {
   const lastClickedIndexRef = useRef<number | null>(null);
   const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
   const [deletingSelected, setDeletingSelected] = useState(false);
-  const [stats, setStats] = useState<SessionStoreStats | null>(null);
   const [pruneOpen, setPruneOpen] = useState(false);
   const [pruneDays, setPruneDays] = useState("90");
   const [pruning, setPruning] = useState(false);
@@ -799,30 +797,6 @@ export default function SessionsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
-  const selectedSources = sourceSelectionsByCategory[sessionCategory];
-
-  const pinnedSourceSelections = useMemo(
-    () =>
-      Object.values(sourceSelectionsByCategory).flatMap(
-        (selection) => selection ?? [],
-      ),
-    [sourceSelectionsByCategory],
-  );
-
-  const allSourceOptions = useMemo(() => {
-    const entries = Object.entries(stats?.by_source ?? {}).sort(
-      ([aSource, aCount], [bSource, bCount]) =>
-        bCount - aCount || sourceLabel(aSource).localeCompare(sourceLabel(bSource)),
-    );
-    const seen = new Set(entries.map(([source]) => source));
-    for (const source of pinnedSourceSelections) {
-      if (!seen.has(source)) {
-        entries.unshift([source, 0]);
-        seen.add(source);
-      }
-    }
-    return entries;
-  }, [pinnedSourceSelections, stats]);
 
   const allSourceNames = useMemo(
     () => allSourceOptions.map(([source]) => source),
@@ -858,52 +832,6 @@ export default function SessionsPage() {
     }
     return {};
   }, [selectedSources, sessionCategory, allSourceNames]);
-
-  const categoryDefaultSources = useMemo(() => {
-    return allSourceNames.filter((source) =>
-      sourceBelongsToCategory(source, sessionCategory),
-    );
-  }, [sessionCategory, allSourceNames]);
-
-  const sourceOptions = useMemo(() => {
-    const selected = new Set(selectedSources ?? []);
-    return allSourceOptions.filter(
-      ([source]) =>
-        sourceBelongsToCategory(source, sessionCategory) || selected.has(source),
-    );
-  }, [allSourceOptions, selectedSources, sessionCategory]);
-
-  const effectiveSelectedSources = selectedSources ?? categoryDefaultSources;
-
-  const selectedSourceSet = useMemo(
-    () => new Set(effectiveSelectedSources),
-    [effectiveSelectedSources],
-  );
-
-  const defaultSourceFilterLabel = useMemo(() => {
-    if (sessionCategory === "chats") return "Any chat source";
-    if (sessionCategory === "automation") return "Any automation source";
-    return t.sessions.anySource;
-  }, [sessionCategory, t.sessions.anySource]);
-
-  const sourceMenuTitle = useMemo(() => {
-    if (sessionCategory === "chats") return "Chat sources";
-    if (sessionCategory === "automation") return "Automation sources";
-    return t.sessions.sourceFilter;
-  }, [sessionCategory, t.sessions.sourceFilter]);
-
-  const sourceFilterLabel = useMemo(() => {
-    if (selectedSources === null) {
-      return defaultSourceFilterLabel;
-    }
-    if (selectedSources.length === 0) {
-      return "No sources";
-    }
-    if (selectedSources.length === 1) {
-      return sourceLabel(selectedSources[0]);
-    }
-    return `${selectedSources.length} sources`;
-  }, [defaultSourceFilterLabel, selectedSources]);
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -948,21 +876,6 @@ export default function SessionsPage() {
     };
   }, [setEnd]);
 
-  useEffect(() => {
-    if (!sourceMenuOpen) return;
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!sourceMenuRef.current?.contains(event.target as Node)) {
-        setSourceMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [sourceMenuOpen]);
-
   const loadSessions = useCallback((p: number, silent = false) => {
     // ``silent`` skips the loading spinner so background refreshes
     // (triggered when the overview poll detects a new session from
@@ -987,12 +900,10 @@ export default function SessionsPage() {
       });
   }, [sessionQueryOptions]);
 
-  const loadStats = useCallback(() => {
-    api
-      .getSessionStats()
-      .then(setStats)
-      .catch(() => {});
-  }, []);
+  // Stats (per-source counts) are owned by the filter context; mutations
+  // on this page refresh them through the same alias the old local
+  // callback had.
+  const loadStats = refreshStats;
 
   const handleImportSessions = useCallback(
     async (files: FileList | null) => {
@@ -1024,10 +935,6 @@ export default function SessionsPage() {
       showToast,
     ],
   );
-
-  useEffect(() => {
-    loadStats();
-  }, [loadStats]);
 
   // Refs for the overview poll's new-session detection. The poll effect
   // below is mounted once with stable deps, so it reads the current page
@@ -1126,51 +1033,19 @@ export default function SessionsPage() {
     [clearSelection],
   );
 
-  const updateSessionCategory = useCallback(
-    (value: string) => {
-      setSessionCategory(value as SessionFilterCategory);
-      setSourceMenuOpen(false);
-      setPage(0);
-      setExpandedId(null);
-      clearSelection();
-    },
-    [clearSelection],
-  );
-
-  const toggleSourceFilter = useCallback(
-    (source: string) => {
-      setSourceSelectionsByCategory((currentByCategory) => {
-        const current = currentByCategory[sessionCategory];
-        const next = new Set(current ?? categoryDefaultSources);
-        if (next.has(source)) {
-          next.delete(source);
-        } else {
-          next.add(source);
-        }
-        const nextSelection = sourceOptions
-          .map(([optionSource]) => optionSource)
-          .filter((optionSource) => next.has(optionSource));
-        return {
-          ...currentByCategory,
-          [sessionCategory]: nextSelection,
-        };
-      });
-      setPage(0);
-      setExpandedId(null);
-      clearSelection();
-    },
-    [categoryDefaultSources, clearSelection, sessionCategory, sourceOptions],
-  );
-
-  const clearSourceFilters = useCallback(() => {
-    setSourceSelectionsByCategory((currentByCategory) => ({
-      ...currentByCategory,
-      [sessionCategory]: null,
-    }));
+  // A category or source-subset change (from the sidebar Filters dropdown
+  // next to the profile switcher) resets list state — the same side
+  // effects the removed toolbar controls used to trigger.
+  const firstFilterLoad = useRef(true);
+  useEffect(() => {
+    if (firstFilterLoad.current) {
+      firstFilterLoad.current = false;
+      return;
+    }
     setPage(0);
     setExpandedId(null);
     clearSelection();
-  }, [clearSelection, sessionCategory]);
+  }, [sessionCategory, selectedSources, clearSelection]);
 
   // Debounced FTS search
   useEffect(() => {
@@ -1763,102 +1638,6 @@ export default function SessionsPage() {
       {(showOverviewTab && !isSearching) || showList ? (
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
-            <Segmented
-              className="w-fit shrink-0"
-              size="md"
-              value={sessionCategory}
-              onChange={updateSessionCategory}
-              options={[
-                { value: "chats", label: t.sessions.filterChats },
-                { value: "automation", label: t.sessions.filterAutomation },
-                { value: "all", label: t.sessions.filterAll },
-              ]}
-            />
-
-            <div ref={sourceMenuRef} className="relative shrink-0">
-              <Button
-                outlined
-                size="sm"
-                prefix={<ListFilter />}
-                suffix={
-                  <ChevronDown
-                    className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
-                  />
-                }
-                className="h-8 min-w-[10rem] max-w-[14rem] justify-between text-xs"
-                aria-label={t.sessions.sourceFilter}
-                aria-expanded={sourceMenuOpen}
-                onClick={() => setSourceMenuOpen((open) => !open)}
-              >
-                <span className="min-w-0 truncate">{sourceFilterLabel}</span>
-              </Button>
-
-              {sourceMenuOpen && (
-                <div
-                  className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
-                >
-                  <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {sourceMenuTitle}
-                    </span>
-                    {selectedSources !== null && (
-                      <Button
-                        ghost
-                        size="xs"
-                        onClick={clearSourceFilters}
-                        className="shrink-0"
-                      >
-                        {t.common.clear}
-                      </Button>
-                    )}
-                  </div>
-                  <div className="max-h-64 overflow-y-auto p-1">
-                    {sourceOptions.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-muted-foreground">
-                        {sourceMenuTitle}
-                      </div>
-                    ) : (
-                      sourceOptions.map(([source, count]) => {
-                        const selected = selectedSourceSet.has(source);
-                        const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal;
-                        const sourceColor =
-                          SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
-
-                        return (
-                          <div
-                            key={source}
-                            className="flex min-w-0 items-center gap-2 px-2 py-1.5 hover:bg-secondary/40"
-                          >
-                            <Checkbox
-                              checked={selected}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleSourceFilter(source);
-                              }}
-                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
-                            />
-                            <button
-                              type="button"
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
-                              onClick={() => toggleSourceFilter(source)}
-                            >
-                              <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
-                              <span className="min-w-0 flex-1 truncate">
-                                {sourceLabel(source)}
-                              </span>
-                              <span className="shrink-0 tabular-nums text-muted-foreground">
-                                {count}
-                              </span>
-                            </button>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
             {showOverviewTab && !isSearching && (
               <Segmented
                 className="w-fit shrink-0"
@@ -2007,6 +1786,35 @@ export default function SessionsPage() {
                 String(selectedIds.size),
               )}
             </span>
+          </Button>
+        </div>
+      )}
+
+      {showList && !isSearching && activeCount > 0 && (
+        <div
+          className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
+          role="status"
+        >
+          <ListFilter className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            {sessionCategory === "chats"
+              ? t.sessions.filterChats
+              : sessionCategory === "automation"
+                ? t.sessions.filterAutomation
+                : t.sessions.filterAll}
+            {selectedSources !== null &&
+              ` · ${selectedSources.length} ${t.sessions.filterSources ?? "sources"}`}
+          </span>
+          <Button
+            ghost
+            size="xs"
+            onClick={() => {
+              setSessionCategory("chats");
+              clearSources();
+            }}
+            aria-label="Clear session filters"
+          >
+            {t.common.clear}
           </Button>
         </div>
       )}

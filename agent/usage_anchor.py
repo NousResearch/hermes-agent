@@ -32,10 +32,24 @@ _FINGERPRINT_KEYS = ("role", "content", "api_content", "tool_call_id", "tool_cal
 
 
 def message_fingerprint(msg: Any) -> Optional[str]:
-    """Stable digest of one transcript message over its provider-visible, persisted fields."""
+    """Stable digest of one transcript message over its provider-visible, persisted fields.
+
+    ``content`` is hashed in the shape the session row stores it (``durable_content``: a part list
+    keeps its text and folds each image to ``[screenshot]``; a multimodal tool-result envelope becomes
+    its text summary), so an anchor captured on a live
+    multimodal turn still matches the same row after a reload (#159070). Plain strings pass through
+    unchanged, so anchors already persisted keep matching."""
     if not isinstance(msg, dict):
         return None
     payload = {k: msg.get(k) for k in _FINGERPRINT_KEYS if msg.get(k) is not None}
+    if isinstance(payload.get("content"), (list, dict)):
+        from session_rules.turns import durable_content
+
+        content = durable_content(payload["content"])
+        if content is None:
+            payload.pop("content")
+        else:
+            payload["content"] = content
     try:
         raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True, separators=(",", ":"))
     except (TypeError, ValueError):

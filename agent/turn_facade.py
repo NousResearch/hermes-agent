@@ -32,6 +32,10 @@ class TurnFacadeMixin:
         prelude: Optional[Generator]=None,
     ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        # An agent built before a plugin began running its profile elsewhere (a cached gateway or
+        # dashboard session agent) runs no further turn on this host: same refusal as ``__init__``.
+        from hermes_cli.profiles_run_elsewhere import require_home_runs_here
+        require_home_runs_here()
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline

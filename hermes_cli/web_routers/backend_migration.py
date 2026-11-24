@@ -331,8 +331,13 @@ def _refuse(host, status_code: int, code: str, message: str, **extra: Any) -> JS
 
 def _unfinished(host, target: Target) -> Optional[JSONResponse]:
     """409 while a run is live or an earlier one died mid-way (its rollback belongs in a terminal:
-    the CLI runs it in the foreground, and it may restart the process answering this request)."""
+    the CLI runs it in the foreground, and it may restart the process answering this request). First of
+    all, 409 for a profile a plugin runs elsewhere: no move or undo is started for it, and no command
+    that would roll one back is named."""
     from hermes_cli.gateway_migrate_backends_apply import _in_progress, read_manifest, unreadable_manifest
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    if (elsewhere := run_elsewhere_refusal(host.home)) is not None:
+        return _refuse(host, 409, "blocked", "Nothing was started.", blockers=[f"{elsewhere} Nothing changed."])
     if (problem := unreadable_manifest(host.home)) is not None:
         return _refuse(host, 409, "manifest_unreadable", f"{problem}. Nothing changed; see "
                        f"{target.command('--status')} on this machine.", command=target.command("--status"))

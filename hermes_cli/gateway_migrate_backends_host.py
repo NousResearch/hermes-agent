@@ -100,6 +100,31 @@ def _env_tokens(environment: str) -> dict[str, str]:
     return dict(t.split("=", 1) for t in tokens if "=" in t)
 
 
+#: Set by the gateway service's own unit (``gateway.generate_systemd_unit``): a legacy unit's values are not carried.
+_GATEWAY_UNIT_ENV = frozenset({"HOME", "USER", "LOGNAME", "PATH", "VIRTUAL_ENV", "HERMES_HOME", "HERMES_SUPERVISED_CHILD"})
+
+
+def _systemd_words(environment: str) -> list[str]:
+    """The words of a ``systemctl show -p Environment`` value exactly as printed: systemd prints each
+    assignment bare or double-quoted with C escapes, the syntax ``Environment=`` reads back, so a word is
+    carried without being unescaped (whitespace inside quotes or after a backslash does not split)."""
+    words, word, quoted, escaped = [], "", False, False
+    for ch in environment:
+        if escaped:
+            word, escaped = word + ch, False
+        elif ch == "\\":
+            word, escaped = word + ch, True
+        elif ch == '"':
+            word, quoted = word + ch, not quoted
+        elif ch.isspace() and not quoted:
+            if word:
+                words.append(word)
+            word = ""
+        else:
+            word += ch
+    return [*words, word] if word else words
+
+
 _HOME_KEYS = ("HERMES_HOME", "HOME", "HERMES_DATA_DIR_SUFFIX")  # the variables that decide a unit's home
 _HOME_LINE = re.compile(r"^\s*(export\s+)?(" + "|".join(_HOME_KEYS) + r")\s*=(.*)$")
 
@@ -687,6 +712,115 @@ class SystemHost:
         delete it, which no rollback or --restore could bring back."""
         from hermes_cli import gateway as gw
         return self.gateway_kind() == "systemd" and gw.has_legacy_hermes_units()
+
+    # ------------------------------------------------------------------ what the move takes over
+
+    def legacy_unit_records(self) -> list[dict]:
+        """The pre-rename ``hermes.service`` gateway units (``gateway._find_legacy_hermes_units``) with their state:
+        ``unit``, ``path``, ``system``, ``enabled`` (``systemctl is-enabled``), ``active``, ``main_pid``."""
+        from hermes_cli import gateway as gw
+        if self.gateway_kind() != "systemd":
+            return []
+        found = []
+        for name, path, system in gw._find_legacy_hermes_units():
+            props = self.unit_props(name, "system" if system else "user")
+            found.append({"unit": name, "path": str(path), "system": system,
+                          "enabled": props.get("UnitFileState") or "", "active": props.get("ActiveState") == "active",
+                          "main_pid": int(props.get("MainPID") or 0) or None})
+        return found
+
+    def legacy_environment_lines(self, unit: str) -> list[str]:
+        """The environment user unit *unit* sets itself, as systemd resolved it (``systemctl show``: every
+        drop-in, continued lines and ``Environment=`` resets applied), for the gateway service: one
+        ``Environment=`` line of its assignments without the ones the gateway unit sets itself, then one
+        ``EnvironmentFile=`` line per file in order (``-`` kept for an optional one). Values stay in memory
+        and in the 0600 drop-in they are copied to."""
+        res = _systemctl("user", ["show", unit, "--no-pager", "--property=Environment",
+                                  "--property=EnvironmentFiles"])
+        self._require(res, f"read {unit}")
+        words: list[str] = []
+        files: list[tuple[str, bool]] = []
+        for line in (res.stdout or "").splitlines():
+            key, _, value = line.partition("=")
+            if key == "Environment":
+                words += [w for w in _systemd_words(value) if w.lstrip('"').split("=", 1)[0] not in _GATEWAY_UNIT_ENV]
+            elif key == "EnvironmentFiles":
+                files += [(path, flag == "yes") for path, flag in _ENV_FILE_ENTRY.findall(value)]
+        # show prints values and paths already expanded, so a literal % is doubled back for systemd.
+        lines = ["Environment=" + " ".join(w.replace("%", "%%") for w in words)] if words else []
+        return lines + [f"EnvironmentFile={'-' if optional else ''}{path.replace('%', '%%')}" for path, optional in files]
+
+    def gateway_env_dropin_path(self, name: str) -> str:
+        from hermes_cli import gateway as gw
+        return str(self.user_unit_dir() / f"{gw.get_service_name()}.service.d" / name)
+
+    def remove_legacy_units(self) -> None:
+        """Stop, disable and delete this user's legacy units (``gateway.remove_legacy_hermes_units``)."""
+        from hermes_cli import gateway as gw
+        units = [u["unit"] for u in self.legacy_unit_records() if not u["system"]]
+        run_quietly(lambda: gw.remove_legacy_hermes_units(interactive=False))
+        if left := [u["unit"] for u in self.legacy_unit_records() if not u["system"]]:
+            raise RuntimeError(f"could not remove {', '.join(left)}")
+        for unit in units:  # a stopped gateway may exit non-zero: no deleted unit is left listed as failed
+            _systemctl("user", ["reset-failed", unit])
+
+    def write_gateway_env_dropin(self, path: str, lines: list[str]) -> None:
+        from hermes_cli.gateway_migrate_backends_apply import write_private_file
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        header = "# Written by `hermes gateway migrate --backends`: the environment of the legacy unit it replaced.\n"
+        write_private_file(Path(path), (header + "[Service]\n" + "\n".join(lines) + "\n").encode("utf-8"))
+        self.daemon_reload("user")
+
+    def remove_gateway_env_dropin(self, path: str) -> None:
+        Path(path).unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            Path(path).parent.rmdir()  # only when nothing else is in it
+        self.daemon_reload("user")
+
+    def restore_legacy_unit(self, rec: dict) -> None:
+        """Put back a legacy unit the move replaced, from its backup: the file, then its enablement and state."""
+        if not Path(rec["path"]).exists():
+            Path(rec["path"]).parent.mkdir(parents=True, exist_ok=True)
+            Path(rec["path"]).write_bytes(Path(rec["backup"]).read_bytes())
+        self.daemon_reload("user")
+        if rec.get("enabled") == "enabled":
+            self._require(_systemctl("user", ["enable", rec["unit"]]), f"enable {rec['unit']}")
+        if rec.get("active"):
+            self._require(_systemctl("user", ["start", rec["unit"]], timeout=90), f"start {rec['unit']}")
+
+    def stray_gateway(self, pid: int) -> dict:
+        """``{"pid", "start_time", "idle_exit", "chats", "unit"}`` for this home's gateway *pid* running outside its
+        service. ``idle_exit``: it was started to end itself once idle (a chat client's own start,
+        ``gateway_runtime_start.spawn_unmanaged_gateway``); ``chats``: the active agents its runtime record
+        names, None when that record is not this process's; ``unit``: the systemd service whose cgroup it is in."""
+        import psutil
+        from gateway.status import parse_active_agents, read_runtime_status
+        try:
+            argv = psutil.Process(pid).cmdline()
+        except (psutil.Error, OSError):
+            argv = []
+        from hermes_cli.update_cmd_posix_pause import _pid_cgroup
+        record = read_runtime_status(self.home / "gateway_state.json") or {}
+        chats = parse_active_agents(record.get("active_agents")) if record.get("pid") == pid else None
+        units = [part for part in (_pid_cgroup(pid) or "").split("/") if part.endswith(".service")]
+        return {"pid": pid, "start_time": self.start_time(pid), "idle_exit": "--idle-exit" in argv, "chats": chats,
+                "unit": units[-1] if units else None}
+
+    def stop_stray_gateway(self) -> Optional[int]:
+        """Stop this home's gateway when it runs outside its service (``gateway.stop_profile_gateway``: a planned
+        stop, SIGTERM, its orphans reaped) and wait until it is gone. Returns the pid stopped, None when none ran."""
+        from hermes_cli import gateway as gw
+        state = self.gateway_state()
+        pid = state["running_pid"]
+        if not pid or state["active"]:
+            return None
+        run_quietly(gw.stop_profile_gateway)
+        deadline = time.monotonic() + 60
+        while self.gateway_pid() is not None:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"the gateway outside its service (pid {pid}) did not stop within 60 s")
+            self.sleep(0.5)
+        return pid
 
     def _refuse_foreign_gateway(self, action: str) -> None:
         """Raise instead of driving another home's same-named gateway unit or LaunchAgent."""

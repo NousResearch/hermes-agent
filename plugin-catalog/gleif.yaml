@@ -8,7 +8,7 @@ category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-gleif#readme
 version: 0.1.1
 image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-gleif/41f0099f5634d52f59e9182b9afae54347afb2b8/assets/catalog-banner.png
-requires_hermes: '>=0.21.4'
+requires_hermes: ">=0.21.4"
 platforms: []
 title: LEI Record
 capabilities:

@@ -579,13 +579,45 @@ def test_a_host_started_inside_the_launch_profiles_bound_scope_takes_its_launche
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_lent_launch_scope_keeps_the_callers_task_local_multiplexing_for_a_missing_launcher_value(
+        tmp_path, monkeypatch):
+    """A launch-profile body under task-local multiplexing (the desktop cron ticker) never reads a name its scope
+    lacks from the live process env, which another profile's task may have written. The launcher it lends its
+    scope to leaves such a name unresolved too, as the body would."""
+    from agent import secret_scope as ss
+    from tui_gateway import server
+
+    tags, runner = tmp_path / "tags", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho "$1" >> "{tags}"\nshift\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "isolation": "host", "host": {"launcher": [str(runner), "${RUNNER_TAG}"]}}}), encoding="utf-8")
+    monkeypatch.delenv("RUNNER_TAG", raising=False)
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    context_token = ss.set_multiplex_context(True)
+    try:
+        with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+            monkeypatch.setenv("RUNNER_TAG", "written-after-the-scope-was-bound")
+            assert ss.get_secret("RUNNER_TAG") is None
+            host.ensure_started()
+        assert tags.read_text(encoding="utf-8").split() == ["${RUNNER_TAG}"]
+    finally:
+        host.shutdown()
+        ss.reset_multiplex_context(context_token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
 @pytest.mark.parametrize("caller", ["launch", "secondary"])
 def test_a_caller_bound_to_another_profile_lends_its_scope_to_no_other_profiles_launcher(
         tmp_path, monkeypatch, caller):
     """Only a caller bound to the started profile's own secrets lends them to its launcher. A body bound to the
     launch profile that starts a secondary's host leaves the secondary on its own ``.env``, and a body bound to a
-    secondary that starts the launch profile's host leaves it on the launch env."""
+    secondary that starts the launch profile's host leaves it on the env the process loaded, not on a launch
+    ``.env`` edited since."""
     from agent import secret_scope as ss
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tui_gateway import server
@@ -596,13 +628,14 @@ def test_a_caller_bound_to_another_profile_lends_its_scope_to_no_other_profiles_
         script.chmod(0o755)
         return ran
 
-    ops_ran, launch_ran = runner("ops-runner"), runner("launch-runner")
+    ops_ran, launch_ran, edited_ran = runner("ops-runner"), runner("launch-runner"), runner("edited-runner")
     ops = _home_with_plugins(tmp_path / "ops", monkeypatch, {})
     launch = _home_with_plugins(tmp_path, monkeypatch, {})
     launcher = yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}})
     for home in (ops, launch):
         (home / "config.yaml").write_text(launcher, encoding="utf-8")
     (ops / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / 'ops-runner'}\n", encoding="utf-8")
+    (launch / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / 'edited-runner'}\n", encoding="utf-8")
     monkeypatch.setenv("PLUGIN_RUNNER", str(tmp_path / "launch-runner"))
     plugins_mod._reset_plugin_managers_for_tests()
     started, bound_to = (ops, None) if caller == "launch" else (launch, str(ops))
@@ -615,7 +648,8 @@ def test_a_caller_bound_to_another_profile_lends_its_scope_to_no_other_profiles_
     try:
         with server._session_profile_runtime_scope({"profile_home": bound_to}, hydrate_secrets=False):
             host.ensure_started()
-        assert (ops_ran.exists(), launch_ran.exists()) == ((True, False) if started == ops else (False, True))
+        ran = [path.exists() for path in (ops_ran, launch_ran, edited_ran)]
+        assert ran == ([True, False, False] if started == ops else [False, True, False])
     finally:
         host.shutdown()
         ss.reset_multiplex_context(context_token)

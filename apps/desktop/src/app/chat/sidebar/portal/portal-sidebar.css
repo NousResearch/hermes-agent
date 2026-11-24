@@ -1274,6 +1274,12 @@ button.portal-section-title:hover {
   padding-inline-start: calc(0.625rem + 1rem + 0.625rem);
 }
 
+/* Off, it keeps the room its check takes when on (the indicator's gap and glyph), so the label
+   wraps the same either way. */
+:root[data-shell='portal'] [data-slot='dropdown-menu-checkbox-item'].portal-agent-menu-setting[data-state='unchecked'] {
+  padding-inline-end: calc(0.625rem + 0.5rem + 0.75rem);
+}
+
 .portal-agent-menu .portal-hide-info {
   opacity: 0;
 }

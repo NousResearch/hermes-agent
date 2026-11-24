@@ -114,16 +114,17 @@ def isolation_mode(config: Optional[Mapping[str, Any]] = None) -> str:
 
 def host_launcher(config: Optional[Mapping[str, Any]] = None, *, home: Any = None) -> list[str]:
     """``plugins.host.launcher``: argv prefix the host process runs under (a sandbox runner). Read from the
-    config (no *config*), the managed overlay's launcher wins, its ``${VAR}``s expanded against the process env
-    as ``apply_managed_overlay`` documents, whichever profile's secret scope the caller has bound. For a
-    profile a plugin runs elsewhere (*home*, else this process's) only that one counts: that backend writes
-    the profile's config.yaml."""
+    config (no *config*), a launcher the managed overlay sets wins, even one that expands to nothing, its
+    ``${VAR}``s expanded against the process env as ``apply_managed_overlay`` documents, whichever profile's
+    secret scope the caller has bound. For a profile a plugin runs elsewhere (*home*, else this process's)
+    only that one counts: that backend writes the profile's config.yaml."""
     from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     if config is None:
         from hermes_cli.managed_scope import apply_managed_overlay
-        managed = _launcher_in(contextvars.Context().run(apply_managed_overlay, {}))  # no scope bound
-        if managed or run_elsewhere_refusal(home) is not None:
-            return managed
+        managed = contextvars.Context().run(apply_managed_overlay, {})  # no scope bound
+        host = _plugins_config(managed).get("host")
+        if (isinstance(host, Mapping) and "launcher" in host) or run_elsewhere_refusal(home) is not None:
+            return _launcher_in(managed)
     return _launcher_in(config)
 
 

@@ -1233,6 +1233,40 @@ def test_a_secondary_profiles_managed_launcher_expands_against_the_process_env_u
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_managed_launcher_that_expands_to_nothing_is_not_replaced_by_a_profiles_env_file_value(tmp_path, monkeypatch):
+    """A managed launcher whose ``${VAR}`` the process env sets empty is still the administrator's: the host starts
+    with no launcher rather than expanding the same reference again against the profile's ``.env``."""
+    from agent import secret_scope as ss
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    launch = _home_with_plugins(tmp_path, monkeypatch, {})
+    ops = launch / "profiles" / "ops"
+    ops.mkdir(parents=True)
+    (ops / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host"}}), encoding="utf-8")
+    (ops / ".env").write_text(f"SANDBOX_RUNNER={runner}\n", encoding="utf-8")  # the user's, not the operator's
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": "${SANDBOX_RUNNER}"}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("SANDBOX_RUNNER", "")
+    ss.set_multiplex_active(True)
+    plugins_mod._reset_plugin_managers_for_tests()
+    token = set_hermes_home_override(ops)
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        host.ensure_started()
+        assert host.alive and not ran.exists()
+    finally:
+        host.shutdown()
+        reset_hermes_home_override(token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
 def test_a_host_started_by_a_caller_bound_to_a_since_renamed_link_runs_the_profiles_launcher(tmp_path, monkeypatch):
     """The launcher comes from the config of the home the host starts in, not from the caller's binding: a load

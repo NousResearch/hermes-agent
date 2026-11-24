@@ -26,6 +26,17 @@ def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
         sys.exit(1)
 
 
+def container_exec_info() -> dict | None:
+    """``hermes_cli.config.get_container_exec_info()`` for the entry point, or None for a profile a plugin
+    runs elsewhere: that backend writes the file, and its ``backend=`` line names the program to start. The
+    command then stays a host command."""
+    from hermes_cli.config import get_container_exec_info
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+
+    info = get_container_exec_info()
+    return None if info and run_elsewhere_refusal() is not None else info
+
+
 def exec_in_container(container_info: dict, cli_args: list):
     """Replace the current process with a command inside the managed container.
 

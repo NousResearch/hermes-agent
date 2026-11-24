@@ -3293,9 +3293,9 @@ def main():
     # NixOS container mode routes ALL invocations into the managed container.
     # MUST run before parse_args() so --help, unrecognised flags and every
     # subcommand are forwarded instead of intercepted by argparse on the host.
-    from hermes_cli.config import get_container_exec_info
+    from hermes_cli.main_container import container_exec_info
 
-    container_info = get_container_exec_info()
+    container_info = container_exec_info()  # None for a profile a plugin runs elsewhere
     if container_info:
         from hermes_cli.main_container import exec_in_container
 

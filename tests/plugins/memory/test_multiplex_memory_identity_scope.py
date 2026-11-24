@@ -1,8 +1,8 @@
 """Multiplex invariant: memory-provider identity/tenant/endpoint never comes from the default profile.
 
 Under ``gateway.multiplex_profiles`` ``os.environ`` is the DEFAULT profile's ``.env``. When a secondary
-profile's scope does not define MEM0_USER_ID / RETAINDB_PROJECT /
-OPENVIKING_* / HERMES_HONCHO_HOST, the provider must fall back to its own default
+profile's scope does not define RETAINDB_PROJECT /
+HERMES_HONCHO_HOST, the provider must fall back to its own default
 (per-profile partition), NOT write the secondary's memories into the default profile's account.
 """
 from __future__ import annotations
@@ -12,13 +12,8 @@ import pytest
 from agent import secret_scope
 
 _DEFAULT_ENV = {
-    "MEM0_USER_ID": "user-default", "MEM0_AGENT_ID": "agent-default", "MEM0_HOST": "http://mem0.default",
-    "MEM0_MODE": "self_hosted",
     "RETAINDB_PROJECT": "proj-default", "RETAINDB_BASE_URL": "https://rdb.default",
-    "OPENVIKING_API_KEY": "ov-default", "OPENVIKING_ACCOUNT": "acct-default", "OPENVIKING_USER": "user-default",
-    "OPENVIKING_AGENT": "agent-default", "OPENVIKING_ENDPOINT": "http://ov.default",
     "HERMES_HONCHO_HOST": "host-default", "HONCHO_BASE_URL": "https://honcho.default",
-    "OPENAI_API_KEY": "sk-default", "OPENAI_BASE_URL": "https://openai.default/v1",
 }
 
 
@@ -34,8 +29,7 @@ def secondary_profile(monkeypatch, tmp_path):
     (prof_b / "config.yaml").write_text("{}\n")
     monkeypatch.setenv("HERMES_HOME", str(prof_b))
     secret_scope.set_multiplex_active(True)
-    token = secret_scope.set_secret_scope({"RETAINDB_API_KEY": "rdb-b", "HONCHO_API_KEY": "honcho-b",
-                                           "MEM0_API_KEY": "mem0-b"})
+    token = secret_scope.set_secret_scope({"RETAINDB_API_KEY": "rdb-b", "HONCHO_API_KEY": "honcho-b"})
     try:
         yield prof_b
     finally:
@@ -44,39 +38,9 @@ def secondary_profile(monkeypatch, tmp_path):
 
 
 def test_secondary_profile_memory_identity_never_inherits_default_environ(secondary_profile):
-    import plugins.memory.mem0 as mem0
-    import plugins.memory.openviking as openviking
-    import plugins.memory.retaindb as retaindb
-
-    cfg = mem0._load_config()
-    assert "user_id" not in cfg  # falls back to the gateway-native id, not the default's user
-    assert (cfg["agent_id"], cfg["host"], cfg["mode"]) == ("hermes", "", "platform")
+    from plugins.memory import retaindb
 
     provider = retaindb.RetainDBMemoryProvider()
     provider.initialize("s1", hermes_home=str(secondary_profile))
     assert provider._client.project == "hermes-b"
     assert "default" not in provider._client.base_url
-
-    settings = openviking._resolve_connection_settings({})
-    assert (settings["api_key"], settings["account"], settings["user"]) == ("", "", "")
-    assert "default" not in settings["endpoint"]
-    client = openviking._VikingClient("http://x", "k")
-    assert (client._account, client._user) == ("default", "default")  # the built-in tenant, not acct-default
-
-
-def test_mem0_oss_llm_never_borrows_default_profile_openai_key(secondary_profile):
-    pytest.importorskip("mem0")
-    from mem0.configs.llms.openai import OpenAIConfig
-
-    from plugins.memory.mem0._openai_llm import DirectOpenAILLM
-
-    with pytest.raises(ValueError, match="OpenAI API key is required"):
-        DirectOpenAILLM(OpenAIConfig(model="gpt-5-mini"))
-    # The secondary's own scoped key + base URL are used when present.
-    token = secret_scope.set_secret_scope({"OPENAI_API_KEY": "sk-b", "OPENAI_BASE_URL": "https://openai.b/v1"})
-    try:
-        llm = DirectOpenAILLM(OpenAIConfig(model="gpt-5-mini"))
-    finally:
-        secret_scope.reset_secret_scope(token)
-    assert llm.client.api_key == "sk-b"
-    assert str(llm.client.base_url).startswith("https://openai.b/v1")

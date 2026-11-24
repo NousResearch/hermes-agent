@@ -50,9 +50,21 @@ vi.mock('@/hermes', async importOriginal => {
   return { ...actual, HermesGateway: FakeHermesGateway }
 })
 
+// A secondary's reopen does `await import('@/store/session-states')` (store/gateway.ts). Load that
+// graph at collection so the first reconnect test is not charged its cold transform, which times it
+// out on a loaded runner.
+import '@/store/session-states'
+
 import type * as HermesModule from '@/hermes'
 import type { HermesGateway } from '@/hermes'
 import {
+  backendTransitionFor,
+  beginBackendTransition,
+  endBackendTransition,
+  resetBackendTransitionsForTests
+} from '@/store/backend-transition'
+import {
+  $activeGatewayRoute,
   $gateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -60,9 +72,10 @@ import {
   setPrimaryGateway
 } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $profileRemoteOverrides } from '@/store/profile-remote-override'
 import { $connection, $gatewayState } from '@/store/session'
 
-import { useGatewayRequest } from './use-gateway-request'
+import { READS_SENT_AGAIN, useGatewayRequest } from './use-gateway-request'
 
 interface TestGateway {
   connect: ReturnType<typeof vi.fn>
@@ -222,6 +235,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  resetBackendTransitionsForTests()
+  $profileRemoteOverrides.set({})
   closeSecondaryGateways()
   setPrimaryGateway(null)
   $gateway.set(null)
@@ -316,6 +331,143 @@ describe('useGatewayRequest', () => {
     expect(desktop.getConnection).not.toHaveBeenCalled()
     expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
     expect(gateway.connect).toHaveBeenLastCalledWith(expect.stringContaining('ticket=fresh-2'))
+  })
+
+  it('does not replay a delayed local failure onto a same-named profile on another source', async () => {
+    installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    let rejectRequest!: (error: Error) => void
+    primary.request.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRequest = reject
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+    const { result } = renderHook(() => useGatewayRequest())
+
+    const pending = result.current
+      .requestGateway('prompt.submit', { session_id: 'local-only', text: 'private' })
+      .catch(error => error)
+
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    const destination = $gateway.get() as unknown as TestGateway
+    destination.request.mockResolvedValue({ sent: true })
+    await act(async () => {
+      rejectRequest(failure)
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(destination.request).not.toHaveBeenCalled()
+  })
+
+  it('does not replay when the source changes while recovery is pending', async () => {
+    const desktop = installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    primary.connectionState = 'closed'
+    primary.request.mockRejectedValueOnce(failure).mockResolvedValue({ sent: true })
+    let finishRecovery!: () => void
+    primary.connect.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          finishRecovery = resolve
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('closed')
+    const { result } = renderHook(() => useGatewayRequest())
+    const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+    await vi.waitFor(() => expect(primary.connect).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    const destination = $gateway.get() as unknown as TestGateway
+    await act(async () => {
+      finishRecovery()
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(destination.request).not.toHaveBeenCalled()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['resolves', 'rejects'] as const)(
+    'keeps the newer foreground descriptor when a stale primary recovery lookup %s',
+    async outcome => {
+      const desktop = installRemoteDesktop()
+      const primary = makePrimaryGateway()
+      const failure = new Error('connection closed')
+      primary.connectionState = 'closed'
+      primary.request.mockRejectedValueOnce(failure)
+      let settleLookup!: () => void
+      const localConnection = await desktop.getConnection()
+      desktop.getConnection.mockClear()
+      desktop.getConnection.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            settleLookup = () =>
+              outcome === 'resolves' ? resolve(localConnection) : reject(new Error('local backend unavailable'))
+          })
+      )
+      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('closed')
+      const { result } = renderHook(() => useGatewayRequest())
+      const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+      await vi.waitFor(() => expect(desktop.getConnection).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        await ensureGatewayForAgent('home', 'default')
+      })
+      const foreground = { ...localConnection, baseUrl: 'https://home.example.test', connectionId: 'home' }
+      $connection.set(foreground as never)
+      await act(async () => {
+        settleLookup()
+      })
+
+      expect(await pending).toBe(failure)
+      expect($connection.get()).toBe(foreground)
+      expect(result.current.connectionRef.current).toBeNull()
+      expect(primary.connect).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not dial the primary when the foreground moves while its ticket is minted', async () => {
+    const desktop = installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    primary.connectionState = 'closed'
+    primary.request.mockRejectedValueOnce(failure)
+    let releaseMint!: () => void
+    desktop.getGatewayWsUrl.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          releaseMint = () => resolve({ ok: true as const, wsUrl: 'ws://127.0.0.1:5151/api/ws?token=fresh-local' })
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('closed')
+    const { result } = renderHook(() => useGatewayRequest())
+    const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+    await vi.waitFor(() => expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    await act(async () => {
+      releaseMint()
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.connect).not.toHaveBeenCalled()
   })
 
   it('does not reconnect for a non-transport request failure', async () => {
@@ -468,5 +620,313 @@ describe('useGatewayRequest', () => {
     // settling.
     await vi.advanceTimersByTimeAsync(20_000)
     await pending
+  })
+})
+
+describe('a planned sandbox restart of a plugin-run profile', () => {
+  afterEach(() => $activeGatewayRoute.set('default'))
+
+  // The composer's send: the backend knows a `submission_id` it has already taken.
+  const KEYED_SUBMIT = { submission_id: 'sub-1', text: 'try again' }
+
+  function launchedPrimary() {
+    const primary = makePrimaryGateway()
+
+    $profileRemoteOverrides.set({
+      work: { host: '127.0.0.1:47972', launcher: { plugin: 'openshell' }, url: 'http://127.0.0.1:47972' }
+    })
+    setPrimaryGateway(primary as unknown as HermesGateway, 'work')
+    $activeGatewayRoute.set('work')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    return primary
+  }
+
+  it('holds a request the restart cut off and sends it once the backend is back', async () => {
+    const primary = launchedPrimary()
+    primary.request
+      .mockRejectedValueOnce(new Error('WebSocket heartbeat acknowledgement timed out'))
+      .mockResolvedValueOnce({ status: 'started' })
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    let settled: unknown = 'pending'
+    const sent = result.current.requestGateway('prompt.submit', KEYED_SUBMIT).then(value => (settled = value))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(settled).toBe('pending')
+    expect(primary.request).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      endBackendTransition('work', { source: 'launcher' })
+      await sent
+    })
+    expect(settled).toEqual({ status: 'started' })
+    expect(primary.request).toHaveBeenCalledTimes(2)
+    expect(primary.request).toHaveBeenLastCalledWith('prompt.submit', KEYED_SUBMIT, undefined, undefined)
+  })
+
+  it('a restart that does not come back fails the request with its real error', async () => {
+    const primary = launchedPrimary()
+    const cut = new Error('WebSocket heartbeat acknowledgement timed out')
+    primary.request.mockRejectedValueOnce(cut)
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    const sent = result.current.requestGateway('prompt.submit', KEYED_SUBMIT).catch(error => error)
+
+    await act(async () => {
+      await Promise.resolve()
+      endBackendTransition('work', { ok: false, source: 'launcher' })
+    })
+    await expect(sent).resolves.toBe(cut)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(backendTransitionFor('work')).toBeNull()
+  })
+
+  // With no planned transition a heartbeat timeout says the socket went silent, not that the backend
+  // is gone: it may already have run the request (a turn, a paid generation), so it is not sent again.
+  it.each([
+    { label: 'a profile no plugin runs', launched: false },
+    { label: 'a plugin-run profile whose launcher reports no restart', launched: true }
+  ])('a heartbeat timeout outside a planned transition is not sent again ($label)', async ({ launched }) => {
+    const primary = launched ? launchedPrimary() : makePrimaryGateway()
+    const silent = new Error('WebSocket heartbeat acknowledgement timed out')
+    primary.request.mockRejectedValueOnce(silent).mockResolvedValueOnce({ token: 'a second run' })
+
+    if (!launched) {
+      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('open')
+    }
+
+    const { result } = renderHook(() => useGatewayRequest())
+
+    await act(async () => {
+      await expect(result.current.requestGateway('pet.generate', { prompt: 'a fox' })).rejects.toBe(silent)
+    })
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(primary.connect).not.toHaveBeenCalled()
+  })
+})
+
+// A request the transport cut off has an unknown
+// outcome: the backend that held it may already have run it. `ran` is what each backend was asked to run.
+describe('a write the old backend already received, cut off during a planned transition', () => {
+  afterEach(() => $activeGatewayRoute.set('default'))
+
+  const HEARTBEAT_CUT = 'WebSocket heartbeat acknowledgement timed out'
+  const CLOSED_CUT = 'Hermes gateway connection closed'
+
+  // The primary socket of a plugin-run profile. The first request reaches the backend the profile is
+  // on now, which runs it; its answer is lost in the cut. Everything after reaches the backend the
+  // profile is on once the transition has ended.
+  function twoBackends(cut: string) {
+    const ran = { before: [] as string[], after: [] as string[] }
+    const primary = makePrimaryGateway()
+
+    primary.request.mockImplementation(async (method: string) => {
+      if (ran.before.length === 0) {
+        ran.before.push(method)
+
+        throw new Error(cut)
+      }
+
+      ran.after.push(method)
+
+      return { ok: true }
+    })
+    $profileRemoteOverrides.set({
+      work: { host: '127.0.0.1:47972', launcher: { plugin: 'some-plugin' }, url: 'http://127.0.0.1:47972' }
+    })
+    setPrimaryGateway(primary as unknown as HermesGateway, 'work')
+    $activeGatewayRoute.set('work')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    return { primary, ran }
+  }
+
+  const UNKEYED_WRITES = [
+    { method: 'pet.generate', params: { count: 4, prompt: 'a fox', style: 'auto' } },
+    { method: 'prompt.background', params: { session_id: 's1', text: 'summarize the repo' } },
+    { method: 'session.steer', params: { session_id: 's1', text: 'use the other branch' } }
+  ]
+
+  it.each(UNKEYED_WRITES)(
+    'a restart does not run $method a second time after a heartbeat timeout cut it off',
+    async ({ method, params }) => {
+      const { ran } = twoBackends(HEARTBEAT_CUT)
+      beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+      const { result } = renderHook(() => useGatewayRequest())
+      const sent = result.current.requestGateway(method, params).catch(error => error)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+        endBackendTransition('work', { source: 'launcher' })
+        await sent
+      })
+
+      expect(ran.before).toEqual([method])
+      // The person is told the request was cut off; nothing runs it again unasked.
+      expect(ran.after).toEqual([])
+      await expect(sent).resolves.toBeInstanceOf(Error)
+    }
+  )
+
+  it.each(UNKEYED_WRITES)(
+    'a switch to the plugin backend does not run $method there after the host backend already received it',
+    async ({ method, params }) => {
+      // The window redials the profile in place (gateway.close()), which rejects what is in flight
+      // with the closed-connection error while the switch's own transition is showing.
+      const { ran } = twoBackends(CLOSED_CUT)
+      beginBackendTransition('work', 'starting', { source: 'switch' })
+
+      const { result } = renderHook(() => useGatewayRequest())
+      const sent = result.current.requestGateway(method, params).catch(error => error)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+        endBackendTransition('work', { source: 'switch' })
+        await sent
+      })
+
+      expect(ran.before).toEqual([method])
+      expect(ran.after).toEqual([])
+      await expect(sent).resolves.toBeInstanceOf(Error)
+    }
+  )
+
+  // What the re-send does today, pinned so a fix keeps the parts the restart flow needs.
+  it.each([
+    { cut: HEARTBEAT_CUT, method: 'session.resume', params: { session_id: 's1' } },
+    { cut: CLOSED_CUT, method: 'session.history', params: { session_id: 's1' } },
+    { cut: HEARTBEAT_CUT, method: 'prompt.submit', params: { session_id: 's1', submission_id: 'sub-1', text: 'hi' } },
+    { cut: CLOSED_CUT, method: 'a2a.forward', params: { input_id: 'in-1', text: 'hi' } }
+  ])('a read or a keyed write ($method) cut off by a restart is sent again once', async ({ cut, method, params }) => {
+    const { primary, ran } = twoBackends(cut)
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    const sent = result.current.requestGateway(method, params)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      endBackendTransition('work', { source: 'launcher' })
+      await sent
+    })
+
+    expect(ran.after).toEqual([method])
+    expect(primary.request).toHaveBeenCalledTimes(2)
+    expect(primary.request).toHaveBeenLastCalledWith(method, params, undefined, undefined)
+  })
+
+  it('a request cut off twice is sent twice and no more: the second cut reaches the caller', async () => {
+    const primary = makePrimaryGateway()
+    const second = new Error(HEARTBEAT_CUT)
+
+    primary.request.mockRejectedValueOnce(new Error(HEARTBEAT_CUT)).mockRejectedValueOnce(second)
+    $profileRemoteOverrides.set({
+      work: { host: '127.0.0.1:47972', launcher: { plugin: 'some-plugin' }, url: 'http://127.0.0.1:47972' }
+    })
+    setPrimaryGateway(primary as unknown as HermesGateway, 'work')
+    $activeGatewayRoute.set('work')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    const sent = result.current.requestGateway('session.resume', { session_id: 's1' }).catch(error => error)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      endBackendTransition('work', { source: 'launcher' })
+      await sent
+    })
+
+    await expect(sent).resolves.toBe(second)
+    expect(primary.request).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['restarting', 'starting'] as const)(
+    'a write that never left this computer is sent once the backend is back (%s)',
+    async kind => {
+      const source = kind === 'restarting' ? 'launcher' : 'switch'
+      const primary = makePrimaryGateway()
+
+      // The socket was already down: the request was refused before anything was written to it.
+      primary.request
+        .mockRejectedValueOnce(new Error('Hermes gateway is not connected'))
+        .mockResolvedValueOnce({ ok: true })
+      $profileRemoteOverrides.set({
+        work: { host: '127.0.0.1:47972', launcher: { plugin: 'some-plugin' }, url: 'http://127.0.0.1:47972' }
+      })
+      setPrimaryGateway(primary as unknown as HermesGateway, 'work')
+      $activeGatewayRoute.set('work')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('open')
+      beginBackendTransition('work', kind, { source })
+
+      const { result } = renderHook(() => useGatewayRequest())
+      const sent = result.current.requestGateway('pet.generate', { prompt: 'a fox' })
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+        endBackendTransition('work', { source })
+        await sent
+      })
+
+      await expect(sent).resolves.toEqual({ ok: true })
+      expect(primary.request).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  it('a write with an empty key is not sent again', async () => {
+    const { ran } = twoBackends(CLOSED_CUT)
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+
+    const sent = result.current
+      .requestGateway('prompt.submit', { input_id: null, submission_id: '', text: 'hi' })
+      .catch(error => error)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      endBackendTransition('work', { source: 'launcher' })
+      await sent
+    })
+
+    expect(ran).toEqual({ after: [], before: ['prompt.submit'] })
+  })
+
+  // A method is added to the list only with the claim that running it twice changes nothing, so this
+  // expectation changes in the same commit. Every method that is not listed is not sent again.
+  it('the reads sent again after a planned transition are these and no others', () => {
+    expect([...READS_SENT_AGAIN].sort()).toEqual(['session.history', 'session.resume'])
+  })
+
+  it('outside a planned transition a closed socket still sends a write again, as before this feature', async () => {
+    const { ran } = twoBackends(CLOSED_CUT)
+    $profileRemoteOverrides.set({})
+
+    const { result } = renderHook(() => useGatewayRequest())
+
+    await act(async () => {
+      await expect(result.current.requestGateway('pet.generate', { prompt: 'a fox' })).resolves.toEqual({ ok: true })
+    })
+
+    expect(ran).toEqual({ before: ['pet.generate'], after: ['pet.generate'] })
   })
 })

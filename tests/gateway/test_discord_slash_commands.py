@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class FakeTree:
@@ -97,7 +97,12 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_SMART_THREAD_TITLES", raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -112,6 +117,23 @@ def adapter():
     # construct a full auth context (allowlist / channel scope).
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
+
+
+def test_patchable_payload_excludes_install_and_context_metadata(adapter):
+    payload = {
+        "type": 1,
+        "name": "status",
+        "description": "Show Hermes session status",
+        "options": [],
+        "contexts": [2, 0, 1],
+        "integration_types": [1, 0],
+    }
+
+    assert adapter._patchable_app_command_payload(payload) == {
+        "name": "status",
+        "description": "Show Hermes session status",
+        "options": [],
+    }
 
 
 # ------------------------------------------------------------------
@@ -366,7 +388,9 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
 
     adapter.handle_message = capture_handle
 
-    await adapter._dispatch_thread_session(interaction, "555", "Planning", "Hello!")
+    thread = SimpleNamespace(id=555, name="Planning", guild=interaction.guild, topic=None,
+                             parent=SimpleNamespace(id=100, name="general", guild=interaction.guild))
+    await adapter._dispatch_thread_session(interaction, thread, "Hello!")
 
     assert len(captured_events) == 1
     event = captured_events[0]
@@ -454,7 +478,7 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
 # ------------------------------------------------------------------
 
 
-import discord as _discord_mod  # noqa: E402 — mock or real, used below
+import discord as _discord_mod
 
 
 class _FakeTextChannel:

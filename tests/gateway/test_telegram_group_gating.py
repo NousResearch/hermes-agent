@@ -3,8 +3,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.event import MessageType
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 import os
@@ -279,6 +280,40 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
+def test_observe_mode_commands_and_text_turns_share_one_group_session():
+    """Regression: in a non-forum observe chat a slash command kept the sender id for slash access
+    checks, so the default ``group_sessions_per_user`` keyed it to a per-user session; ``/new``,
+    ``/model`` and skill commands acted on a session the observed transcript never reached."""
+    from gateway.config import GatewayConfig
+    from gateway.session import build_session_context, build_session_context_prompt, build_session_key
+
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], group_allowed_chats=["-100"],
+                            observe_unmentioned_group_messages=True)
+    seen = []
+    adapter.handle_message = AsyncMock(side_effect=seen.append)
+    adapter._enqueue_text_event = seen.append
+    adapter._ensure_forum_commands = AsyncMock()
+    text, command = "@hermes_bot summarise the chat", "/new@hermes_bot"
+
+    async def _run():
+        await adapter._handle_text_message(SimpleNamespace(
+            update_id=1, message=_group_message(text, entities=[_mention_entity(text)]), effective_message=None), None)
+        await adapter._handle_command(SimpleNamespace(
+            update_id=2, message=_group_message(command, entities=[_bot_command_entity(command, command)]),
+            effective_message=None), None)
+
+    asyncio.run(_run())
+    text_turn, command_turn = seen
+    assert command_turn.message_type == MessageType.COMMAND and command_turn.source.user_id == "111"
+    observed = adapter._telegram_group_observe_shared_source(command_turn.source)
+    restored = SessionSource.from_dict(command_turn.source.to_dict())
+    keys = {build_session_key(s) for s in (text_turn.source, command_turn.source, observed, restored)}
+    assert len(keys) == 1, keys
+    config = GatewayConfig()
+    assert build_session_context_prompt(build_session_context(command_turn.source, config)) == (
+        build_session_context_prompt(build_session_context(text_turn.source, config)))
+
+
 def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):
     from gateway.run import GatewayRunner
 
@@ -515,6 +550,44 @@ def test_gating_forum_general_topic_normalizes_to_one():
     assert adapter2._should_process_message(general) is False
 
 
+def test_bot_created_forum_topic_anchor_is_not_a_reply_to_bot():
+    """Topic creation anchors must not bypass the group mention requirement."""
+    adapter = _make_adapter(require_mention=True)
+    topic_message = _forum_message(
+        chat_id=-100, thread_id=73, is_topic_message=True, is_forum=True
+    )
+    topic_message.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=999),
+        message_id=73,
+        forum_topic_created=SimpleNamespace(name="Bot-created topic"),
+    )
+
+    assert adapter._is_reply_to_bot(topic_message) is False
+    assert adapter._should_process_message(topic_message) is False
+
+    genuine_reply = _forum_message(
+        chat_id=-100, thread_id=73, is_topic_message=True, is_forum=True
+    )
+    genuine_reply.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=999), message_id=72
+    )
+    assert adapter._is_reply_to_bot(genuine_reply) is True
+
+
+def test_non_forum_reply_anchor_to_bot_still_bypasses_mention_gate():
+    """A reply-UI anchor is a real bot reply, not a forum creation event."""
+    adapter = _make_adapter(require_mention=True)
+    reply = _forum_message(
+        chat_id=-100, thread_id=73, is_topic_message=False, is_forum=False, chat_type="group"
+    )
+    reply.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=999), message_id=73
+    )
+
+    assert adapter._is_reply_to_bot(reply) is True
+    assert adapter._should_process_message(reply) is True
+
+
 def test_bot_self_messages_are_ignored_in_dm_and_group():
     """Bot-authored messages must not re-enter as fresh user turns (issue #11905).
 
@@ -748,6 +821,56 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
 # ---------------------------------------------------------------------------
 # Replied-to media caching
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("is_voice, from_bot", [(True, False), (True, True), (False, False)])
+def test_typed_reply_to_a_voice_note_keeps_its_type_and_reaches_stt(is_voice, from_bot):
+    """A typed reply to a person's voice note stays TEXT (no voice-mode auto-TTS) with the
+    attachment still STT input (retyped AUDIO it silently skipped STT), and the typed text stays
+    the answer to a pending clarify. The bot's own voice note and a replied-to audio file are
+    never transcribed."""
+    spoken = is_voice and not from_bot
+    async def _run():
+        from gateway.platforms.event import MessageEvent
+        from gateway.run import GatewayRunner, _event_media_is_stt_input
+
+        adapter = _make_adapter()
+        cached = SimpleNamespace(
+            path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        media = SimpleNamespace(file_name="voice.ogg")
+        msg = SimpleNamespace(reply_to_message=SimpleNamespace(
+            voice=media if is_voice else None, audio=None if is_voice else media,
+            from_user=SimpleNamespace(is_bot=from_bot)))
+        event = MessageEvent(
+            text="continue", message_type=MessageType.TEXT, media_urls=[], media_types=[],
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="111"))
+
+        await adapter._cache_replied_media(msg, event)
+
+        assert event.message_type == (MessageType.TEXT if spoken else MessageType.AUDIO)
+        assert _event_media_is_stt_input(event, 0) is spoken
+        assert ("not this message" in event.text) is spoken
+        runner = object.__new__(GatewayRunner)
+        runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+        assert not spoken or await runner._prepare_clarify_reply_text(event) == "continue"
+
+    asyncio.run(_run())
+
+
+def test_captioned_own_audio_still_answers_a_clarify_with_its_transcript():
+    """Only a replied-to voice note makes the typed text the answer: a TEXT event carrying the
+    sender's own audio and a caption (Google Chat keeps TEXT for that) is answered by its speech."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+
+    event = MessageEvent(
+        text="answer attached", message_type=MessageType.TEXT, media_urls=["cache/audio/a.ogg"], media_types=["audio/ogg"],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="111"))
+    runner = object.__new__(GatewayRunner)
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["2"]))
+
+    assert asyncio.run(runner._prepare_clarify_reply_text(event)) == "2"
 
 
 # ---------------------------------------------------------------------------
@@ -1012,3 +1135,241 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     human = _group_message("hermes, hello")
     assert adapter._should_process_message(human) is True
     assert adapter._should_observe_unmentioned_group_message(human) is False
+
+
+def _in_topic(message, thread_id):
+    message.message_thread_id = thread_id
+    message.is_topic_message = True
+    return message
+
+
+def _free_response_adapter(scope, **extra):
+    """Adapter whose chat -100 (``scope="chat"``) or topic -100:31 (``scope="topic"``) is free-response,
+    plus the matching message-placement helper."""
+    if scope == "chat":
+        adapter = _make_adapter(free_response_chats=["-100"], **extra)
+        return adapter, (lambda m: m)
+    adapter = _make_adapter(free_response_topics=["-100:31"], **extra)
+    return adapter, (lambda m: _in_topic(m, 31))
+
+
+@pytest.mark.parametrize("scope", ["chat", "topic"])
+def test_bots_require_mention_still_vetoes_other_bots_in_free_response_scope(scope):
+    """#147623: free_response_chats/topics let humans trigger without a mention; they must not switch off
+    ``bots_require_mention`` for other bots (an unmentioned bot message or quote-reply passed the gate)."""
+    adapter, place = _free_response_adapter(scope, require_mention=True, bots_require_mention=True)
+
+    # Humans keep the free-response behaviour: no mention needed, quote-replies work.
+    assert adapter._should_process_message(place(_group_message("just chatting"))) is True
+    assert adapter._should_process_message(place(_group_message("replying", reply_to_bot=True))) is True
+    # Another bot must still @mention us: plain chatter and quote-replies are vetoed ...
+    assert adapter._should_process_message(place(_bot_sender_message("routine notification"))) is False
+    assert adapter._should_process_message(place(_bot_sender_message("auto-reply", reply_to_bot=True))) is False
+    # ... while an explicit @mention from that bot still goes through.
+    text = "@hermes_bot ping"
+    mentioned = place(_bot_sender_message(text, entities=[_mention_entity(text)]))
+    assert adapter._should_process_message(mentioned) is True
+
+
+def test_free_response_exemption_stays_scoped_to_its_own_chat():
+    """The bot veto now runs before the free-response check; the exemption for HUMANS must not widen."""
+    adapter = _make_adapter(require_mention=True, bots_require_mention=True, free_response_chats=["-100"])
+
+    assert adapter._should_process_message(_group_message("hi", chat_id=-100)) is True
+    assert adapter._should_process_message(_group_message("hi", chat_id=-200)) is False
+
+
+@pytest.mark.parametrize("scope", ["chat", "topic"])
+def test_free_response_still_admits_bot_chatter_when_bots_require_mention_is_off(scope):
+    """No behaviour change for anyone who has not opted in to ``bots_require_mention``."""
+    adapter, place = _free_response_adapter(scope, require_mention=True)
+
+    assert adapter._should_process_message(place(_bot_sender_message("routine notification"))) is True
+    assert adapter._should_process_message(place(_bot_sender_message("auto-reply", reply_to_bot=True))) is True
+
+
+@pytest.mark.parametrize("scope", ["chat", "topic"])
+def test_vetoed_bot_message_in_free_response_scope_is_observed_not_dropped(scope):
+    """#147623: a bot message the veto refuses is not dispatched, so it must stay eligible as observed
+    context (#115119) -- the observation gate used to exclude free-response chats/topics outright."""
+    adapter, place = _free_response_adapter(
+        scope,
+        require_mention=True,
+        bots_require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+    )
+    chatter = place(_bot_sender_message("routine notification"))
+    assert adapter._should_process_message(chatter) is False
+    assert adapter._should_observe_unmentioned_group_message(chatter) is True
+
+    # A human message dispatches (free-response), so it is NOT also observed ...
+    human = place(_group_message("just chatting"))
+    assert adapter._should_process_message(human) is True
+    assert adapter._should_observe_unmentioned_group_message(human) is False
+    # ... and neither is a bot @mention, which dispatches.
+    text = "@hermes_bot ping"
+    mentioned = place(_bot_sender_message(text, entities=[_mention_entity(text)]))
+    assert adapter._should_process_message(mentioned) is True
+    assert adapter._should_observe_unmentioned_group_message(mentioned) is False
+
+
+def test_free_response_chat_bot_chatter_is_stored_as_observed_context_end_to_end():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            bots_require_mention=True,
+            free_response_chats=["-100"],
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        msg = _bot_sender_message("deploy finished")
+        update = SimpleNamespace(update_id=2002, message=msg, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _session_id, message, _skip_db = store.messages[0]
+        assert message["observed"] is True
+        assert message["content"].endswith("deploy finished")
+
+    asyncio.run(_run())
+
+
+def _replying_to(message, *, user_id=None, message_id=10, sender_chat=None):
+    message.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=user_id) if user_id else None, message_id=message_id, text="earlier", caption=None,
+        sender_chat=SimpleNamespace(id=sender_chat, type="channel") if sender_chat else None)
+    return message
+
+
+def _with_media(message, kind):
+    setattr(message, kind, SimpleNamespace(file_id="f"))
+    return message
+
+
+@pytest.mark.parametrize("message, expected", [
+    (_group_message("@hermes_bot when is rent due?", entities=[_mention_entity("@hermes_bot when is rent due?")]), True),
+    (_group_message("sure, saturday", reply_to_bot=True), True),
+    (_group_message("hermes, add milk to the list"), True),
+    (_group_message("", caption="/status"), True),
+    (_group_message(" /status"), True),
+    (_dm_message("hello"), True),
+    (_replying_to(_group_message("yes, saturday"), user_id=222), False),
+    (_group_message("@alice are we buying the fridge?", entities=[_mention_entity("@alice are we buying the fridge?", "@alice")]), False),
+    (_group_message("the fridge arrives on saturday"), False),
+    (_group_message("are we buying the fridge on saturday?"), None),
+    (_group_message("what did @alice say?", entities=[_mention_entity("what did @alice say?", "@alice")]), None),
+    (_replying_to(_group_message("anyone up for dinner?", thread_id=5), user_id=222, message_id=5), None),
+    (_replying_to(_group_message("agreed?")), None),
+    (_replying_to(_group_message("agreed")), None),
+    (_replying_to(_group_message("when does it start?"), user_id=777000, sender_chat=-1009), None),
+    (_replying_to(_group_message("agreed"), user_id=1087968824, sender_chat=-100), None),
+    (_with_media(_group_message(None), "voice"), None),
+    (_with_media(_group_message(None), "audio"), None),
+    (_with_media(_group_message(None), "video_note"), None),
+    (_with_media(_group_message(None, caption="the fridge arrives on saturday"), "voice"), False),
+    (_with_media(_group_message(None), "photo"), False),
+], ids=[
+    "mention", "reply-to-bot", "wake-word", "caption-command", "indented-command", "dm",
+    "reply-to-other-member", "opens-with-other-mention", "chatter",
+    "question", "mentions-other-mid-question", "forum-topic-root", "reply-to-unknown-author",
+    "reply-to-unknown-author-statement", "reply-to-channel-autoforward", "reply-to-anonymous-admin",
+    "voice-note", "audio-file", "video-note", "captioned-voice-chatter", "photo-without-caption",
+])
+def test_reply_expected_follows_who_the_group_message_addresses(message, expected):
+    adapter = _make_adapter(require_mention=False, mention_patterns=["hermes"])
+
+    assert adapter._build_message_event(message, MessageType.TEXT).reply_expected is expected
+
+
+@pytest.mark.asyncio
+async def test_photo_batch_addressed_to_the_bot_keeps_the_silence_notice():
+    adapter = _make_adapter(require_mention=False)
+    pending = {}
+    for caption in ("just a photo", "/status"):
+        event = adapter._build_message_event(_group_message("", caption=caption), MessageType.PHOTO)
+        adapter._merge_into_pending(pending, "album", event)
+    assert pending["album"].reply_expected is True
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="album", stream_consumer_holder=[None], mute_notification_reply=False,
+        persist_user_display_kind=None, reply_expected=False,
+        source=pending["album"].source, _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id=None, run_generation=1,
+    )
+    result = {"final_response": "[SILENT]", "failed": False}
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    runner._deliver_queued_first_response.assert_not_awaited()
+
+    turn_ctx.reply_expected = pending["album"].reply_expected
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+
+
+def test_rich_message_wake_word_or_mention_in_group_is_dispatched():
+    """A text-less ``rich_message`` group message carrying the wake word or @handle is addressed to the bot: it
+    passes the trigger gate (not dropped or merely observed) and the agent gets the flattened text."""
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"\bchompy\b"],
+                            observe_unmentioned_group_messages=True)
+    msg = _group_message(None)
+    msg.api_kwargs = {"rich_message": {"blocks": [
+        {"type": "paragraph", "text": "chompy, summarise this"},
+        {"type": "paragraph", "text": "second paragraph"}]}}
+    other = _group_message(None)
+    other.api_kwargs = {"rich_message": {"blocks": [{"type": "paragraph", "text": "side chatter"}]}}
+
+    assert adapter._should_process_message(msg) is True
+    assert adapter._build_message_event(msg, MessageType.TEXT).text == "chompy, summarise this\nsecond paragraph"
+    assert adapter._should_process_message(other) is False
+    mentioned = _group_message(None)
+    mentioned.api_kwargs = {"rich_message": {"blocks": [{"type": "paragraph", "text": "@hermes_bot look"}]}}
+    assert adapter._should_process_message(mentioned) is True
+
+
+def test_rich_message_handle_inside_code_span_does_not_wake_the_bot():
+    """A rich-only group message that pastes the bot handle as ``code`` is not a mention, exactly like
+    plain text whose @handle sits under a ``code`` entity; the same handle outside code still wakes it."""
+    adapter = _make_adapter(require_mention=True)
+    plain = _group_message("run @hermes_bot to test", entities=[SimpleNamespace(type="code", offset=4, length=11)])
+    in_code = _group_message(None)
+    in_code.api_kwargs = {"rich_message": {"blocks": [
+        {"type": "paragraph", "text": ["run ", {"type": "code", "text": "@hermes_bot"}, " to test"]},
+        {"type": "pre", "text": "@hermes_bot --help"}]}}
+    outside = _group_message(None)
+    outside.api_kwargs = {"rich_message": {"blocks": [
+        {"type": "paragraph", "text": ["@hermes_bot run ", {"type": "code", "text": "make"}]}]}}
+
+    assert adapter._should_process_message(plain) is False
+    assert adapter._should_process_message(in_code) is False
+    assert adapter._should_process_message(outside) is True
+
+
+def _channel_post(text, *, chat_id, mention):
+    entities = [_mention_entity(text)] if mention else []
+    return SimpleNamespace(
+        message_id=44, text=text, caption=None, entities=entities, caption_entities=[],
+        message_thread_id=None, is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="channel", title="Broadcast", is_forum=False),
+        from_user=None, sender_chat=SimpleNamespace(id=chat_id, type="channel"), reply_to_message=None, date=None)
+
+
+@pytest.mark.parametrize("guest_mode", [False, True])
+def test_channel_posts_run_the_group_gates(guest_mode):
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], guest_mode=guest_mode)
+    # Outside allowed_chats a channel post is dropped even when it mentions the bot: guest mode is
+    # a group affordance, and anyone who can post in a channel would otherwise cross the allowlist.
+    assert adapter._should_process_message(_channel_post("hi @hermes_bot", chat_id=-200, mention=True)) is False
+    # Allowlisted channel: require_mention holds, an explicit mention triggers.
+    assert adapter._should_process_message(_channel_post("ordinary post", chat_id=-100, mention=False)) is False
+    assert adapter._should_process_message(_channel_post("hi @hermes_bot", chat_id=-100, mention=True)) is True
+    # Guest mode still lets a group mention cross the allowlist.
+    group = _group_message("hi @hermes_bot", chat_id=-200, entities=[_mention_entity("hi @hermes_bot")])
+    assert adapter._should_process_message(group) is guest_mode

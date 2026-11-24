@@ -6,7 +6,7 @@ import pytest
 
 from hermes_cli import main, uninstall
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
-from tests.hermes_cli.test_data_uninstall import layout  # noqa: F401 — isolated home
+from tests.hermes_cli.test_data_uninstall import layout
 
 
 @pytest.mark.parametrize("entry", ["cli", "module", "cli-dry-run"])
@@ -55,7 +55,7 @@ def test_module_subprocess_removes_only_the_disposable_home(layout, tmp_path):
                LOCALAPPDATA=str(tmp_path), PYTHONPATH=str(root), PYTHONUTF8="1")
     result = subprocess.run([sys.executable, "-m", "hermes_cli.uninstall", "--mode", "data"],
                             cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     # This process's actual source is outside the temp home, unlike layout's
     # declared source. Managed tools, launchers and sibling profiles survive.

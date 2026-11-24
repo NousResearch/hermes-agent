@@ -42,6 +42,35 @@ import { type ControlMasterHolders, sharedControlMasterHolders } from './ssh-con
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
+// Ceiling for configured budgets, matching backend-probes.ts: a typo can't
+// hang boot for minutes, and 120s absorbs even lossy cold links.
+const MAX_SSH_BUDGET_TIMEOUT_MS = 120_000
+
+/**
+ * Turn a `desktop.ssh_connect_timeout` / `desktop.ssh_forward_timeout` value
+ * from config.yaml (whole seconds) into a budget in ms. The connect budget is
+ * passed to ssh as `-o ConnectTimeout` on the command line, so the user's SSH
+ * config file cannot raise it (#132508): these keys are the only knob.
+ *
+ * Strict on purpose. Only a positive whole number counts; `45s`, `1.5`, `0`
+ * and anything else return undefined so the caller keeps the default instead
+ * of booting with a budget shorter than the one that was already too short.
+ */
+function resolveSshBudgetMs(raw: unknown): number | undefined {
+  const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : ''
+
+  if (!/^\d+$/.test(text)) {
+    return undefined
+  }
+
+  const seconds = Number(text)
+
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) {
+    return undefined
+  }
+
+  return Math.min(seconds * 1000, MAX_SSH_BUDGET_TIMEOUT_MS)
+}
 
 // Remote-side watchdog for probe commands, in seconds. runSsh SIGKILLs the
 // LOCAL ssh child on timeout, but the remote command keeps running as an
@@ -288,6 +317,12 @@ function hostArgs({ port, keyPath }: { port?: number | string; keyPath?: string 
 
 function target(user, host) {
   return user ? `${user}@${host}` : host
+}
+
+// Quote for the login shell sshd invokes. fish treats `\` inside `'…'`; POSIX
+// does not. Close the quote and escape outside it so both decode identically.
+function loginShellQuote(value: string) {
+  return `'${String(value).replace(/['\\]/g, ch => (ch === `'` ? `'\\''` : `'\\\\'`))}'`
 }
 
 function buildExecArgs(conn, remoteCommand, connectTimeoutMs?) {
@@ -683,6 +718,7 @@ class SshConnection {
   _tunnelRestartDelayMs: number
   _opened: boolean
   _mux: boolean
+  _posixRemote: boolean | null = null
   _tunnels: Map<string, any>
   _controlMasters: ControlMasterHolders
   _forwardedSpecs: Set<string>
@@ -1008,8 +1044,28 @@ class SshConnection {
 
   // One-shot remote command over the control connection. Resolves stdout;
   // rejects with a classified error on non-zero exit or timeout.
+  //
+  // sshd hands the command to the user's LOGIN shell. Payloads are POSIX sh, so
+  // fish rejects `help="$(…)"`. On Linux/Darwin wrap in `sh -c`; Windows stays raw.
   async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
-    const args = buildExecArgs(this, remoteCommand, this._connectTimeoutMs)
+    if (this._posixRemote === null) {
+      try {
+        const probe: any = await runSsh(buildExecArgs(this, 'uname -s', this._connectTimeoutMs), {
+          timeoutMs: timeoutMs ?? this._execTimeoutMs,
+          spawnFn: this._spawnFn,
+          command: this.sshBinary
+        })
+
+        if (probe.code !== 255) {
+          this._posixRemote = probe.code === 0 && /^(Linux|Darwin)$/.test(String(probe.stdout || '').trim())
+        }
+      } catch {
+        // transport failure: leave uncached, send this payload raw
+      }
+    }
+
+    const command = this._posixRemote ? `sh -c ${loginShellQuote(remoteCommand)}` : remoteCommand
+    const args = buildExecArgs(this, command, this._connectTimeoutMs)
     let result
 
     try {
@@ -1394,6 +1450,7 @@ export {
   pickLocalPort,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
+  resolveSshBudgetMs,
   runSsh,
   SSH_ERROR,
   SshConnection,

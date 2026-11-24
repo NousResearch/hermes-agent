@@ -35,7 +35,8 @@ vi.mock('./routes', () => ({
   sessionRoute: (id: string) => `/c/${encodeURIComponent(id)}`
 }))
 
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $sessionResumeRequest } from '@/store/session'
+import { _resetUserSessionOpenForTests, currentUserSessionOpen } from '@/store/session-open-intent'
 
 import { openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
 
@@ -82,6 +83,7 @@ describe('openSession', () => {
     focusedSessionWorkspaceScope.mockReturnValue({ workspaceMode: 'sessions' })
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
+    $sessionResumeRequest.set(null)
   })
 
   it('in-place focuses an existing tile and does not navigate', () => {
@@ -256,6 +258,34 @@ describe('openSession', () => {
     expect(navigate).toHaveBeenCalledWith('/c/s3')
   })
 
+  // #62045: picking the session this window already shows must still be an
+  // EXPLICIT reselect — the picker door queues the resume request the sidebar
+  // door always does, so use-route-resume re-runs resumeSession instead of
+  // treating the click as an already-active no-op.
+  it('picker queues an explicit resume request even for the session already on screen', () => {
+    // The active session, already selected in main — the in-place open path
+    // below would front 'main' and navigate nowhere.
+    $selectedStoredSessionId.set('s1')
+    $activeSessionId.set('runtime-current')
+    focusOpenSession.mockReturnValue('main')
+
+    expect($sessionResumeRequest.get()).toBeNull()
+
+    openSessionFromPicker('s1', navigate)
+
+    expect($sessionResumeRequest.get()?.sessionId).toBe('s1')
+    // The session still lands on screen exactly as before.
+    expect(navigate).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+
+    // Not just the active row: every picker pick is an explicit reselect, so a
+    // DIFFERENT session's request is queued too (with a fresh sequence).
+    openSessionFromPicker('s2', navigate)
+
+    expect($sessionResumeRequest.get()?.sessionId).toBe('s2')
+    expect($sessionResumeRequest.get()?.sequence ?? 0).toBeGreaterThan(1)
+  })
+
   it('window pops out when the bridge supports it', () => {
     openSession('s1', navigate, 'window')
     expect(openSessionInNewWindow).toHaveBeenCalledWith('s1')
@@ -274,5 +304,30 @@ describe('openSession', () => {
     openSession('', navigate)
     expect(navigate).not.toHaveBeenCalled()
     expect(focusOpenSession).not.toHaveBeenCalled()
+  })
+})
+
+// The launch restore yields to this revision (store/connections.ts), so a real
+// open has to move it at once, and a pop-out (another window) must not.
+describe('openSession marks a chat the person opened', () => {
+  const navigate = vi.fn()
+
+  beforeEach(() => {
+    _resetUserSessionOpenForTests()
+    focusOpenSession.mockReturnValue(null)
+    canOpenSessionWindow.mockReturnValue(true)
+  })
+
+  it('bumps the user-open revision synchronously for an in-window open', () => {
+    const before = currentUserSessionOpen()
+    openSession('s1', navigate)
+    expect(currentUserSessionOpen()).toBe(before + 1)
+  })
+
+  it('leaves it alone for a native pop-out', () => {
+    const before = currentUserSessionOpen()
+    openSession('s1', navigate, 'window')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1')
+    expect(currentUserSessionOpen()).toBe(before)
   })
 })

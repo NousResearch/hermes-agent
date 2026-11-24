@@ -52,15 +52,17 @@ def flavored_assets(icons: Path, assets: Path):
 
 
 def release_version(_repo: Path, tag: str) -> str:
-    from scripts.termux.deb_version import channel_for_tag
+    from hermes_cli.update_channel import release_version as version_for
 
-    channel_for_tag(tag)  # shared release tag grammar, not a second version parser
-    return tag[1:]
+    version = version_for(tag)
+    if version is None:
+        raise ValueError(f"Not a release tag: {tag!r}")
+    return version
 
 
-def npm_command(node: str) -> list[str]:
-    # Dependency preparation and packaging must resolve the same npm identity.
-    return [node, str(ROOT / "scripts/build/node-deps.mjs"), "--npm"]
+def pnpm_command(node: str) -> list[str]:
+    # Dependency preparation and packaging must resolve the same pnpm identity.
+    return [node, str(ROOT / "scripts/build/node-deps.mjs"), "--pnpm"]
 
 
 def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
@@ -112,9 +114,12 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
         run([node, "scripts/build/tui.mjs", "--source", str(repo), "--out", str(products / "tui")], cwd=repo, env=env)
         run([node, "scripts/build/web.mjs", "--source", str(repo), "--icons", str(products / "icons"),
              "--out", str(products / "web")], cwd=repo, env=env)
+        run([node, "scripts/build/webapp.mjs", "--source", str(repo), "--out", str(products / "webapp")],
+            cwd=repo, env=env)
         if prepared.payload is None:
             raise ValueError("payload dependencies were not prepared")
-        if finish_native(prepared.payload, {"tui": products / "tui", "web": products / "web"}):
+        frontends = {name: products / name for name in ("tui", "web", "webapp")}
+        if finish_native(prepared.payload, frontends):
             raise RuntimeError("prepared payload assembly failed")
     from scripts.bundles.desktop_prepare import require_source
     require_source(repo, request.commit)
@@ -130,8 +135,10 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
              "--out", str(desktop / "dist")], cwd=repo, env=env)
         version_args = []
         if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
-            script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.HERMES_RELEASE_EPOCH)))"
-            quad = capture([node, "-e", script, request.tag], repo, env)
+            # A Store package carries the Store scheme (revision zero) even on a canary.
+            script = ("const m=require('./scripts/msix-shared.mjs');const e=Number(process.env.HERMES_RELEASE_EPOCH);"
+                      "console.log(process.argv[2]==='store'?m.storePackageVersionAt(e):m.nativeQuad(process.argv[1],e))")
+            quad = capture([node, "-e", script, request.tag, variant], repo, env)
             version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
         run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,
             env=packaging_environment(env, os.environ, request.target))
@@ -152,6 +159,8 @@ def main() -> None:
     parser.add_argument("--work", type=Path)
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--clean", action="store_true",
+                        help="Remove this checkout's previous build outputs, under the checkout lock, before preparing")
     parser.add_argument("--prepared", type=Path)
     parser.add_argument("builder_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -159,7 +168,7 @@ def main() -> None:
     try:
         if args.prepared:
             if (args.tag or args.commit_build or args.release_commit or args.channel_request
-                    or args.prepare_only or args.work or args.cache):
+                    or args.prepare_only or args.work or args.cache or args.clean):
                 parser.error("--prepared supplies the complete build request")
             build_prepared(args.prepared, builder_args, args.variant)
         else:
@@ -175,7 +184,7 @@ def main() -> None:
                                           release_commit=args.release_commit)
             if args.prepare_only and builder_args:
                 parser.error("builder arguments belong to the build phase")
-            result = prepare(request)
+            result = prepare(request, clean=args.clean)
             if args.prepare_only:
                 print(result)
             else:

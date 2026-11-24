@@ -54,7 +54,7 @@ is documented as a known limitation at the end of this document.
   a plain module global, not a contextvar: it describes the deployment mode,
   not a per-task value. Its only job is to arm the fail-closed behavior in
   `get_secret()`.
-- The dashboard/Desktop backend (`hermes serve`) has no such flag, so
+- The dashboard / remote-Desktop backend (`hermes serve`) has no such flag, so
   `hermes_cli/web_server.py::start_server` calls
   `tui_gateway.launch_profile_policy.activate_multi_profile_hosting_eagerly()`
   as its LAST boot step: the host arms the guard when the machine has more than
@@ -117,6 +117,56 @@ consistently.
 Both scopes are `contextvars`, so they propagate into executor worker threads
 via `copy_context()` and unwind deterministically — nothing is written to
 `os.environ`, ever.
+
+### One scope value
+
+The scope, the home override, the secret scope and the terminal policy are one
+immutable value, `hermes_scope.ScopeState`, in a single contextvar. The scope is
+`hermes_scope.Scope(tenant, agent, actor, owner=, can_administer=)`:
+
+- `actor` is `Principal(id)` (a person) or `System(reason)` (cron, kanban,
+  housekeeping).
+- `owner` is the agent's one owner: a `Principal` for a personal agent or a
+  `Group` for a shared one. Other people may use a personal agent when its owner
+  shares it.
+- `can_administer` says whether the activity may change the agent itself (keys,
+  settings, plugins, cron, deletion). Every turn still updates the agent's memory
+  and skills. A hosted scope must name both, from the signed claim; a local scope
+  defaults to the local person as owner, administering.
+- A `TurnScope` adds `session`, `turn` and `fence`: the `Fence(epoch, generation)`
+  the turn's admission was claimed under (`agent.runtime_scope.claim_fence(row)`).
+
+`agent/runtime_scope.py` is the only module that turns a scope into profile
+state:
+
+- `bind_profile_scope(home)` binds the scope plus all three pieces as
+  one change and removes it on exit. The process's own home keeps its launch
+  semantics; any other home is hydrated from that profile's sources and stamped
+  as routed. It refuses inside a hosted scope.
+- `bind_state(scope, ...)` returns the change's token, for a host that holds it
+  across calls (the TUI turn, the managed worker) or deliberately binds less.
+- `bind_turn(session_id, turn_id, fence)` marks a turn inside a bound scope.
+
+Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and
+administration right; anything else raises `ScopeSwitchRefused`.
+
+A reset removes its own change and replays the later ones, except those made
+inside a scope the result no longer has. A reset that is stale, repeated, out of
+order or made from a copied context therefore lands on a state that whole binds
+produce, never one profile's home beside another's secrets. Leaving a hosted
+agent by any reset other than the bind that entered it raises
+`ScopeSwitchRefused`.
+
+The legacy setters (`set_hermes_home_override`, `set_secret_scope`,
+`set_terminal_scope`, `install_profile_terminal_scope`) keep working. Inside a
+bound scope, a call naming another profile moves the whole scope in a local
+install and raises `ScopeSwitchRefused` in a hosted one. Clearing one piece of a
+bound scope (`set_secret_scope(None)`, `set_terminal_scope(None)`) refuses. A
+raw terminal policy (a session's frozen policy) goes through
+`bind_terminal_policy(policy, profile_home=...)`, which inside a bound scope
+accepts only a policy owned by the bound agent. The code-health rule HX016 blocks new direct calls, including
+through relative imports; existing ones migrate when their function is next
+edited.
 
 ## Workstream A: context-local secret scope
 
@@ -252,7 +302,7 @@ conflating (`gateway/authz_mixin.py`):
 | Shared credential → satellite via `profile_routes` | Routed profile | Receiving (shared) adapter | Receiving adapter; after a restart the satellite still drains through the primary |
 | Shared bot → a profile that owns its own bot | Routed profile | Receiving adapter | Receiving adapter — the conversation stays with the bot the user wrote to |
 | Secondary-owned bot → `default` (`bot_profile: <secondary>`) | `default` (`agent:main`, default home) | Receiving (secondary) adapter | Receiving adapter |
-| Restored / synthetic source, no live provenance | Stored `source.profile` | **None** (fail closed) | Unique owner of `(platform, runtime)`, else `None` |
+| Restored / synthetic source, no live provenance | Stored `source.profile` | **None** (fail closed) | Unique owner of `(platform, runtime)`, else the Relay in that profile's map when it fronts the platform, else `None` |
 
 Outside multiplexing there is one adapter per platform, so both seams return
 it. `tests/gateway/test_multiplex_transport_matrix.py` asserts every row.
@@ -267,6 +317,14 @@ delivers through that bot's adapter or fails closed — a satellite routed
 through the default bot keeps answering from the default bot, a lane owned by
 a secondary never falls back to the default bot's credential. Entries written
 before the column existed carry `null` and keep the shared-bot heuristics.
+The relay-delivery marker is never persisted, so a restored lane that arrived
+over the relay finds no native adapter for its logical platform; delivery then
+falls back to the Relay registered in that profile's map when its transport
+advertises the platform (the same rule as `resolve_delivery_transport`). Only
+the primary serves the Relay, so a secondary's lane still fails closed.
+Auto-resume, heartbeats and plugin injection warm the Relay's per-chat egress
+routing from the restored source before dispatch, and a reconnecting Relay
+resumes the sessions of every platform it fronts.
 Over the relay, every outbound frame's `metadata.profile` (and `follow_up`'s
 key namespace) tells the connector which profile to stamp on the next
 `passthrough_forward`, so a button press after a routed slash command stays in

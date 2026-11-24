@@ -1,23 +1,36 @@
 import type { SharedMetricsConsentResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { recordOnboarding, setDesktopMetricsGate } from './desktop-metrics'
+import { captureDesktopMetricsGate, recordOnboarding } from './desktop-metrics'
 
 /** Public page describing exactly what shared metrics contain and how consent windows work. */
 export const SHARED_METRICS_DOCS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics'
 
 export type SharedMetricsConsent = SharedMetricsConsentResult
 
-/** The first-run answers, as the two config opt-ins `hermes setup` writes. */
-export type SharedMetricsChoice = 'local' | 'off' | 'share'
+/** The first-run answers, as the two config opt-ins `hermes setup` writes: each sets both. */
+export type SharedMetricsChoice = 'off' | 'share'
 
 export const SHARED_METRICS_CHOICES: Record<SharedMetricsChoice, { enabled: boolean; send: boolean }> = {
   share: { enabled: true, send: true },
-  local: { enabled: true, send: false },
   off: { enabled: false, send: false }
 }
 
 export type SharedMetricsRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+/**
+ * Name the profile on every consent RPC: an unscoped one resolves to the
+ * backend's launch home, so on a shared backend the answer landed in another
+ * profile's config.yaml and the focused profile's offer never retired (#130714).
+ * `custom` is a HERMES_HOME outside profiles/ the backend cannot resolve by
+ * name; there the ambient route already is that home.
+ */
+export function sharedMetricsProfileRequester(
+  request: SharedMetricsRequester,
+  profile: string
+): SharedMetricsRequester {
+  return profile === 'custom' ? request : (method, params = {}) => request(method, { ...params, profile })
+}
 
 function isConsent(value: unknown): value is SharedMetricsConsent {
   return typeof value === 'object' && value !== null && typeof (value as SharedMetricsConsent).decided === 'boolean'
@@ -73,16 +86,27 @@ export function sharedMetricsOfferPending(consent: SharedMetricsConsent | null):
 /** Record a first-run answer; the strip and the dialog retire as soon as the backend reports it decided. */
 export async function answerSharedMetricsOffer(
   request: SharedMetricsRequester,
-  choice: SharedMetricsChoice
+  choice: SharedMetricsChoice,
+  profileScope: string
 ): Promise<void> {
-  const consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
+  const applyGate = await captureDesktopMetricsGate(profileScope)
+  let consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
 
-  if (consent) {
-    // Gate first: the consent answer is itself a first-run step, counted only when it opted in.
-    setDesktopMetricsGate(consent.enabled ? 'on' : 'off')
-    recordOnboarding('consent', 'completed')
+  // A late answer still withdraws its original cohort, but cannot answer another profile's offer.
+  if (!(await applyGate(consent.enabled ? 'on' : 'off'))) {
+    // A focus refresh may retire this cohort mid-save. Re-read under a fresh capture:
+    // replaying the saved answer instead could resurrect a newer withdrawal.
+    const applyCurrent = await captureDesktopMetricsGate(profileScope)
+    const current = await readSharedMetricsConsent(request)
+
+    if (!current?.decided || !(await applyCurrent(current.enabled ? 'on' : 'off', current.decided))) {
+      return
+    }
+
+    consent = current
   }
 
+  recordOnboarding('consent', 'completed')
   $sharedMetricsConsent.set(consent)
   $sharedMetricsDetailsOpen.set(false)
 }

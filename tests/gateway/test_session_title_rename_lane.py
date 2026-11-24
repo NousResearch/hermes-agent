@@ -77,11 +77,11 @@ def _attach_in_thread(current, entry_origin, row_origin=None, get_session=None):
     predicate and recovery. Returns (agent, scheduled renames)."""
     scheduled: list = []
     entry = types.SimpleNamespace(session_id="sess-1", origin=entry_origin)
-    row = {"origin_json": json.dumps(row_origin.to_dict())} if row_origin else None
-    db = types.SimpleNamespace(get_session=get_session or {"sess-1": row}.get)
+    record = types.SimpleNamespace(origin_json=json.dumps(row_origin.to_dict())) if row_origin else None
+    store = types.SimpleNamespace(sessions=types.SimpleNamespace(get=get_session or {"sess-1": record}.get))
     runner = types.SimpleNamespace(
         session_store=types.SimpleNamespace(
-            lookup_by_session_key={"key-1": entry}.get, _db_for_key={"key-1": db}.get,
+            lookup_by_session_key={"key-1": entry}.get, _persistence_for_key={"key-1": store}.get,
         ),
         _is_telegram_topic_lane=lambda src: False,
         _is_relay_discord_channel_lane=lambda src: False,
@@ -210,7 +210,6 @@ def test_title_thread_copy_preserves_transport_adapter_ref(monkeypatch):
 
     def fake_schedule(coro, loop, logger=None, log_message=None):
         coro.close()
-        return None
 
     monkeypatch.setattr("gateway.run.safe_schedule_threadsafe", fake_schedule)
 

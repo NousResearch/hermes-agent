@@ -23,25 +23,29 @@ class TurnRetryState:
     # refusal, and one route re-read after a wrong-host refusal (``anon_on_paid_host``).
     welcome_model_switch_attempted: bool = False
     welcome_route_heal_attempted: bool = False
-    copilot_auth_retry_attempted: bool = False
-    # Copilot surfaces a stale credential as a 400 ``model_not_available_for_integrator``
-    # / ``model_not_supported``, not a 401 — separate guard from the 401 one.
-    copilot_stale_cred_retry_attempted: bool = False
+    # Provider-profile runtime refresh (``refresh_runtime_credentials``): one 401 refresh, and a
+    # separate one for a non-auth error the profile reads as a stale credential.
+    provider_auth_refresh_attempted: bool = False
+    provider_stale_refresh_attempted: bool = False
     vertex_auth_retry_attempted: bool = False
 
     # Format / payload recovery guards
     thinking_sig_retry_attempted: bool = False
-    invalid_encrypted_content_retry_attempted: bool = False
+    # Route-scoped one-shot repairs: the route visit (``route_verdicts.route_visit``) each was spent on.
+    # A route change resets the verdicts and starts a new visit, which re-arms them.
+    invalid_encrypted_content_retry_visit: int | None = None
     native_compaction_reject_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False
     multimodal_tool_content_retry_attempted: bool = False
-    reasoning_mandatory_retry_attempted: bool = False
+    reasoning_mandatory_retry_visit: int | None = None
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
 
     # Transport / rate-limit recovery
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # Credit-limited 402 ("can only afford N tokens") already retried with a lowered output cap.
+    affordable_402_clamp_attempted: bool = False
     # Persistent 401/403 already escalated to the fallback chain once this attempt.
     auth_failover_attempted: bool = False
     # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).

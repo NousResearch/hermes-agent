@@ -38,7 +38,7 @@ def _deterministic_worker_start(monkeypatch):
     generous headroom to reach the dispatch — which is the behavior these
     tests mean to pin.
     """
-    import tools.daemon_pool as daemon_pool
+    from tools import daemon_pool
 
     real_executor = daemon_pool.DaemonThreadPoolExecutor
 
@@ -167,7 +167,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import lifecycle
     import model_tools
 
     agent = _make_agent(tmp_path)
@@ -299,8 +299,8 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
 ):
     """Clarify waits on a human; the generic sequential deadline must not fire.
 
-    Default ``agent.clarify_timeout`` is 3600s; ``<= 0`` is unlimited. Both
-    outlast ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` (default 420s).
+    Only ``agent.clarify_timeout`` (default 90s; ``<= 0`` unlimited) bounds the
+    wait, never ``HERMES_CONCURRENT_TOOL_TIMEOUT_S``.
     """
     agent = _make_agent(tmp_path)
     monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")

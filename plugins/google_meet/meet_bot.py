@@ -218,7 +218,7 @@ def _pcm_tail_loop(proc, pcm_path: Path, stop_flag: dict, poll_interval: float =
         _quiet(proc.stdin.close)
 
 
-def _start_pcm_pump(rt: dict, bridge_info: dict, pcm_path: Path, state: "_BotState",
+def _start_pcm_pump(rt: dict, bridge_info: dict, pcm_path: Path, state: _BotState,
                     stop_flag: dict) -> None:
     """Stream the growing ``speaker.pcm`` (24kHz s16le mono) into the device Chrome's fake mic reads.
     The pump reads raw PCM from stdin (``-``) so audio appended after start-up is still played —
@@ -257,7 +257,7 @@ def _start_pcm_pump(rt: dict, bridge_info: dict, pcm_path: Path, state: "_BotSta
     rt["pcm_tail_thread"].start()
 
 
-def _start_realtime_speaker(rt: dict, cfg: "_BotConfig", stop_flag: dict, state: "_BotState") -> None:
+def _start_realtime_speaker(rt: dict, cfg: _BotConfig, stop_flag: dict, state: _BotState) -> None:
     """Wire up the OpenAI Realtime session, the say-queue speaker thread and the PCM pump."""
     pcm_path, queue_path = cfg.out_dir / "speaker.pcm", cfg.out_dir / "say_queue.jsonl"
     pcm_path.write_bytes(b"")  # clean sink file per session
@@ -438,7 +438,7 @@ def run_bot() -> int:
     cfg = _config_from_env()
     if not _is_safe_meet_url(cfg.url):
         sys.stderr.write("google_meet bot: refusing to launch — HERMES_MEET_URL must be a "
-                         "meet.google.com URL. got: %r\n" % cfg.url)
+                         f"meet.google.com URL. got: {cfg.url!r}\n")
         return 2
     if cfg.out_dir is None:
         sys.stderr.write("google_meet bot: HERMES_MEET_OUT_DIR is required\n")

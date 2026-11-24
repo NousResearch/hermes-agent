@@ -11,18 +11,20 @@ module whose helper tests monkeypatch there.
 from __future__ import annotations
 
 import importlib
-import sys
 from typing import Any
 
 WEB_SERVER = "hermes_cli.web_server"
 
 
 def _server(module: str = WEB_SERVER):
-    """Return the live ``module`` (imported on demand)."""
-    mod = sys.modules.get(module)
-    if mod is None:  # pragma: no cover - routers are only mounted by web_server
-        mod = importlib.import_module(module)
-    return mod
+    """Return the live ``module``, importing it on first use.
+
+    Not a ``sys.modules`` lookup: a module is listed there while another thread still runs its
+    body (router helpers also run in worker threads of processes that never imported their
+    module). ``import_module`` returns a loaded module directly and waits for one that another
+    thread is still importing.
+    """
+    return importlib.import_module(module)
 
 
 def late(name: str, module: str = WEB_SERVER):
@@ -44,7 +46,7 @@ class LateState:
     defined *after* the router's ``include_router`` point, so a late import would miss it.
     """
 
-    __slots__ = ("_name", "_module")
+    __slots__ = ("_module", "_name")
 
     def __init__(self, name: str, module: str = WEB_SERVER) -> None:
         object.__setattr__(self, "_name", name)
@@ -84,10 +86,10 @@ class LateState:
     def __exit__(self, *exc):
         return self._target().__exit__(*exc)
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         return self._target() == other
 
-    def __ne__(self, other: Any) -> bool:
+    def __ne__(self, other: object) -> bool:
         return self._target() != other
 
     def __lt__(self, other: Any) -> bool:

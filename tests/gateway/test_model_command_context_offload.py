@@ -51,7 +51,7 @@ def _runner_with_store(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **kw: ModelSwitchResult(
@@ -77,7 +77,6 @@ def _runner_with_store(tmp_path, monkeypatch):
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
-    runner._pending_one_turn_model_restores = {}
     runner._running_agents = {}
     _store = MagicMock()
     _store.set_model_override = AsyncMock()

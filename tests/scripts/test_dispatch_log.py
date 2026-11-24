@@ -7,7 +7,7 @@ import pytest
 from scripts.releases import dispatch_log
 from scripts.releases.bundle_env import parse_assignments
 from scripts.releases.channel_build import dispatch_command as channel_dispatch
-from scripts.releases.commit_build import dispatch_command as commit_dispatch
+from scripts.releases.commit_build import tagless_dispatch_command as tagless_dispatch
 from scripts.releases.job_groups import ALL_JOBS
 from tests.ci.test_desktop_release_tag_admission import _workflow
 
@@ -56,20 +56,17 @@ def test_pre_build_setup_prints_the_dispatch_before_any_other_work():
     assert "GITHUB_TOKEN" not in forwarded and "GH_TOKEN" not in forwarded
 
 
-@pytest.mark.parametrize("kind,extra", [
-    ("commit", {}),
-    ("channel", {"CHANNEL": "magic-test"}),
-    ("channel", {"CHANNEL": "magic-test", "BRANDING": "stable"}),
-    ("commit", {"BUNDLE_ENV_JSON": json.dumps({"HERMES_SKIP_INTRO": "1", "HERMES_HOME": None})}),
+@pytest.mark.parametrize("extra", [
+    {"CHANNEL": "magic-test"},
+    {"CHANNEL": "magic-test", "BRANDING": "stable"},
+    {"CHANNEL": "magic-test", "BUNDLE_ENV_JSON": json.dumps({"HERMES_DATA_DIR_SUFFIX": "-test", "HERMES_HOME": None})},
 ])
-def test_printed_command_is_the_dispatcher_command(kind, extra):
+def test_printed_command_is_the_dispatcher_command(extra):
+    kind = "channel"
     values = env(BUILD_COMMIT=SHA, **extra)
     baked = json.loads(values["BUNDLE_ENV_JSON"])
-    if kind == "channel":
-        expected = channel_dispatch(values["CHANNEL"], SHA, REPOSITORY, BRANCH, baked or None,
-                                    values.get("BRANDING", "preview"))
-    else:
-        expected = commit_dispatch(SHA, REPOSITORY, BRANCH, baked or None)
+    expected = channel_dispatch(values["CHANNEL"], SHA, REPOSITORY, BRANCH, baked or None,
+                                values.get("BRANDING", "preview"))
     text = dispatch_log.report(values)
     assert "kind: " + kind in text
     assert "workflow: " + shlex.join(expected) in text
@@ -96,18 +93,49 @@ def test_unrecreatable_dispatches_name_the_kind_and_no_command(override):
     assert "kind: unknown" not in text
 
 
+@pytest.mark.parametrize("extra", [{}, {"JOBS": "termux"},
+                                   {"BUNDLE_ENV_JSON": json.dumps({"HERMES_HOME": None})}])
+def test_a_tagless_commit_dispatch_from_main_has_no_replay_and_no_receipt(extra):
+    # From main, release.py --build-commit runs Stable Release on a commit claim; a direct tagless
+    # commit dispatch there is one no release.py command recreates, and it mints no receipt.
+    text = dispatch_log.report(env(BUILD_COMMIT=SHA, **extra))
+    assert "kind: commit" in text
+    assert "a tagless commit build" in text and "workflow: " not in text
+    assert "receipt: this dispatch writes no post-build receipt tag" in text
+
+
+@pytest.mark.parametrize("extra", [{}, {"BUNDLE_ENV_JSON": json.dumps({"HERMES_HOME": None, "HERMES_DATA_DIR_SUFFIX": "-t"})}])
+def test_a_tagless_commit_dispatch_off_main_prints_the_release_py_command_that_sent_it(extra):
+    values = env(BUILD_COMMIT=SHA, DEFAULT_BRANCH="develop", GITHUB_REF="refs/heads/develop", **extra)
+    baked = json.loads(values["BUNDLE_ENV_JSON"])
+    text = dispatch_log.report(values)
+    assert "workflow: " + shlex.join(tagless_dispatch(SHA, REPOSITORY, "develop", baked or None)) in text
+    flags = dispatch_log.command_flags(dispatch_log.describe(values))
+    assert "release.py: " + shlex.join(["python", "scripts/release.py", "--publish", "--remote", "<remote>", *flags]) in text
+    assert "receipt: this dispatch writes no post-build receipt tag" in text
+    # A job subset is not what release.py sends.
+    assert "workflow: " not in dispatch_log.report({**values, "JOBS": "termux"})
+
+
 @pytest.mark.parametrize("jobs", ["termux", "darwin-arm64,win32-x64"])
-def test_a_partial_jobs_commit_has_a_receipt_but_no_release_command(jobs):
-    text = dispatch_log.report(env(BUILD_COMMIT=SHA, JOBS=jobs))
+def test_a_partial_jobs_channel_has_a_receipt_but_no_release_command(jobs):
+    text = dispatch_log.report(env(BUILD_COMMIT=SHA, CHANNEL="magic-test", JOBS=jobs))
     assert "release.py: this dispatch is not a release.py --build-commit run" in text
-    assert "receipt: v<version>+commit.<run-created-utc>.35629258153" in text
+    assert "receipt: v<version>+channel.<run-created-utc>.35629258153" in text
 
 
 def test_an_unreadable_jobs_value_is_reported_not_raised():
     # The log must not fail the build; admission refuses the input next.
     text = dispatch_log.report(env(BUILD_COMMIT=SHA, JOBS="mac,mac"))
-    assert "release.py: this dispatch is not a release.py --build-commit run" in text
+    assert "a tagless commit build" in text and "workflow: " not in text
     assert '"jobs": "mac,mac"' in text
+
+
+@pytest.mark.parametrize("extra", [{"DEFAULT_BRANCH": "develop"}, {"CHANNEL": "magic-test"}])
+def test_a_malformed_commit_is_reported_without_a_replay_not_raised(extra):
+    # The log must not fail the build; admission refuses the input next.
+    text = dispatch_log.report(env(BUILD_COMMIT="not-a-sha", **extra))
+    assert "workflow: " not in text and '"build_commit": "not-a-sha"' in text
 
 
 def test_report_omits_values_the_workflow_did_not_forward(monkeypatch):
@@ -126,7 +154,7 @@ def test_module_prints_the_report_from_the_process_environment(monkeypatch, caps
 
 
 def test_bundle_env_round_trips_the_cli_flags():
-    baked = parse_assignments(["HERMES_SKIP_INTRO=1"], ["HERMES_HOME"])
+    baked = parse_assignments(["HERMES_SHARED_AUTH_DIR=/shared"], ["HERMES_HOME"])
     facts = dispatch_log.describe(env(BUILD_COMMIT=SHA, BUNDLE_ENV_JSON=json.dumps(baked)))
     flags = dispatch_log.command_flags(facts)
-    assert flags == ["--build-commit", SHA, "--bundle-unset", "HERMES_HOME", "--bundle-env", "HERMES_SKIP_INTRO=1"]
+    assert flags == ["--build-commit", SHA, "--bundle-unset", "HERMES_HOME", "--bundle-env", "HERMES_SHARED_AUTH_DIR=/shared"]

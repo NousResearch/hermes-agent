@@ -16,7 +16,7 @@ from agent.session_activity import ActivityProvenance
 logger = logging.getLogger("run_agent")
 
 
-def _activity_lock(obj) -> "threading.Lock":
+def _activity_lock(obj) -> threading.Lock:
     """Lazy per-instance ``_turn_liveness_activity_lock`` (so ``__new__``/SimpleNamespace doubles work)."""
     _lock = getattr(obj, "_turn_liveness_activity_lock", None)
     if _lock is None:
@@ -28,7 +28,7 @@ def _activity_lock(obj) -> "threading.Lock":
 class ActivityTrackingMixin:
     """Liveness timestamps/labels and rate-limited session activity persistence."""
 
-    def _liveness_activity_lock(self) -> "threading.Lock":
+    def _liveness_activity_lock(self) -> threading.Lock:
         """Shared lock for the activity clock and its generation counter.
 
         ``_touch_activity`` stamps under it and the liveness watchdog samples/commits under it, so a stall
@@ -89,7 +89,7 @@ class ActivityTrackingMixin:
         self._persist_session_activity_if_due()
 
     def _persist_session_activity_if_due(self) -> None:
-        """Best-effort durable activity heartbeat for SessionDB consumers.
+        """Best-effort durable activity heartbeat for session store consumers.
 
         Cadence pinned by ``SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS`` (config-independent). Fail-open:
         a failed write never raises into the agent loop.
@@ -98,7 +98,9 @@ class ActivityTrackingMixin:
         session_db = getattr(self, "_session_db", None)
         if not session_id or session_db is None:
             return
-        touch = getattr(session_db, "touch_session_activity", None)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(self)
+        touch = store.sessions.touch_activity if store is not None else getattr(session_db, "touch_session_activity", None)
         if not callable(touch):
             return
         from agent.session_activity import (
@@ -107,11 +109,15 @@ class ActivityTrackingMixin:
 
         now_mono = time.monotonic()
         last_mono = getattr(self, "_session_activity_last_persist_mono", 0.0)
-        if (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        # 0.0 is the never-persisted / reset sentinel and always writes through: CLOCK_MONOTONIC is
+        # roughly host uptime, so on a freshly booted VM ``now_mono`` itself can be under the interval.
+        if last_mono and (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
             return
         self._session_activity_last_persist_mono = now_mono
+        from agent.runtime_session_store import call_off_event_loop  # Relay callbacks run on a loop (#139029)
         try:
-            touch(
+            call_off_event_loop(
+                touch,
                 session_id,
                 getattr(self, "_last_activity_ts", None),
                 description=getattr(self, "_last_activity_desc", None),
@@ -127,7 +133,7 @@ class ActivityTrackingMixin:
         """Drop mid-turn activity labels once the turn is no longer running.
 
         Keeps ``_last_activity_ts`` so idle/watchdog clocks stay continuous across turns; clears description +
-        provenance so idle agents / SessionDB listings stop advertising the last mid-turn stamp.
+        provenance so idle agents / session store listings stop advertising the last mid-turn stamp.
 
         See #15654, #72039.
         """
@@ -137,8 +143,12 @@ class ActivityTrackingMixin:
         session_db = getattr(self, "_session_db", None)
         if not session_id or session_db is None:
             return
-        clear = getattr(session_db, "clear_session_activity_labels", None)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(self)
+        clear = (store.sessions.clear_activity_labels if store is not None
+                 else getattr(session_db, "clear_session_activity_labels", None))
         if not callable(clear):
             return
+        from agent.runtime_session_store import call_off_event_loop
         with suppress(Exception):  # never let durable cleanup I/O break turn teardown
-            clear(session_id)
+            call_off_event_loop(clear, session_id)

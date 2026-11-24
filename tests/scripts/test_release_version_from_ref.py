@@ -1,6 +1,6 @@
 """A ref names a version, and the next version is derived, never read from the tree.
 
-Derivation reads the published stable head, or the seed ``0.21.4`` before one
+Derivation reads the published stable head, or the seed ``0.21.5`` before one
 exists. Attempt refs number attempts within a version and never move the line.
 """
 import json
@@ -9,7 +9,7 @@ import pytest
 
 from scripts.releases.versioning import derive_next_version, next_attempt, tag_record, version_from_tag
 
-SEED = "0.21.4"
+SEED = "0.21.5"
 
 
 def test_final_tag_is_its_version():
@@ -18,7 +18,7 @@ def test_final_tag_is_its_version():
 
 @pytest.mark.parametrize("ref", [
     "v0.21.5-rc",
-    "v0.21.4+canary.20260922T001400Z",
+    "canary.20260922T001400Z-v0.21.4",
     "v2026.9.21",
     "canary-0.21.4+canary.20260922T001400Z",
     "v0.0.7+channel.20260922T001400Z.98765",
@@ -45,7 +45,7 @@ def test_marker_ref_names_the_attempt_it_clears():
 @pytest.mark.parametrize("ref", [
     "v0.21.5-rc", "v0.21.5-rc.1", "rc.01-v0.21.5", "rc.0-v0.21.5",
     "rc.1-v2026.9.21", "v0.21.5", "abandoned-rc.1-v0.21.5",
-    "rc.1-v0.21.5+canary.20260922T001400Z", "rc.1-v0.21", "rc.-v0.21.5",
+    "rc.1-canary.20260922T001400Z-v0.21.5", "rc.1-v0.21", "rc.-v0.21.5",
 ])
 def test_attempt_ref_rejects_other_shapes(ref):
     from scripts.releases.versioning import parse_attempt_ref
@@ -83,7 +83,7 @@ def test_canary_compares_equal_to_its_stable():
 
 
 def test_empty_head_seeds_the_line():
-    assert derive_next_version(published=None, bump="patch") == "0.21.5"
+    assert derive_next_version(published=None, bump="patch") == "0.21.6"
     assert derive_next_version(published=None, bump="minor") == "0.22.0"
     assert derive_next_version(published=None, bump="major") == "1.0.0"
 
@@ -131,7 +131,7 @@ def test_a_newer_published_release_outranks_the_protected_head():
         {"tag_name": "v0.21.8", "draft": False, "prerelease": False},
         # Drafts, prereleases and CalVer labels are not published stable releases.
         {"tag_name": "v0.21.9", "draft": True, "prerelease": False},
-        {"tag_name": "v0.21.8+canary.20260924T000000Z", "draft": False, "prerelease": True},
+        {"tag_name": "canary.20260924T000000Z-v0.21.8", "draft": False, "prerelease": True},
         {"tag_name": "v2026.9.24", "draft": False, "prerelease": False},
     ]
 

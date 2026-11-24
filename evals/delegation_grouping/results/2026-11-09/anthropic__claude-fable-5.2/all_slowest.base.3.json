@@ -1,0 +1,56 @@
+{
+ "arm": "base",
+ "model": "anthropic/claude-fable-5.2",
+ "child_model": "openai/gpt-6-luna",
+ "task": "all_slowest",
+ "kind": "all",
+ "rep": 3,
+ "error": null,
+ "success": true,
+ "units": 1,
+ "expected_units": 1,
+ "delivery_ok": true,
+ "score": 1.0,
+ "spawn_calls": 1,
+ "spawn_groups": [
+  [
+   "latency",
+   "latency",
+   "latency"
+  ]
+ ],
+ "children_run": 3,
+ "parent_turns_after_dispatch": 1,
+ "parent_calls_total": 3,
+ "parent_calls_after_dispatch": 1,
+ "other_calls": [],
+ "parent_usage": {
+  "api_calls": 3,
+  "prompt_tokens": 21523,
+  "input_tokens": 10,
+  "cache_read_tokens": 17846,
+  "cache_write_tokens": 3667,
+  "completion_tokens": 585,
+  "total_tokens": 22108
+ },
+ "child_tokens": {
+  "input": 20954,
+  "output": 201
+ },
+ "child_api_calls": 6,
+ "child_cost_usd_estimate": 0.001593,
+ "delegate_schema_chars": 5056,
+ "unit_log": [
+  {
+   "delegation_id": "deleg_9850398e",
+   "group": "latency",
+   "task_indexes": [
+    0,
+    1,
+    2
+   ],
+   "at_s": 13.4
+  }
+ ],
+ "wall_s": 19.9
+}

@@ -123,7 +123,7 @@ class Chamber:
             args.setdefault("pace", self.writer_pace)
         payload = {"workdir": str(self.work), "name": name, "db": str(self.db),
                    "stop": str(self.work / f"{name}.stop"), "busy_ok": self.mode == "delete", **args}
-        stderr = open(self.work / f"{name}.stderr", "wb")  # noqa: SIM115 - closed in reap()
+        stderr = open(self.work / f"{name}.stderr", "wb")
         proc = subprocess.Popen(
             [sys.executable, str(ROLES), role, json.dumps(payload)],
             cwd=str(REPO_ROOT), env={**self.env, **(env or {})}, stdin=subprocess.DEVNULL,
@@ -139,11 +139,11 @@ class Chamber:
     def spawn_cli(self, name: str, *argv: str) -> subprocess.Popen:
         """A real `hermes …` CLI subprocess against this HERMES_HOME (``hermes_cli.main`` run as ``__main__``
         by ``_roles.py cli`` so the journal-mode seam applies to it too)."""
-        stderr = open(self.work / f"{name}.stderr", "wb")  # noqa: SIM115 - closed in reap()
+        stderr = open(self.work / f"{name}.stderr", "wb")
         payload = {"workdir": str(self.work), "name": name, "argv": list(argv)}
         proc = subprocess.Popen(
             [sys.executable, str(ROLES), "cli", json.dumps(payload)], cwd=str(REPO_ROOT), env=self.env,
-            stdin=subprocess.DEVNULL, stdout=open(self.work / f"{name}.stdout", "wb"), stderr=stderr,  # noqa: SIM115
+            stdin=subprocess.DEVNULL, stdout=open(self.work / f"{name}.stdout", "wb"), stderr=stderr,
         )
         proc._stderr_file = stderr  # type: ignore[attr-defined]
         with self._lock:

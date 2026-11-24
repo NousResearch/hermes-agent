@@ -13,6 +13,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionEntry
 from gateway.turn_context import TurnContext
 from run_agent import AIAgent
+from tests.fixtures.storage_read import transcript_rows
 
 
 class _TurnObserved(BaseException):
@@ -28,8 +29,8 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
     monkeypatch.setattr("agent.skill_commands._load_skill_payload", lambda name, **kw: (
         {"name": name, "content": payloads[name]}, tmp_path / name, name,
     ))
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
     source = SessionSource(platform=Platform.DISCORD, chat_id="channel", user_id="user", user_name="Example")
     event = MessageEvent(text=question, source=source, auto_skill=skills,
                          channel_context="[Discord channel context: synthetic metadata]")
@@ -59,9 +60,9 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         raise exc
     runner._hmwa_agent_error_reply = propagate_error
 
-    from hermes_state import SessionDB
-    db = SessionDB(tmp_path / "state.db")
-    agent = AIAgent(session_db=db, model="test-model", api_key="test-key", base_url="http://127.0.0.1:1/v1",
+    from persistence_assembly import open_persistence, profile_scope
+    db = open_persistence(profile_scope(home=tmp_path))
+    agent = AIAgent(persistence=db, model="test-model", api_key="test-key", base_url="http://127.0.0.1:1/v1",
                     platform="discord", session_id=entry.session_id, enabled_toolsets=[],
                     quiet_mode=True, skip_memory=True, skip_context_files=True)
     agent.compression_enabled = False
@@ -111,7 +112,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
             assert payload in model_inputs[0]
         if skills:
             assert model_inputs[0].index(question) > title_generator.MAX_TITLE_INPUT_CHARS
-        stored = [row["content"] for row in db.get_messages(entry.session_id) if row["role"] == "user"]
+        stored = [row["content"] for row in transcript_rows(db, entry.session_id) if row["role"] == "user"]
         assert stored and question in stored[0]
         for payload in payloads.values():
             assert payload in stored[0]

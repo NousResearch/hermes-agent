@@ -10,12 +10,20 @@ import type { OverlayNavGroup, OverlayNavLink } from './overlay-split-layout'
 
 interface OverlayBreadcrumbHeaderProps {
   child?: OverlayNavLink
+  /** A child's own sub-page (third nav level). */
+  grandchild?: OverlayNavLink
   group: OverlayNavGroup
   rootLabel: string
   trailing?: ReactNode
 }
 
-export function OverlayBreadcrumbHeader({ child, group, rootLabel, trailing }: OverlayBreadcrumbHeaderProps) {
+export function OverlayBreadcrumbHeader({
+  child,
+  grandchild,
+  group,
+  rootLabel,
+  trailing
+}: OverlayBreadcrumbHeaderProps) {
   return (
     <div className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', PAGE_INSET_X)}>
       <nav aria-label={group.label} className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
@@ -27,9 +35,21 @@ export function OverlayBreadcrumbHeader({ child, group, rootLabel, trailing }: O
               {group.label}
             </Button>
             <ChevronRight aria-hidden className="size-3 shrink-0" />
-            <span aria-current="page" className="truncate text-foreground">
-              {child.label}
-            </span>
+            {grandchild ? (
+              <>
+                <Button className="min-w-0 truncate" onClick={child.onSelect} size="inline" variant="text">
+                  {child.label}
+                </Button>
+                <ChevronRight aria-hidden className="size-3 shrink-0" />
+                <span aria-current="page" className="truncate text-foreground">
+                  {grandchild.label}
+                </span>
+              </>
+            ) : (
+              <span aria-current="page" className="truncate text-foreground">
+                {child.label}
+              </span>
+            )}
           </>
         ) : (
           <span aria-current="page" className="truncate text-foreground">

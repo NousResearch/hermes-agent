@@ -12,7 +12,7 @@ import pytest
 import hermes_cli.observability.relay_shared_metrics as relay
 import hermes_cli.observability.shared_metrics_install as install
 import hermes_cli.observability.shared_metrics_startup as startup
-import tui_gateway.server as server
+from tui_gateway import server
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_platform.host import facts
 
@@ -220,7 +220,7 @@ def test_meminfo_total_is_parsed_in_bytes():
 
 @pytest.mark.parametrize(("vendors", "gpu"), [
     (["0x8086", "0x10de"], "nvidia"), (["0x8086", "0x1002"], "amd"), (["0x8086"], "intel"),
-    (["0x1af4"], "none"), ([], "none"), (["10DE"], "nvidia"),
+    (["0x1af4"], "none"), ([], "none"), (["10DE"], "nvidia"), ([""], "unknown"), (["", "0x10de"], "nvidia"),
 ])
 def test_gpu_vendor_priority_prefers_the_discrete_card(vendors, gpu):
     assert facts.classify_gpu_vendors(vendors) == gpu
@@ -294,7 +294,7 @@ def test_source_checkout_channel_follows_its_branch_never_its_remote(tmp_path, m
     assert install.release_channel({}) == channel
 
 
-@pytest.mark.parametrize(("tag", "channel"), [("v0.13.0", "stable"), ("v0.13.0+canary.20260927T120000Z", "main")])
+@pytest.mark.parametrize(("tag", "channel"), [("v0.13.0", "stable"), ("canary.20260927T120000Z-v0.13.0", "main")])
 def test_packaged_build_channel_is_its_baked_channel_not_its_branch(tmp_path, monkeypatch, tag, channel):
     from hermes_cli.update_channel import is_canary_tag
 

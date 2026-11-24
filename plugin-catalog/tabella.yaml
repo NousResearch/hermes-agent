@@ -1,0 +1,34 @@
+name: tabella
+repo: https://github.com/dyiapanis/tabella
+sha: e6e53da87b7a2d6ed81dc675c578dafd72a01b0c
+description: |
+  Read, create and convert documents — .docx, .xlsx, .pptx, .pdf, .odt, .ods, .odp — from structured JSON or HTML/CSS, with OCR for scanned files.
+
+  Disclosures
+  - Shells out to pandoc for conversion, a TeX engine for PDF output, and tesseract for OCR.
+  - Re-execs into its own dependency venv, bootstrapped from PyPI on first run.
+  - Optional self-host HTTP server; a bearer token is generated into the plugin data directory on first run.
+  - Reads and writes only the filesystem paths you pass.
+  - Runs entirely locally: no network calls, no telemetry.
+maintainer: dyiapanis
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/dyiapanis/tabella#readme
+version: "2.0.7"
+image: https://raw.githubusercontent.com/dyiapanis/tabella/e6e53da87b7a2d6ed81dc675c578dafd72a01b0c/docs/banner.jpg
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - doc_read
+    - doc_read_meta
+    - doc_convert
+    - doc_create_document
+    - doc_edit_pdf
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

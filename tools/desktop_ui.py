@@ -26,18 +26,13 @@ _emit: Optional[Callable[[str, str, dict], None]] = None
 # routing these through HERMES_UI_SESSION_ID (the window identity) means
 # the frame lands on a stream that doesn't own the transcript and is
 # never painted (#80678).
-_SESSION_SCOPED_EVENTS: FrozenSet[str] = frozenset({"message.reaction"})
+_SESSION_SCOPED_EVENTS: frozenset[str] = frozenset({"message.reaction"})
 
 
 def set_emitter(fn: Optional[Callable[[str, str, dict], None]]) -> None:
     """Install (or clear) the renderer-event sink. Called by the desktop gateway."""
     global _emit
     _emit = fn
-
-
-def available() -> bool:
-    """True when running under the desktop app (an emitter is wired)."""
-    return _emit is not None
 
 
 def user_enabled(setting: str, default: bool) -> bool:

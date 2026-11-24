@@ -148,14 +148,30 @@ def _shutdown_cached_aux_clients() -> None:
 
 # Ordered teardown steps (attribute names, resolved at call time so tests can patch them)
 # and the exception class each swallows.
+# Async delegations and MCP servers live in the gateway, which owns their lifetime: a CLI exit
+# neither interrupts the delegations nor tears down MCP servers.
 _CLEANUP_STEPS = (
     ("_stop_cli_wake_word", Exception), ("_cleanup_all_terminals", Exception),
-    ("_interrupt_async_delegations", Exception), ("_cleanup_all_browsers", Exception),
-    ("_shutdown_mcp_servers", BaseException), ("_shutdown_cached_aux_clients", Exception),
+    ("_cleanup_all_browsers", Exception), ("_shutdown_cached_aux_clients", Exception),
 )
 
 
+def _gateway_owns_session_end(agent) -> bool:
+    """A gateway-backed session ends in the gateway: the viewer's ``end_session`` (``session.detach
+    {end_reason}``) makes the owner run finalize and the memory commit (gateway/session_viewer_close)."""
+    from hermes_cli.gateway_agent import GatewayAgent
+    return isinstance(agent, GatewayAgent)
+
+
+def _is_gateway_viewer(cli) -> bool:
+    """The CLI is a viewer of a gateway-owned session store (its ``end_session`` is a detach)."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    return isinstance(getattr(cli, "_session_db", None), GatewaySessionStore)
+
+
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
+    if _gateway_owns_session_end(_cli()._active_agent_ref):
+        return False
     # A handed-off session is owned by the gateway process — never finalize it here.
     # The CLI must not finalize it on exit — that sets end_reason on a row the gateway reopened and is
     # actively writing to, causing the handoff leg to vanish from session history (#88234).
@@ -168,10 +184,12 @@ def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     return session_id not in _cli()._single_query_finalize_attempted_session_ids
 
 
-def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown") -> None:
+def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown") -> list[str]:
+    """Fire on_session_finalize; return the plugin messages meant for the user (never raises)."""
     with suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session
-        finalize_session(session_id=session_id, platform=platform, reason=reason)
+        from hermes_cli.lifecycle import finalize_session, session_end_messages
+        return session_end_messages(finalize_session(session_id=session_id, platform=platform, reason=reason))
+    return []
 
 
 def _oneshot_agent_and_session(cli):
@@ -201,7 +219,8 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
     with suppress(Exception):
         agent.interrupt(reason.replace("_", " "))
 
-    if session_id in _cli()._handed_off_session_ids:  # gateway owns the lifecycle now
+    # The gateway owns the lifecycle now; a gateway turn fires on_session_end itself when interrupted.
+    if session_id in _cli()._handed_off_session_ids or _gateway_owns_session_end(agent):
         return
     if session_id:
         with suppress(Exception):
@@ -220,11 +239,16 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
     agent, session_id = _oneshot_agent_and_session(cli)
     if session_id in _cli()._single_query_finalize_attempted_session_ids:
         return
-    if session_id in _cli()._handed_off_session_ids:  # gateway owns the lifecycle now
+    # The gateway owns the lifecycle now; for a gateway session the flush's end_session detached with
+    # an end_reason, so the gateway finalizes it.
+    if session_id in _cli()._handed_off_session_ids or _gateway_owns_session_end(agent):
         return
 
     try:
-        _notify_session_finalize(session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason)
+        # stderr: one-shot stdout is the answer scripts parse.
+        for message in _notify_session_finalize(
+                session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason):
+            print(message, file=sys.stderr, flush=True)
     finally:
         _cli()._single_query_finalize_attempted_session_ids.add(session_id)
 
@@ -263,12 +287,20 @@ def _flush_one_shot_session_store(cli) -> None:
     db = getattr(agent, "_session_db", None) or getattr(cli, "_session_db", None)
     if db is None:
         return
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
     try:
-        db.flush_token_counts()
+        if store is not None:
+            store.usage.flush_usage()
+        else:
+            db.flush_token_counts()
     except Exception:
         logger.debug("one-shot token-count drain failed", exc_info=True)
     try:
-        db.end_session(session_id, "cli_close")
+        if store is not None:
+            store.sessions.end(session_id, "cli_close")
+        else:
+            db.end_session(session_id, "cli_close")
     except Exception:
         logger.debug("one-shot end_session failed", exc_info=True)
 
@@ -339,6 +371,11 @@ def _finalize_single_query(cli) -> None:
     """
     import cli as cli_module
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
+    # A non-quiet -q turn reported done/error on the terminal, which outlives the process under
+    # OSC 7501: clear it like /quit does, before the linger keeps the process around.
+    clear_status = getattr(cli, "_clear_program_status", None)
+    if clear_status is not None:
+        clear_status()
     try:
         try:
             _flush_one_shot_session_store(cli)

@@ -1,0 +1,19 @@
+name: meme-studio-mcp
+title: Meme Studio
+repo: https://github.com/MrHydeDev/meme-studio-mcp-plugin
+sha: 8d8f27722f2549b8154ec7ef9cce609d8a62addb
+version: "1.0.0"
+description: "Meme Studio through its MCP server (Streamable HTTP at https://memes.mrhyde.dev/mcp, no sign-in, no keys in config): finds the meme templates that fit a joke among more than a thousand, still and animated, with what goes in each caption slot, and makes the finished meme, an animated GIF for animated templates, plus a link to edit it in the browser. Works with the user's own photo too. Bundles one skill for the whole flow. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code; every tool call goes to memes.mrhyde.dev (closed-source server), which receives the searches, captions and any photo the agent sends (as base64, or an image_url the server downloads itself), says it does not store or log that content, keeps daily aggregate counts (requests, distinct people without identifying them, agent types, tools, options, templates chosen, errors) published weekly at memes.mrhyde.dev/en/stats plus minimal technical logs and temporary IP records for abuse blocks, and marks finished memes with an invisible pixel watermark; the skill may also call the same endpoint with curl from the terminal to save the image. Every tool is annotated read-only; the package marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: MrHydeDev
+tier: community
+category: tools
+docs_url: https://github.com/MrHydeDev/meme-studio-mcp-plugin
+image: https://raw.githubusercontent.com/MrHydeDev/meme-studio-mcp-plugin/8d8f27722f2549b8154ec7ef9cce609d8a62addb/docs/logo.png
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

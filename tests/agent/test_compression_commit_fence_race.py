@@ -16,13 +16,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import agent.compression_facade as compression_facade
-import agent.conversation_compression as conversation_compression
+from agent import compression_facade
+from agent import conversation_compression
 from agent.conversation_compression import CompressionCommitFence
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent(db: SessionDB, session_id: str):
+def _build_agent(db, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -32,7 +33,7 @@ def _build_agent(db: SessionDB, session_id: str):
             model="test/model",
             platform="telegram",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -70,7 +71,7 @@ def _overlapping_attempts(agent, messages):
     def _attempt(fence):
         try:
             agent._compress_context(messages, "sys", commit_fence=fence)
-        except Exception as exc:  # noqa: BLE001 - surfaced via assertion below
+        except Exception as exc:
             errors.append(exc)
 
     return fence_a, fence_b, entered_a, entered_b, release_a, release_b, errors, _fake_compress, _attempt
@@ -80,8 +81,8 @@ class TestCommitFenceCompletionOrder:
     def test_earlier_attempt_finishing_first_keeps_newer_live_fence(
         self, tmp_path: Path, monkeypatch
     ):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("S", source="cli")
+        db = storage_handle(tmp_path)
+        seed_session(db, "S", "cli")
         agent = _build_agent(db, "S")
         messages = [{"role": "user", "content": "live question"}]
 
@@ -110,8 +111,8 @@ class TestCommitFenceCompletionOrder:
     def test_lifo_completion_restores_outer_fence_while_it_runs(
         self, tmp_path: Path, monkeypatch
     ):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("S", source="cli")
+        db = storage_handle(tmp_path)
+        seed_session(db, "S", "cli")
         agent = _build_agent(db, "S")
         messages = [{"role": "user", "content": "live question"}]
 

@@ -185,27 +185,23 @@ class MCPServerRunMixin:
             self._last_park_line = line
             logger.warning(msg, *args)
 
-    async def _park(self, revival_reason: str) -> bool:
+    async def _park(self, revival_reason: str, quiet: bool = False) -> bool:
         """Drop this server's tools and wait for a reconnect request; True when shutdown came instead.
         The run task must NOT exit (it is the only ``_reconnect_event`` listener, so returning
         leaves the server unrevivable). With tools deregistered no call can reach the breaker
-        probe, so the wait is TIMED (one self-probe per ``_PARKED_RETRY_INTERVAL``); an explicit
-        ``_reconnect_event.set()`` wakes it immediately."""
-        # Do NOT return — exiting the task orphans the server: nothing would ever listen for
-        # _reconnect_event again and the server would be permanently wedged for the life of the process
-        # (#16788). Instead, drop the phantom tools from the registry and park. Because parking deregisters
-        # the tools, no tool call can reach the circuit-breaker half-open probe or _signal_reconnect — so
-        # the park is a TIMED wait: every _PARKED_RETRY_INTERVAL we wake and attempt one reconnect ourselves
-        # (#57129). An explicit _reconnect_event.set() (OAuth recovery, manual /mcp refresh) still wakes us
-        # immediately.
+        probe, so the wait is TIMED (one self-probe per ``_next_park_probe_timeout``); an explicit
+        ``_reconnect_event.set()`` wakes it immediately. ``quiet=True`` parks WITHOUT any timed
+        self-probe — the failure is a provably unwinnable resource conflict (a duplicate instance
+        holds a single-writer resource), so only an explicit reconnect can revive it."""
         self._was_parked = True
         self._park_reason = revival_reason
+        self._park_quiet = quiet
         self._deregister_tools()
         self._reconnect_event.clear()
         paused = False
         while True:
             outcome = await self._wait_for_reconnect_or_shutdown(
-                timeout=_core._PARKED_RETRY_INTERVAL)
+                timeout=None if quiet else self._next_park_probe_timeout())
             if outcome == "shutdown":
                 return True
             # A disabled or deleted config entry must stop the self-probe here: the probe
@@ -231,6 +227,10 @@ class MCPServerRunMixin:
                 from tools.mcp_oauth import _oauth_interactive_enabled
 
                 _oauth_interactive_enabled.set(False)
+            # Every revival is a re-attempt of a still-failed server (a discovery nudge included):
+            # count it now so the NEXT park waits longer; a proven session resets the streak.
+            self._parked_probe_failures += 1
+            self._park_quiet = False
             logger.debug(
                 "MCP server '%s': attempting revival %s (%s); rebuilding transport.",
                 self.name,
@@ -254,6 +254,15 @@ class MCPServerRunMixin:
         except Exception:
             return True
 
+    def _next_park_probe_timeout(self) -> float:
+        """Self-probe wait for the current park: ``_PARKED_RETRY_INTERVAL``, doubling per
+        consecutive still-failed probe, capped at ``_PARKED_PROBE_BACKOFF_MAX``. Resets once a
+        session proves healthy (``_mark_session_proven``)."""
+        base = _core._PARKED_RETRY_INTERVAL
+        if self._parked_probe_failures <= 0:
+            return base
+        return min(base * (2 ** self._parked_probe_failures), _core._PARKED_PROBE_BACKOFF_MAX)
+
     async def _prepare_run(self, config: dict) -> bool:
         """Bind config, build sampling/elicitation handlers, validate HTTP. False when the server
         must not start (bad remote URL / non-MCP endpoint: fail fast with ``_error`` set and
@@ -261,6 +270,10 @@ class MCPServerRunMixin:
         self._config = config
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
+        # single_instance: exactly one live child system-wide (single-writer datastore). A stdio
+        # server whose child dies before the handshake after the initial ladder is a duplicate that
+        # found the resource taken — park quietly instead of self-probing a doomed spawn forever.
+        self._single_instance = bool(config.get("single_instance"))
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
         # The _MCP_*_TYPES flags are False until the lazy SDK import runs.
@@ -272,7 +285,8 @@ class MCPServerRunMixin:
         # routes it through Hermes' approval system.
         elicitation_config = config.get("elicitation", {})
         self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
-                                                       call_context=lambda: self._pending_call_context)
+                                                       call_context=lambda: self._pending_call_context,
+                                                       call_callbacks=lambda: self._pending_call_callbacks)
                              if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
@@ -352,6 +366,7 @@ class MCPServerRunMixin:
                             from agent.secret_scope import reset_secret_scope
                             reset_secret_scope(scope_token)
                 rebuild = True
+                self._auth_park = None
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 self._resolved_identity = None  # the transport publishes the inputs it connects with
                 if not await self._on_clean_return(await run_transport(config), budget):
@@ -374,7 +389,7 @@ class MCPServerRunMixin:
                 # Stale PIDs must never fast-fail the NEXT transport's calls.
                 self._stdio_child_pids = set()
 
-    async def _on_clean_return(self, lifecycle_reason: str, budget: "_RetryBudget") -> bool:
+    async def _on_clean_return(self, lifecycle_reason: str, budget: _RetryBudget) -> bool:
         """Clean transport return: shutdown, stdio recycle, or a requested rebuild (not a failure
         for the retry counters)."""
         if self._shutdown_event.is_set():
@@ -406,7 +421,7 @@ class MCPServerRunMixin:
             if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
                 self._log_park(
                     "MCP server '%s': %d consecutive reconnects without a healthy session (rapid-drop budget "
-                    "exhausted), parking; will self-probe every %ds until it recovers (state: degraded → parked)",
+                    "exhausted), parking; will self-probe after %ds, backing off to 1h, until it recovers (state: degraded → parked)",
                     self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL)
                 if not await self._park_and_rearm("from parked state", budget):
                     return False
@@ -415,7 +430,7 @@ class MCPServerRunMixin:
         self.session = None
         return True
 
-    async def _park_and_rearm(self, revival_reason: str, budget: "_RetryBudget") -> bool:
+    async def _park_and_rearm(self, revival_reason: str, budget: _RetryBudget) -> bool:
         """Park; on revival leave ONE probe per wake so a still-dead server re-parks instead of
         burning 5 rapid retries. False on shutdown."""
         if await self._park(revival_reason):
@@ -423,22 +438,27 @@ class MCPServerRunMixin:
         self._reconnect_retries, budget.backoff = _core._MAX_RECONNECT_RETRIES, 1.0
         return True
 
-    async def _park_initial_failure(self, exc: Exception, revival_reason: str, budget: "_RetryBudget") -> bool:
-        """Publish ``exc`` to ``start()``, park, and on revival reset every counter. False on shutdown."""
+    async def _park_initial_failure(self, exc: Exception, revival_reason: str, budget: _RetryBudget,
+                                    quiet: bool = False) -> bool:
+        """Publish ``exc`` to ``start()``, park, and on revival leave ONE attempt (like
+        :meth:`_park_and_rearm`). False on shutdown. ``quiet=True`` parks without a timed
+        self-probe (a provably unwinnable resource conflict)."""
         self._publish_error(exc)
-        if await self._park(revival_reason):
+        if await self._park(revival_reason, quiet=quiet):
             return False
-        budget.initial_retries = self._reconnect_retries = 0
+        # A full ladder per wake respawned a still-broken stdio child 4x every interval forever
+        # (each `npx` run leaving cache behind: hermes-official-plugins#401).
+        budget.initial_retries, self._reconnect_retries = _core._MAX_INITIAL_CONNECT_RETRIES, 0
         budget.backoff = 1.0
         self._error = None
         self._ready.clear()
         return True
 
-    async def _backoff_sleep(self, budget: "_RetryBudget") -> None:
+    async def _backoff_sleep(self, budget: _RetryBudget) -> None:
         await asyncio.sleep(_jittered(budget.backoff))
         budget.backoff = min(budget.backoff * 2, _core._MAX_BACKOFF_SECONDS)
 
-    async def _on_transport_error(self, exc: Exception, budget: "_RetryBudget") -> bool:
+    async def _on_transport_error(self, exc: Exception, budget: _RetryBudget) -> bool:
         """Transport raised: classify, then run the initial-connect or reconnect ladder. False = exit."""
         # Unwrap anyio TaskGroup wrappers: the group's str() hides the root cause.
         root = _errors._unwrap_exception_group(exc)
@@ -466,7 +486,7 @@ class MCPServerRunMixin:
         self._reconnect_retries += 1
         if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
             self._log_park(
-                "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
+                "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe after %ds, backing off to 1h, "
                 "until it recovers (state: degraded → parked): %s: %s",
                 self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
             return await self._park_and_rearm("from parked state", budget)
@@ -477,7 +497,7 @@ class MCPServerRunMixin:
         return not self._shutdown_event.is_set()
 
     async def _on_initial_connect_error(self, exc: Exception, root: BaseException,
-                                        failure_class: str, budget: "_RetryBudget") -> bool:
+                                        failure_class: str, budget: _RetryBudget) -> bool:
         if failure_class == "permanent":
             # Deterministic failure (bad command, non-MCP URL, 401/403): park at once; auth
             # failures park (not return) so the task can pick up fresh tokens later.
@@ -486,9 +506,23 @@ class MCPServerRunMixin:
                       else "connection with a permanent error, parking without retries")
             self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, root)
+            self._arm_auth_park(root)
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
+            # A single-instance stdio server whose child died before the handshake after the whole
+            # initial ladder is a duplicate that found the single-writer resource taken: self-probing
+            # just re-spawns the same doomed child forever. Park QUIETLY (no timed self-probe) — only
+            # an explicit reconnect (`hermes mcp` refresh / `_reconnect_event`) revives it once the
+            # owning instance exits.
+            if self._single_instance and not self._is_http():
+                logger.warning(
+                    "MCP server '%s' failed initial connection after %d attempts and is marked "
+                    "single_instance; another process likely holds its resource, parking quietly "
+                    "(no self-probe; an explicit `hermes mcp` refresh or reconnect revives it): %s: %s",
+                    self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, root)
+                return await self._park_initial_failure(
+                    exc, "after single-instance resource conflict", budget, quiet=True)
             self._log_park(
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
@@ -503,7 +537,7 @@ class MCPServerRunMixin:
             self._publish_error(exc)
         return not self._shutdown_event.is_set()
 
-    async def _on_permanent_error(self, root: BaseException, budget: "_RetryBudget") -> bool:
+    async def _on_permanent_error(self, root: BaseException, budget: _RetryBudget) -> bool:
         # Auth failure on a PROVEN session is often a raced-teardown OAuth lock, not revoked
         # credentials: grant ONE suspect+reconnect cycle first.
         if _errors._is_auth_error(root) and self._session_proven and not self._permanent_grace_used:
@@ -518,9 +552,21 @@ class MCPServerRunMixin:
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
         self._log_park(
-            "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
+            "MCP server '%s' hit a permanent error, parking without retries; will self-probe after %ds, backing off to 1h "
             "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
+        self._arm_auth_park(root)
         return await self._park_and_rearm("from parked state (permanent error)", budget)
+
+    def _arm_auth_park(self, root: BaseException) -> None:
+        """Record the OAuth credentials an auth-failure park failed with. Until a re-authorization
+        rewrites them, a discovery pass has nothing new to try: every nudge replayed the same rejected
+        refresh token, so a backend building agents (each one re-runs discovery while no server is
+        connected) hit the authorization server once per session, enough for a rate-limit ban."""
+        if self._auth_type == "oauth" and _errors._is_auth_error(root):
+            from hermes_constants import get_hermes_home
+            from tools.mcp_oauth import HermesTokenStorage
+            storage = HermesTokenStorage(self.name, hermes_home=get_hermes_home())
+            self._auth_park = (storage, storage.credential_stamp())
 
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""
@@ -546,7 +592,7 @@ class MCPServerRunMixin:
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=10)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("MCP server '%s' shutdown timed out, cancelling task", self.name)
                 self._task.cancel()
                 try:

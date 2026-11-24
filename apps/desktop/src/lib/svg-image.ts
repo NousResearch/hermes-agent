@@ -1,11 +1,12 @@
 // Rasterise an SVG string to PNG and copy it to the clipboard. Self-contained
-// SVGs only (inline styles) — mermaid output qualifies. Falls back to copying
-// the SVG markup as text where image clipboard writes aren't permitted.
+// SVGs only (inline styles): Pele output with its palette written onto the
+// root qualifies. Falls back to copying the SVG markup as text where image
+// clipboard writes aren't permitted.
 
-// Mermaid emits width="100%" plus a viewBox. That percentage is not an
-// intrinsic size: the zoom overlay's shrink-to-fit grid can collapse it, and
-// parseFloat("100%") makes a 100px PNG. Replace percentage attrs with the
-// viewBox pixels; leave explicit pixel attrs alone. No-op when nothing to do.
+import { writeClipboardText } from '@/lib/clipboard'
+
+// A percentage width or height is not an intrinsic size (parseFloat("100%")
+// would make a 100px PNG); fall back to the viewBox for those.
 function isPercentLength(raw: string | null): boolean {
   return Boolean(raw?.trim().endsWith('%'))
 }
@@ -14,51 +15,6 @@ function viewBoxSize(el: Element): { height: number; width: number } | null {
   const [, , vbW, vbH] = (el.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number)
 
   return vbW > 0 && vbH > 0 ? { height: vbH, width: vbW } : null
-}
-
-export function normalizeSvgSize(svg: string): string {
-  const el = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement
-
-  if (el.tagName !== 'svg') {
-    return svg
-  }
-
-  const width = el.getAttribute('width')
-  const height = el.getAttribute('height')
-  const widthPct = isPercentLength(width)
-  const heightPct = isPercentLength(height)
-
-  if (!widthPct && !heightPct) {
-    return svg
-  }
-
-  // Mermaid pins the intrinsic width with an inline max-width in pixels. An
-  // inline style beats the container's width caps (max-w-full and friends),
-  // so a wide diagram renders at full intrinsic width in the inline preview
-  // instead of shrinking to the pane. Relative values stay untouched.
-  const maxWidth = el.style.getPropertyValue('max-width')
-
-  if (maxWidth && !isPercentLength(maxWidth) && !maxWidth.trim().endsWith('vw')) {
-    el.style.setProperty('max-width', '100%')
-  }
-
-  const box = viewBoxSize(el)
-
-  if (!box) {
-    return svg
-  }
-
-  if (widthPct) {
-    el.setAttribute('width', String(box.width))
-  }
-
-  // Mermaid usually omits height. Fill it from the viewBox so the overlay has
-  // both intrinsic dimensions; don't overwrite an explicit pixel height.
-  if (heightPct || (widthPct && !height)) {
-    el.setAttribute('height', String(box.height))
-  }
-
-  return new XMLSerializer().serializeToString(el)
 }
 
 function parseSvgLength(raw: string | null): number | null {
@@ -113,11 +69,16 @@ export function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
 }
 
 export async function copySvgAsPng(svg: string): Promise<void> {
+  // An insecure origin has no image clipboard: copy the markup while the click still counts.
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    return writeClipboardText(svg)
+  }
+
   try {
     const blob = await svgToPngBlob(svg)
 
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
   } catch {
-    await navigator.clipboard.writeText(svg)
+    await writeClipboardText(svg)
   }
 }

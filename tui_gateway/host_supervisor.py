@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
+from hermes_cli._startup_fast import project_root_str
 from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
 _REGISTRY_NAME = "dashboard-compute-host.json"
 _RESPAWN_WINDOW_SECS = 300.0
 _SHUTDOWN_TIMEOUT_SECS = 10.0
+# A cold host imports the agent stack before its hello (~1.3s idle, 5s+ on a loaded box).
+_HELLO_TIMEOUT_SECS = 10.0
 # Late control-ack handlers: a compress that outlives its RPC waiter can run for the full
 # compression ceiling plus a stall-fallback retry, so keep registrations past that — bounded.
 # See #97948.
@@ -75,14 +78,14 @@ def append_log_record(path: str | Path, record: str) -> None:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(project_root_str())
 
 
 def _check_output(argv: list[str], **kwargs: Any) -> str:
     """Stripped stdout of a short subprocess, or ``""`` on any failure."""
     with contextlib.suppress(Exception):
         return subprocess.check_output(
-            argv, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
+            argv, stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
             timeout=2, **kwargs).strip()
     return ""
 
@@ -255,14 +258,38 @@ class HostSupervisor:
         self._send_frame(
             {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
-    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
-        """Send ``frame`` and block for the host reply carrying ``request_id``."""
+    def has_pending_turn(self, sid: str) -> bool:
+        """True when a host completion callback is still registered for ``sid``.
+
+        Read by the serving process to tell "the host still owes this session a
+        terminal frame" from "nothing will ever call back for it". Entries are
+        added in :meth:`submit_turn` and removed by ``turn.end``/``turn.error``
+        handling or :meth:`_fail_pending_turns`, all under ``self._lock``.
+        """
+        with self._lock:
+            return any(s == sid for s, _cb in self._pending_turns.values())
+
+    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float,
+                     on_late_ack: Callable[[dict], None] | None = None) -> dict:
+        """Send ``frame`` and block for the host reply carrying ``request_id``. On timeout ``on_late_ack``
+        takes over in the same locked step that retires the waiter's queue, so a reply landing at any moment
+        reaches exactly one of them (a dropped ack would leak whatever the handler releases)."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
         with self._lock:
             self._pending_controls[request_id] = q
         try:
             self._send_frame(frame)
             return q.get(timeout=timeout)
+        except queue.Empty:
+            dropped: list = []
+            with self._lock:
+                self._pending_controls.pop(request_id, None)
+                if not q.empty():  # landed after the wait gave up, before the queue was retired
+                    return q.get_nowait()
+                if on_late_ack is not None:
+                    dropped = self._register_late_control_handler_locked(request_id, on_late_ack)
+            self._fire_dropped_late_handlers(dropped)
+            raise
         finally:
             with self._lock:
                 self._pending_controls.pop(request_id, None)
@@ -296,22 +323,35 @@ class HostSupervisor:
         if not wait:
             self._send_frame(frame)
             return {"status": "sent", "request_id": request_id}
-        try:
-            return self._await_reply(frame, request_id, timeout)
-        except queue.Empty:
-            if on_late_ack is not None:
-                self._register_late_control_handler(request_id, on_late_ack)
-            raise
+        return self._await_reply(frame, request_id, timeout, on_late_ack)
 
     def _register_late_control_handler(self, request_id: str, handler: Callable[[dict], None]) -> None:
-        now = time.monotonic()
         with self._lock:
-            handlers = self._late_control_handlers
-            for rid in [r for r, (at, _cb) in handlers.items() if now - at > _LATE_CONTROL_TTL_SECS]:
-                handlers.pop(rid, None)
-            while len(handlers) >= _LATE_CONTROL_MAX:
-                handlers.pop(min(handlers, key=lambda rid: handlers[rid][0]), None)
-            handlers[request_id] = (now, handler)
+            dropped = self._register_late_control_handler_locked(request_id, handler)
+        self._fire_dropped_late_handlers(dropped)
+
+    def _register_late_control_handler_locked(self, request_id: str, handler: Callable[[dict], None]) -> list:
+        """Register under ``self._lock``; returns the handlers the TTL or the cap dropped, for the caller to fire
+        outside the lock (``_fire_dropped_late_handlers``)."""
+        now = time.monotonic()
+        dropped = []
+        handlers = self._late_control_handlers
+        for rid in [r for r, (at, _cb) in handlers.items() if now - at > _LATE_CONTROL_TTL_SECS]:
+            dropped.append((rid, handlers.pop(rid)[1]))
+        while len(handlers) >= _LATE_CONTROL_MAX:
+            rid = min(handlers, key=lambda r: handlers[r][0])
+            dropped.append((rid, handlers.pop(rid)[1]))
+        handlers[request_id] = (now, handler)
+        return dropped
+
+    @staticmethod
+    def _fire_dropped_late_handlers(dropped: list) -> None:
+        """A dropped handler still fires once, with a ``control.error``: it may own a release (a transcript
+        claim) that nothing else would run."""
+        for rid, cb in dropped:
+            frame = {"type": "control.error", "request_id": rid,
+                     "message": "compute host reply abandoned: no answer within the late-ack window"}
+            _call_logged(cb, frame, f"compute host late control drop handler failed (request_id={rid})")
 
     def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
         with self._lock:
@@ -338,13 +378,14 @@ class HostSupervisor:
         proc = subprocess.Popen(
             self.argv, cwd=str(self.cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
+            # detached-spawn: ok — compute host exits on its own parent-guard (compute_host._parent_guard_loop) and flushes sessions; a supervisor KILL could cut that flush short
             start_new_session=True)
         self._proc = proc
         for target, name in ((self._drain_stdout, "compute-host-stdout"),
                              (self._drain_stderr, "compute-host-stderr"),
                              (self._wait_for_exit, "compute-host-wait")):
             threading.Thread(target=target, args=(proc,), name=name, daemon=True).start()
-        if not self._hello_event.wait(timeout=10.0):
+        if not self._hello_event.wait(timeout=_HELLO_TIMEOUT_SECS):
             self._terminate_process(proc)
             raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
         self._validate_hello()

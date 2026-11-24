@@ -6,10 +6,10 @@
  * Provenance comes from CI, local git, or an explicit unknown-source stamp.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { resolve, join, relative, posix } from "path"
 import productIdentity from "../product-identity.cjs"
-import { channelBuildRequest } from "../../../scripts/msix-shared.mjs"
+import { COMMIT_TAG_RE, channelBuildRequest, releaseVersion } from "../../../scripts/msix-shared.mjs"
 import { validateBundleEnvironment } from "./bundle-env.mjs"
 import { execFileSync } from "child_process"
 
@@ -97,8 +97,10 @@ export function resolveStamp({
     return { ...local, branch: null, source: 'channel-build', baseVersion: channelBuild.sourceVersion, channelBuild }
   }
   if (env.HERMES_BUILD_COMMIT) {
-    if (!/^[a-f0-9]{40}$/.test(env.HERMES_BUILD_COMMIT) || env.HERMES_PAYLOAD_TAG) {
-      throw new Error('Commit builds require an exact full SHA without a release tag')
+    // A commit build carries no release tag, or only its own claim tag (commit.<stamp>-vX.Y.Z).
+    if (!/^[a-f0-9]{40}$/.test(env.HERMES_BUILD_COMMIT)
+        || (env.HERMES_PAYLOAD_TAG && !COMMIT_TAG_RE.test(env.HERMES_PAYLOAD_TAG))) {
+      throw new Error('Commit builds require an exact full SHA and no release tag but their own claim')
     }
     const local = fromLocalGit(repoRoot, execFn)
     if (!local || local.commit !== env.HERMES_BUILD_COMMIT) {
@@ -115,7 +117,10 @@ export function isFallbackCommit(commit) {
 
 /** Qualify desktop CLI files before the immutable runtime paths are baked.
  * Canonical command keys remain stable for backend consumers; public aliases
- * come from the declared filenames, never those internal keys.
+ * come from the declared filenames, never those internal keys. The canonical
+ * files stay beside them: the agent's own terminal puts <payload>/bin first on
+ * PATH (pm.environments.activate_dependencies) and runs bare `hermes`, while
+ * only the qualified names are published (MSIX aliases, ~/.local/bin links).
  */
 export function stageDesktopLaunchers(root, identity = productIdentity) {
   const file = join(root, 'manifest.json')
@@ -127,7 +132,7 @@ export function stageDesktopLaunchers(root, identity = productIdentity) {
     const alias = name.replace(/^hermes(?=-|$)/, identity.cliName)
     const destination = posix.join(posix.dirname(source), `${alias}${windows ? '.exe' : ''}`)
     if (source !== destination && existsSync(join(root, source))) {
-      renameSync(join(root, source), join(root, destination))
+      copyFileSync(join(root, source), join(root, destination))
     }
     if (!existsSync(join(root, destination))) throw new Error(`Missing desktop launcher: ${destination}`)
     commands[name] = destination
@@ -212,10 +217,13 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   if (commitBuild && (!/^[a-f0-9]{40}$/.test(commitBuild) || commitBuild !== stamp.commit)) {
     throw new Error('Commit build identity does not match the stamp commit')
   }
-  if (commitBuild && env.HERMES_PAYLOAD_TAG) {
+  if (commitBuild && env.HERMES_PAYLOAD_TAG && !COMMIT_TAG_RE.test(env.HERMES_PAYLOAD_TAG)) {
     throw new Error('Commit builds cannot also set a release tag')
   }
-  const version = env.HERMES_PAYLOAD_VERSION || (env.HERMES_PAYLOAD_TAG || '').replace(/^v/, '') || null
+  if (!commitBuild && COMMIT_TAG_RE.test(env.HERMES_PAYLOAD_TAG || '')) {
+    throw new Error('A commit build tag requires HERMES_BUILD_COMMIT (the commit identity)')
+  }
+  const version = env.HERMES_PAYLOAD_VERSION || releaseVersion(env.HERMES_PAYLOAD_TAG) || null
   // The bundle's baked runtime defaults/clears, recorded as data so the smoke
   // driver can predict the app's resolved Hermes home without reimplementing
   // the banner. Only commit bundles carry one, but the field is harmless when

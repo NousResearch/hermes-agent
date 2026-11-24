@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 
+from tools.terminal_tool_sudo_askpass import SUDO_ASKPASS_PREFIX, SUDO_ASKPASS_SUFFIX
 from utils import env_var_enabled
 
 # Log-record parity with the origin module.
@@ -93,15 +94,15 @@ _SUDO_HEADLESS_FAILURES = ("sudo: a password is required", "sudo: no tty present
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """Append a SUDO_PASSWORD tip when sudo failed in a headless context
-    (gateway session or delegate_task child); otherwise return *output* as is."""
+    (gateway session, delegate_task child or `hermes chat -q`); otherwise return *output* as is."""
     is_gateway = env_var_enabled("HERMES_GATEWAY_SESSION")
-    is_delegated_child = _in_delegated_child_context()
-    if not (is_gateway or is_delegated_child) or not any(f in output for f in _SUDO_HEADLESS_FAILURES):
+    no_user = _no_sudo_user()
+    if not (is_gateway or no_user) or not any(f in output for f in _SUDO_HEADLESS_FAILURES):
         return output
     from hermes_constants import display_hermes_home as _dhh
-    if is_delegated_child:
+    if no_user:
         return output + (
-            "\n\n💡 Tip: Subagents cannot prompt for a sudo password. "
+            "\n\n💡 Tip: This session cannot prompt for a sudo password. "
             f"Add SUDO_PASSWORD to {_dhh()}/.env on the agent machine, "
             "or run the command without sudo."
         )
@@ -186,62 +187,72 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -
     """Prompt for a sudo password; "" on skip (empty Enter), timeout, or error. Prefers the
     CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty (msvcrt on
     Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
-    from tools.terminal_tool import _get_sudo_password_callback
-    _sudo_cb = _get_sudo_password_callback()
-    if _sudo_cb is not None:
-        token = _sudo_prompt_command.set(command)
+    from tools.human_input_hooks import human_input_request
+    # The password never reaches the hook; only how the prompt ended.
+    with human_input_request("sudo", prompt=command) as human:
+        from tools.terminal_tool import _get_sudo_password_callback
+        _sudo_cb = _get_sudo_password_callback()
+        if _sudo_cb is not None:
+            token = _sudo_prompt_command.set(command)
+            try:
+                from tools.approval_human_wait import human_wait_window
+                with human_wait_window():
+                    password = _sudo_cb() or ""
+                human.outcome = "provided" if password else "skipped"
+                return password
+            except Exception:
+                human.outcome = "error"
+                return ""
+            finally:
+                _sudo_prompt_command.reset(token)
+
+        result = {"password": None, "done": False}
         try:
+            os.environ["HERMES_SPINNER_PAUSE"] = "1"
+            time.sleep(0.2)
+            print("\n".join((
+                "",
+                "┌" + "─" * 58 + "┐",
+                "│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│",
+                "├" + "─" * 58 + "┤",
+                "│  Enter password below (input is hidden), or:            │",
+                "│    • Press Enter to skip (command fails gracefully)     │",
+                f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│",
+                "└" + "─" * 58 + "┘",
+                "",
+            )))
+            print("  Password (hidden): ", end="", flush=True)
+            password_thread = threading.Thread(target=_read_hidden_password, args=(result,), daemon=True)
+            password_thread.start()
             from tools.approval_human_wait import human_wait_window
             with human_wait_window():
-                return _sudo_cb() or ""
-        except Exception:
+                password_thread.join(timeout=timeout_seconds)
+            if not result["done"]:
+                print("\n  ⏱ Timeout - continuing without sudo\n    (Press Enter to dismiss)\n")
+                sys.stdout.flush()
+                human.outcome = "timeout"
+                return ""
+            password = result["password"] or ""
+            human.outcome = "provided" if password else "skipped"
+            # Newline after the hidden input, then the outcome line.
+            if password:
+                print("\n  ✓ Password received (cached for this session)\n")
+            else:
+                print("\n  ⏭ Skipped - continuing without sudo\n")
+            sys.stdout.flush()
+            return password
+        except (EOFError, KeyboardInterrupt):
+            print("\n  ⏭ Cancelled - continuing without sudo\n")
+            sys.stdout.flush()
+            human.outcome = "cancelled"
+            return ""
+        except Exception as e:
+            print(f"\n  [sudo prompt error: {e}] - continuing without sudo\n")
+            sys.stdout.flush()
+            human.outcome = "error"
             return ""
         finally:
-            _sudo_prompt_command.reset(token)
-
-    result = {"password": None, "done": False}
-    try:
-        os.environ["HERMES_SPINNER_PAUSE"] = "1"
-        time.sleep(0.2)
-        print("\n".join((
-            "",
-            "┌" + "─" * 58 + "┐",
-            "│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│",
-            "├" + "─" * 58 + "┤",
-            "│  Enter password below (input is hidden), or:            │",
-            "│    • Press Enter to skip (command fails gracefully)     │",
-            f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│",
-            "└" + "─" * 58 + "┘",
-            "",
-        )))
-        print("  Password (hidden): ", end="", flush=True)
-        password_thread = threading.Thread(target=_read_hidden_password, args=(result,), daemon=True)
-        password_thread.start()
-        from tools.approval_human_wait import human_wait_window
-        with human_wait_window():
-            password_thread.join(timeout=timeout_seconds)
-        if not result["done"]:
-            print("\n  ⏱ Timeout - continuing without sudo\n    (Press Enter to dismiss)\n")
-            sys.stdout.flush()
-            return ""
-        password = result["password"] or ""
-        # Newline after the hidden input, then the outcome line.
-        if password:
-            print("\n  ✓ Password received (cached for this session)\n")
-        else:
-            print("\n  ⏭ Skipped - continuing without sudo\n")
-        sys.stdout.flush()
-        return password
-    except (EOFError, KeyboardInterrupt):
-        print("\n  ⏭ Cancelled - continuing without sudo\n")
-        sys.stdout.flush()
-        return ""
-    except Exception as e:
-        print(f"\n  [sudo prompt error: {e}] - continuing without sudo\n")
-        sys.stdout.flush()
-        return ""
-    finally:
-        os.environ.pop("HERMES_SPINNER_PAUSE", None)
+            os.environ.pop("HERMES_SPINNER_PAUSE", None)
 
 
 def _looks_like_env_assignment(token: str) -> bool:
@@ -310,11 +321,14 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         i = end
 
 
-def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
+def _rewrite_real_sudo_invocations(command: str, askpass: bool = False) -> tuple[str, int]:
     """Rewrite literal sudo executable words, preserving their spelling and arguments.
 
     Follow ordinary env options/assignments, not shell payloads or env split strings:
     interpreting those requires a second parser and rewriting inside another quoting layer.
+    Each counted sudo gets `` -S -p ''`` appended; with ``askpass=True`` it is instead prefixed
+    with ``SUDO_ASKPASS="$__hermes_sudo_dir/a"`` and gets an option word the askpass prologue
+    sets to ``-A``, or to ``-S -p ''`` when its setup fails (see ``terminal_tool_sudo_askpass``).
     """
     out: list[str] = []
     sudo_count = 0
@@ -364,7 +378,10 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
         in_env = executable == "env"
         env_options = in_env
         if executable == "sudo":
-            out[-1] += " -S -p ''"
+            if askpass:
+                out[-1] = SUDO_ASKPASS_PREFIX + out[-1] + SUDO_ASKPASS_SUFFIX
+            else:
+                out[-1] += " -S -p ''"
             sudo_count += 1
     return "".join(out), sudo_count
 
@@ -429,9 +446,18 @@ def _rewrite_compound_background(command: str) -> str:
     return result
 
 
+def _no_sudo_user() -> bool:
+    """A delegated child or a `hermes chat -q` run: nobody can answer a sudo prompt. Single-query only
+    (not _no_user_can_answer): cron strips HERMES_INTERACTIVE and unattended platforms register no sudo callback."""
+    from tools.approval_context import _is_single_query_approval_context
+    return _in_delegated_child_context() or _is_single_query_approval_context()
+
+
 def _transform_sudo_command(
     command: str | None,
     sudo_nopasswd_check: Callable[[], bool] | None = None,
+    *,
+    askpass_supported: Callable[[], bool] | None = None,
 ) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
@@ -443,7 +469,12 @@ def _transform_sudo_command(
     is required". Password sources, in order: configured SUDO_PASSWORD, the session cache, then
     an interactive prompt (45s timeout, cached on success) when a UI is reachable.
     ``sudo_nopasswd_check`` (supplied by ``BaseEnvironment``) runs ``sudo -n true`` inside the
-    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely."""
+    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely.
+    ``askpass_supported`` (also from ``BaseEnvironment``) is asked only once a password is
+    available: when it returns True and no counted sudo carries its own stdin/askpass option,
+    the result is ``terminal_tool_sudo_askpass.build_prologue`` + the askpass rewrite, with ONE
+    password line as ``sudo_stdin``; the prologue reads that line so the rest of stdin reaches
+    the command untouched, and hands the password to each sudo through an askpass helper."""
     from tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
@@ -461,12 +492,12 @@ def _transform_sudo_command(
     has_configured_password = _configured_password is not None
     sudo_password = _configured_password if has_configured_password else _get_cached_sudo_password()
 
-    # delegate_task children inherit HERMES_INTERACTIVE=1 (and possibly a stale thread-local
-    # callback on a recycled worker) but have no user on the other side — always headless;
-    # configured password and session cache still apply.
+    # delegate_task children and `hermes chat -q` inherit HERMES_INTERACTIVE=1 and (for -q) the CLI
+    # panel callback, but have no user on the other side — always headless; configured password and
+    # session cache still apply.
     should_prompt_for_sudo = (
         env_var_enabled("HERMES_INTERACTIVE") or _get_sudo_password_callback() is not None
-    ) and not _in_delegated_child_context()
+    ) and not _no_sudo_user()
     if not has_configured_password and not sudo_password and should_prompt_for_sudo:
         # sudoers NOPASSWD must not be forced through the prompt or the -S pipe. The probe is
         # a round trip on the selected backend (an ssh exec for SSH), so it only runs when a
@@ -479,6 +510,20 @@ def _transform_sudo_command(
             _set_cached_sudo_password(sudo_password)
 
     if has_configured_password or sudo_password:
+        from tools.terminal_tool_sudo_askpass import (
+            SUDO_ASKPASS_TIMEOUT_TOKEN, build_prologue, has_background_sudo, has_own_stdin_or_askpass,
+            sudo_command_words,
+        )
         # sudo -S reads one line per invocation: compound `sudo a && sudo b` needs one line each.
-        return transformed, (sudo_password + "\n") * sudo_count
+        # The askpass form gets the same lines: its prologue takes them off stdin once the helper
+        # is set up, and leaves them for ``-S`` when setup fails at run time.
+        password_lines = (sudo_password + "\n") * sudo_count
+        if askpass_supported is not None and not has_own_stdin_or_askpass(command) and askpass_supported():
+            sudo_words = sudo_command_words(command)  # None: a word cannot be checked, stdin form
+            if sudo_words is not None:
+                askpass_command = _rewrite_real_sudo_invocations(command, askpass=True)[0]
+                prologue = build_prologue(sudo_count, SUDO_ASKPASS_TIMEOUT_TOKEN, has_background_sudo(command),
+                                          sudo_words=sudo_words)
+                return prologue + askpass_command, password_lines
+        return transformed, password_lines
     return command, None

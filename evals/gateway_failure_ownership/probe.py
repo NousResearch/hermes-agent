@@ -14,10 +14,8 @@ os.environ.update(
     HOME=str(HOME),
     HERMES_HOME=str(HOME),
     HERMES_DISABLE_PLUGINS="1",
-    # The scrub above drops the test harness's hermetic switch. Without it, GatewayRunner()
-    # in this fresh home starts tirith's startup install on a background thread (PM runtime,
-    # Python and uv downloaded and unpacked while the cases run) and its buffers land in the
-    # process-wide tracemalloc window the archive case measures.
+    # The scrub above drops the test harness's hermetic switch; keep lazy PM installs off so no
+    # background download's buffers land in the tracemalloc window the archive case measures.
     HERMES_DISABLE_LAZY_INSTALLS="1",
     NO_PROXY="127.0.0.1,localhost",
 )
@@ -63,9 +61,6 @@ class Peer(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append({"path": self.path, "body": body})
-        users = [
-            m.get("content") for m in body.get("messages", []) if m["role"] == "user"
-        ]
         fail = fault == "http400"
         if fail:
             data = {
@@ -138,11 +133,12 @@ class Peer(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 from run_agent import AIAgent
-from hermes_state import SessionDB
+from persistence.conversation.messages import TranscriptRead, TranscriptView
 from gateway.session import SessionStore, AsyncSessionStore, SessionSource
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
 
 
 import gateway.run as gateway_run
@@ -166,6 +162,7 @@ class ControlledAgent(AIAgent):
                 [sys.executable, str(Path(__file__).with_name("foreign_writer.py")),
                  str(ROOT), str(HOME / "state.db"), sid],
                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=20,
+                check=False,
             )
             assert result.returncode == 0, result.stderr
             faults.append("foreign-writer-committed")
@@ -203,16 +200,23 @@ original_load = runner.session_store.load_transcript
 
 
 raw_reads = []
-original_get_messages = SessionDB.get_messages
 
 
-def observed_get_messages(self, session_id, *args, **kwargs):
-    if kwargs.get("include_inactive") or kwargs.get("include_compacted") or any(args[:2]):
-        raw_reads.append(session_id)
-    return original_get_messages(self, session_id, *args, **kwargs)
+def observed(read):
+    """``read`` noting every read past the live rows (rewound or compaction-archived rows)."""
+    def observed_read(self, session_id, *args, **kwargs):
+        request = kwargs.get("request", args[0] if args else None)
+        if request is not None and request.view is not TranscriptView.ACTIVE:
+            raw_reads.append(session_id)
+        return read(self, session_id, *args, **kwargs)
+    return observed_read
 
 
-SessionDB.get_messages = observed_get_messages
+# The message repository class of the store the gateway opens: every transcript read goes through it.
+MessageRepository = type(open_persistence(profile_scope()).messages)
+read_transcript = MessageRepository.read_transcript
+MessageRepository.read_transcript = observed(read_transcript)
+MessageRepository.read_conversation = observed(MessageRepository.read_conversation)
 
 
 def controlled_load(session_id, **kwargs):
@@ -230,16 +234,11 @@ sid = entry.session_id
 
 
 def rows():
-    with sqlite3.connect(HOME / "state.db") as conn:
-        conn.row_factory = sqlite3.Row
-        return [
-            dict(row)
-            for row in conn.execute(
-                "SELECT id,role,content,platform_message_id,timestamp,display_metadata,active,compacted FROM messages "
-                "WHERE session_id=? ORDER BY id",
-                (sid,),
-            )
-        ]
+    # The unobserved read_transcript: the probe's own read of every row is not a read past the live rows.
+    with open_persistence_reader(HOME / "state.db") as store:
+        stored = read_transcript(store.messages, sid, TranscriptRead(view=TranscriptView.ALL))
+    keys = ("id", "role", "content", "platform_message_id", "timestamp", "display_metadata", "active", "compacted")
+    return [{key: wire[key] for key in keys} for wire in (row.as_wire_row() for row in stored)]
 
 
 async def main():
@@ -349,7 +348,7 @@ async def main():
             )
         )
     users = [r for r in rows() if r["role"] == "user" and r["active"]]
-    markers = [json.loads(r["display_metadata"] or "{}").get("gateway_input_owner") for r in users]
+    markers = [(r["display_metadata"] or {}).get("gateway_input_owner") for r in users]
     observations.append(dict(
         text="durable marker propagation", reached=bool(users),
         pass_=all(isinstance(m, str) and m for m in markers) and len(set(markers)) == len(markers)

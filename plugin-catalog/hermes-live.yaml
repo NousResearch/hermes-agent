@@ -1,0 +1,28 @@
+name: hermes-live
+title: Hermes Live
+repo: https://github.com/dandacompany/hermes-live
+sha: c81c84f0e001014662cadb8b3e3dafa0c51b54f7
+description: "Multi-provider live voice calls with Gemini, Grok, Qwen, and a Codex subscription in Hermes Desktop. Disclosure — voice audio and recent chat go only to the live-voice provider the user picks (Gemini, Grok or Qwen); the Codex option drives the user's own Codex CLI on its own ChatGPT login; tasks the voice model submits run as normal Hermes chat turns with the usual approvals."
+maintainer: dandacompany
+tier: community
+category: voice
+requires_hermes: ">=0.22.5"
+version: "0.9.2"
+docs_url: https://github.com/dandacompany/hermes-live#readme
+readme: true
+platforms: [macos]
+screenshots:
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/settings-v0.9.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/providers.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/audio-settings.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/api-usage.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/codex-usage.png
+known_issues:
+  - "Codex voice and quota use the backend user's Codex CLI ChatGPT login, not Hermes-owned subscription authentication."
+  - "Profiles sharing an OS user and CODEX_HOME can share the Codex account. Remote end-to-end calls and Windows/Linux have not been verified."
+  - "Voice can keep waiting when a delegated Hermes task pauses for user input; answer in the chat. End another active voice call before starting."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -36,7 +36,7 @@ function request(sequence: number = 65536, token: string = 'ab12cd34ef56ab78'): 
       windowsExecutableName: 'hermes-no-registry-needed',
       msixAppIdWithOrg: `NousResearch.HermesChannel${token}`
     },
-    bundleEnv: { HERMES_GUEST_ONBOARDING: '1' },
+    bundleEnv: { HERMES_PREVIEW_FULL_CONNECTORS: '1' },
     publicBase: 'https://builds.example.test'
   }
 }
@@ -377,7 +377,9 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       'apps/desktop/update-feed.cjs',
       'apps/desktop/assets/msix-manifest.xml',
       'apps/desktop/scripts/before-build.mjs',
+      'apps/desktop/scripts/mac-icon.cjs',
       'apps/desktop/scripts/mac-sign.mjs',
+      'apps/desktop/scripts/mac-sign-cache.mjs',
       'apps/desktop/scripts/payload-digests.mjs',
       'apps/desktop/scripts/utils.mjs',
       'scripts/msix-shared.mjs',
@@ -401,7 +403,14 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       fs.cpSync(path.join(repo, tree), path.join(root, tree), { recursive: true })
     }
 
-    fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
+    // Mirror both install trees so the copied desktop files resolve their
+    // dependencies exactly as they do in the checkout, hoisted or not.
+    for (const dir of ['', 'apps/desktop']) {
+      if (fs.existsSync(path.join(repo, dir, 'node_modules'))) {
+        fs.symlinkSync(path.join(repo, dir, 'node_modules'), path.join(root, dir, 'node_modules'), 'junction')
+      }
+    }
+
     const assets: string = path.join(app, 'assets/appx')
     fs.mkdirSync(assets)
 
@@ -420,8 +429,9 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       const build: ChannelBuildRequest = request(sequence)
 
       const script: string = `
-        const { AppInfo } = require('./node_modules/app-builder-lib/dist/appInfo.js');
-        const Msix = require('./node_modules/app-builder-lib/dist/targets/win/MsixTarget.js').default;
+        const builderEntry = require.resolve('app-builder-lib', { paths: [require('node:path').resolve('apps/desktop')] });
+        const { AppInfo } = require(builderEntry);
+        const Msix = require(require('node:path').join(builderEntry, '../targets/win/MsixTarget.js')).default;
         const config = require('./apps/desktop/electron-builder.config.cjs');
         const pkg = require('./apps/desktop/package.json');
         const fs = require('node:fs');

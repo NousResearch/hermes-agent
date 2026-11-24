@@ -57,7 +57,7 @@ def has_codex_credentials() -> bool:
         return isinstance(entries, list) and any(
             isinstance(e, dict) and str(e.get("access_token", "") or "").strip() for e in entries
         )
-    except Exception:  # noqa: BLE001 — availability must never raise
+    except Exception:
         return False
 
 
@@ -71,13 +71,13 @@ class OpenAINativeWebSearchProvider(BaseWebSearchProvider):
     def is_available(self) -> bool:
         return has_codex_credentials()
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Never called on a successful native turn — the transport replaces the tool
         before the request goes out. Reached only when the active transport cannot host
         the built-in, so fail loudly instead of returning an empty result set."""
         return search_fail(_UNSUPPORTED_MSG)
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         from plugins.web._common import setup_schema
 
         return setup_schema(

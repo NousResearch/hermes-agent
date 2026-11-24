@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
+from agent.models_dev import _configured_catalog_provider
 from agent.reasoning_effort import GPT62_MODEL_IDS
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
@@ -24,7 +25,7 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 # routes (openai-codex, xai-oauth) keep their own policy.
 _MODELS_DEV_DIRECT_HOSTS = {
     "openai": "openai.com", "xai": "x.ai", "anthropic": "anthropic.com", "google": "googleapis.com",
-    "deepseek": "deepseek.com", "xiaomi": "xiaomimimo.com",
+    "deepseek": "deepseek.com", "xiaomi": "xiaomimimo.com", "mistral": "mistral.ai",
 }
 
 # Below $0.01, render at 4 dp so cheap-model costs never display as $0.00.
@@ -114,6 +115,10 @@ class PricingEntry:
     output_cost_per_million: Optional[Decimal] = None
     cache_read_cost_per_million: Optional[Decimal] = None
     cache_write_cost_per_million: Optional[Decimal] = None
+    #: The price list this entry came from omits a cache-hit rate, so it charges cache reads at
+    #: its prompt rate (Bifrost's ``/v1/models`` does this for strata: its ledger books the whole
+    #: 658M-token prompt at the prompt rate, cached 540M included).
+    cache_read_priced_as_input: bool = False
     #: A catalog's own 1-hour write rate (``input_cache_write_1h``); see ``_cache_write_buckets``.
     cache_write_1h_cost_per_million: Optional[Decimal] = None
     request_cost: Optional[Decimal] = None
@@ -446,6 +451,20 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
 
 
+_VIBE_SUBSCRIPTION_MODEL_MARKER = "mistral-vibe-cli"
+# Bifrost names an upstream provider as the model-id prefix; the Vibe subscription's own
+# upstream is the one its ledger books at $0 (callers get no per-token rate for those ids).
+_VIBE_UPSTREAM_PREFIX = "mistral-vibe/"
+
+
+def _is_vibe_subscription_model(model: str) -> bool:
+    """True for a model the Mistral Vibe subscription serves at no per-token rate: a
+    Vibe-console id (``mistral-vibe-cli-*``), or any model routed to the ``mistral-vibe``
+    upstream through the fleet gateway (its ledger books those calls at $0)."""
+    name = (model or "").strip().lower()
+    return _VIBE_SUBSCRIPTION_MODEL_MARKER in name or name.startswith(_VIBE_UPSTREAM_PREFIX)
+
+
 def resolve_billing_route(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None
 ) -> BillingRoute:
@@ -468,6 +487,17 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
+    if provider_name == "antigravity-oauth":
+        # Google Antigravity plan: calls ride the plan's quota, there is no per-call invoice.
+        return BillingRoute(provider="antigravity-oauth", model=model, base_url=url, billing_mode="subscription_included")
+    if _is_vibe_subscription_model(bare):
+        # A Vibe-console model id (`mistral-vibe-cli-*`): only the Vibe subscription serves it,
+        # no price list publishes a per-token rate, and the gateway's own ledger books every such
+        # call at $0. "included" is the honest status — $0 is the real charge, not missing data.
+        # A catalogued model id on the same subscription route (deepseek-v4-1-flash-1017) still
+        # prices from that vendor's rate card through `catalog_provider`.
+        return BillingRoute(provider=provider_name or "mistral-vibe", model=model, base_url=url,
+                            billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):
@@ -481,6 +511,11 @@ def resolve_billing_route(
             snapshot_provider = "google"
         elif provider_name == "fireworks" or host("api.fireworks.ai"):
             snapshot_provider = "fireworks"
+        elif provider_name and provider_name not in {"custom", "local"}:
+            # A gateway/subscription route declares which catalogued vendor it resells
+            # (``providers.<name>.catalog_provider``); that vendor's rate card is the
+            # price route for its models. Without the declaration the route stays unpriced.
+            snapshot_provider = _configured_catalog_provider(provider_name)
     if snapshot_provider:
         if snapshot_provider == "openai" and (not url or host("api.openai.com")):
             bare = strip_codex_context_variant_suffix(bare)
@@ -607,11 +642,15 @@ def _pricing_entry_from_metadata(
     # and dropping it would under-count, so the whole entry is unknown.
     if "request" in rejected or (prompt is None and completion is None and request is None):
         return None
+    cache_read = per_million("cache_read", "cached_prompt", "input_cache_read")
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
+        cache_read_cost_per_million=cache_read,
         cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
         cache_write_1h_cost_per_million=per_million("cache_write_1h", "input_cache_write_1h"),
+        # A price list that quotes one prompt rate and no cache-hit discount bills every prompt
+        # token at that rate; leaving the cache bucket unpriced would mark the whole call unknown.
+        cache_read_priced_as_input=cache_read is None and prompt is not None,
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
     )
@@ -655,6 +694,13 @@ def get_pricing_entry(
     bundled_entry = _lookup_official_docs_pricing(route)
     if bundled_entry:
         return bundled_entry
+    # Gateways name the upstream vendor as the model-id prefix (`deepseek/deepseek-flash`). The
+    # vendor's own official rate card outranks the gateway's published price for that id: Bifrost
+    # quotes DeepSeek's PEAK rates while billing the off-peak card, so reading it would double the
+    # estimate. Consulted before the endpoint's models API for exactly that reason.
+    upstream_bundled = _upstream_prefixed_pricing_entry(model_name, route, bundled_only=True)
+    if upstream_bundled:
+        return upstream_bundled
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""), route.model,
@@ -663,7 +709,27 @@ def get_pricing_entry(
         )
         if entry:
             return entry
+        # No price for that id: the named upstream's catalog rate is the remaining route.
+        upstream_entry = _upstream_prefixed_pricing_entry(model_name, route)
+        if upstream_entry:
+            return upstream_entry
     return _models_dev_pricing_entry(route)
+
+
+def _upstream_prefixed_pricing_entry(
+    model_name: str, route: BillingRoute, *, bundled_only: bool = False
+) -> Optional[PricingEntry]:
+    """Rate card of the vendor named by a ``<vendor>/<model>`` gateway model id, or None."""
+    vendor, _, model = (model_name or "").strip().partition("/")
+    if not vendor or not model or vendor == route.provider:
+        return None
+    vendor_route = resolve_billing_route(model, provider=vendor)
+    if vendor_route.provider == route.provider:
+        return None
+    bundled = _lookup_official_docs_pricing(vendor_route)
+    if bundled or bundled_only:
+        return bundled
+    return _models_dev_pricing_entry(vendor_route)
 
 
 # Usage-field candidate paths per API shape: (input/prompt total, output, cache
@@ -834,6 +900,11 @@ def estimate_usage_cost(
     # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
+    # A list that quotes no cache-hit rate bills cache reads at the prompt rate. Fold them into
+    # the input bucket so the call is priced instead of returned as unknown.
+    if entry.cache_read_priced_as_input and usage.cache_read_tokens:
+        usage = replace(usage, input_tokens=usage.input_tokens + usage.cache_read_tokens, cache_read_tokens=0)
+        above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
     amount = _ZERO
     for tokens, rate, rate_above, note in (
         (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),

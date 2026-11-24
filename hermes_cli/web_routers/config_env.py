@@ -984,8 +984,28 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    # The API Key field is optional: Desktop leaves it blank (or echoes the ${VAR}
+    # placeholder) for an endpoint whose credential lives in .env behind ``key_env``.
+    # Fall back to the endpoint's CONFIGURED key so the Test reflects what the runtime
+    # will actually send, instead of 401ing "rejected the API key" on a good key.
+    _test_key = (body.api_key or "").strip()
+    if not _test_key or _ENV_REF_RE.fullmatch(_test_key):
+        try:
+            _providers = load_config().get("providers")
+        except Exception:
+            _providers = None
+        if isinstance(_providers, dict):
+            _target = base_url.rstrip("/")
+            for _entry in _providers.values():
+                if isinstance(_entry, dict) and str(_entry.get("base_url") or "").strip().rstrip("/") == _target:
+                    try:
+                        from hermes_cli.fallback_config import resolve_entry_api_key
+                        _test_key = (resolve_entry_api_key(_entry) or "").strip() or _test_key
+                    except Exception:
+                        pass
+                    break
+    if _test_key:
+        headers["Authorization"] = f"Bearer {_test_key}"
 
     resolved, resp = await _probe_openai_compatible_models(base_url, headers)
     if resp is None:

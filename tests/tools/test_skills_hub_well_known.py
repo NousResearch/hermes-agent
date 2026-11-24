@@ -82,3 +82,7 @@ class TestWellKnownSkillSource:
         refetched = self._source().fetch(installed.identifier)
 
         assert refetched is not None and refetched.files == installed.files
+
+        mock_get.reset_mock()
+        assert self._source().fetch("https://example.com/.well-known/agent-skills/demo/SKILL.md") is None
+        mock_get.assert_not_called()

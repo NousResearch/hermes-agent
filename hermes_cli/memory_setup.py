@@ -267,7 +267,7 @@ def cmd_setup(args) -> None:
     if not providers:
         print("\n  No memory provider plugins detected.")
         print("  Install one from the plugin catalog (e.g. `hermes plugins install honcho`; "
-              "`hermes plugins` lists them) and try again.\n")
+              "`hermes plugins browse` lists them) and try again.\n")
         return
 
     items = [(name, f"— {desc}") for name, desc, _ in providers]

@@ -1,3 +1,4 @@
+import { host, useValue } from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
 import { useRef, useState } from 'react'
 
@@ -20,7 +21,6 @@ import { $groupChats, $groupChatWorkspace } from '@/plugins/hermes-bots/group-ch
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import { groupChatMemberBots, groupChatNames } from '@/plugins/hermes-bots/group-membership'
 import { useBots } from '@/plugins/hermes-bots/i18n'
-import { $activeConnectionId } from '@/store/connections'
 import { $activeGatewayProfile } from '@/store/profile'
 
 import { PortalSectionHeader } from './portal-section-header'
@@ -35,29 +35,34 @@ export interface GroupChatMatches {
  * The gateway rooms this section lists. `useGatewayGroupRooms` reads the active agent's store, and a
  * room lives in the store of the agent that made it; this section is not one agent's, so it also
  * keeps the rooms it saw while another agent of this machine was the active one. A room's own agent
- * is the authority on it: once that agent's list no longer has it, it goes. Agents never opened in
- * this window list nothing here until they are.
+ * is the authority on it: once that agent's list no longer has it, or the agent itself is gone, it
+ * goes. Agents never opened in this window list nothing here until they are.
  */
 function useSeenGatewayRooms(): GatewayGroupRoom[] {
   const current = useGatewayGroupRooms()
-  const connectionId = useStore($activeConnectionId)
+  const connectionId = useValue(host.state.connectionId)
   const profile = useStore($activeGatewayProfile)
+  const roster = useStore($lastRoster)
   const disbanded = useStore($disbandedGatewayRooms)
-  const seen = useRef<{ connectionId: null | string; rooms: GatewayGroupRoom[] }>({ connectionId, rooms: [] })
-  const earlier = seen.current.connectionId === connectionId ? seen.current.rooms : []
+  const seen = useRef<GatewayGroupRoom[]>([])
   // One row a room: a backend with a single store lists the same rooms under every agent.
   const ids = new Set(current.map(room => room.room.room_id))
+  // An empty roster has not been read yet: every machine has at least one agent.
+  const agents = new Set(roster.map(row => row.name))
 
-  const rooms = [
-    ...earlier.filter(
-      room => room.binding.profile !== profile && !ids.has(room.room.room_id) && !disbanded.has(room.key)
-    ),
-    ...current
-  ]
+  const earlier = seen.current.filter(
+    room =>
+      room.binding.connectionId === connectionId &&
+      room.binding.profile !== profile &&
+      (!agents.size || agents.has(room.binding.profile)) &&
+      !ids.has(room.room.room_id) &&
+      !disbanded.has(room.key)
+  )
 
-  seen.current = { connectionId, rooms }
+  // Newest first, whichever agent is active: a row never moves because another agent was opened.
+  seen.current = [...earlier, ...current].sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key))
 
-  return rooms
+  return seen.current
 }
 
 /** Bot Mode's hooks (the gateway room list polls): call only while that plugin is loaded. */

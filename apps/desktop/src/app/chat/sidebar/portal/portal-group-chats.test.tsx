@@ -153,6 +153,30 @@ describe('rooms seen under an agent that was active earlier', () => {
     expect(listed()).toBe('Launch crew@ops')
   })
 
+  it('leave with an agent that is no longer in the roster', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    $lastRoster.set([{ name: 'default' }, { name: 'ops' }] as never)
+    const view = show('default', [roomOf('default', 'r1', 'Launch crew')])
+    show('ops', [], view)
+    expect(listed()).toBe('Launch crew@default')
+
+    act(() => $lastRoster.set([{ name: 'ops' }] as never))
+    expect(listed()).toBe('none')
+  })
+
+  it('keep their place when the active agent changes', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    const crew = roomOf('default', 'r1', 'Launch crew')
+    const notes = { ...roomOf('ops', 'r2', 'Field notes'), updatedAt: 5 }
+    const view = show('default', [crew])
+    show('ops', [notes], view)
+    const order = listed()
+
+    show('default', [crew], view)
+    expect(listed()).toBe(order)
+    expect(order).toBe('Field notes@ops, Launch crew@default')
+  })
+
   it('are forgotten on another machine', () => {
     $connection.set({ connectionId: 'local' } as never)
     const view = show('default', [roomOf('default', 'r1', 'Launch crew')])

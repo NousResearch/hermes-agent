@@ -1077,7 +1077,6 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
 
 def _prepare_runtime_status_update(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
-    reset_pending: Any = _UNSET,
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
@@ -1116,7 +1115,6 @@ def _prepare_runtime_status_update(
         _apply_set_fields(payload, (
             ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
             ("restart_requested", restart_requested, bool),
-            ("reset_pending", reset_pending, bool),
             ("active_agents", active_agents, parse_active_agents),
             ("active_work", active_work, lambda v: list(v) if v else None),
             ("served_profiles", served_profiles, lambda v: list(v or [])),

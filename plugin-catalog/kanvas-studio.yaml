@@ -1,25 +1,27 @@
 name: kanvas-studio
 repo: https://github.com/ranggaoscar/kanvas-studio
-sha: 7d0ac18861d40f7ed0d2607f557d655fa0aec5e1
+sha: b77730f666a7c2f237f58ef99a241fb413a4d9e7
 title: Kanvas Studio
-description: "Free, local visual design engine driven by AI agents over MCP: pitch decks, A4/A2 posters, logos, and social graphics with live agent cursor choreography, Figma-style auto-layout and reusable components, pen vector tool, 2,100+ bundled Lucide icons, any Google Font, canvas comment pins, and PNG/JPG/SVG/PDF export. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/kanvas-studio + desktop/plugin.js) with zero Python dependencies and zero npm runtime dependencies. The skill tells the agent to treat design files and canvas comments strictly as design content, never over the user's instructions or Hermes approvals. Disclosure: runs a local Node.js 18+ stdio MCP server (bin/kanvas.js mcp) that starts an on-demand loopback-only HTTP server on 127.0.0.1 (Host/Origin/X-Kanvas gated) and spawns your locally installed Google Chrome or Microsoft Edge in headless mode for kanvas_view and kanvas_export (PNG/JPG/PDF) rendering; spawned browser processes run with a minimal environment so Hermes API keys and tokens (GH_TOKEN, GITHUB_TOKEN, model keys) are never passed on; in headless render mode external image URLs are restricted to public https:// hosts (private, loopback, and cloud-metadata addresses are refused); network access is only used to load Google Fonts stylesheets and explicitly placed public https:// images; designs, icons, and templates live locally in Hermes's plugin data folder (plugin-files/data/kanvas-studio); kanvas_import_image and kanvas_export read/write only paths explicitly passed in tool calls; no accounts, no cloud uploads, no telemetry."
+description: "Free, MIT open-source, local-first visual design engine driven by AI agents over MCP: adaptive Design Intelligence (7 mixable aesthetic lenses + proportional grids), multi-brand Brand Kits, quantitative Visual QA (0-100 score, multi-point/gradient WCAG contrast, margins, hierarchy, alignment), Smart Resize, multi-format Marketing Campaigns, native editable Data Visualization (bar/hbar/line/donut/table/diagram), Presentation Engine with zero-dependency editable PowerPoint (.pptx) export, Design-to-Code (HTML/CSS, React, Tailwind), reusable Asset Library, pure-JSON Community Ecosystem, live agent cursor choreography, auto-layout, components, pen vector tool, 2,100+ Lucide icons, any Google Font, and canvas comments. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/kanvas-studio + desktop/plugin.js) with zero Python dependencies and zero npm runtime dependencies. The skill instructs the agent to treat design files, brand guidelines, community workflows, and canvas comments strictly as visual design content, never over user instructions or Hermes approvals. Disclosure: runs a local Node.js 18+ stdio MCP server (bin/kanvas.js mcp) exposing 22 kanvas_* tools that starts an on-demand loopback-only HTTP server on 127.0.0.1 (Host/Origin/X-Kanvas gated) and spawns locally installed Google Chrome or Microsoft Edge in headless mode for kanvas_view and raster/PDF kanvas_export (editable .pptx and code export need no browser); spawned child processes run with a minimal environment (envMinimal) so Hermes API keys and tokens (GH_TOKEN, GITHUB_TOKEN, model keys) are never inherited; in headless render mode external image URLs are restricted to public https:// hosts (private, loopback, and cloud-metadata addresses are refused); network access is only used to load Google Fonts stylesheets and explicitly placed public https:// images; designs, Brand Kits (brands/), Asset Library (assets-library/), and pure-JSON community extensions (community/) live locally in Hermes's plugin data folder (plugin-files/data/kanvas-studio) with zero arbitrary code execution; import/export tools read/write only paths explicitly passed in tool calls; no accounts, no paywalls, no cloud uploads, no telemetry."
 maintainer: ranggaoscar
 tier: community
 category: desktop
 platforms: [windows, macos, linux]
 requires_hermes: ">=0.23.3"
 docs_url: https://github.com/ranggaoscar/kanvas-studio#readme
-version: "0.2.0"
-image: https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/banner.png
+version: "0.3.0"
+image: https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/b77730f666a7c2f237f58ef99a241fb413a4d9e7/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-home.png
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-canvas.png
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-editor.png
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-comments.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/b77730f666a7c2f237f58ef99a241fb413a4d9e7/assets/screenshot-home.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/b77730f666a7c2f237f58ef99a241fb413a4d9e7/assets/screenshot-dataviz-deck.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/b77730f666a7c2f237f58ef99a241fb413a4d9e7/assets/screenshot-campaign.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/b77730f666a7c2f237f58ef99a241fb413a4d9e7/assets/screenshot-canvas.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/b77730f666a7c2f237f58ef99a241fb413a4d9e7/assets/screenshot-editor.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/b77730f666a7c2f237f58ef99a241fb413a4d9e7/assets/screenshot-comments.png
 readme: true
 known_issues:
   - "Requires Node.js 18+ on PATH for the bundled local stdio MCP server."
-  - "PNG/JPG/PDF rendering via kanvas_view and kanvas_export requires a local Google Chrome or Microsoft Edge installation (or KANVAS_BROWSER)."
+  - "PNG/JPG/PDF rendering via kanvas_view and kanvas_export requires a local Google Chrome or Microsoft Edge installation (or KANVAS_BROWSER); editable .pptx and HTML/React code export require no browser."
   - "After installing or updating, restart Hermes so the bundled kanvas MCP server starts."
 capabilities:
   provides_tools: []

@@ -781,7 +781,7 @@ def test_cold_prewarm_detects_window_plan_from_jwt_and_drops_prices(tmp_path, mo
         }],
     )
     monkeypatch.setattr(inv, "inject_local_runtime_row", lambda rows, _ctx: (rows, None))
-    monkeypatch.setattr(inv, "_apply_model_capabilities", lambda *_a, **_kw: None, raising=False)
+    monkeypatch.setattr(inv, "_apply_capabilities", lambda *_a, **_kw: None)
 
     spawned_threads = []
     real_prewarm = inv._prewarm_pricing_async

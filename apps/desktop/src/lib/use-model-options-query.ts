@@ -45,10 +45,7 @@ export function nousRefetchOnMount(data: ModelOptionsResult | undefined): 'alway
 // A cache-only open on a fresh or TTL-expired backend ships rows marked `pricing_pending`
 // or `free_tier_pending` while prewarm runs in the background; re-read a few times per
 // open so prices and window-plan labels appear without "Refresh models".
-export function nousPricingPoll(
-  data: ModelOptionsResult | undefined,
-  attemptsSinceOpen: number
-): false | number {
+export function nousPricingPoll(data: ModelOptionsResult | undefined, attemptsSinceOpen: number): false | number {
   return attemptsSinceOpen < NOUS_PENDING_MAX_POLLS &&
     data?.providers?.some(p => isNousProvider(p) && Boolean(p.pricing_pending || p.free_tier_pending))
     ? 2_000

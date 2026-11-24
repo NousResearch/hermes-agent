@@ -402,7 +402,10 @@ def reset_nous_portal_account_info_cache() -> None:
     """Clear the short-lived account-info cache used by tests."""
     global _account_info_cache
     with _ACCOUNT_INFO_CACHE_LOCK:
-        _account_info_cache = {}
+        if isinstance(_account_info_cache, dict):
+            _account_info_cache.clear()
+        else:
+            _account_info_cache = {}
 
 
 def get_nous_portal_account_info(*, force_fresh: bool = False, min_jwt_ttl_seconds: int = 60) -> NousPortalAccountInfo:
@@ -494,10 +497,8 @@ def cached_nous_account_matches_jwt(info: Any) -> bool:
         raw_claims = getattr(info, "raw_claims", None)
         jwt_fp = _jwt_token_fingerprint(None, raw_claims if isinstance(raw_claims, dict) else None)
         if jwt_fp is None:
-            from hermes_cli.auth import get_provider_auth_state
-
-            state = get_provider_auth_state("nous") or {}
-            jwt_fp = _jwt_token_fingerprint(state.get("access_token"))
+            access_token, _ = _current_account_token_and_portal()
+            jwt_fp = _jwt_token_fingerprint(access_token)
         return jwt_fp is not None and jwt_fp == token_fp
     except Exception:
         logging.getLogger(__name__).debug("Cached Nous JWT match check failed", exc_info=True)
@@ -517,24 +518,34 @@ def _account_identity(access_token: str, portal_base_url: Optional[str]) -> str:
     return f"{portal_base_url or ''}:{identity}"
 
 
-def _current_account_identity() -> Optional[str]:
-    """``_account_identity`` for the persisted Nous login (or active OAuth pool entry), without a refresh
-    or network call. None when logged out."""
+def _current_account_token_and_portal() -> tuple[Optional[str], Optional[str]]:
+    """Persisted Nous access token + portal URL (direct auth state or active OAuth pool), without I/O refresh."""
+    from hermes_cli.anon_auth import guest_without_free_tier, held_connectors_token
     from hermes_cli.auth import get_provider_auth_state
 
     state = get_provider_auth_state("nous") or {}
-    access_token = state.get("access_token")
+    access_token = "" if guest_without_free_tier(state) else (held_connectors_token(state) or "")
+    portal_base_url = _portal_base_url(state)
     if _nonblank(access_token):
-        return _account_identity(access_token, _portal_base_url(state))
+        return access_token, portal_base_url
     try:
         entry = _select_nous_pool_entry()
     except Exception:
         logging.getLogger(__name__).debug("Nous OAuth pool identity lookup failed", exc_info=True)
-        return None
+        return None, None
     if entry is not None and _pool_entry_is_portal_oauth(entry):
-        entry_portal = getattr(entry, "portal_base_url", None) or _portal_base_url(state)
-        return _account_identity(entry.access_token, entry_portal)
-    return None
+        entry_portal = getattr(entry, "portal_base_url", None) or portal_base_url
+        return entry.access_token, entry_portal
+    return None, None
+
+
+def _current_account_identity() -> Optional[str]:
+    """``_account_identity`` for the persisted Nous login (or active OAuth pool entry), without a refresh
+    or network call. None when logged out."""
+    access_token, portal_base_url = _current_account_token_and_portal()
+    if not _nonblank(access_token):
+        return None
+    return _account_identity(access_token, portal_base_url)
 
 
 def nous_policy_notice(*, removed: bool) -> str:

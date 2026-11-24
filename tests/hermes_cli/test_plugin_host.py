@@ -499,28 +499,57 @@ def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_n
         plugins_mod._reset_plugin_managers_for_tests()
 
 
-@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
-def test_a_launcher_written_as_a_variable_only_the_callers_scope_holds_still_runs(tmp_path, monkeypatch):
-    """Under multiplexing a ``${VAR}`` launcher expands through the secret scope the start was asked for in (a
-    launch profile's env-only keys live there), not only the profile's own files the host's context holds."""
-    from agent import secret_scope as ss
+@pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts; SIGKILL
+@pytest.mark.parametrize("crashed", ["secondary", "launch"])
+def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_path, monkeypatch, crashed):
+    """A crash restart starts the host from a thread with no binding. A ``${VAR}`` launcher still expands from
+    the crashed profile's own secrets: a secondary's ``.env`` (never the launch profile's value for the name),
+    or the launch profile's env-only keys (systemd ``Environment=``), which no file holds."""
+    import signal
 
-    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
-    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
-    runner.chmod(0o755)
-    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    from agent import secret_scope as ss
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tests.waiting import wait_until
+    from tui_gateway.launch_profile_policy import owner_secret_scope
+
+    def runner(name):
+        ran, script = tmp_path / f"{name}.ran", tmp_path / name
+        script.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+        script.chmod(0o755)
+        return ran
+
+    def runs(ran):
+        return ran.read_text(encoding="utf-8").count("ran") if ran.exists() else 0
+
+    own_ran, launch_ran = runner("own-runner"), runner("launch-runner")
+    ops = _home_with_plugins(tmp_path / "ops", monkeypatch, {"hostprobe": PROBE_PLUGIN})
+    launch = _home_with_plugins(tmp_path, monkeypatch, {"hostprobe": PROBE_PLUGIN})
+    home = ops if crashed == "secondary" else launch
     (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
-        "enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+        "enabled": ["hostprobe"], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+    if crashed == "secondary":
+        (ops / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / 'own-runner'}\n", encoding="utf-8")
+        monkeypatch.setenv("PLUGIN_RUNNER", str(tmp_path / "launch-runner"))
+    else:
+        monkeypatch.setenv("PLUGIN_RUNNER", str(tmp_path / "own-runner"))
     ss.set_multiplex_active(True)
-    token = ss.set_secret_scope({"PLUGIN_RUNNER": str(runner)}, profile_home=str(home))
     plugins_mod._reset_plugin_managers_for_tests()
-    host = plugins_mod.get_plugin_manager()._plugin_host()
+    # The first start runs inside the profile's binding, as a gateway's load of that profile's plugins does.
+    home_token = set_hermes_home_override(home)
+    scope_token = ss.set_secret_scope(owner_secret_scope(home), profile_home=str(home))
+    manager = plugins_mod.get_plugin_manager()
     try:
-        host.ensure_started()
-        assert ran.read_text(encoding="utf-8").count("ran") == 1
+        manager.discover_and_load()
+        assert manager._plugins["hostprobe"].error is None
+        assert runs(own_ran) == 1
+        os.kill(manager._plugin_host().pid, signal.SIGKILL)
+        wait_until(lambda: runs(own_ran) + runs(launch_ran) >= 2, timeout=15, what="the crashed host's restart")
+        assert (runs(own_ran), runs(launch_ran)) == (2, 0)
     finally:
-        host.shutdown()
-        ss.reset_secret_scope(token)
+        manager.unload()
+        manager._plugin_host().shutdown()
+        ss.reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
         plugins_mod._reset_plugin_managers_for_tests()
 
 

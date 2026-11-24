@@ -71,11 +71,18 @@ def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
 
 
 def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
-    """*home*'s ``plugins.host.launcher``, read as plugin code bound to *home* reads its config: the home rebound,
-    the caller's secret scope kept (it expands the launcher's ``${VAR}``s)."""
-    from hermes_cli.plugins_loader import _plugin_home_scope
-    with _plugin_home_scope(home):
-        return host_launcher(home=home)
+    """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home* alone: a start can come from
+    a caller bound to another profile, or from a crash restart's thread, which has no binding at all. Its
+    ``${VAR}``s expand through *home*'s own secrets (``owner_secret_scope``: the launch profile's env and files,
+    any other profile's own files), so under multiplexing never through ``os.environ``. No terminal policy: the
+    launcher is only read here."""
+
+    def choose() -> list:
+        from agent.runtime_scope import bind_state, scope_for_profile
+        with bind_state(scope_for_profile(home), hydrate_secrets=False, terminal=False):
+            return host_launcher(home=home)
+
+    return contextvars.Context().run(choose)
 
 
 class PluginHost:
@@ -137,10 +144,9 @@ class PluginHost:
         from hermes_cli.plugin_isolation import host_launcher
         # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
         # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
-        # For the home this start took (``_home``), not ``owner_home`` read again nor the caller's home binding,
-        # either of which can name a link renamed since. With only the home rebound, not in the host's context:
-        # the caller's secret scope expands the launcher's ``${VAR}``s (a launch profile's env-only keys are
-        # there), while the host's holds only the profile's own files.
+        # For the home this start took (``_home``), not ``owner_home`` read again nor the caller's binding, either
+        # of which can name a link renamed since. Not in the host's context either: its secret scope holds only
+        # the profile's files, without the launch profile's env-only keys.
         return [*_launcher_for(self._home, host_launcher), sys.executable, "-P", "-m", _HOST_MODULE]
 
     def _env(self) -> dict[str, str]:

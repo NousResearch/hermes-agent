@@ -8,6 +8,8 @@ degrade to infra; any other error shape must still fail closed.
 import json
 import subprocess
 
+import pytest
+
 from hermes_cli import kanban_pr_acceptance as gate
 
 SHA = "5f28b50f00000000000000000000000000000000"
@@ -20,7 +22,7 @@ EXTRA = {"type": "NOT_FOUND", "path": ["repository", "pullRequest"],
          "message": "Could not resolve to repository"}
 
 
-def _fake_gh(calls, payload_box):
+def _fake_gh(calls, payload_box, *, raise_graphql=False):
     """Stand in for `gh api`: mirrors the measured App-token shape — GraphQL
     partial data on stdout, non-zero exit, gh's own stderr line."""
     def run(command, **kwargs):
@@ -31,6 +33,8 @@ def _fake_gh(calls, payload_box):
                 "headRefOid": SHA, "baseRefName": "main", "state": "MERGED",
                 "baseRef": {"branchProtectionRule": None}}}},
                 "errors": payload_box[0]}
+            if raise_graphql:
+                raise subprocess.CalledProcessError(1, command, output=json.dumps(payload))
             return subprocess.CompletedProcess(command, 1, json.dumps(payload),
                                                "gh: Resource not accessible by integration\n")
         if endpoint.startswith("repos/ydengGitHub/aiwl-workstation/rules/branches/main"):
@@ -74,3 +78,37 @@ def test_forbidden_protection_classifies_by_checks(monkeypatch):
     assert receipt["classification"] == "infra"
     assert receipt["head_sha"] is None and receipt["checks"] == []
     assert calls == ["graphql"]  # refused before consulting any other endpoint
+
+
+def test_forbidden_protection_classifies_by_checks_when_gh_raises(monkeypatch):
+    monkeypatch.setattr(gate, "_gh_env", lambda profile_home: None)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _fake_gh(calls, [[FORBIDDEN]], raise_graphql=True))
+
+    receipt = gate.collect_acceptance(PR_URL, PR_URL)
+
+    assert receipt["ok"] is True
+    assert receipt["classification"] == "success"
+    assert receipt["head_sha"] == SHA
+    assert calls == [
+        "graphql",
+        "repos/ydengGitHub/aiwl-workstation/rules/branches/main?per_page=100",
+        f"repos/ydengGitHub/aiwl-workstation/commits/{SHA}/check-runs?per_page=100&filter=latest",
+        f"repos/ydengGitHub/aiwl-workstation/commits/{SHA}/statuses?per_page=100",
+        "repos/ydengGitHub/aiwl-workstation/pulls/1467",
+    ]
+
+
+def test_forbidden_with_not_found_still_raises_when_gh_raises(monkeypatch):
+    monkeypatch.setattr(gate, "_gh_env", lambda profile_home: None)
+    calls = []
+    payload_box = [[FORBIDDEN, EXTRA]]
+    monkeypatch.setattr(
+        subprocess, "run", _fake_gh(calls, payload_box, raise_graphql=True))
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        gate._api("graphql", tolerate_protection_forbidden=True)
+
+    assert exc_info.value.returncode == 1
+    assert json.loads(exc_info.value.stdout)["errors"] == [FORBIDDEN, EXTRA]
+    assert calls == ["graphql"]

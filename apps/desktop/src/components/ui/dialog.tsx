@@ -143,6 +143,7 @@ function DialogContent({
   function handleFocusCapture(event: React.FocusEvent<HTMLDivElement>) {
     // React autoFocus runs before Radix's open autofocus event.
     const previous = event.relatedTarget
+
     if (
       previous instanceof HTMLElement &&
       !event.currentTarget.contains(previous) &&
@@ -150,24 +151,29 @@ function DialogContent({
     ) {
       pageOpener.current = previous
     }
+
     onFocusCapture?.(event)
   }
 
   function handleOpenAutoFocus(event: Event) {
     const active = document.activeElement
+
     // Programmatic page dialogs have no Radix Trigger to restore on close.
     if (active instanceof HTMLElement && active.closest('[data-page-surface]')) {
       pageOpener.current = active
     }
+
     onOpenAutoFocus?.(event)
   }
 
   function handleCloseAutoFocus(event: Event) {
     onCloseAutoFocus?.(event)
+
     if (!event.defaultPrevented && pageOpener.current?.isConnected) {
       pageOpener.current.focus({ preventScroll: true })
       event.preventDefault()
     }
+
     pageOpener.current = null
   }
 
@@ -225,6 +231,7 @@ function DialogContent({
                   'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--dialog-body-gap,0.75rem)] overflow-y-auto p-[var(--dialog-body-padding,1rem)]',
                   bodyClassName
                 )}
+                data-slot="dialog-banner-body"
               >
                 {children}
               </div>

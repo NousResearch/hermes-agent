@@ -34,6 +34,7 @@ import { HashRouter } from 'react-router'
 import App from './app'
 import { installArtworkAttributes } from './app/redesign/artwork'
 import { installPortalBrowserChrome } from './app/redesign/browser-chrome'
+import { installLayoutScale } from './app/redesign/layout-scale'
 import { installShellSheetAttribute } from './app/shell/shell-sheet'
 import { installTitlebarBandProperty } from './app/shell/use-touch-titlebar'
 import { RootErrorBoundary } from './components/error-boundary'
@@ -68,6 +69,8 @@ installShellAttribute()
 installPortalAccentAttribute()
 // The launch's artwork (redesign only), on <html> before the first paint so no other art flashes.
 installArtworkAttributes()
+// The web app's own UI scale: the redesign lays out for the room it leaves, as under browser zoom.
+installLayoutScale()
 // Whether this visitor must sign up before anything runs: settled from the serving page, once.
 installVisitorAccess()
 // Body-portalled surfaces clear the band through this root property, in every window.

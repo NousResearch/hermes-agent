@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { $layoutScale, layoutQuery } from '@/lib/layout-scale'
+
 /** The redesign's responsive model (DESIGN.md › "Responsive"): three width classes, two breakpoints.
  *
  *  - compact (< 640): phones and narrow docked windows. No rail column; the band carries a menu
@@ -33,31 +35,35 @@ export function widthClassFor(width: number): WidthClass {
 }
 
 // Guarded like every matchMedia call site: node and jsdom test envs may have no `matchMedia`.
-const query = (media: string) => (typeof window !== 'undefined' ? window.matchMedia?.(media) : undefined)
+const query = (media: string) => (typeof window !== 'undefined' ? window.matchMedia?.(layoutQuery(media)) : undefined)
 
-const compactQuery = query(COMPACT_QUERY)
-const belowWideQuery = query(BELOW_WIDE_QUERY)
-
-function currentWidthClass(): WidthClass {
-  if (compactQuery?.matches) {
-    return 'compact'
-  }
-
-  return belowWideQuery?.matches ? 'medium' : 'wide'
-}
-
-/** This window's width class, live. Two media-query listeners, not a resize listener: it changes
- *  only when a breakpoint is crossed. */
-export const $widthClass = atom<WidthClass>(currentWidthClass())
-
-const sync = () => $widthClass.set(currentWidthClass())
-
-compactQuery?.addEventListener('change', sync)
-belowWideQuery?.addEventListener('change', sync)
-
-const shortQuery = query(SHORT_QUERY)
+/** This window's width class, live. Media-query listeners, not a resize listener: it changes only
+ *  when a breakpoint is crossed. */
+export const $widthClass = atom<WidthClass>('wide')
 
 /** Whether this window is short, live. */
-export const $shortViewport = atom(Boolean(shortQuery?.matches))
+export const $shortViewport = atom(false)
 
-shortQuery?.addEventListener('change', event => $shortViewport.set(event.matches))
+let unbind = () => {}
+
+/** Bound again whenever the app's own scale changes: the queries are asked against the room that
+ *  scale leaves (lib/layout-scale.ts), so their lengths change with it. */
+function bind() {
+  unbind()
+
+  const compact = query(COMPACT_QUERY)
+  const belowWide = query(BELOW_WIDE_QUERY)
+  const short = query(SHORT_QUERY)
+
+  const sync = () => {
+    $widthClass.set(compact?.matches ? 'compact' : belowWide?.matches ? 'medium' : 'wide')
+    $shortViewport.set(Boolean(short?.matches))
+  }
+
+  const queries = [compact, belowWide, short]
+  queries.forEach(media => media?.addEventListener('change', sync))
+  unbind = () => queries.forEach(media => media?.removeEventListener('change', sync))
+  sync()
+}
+
+$layoutScale.subscribe(bind)

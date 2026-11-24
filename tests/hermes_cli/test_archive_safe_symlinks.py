@@ -65,6 +65,8 @@ def test_exported_profile_with_symlinks_imports_with_the_links_kept(tmp_path, mo
     pytest.param([("p/", D, ""), ("p/e", L, "/etc/passwd")], id="absolute"),
     pytest.param([("p/", D, ""), ("p/e", L, "C:\\Windows\\system32")], id="windows-drive"),
     pytest.param([("p/", D, ""), ("p/e", L, "../sibling")], id="dotdot-to-a-sibling-of-the-root"),
+    # Publishing renames p, so ../p/x would then point into whatever profile is named p.
+    pytest.param([("p/", D, ""), ("p/x", F, b"x"), ("p/e", L, "../p/x")], id="walks-back-in-by-root-name"),
     # z only escapes through y, so a lexical check of z's target alone passes it.
     pytest.param([("p/a/b/", D, ""), ("p/a/b/y", L, "../.."), ("p/a/b/z", L, "y/../../.."),
                   ("p/a/b/z/PWNED", F, b"x")], id="chained-link-then-file-through-it"),
@@ -85,3 +87,26 @@ def test_a_link_that_could_reach_outside_the_root_is_refused(tmp_path, entries):
 
     # The caller discards the staging dir on error; nothing may have landed beside it.
     assert [p.name for p in (tmp_path / "outer").iterdir()] == ["dest"]
+
+
+@pytest.mark.require_symlinks
+@pytest.mark.platforms("posix")  # file modes
+def test_imported_env_link_becomes_an_owner_only_file(tmp_path, monkeypatch):
+    from hermes_cli.profiles import import_profile
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    archive = tmp_path / "p.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo("p/keys.txt")
+        info.size, info.mode = 4, 0o644
+        tf.addfile(info, io.BytesIO(b"K=v\n"))
+        link = tarfile.TarInfo("p/.env")
+        link.type, link.linkname = L, "keys.txt"
+        tf.addfile(link)
+
+    env = import_profile(str(archive), name="p2") / ".env"
+
+    assert not env.is_symlink()
+    assert env.read_text() == "K=v\n"
+    assert env.stat().st_mode & 0o777 == 0o600

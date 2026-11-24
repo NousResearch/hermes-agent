@@ -6,6 +6,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import uuid
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -87,35 +88,60 @@ def relativize_internal_links(staged: Path, source: Path) -> None:
             os.symlink(os.path.relpath(inside, link.parent), link, target_is_directory=os.path.isdir(real))
 
 
-def _create_archive_symlinks(links: list[tuple[tarfile.TarInfo, Path]], destination: Path) -> None:
+def _create_archive_symlinks(links: list[tuple[tarfile.TarInfo, Path, Path]]) -> None:
     """Create the archive's symlinks after every file is written, then refuse any that escapes.
 
-    Links come last so no file or directory is ever written through one. Containment is judged on
-    the real resolved path once all links exist, because a target such as ``y/../..`` only escapes
-    through another link (``y``), and that link may come later in the archive. The bound is the
-    member's own top-level directory, not ``destination``: the caller moves that directory into
-    place, so a link to a sibling of it would point outside the imported tree afterwards.
+    Each entry is ``(member, path, root)``, ``root`` being the member's top-level directory. Links
+    come last so no file or directory is ever written through one. Containment is judged on the
+    real resolved path once all links exist, because a target such as ``y/../..`` only escapes
+    through another link (``y``), and that link may come later in the archive. That final check
+    runs with ``root`` moved to a random name: the caller publishes it under another name, so a
+    link that leaves ``root`` and walks back in by its archive name (``../<root>/x``) would then
+    point at another profile.
     """
-    def _inside(member: tarfile.TarInfo, path: Path) -> bool:
-        root = os.path.realpath(destination.joinpath(normalize_archive_parts(member.name)[0]))
-        resolved = os.path.realpath(path)
-        return resolved == root or resolved.startswith(root + os.sep)
+    def _inside(root: Path, path: Path) -> bool:
+        real_root, resolved = os.path.realpath(root), os.path.realpath(path)
+        return resolved == real_root or resolved.startswith(real_root + os.sep)
 
-    for member, target in links:
+    made: dict[Path, bool] = {}
+    for member, target, root in links:
         # The parent check stops a link (or its parent dirs) being created through an earlier link.
         if PurePosixPath(member.linkname.replace("\\", "/")).is_absolute() \
-                or PureWindowsPath(member.linkname).drive or not _inside(member, target.parent):
+                or PureWindowsPath(member.linkname).drive or not _inside(root, target.parent):
             raise ValueError(f"Archive symlink escapes the destination: {member.name}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        try:  # Windows needs the directory flag up front; every file and dir already exists
-            os.symlink(member.linkname, target, target_is_directory=(target.parent / member.linkname).is_dir())
-        except FileExistsError as exc:  # a link member must not replace a member already extracted
-            raise ValueError(f"Archive symlink collides with another member: {member.name}") from exc
-        except OSError as exc:  # Windows without the symlink privilege (Developer Mode off)
-            raise ValueError(f"Cannot create the archive symlink {member.name} on this system: {exc}") from exc
-    for member, target in links:
-        if not _inside(member, target):
-            raise ValueError(f"Archive symlink escapes the destination: {member.name}")
+        if target.exists() or target.is_symlink():  # must not replace a member already extracted
+            raise ValueError(f"Archive symlink collides with another member: {member.name}")
+        made[target] = _symlink(member, target)
+    # Windows fixes a link's file/dir type at creation, and a link through another link created
+    # later saw no directory yet: recreate mismatched ones until every type matches its target.
+    for _ in links:
+        wrong = [(m, t) for m, t, _r in links if made[t] != os.path.isdir(t)]
+        if not wrong:
+            break
+        for member, target in wrong:
+            target.unlink()
+            made[target] = _symlink(member, target)
+    for root in {root for _m, _t, root in links}:
+        moved = root.with_name(f".{uuid.uuid4().hex}")
+        root.rename(moved)
+        try:
+            for member, target, _r in [entry for entry in links if entry[2] == root]:
+                if not _inside(moved, moved / target.relative_to(root)):
+                    raise ValueError(f"Archive symlink escapes the destination: {member.name}")
+        finally:
+            moved.rename(root)
+
+
+def _symlink(member: tarfile.TarInfo, target: Path) -> bool:
+    """Create ``target`` -> ``member.linkname`` (either separator style); return the dir flag used."""
+    link_text = member.linkname.replace("\\", "/").replace("/", os.sep)
+    is_dir = os.path.isdir(target.parent / link_text)
+    try:
+        os.symlink(link_text, target, target_is_directory=is_dir)
+    except OSError as exc:  # Windows without the symlink privilege (Developer Mode off)
+        raise ValueError(f"Cannot create the archive symlink {member.name} on this system: {exc}") from exc
+    return is_dir
 
 
 def safe_extract_targz(archive: Path, destination: Path, *, allow_symlinks: bool = False) -> None:
@@ -127,15 +153,16 @@ def safe_extract_targz(archive: Path, destination: Path, *, allow_symlinks: bool
     do, so a tampered archive fails the import instead of landing a partial tree. ``destination``
     must be a fresh staging directory the caller discards on error.
     """
-    links: list[tuple[tarfile.TarInfo, Path]] = []
+    links: list[tuple[tarfile.TarInfo, Path, Path]] = []
     with tarfile.open(archive, "r:gz") as tf:
         for member in tf.getmembers():
-            target = destination.joinpath(*normalize_archive_parts(member.name))
+            parts = normalize_archive_parts(member.name)
+            target = destination.joinpath(*parts)
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
             if member.issym() and allow_symlinks:
-                links.append((member, target))
+                links.append((member, target, destination / parts[0]))
                 continue
             if not member.isfile():
                 raise ValueError(f"Unsupported archive member type: {member.name}")
@@ -147,7 +174,7 @@ def safe_extract_targz(archive: Path, destination: Path, *, allow_symlinks: bool
                 shutil.copyfileobj(extracted, dst)
             with suppress(OSError):
                 os.chmod(target, member.mode & 0o777)
-    _create_archive_symlinks(links, destination)
+    _create_archive_symlinks(links)
 
 
 def archive_root_dirs(archive: Path) -> set[str]:

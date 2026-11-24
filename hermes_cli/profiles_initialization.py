@@ -52,7 +52,7 @@ def prepare_imported_tree(staged: Path) -> None:
     # A failed removal must abort import rather than install a stale PM selection.
     for child in staged.iterdir():
         if child.name in PM_RUNTIME_ROOT_DIRS:
-            if child.is_dir():
+            if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
             else:
                 child.unlink()
@@ -60,7 +60,11 @@ def prepare_imported_tree(staged: Path) -> None:
     # .env owner-only, as a clone and `hermes import` do (#59726).
     drop_other_access(staged / "config.yaml")
     env = staged / ".env"
-    if env.is_file() and not env.is_symlink():
+    if env.is_symlink():  # import keeps only in-tree links; a real file gets its own 0600 mode
+        content = env.read_bytes() if env.is_file() else b""
+        env.unlink()
+        env.write_bytes(content)
+    if env.is_file():
         os.chmod(env, 0o600)
 
 

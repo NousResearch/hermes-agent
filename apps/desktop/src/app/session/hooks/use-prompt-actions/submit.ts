@@ -78,6 +78,7 @@ import {
   withSessionBusyRetry,
   withSessionNotFoundResume
 } from './utils'
+import { refusedByBusyGate } from './queue-if-busy'
 
 interface SubmitPromptDeps {
   activeSessionIdRef: MutableRefObject<string | null>
@@ -322,13 +323,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         serverQueue &&
         Boolean(options?.fromQueue || isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
 
-      if (
-        !hasSendable ||
-        (!serverQueue &&
-          !options?.fromQueue &&
-          !options?.bypassBusyGate &&
-          isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
-      ) {
+      if (!hasSendable || refusedByBusyGate(options, serverQueue, guardSessionId)) {
         return false
       }
 

@@ -929,7 +929,7 @@ class GatewayInboundMixin(
         # --provider openrouter reach the /model handler. Built-ins keep precedence: aliases only
         # need early handling when the typed command is not already known.
         if command and _cmd_def is None:
-            qcmd = self._hm_quick_commands().get(command)
+            qcmd = self._hm_quick_commands(source).get(command)
             if qcmd is not None and qcmd.get("type") == "alias":
                 new_command = self._hm_expand_alias_quick_command(event, qcmd)
                 if new_command is not None:

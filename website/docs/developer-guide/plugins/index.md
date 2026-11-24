@@ -2381,6 +2381,37 @@ def register(ctx):
     ctx.register_hook("pre_tool_call", guard)
 ```
 
+### Schedule a job once and read where cron delivers it
+
+`cron.plugin_api` is for plugin code that works with cron jobs directly, including code with no `ctx` (a dashboard route, a standalone process). Both functions call the code cron itself runs.
+
+`ensure_named_job(name, *, prompt, schedule, repeat=None, deliver=None, enabled_toolsets=None, home=None)` returns the stored job named exactly `name` (a job dict, as `hermes cron list` stores it) and creates it when no job has that name:
+
+- `name` must be a non-empty string with no leading or trailing whitespace; cron could not find any other name again. Anything else raises `ValueError` and nothing is created.
+- Disabled jobs count. Two or more jobs with that name raise `AmbiguousJobReference` (importable from the same module) and nothing is created.
+- An existing enabled job has its trigger registered with the active scheduler provider again. Its prompt and schedule are not updated.
+- A new job is created and registered the way `hermes cron add` does it. Errors from either step reach you unchanged. When registration fails the job is already saved: call `ensure_named_job` again and it registers that job instead of creating a second one.
+- The lookup and the create are not atomic across processes. If your plugin can call it from two places at once, serialize those calls yourself (a file lock, for example).
+
+`delivery_platforms(job_id=None, *, home=None)` returns the platforms cron would deliver the job's output to right now, as a tuple of lower-cased names in cron's order, each once. `()` means the job delivers nowhere (`local`). `None` means no stored job has that id, or, with no `job_id`, that the code is not running inside a cron run (see `ctx.current_cron_execution()` above). It uses cron's own resolver, so `all`, the `origin` fallback to a home channel and `bot-chat` follow cron's rules. It returns no chat ids, thread ids or tokens. Use it to skip a notification of your own when cron already delivers the output to your platform. It does the work cron does when it delivers: for `all`, that reads the gateway config once for each platform whose home channel is not set in the environment. Call it once per run and keep the answer.
+
+Both take `home`: a profile's Hermes home (`~` is expanded). The call then runs with that profile's home, cron store, secrets (its `.env`, so its home channels too) and settings (its time zone for a schedule), and yours are restored afterwards, also when it raises. The secrets are read from that profile's own files, also when you name the profile that is already active. When the profile configures an external secret source, the first call runs that source, as Hermes does when it starts work for that profile. A `home` that is not an existing directory is never created: `ensure_named_job` raises `FileNotFoundError` and `delivery_platforms` returns `None`. A hosted activity cannot act for a profile, so a call that has to bind `home` raises there. `home=None` uses the active profile.
+
+```python
+from cron.plugin_api import AmbiguousJobReference, delivery_platforms, ensure_named_job
+
+def register(ctx):
+    def on_post_llm_call(**kwargs):
+        if "push" in (delivery_platforms() or ()):
+            return  # cron delivers this run's output through push already
+        try:
+            ensure_named_job("follow-up", prompt="Check on the deploy.", schedule="in 30m")
+        except AmbiguousJobReference:
+            pass  # the user has two jobs with that name; leave them alone
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
 ### Add Automation Blueprints
 
 `ctx.register_automation_blueprint(key, *, title, description, schedule_template, prompt_template, category="general", slots=(), deliver_default="origin", skills=(), tags=())` adds a fill-in-the-blanks automation to the [Automation Blueprints catalog](../../reference/automation-blueprints-catalog.mdx). It appears next to the built-ins in `/blueprint` (CLI, TUI, messengers), the dashboard's Blueprints tab, and the Desktop Cron page, labelled with your plugin's name. The arguments are the fields of the built-in `AutomationBlueprint` (`cron/blueprint_catalog.py`); each slot is a dict of `BlueprintSlot` fields.

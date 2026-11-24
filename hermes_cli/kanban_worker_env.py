@@ -34,11 +34,12 @@ _HOST_NAMES = frozenset({
     "USERNAME", "HOMEDRIVE", "HOMEPATH", "COMPUTERNAME", "PROCESSOR_ARCHITEW6432",
     # Hermes' own location, install and host policy, read before any profile config loads: the
     # host-wide gateway lock directory (else a cold-started gateway takes a different "host" lock),
-    # the no-install policy, and the shared board root and its lock's busy timeout.
+    # the no-install policy, the state folder a launcher named, and the shared board root and its
+    # lock's busy timeout.
     "HERMES_HOME", "HERMES_REAL_HOME", "HERMES_SCRATCH_DIR", "HERMES_RUNTIME_DIR", "HERMES_INSTALL_ROOT",
     "HERMES_PYTHON_SRC_ROOT", "HERMES_DATA_DIR_SUFFIX", "HERMES_HOME_MODE", "HERMES_MANAGED",
     "HERMES_CONTAINER", "HERMES_SKIP_CHMOD", "HERMES_GATEWAY_LOCK_DIR", "HERMES_DISABLE_LAZY_INSTALLS",
-    "HERMES_KANBAN_HOME", "HERMES_KANBAN_BUSY_TIMEOUT_MS",
+    "HERMES_INSTALL_STATE_DIR", "HERMES_KANBAN_HOME", "HERMES_KANBAN_BUSY_TIMEOUT_MS",
     # The administrator-managed scope directory (an IT bootstrap override, never in any profile's
     # ``.env``): without it a cold-started gateway loses the managed overlay stored elsewhere.
     "HERMES_MANAGED_DIR",

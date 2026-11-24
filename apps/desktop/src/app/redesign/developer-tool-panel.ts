@@ -194,17 +194,18 @@ function hideTool(id: string): void {
   }
 }
 
-const shownTool = (): string | undefined => {
+const shownTools = (): string[] => {
   const tree = $layoutTree.get()
 
-  return tree ? allPaneIds(tree).filter(isTool).find(isPaneVisible) : undefined
+  return tree ? allPaneIds(tree).filter(isTool).filter(isPaneVisible) : []
 }
 
 /** Whether a tool is on screen beside the chat: what the band's right sidebar button says and flips
- *  in the redesign. Read from the pane tree, the same answer each tool's tile gives for itself. */
+ *  in the redesign. Read from the pane tree, the same answer each tool's tile gives for itself.
+ *  Classic never asks, so there the tree is not walked. */
 export const $developerToolShown = computed(
-  [$layoutTree, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides],
-  () => shownTool() !== undefined
+  [$portalShell, $layoutTree, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides],
+  portal => portal && shownTools().length > 0
 )
 
 /** The band's right sidebar button and its keybind, on a wide redesign window: hide the tool panel,
@@ -216,14 +217,19 @@ export function toggleDeveloperToolPanel(): boolean {
     return false
   }
 
-  const shown = shownTool()
+  const shown = shownTools()
 
-  if (shown === undefined) {
+  if (shown.length === 0) {
     restoreTreePane('files')
     prepareDeveloperToolPanel('files')
-  } else if (!hideDeveloperToolPanel(shown)) {
-    // A tool standing alone in its zone, not yet gathered.
-    hideTool(shown)
+  }
+
+  // Every zone showing a tool, so one press leaves the side empty: the panel as a whole, and a tool
+  // standing alone in a zone of its own (not yet gathered) by itself.
+  for (const tool of shown) {
+    if (isPaneVisible(tool) && !hideDeveloperToolPanel(tool)) {
+      hideTool(tool)
+    }
   }
 
   return true

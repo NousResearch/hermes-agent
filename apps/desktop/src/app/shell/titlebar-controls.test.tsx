@@ -562,6 +562,16 @@ describe('the redesign’s right sidebar button', () => {
     expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
   })
 
+  it('hides tools showing in two zones with one press', () => {
+    $hiddenTreePanes.set(new Set(['files', 'review']))
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+    expect(['files', 'review', 'terminal', 'chat-items'].filter(isPaneVisible)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+  })
+
   it('shows Files in the panel when nothing is open', () => {
     $hiddenTreePanes.set(new Set(['files', 'review', 'terminal', 'chat-items']))
     renderControls('/')

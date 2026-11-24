@@ -550,6 +550,36 @@ def test_stable_promotion_fails_on_public_readback_mismatch_for_dmg_and_page(
     r2_server.corrupt_put = None
 
 
+class _PublicOriginServingStaleAlias(dict):
+    """The public origin's view of the bucket, serving an old size for the DMG alias only."""
+
+    def __init__(self, bucket: dict):
+        super().__init__()
+        self.bucket = bucket
+
+    def get(self, key, default=None):
+        if key == STABLE_DMG_KEY:
+            return (b"stale cached alias", '"cdn"')
+        return self.bucket.get(key, default)
+
+
+def test_stable_promotion_fails_when_public_origin_serves_another_dmg_size(
+    tmp_path,
+    monkeypatch,
+    r2_server,  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
+    https_origin,  # health: allow F811 -- pytest injects the imported https_origin fixture by parameter name
+):
+    monkeypatch.setattr(urllib.request, "urlopen", https_origin.opener)
+    manifest, dmg_bytes = _stage_stable_release(tmp_path, r2_server, https_origin, version="1.2.3")
+    https_origin.store = _PublicOriginServingStaleAlias(r2_server.store)
+
+    with pytest.raises(ValueError, match=f"Channel read-back differs: {STABLE_DMG_KEY}"):
+        artifacts.promote(manifest, tmp_path / "stale-public-alias", https_origin.base)
+    # R2 took the copy; the public read-back stopped promotion before the later pointers moved.
+    assert r2_server.store[STABLE_DMG_KEY][0] == dmg_bytes
+    assert STABLE_APPINSTALLER_KEY not in r2_server.store
+    assert STABLE_PAGE_KEY not in r2_server.store
+
 def test_stable_promotion_upgrades_existing_dmg_and_page_and_detects_etag_race(
     tmp_path,
     monkeypatch,

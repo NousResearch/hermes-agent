@@ -195,15 +195,19 @@ async def post_health_retirement(request: Request):
     return getattr(retirement, action)(token)
 
 
-# Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
-# Platform enum's normalized values: built-in members plus plugin directory names
-# (lowercased), which allow hyphens as well as underscores (e.g. ``reviewer:foo-bar``).
-_PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$")
+# Platform segment mirrors the Platform enum's normalized values: built-in members plus plugin
+# directory names (lowercased), which allow hyphens as well as underscores (``reviewer:foo-bar``).
+_STATUS_KEY_PLATFORM_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
 
 def _is_profile_platform_status_key(key: object) -> bool:
     """Accept only the runner's public ``<profile>:<platform>`` key grammar."""
-    return isinstance(key, str) and bool(_PROFILE_PLATFORM_STATUS_KEY_RE.fullmatch(key))
+    from hermes_constants import PROFILE_ID_RE
+
+    if not isinstance(key, str):
+        return False
+    profile, sep, platform = key.partition(":")
+    return bool(sep and PROFILE_ID_RE.fullmatch(profile) and _STATUS_KEY_PLATFORM_RE.fullmatch(platform))
 
 
 def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bool:

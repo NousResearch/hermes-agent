@@ -1,0 +1,33 @@
+name: hybridops
+title: HybridOps Recovery
+repo: https://github.com/hybridops-tech/hermes-plugin-hybridops
+sha: f49a02346cb72e981487622ce77041efcf91c189
+version: "0.1.0"
+description: >-
+  Inspect, export and import Containerlab recovery sets through an existing HybridOps runtime.
+  Export and import are disabled by default and require Hermes approval when enabled; input and
+  execution-contract digests prevent an approved operation from running after its files or target
+  settings change. Disclosure - Linux only; reads operator-configured input files and HybridOps
+  module state, then runs the configured local hyops executable with fixed argument lists and no
+  shell. HybridOps and Ansible may connect to the configured target, run Containerlab save or
+  snapshot commands, and write recovery data on the target and controller; import may replace the
+  declared native lab directory after validation. The plugin makes no direct network calls, starts
+  no background process, sends no telemetry, does not update itself, and does not install HybridOps
+  or its Ansible collections.
+maintainer: hybridops-tech
+tier: community
+category: automation
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/hybridops-tech/hermes-plugin-hybridops#readme
+readme: true
+platforms:
+  - linux
+capabilities:
+  provides_tools:
+    - hybridops_recovery_inspect
+    - hybridops_recovery_export
+    - hybridops_recovery_import
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

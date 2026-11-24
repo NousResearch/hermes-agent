@@ -10,7 +10,6 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 from __future__ import annotations
 
 import ast
-import contextlib
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -18,7 +17,7 @@ import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
 from plugins import plugin_loader as _loader
@@ -198,10 +197,14 @@ def list_memory_provider_names() -> list[str]:
 
 def discover_memory_providers() -> list[tuple[str, str, bool]]:
     """``[(name, description, is_available), ...]``; bundled wins on name collisions,
-    then user directories, then pip."""
+    then user directories, then pip. A user provider that ``plugins.disabled`` lists is listed from
+    its manifest as not available without running its code; ``load_memory_provider`` refuses it too."""
+    choice = _loader.read_plugin_choice()
     results = [
-        (name, _loader.read_plugin_description(child),
-         _loader.probe_availability(lambda c=child: _load_provider_from_dir(c, register_skills=False)))
+        _loader.describe_without_import(name, child)
+        if not _is_bundled(child) and choice.is_disabled(child, name)
+        else (name, _loader.read_plugin_description(child),
+              _loader.probe_availability(lambda c=child: _load_provider_from_dir(c, register_skills=False)))
         for name, child in _iter_provider_dirs()
     ]
     seen = {name for name, _, _ in results}
@@ -214,11 +217,13 @@ def discover_memory_providers() -> list[tuple[str, str, bool]]:
     return results
 
 
-def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -> Optional[MemoryProvider]:
+def load_memory_provider(name: str, *, register_skills: Optional[bool] = None,
+                         manager=None) -> Optional[MemoryProvider]:
     """Load a MemoryProvider by name (bundled, user, project, then pip entry point);
     None if not found or failing to load. Skills register only for the configured
     active provider unless ``register_skills`` is explicit, so inspecting inactive
-    providers leaves no registry side effects."""
+    providers leaves no registry side effects. ``manager``: a hosted provider loads into that
+    plugin manager and its host, not the active profile's (``transient_plugin_host``)."""
     if register_skills is None:
         register_skills = name == _get_active_memory_provider()
 
@@ -235,7 +240,7 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
 
     def _load(_dir):
         if provider_dir:
-            return _load_provider_from_dir(provider_dir, register_skills=register_skills)
+            return _load_provider_from_dir(provider_dir, register_skills=register_skills, manager=manager)
         from hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"pip-installed memory provider {name!r}")
         if refusal:
@@ -368,13 +373,15 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     return provider
 
 
-def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional[MemoryProvider]:
+def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True,
+                            manager=None) -> Optional[MemoryProvider]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
     from hermes_cli.plugin_isolation import user_plugin_host
-    host = None if _is_bundled(provider_dir) else user_plugin_host()
+    host = None if _is_bundled(provider_dir) else (
+        manager._plugin_host() if manager is not None else user_plugin_host())
     if host is not None:
-        return _ProviderCollector(name, register_skills=register_skills).collect_in_host(
+        return _ProviderCollector(name, register_skills=register_skills, manager=manager).collect_in_host(
             host, provider_dir, _module_name(provider_dir, name))
     mod = _load_package(provider_dir, name)
     if mod is None:
@@ -439,11 +446,12 @@ class _ProviderCollector:
     (the one call the activation path owns) and delegates other ``register_*``
     calls to a real ``PluginContext`` so providers have the full plugin surface."""
 
-    def __init__(self, name: str, *, register_skills: bool = True):
+    def __init__(self, name: str, *, register_skills: bool = True, manager=None):
         self.name = name
         self.provider = None
         self._register_skills = register_skills
         self._context = None
+        self._manager = manager  # None: the active profile's plugin manager
         self._hook_source = None
 
     def collect(self, register, *, source=None):
@@ -517,6 +525,14 @@ class _ProviderCollector:
     def register_cli_command(self, *args, **kwargs):
         pass  # CLI registration happens via discover_plugin_cli_commands()
 
+    def register_context_reference(self, provider):
+        """A hook-only load (an explicit ``manager``) claims no ``@`` prefix: the table is process-wide and
+        keyed to the claiming manager, so a throwaway one would hold it past its stopped host and refuse
+        the profile's own load of the same plugin."""
+        if self._manager is None:
+            return self.__getattr__("register_context_reference")(provider)
+        return None
+
     def __getattr__(self, attr: str):
         """Delegate any other ``register_*`` call to a real ``PluginContext`` (a
         hand-maintained stub drifted: unknown calls raised and cost the provider).
@@ -541,33 +557,8 @@ class _ProviderCollector:
             from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
 
             manifest = PluginManifest(name=self.name, key=self.name)
-            self._context = PluginContext(manifest, get_plugin_manager())
+            self._context = PluginContext(manifest, get_plugin_manager() if self._manager is None else self._manager)
         return self._context
-
-
-@contextlib.contextmanager
-def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
-    """Yield a ``release()`` that disposes every registration provider ``name``'s loads made on the
-    active profile's plugin manager since the block began: hooks, tools, middleware and the rest
-    ``_ProviderCollector`` forwards (all in the manager's ownership ledger). For a one-shot load
-    whose plugin host is about to stop, so nothing is left proxying into a dead host; the
-    provider's next real load registers them again. A real load of the same provider on the same
-    profile inside the block loses its registrations too, until it next loads (they would
-    proxy into the stopped host anyway, unless it loaded in-process)."""
-    from hermes_cli.plugins import get_plugin_manager
-
-    provider_dir = find_provider_dir(name)
-    key = provider_dir.name if provider_dir else name  # the collector's key (_load_provider_from_dir)
-    manager = get_plugin_manager()
-    with manager._discovery_lock:
-        before = {id(r) for r in manager._ownership_ledger.get(key, ())}
-
-    def release() -> None:
-        with manager._discovery_lock:
-            made = [r for r in manager._ownership_ledger.get(key, ()) if id(r) not in before]
-            manager._dispose_registrations(made)
-
-    yield release
 
 
 def _get_active_memory_provider() -> Optional[str]:
@@ -590,36 +581,29 @@ def active_memory_provider_commands() -> set[str]:
 
 
 def parked_provider_notice(name: str) -> Optional[str]:
-    """The user-facing reason a configured provider is not loading because ``plugins.disabled`` parks
-    it, naming the update that did so when there was one; None when it is not parked."""
+    """The user-facing reason a provider is not loading because ``plugins.disabled`` parks it, naming
+    the update that did so when there was one; None when it is not parked. Only the selected provider
+    turns external memory off, and the enable command names the active home."""
     provider_dir = find_provider_dir(name)
     if provider_dir is None or not _explicitly_disabled(name, provider_dir):
         return None
     from hermes_cli.config import load_config
     from pm.plugins_state import RECORD
-    record = cfg_get(load_config(), "plugins", RECORD)
+    config = load_config()
+    record = cfg_get(config, "plugins", RECORD)
     recorded = record.get(name) if isinstance(record, dict) else None
     why = (f" An update turned it off ({recorded.get('reason')}) and a later update retries it."
            if isinstance(recorded, dict) and recorded.get("reason") else "")
-    return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it, so external memory is off "
-            f"(built-in memory still works).{why} Turn it back on with `hermes plugins enable {name}`.")
+    effect = (", so external memory is off (built-in memory still works)"
+              if cfg_get(config, "memory", "provider") == name else "")
+    return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it{effect}.{why} "
+            f"Turn it back on with {_loader.enable_command(name)}.")
 
 
 def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
     """True when a NON-bundled provider is parked in ``plugins.disabled`` under any spelling the
     plugin commands write: the provider name, its directory name or its manifest ``name:``."""
-    if _is_bundled(provider_dir):
-        return False
-    try:
-        from hermes_cli.config import load_config
-        disabled = cfg_get(load_config(), "plugins", "disabled")
-    except Exception:
-        return False
-    if not isinstance(disabled, list):
-        return False
-    from pm.plugins_state import plugin_spellings
-
-    return bool(plugin_spellings(provider_dir, name) & {v for v in disabled if isinstance(v, str)})
+    return not _is_bundled(provider_dir) and _loader.read_plugin_choice().is_disabled(provider_dir, name)
 
 
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:

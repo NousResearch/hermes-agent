@@ -1,0 +1,15 @@
+name: aisecuritywarden
+repo: https://github.com/SoftDevEng/aiSecurityWarden-hermes
+sha: eb47333f889c28559d6e77923425da42973a6ac6
+description: "Secret source that loads the API keys a revocable aiSecurityWarden machine token may read (end-to-end encrypted, optional phone approval) at Hermes startup. Bulk source \"aisecuritywarden\"; runs the aiSecurityWarden client's swctl, so the token never enters Hermes. Disclosure — when enabled, runs your installed aiSecurityWarden `swctl` client (argv only, allowlisted environment, up to 180 s to allow a phone approval) at Hermes start-up, which contacts the aiSecurityWarden server your machine token was set up with, and loads every secret in that token's project into Hermes's environment (existing values are kept unless `override_existing` is on); the plugin itself makes no network calls and never reads the token."
+maintainer: SoftDevEng
+tier: community
+category: tools
+version: "0.7.14"
+docs_url: https://github.com/SoftDevEng/aiSecurityWarden-hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.1"

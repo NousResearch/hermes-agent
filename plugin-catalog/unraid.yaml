@@ -1,26 +1,26 @@
 name: unraid
 title: Unraid
 repo: https://github.com/Anunnaki-Astronaut/hermes-unraid
-sha: 8255a39334fc27769594a6fec221a4b09b83fbed
+sha: 535b8a7c96256b424fbde74392f9cdafa55610eb
 description: "Read-only Unraid monitoring for Hermes Desktop: server metadata, array capacity, Docker containers, virtual machines, and grouped alerts. Disclosure — sends fixed GraphQL queries to the user-configured Unraid host and stores a VIEWER key through Hermes secret scope; no telemetry, background process, shell, SSH, MCP, or mutations."
 maintainer: Anunnaki-Astronaut
 tier: community
 category: desktop
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/Anunnaki-Astronaut/hermes-unraid#readme
-version: "0.3.0"
-image: https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/8255a39334fc27769594a6fec221a4b09b83fbed/docs/screenshots/catalog-banner.png
+version: "0.3.2"
+image: https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/535b8a7c96256b424fbde74392f9cdafa55610eb/docs/screenshots/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/8255a39334fc27769594a6fec221a4b09b83fbed/docs/screenshots/overview.png
-  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/8255a39334fc27769594a6fec221a4b09b83fbed/docs/screenshots/array.png
-  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/8255a39334fc27769594a6fec221a4b09b83fbed/docs/screenshots/docker.png
-  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/8255a39334fc27769594a6fec221a4b09b83fbed/docs/screenshots/vms.png
-  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/8255a39334fc27769594a6fec221a4b09b83fbed/docs/screenshots/alerts.png
+  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/535b8a7c96256b424fbde74392f9cdafa55610eb/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/535b8a7c96256b424fbde74392f9cdafa55610eb/docs/screenshots/array.png
+  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/535b8a7c96256b424fbde74392f9cdafa55610eb/docs/screenshots/docker.png
+  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/535b8a7c96256b424fbde74392f9cdafa55610eb/docs/screenshots/vms.png
+  - https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unraid/535b8a7c96256b424fbde74392f9cdafa55610eb/docs/screenshots/alerts.png
 readme: true
 platforms: []
 known_issues:
   - When Hermes Desktop uses a remote backend, install the Desktop part locally and the Agent/backend part on the remote Hermes host.
-  - The Unraid GraphQL schema can vary by release; this version was manually tested with Unraid 7.3.
+  - The Unraid GraphQL schema can vary by release. The monitor was previously tested with Unraid 7.3; the 0.3.2 transport changes were tested offline.
 capabilities:
   provides_tools: []
   provides_hooks: []

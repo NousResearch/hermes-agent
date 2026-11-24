@@ -2117,12 +2117,12 @@ _SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
 
 def _profile_name_from_home(home: Path, default: Path) -> str | None:
     """Profile name when ``home`` is ``<default>/profiles/<name>`` with a service-safe name, else None."""
-    import re
+    from hermes_constants import PROFILE_ID_RE
     try:
         parts = home.relative_to((default / "profiles").resolve()).parts
     except ValueError:
         return None
-    if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
+    if len(parts) == 1 and PROFILE_ID_RE.match(parts[0]):
         return parts[0]
     return None
 
@@ -2790,14 +2790,14 @@ def launchd_gateway_labels_for_install() -> list[str]:
     """Launchd labels for every profile of THIS install (root first, then profiles by name). Derived from
     the profile layout, NOT by globbing ``~/Library/LaunchAgents``, so a sandboxed HERMES_HOME never
     restarts another install's fleet. Names that can't map to a suffix are skipped."""
-    import re as _re
     from hermes_cli.profiles import list_profiles
+    from hermes_constants import PROFILE_ID_RE
     root_label: list[str] = []
     profile_labels: list[str] = []
     for profile in list_profiles():
         if profile.is_default:
             root_label.append("ai.hermes.gateway")
-        elif _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile.name):
+        elif PROFILE_ID_RE.match(profile.name):
             profile_labels.append(f"ai.hermes.gateway-{profile.name}")
     return root_label + sorted(profile_labels)
 

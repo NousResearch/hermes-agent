@@ -139,6 +139,12 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    def __copy__(self) -> FooteredReply:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> FooteredReply:
+        return self
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

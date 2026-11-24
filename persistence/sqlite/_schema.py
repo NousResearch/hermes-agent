@@ -1283,7 +1283,7 @@ def _run_data_migrations(holder: StoreHolder, cursor: sqlite3.Cursor, current_ve
                 f"AND {_sql_json_extract('model_config', '$._chat_adopted')} IS NULL"
             )
         except sqlite3.OperationalError as exc:
-            if "no such" not in str(exc):
+            if not str(exc).startswith(("no such function", "no such column")):
                 raise
     _advance_message_uid_backfill(holder, cursor)
     fts_migrations_complete = True

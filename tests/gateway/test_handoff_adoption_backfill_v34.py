@@ -77,6 +77,24 @@ def test_a_capture_without_a_handoff_is_still_evicted_after_upgrade(tmp_path):
         upgraded.persistence.close()
 
 
+def test_one_malformed_model_config_does_not_stop_the_upgrade(tmp_path):
+    # v34 raises every OperationalError but a missing function or column, so a json_set over one
+    # malformed model_config would fail every open; json_valid keeps that row out of the UPDATE.
+    store, entry, worker = _old_route_onto_markerless_worker(tmp_path, handed_off=True)
+    db = store.persistence
+    damaged = seed_session(db, worker + "-damaged", "subagent", parent_session_id=entry.session_id)
+    db.coordination.request_handoff(session_id=damaged, platform="telegram")
+    db.coordination.claim_handoff(session_id=damaged)
+    db.coordination.complete_handoff(session_id=damaged)
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET model_config = '{' WHERE id = ?", (damaged,)))
+    upgraded = _reopen_after_upgrade(store, tmp_path)
+    try:
+        assert upgraded.persistence.sessions.get_model_config_value(worker, "_chat_adopted") is True
+    finally:
+        upgraded.persistence.close()
+
+
 def test_a_handed_off_row_that_compressed_adopts_nothing(tmp_path):
     # The handed-off row spawned a markerless worker, then compressed. The worker has the same
     # parent, created_source='subagent' and no _delegate_from as the continuation: the capture shape.
@@ -108,15 +126,20 @@ def _compress(db, session_id):
 
 
 def test_a_handed_off_row_whose_continuation_was_deleted_is_adopted(tmp_path):
-    # A deleted newest segment starts a fresh chat, for any chat; the older row only has to stay
-    # the user's, so /resume can still pick it.
+    # A completed handoff keeps the older row recoverable whatever its end_reason, so once its newest
+    # segment is deleted the chat reopens it, as main does for a handed-off chat. Its own marked
+    # delegate is not a continuation and must not block the adoption.
     store, entry, handed = _old_route_onto_markerless_worker(tmp_path, handed_off=True)
     db = store.persistence
+    db.sessions.touch_activity(handed)  # the handoff's synthetic turn, after the switch
+    seed_session(db, handed + "-delegate", "subagent", parent_session_id=handed,
+                 model_config={"_delegate_from": handed})
     tip = _compress(db, handed)
     assert store.switch_session(entry.session_key, tip) is not None
     assert db.sessions.delete(tip, media_root=str(native_inputs_root()))
     upgraded = _reopen_after_upgrade(store, tmp_path)
     try:
         assert upgraded.persistence.sessions.get_model_config_value(handed, "_chat_adopted") is True
+        assert upgraded.get_or_create_session(_SOURCE).session_id == handed
     finally:
         upgraded.persistence.close()

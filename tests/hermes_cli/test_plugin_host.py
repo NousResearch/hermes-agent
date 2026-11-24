@@ -499,6 +499,31 @@ def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_n
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_launcher_written_as_a_variable_only_the_callers_scope_holds_still_runs(tmp_path, monkeypatch):
+    """Under multiplexing a ``${VAR}`` launcher expands through the secret scope the start was asked for in (a
+    launch profile's env-only keys live there), not only the profile's own files the host's context holds."""
+    from agent import secret_scope as ss
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({"PLUGIN_RUNNER": str(runner)}, profile_home=str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        host.ensure_started()
+        assert ran.read_text(encoding="utf-8").count("ran") == 1
+    finally:
+        host.shutdown()
+        ss.reset_secret_scope(token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
 def test_a_host_started_by_a_caller_bound_to_a_since_renamed_link_runs_the_profiles_launcher(tmp_path, monkeypatch):
     """The launcher comes from the config of the home the host starts in, not from the caller's binding: a load

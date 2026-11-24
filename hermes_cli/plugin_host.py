@@ -70,6 +70,14 @@ def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
         reset_secret_scope(token)
 
 
+def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
+    """*home*'s ``plugins.host.launcher``, read as plugin code bound to *home* reads its config: the home rebound,
+    the caller's secret scope kept (it expands the launcher's ``${VAR}``s)."""
+    from hermes_cli.plugins_loader import _plugin_home_scope
+    with _plugin_home_scope(home):
+        return host_launcher(home=home)
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 
@@ -129,10 +137,11 @@ class PluginHost:
         from hermes_cli.plugin_isolation import host_launcher
         # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
         # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
-        # For the home this start took (``_home``), with its config read in that home's context: not ``owner_home``
-        # read again, nor the caller's binding, either of which can name a link renamed since.
-        launcher = self._base_context.run(host_launcher, home=self._home)
-        return [*launcher, sys.executable, "-P", "-m", _HOST_MODULE]
+        # For the home this start took (``_home``), not ``owner_home`` read again nor the caller's home binding,
+        # either of which can name a link renamed since. With only the home rebound, not in the host's context:
+        # the caller's secret scope expands the launcher's ``${VAR}``s (a launch profile's env-only keys are
+        # there), while the host's holds only the profile's own files.
+        return [*_launcher_for(self._home, host_launcher), sys.executable, "-P", "-m", _HOST_MODULE]
 
     def _env(self) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env

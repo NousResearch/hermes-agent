@@ -29,6 +29,8 @@ import { SimplifiedGatewayHeader } from './simplified-gateway-header'
 const copy = en.shell.gatewayMenu
 const onToggle = vi.fn()
 
+const onNewAgent = vi.fn()
+
 function mount(props: { connectionId?: null | string; label?: string; selected?: boolean } = {}) {
   return render(
     <MemoryRouter>
@@ -37,6 +39,7 @@ function mount(props: { connectionId?: null | string; label?: string; selected?:
           <SimplifiedGatewayHeader
             connectionId={props.connectionId ?? null}
             label={props.label ?? 'Hermes host'}
+            onNewAgent={onNewAgent}
             onToggle={onToggle}
             open
             selected={props.selected ?? true}
@@ -55,6 +58,7 @@ const popover = () => screen.queryByRole('dialog')
 beforeEach(() => {
   stubMenuDomApis()
   onToggle.mockReset()
+  onNewAgent.mockReset()
   mocks.restart.mockReset()
   $gatewayState.set('open')
   setInterfaceMode('simple')
@@ -71,6 +75,26 @@ afterEach(() => {
 })
 
 describe('a machine row status', () => {
+  it('starts a new agent on its own machine, without folding it', () => {
+    mount()
+
+    fireEvent.click(screen.getByRole('button', { name: en.profiles.newProfile }))
+
+    expect(onNewAgent).toHaveBeenCalledTimes(1)
+    expect(onToggle).not.toHaveBeenCalled()
+  })
+
+  it('keeps New agent in place on a machine that is not connected, saying why it waits', () => {
+    $gatewayState.set('closed')
+    mount()
+
+    const button = screen.getByRole('button', { name: `${en.profiles.newProfile} · ${copy.offline}` })
+    fireEvent.click(button)
+
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    expect(onNewAgent).not.toHaveBeenCalled()
+  })
+
   it('opens the machine popover by click without toggling the machine, and Escape returns focus', async () => {
     mount()
     const status = statusButton()

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode, RefObject } from 'react'
 
+import type { AgentSettingsOwner } from '@/app/agent-settings/data'
 import { SIDEBAR_PROFILE_GROUP_HEADER_AREA } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { FadeScroll } from '@/components/ui/fade-scroll'
@@ -24,7 +25,7 @@ import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
-import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
+import { agentKey, agentOwner, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
 
 import { type AgentChatCount, agentChatCount } from './agent-chat-cap'
 import { PortalAgentMenu } from './portal-agent-menu'
@@ -39,6 +40,9 @@ interface PortalAgentGroupsProps {
   query: string
   pending: string | null
   onOpenAgent: (agent: SimplifiedAgent) => void
+  /** Start a new agent on the machine whose header was used: one of its agents, or nothing for the
+   *  window's own machine. */
+  onNewAgent: (owner?: AgentSettingsOwner) => void
   onResumeSession: (id: string, row?: SessionInfo) => void
   scrollRef: RefObject<HTMLDivElement | null>
 }
@@ -206,13 +210,17 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
           const gatewayId = JSON.stringify(['gateway', connectionId])
           const open = Boolean(query) || (props.expanded[gatewayId] ?? true)
           const selected = connectionId === (activeConnection ?? owner)
-          const label = agents.find(agent => agent.connectionId === connectionId)!.gateway
+          const first = agents.find(agent => agent.connectionId === connectionId)!
+          const label = first.gateway
 
           return (
             <div data-open={open && group.length > 0} data-slot="gateway-group" key={gatewayId}>
               <SimplifiedGatewayHeader
                 connectionId={connectionId}
                 label={label}
+                onNewAgent={() =>
+                  props.onNewAgent(connectionId && !selected ? { connectionId, profile: agentOwner(first).profile } : undefined)
+                }
                 onToggle={query ? undefined : () => props.onToggle(gatewayId, open)}
                 open={open}
                 selected={selected}

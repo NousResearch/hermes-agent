@@ -1,13 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { lazy, type ReactNode, Suspense, useLayoutEffect, useRef, useState } from 'react'
 
+import type { AgentSettingsOwner } from '@/app/agent-settings/data'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { useStableNavigate } from '@/app/stable-navigate'
-import { Button } from '@/components/ui/button'
-import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Plus } from '@/lib/icons'
 import { $hiddenSidebarAgents, $portalAgentsSectionOpen, $sidebarAgentScroll } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
@@ -181,7 +179,8 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
   const scroll = useAgentScroll(props)
   const open = useStore($portalAgentsSectionOpen)
   const hidden = useStore($hiddenSidebarAgents)
-  const [creating, setCreating] = useState(false)
+  // The New agent dialog, for the machine whose "+" opened it (no owner is this window's own).
+  const [creating, setCreating] = useState<{ owner?: AgentSettingsOwner } | null>(null)
   useFleetRoster(true)
 
   // The badge counts what the section lists: hidden agents live in their own row below it.
@@ -195,19 +194,6 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       data-slot="agent-section"
     >
       <PortalSectionHeader
-        action={
-          <Tip label={t.profiles.newProfile}>
-            <Button
-              aria-label={t.profiles.newProfile}
-              className="portal-section-action"
-              onClick={() => setCreating(true)}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Plus aria-hidden />
-            </Button>
-          </Tip>
-        }
         count={listed}
         label={t.simplifiedAgents.agents}
         onToggle={() => $portalAgentsSectionOpen.set(!open)}
@@ -217,6 +203,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       <div className="portal-section-body" hidden={!open}>
         <PortalAgentGroups
           {...props}
+          onNewAgent={owner => setCreating({ owner })}
           onOpenAgent={agent => void openAgent(agent)}
           pending={pending}
           scrollRef={scroll}
@@ -224,7 +211,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       </div>
       {creating && (
         <Suspense fallback={null}>
-          <NewAgentDialog onClose={() => setCreating(false)} />
+          <NewAgentDialog onClose={() => setCreating(null)} owner={creating.owner} />
         </Suspense>
       )}
     </section>

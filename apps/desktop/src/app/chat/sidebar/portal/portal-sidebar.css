@@ -488,6 +488,12 @@ button.portal-section-title:hover {
   color: var(--ui-text-primary);
 }
 
+/* An action that waits (a machine that cannot take an agent yet) stays in place, stepped back. */
+.portal-sidebar .portal-section-action[aria-disabled='true'] {
+  opacity: var(--portal-text-quiet-opacity);
+  cursor: default;
+}
+
 .portal-sidebar .portal-section-scroll {
   --scroll-fade-size: min(4rem, 25%);
 

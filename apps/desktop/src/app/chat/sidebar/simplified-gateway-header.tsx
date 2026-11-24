@@ -1,10 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { Plus } from '@/lib/icons'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
@@ -31,6 +33,8 @@ interface SimplifiedGatewayHeaderProps {
   open: boolean
   /** Absent while a search holds the machine open: the row then stands as a disabled disclosure. */
   onToggle?: () => void
+  /** Start a new agent on this machine. */
+  onNewAgent: () => void
 }
 
 /** A machine row (Figma 147:7470): name with its organisation as a quiet inline tag, the status at
@@ -40,7 +44,8 @@ export function SimplifiedGatewayHeader({
   label,
   selected,
   open,
-  onToggle
+  onToggle,
+  onNewAgent
 }: SimplifiedGatewayHeaderProps) {
   const { t } = useI18n()
   const statusId = useId()
@@ -65,6 +70,8 @@ export function SimplifiedGatewayHeader({
     closed: t.shell.gatewayMenu.offline,
     error: t.shell.gatewayMenu.offline
   }[state]
+
+  const newAgentLabel = state === 'open' ? t.profiles.newProfile : `${t.profiles.newProfile} · ${status}`
 
   return (
     <div
@@ -102,6 +109,19 @@ export function SimplifiedGatewayHeader({
         <span aria-hidden className="portal-status-dot" />
         <span id={statusId}>{status}</span>
       </MachineStatusPopover>
+      {/* Only a connected machine can take an agent; elsewhere the button stays and says why. */}
+      <Tip label={newAgentLabel}>
+        <Button
+          aria-disabled={state === 'open' ? undefined : true}
+          aria-label={newAgentLabel}
+          className="portal-section-action"
+          onClick={state === 'open' ? onNewAgent : undefined}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <Plus aria-hidden />
+        </Button>
+      </Tip>
     </div>
   )
 }

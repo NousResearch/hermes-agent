@@ -32,12 +32,13 @@
   padding-top: calc(var(--portal-stage-header-height) + 0.75rem);
 }
 
-/* Lines scrolling up fade out beneath the stage header row. A static mask on
-   the scroller: no repaint per scroll frame. */
+/* Lines scrolling up fade out beneath the stage header row, and are gone by the time they reach
+   its text (the machine // agent line, centred in the row): the fade runs over the row's lower
+   third. A static mask on the scroller: no repaint per scroll frame. */
 :root[data-shell='portal'] [data-chat-surface] [data-slot='aui_thread-viewport'] {
   mask-image: linear-gradient(
     to bottom,
-    transparent 0.75rem,
+    transparent calc(var(--portal-stage-header-height) * 2 / 3),
     var(--portal-raw-black) var(--portal-stage-header-height)
   );
 }

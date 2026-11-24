@@ -146,9 +146,13 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
         skills = parsed["skills"] if parsed else []
         return next((e for e in skills if isinstance(e, dict) and e.get("name") == skill_name), None)
 
-    @staticmethod
-    def _wrap_identifier(base_url: str, skill_name: str) -> str:
-        return f"well-known:{base_url.rstrip('/')}/{skill_name}"
+    @classmethod
+    def _wrap_identifier(cls, base_url: str, skill_name: str) -> str:
+        skill_url = f"{base_url.rstrip('/')}/{skill_name}"
+        # The short form is read back only under BASE_PATH; an index anywhere else keeps its URL.
+        if f"{cls.BASE_PATH}/" in skill_url:
+            return f"well-known:{skill_url}"
+        return f"well-known:{base_url.rstrip('/')}/index.json#{skill_name}"
 
 
 # --- Direct URL source adapter ----------------------------------------------

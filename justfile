@@ -196,6 +196,12 @@ lock:
 ruff +files:
     scripts/hermes-python -m scripts.code_health.ruff_runner check "$@"
 
+# Pre-commit: the RE2 pattern gate (scripts/check_re2_patterns.py) on the given files
+[group('hooks')]
+[positional-arguments]
+re2-patterns +files:
+    scripts/hermes-python scripts/check_re2_patterns.py "$@"
+
 # Pre-commit: eslint on the given files, from the calling workspace
 [group('hooks')]
 [no-cd]

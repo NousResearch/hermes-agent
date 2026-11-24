@@ -734,6 +734,32 @@ def chat_ordered_work(adapter: Any) -> ChatOrderedWork:
     return adapter.__dict__.setdefault("_chat_ordered_work", ChatOrderedWork(adapter))
 
 
+def mention_pattern_texts(raw, *, config_style: bool, defaults: list[str] | None = None) -> list[str]:
+    """The pattern texts :func:`compile_mention_patterns` compiles from ``raw`` (``hermes doctor`` reads them too).
+
+    * **Config-style**: a string is one pattern, a list keeps its non-blank string items as they stand;
+      any other value gives ``[]``.
+    * **Wakeword-style**: None gives ``defaults``; a string is a JSON list, else comma/newline separated;
+      a list is taken item by item and any other value is one item; every item is ``str(item).strip()``.
+    """
+    if config_style:
+        patterns = [raw] if isinstance(raw, str) else raw
+        return [p for p in patterns if isinstance(p, str) and p.strip()] if isinstance(patterns, list) else []
+    if raw is None:
+        patterns = list(defaults or [])
+    elif isinstance(raw, str):
+        text = raw.strip()
+        try:
+            loaded = json.loads(text) if text else []
+        except (ValueError, RecursionError):  # not JSON, or nested deeper than the parser goes
+            loaded = None
+        patterns = loaded if isinstance(loaded, list) else [
+            part.strip() for line in text.splitlines() for part in line.split(",")]
+    else:
+        patterns = raw if isinstance(raw, list) else [raw]
+    return [t for t in (str(p).strip() for p in patterns) if t]
+
+
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,
                              display_label: str | None = None, defaults: list[str] | None = None,
                              logger_: logging.Logger | None = None) -> list[re.Pattern]:
@@ -743,8 +769,8 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
       list or string (else warn + ``[]``); non-string entries skipped; info log on load.
     * **Wakeword-style** (photon, bluebubbles): pass ``defaults``. ``raw`` may be None
       (defaults), a string (JSON list or comma/newline separated), a list, or a scalar.
-    ``log_prefix`` is interpolated into every log line so per-adapter output stays
-    byte-identical to the historical inline implementations.
+    :func:`mention_pattern_texts` reads the texts. ``log_prefix`` is interpolated into every log line
+    so per-adapter output stays byte-identical to the historical inline implementations.
     """
     log = logger_ or logger
 
@@ -761,30 +787,17 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
         display = display_label or platform_label
         if raw is None:
             return []
-        patterns = [raw] if isinstance(raw, str) else raw
-        if not isinstance(patterns, list):
+        if not isinstance(raw, (str, list)):
             log.warning("[%s] %s mention_patterns must be a list or string; got %s",
-                        log_prefix, platform_label, type(patterns).__name__)
+                        log_prefix, platform_label, type(raw).__name__)
             return []
-        compiled = _compile([p for p in patterns if isinstance(p, str) and p.strip()],
+        compiled = _compile(mention_pattern_texts(raw, config_style=True),
                             "[%s] Invalid %s mention pattern %r: %s", display)
         if compiled:
             log.info("[%s] Loaded %d %s mention pattern(s)", log_prefix, len(compiled), display)
         return compiled
-    if raw is None:
-        patterns = list(defaults or [])
-    elif isinstance(raw, str):
-        text = raw.strip()
-        try:
-            loaded = json.loads(text) if text else []
-        except Exception:
-            loaded = None
-        patterns = loaded if isinstance(loaded, list) else [
-            part.strip() for line in text.splitlines() for part in line.split(",")]
-    else:
-        patterns = raw if isinstance(raw, list) else [raw]
-    texts = [t for t in (str(p).strip() for p in patterns) if t]
-    return _compile(texts, "[%s] Invalid mention pattern %r: %s")
+    return _compile(mention_pattern_texts(raw, config_style=False, defaults=defaults),
+                    "[%s] Invalid mention pattern %r: %s")
 
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────

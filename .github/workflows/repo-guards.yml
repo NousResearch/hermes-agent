@@ -445,3 +445,16 @@ jobs:
       - name: Regenerate every icon target, verify structure, diff against committed
         if: ${{ !cancelled() && steps.setup-pm.outcome == 'success' }}
         run: just check-icons
+
+      # ── python lane: regex patterns build on RE2 (needs a Hermes runtime interpreter) ─────
+
+      # Product code matches through hermes_re, on RE2. RE2 refuses constructs stdlib `re` accepts
+      # (lookaround, backreferences) and evaluates an interior `\b` with ASCII word rules, and a
+      # module compiles most patterns only when it is first imported. The gate compiles and builds
+      # every literal pattern of the files that import hermes_re, so a pattern that cannot run
+      # fails here, not on a user's first match. It needs google-re2, a core dependency, hence the
+      # runtime interpreter setup-pm exported above (the lint job's interpreter has no
+      # dependencies). Local: `just check --only re2-patterns`.
+      - name: Check that every regex pattern builds on RE2
+        if: ${{ !cancelled() && steps.setup-pm.outcome == 'success' && inputs.python }}
+        run: just check --only re2-patterns

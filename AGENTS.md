@@ -85,7 +85,7 @@ hermes-agent/
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 ├── evals/                # live-model A/B and probe harnesses
-└── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
+└── website/              # Docusaurus docs
 ```
 
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
@@ -130,6 +130,7 @@ per variant and a name → variant table (`tools/environments/`, its table still
   unbound read is a silent default-profile leak. Binding points and seams: `gateway/AGENTS.md`
   § Profile scope (HX002/HX004/HX005/HX012, PS-P05/P06).
 - **Machine facts and executable lookup go through `hermes_platform`.**
+- **Regexes: `import hermes_re as re`** (HX018).
 - **Dependencies carry upper bounds** (`>=floor,<next_major`; git URLs and Actions pinned to a SHA);
   after editing `pyproject.toml` run `hermes pm lock` and commit `uv.lock`; never mutate a Hermes
   environment with raw pip/uv.

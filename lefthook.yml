@@ -21,6 +21,15 @@ pre-commit:
       glob: "*.py"
       run: "{just} check --only shims"
 
+    # Only files that import hermes_re are judged; tests/ stays on stdlib re. Without
+    # google-re2 the gate exits 2 and the commit fails, as `just check` does.
+    - name: re2 patterns
+      glob: "*.py"
+      exclude:
+        - "tests/**"
+        - "**/tests/**"
+      run: "{just} re2-patterns {staged_files}"
+
     - name: lint web
       root: web/
       glob: "web/**/*.{js,ts,tsx}"

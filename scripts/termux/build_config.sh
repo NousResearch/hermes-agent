@@ -16,8 +16,11 @@ PLATFORM_TAG="android_24_arm64_v8a"
 # because index.json's pythonAbi field must agree with it.
 PYTHON_ABI="cp314"
 
-# Toolchain pins for the uvloop configured-source build path (--no-build-
-# isolation). Pure-python installs only: maturin is deliberately absent --
+# Toolchain pins for the builds that run without build isolation (--no-build-
+# isolation): uvloop's configured-source path, and google-re2, whose sdist
+# needs pybind11 without declaring it (keep that pin equal to
+# [tool.uv.extra-build-dependencies] in pyproject.toml). Pure-python installs
+# only: maturin is deliberately absent --
 # it is a native wheel that uv (rightly) refuses to install onto bionic,
 # and the rust-backend sdists (pydantic-core, jiter, ...) build through
 # ISOLATION, where the sdist's own constraint fetches the backend fresh.

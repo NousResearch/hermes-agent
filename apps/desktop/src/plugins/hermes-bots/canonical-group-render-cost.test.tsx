@@ -1,11 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
-import type { ComponentProps } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import type * as Header from './canonical-group-header'
 import type * as History from './canonical-group-history'
 import type * as RoomStatus from './group-room-status'
+import type * as RoomUI from './group-room-ui'
 
 // Plan step 3: the room's derived state (outcomes, round, handoffs) is computed once per log/state change,
 // and only the working chips tick each second; the whole room does not re-render on the clock.
@@ -28,12 +30,41 @@ vi.mock('./group-room-status', async importOriginal => {
       return real.memberOutcomes(...args) } }
 })
 const historyRenders = vi.hoisted(() => ({ count: 0 }))
+const rowRenders = vi.hoisted(() => ({ count: 0 }))
+const chromeRenders = vi.hoisted(() => ({ count: 0 }))
+// The room itself (header + notices + cycle) must not re-run for a draft change either: that chrome is
+// what a keystroke used to repaint even after the transcript was memoised.
+vi.mock('./canonical-group-header', async importOriginal => {
+  const real = await importOriginal<typeof Header>()
+
+  return { ...real, CanonicalGroupHeader: (props: Parameters<typeof real.CanonicalGroupHeader>[0]) => { chromeRenders.count++
+
+    return real.CanonicalGroupHeader(props) } }
+})
+// A transcript row is the expensive unit (avatar, author, markdown body): count them, so a keystroke
+// that repaints the whole room fails here even when the derived-data scans stay flat.
+vi.mock('./group-room-ui', async importOriginal => {
+  const real = await importOriginal<typeof RoomUI>()
+
+  return { ...real, RoomMessage: (props: Parameters<typeof real.RoomMessage>[0]) => { rowRenders.count++
+
+    return real.RoomMessage(props) } }
+})
 vi.mock('./canonical-group-history', async importOriginal => {
   const real = await importOriginal<typeof History>()
+  const { memo: memoize } = await import('react')
 
-  return { ...real, CanonicalGroupHistory: (props: Parameters<typeof real.CanonicalGroupHistory>[0]) => { historyRenders.count++
+  // `CanonicalGroupHistory` is memo() in the app; the counting wrapper must be too, or this harness
+  // would repaint on every parent render and measure the mock instead of the memo boundary.
+  const inner = real.CanonicalGroupHistory as unknown as ((props: Parameters<typeof real.CanonicalGroupHistory>[0]) => unknown) & { type: (props: Parameters<typeof real.CanonicalGroupHistory>[0]) => unknown }
+  const Implementation = typeof real.CanonicalGroupHistory === 'function' ? real.CanonicalGroupHistory : inner.type
+  const render = Implementation as (props: Parameters<typeof real.CanonicalGroupHistory>[0]) => ReactNode
 
-    return real.CanonicalGroupHistory(props) } }
+  const Counting = memoize((props: Parameters<typeof real.CanonicalGroupHistory>[0]) => { historyRenders.count++
+
+    return render(props) })
+
+  return { ...real, CanonicalGroupHistory: Counting }
 })
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
@@ -122,13 +153,24 @@ it('does not rescan the log for handoffs on each keystroke in the composer', asy
   const scans = handoffScans.count
   const outcomes = outcomeRuns.count
 
-  for (const text of ['h', 'he', 'hel', 'hell', 'hello']) {
+  // The first character is the one empty→non-empty edge: Send's availability turns on with it, so the
+  // room takes exactly one render there. Every keystroke after that must cost nothing but the input.
+  await act(async () => { fireEvent.change(input, { target: { value: 'h' } }) })
+  const rows = rowRenders.count
+  const chrome = chromeRenders.count
+
+  for (const text of ['he', 'hel', 'hell', 'hello']) {
     await act(async () => { fireEvent.change(input, { target: { value: text } }) })
   }
 
   expect(input.value).toBe('hello')
   expect(handoffScans.count - scans).toBe(0)
   expect(outcomeRuns.count - outcomes).toBe(0)
+  // The symptom in #152114: a keystroke repainting the transcript. Nothing below the composer
+  // may re-render for a draft change.
+  expect(rowRenders.count - rows).toBe(0)
+  // The room's own chrome is not re-run either: the words live in the composer now.
+  expect(chromeRenders.count - chrome).toBe(0)
 })
 
 

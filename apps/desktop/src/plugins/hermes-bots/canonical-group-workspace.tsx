@@ -1,5 +1,5 @@
 import { Button, host, LruCache, randomUuid } from '@hermes/plugin-sdk'
-import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
+import { type ClipboardEvent, type DragEvent, type Ref, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 
 import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive, useSameValue } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
@@ -115,7 +115,28 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
   const [readError, setReadError] = useState('')
-  const [draft, setDraft] = useState('')
+  // The words live in the composer child, not here: a keystroke must re-render the input and nothing
+  // else in the room. This component keeps only whether there is anything typed (it decides Send)
+  // and the current text in a ref, read when it sends.
+  const [hasDraft, setHasDraft] = useState(false)
+  const draftText = useRef('')
+  const composer = useRef<RoomDraftHandle>(null)
+
+  /** Programmatic draft replacement (journal restore, reply mention, words handed back): the input
+   *  owns the text, so it is told directly; only the "anything typed" flag re-renders this room. */
+  const setDraftText = (text: string) => {
+    draftText.current = text
+    setHasDraft(!!text.trim())
+    composer.current?.setText(text)
+  }
+
+  /** Every keystroke lands here. The words go to a ref and only the empty↔non-empty edge re-renders
+   *  this room (Send's availability is all it needs) — that is why typing in a room costs one
+   *  textarea, not the transcript, the roster or the header. */
+  const noteTyped = useCallback((text: string) => {
+    draftText.current = text
+    setHasDraft(previous => (!!text.trim()) === previous ? previous : !!text.trim())
+  }, [])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [restored, setRestored] = useState(false)
@@ -141,7 +162,6 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const [reply, setReply] = useState<RoomReply | null>(null)
   // A handed-back journal entry keeps its thread even without a visible reply chip.
   const draftThread = useRef<string | undefined>(undefined)
-  const composerInput = useRef<HTMLTextAreaElement>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const scroller = useStickToBottom()
   // An intent handed back for editing (nothing of it admitted): the next Send replaces it.
@@ -176,7 +196,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
       if (entry) {
         draftThread.current = entry.params.payload.thread_id as string | undefined
-        setDraft(String(entry.params.payload.text ?? ''))
+        setDraftText(String(entry.params.payload.text ?? ''))
         setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
       }
 
@@ -417,7 +437,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     setPending(null)
     setReply(next?.reply ?? null)
     setRestoredPending(false)
-    setDraft(next?.text ?? '')
+    setDraftText(next?.text ?? '')
     setAttachments(next?.attachments ?? [])
   }
 
@@ -439,7 +459,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       setReply(current => current?.thread === draftThread.current ? current : null)
       setPending(null)
       setRestoredPending(false)
-      setDraft(words.text)
+      setDraftText(words.text)
       setAttachments(words.attachments)
       setSendHint(hint)
     } else {setSendHint(labels.sendMaybe)}
@@ -466,7 +486,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
   const sendIntent = async (run: SendRun) => {
     await retireDeliveredIntent()
-    const typed = { text: draft, attachments, thread_id: reply?.thread ?? draftThread.current }
+    const typed = { text: draftText.current, attachments, thread_id: reply?.thread ?? draftThread.current }
     const replacing = editing.current
     const exact = pending ?? (replacing ? await replaceCanonicalGroupSend(binding, replacing, typed) : await prepareCanonicalGroupSend(binding, typed))
     editing.current = null
@@ -481,13 +501,13 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     }
 
     // Another window won the room's slot: send its intent first, keep this window's words.
-    if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments, reply?.thread)) {
+    if (!pending && !sameGroupPayload(exact.params.payload, draftText.current, attachments, reply?.thread)) {
       heldDraft.current = holdDraft(heldDraft.current, { ...typed, reply })
     }
 
     const words = { text: String(exact.params.payload.text ?? ''), attachments: (exact.params.payload.attachments as Attachment[] | undefined) ?? [] }
     setPending(exact)
-    setDraft(words.text)
+    setDraftText(words.text)
     setAttachments(words.attachments)
     // Save before waiting; Stop can still hold this intent back.
     await peerRenewalBeforeSend(exact.binding, state, methods)
@@ -528,7 +548,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
   const send = () => {
     // A Stop still fencing behind the last Send would cancel this one too: it waits until Stop is done.
-    if (!restored || busyRef.current || stopPending.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    if (!restored || busyRef.current || stopPending.current || uploading || !state?.driver_status || (!pending && !hasDraft && !attachments.length)) {return}
     stopIntent.current = null
     setSendHint('')
     setNotice('')
@@ -635,9 +655,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const driver = state?.driver_status
   const members = useSameValue(state?.room.members ?? NO_MEMBERS)
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
-  const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
-  const memberById = new Map(members.map(member => [member.member_id, member]))
-  const avatarFor = (name: string, size: number) => <RoomBotAvatar name={name} size={size} />
+  const mentionMembers = useMemo(() => members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name })), [members])
+  const memberById = useMemo(() => new Map(members.map(member => [member.member_id, member])), [members])
+  // Stable identities: the transcript below is memoised, so these three must not be re-created by a
+  // composer keystroke — a fresh prop identity is exactly what defeats that memo boundary.
+  const avatarFor = useCallback((name: string, size: number) => <RoomBotAvatar name={name} size={size} />, [])
+
+  const historyPause = useMemo(() => ({ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop, stopping }),
+    [busy, continueDiscussion, driver?.max_continues, stop, stopping])
 
   // The Bots list row reads this room's live state while it is open, and forgets it once it closes.
   useEffect(() => holdCanonicalRoomLive(binding), [binding])
@@ -651,16 +676,23 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   })
 
   // Hover Reply: continue that message's thread, addressed to the member who wrote it.
-  const replyTo = (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
+  const replyTo = useCallback((member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
     setReply({ member, name: member ? canonicalMemberName(member) : author, quote: text.split('\n').map(line => line.trim()).find(Boolean) ?? '', thread })
 
     if (member) {
       const tag = `@${member.handle}`
-      setDraft(current => current.trimStart().startsWith(tag) ? current : `${tag} ${current}`)
+      const current = draftText.current
+      const next = current.trimStart().startsWith(tag) ? current : `${tag} ${current}`
+
+      if (next !== current) {
+        draftText.current = next
+        setHasDraft(true)
+        composer.current?.setText(next)
+      }
     }
 
-    focusComposerEnd(composerInput)
-  }
+    composer.current?.focus()
+  }, [])
 
   // Text pastes stay in the composer; only files go through the picker's upload.
   const attachTransfer = (event: ClipboardEvent | DragEvent, data: DataTransfer | null) => {
@@ -672,7 +704,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     if (!composerLocked && offersGroupMethod(methods, 'groups.attachment.upload')) {uploader.current?.upload(files)}
   }
 
-  const canSend = canSendNow({ restored, busy, stopping, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
+  const canSend = canSendNow({ restored, busy, stopping, uploading, pending: !!pending, draft: hasDraft ? 'typed' : '', attachments: attachments.length, driver: !!driver })
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -688,7 +720,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
           <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo}
-            pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop, stopping }} />
+            pause={historyPause} />
           <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)
@@ -723,8 +755,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         onSubmit={send}
         sendLabel={pending ? labels.retry : labels.send}
         status={<CanonicalGroupCycle cycle={cycle} driver={driver} labels={labels} members={members} statuses={statuses} />}>
-        <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked} handleFor={member => member.handle}
-          members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} ref={composerInput} value={draft} />
+        <RoomDraftInput disabled={composerLocked} initialText={draftText.current} label={labels.groupMessage} members={mentionMembers} onText={noteTyped}
+          placeholder={labels.composerPlaceholder} ref={composer} send={send} />
       </RoomComposer>
       </div>
     </div>
@@ -732,4 +764,39 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       <CanonicalGroupRoomSettings autoRouting={!!driver?.routing_modes?.includes('auto')} binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refreshAfterChange} />
     </CanonicalGroupDetails>}
   </section>
+}
+
+interface RoomDraftHandle {
+  /** Replace the whole draft (journal restore, a reply's @mention, words handed back to the user). */
+  setText: (text: string) => void
+  focus: () => void
+}
+
+/** The composer's words, owned here so a keystroke re-renders this textarea and nothing else in the
+ *  room — the same shape as the main thread's composer. The room keeps only "anything typed" (it
+ *  decides Send) and reads the words through this handle at send time, so typing never re-runs the
+ *  transcript, the roster, the header or the cycle strip. */
+function RoomDraftInput({ disabled, initialText, label, members, onText, placeholder, ref, send }: {
+  disabled: boolean
+  /** Words already on hand at mount (a journal entry restored before this input existed). */
+  initialText: string
+  label: string
+  members: { name: string; handle: string; display_name?: string }[]
+  onText: (text: string) => void
+  placeholder: string
+  ref: Ref<RoomDraftHandle>
+  send: () => void
+}) {
+  const [text, setText] = useState(initialText)
+  const input = useRef<HTMLTextAreaElement>(null)
+
+  useImperativeHandle(ref, () => ({
+    focus: () => focusComposerEnd(input),
+    setText: (next: string) => { setText(next); onText(next) }
+  }), [onText])
+
+  return <GroupMentionInput aria-label={label} className={ROOM_COMPOSER_INPUT_CLASS} disabled={disabled}
+    handleFor={member => member.handle} members={members}
+    onChange={(next: string) => { setText(next); onText(next) }}
+    onSubmitDraft={send} placeholder={placeholder} ref={input} value={text} />
 }

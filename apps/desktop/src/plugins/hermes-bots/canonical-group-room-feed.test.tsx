@@ -278,7 +278,9 @@ it('keeps the same log array when a read brings nothing new', async () => {
   const room = { log: [message(1), message(2)], changeEvents: true }
   serveRoom(room)
   const History = await import('./canonical-group-history')
-  const render0 = vi.spyOn(History, 'CanonicalGroupHistory')
+  // The export is a memo() component: its render function is `type`, and React reads that property
+  // at render time, so spying on it still sees every render's props.
+  const render0 = vi.spyOn(History.CanonicalGroupHistory as unknown as { type: (props: { events: unknown }) => unknown }, 'type')
   render(<CanonicalGroupWorkspace binding={binding} />)
   await screen.findByText('m2')
   const before = (render0.mock.calls.at(-1)?.[0] as { events: unknown }).events

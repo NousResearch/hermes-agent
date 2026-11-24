@@ -178,14 +178,22 @@ export function MemberStatusChip({ avatar, badge, labels, name, phase, status: g
 export const ROOM_AVATAR_SIZE = 28
 const AVATAR_COLUMN = 'w-7 shrink-0'
 
+/** A transcript row's "x ago", kept live inside a memoised row: the shared clock publishes each second,
+ *  but this leaf re-renders only when its label actually changes ("3 minutes ago" → "4 minutes ago"),
+ *  so a room of hundreds of rows costs one string compare per row per tick, not a re-render. */
+export function RoomTime({ className, timestampMs }: { className?: string; timestampMs: number }) {
+  const { locale } = useI18n()
+  const label = useSyncExternalStore(subscribeClock, () => relativeTime(timestampMs, undefined, locale))
+
+  return <time className={className} dateTime={new Date(timestampMs).toISOString()}>{label}</time>
+}
+
 /** One transcript row: avatar, name and time over the body, like a chat thread. Members'
  *  bodies read like the main thread's assistant answer (bare markdown); the user's own body
  *  sits in the main thread's user bubble (`--dt-user-bubble` fill, transcript hairline). */
 export function RoomMessage({ actions, author, avatar, badge, children, isUser = false, timestampMs }: {
   actions?: ReactNode; author?: ReactNode; avatar?: ReactNode; badge?: ReactNode; children: ReactNode; isUser?: boolean; timestampMs?: number
 }) {
-  const { locale } = useI18n()
-
   return <div className="group/room-message flex items-start gap-3 py-2" data-room-message={isUser ? 'user' : 'member'}>
     <div className={cn(AVATAR_COLUMN, 'mt-0.5')}>{avatar}</div>
     <div className="min-w-0 flex-1">
@@ -193,7 +201,7 @@ export function RoomMessage({ actions, author, avatar, badge, children, isUser =
         {author && <span className="truncate text-[0.8125rem] font-semibold text-foreground">{author}</span>}
         {badge}
         {typeof timestampMs === 'number' && Number.isFinite(timestampMs) &&
-          <time className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs, undefined, locale)}</time>}
+          <RoomTime className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" timestampMs={timestampMs} />}
         {actions && <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/room-message:opacity-100 focus-within:opacity-100">{actions}</div>}
       </div>
       <div className={cn(ROOM_TEXT_SCALE, 'wrap-anywhere mt-0.5 min-w-0 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground [&_pre]:whitespace-pre-wrap',

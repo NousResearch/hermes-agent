@@ -939,7 +939,12 @@ export function MessageTextContent({
   )
 }
 
-export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
+/**
+ * Memoised on its own text: a room row (or a streaming neighbour) re-rendering does not re-parse
+ * markdown that did not change. Without this, one keystroke in a composer re-ran Streamdown for
+ * every message on screen.
+ */
+export const MarkdownTextContent = memo(function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
   // No `smooth` on purpose — same as the assistant answer. `TextMessagePartProvider`
   // mints a fresh part object on every `text` change, and useSmooth resets its
   // reveal to empty whenever the part identity changes, so a smoothed reasoning
@@ -951,7 +956,7 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
       <MarkdownTextSurface {...surfaceProps} />
     </TextMessagePartProvider>
   )
-}
+})
 
 const MarkdownTextImpl = () => {
   const textDirection = useForcedTextDirection()

@@ -53,13 +53,20 @@ export function ReorderableList({
   useEffect(() => () => over.current?.removeAttribute(PROJECT_ROW_DROP_ATTR), [])
 
   const handleDragMove = ({ active }: DragMoveEvent) => {
-    const item = active.rect.current.translated
-    const target = item && outside?.accepts(String(active.id)) ? outside.target() : null
+    const { initial, translated } = active.rect.current
+    const target = initial && translated && outside?.accepts(String(active.id)) ? outside.target() : null
 
+    if (!initial || !translated || !target) {
+      mark(null)
+
+      return
+    }
+
+    // Where the item is drawn: moved on Y only (useSortableBindings), so x is where it started.
     // Hit-tested, so a target scrolled out of its clip is not under the item where its box would be.
-    const under = item && document.elementsFromPoint(item.left + item.width / 2, item.top + item.height / 2)
+    const under = document.elementsFromPoint(initial.left + initial.width / 2, translated.top + translated.height / 2)
 
-    mark(target && under?.includes(target) ? target : null)
+    mark(under.includes(target) ? target : null)
   }
 
   const handleDragEnd = ({ activatorEvent, active, over: overItem }: DragEndEvent) => {

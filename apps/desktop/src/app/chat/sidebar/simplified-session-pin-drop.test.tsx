@@ -159,6 +159,16 @@ it('pins a chat dropped on Pinned, the way its menu does, and leaves the agentâ€
   expect(onReorder).not.toHaveBeenCalled()
 })
 
+// The row is drawn on the vertical axis only, so it is over Pinned however far the pointer strays.
+it('pins a chat carried up to Pinned with the pointer far off to the side', async () => {
+  const onUpdate = vi.fn()
+
+  render(<Sidebar onUpdate={onUpdate} />)
+  await drag(agentRow('Chat 2'), 900, 50)
+
+  expect(onUpdate).toHaveBeenCalledWith(chats[2], 'pinned', true)
+})
+
 it('marks Pinned as the target only while the chat is held over it', async () => {
   render(<Sidebar onUpdate={noop} />)
   const section = doc.querySelector<HTMLElement>('[data-slot="pinned-section"]')!

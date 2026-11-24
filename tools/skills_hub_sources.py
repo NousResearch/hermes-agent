@@ -107,6 +107,7 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
 
     def _parse_identifier(self, identifier: str) -> Optional[dict]:
         raw = identifier.removeprefix("well-known:")
+        explicit = raw != identifier
         if not raw.startswith(("http://", "https://")):
             return None
         parsed_url = urlparse(raw)
@@ -118,7 +119,9 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
             skill_url = f"{base_url}/{skill_name}"
         else:
             skill_url = clean_url[:-len("/SKILL.md")] if clean_url.endswith("/SKILL.md") else clean_url.rstrip("/")
-            if f"{self.BASE_PATH}/" not in skill_url:
+            # A bare URL is claimed only under BASE_PATH; a ``well-known:`` one is what _wrap_identifier
+            # recorded for an index at any path, so it must read back or check/update lose the skill.
+            if not explicit and f"{self.BASE_PATH}/" not in skill_url:
                 return None
             base_url, skill_name = skill_url.rsplit("/", 1)
         return {"index_url": f"{base_url}/index.json", "base_url": base_url,

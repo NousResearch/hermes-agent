@@ -31,7 +31,9 @@ import {
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
 import { scheduleStreamWork } from '@/lib/stream-work-clock'
+import { anySttLeaseActive } from '@/lib/stt-lease'
 import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import { anyTtsLeaseActive } from '@/lib/tts-lease'
 import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -41,6 +43,9 @@ import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
 import { broadcastTranscriptChanged } from '@/store/transcript-sync'
+import { $voicePlayback } from '@/store/voice-playback'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $voiceStreamPaintOwners } from '@/store/voice-stream-paint'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -50,13 +55,13 @@ import {
   type DuplicateFinalCollapse,
   identicalInterimSiblingIndex
 } from './collapse-duplicate-final'
+import { terminalCompletionState } from './completion-terminal-state'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
-import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
+import { completionErrorText, delegateTaskPayloads, streamFlushFloor } from './utils'
 
 interface MessageStreamOptions {
   activeGatewayProfile?: string
@@ -73,12 +78,15 @@ interface MessageStreamOptions {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    liveDelta?: boolean
   ) => ClientSessionState
 }
 
 interface QueuedStreamDelta {
   occurredAt: number
+  /** Segment offset of `text`'s first code unit, when the frame was stamped. */
+  offset?: number
   text: string
   type: 'assistant' | 'reasoning'
 }
@@ -89,6 +97,15 @@ interface QueuedStreamDelta {
 let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
+
+function streamMessageIndex(messages: readonly ChatMessage[], streamId: string): number {
+  // Live output almost always owns the tail; late tool events may own a sealed row.
+  const tailIndex = messages.length - 1
+
+  return tailIndex >= 0 && messages[tailIndex].id === streamId
+    ? tailIndex
+    : messages.findIndex(message => message.id === streamId)
+}
 
 /**
  * A sealed stream can lose a few characters while the authoritative final
@@ -181,73 +198,88 @@ export function useMessageStream({
       occurredAt = Date.now() / 1000
     ) => {
       const apply = () => {
-        updateSessionState(sessionId, state => {
-          // After a stop, drop any late deltas / tool events for the
-          // cancelled turn so they don't keep growing the (now finalized)
-          // assistant bubble or, worse, seed a brand-new bubble that
-          // appears to belong to the next user message.
-          if (state.interrupted || opts.skip?.(state)) {
-            return state
-          }
+        updateSessionState(
+          sessionId,
+          state => {
+            // After a stop, drop any late deltas / tool events for the
+            // cancelled turn so they don't keep growing the (now finalized)
+            // assistant bubble or, worse, seed a brand-new bubble that
+            // appears to belong to the next user message.
+            if (state.interrupted || opts.skip?.(state)) {
+              return state
+            }
 
-          const reconciledId = opts.eventTarget?.(state) ?? null
-          const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
-          // The event landed on a bubble that is NOT the live stream (sealed
-          // by interim commentary, a mid-turn user message, or turn settle).
-          // It is a patch to history: the bubble keeps its own pending bit
-          // and the turn's stream bookkeeping is neither consulted nor changed.
-          const patchesSealedBubble = reconciledId !== null && reconciledId !== state.streamId
-          const groupId = state.pendingBranchGroup ?? undefined
-          const prev = state.messages
-          let nextMessages: ChatMessage[]
+            const reconciledId = opts.eventTarget?.(state) ?? null
+            const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
+            // The event landed on a bubble that is NOT the live stream (sealed
+            // by interim commentary, a mid-turn user message, or turn settle).
+            // It is a patch to history: the bubble keeps its own pending bit
+            // and the turn's stream bookkeeping is neither consulted nor changed.
+            const patchesSealedBubble = reconciledId !== null && reconciledId !== state.streamId
+            const groupId = state.pendingBranchGroup ?? undefined
+            const prev = state.messages
+            let nextMessages: ChatMessage[]
 
-          if (!prev.some(m => m.id === streamId)) {
-            nextMessages = [
-              ...prev,
-              {
-                id: streamId,
-                role: 'assistant',
-                parts: seed(),
-                timestamp: occurredAt,
-                pending: true,
-                branchGroupId: groupId
-              }
-            ]
-          } else {
-            nextMessages = prev.map(m => {
-              if (m.id !== streamId) {
-                return m
-              }
+            // Copy the transcript once and patch only the owning row.
+            const streamIndex = streamMessageIndex(prev, streamId)
 
-              const patched = { ...m, parts: transform(m.parts, m) }
+            if (streamIndex === -1) {
+              nextMessages = [
+                ...prev,
+                {
+                  id: streamId,
+                  role: 'assistant',
+                  parts: seed(),
+                  timestamp: occurredAt,
+                  pending: true,
+                  branchGroupId: groupId
+                }
+              ]
+            } else {
+              const message = prev[streamIndex]
+              const parts = transform(message.parts, message)
+              const patched = { ...message, parts }
 
               // A bubble a steer sealed stays pending only while its own tools run.
-              return {
-                ...patched,
-                pending: patchesSealedBubble
-                  ? Boolean(m.pending) && hasUnresolvedToolCall(patched)
-                  : opts.pending
-                    ? opts.pending(m)
-                    : true
+              const pending = patchesSealedBubble
+                ? Boolean(message.pending) && hasUnresolvedToolCall(patched)
+                : opts.pending
+                  ? opts.pending(message)
+                  : true
+
+              // A no-op event (e.g. a reasoning replace that lands after answer
+              // text) must not publish a fresh transcript: the live view path
+              // compares rows by reference, so a new wrapper would repaint.
+              const turnUnchanged =
+                patchesSealedBubble ||
+                (state.streamId === streamId && state.sawAssistantPayload && !state.awaitingResponse)
+
+              if (parts === message.parts && pending === Boolean(message.pending) && turnUnchanged) {
+                return state
               }
-            })
-          }
 
-          if (patchesSealedBubble) {
-            // Later deltas must not append into the bubble the late event
-            // just updated, and a late event from an earlier phase must not
-            // clear the wait state of the turn now in flight.
-            return { ...state, messages: nextMessages }
-          }
+              nextMessages = prev.slice()
+              nextMessages[streamIndex] = { ...patched, pending }
+            }
 
-          return {
-            ...state,
-            messages: nextMessages,
-            streamId,
-            sawAssistantPayload: true,
-            awaitingResponse: false
-          }
-        })
+            if (patchesSealedBubble) {
+              // Later deltas must not append into the bubble the late event
+              // just updated, and a late event from an earlier phase must not
+              // clear the wait state of the turn now in flight.
+              return { ...state, messages: nextMessages }
+            }
+
+            return {
+              ...state,
+              messages: nextMessages,
+              streamId,
+              sawAssistantPayload: true,
+              awaitingResponse: false
+            }
+          },
+          undefined,
+          true
+        )
       }
 
       apply()
@@ -332,7 +364,9 @@ export function useMessageStream({
           queued.reduce(
             (next, delta) =>
               delta.type === 'assistant'
-                ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, delta.text, delta.occurredAt))
+                ? dedupeGeneratedImageEchoesInParts(
+                    appendAssistantTextPart(next, delta.text, delta.occurredAt, delta.offset)
+                  )
                 : appendReasoningPart(next, delta.text, delta.occurredAt),
             parts
           )
@@ -376,20 +410,26 @@ export function useMessageStream({
     // ADAPTIVE: the floor scales with what the last flush actually cost.
     // With several sessions streaming at once (split tiles), one flush carries
     // every stream's commit + markdown re-parse; when that work approaches or
-    // exceeds the fixed 33ms budget, back-to-back flushes leave the main
+    // exceeds the 40ms base floor, back-to-back flushes leave the main
     // thread no idle frames and every interaction (typing, resize, hover)
     // stutters even though no render is wasted. Yielding 3x the measured cost
     // keeps the thread ~75% idle for input at any load: cheap flushes stay at
-    // 30fps of text growth, expensive multi-stream flushes degrade text fps
+    // 25fps of text growth, expensive multi-stream flushes degrade text fps
     // instead of interactivity — capped so text never updates slower than 4/s.
     // The cost has to include the deferred view-sync frame where the commit
     // actually happens; see runFlush below.
     const sinceLast = performance.now() - lastFlushAtRef.current
+    const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible'
 
-    const adaptiveFloor = Math.min(
-      Math.max(STREAM_DELTA_FLUSH_MS, lastFlushCostRef.current * 3),
-      MAX_STREAM_FLUSH_GAP_MS
-    )
+    // Any voice consumer reads the transcript off-screen; never slow its feed.
+    const voiceBusy =
+      $autoSpeakReplies.get() ||
+      $voicePlayback.get().status !== 'idle' ||
+      $voiceStreamPaintOwners.get() > 0 ||
+      anySttLeaseActive() ||
+      anyTtsLeaseActive()
+
+    const adaptiveFloor = streamFlushFloor(lastFlushCostRef.current, hidden, voiceBusy)
 
     if (flushHandleRef.current !== null && sinceLast < adaptiveFloor) {
       return
@@ -405,7 +445,7 @@ export function useMessageStream({
       // (and with it the React commit + Streamdown re-parse the floor is meant
       // to account for) to its own rAF inside updateSessionState, which runs
       // after this timer task. Stopping the clock here pins lastFlushCostRef
-      // near zero and collapses the adaptive floor to 33ms no matter the load.
+      // near zero and collapses the adaptive floor to its base no matter the load.
       // Our rAF is registered after the view-sync one, so it runs in the same
       // frame right after that commit; its timestamp marks frame start, so
       // (now - frameStart) counts only work done inside the frame, not the
@@ -448,18 +488,26 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
-    (sessionId: string, key: 'assistant' | 'reasoning', delta: string, occurredAt = Date.now() / 1000) => {
+    (
+      sessionId: string,
+      key: 'assistant' | 'reasoning',
+      delta: string,
+      occurredAt = Date.now() / 1000,
+      offset?: number
+    ) => {
       if (!delta) {
         return
       }
 
       const queued = queuedDeltasRef.current.get(sessionId) ?? []
       const tail = queued.at(-1)
+      // Only a contiguous chunk joins the queued one, so each entry keeps one offset.
+      const contiguous = tail?.offset === undefined ? offset === undefined : offset === tail.offset + tail.text.length
 
-      if (tail?.type === key) {
+      if (tail?.type === key && contiguous) {
         tail.text += delta
       } else {
-        queued.push({ occurredAt, text: delta, type: key })
+        queued.push({ occurredAt, offset, text: delta, type: key })
       }
 
       queuedDeltasRef.current.set(sessionId, queued)
@@ -524,13 +572,17 @@ export function useMessageStream({
         return
       }
 
+      let offset: number | undefined
+
       if (stamp) {
         const admitted = admitSegmentDelta(segmentCursorsRef.current.get(sessionId), stamp, delta)
         segmentCursorsRef.current.set(sessionId, admitted.cursor)
+        // Admission trims only an already-applied head, so the rest starts that much later.
+        offset = stamp.offset === undefined ? undefined : stamp.offset + delta.length - admitted.text.length
         delta = admitted.text
       }
 
-      queueDelta(sessionId, 'assistant', delta, occurredAt)
+      queueDelta(sessionId, 'assistant', delta, occurredAt, offset)
     },
     [queueDelta]
   )
@@ -777,38 +829,33 @@ export function useMessageStream({
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
-      responseReused?: boolean
+      responseReused?: boolean,
+      failureReason?: string
     ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
-        // Late completion from an already-cancelled turn: cancelRun has
-        // already finalized the bubble (kept the partial text, dropped it if
-        // empty). Re-running the dedupe below would replace the partial with
-        // the just-cancelled full text, so we settle and bail instead — only
-        // extending the bubble to the partial the agent persisted (#121594).
-        if (state.interrupted) {
-          return {
-            ...state,
-            messages: bindStoppedTurnReceipt(
-              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
-              persistedTurn
-            ),
-            awaitingResponse: false,
-            busy: false,
-            needsInput: false,
-            pendingBranchGroup: null,
-            streamId: null,
-            turnStartedAt: null,
-            turnLive: false
-          }
+        // A cancelled turn or a provider safety-filter refusal collapses the
+        // turn into a fully-formed terminal state instead of the dedupe/merge
+        // below (see terminalCompletionState for the two cases and the WHY).
+        const terminalState = terminalCompletionState(state, {
+          text,
+          occurredAt,
+          persistedTurn,
+          failure,
+          status,
+          failureReason
+        })
+
+        if (terminalState) {
+          return terminalState
         }
 
         const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
         const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
-        const completionError = failure?.error ?? completionErrorText(finalText)
+        const completionError = failure?.error ?? completionErrorText(finalText, status)
         // A partial failure's `text` is streamed output the user should keep,
         // not the error string — settle it like a normal reply AND mark the
         // bubble failed, instead of stripping the text.
@@ -1097,7 +1144,7 @@ export function useMessageStream({
           (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden
         )
 
-        const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
+        const lastVisible = nextMessages.findLast(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
         const sameTurnId = collapsed?.keptId ?? (streamIndex >= 0 ? streamId : null)

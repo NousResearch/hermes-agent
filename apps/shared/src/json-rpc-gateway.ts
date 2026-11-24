@@ -1,3 +1,4 @@
+import type { CanonicalClientIdentity } from './gateway-contract.generated.js'
 import type { GatewayEvent, GatewayEventName } from './gateway-events.js'
 import {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
@@ -26,6 +27,8 @@ export interface GatewayClientOptions {
   onRequestHandlerError?: JsonRpcRequestChannelOptions['onRequestHandlerError']
   /** No handler accepted a server→client request; the channel already answered `-32601`. */
   onUnhandledRequest?: JsonRpcRequestChannelOptions['onUnhandledRequest']
+  /** An error frame no request owns (the backend's parse-error reply). */
+  onUncorrelatedError?: JsonRpcRequestChannelOptions['onUncorrelatedError']
   /** Return true to intercept the default closed-state transition. */
   onSocketClose?: (event: { code: number }) => boolean | void
   /** Fetch `session.events.since` after a reconnect (default). Off for notification-only feeds whose peer never answers RPCs. */
@@ -164,9 +167,9 @@ export class JsonRpcGatewayClient {
   private replayEpochBySession = new Map<string, string>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<
-    Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
+    Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'socketFactory'>
   > &
-    Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
+    Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'socketFactory'>
 
   /**
    * This client is the Desktop app on the backend's own machine, read at each socket open
@@ -174,6 +177,11 @@ export class JsonRpcGatewayClient {
    */
   protected isDesktopLocal(): boolean {
     return false
+  }
+
+  /** Which client this is, announced once per connection on its first `gateway.ready` (`JsonRpcRequestChannelOptions.clientIdentity`); none by default. */
+  protected clientIdentity(): CanonicalClientIdentity | null | Promise<CanonicalClientIdentity | null> {
+    return null
   }
 
   constructor(options: GatewayClientOptions = {}) {
@@ -189,11 +197,13 @@ export class JsonRpcGatewayClient {
       replay: options.replay ?? true,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       onRequestHandlerError: options.onRequestHandlerError,
+      onUncorrelatedError: options.onUncorrelatedError,
       onUnhandledRequest: options.onUnhandledRequest,
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       socketFactory: options.socketFactory
     }
     this.channel = new JsonRpcRequestChannel({
+      clientIdentity: () => this.clientIdentity(),
       createRequestId: this.options.createRequestId,
       desktopLocal: () => this.isDesktopLocal(),
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
@@ -205,6 +215,7 @@ export class JsonRpcGatewayClient {
       onEvent: event => this.handleEvent(event),
       onHeartbeatFailure: error => this.invalidate(error.message),
       onRequestHandlerError: this.options.onRequestHandlerError,
+      onUncorrelatedError: this.options.onUncorrelatedError,
       onUnhandledRequest: this.options.onUnhandledRequest,
       requestTimeoutMs: this.options.requestTimeoutMs
     })
@@ -217,6 +228,11 @@ export class JsonRpcGatewayClient {
   /** The connected canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
   protected get backendClarifyBatch(): boolean {
     return this.channel.clarifyBatch
+  }
+
+  /** The connected backend keeps `client.activity` reports (`client.capabilities`); send none otherwise. */
+  get clientActivity(): boolean {
+    return this.channel.clientActivity
   }
 
   async connect(wsUrl: string): Promise<void> {

@@ -23,7 +23,7 @@ test('native consumption copies admitted modules and helpers, rejecting changed 
     const out = path.join(app, 'build/native-deps')
     fs.mkdirSync(path.join(out, 'node-pty'), { recursive: true })
     fs.cpSync(path.join(import.meta.dirname, '../electron/native'), path.join(app, 'electron/native'), { recursive: true })
-    fs.writeFileSync(path.join(source, 'package-lock.json'), '{}')
+    fs.writeFileSync(path.join(source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
     fs.writeFileSync(path.join(app, 'package.json'), '{}')
     fs.writeFileSync(path.join(out, 'node-pty/package.json'), '{}')
     const binding = path.join(out, 'node-pty/pty.node')

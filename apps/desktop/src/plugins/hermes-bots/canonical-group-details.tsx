@@ -6,7 +6,7 @@ import { canonicalApprovalPreview } from './canonical-group-approval'
 import { type GroupMethods, offersGroupMethod, offersGroupSafetyMethod } from './canonical-group-capabilities'
 import type { CanonicalGroupRoute, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 import type { MemberStatus } from './group-room-status'
-import { AvatarStack, fill, memberStatusText, type RoomStatusLabels } from './group-room-ui'
+import { AvatarStack, fill, memberStatusText, type RoomStatusLabels, shownDetail, useShownStatus } from './group-room-ui'
 
 /** What an open room last saw, for its row in the Bots list. */
 export interface CanonicalRoomLive { working: boolean; failed: boolean; needsYou: boolean }
@@ -64,12 +64,24 @@ export function useStickToBottom() {
 
     if (!el || !content) {return}
 
-    const onScroll = () => { pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48 }
+    let lastTop = el.scrollTop
 
-    const follow = () => { if (pinned.current) {el.scrollTop = el.scrollHeight} }
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+
+      if (el.scrollTop < lastTop || nearBottom) {pinned.current = nearBottom}
+      lastTop = el.scrollTop
+    }
+
+    const follow = () => {
+      if (pinned.current) {el.scrollTop = el.scrollHeight}
+      lastTop = el.scrollTop
+    }
+
     const observer = new ResizeObserver(follow)
     el.addEventListener('scroll', onScroll)
     observer.observe(content)
+    observer.observe(el)
     follow()
 
     return () => { el.removeEventListener('scroll', onScroll); observer.disconnect() }
@@ -134,7 +146,7 @@ export function CanonicalPendingCard({ action, avatar, busy, labels, methods, na
 
   const choices = Array.isArray(action.approval?.choices) ? action.approval.choices : []
 
-  return <div className="mx-3 my-1 flex items-start gap-2.5 rounded-xl bg-(--chrome-action-hover) px-3 py-2" data-member-id={action.member_id} data-pending-action={action.kind} data-task-id={action.task_id}>
+  return <div className="mx-3 my-1 flex items-start gap-2.5 rounded-xl bg-(--chrome-action-hover) px-3 py-2" data-member-id={action.member_id} data-pending-action={action.kind} data-task-id={action.task_id} tabIndex={-1}>
     <div className="mt-0.5 shrink-0">{avatar}</div>
     <div className="grid min-w-0 flex-1 gap-1.5">
       <p className="text-xs text-foreground">{copy ? fill(labels[copy], { name }) : name}</p>
@@ -178,20 +190,26 @@ export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, ro
     </div>
     <div className="grid gap-1">
       <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">{labels.members} · {room.members.length}</span>
-      {room.members.map(member => {
-        const status = statuses.get(member.member_id) ?? { kind: 'idle' as const }
-        const detail = 'detail' in status ? status.detail : undefined
-
-        return <div className="flex items-center gap-2 py-1" data-member-status={status.kind} key={member.member_id}>
-          {avatarFor(faceName(member), 24)}
-          <div className="min-w-0">
-            <div className="truncate text-xs font-medium text-foreground">{canonicalMemberName(member)} <span className="font-normal text-(--ui-text-quaternary)">@{member.handle}</span></div>
-            <Tip label={detail}><div className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{memberStatusText(status, labels)}</div></Tip>
-          </div>
-        </div>
-      })}
+      {room.members.map(member => <DetailsMember avatar={avatarFor(faceName(member), 24)} key={member.member_id} labels={labels}
+        member={member} status={statuses.get(member.member_id) ?? { kind: 'idle' }} />)}
       <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{labels.membersFixed}</p>
     </div>
     {children}
   </aside>
+}
+
+/** One member row of the details panel; it ticks on its own while that member works. */
+function DetailsMember({ avatar, labels, member, status }: {
+  avatar: ReactNode; labels: RoomStatusLabels; member: CanonicalRoom['members'][number]; status: MemberStatus
+}) {
+  const shown = useShownStatus(status)
+  const detail = shownDetail(shown)
+
+  return <div className="flex items-center gap-2 py-1" data-member-status={shown.kind}>
+    {avatar}
+    <div className="min-w-0">
+      <div className="truncate text-xs font-medium text-foreground">{canonicalMemberName(member)} <span className="font-normal text-(--ui-text-quaternary)">@{member.handle}</span></div>
+      <Tip label={detail}><div className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{memberStatusText(shown, labels)}</div></Tip>
+    </div>
+  </div>
 }

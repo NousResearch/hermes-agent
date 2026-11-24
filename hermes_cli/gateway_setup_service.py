@@ -109,6 +109,56 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     return False
 
 
+def _recorded_choice():
+    from hermes_cli.config import load_config
+    return load_config().get("gateway", {}).get("service_install_choice")
+
+
+def _requests_install_options(args) -> bool:
+    """The user named how to install (``--system``, ``--no-start-now``, ...), not just whether."""
+    return (any(getattr(args, k, None) is not None for k in ("start_now", "start_on_login"))
+            or any(getattr(args, k, False) for k in ("system", "run_as_user", "force", "force_unit_path")))
+
+
+def _messaging_configured() -> bool:
+    """A messaging platform is connected the way the gateway itself loads it (env or config.yaml)."""
+    from gateway.config import load_gateway_config
+    return bool(load_gateway_config().get_connected_platforms())
+
+
+def install_after_setup(args) -> bool:
+    """``hermes gateway install --if-missing``, the installers' step after setup: setup's one
+    consent question, never a second install path. A recorded decline installs nothing; an
+    unanswered question is asked once; a container or a host without a service manager gets
+    setup's guidance. True hands an install the user spelled out with options to the explicit
+    install path, which honours them; a Yes whose install then fails exits 1 so the installer's
+    gateway stage reports it."""
+    from hermes_cli import gateway as gw
+    from hermes_constants import is_container
+
+    if gw._is_service_installed():
+        print("✓ Gateway service already installed")
+        return False
+    if _recorded_choice() == "decline":
+        gw.print_info("Gateway service skipped (declined in setup). Install it any time: hermes gateway install")
+        return False
+    if _requests_install_options(args):
+        return True
+    if _recorded_choice() is None and not _messaging_configured():
+        # First-run setup asks one question and connects no platform: nothing needs a service yet.
+        gw.print_info("No messaging platform connected, so no gateway service was installed. "
+                      "Connect one with: hermes setup gateway")
+        return False
+    if ensure_gateway_service(context="setup", interactive=True):
+        return False
+    # A Yes (now or saved) that did not end in a running service is a failure: the install or its
+    # start failed. Only a No records "decline" on a host that can run a service.
+    attempted = sys.stdin.isatty() and not is_container() and gw._service_backend() is not None
+    if attempted and _recorded_choice() != "decline":
+        raise SystemExit(1)
+    return False
+
+
 def _wizard_install_service(backend: str) -> None:
     """Choose persistence once; start-now without persistence stays unmanaged."""
     import subprocess

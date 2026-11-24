@@ -1,0 +1,19 @@
+name: oura-mcp
+title: Oura
+repo: https://github.com/davidmosiah/oura-mcp
+sha: "0f73130546ddfc0f9714f9fe1ea06578b6564ac1"
+subdir: agent-plugin
+description: "Read the user's Oura Ring readiness, sleep, HRV and activity through the local oura MCP server. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — Unofficial connector, not affiliated with Oura. Runs the `oura-mcp-unofficial@0.8.0` npm package locally over stdio through `npx` (Node.js 20+ required); the package and its dependencies are downloaded from npm on first start. Data source: the official Oura Cloud API v2. The user creates their own Oura developer app; its client ID and secret and the OAuth tokens are created by the connector's own `setup`/`auth` commands in the user's terminal, stored under `~/.oura-mcp/` and refreshed by the connector itself, and sent only to Oura's API; the plugin declares no environment variables and reads no Hermes credentials. It also keeps a wellness profile shared with the author's other connectors at `~/.delx-wellness/profile.json` (first run copies an existing `~/.hermes/profiles/delx-wellness/wellness-profile.json` there), and its connection-status tool reads `~/.hermes/config.yaml` to check for an MCP block. Tools that change state: oura_profile_update (local profile only); oura_exchange_code (stores OAuth tokens locally); oura_revoke_access (revokes the Oura grant and deletes local tokens). The tool set comes from the pinned npm version, not from this repository's source tree."
+maintainer: davidmosiah
+tier: community
+category: tools
+version: "0.8.0"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/davidmosiah/oura-mcp/blob/0f73130546ddfc0f9714f9fe1ea06578b6564ac1/agent-plugin/README.md
+image: https://raw.githubusercontent.com/davidmosiah/oura-mcp/0f73130546ddfc0f9714f9fe1ea06578b6564ac1/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -97,7 +97,7 @@
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('../../../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2') format('woff2');
+  src: url('@nous-research/ui/fonts/Collapse-Bold.woff2') format('woff2');
 }
 
 /* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the
@@ -3973,6 +3973,40 @@ html[data-hud-window] [data-slot='popover-content'] {
 
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
+}
+
+/* On the Webapp, UI scale lives as CSS zoom on <html>. Floating UI skips
+   getScale() when a fixed popper's offsetParent is window (direct child of
+   body), double-scaling coordinates, available sizes, anchor widths and arrows
+   (#148414, #150502, #150729). Portaling into a full-viewport containing-block
+   host gives Floating UI an element offsetParent whose getScale() matches the
+   active CSS zoom, so every Radix primitive scales natively. */
+[data-browser-portal-host] {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  contain: layout;
+}
+
+/* Above mobile Sheet / find-bar z-50 layers, below --z-modal-backdrop (120). */
+[data-browser-portal-host='menu'] {
+  z-index: 60;
+}
+
+[data-browser-portal-host='select'] {
+  z-index: var(--z-modal-popover);
+}
+
+[data-browser-portal-host='tooltip'] {
+  z-index: var(--z-over-modal);
+}
+
+/* Non-modal popovers do not set inline pointer-events: auto; restore it on
+   interactive popper wrappers unless a modal layer has locked body pointer
+   events, while leaving tooltips pass-through. */
+body:not([style*='pointer-events: none']) > [data-browser-portal-host='menu'] > *,
+body:not([style*='pointer-events: none']) > [data-browser-portal-host='select'] > * {
+  pointer-events: auto;
 }
 
 /* CSS zoom scales viewport units too; browser shells must fit their parent. */

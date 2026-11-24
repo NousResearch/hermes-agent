@@ -85,12 +85,14 @@ def _is_accepted_host(
     host_header: str,
     bound_host: str,
     trusted_public_hosts: frozenset[str] = frozenset(),
+    loopback_companion: bool = False,
 ) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
+    - Loopback aliases when bound to loopback, or when the listener also binds a loopback
+      socket beside a specific address (*loopback_companion*: the gateway's Webapp)
     - Exact operator-declared public hosts (with or without port suffix)
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
@@ -103,7 +105,7 @@ def _is_accepted_host(
     if host_only in trusted_public_hosts or bound_host in {"0.0.0.0", "::"}:
         return True
     bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
+    if bound_lc in _LOOPBACK_HOST_VALUES or (loopback_companion and host_only in _LOOPBACK_HOST_VALUES):
         return host_only in _LOOPBACK_HOST_VALUES
     return host_only == bound_lc
 
@@ -260,8 +262,9 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     if not bound_host:
         return None
     trusted_public_hosts = getattr(state, "trusted_public_hosts", frozenset())
+    companion = bool(getattr(state, "loopback_companion", None))
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
+    if not _is_accepted_host(host_header, bound_host, trusted_public_hosts, companion):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
     origin = ws.headers.get("origin", "")
     if not origin:
@@ -272,7 +275,8 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
         parsed = None
     if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
-    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts,
+                                                                             companion):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     # _is_accepted_host drops the port: a page on ANOTHER loopback port is a different origin, the
     # same one CORS refuses — without this it opens /api/pty with a token it read off index.html.

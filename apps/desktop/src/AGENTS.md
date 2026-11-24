@@ -21,7 +21,7 @@ remote resolution and exposure lifecycle; a remote failure must never start a lo
 The gateway `gateway ensure` attaches to is **one multiplexing owner per home**: `HERMES_DESKTOP=1`
 is not how the app finds it, and no per-profile `hermes serve --port 0` child is spawned. One
 gateway process serves sessions from several homes (`tui_gateway/AGENTS.md` § Profile scope); a
-served secondary answers through the multiplexer's control socket (`GatewayEndpoint.multiplex_home`).
+served secondary answers through the multiplexer's control socket (`GatewayEndpoint.control_home`).
 Remote connections (SSH, URL+token, Cloud) likewise reach a backend that may serve several profiles
 from one process. Every lifecycle/status/settings REST call carries `?profile=` (or the `profile`
 param) and every new-session tile records an owner route; a backend-side scope fix is probed twice —
@@ -58,7 +58,7 @@ as CLI, dropping launch options, or falling back to an independent local serve o
 **Rule:** palette curation hides noise (terminal-only / messaging-only built-ins), NEVER
 user-activated extensions. If you tighten `desktop-slash-commands.ts`, keep
 `isDesktopSlashExtensionCommand` flowing into both paths. Test: from `apps/desktop`,
-`npx vitest run src/lib/desktop-slash-commands.test.ts` (workspace deps install at the repo root).
+`pnpm exec vitest run src/lib/desktop-slash-commands.test.ts` (workspace deps install at the repo root).
 
 ## Bot Mode (`src/plugins/hermes-bots/`) — one bot = ONE canonical forever-chat, identified by NAME
 

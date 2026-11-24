@@ -1,4 +1,4 @@
-import type { ClientCapabilitiesResult } from './gateway-contract.generated.js'
+import type { CanonicalClientIdentity, ClientCapabilitiesResult } from './gateway-contract.generated.js'
 import type { GatewayEvent } from './gateway-events.js'
 
 export type GatewayRequestId = number | string
@@ -74,6 +74,11 @@ export class JsonRpcGatewayError extends Error {
   }
 }
 
+/** The `reason` a gateway refusal carries in its structured error data, if any. */
+export function jsonRpcErrorReason(error: unknown): unknown {
+  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+}
+
 /** Refusals `session.steer` / `session.redirect` answer before the text reaches any agent
  *  (gateway/session_busy_controls.py::correct): the turn the client believed busy is gone or cannot
  *  take a correction, so the words are safe to admit as the next prompt — never retried as a control. */
@@ -133,6 +138,8 @@ export interface JsonRpcRequestChannelOptions {
    * against a crashed client (clarify blocks 3600s).
    */
   onRequestHandlerError?: (error: Error, request: { id: string; method: string; params: ServerRequestParams }) => void
+  /** An error frame with no request id (the backend's `-32700` parse-error reply): the owner logs it. */
+  onUncorrelatedError?: (error: JsonRpcGatewayError) => void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   /**
@@ -151,6 +158,11 @@ export interface JsonRpcRequestChannelOptions {
    * The backend offers the welcome trial and first-run onboarding only to that client.
    */
   desktopLocal?: () => boolean
+  /**
+   * Read once per connection generation, after `server_requests`: which client this is (`{name, version?, kind?}`).
+   * A self-declared label for attribution only. A host that names none (the default) sends nothing.
+   */
+  clientIdentity?: () => CanonicalClientIdentity | null | Promise<CanonicalClientIdentity | null>
 }
 
 export type HeartbeatLiveness = 'any-inbound' | 'response'
@@ -217,14 +229,19 @@ export class JsonRpcRequestChannel {
   private backendCountsDeclines = false
   /** The bound generation's canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
   private backendClarifyBatch = false
+  /** The generation the client label was announced on: once per connection, not per `gateway.ready`. */
+  private announcedTo: JsonRpcTransport | null = null
+  /** The bound generation's backend keeps `client.activity` reports (`client.capabilities`). */
+  private backendClientActivity = false
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
-    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
   > &
-    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
+      clientIdentity: options.clientIdentity ?? (() => null),
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
@@ -233,6 +250,7 @@ export class JsonRpcRequestChannel {
       onEvent: options.onEvent,
       onHeartbeatFailure: options.onHeartbeatFailure,
       onRequestHandlerError: options.onRequestHandlerError,
+      onUncorrelatedError: options.onUncorrelatedError,
       onUnhandledRequest: options.onUnhandledRequest,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -249,6 +267,11 @@ export class JsonRpcRequestChannel {
     return this.backendClarifyBatch
   }
 
+  /** Whether the bound generation's backend keeps `client.activity` reports; a client sends none otherwise. */
+  get clientActivity(): boolean {
+    return this.backendClientActivity
+  }
+
   get connected(): boolean {
     return this.transport !== null
   }
@@ -260,6 +283,7 @@ export class JsonRpcRequestChannel {
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
     this.backendClarifyBatch = false
+    this.backendClientActivity = false
 
     // First on the socket, before the owner's own requests: the backend reads frames in order, and its
     // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
@@ -273,6 +297,8 @@ export class JsonRpcRequestChannel {
   detach(error: Error): void {
     this.stopHeartbeat()
     this.transport = null
+    // Nothing is known about the next backend until its own `client.capabilities` answer.
+    this.backendClientActivity = false
     this.rejectAllPending(error)
   }
 
@@ -461,10 +487,41 @@ export class JsonRpcRequestChannel {
     }
   }
 
+  /** Settle the ping or pending call this response answers; an unknown id is ignored. */
+  private settleResponse(id: GatewayRequestId, frame: JsonRpcFrame): void {
+    if (typeof id === 'string' && this.outstandingPings.delete(id)) {
+      this.lastLivenessAt = Date.now()
+
+      return
+    }
+
+    const call = this.pending.get(id)
+
+    if (!call) { return }
+    this.lastLivenessAt = Date.now()
+    this.clearPending(id)
+
+    if (frame.error) {
+      call.reject(jsonRpcErrorFromFrame(frame.error))
+
+      return
+    }
+
+    // Reconnect contract: `session.resume` / `session.activate` /
+    // `session.events.since` answer with `open_requests` — the server→
+    // client requests still waiting on this session. They cannot ride
+    // the event replay ring (they are not events), so they are re-
+    // delivered here, before the caller sees the result, over the very
+    // socket that owns them.
+    this.deliverOpenRequests(frame.result)
+    call.resolve(frame.result)
+  }
+
   /**
-   * Route one inbound frame: a response settles its pending call, an
-   * `event` notification reaches `onEvent`, a server→client request reaches
-   * the `onRequest` handlers. Returns the decoded frame so the owner can act
+   * Route one inbound frame: a response settles its pending call, an error
+   * frame with no request id reaches `onUncorrelatedError`, an `event`
+   * notification reaches `onEvent`, a server→client request reaches the
+   * `onRequest` handlers. Returns the decoded frame so the owner can act
    * on it too (mirror it, record seq, …) or `null` when the text was not
    * JSON or not a JSON object (`null`, a scalar).
    */
@@ -493,31 +550,13 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.id !== undefined && frame.id !== null) {
-      if (typeof frame.id === 'string' && this.outstandingPings.delete(frame.id)) {
-        this.lastLivenessAt = Date.now()
+      this.settleResponse(frame.id, frame)
 
-        return frame
-      }
+      return frame
+    }
 
-      const call = this.pending.get(frame.id)
-
-      if (call) {
-        this.lastLivenessAt = Date.now()
-        this.clearPending(frame.id)
-
-        if (frame.error) {
-          call.reject(jsonRpcErrorFromFrame(frame.error))
-        } else {
-          // Reconnect contract: `session.resume` / `session.activate` /
-          // `session.events.since` answer with `open_requests` — the server→
-          // client requests still waiting on this session. They cannot ride
-          // the event replay ring (they are not events), so they are re-
-          // delivered here, before the caller sees the result, over the very
-          // socket that owns them.
-          this.deliverOpenRequests(frame.result)
-          call.resolve(frame.result)
-        }
-      }
+    if (frame.error) {
+      this.options.onUncorrelatedError?.(jsonRpcErrorFromFrame(frame.error))
 
       return frame
     }
@@ -549,8 +588,20 @@ export class JsonRpcRequestChannel {
         if (this.transport === transport) {
           this.backendCountsDeclines = result?.declines_not_shown === true
           this.backendClarifyBatch = result?.canonical_clarify_batch === true
+          this.backendClientActivity = result?.client_activity === true
         }
       })
+      .catch(() => undefined)
+
+    if (this.announcedTo === transport) {
+      return
+    }
+
+    this.announcedTo = transport
+    // Which client this is, after server_requests and in a call of its own: an older backend refuses just
+    // this one, which is ignored. The host may still be reading its version, so it can follow other requests.
+    void Promise.resolve(this.options.clientIdentity())
+      .then(client => (client && this.transport === transport ? this.request('client.capabilities', { client }) : undefined))
       .catch(() => undefined)
   }
 

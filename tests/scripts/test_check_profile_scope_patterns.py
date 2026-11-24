@@ -9,6 +9,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from hermes_agent.compat.paths import PathMoves
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check_profile_scope_patterns.py"
 
 
@@ -59,7 +61,7 @@ def test_child_env_from_environ_is_flagged_and_the_scoped_builder_is_not():
     assert [f.line for f in mod.scan_text("tools/x.py", hazard, patterns, lines={5})] == [5]
 
 
-def test_adapter_key_outside_the_seam_is_flagged_only_under_platforms():
+def test_adapter_key_outside_the_seam_is_flagged_only_under_platforms(monkeypatch):
     """An adapter that derives a session key with the free ``build_session_key()`` bypasses the
     owner-profile seam (``_source_session_key``); the same call in ``platforms/base.py`` (the seam
     itself) or in the runner is legitimate and must stay silent."""
@@ -81,6 +83,11 @@ def test_adapter_key_outside_the_seam_is_flagged_only_under_platforms():
     assert mod.scan_text("plugins/platforms/acme/adapter.py", seam, patterns) == []
     for owner in ("gateway/platforms/base.py", "gateway/run_startup.py", "gateway/session_recovery.py"):
         assert not [f for f in mod.scan_text(owner, free_key, patterns) if f.pattern_id == "P32"], owner
+    # A path regex names old paths: a moved adapter still matches, a moved seam still does not.
+    monkeypatch.setattr(mod, "original_path", PathMoves({"gateway": "hermes_agent.gateway"}).original)
+    assert [f.pattern_id for f in mod.scan_text("hermes_agent/gateway/platforms/acme.py", free_key, patterns)] == ["P32"]
+    assert not [f for f in mod.scan_text("hermes_agent/gateway/platforms/base.py", free_key, patterns)
+                if f.pattern_id == "P32"]
 
 
 def test_lint_is_advisory_and_exits_zero_with_findings(tmp_path, capsys):

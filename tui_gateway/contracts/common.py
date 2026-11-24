@@ -222,7 +222,7 @@ class PendingApproval(OpenModel):
 
 
 class MessageReaction(OpenModel):
-    """One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is
+    """One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is
     stamped once announced."""
 
     emoji: str
@@ -254,6 +254,18 @@ class AccountOwner(Params):
 
 
 ConnectorOwner = Annotated[SessionOwner | AccountOwner, Field(discriminator="type")]
+
+
+class CanonicalClientIdentity(Params):
+    """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
+    printable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and
+    ``mobile`` are known; another is kept off the label, not refused). Attribution only: on
+    ``session.create`` (owners advertising ``session-client-v1``) and in the per-connection hello
+    (``client.capabilities`` ``client``)."""
+
+    name: str
+    version: str | None = None
+    kind: str | None = None
 
 
 class OkResult(Result):
@@ -308,3 +320,11 @@ __all__ = [
     "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionOwner", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "ToolLabel", "ToolLabelKind", "TranscriptMessage", "Usage",
 ]
+
+
+class UndoRollbackHint(Result):
+    """``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are
+    the changed paths, ``text`` is the rendered line in the backend's language."""
+
+    files: list[str] = Field(default_factory=list)
+    text: str

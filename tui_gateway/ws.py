@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
+from gateway.session_presence import ClientPresence
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
 from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
@@ -101,7 +102,8 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
 # RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+# ``session.account_usage`` waits on a provider's usage API (a plugin hook up to its deadline).
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.transcript", "session.account_usage"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
@@ -151,6 +153,11 @@ class WSTransport:
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self.desktop_local = False
+        #: The client label this peer announced (``client.capabilities`` ``client``, unknown kind removed);
+        #: None until it does. Self-declared, attribution only.
+        self.client_identity: dict | None = None
+        #: Which sessions this peer's user touched lately (gateway/session_presence.py); memory only.
+        self.client_presence = ClientPresence()
         #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
         self.skin_home: str | None = None
         self._closed = False
@@ -390,6 +397,11 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
     from hermes_cli.process_identity import serving_local_desktop
+    from tui_gateway.server_requests import resolve_pinned_response
+    if authority_connection is not None and resolve_pinned_response(req, transport):
+        # The answer to a request a sidecar RPC sent back to THIS socket (vault.preview.fill's page
+        # scripts); the authority's own registry never holds those ids.
+        return None
     with serving_local_desktop(getattr(transport, "desktop_local", False)):
         if authority_connection is None:
             return await asyncio.to_thread(server.dispatch, req, transport)
@@ -411,6 +423,7 @@ def _start_backend_liveness() -> None:
     for start, what in (
         (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
         (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
+        (server._start_cache_expiry_compactor, "cache-expiry compactor start"),
     ):
         try:
             start()

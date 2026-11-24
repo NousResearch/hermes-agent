@@ -8,6 +8,8 @@ import path from 'node:path'
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
+import { PLUGIN_CATALOG_NAME_RE } from '../../shared/src/desktop-plugin-files'
+
 import { platformDefaultHermesHome } from './data-paths'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { removeDesktopPlugin } from './desktop-plugin-remove'
@@ -25,6 +27,8 @@ import { registerPluginFilesIpc } from './plugin-files-ipc'
 
 export interface FsIpcDeps {
   hermesHome: string
+  /** A profile a plugin's launcher runs: its home never feeds the plugin root. */
+  isLaunchedProfile: (profile: string) => boolean
   readActiveDesktopProfile: () => null | string
   expandUserPath: (value: string) => string
   resolveRequestedPathForIpc: (value: string, options: { purpose: string }) => string
@@ -34,6 +38,7 @@ export interface FsIpcDeps {
 
 export function registerFsIpc({
   hermesHome,
+  isLaunchedProfile,
   readActiveDesktopProfile,
   expandUserPath,
   resolveRequestedPathForIpc,
@@ -145,8 +150,8 @@ export function registerFsIpc({
   // moved up once so it does not silently vanish on a profile switch.
   async function desktopPluginsRoot(): Promise<string> {
     const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
-    await migrateProfileScopedDesktopPlugins(hermesHome, root)
-    await reconcileUnifiedDesktopHalves(hermesHome, root)
+    await migrateProfileScopedDesktopPlugins(hermesHome, root, isLaunchedProfile)
+    await reconcileUnifiedDesktopHalves(hermesHome, root, isLaunchedProfile)
 
     return root
   }
@@ -160,7 +165,7 @@ export function registerFsIpc({
   ipcMain.handle('hermes:fs:reconcileDesktopPlugins', async () => {
     const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
 
-    return reconcileDesktopHalvesReport(hermesHome, root)
+    return reconcileDesktopHalvesReport(hermesHome, root, isLaunchedProfile)
   })
 
   // The LOCAL logs root (`<HERMES_HOME>/logs`, profile-aware) — the error
@@ -179,7 +184,9 @@ export function registerFsIpc({
       return { ok: false, error: 'identifier is required', agent: false, desktop: false, warnings: [] }
     }
 
-    return probePluginRepo(resolveGitBinary(), identifier)
+    return probePluginRepo(resolveGitBinary(), identifier, {
+      ref: typeof payload?.ref === 'string' ? payload.ref : undefined
+    })
   })
 
   ipcMain.handle('hermes:plugin:installDesktop', async (_event, payload) => {
@@ -189,13 +196,14 @@ export function registerFsIpc({
       return { ok: false, error: 'identifier is required' }
     }
 
-    return installDesktopPluginFromGit(
-      resolveGitBinary(),
-      identifier,
-      await desktopPluginsRoot(),
-      Boolean(payload?.force),
-      typeof payload?.sha === 'string' ? payload.sha : undefined
-    )
+    const catalogName = typeof payload?.catalogName === 'string' ? payload.catalogName.trim() : ''
+
+    return installDesktopPluginFromGit(resolveGitBinary(), identifier, await desktopPluginsRoot(), {
+      force: Boolean(payload?.force),
+      sha: typeof payload?.sha === 'string' ? payload.sha : undefined,
+      // Recorded on disk as the plugin's catalog entry: only a name the catalog could carry.
+      catalogName: PLUGIN_CATALOG_NAME_RE.test(catalogName) ? catalogName : undefined
+    })
   })
 
   // Uninstall a standalone desktop plugin by FOLDER NAME under the app-level

@@ -432,10 +432,15 @@ def load_env_file(env_path: Path, *, for_overwrite_check: bool = False) -> dict[
     return secrets
 
 
-def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
+def build_profile_secret_scope(hermes_home: Path, *, process_home: Optional[bool] = None) -> dict[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` — so the scope holds only profile secrets."""
+    from ``os.environ`` — so the scope holds only profile secrets.
+
+    *process_home* says whether *hermes_home* is this process's own profile, for a caller that decided
+    it by another rule (the plugin host's launcher, by the key remembered for the process's own path);
+    by default it is ``_is_process_home``, where that path leads now."""
+    own = _is_process_home(hermes_home) if process_home is None else process_home
     secrets = load_env_file(Path(hermes_home) / ".env")
     # Launch-only keys are never profile secrets (#135200): get_secret consults
     # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
@@ -456,7 +461,7 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     # into that profile's own mapping. A secondary never inherits it (#80099 class).
     from gateway.config_loader import bridged_allow_all_users
     bridged = bridged_allow_all_users()
-    if bridged is not None and _is_process_home(hermes_home):
+    if bridged is not None and own:
         secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
     # Administrator-managed ``.env`` LAST, with override: the launch process applies it that way
     # (``env_loader._apply_managed_env``) so policy beats a user's own value. Under multiplex
@@ -469,11 +474,12 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
 
     managed = {k: v for k, v in load_managed_env().items() if not _is_global_env(k)}
     secrets.update(managed)
-    _expand_dotenv_templates(secrets, hermes_home, {**dotenv, **managed})
+    _expand_dotenv_templates(secrets, hermes_home, {**dotenv, **managed}, process_home=own)
     return secrets
 
 
-def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: dict[str, str]) -> None:
+def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: dict[str, str], *,
+                             process_home: bool) -> None:
     """Resolve ``${VAR}`` / ``${VAR:-default}`` in values that came from the dotenv layers, with
     ``load_hermes_dotenv``'s own resolver, so the scope and ``os.environ`` agree on what a file says:
     ``TELEGRAM_HOME_CHANNEL=${TELEGRAM_USER_ID}`` otherwise reached cron delivery as the literal
@@ -486,7 +492,7 @@ def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: di
     if not templated:
         return
     from hermes_cli.env_loader import resolve_home_dotenv
-    lookup = None if _is_process_home(hermes_home) else {k: v for k, v in os.environ.items() if _is_global_env(k)}
+    lookup = None if process_home else {k: v for k, v in os.environ.items() if _is_global_env(k)}
     resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup)
     secrets.update((k, resolved[k]) for k in templated if k in resolved)
 

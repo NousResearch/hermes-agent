@@ -8,6 +8,16 @@ description: "Set up Hermes Agent as a WhatsApp bot via the built-in Baileys bri
 
 Hermes connects to WhatsApp through a built-in bridge based on **Baileys**. This works by emulating a WhatsApp Web session — **not** through the official WhatsApp Business API. No Meta developer account or Business verification is required.
 
+> Run `hermes gateway setup` and pick **WhatsApp** for a guided walk-through.
+
+:::tip Two WhatsApp integrations
+This page is for the **Baileys bridge** — quick to set up, personal accounts, no public URL needed, ban risk.
+
+If you're running a real business bot and want stability, see the **[WhatsApp Business Cloud API guide](./whatsapp-cloud.md)** instead. It's the official Meta-supported path: no account ban risk, but requires a Meta Business account and a public webhook URL.
+
+The two adapters can also run in parallel against different phone numbers if you have a reason to.
+:::
+
 :::warning Unofficial API — Ban Risk
 WhatsApp does **not** officially support third-party bots outside the Business API. Using a third-party bridge carries a small risk of account restrictions. To minimize risk:
 - **Use a dedicated phone number** for the bot (not your personal number)
@@ -21,6 +31,81 @@ with third-party bridges. When this happens, Hermes will update the bridge depen
 bot stops working after a WhatsApp update, pull the latest Hermes version and re-pair.
 :::
 
+## Multiple profiles
+
+The host multiplexer can serve a separate paired WhatsApp session for each profile.
+Run `hermes -p work whatsapp` to pair a secondary profile, then enable WhatsApp
+for that profile. An enabled profile without `creds.json` is skipped with the
+`whatsapp_unpaired` status and its pairing command.
+
+An explicit `platforms.whatsapp.extra.bridge_port` takes precedence. Otherwise,
+a secondary selects the first free port in 3001 to 3999 that no other profile's
+record claims, and saves it in its own `platforms/whatsapp/bridge_port` file for
+subsequent starts. Operators can pre-create that file with a port number; delete
+it to have a new port allocated. The launch profile uses port 3000 unless it
+already has that file (from serving as a secondary), in which case its gateway
+and `hermes send --to whatsapp:<chat_id>` both keep using the recorded port.
+
+A secondary adopts a bridge already running on its port only when its own
+session pidfile identifies that process (pid, kernel start time, and the port it
+was started on), which is
+what a gateway crash leaves behind. An unhealthy one is reaped by that same
+identity and restarted. Any other process bound on the port is a fatal error
+for that profile only. Set `platforms.whatsapp.extra.bridge_port` to a
+distinct free port, or stop the process holding it. Other
+profiles continue running. `hermes gateway status --profile work` reports the
+profile's own WhatsApp adapter rather than shared ingress.
+
+Profiles that each run their own gateway, rather than one multiplexed gateway,
+all use port 3000 unless configured otherwise. Give each one a distinct port in
+that profile's `config.yaml`:
+
+```yaml
+platforms:
+  whatsapp:
+    extra:
+      bridge_port: 3001        # one distinct port per profile
+```
+
+A gateway identifies a running bridge by the session directory the bridge
+reports in `/health`. A bridge serving another profile's session is never
+adopted and never stopped: the second profile's WhatsApp fails to start with
+`whatsapp_bridge_foreign_session`, naming the port and the other session. A
+process that holds the port but does not answer `/health` in time is left
+running too, and WhatsApp fails with the retryable
+`whatsapp_bridge_unresponsive`. `hermes send --to whatsapp:<chat_id>` and cron
+delivery check the same field and send nothing through another profile's bridge
+or through one whose `/health` fails. If you
+override `session_path`, keep it distinct per profile, or the profiles share one
+WhatsApp login. Bridges started by an older Hermes report no session directory
+and are restarted once, as after a bridge update.
+
+A bridge left running by a crashed gateway is adopted only when it was started
+with the settings this gateway would start one with: DM and group policy,
+allowlists, mode, reply prefix, read receipts and the other bridge settings,
+plus the bridge's `package.json`. Otherwise it is restarted, without
+re-pairing. A bridge with no such record (one started by an older Hermes) is
+restarted once.
+
+### Bridge API authentication
+
+The bridge listens on loopback only, but loopback does not identify the caller:
+any process on the same machine could otherwise read every inbound message
+(`GET /messages`) or send as you (`POST /send`). Each session therefore has a
+secret, `platforms/whatsapp/session/.bridge-token` (owner-only, created by the
+gateway on first start), and the bridge requires it as a bearer token on every
+route. Before adopting a bridge that is already running, the gateway first sends
+a challenge to `GET /auth-proof` and adopts the listener only when it proves it
+holds the secret, so an impostor that bound the port first never learns the
+token. A listener that fails the proof (another profile's bridge, which holds
+its own token, or an impostor) is never stopped by port: once this session's
+own bridge has been stopped by its pidfile, a listener still holding the port
+fails WhatsApp with `whatsapp_bridge_foreign_session`. Every newly spawned
+bridge gets a fresh secret. Cron and `hermes send` deliveries read the same
+file; they never create it, and a session that has not yet been started by the
+gateway reports `No WhatsApp bridge token`. A bridge launched by hand without
+`HERMES_WHATSAPP_BRIDGE_TOKEN` refuses to serve.
+
 ## Two Modes
 
 | Mode | How it works | Best for |
@@ -32,10 +117,11 @@ bot stops working after a WhatsApp update, pull the latest Hermes version and re
 
 ## Prerequisites
 
-- **Node.js v18+** and **npm** — the WhatsApp bridge runs as a Node.js process
+- **Node.js v20+** and **npm** — the WhatsApp bridge runs as a Node.js process
 - **A phone with WhatsApp** installed (for scanning the QR code)
 
-Unlike older browser-driven bridges, the current Baileys-based bridge does **not** require a local Chromium or Puppeteer dependency stack.
+Ordinary QR pairing does not need a browser. Accounts that require passkey verification
+also need an installed Chrome or Edge browser with access to that account's passkey.
 
 ---
 
@@ -60,6 +146,32 @@ The wizard will:
 4. Point your camera at the terminal QR code
 
 Once paired, the wizard confirms the connection and exits. Your session is saved automatically.
+
+### Accounts requiring a passkey
+
+If WhatsApp requests a passkey after the QR scan, run the interactive setup with
+the path to your installed Chrome or Edge executable:
+
+```text
+hermes whatsapp --passkey-browser "/absolute/path/to/browser"
+```
+
+The path above is a placeholder; replace it with the actual browser executable
+on your machine. Setup opens WhatsApp Web in a temporary browser window to
+complete its passkey request. Approve the request using your account's passkey.
+If setup displays a confirmation code, compare it with your phone and confirm
+only if the codes match. The browser closes when the request completes or is
+cancelled. Hermes enables WhatsApp only after pairing succeeds.
+
+The temporary window does not inherit your regular Chrome or Edge profile or
+its signed-in password manager. Your passkey must be available through the
+authentication options that window offers. Availability of phone and OS passkeys,
+and real-account WhatsApp acceptance, still need end-to-end validation.
+
+This path needs an interactive terminal and graphical browser on the machine
+running setup. It is not available through dashboard onboarding or a headless
+SSH session. The browser is needed during passkey pairing, not for normal
+messaging after pairing.
 
 :::tip
 If the QR code looks garbled, make sure your terminal is at least 60 columns wide and supports
@@ -103,9 +215,9 @@ WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with
 
 :::tip Allow-all shorthand
 Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
-This is consistent with [Signal group allowlists](/docs/reference/environment-variables).
+This is consistent with [Signal group allowlists](../../reference/environment-variables.md).
 To use the pairing flow instead, remove both variables and rely on the
-[DM pairing system](/docs/user-guide/security#dm-pairing-system).
+[DM pairing system](../security.md#dm-pairing-system).
 :::
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -119,6 +231,23 @@ whatsapp:
 
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
+
+### Group chats (bot mode)
+
+Groups are gated by **group policy**, not by the DM allowlist. `WHATSAPP_GROUP_POLICY` / `whatsapp.group_policy`
+defaults to `pairing`, which forwards nothing from groups. `allowlist` plus `WHATSAPP_GROUP_ALLOWED_USERS` /
+`whatsapp.group_allow_from` (comma-separated **group JIDs**, e.g. `120363001234567890@g.us`) admits the listed
+groups; `open` admits every group the bot is a member of. The sender is then checked like any other gateway
+principal: with `WHATSAPP_ALLOWED_USERS` set, a participant must be on it (or paired) — a sender WhatsApp
+addresses by LID matches through the phone number Baileys supplies alongside it, so a first contact with no
+`lid-mapping` file yet is not dropped; with no sender allowlist,
+`allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
+needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
+message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
+bot, or `/commands` (groups in `free_response_chats` are exempt). Regex wake words go in `mention_patterns`.
+A captionless voice note can only match them with `voice_mention_patterns: true`, which transcribes the group
+voice note first (off by default: every unaddressed voice note then goes to your speech-to-text provider; the
+turn reuses that transcript).
 
 Then start the gateway:
 
@@ -139,6 +268,7 @@ The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session
 - **Sessions survive restarts** — you don't need to re-scan the QR code every time
 - The session data includes encryption keys and device credentials
 - **Do not share or commit this session directory** — it grants full access to the WhatsApp account
+- Hermes keeps the directory owner-only (`0700`) and has the bridge write its key files and `bridge.log` (which carries the QR pairing payloads) as `0600`. Managed (NixOS/systemd) installs and containers keep the modes their service umask or mount sets, so restrict those yourself
 
 ---
 
@@ -163,13 +293,22 @@ Hermes supports voice on WhatsApp:
 
 - **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
-- Agent responses are prefixed with "⚕ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
+- Agent responses are prefixed with "☤ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
 
 ```yaml
 # ~/.hermes/config.yaml
 whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
+  send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
+```
+
+When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting, like any other bridge setting (DM and group policy, allowlists, mention settings, mode, `reply_prefix`, debug, owner-message forwarding, message length, chunk delay, send timeout, the media cache directories) or the bridge's `package.json`, restarts the bridge subprocess on the next connection, without re-pairing.
+
+Delivery and read status of the messages Hermes sends is logged to `gateway.log`, one line per status change (`server_ack`, `delivered`, `read`, `played`, or `error` with WhatsApp's error code). In groups, each recipient's receipt is its own line with `recipient=`. Messages typed by a person on the linked phone are not logged.
+
+```
+[WhatsApp] WhatsApp delivery status: message=3EB0A1 chat=15551234567@s.whatsapp.net status=read at=1760000000
 ```
 
 ---
@@ -198,6 +337,79 @@ Code blocks and inline code are preserved as-is since WhatsApp supports triple-b
 ### Tool Progress
 
 When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
+
+### Native Polls, Clarify-as-Poll, and Locations
+
+The Baileys-bridge adapter (bot mode) supports several native WhatsApp message types:
+
+- **Polls** — the agent can send a native WhatsApp poll (question + options) via the bridge's `/send-poll` endpoint. Poll votes flow back into the conversation.
+- **Clarify questions as polls** — when the agent asks a multiple-choice clarify question, it's rendered as a native single-select poll; tapping an option answers the question. If the poll fails to send, the adapter falls back to a plain text question. Approval prompts are **never** mapped onto polls — polls are only used for genuine multiple-choice clarifies.
+- **Location pins** — the agent can send a native location pin (latitude/longitude, optional name/address) via `/send-location`, and incoming shared locations (including live locations) are delivered to the agent as location messages.
+
+All of this works out of the box in bot (Baileys) mode; no configuration needed.
+
+### Message Batching (Debounce)
+
+WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **0.3s**, extended to **1s** for very long fragments; capped at 2s / 4s). Tune via `config.yaml`:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        text_batch_delay_seconds: 0.3         # quiet period before flushing a batch (max 2.0)
+        text_batch_split_delay_seconds: 1.0   # extended delay near the split threshold (max 4.0)
+```
+
+Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
+
+### Quoted Replies
+
+Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.
+
+---
+
+## Customer-facing bot
+
+Defaults assume the people on the allowlist are you and your team. If the bot number answers
+customers (`WHATSAPP_ALLOWED_USERS=*`, `WHATSAPP_ALLOW_ALL_USERS=true`, or a list of customer
+numbers), everyone on the allowlist is trusted the same way, so harden the gateway before going
+live:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  platforms:
+    whatsapp:
+      tool_progress: "off"              # or "log": no tool-progress bubbles in the chat
+      interim_assistant_messages: false # no mid-turn commentary, only the final reply
+
+platforms:
+  whatsapp:
+    home_channel:                       # or WHATSAPP_HOME_CHANNEL in ~/.hermes/.env
+      platform: whatsapp
+      chat_id: "15551234567@s.whatsapp.net"   # your operator chat, not a customer's
+      name: Operator
+    extra:
+      allow_admin_from:                 # only these senders may run admin slash commands
+        - "15551234567@s.whatsapp.net"
+      group_allow_admin_from:           # same, for group chats (DM admins are not group admins)
+        - "15551234567@s.whatsapp.net"
+      # user_allowed_commands: [new]    # optional: commands customers may still run
+```
+
+- **`tool_progress`** defaults to `new` on WhatsApp, so customers see each tool the agent runs.
+- **`interim_assistant_messages`** defaults to `true`, so customers see the agent's mid-turn commentary.
+- **Home channel:** without one, every sender's first message in a new session (a new customer, or
+  anyone after `/new`) gets a "type /sethome" prompt, and any sender who runs `/sethome` takes over
+  cron and notification delivery. Set it to your own chat.
+- **`allow_admin_from`** (DMs) and **`group_allow_admin_from`** (groups) turn on [slash-command access control](../../reference/slash-commands.md#permissions-and-adminuser-split):
+  customers keep only `/help` and `/whoami` (plus anything in `user_allowed_commands`), can't run
+  `/sethome`, and never get the `/sethome` prompt. Send `/whoami` from your own phone to get the
+  exact ID to list.
+
+`hermes whatsapp` prints a warning pointing here when bot mode allows everyone and no home channel is set.
 
 ---
 

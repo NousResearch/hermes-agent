@@ -1,0 +1,24 @@
+name: gmi-image
+title: GMI Cloud image generation
+repo: https://github.com/zkasuran/hermes-gmi-media
+subdir: gmi-image
+sha: 6760b29d6f9f93f47cef08702bda876fb10af652
+description: "GMI Cloud image generation and URL-based image editing as an image_gen provider (image_gen.provider: gmi-image). Maps Hermes aspect ratios onto each model's own schema, so seedream, gemini-image, gpt-image and luma models share one backend. Disclosure — sends prompts, the optional image URLs and your GMI_API_KEY (read per request through Hermes secret scope) to console.gmicloud.ai; every generation spends GMI credits with no Hermes approval prompt (GMI shows its own price per model). The result is downloaded from the URL GMI returns into the Hermes image cache; the model catalog is read live and cached in memory for one hour. No telemetry, shell commands, background processes, self-updates or extra Python dependencies."
+maintainer: zkasuran
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/zkasuran/hermes-gmi-media/tree/main/gmi-image#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "Image inputs must be public http(s) URLs; local files are refused."
+  - "Live-tested with seedream-5.0-lite and luma-uni-1.1. gemini-2.5-flash-image edits returned upstream errors from GMI during testing. GMI limits some models per day and the error says when it resets."
+  - "Shares one client module with gmi-video and gmi-speech from the same repository; each plugin carries its own byte-identical copy."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GMI_API_KEY

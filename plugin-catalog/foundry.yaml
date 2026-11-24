@@ -1,0 +1,31 @@
+name: foundry
+repo: https://github.com/aks-cmyk/foundry-for-new-creators
+sha: 134692fa1be981972cccbf9bd32f3ed681b9c476
+subdir: "foundry"
+description: "Foundry — five creator bots sharing one memory ledger: research, draft, score, and price your work. Say 'foundry start' — a short interview sets up your brand. Approval is disabled — no trusted human review channel yet; nothing auto-posts."
+maintainer: Amit Srivastava
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: ""
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/aks-cmyk/foundry-for-new-creators/134692fa1be981972cccbf9bd32f3ed681b9c476/foundry/assets/logo-constellation-light.png"
+screenshots: []
+readme: true
+platforms: []
+title: ""
+onboarding: false
+known_issues: ["Human approval is not yet implemented in this version — the Approve action is intentionally unavailable, nothing auto-posts", "Live Smith draft revision via ctx.llm VERIFIED on macOS Nov 10, 2026 (draft-003, generation 'llm'); live web dashboard load VERIFIED Nov 10, 11:15 PM (tabs render) and Nov 11 (all four tabs incl. Brand); live Desktop load not yet run"]
+capabilities:
+  provides_tools:
+    - foundry_start
+    - foundry_ledger_list
+    - foundry_ledger_get
+    - foundry_draft_create
+    - foundry_draft_feedback
+    - foundry_draft_approve
+    - foundry_scorecard
+    - foundry_money_summary
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

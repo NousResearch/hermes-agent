@@ -3,7 +3,7 @@
 Hermes Agent saves conversation trajectories in ShareGPT-compatible JSONL format
 for use as training data, debugging artifacts, and reinforcement learning datasets.
 
-Source files: `agent/trajectory.py`, `run_agent.py` (search for `_save_trajectory`), `batch_runner.py`
+Source files: `agent/trajectory.py`, `agent/session_persistence.py` (search for `_save_trajectory`), `batch_runner.py`
 
 
 ## File Naming Convention
@@ -61,7 +61,7 @@ Each line in the file is a self-contained JSON object. There are two variants:
 ```
 
 The `tool_stats` and `tool_error_counts` dictionaries are normalized to include
-ALL possible tools (from `model_tools.TOOL_TO_TOOLSET_MAP`) with zero defaults,
+ALL possible tools (from `model_tools.get_all_tool_names()`) with zero defaults,
 ensuring consistent schema across entries for HuggingFace dataset loading.
 
 
@@ -215,17 +215,16 @@ preventing Arrow schema mismatch errors during dataset loading.
 
 ## Controlling Trajectory Saving
 
-In the CLI, trajectory saving is controlled by:
+Trajectory saving is a `run_agent.py` / library-level switch — the `hermes` CLI
+does not expose a config key or flag for it:
 
-```yaml
-# config.yaml
-agent:
-  save_trajectories: true  # default: false
+```bash
+python run_agent.py --save_trajectories --query='your question here'
 ```
 
-Or via the `--save-trajectories` flag. When the agent initializes with
-`save_trajectories=True`, the `_save_trajectory()` method is called at the end
-of each conversation turn.
+Or programmatically: `AIAgent(..., save_trajectories=True)` /
+`initialize_agent(..., save_trajectories=True)`. When enabled, the
+`_save_trajectory()` method is called at the end of each conversation turn.
 
 The batch runner always saves trajectories (that's its primary purpose).
 

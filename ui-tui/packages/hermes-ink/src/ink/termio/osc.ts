@@ -17,6 +17,13 @@ const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 /** String Terminator (ESC \) - alternative to BEL for terminating OSC */
 export const ST = ESC + '\\'
 
+/** Strip C0, DEL and C1 controls from a hyperlink URL: a BEL/ESC in it would end the
+ *  OSC 8 sequence early and hand the rest of the URL to the terminal as raw input. */
+export function sanitizeOsc8Url(value: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping controls is the point
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+}
+
 /** Generate an OSC sequence: ESC ] p1;p2;...;pN <terminator>
  * Uses ST terminator for Kitty (avoids beeps), BEL for others */
 export function osc(...parts: (string | number)[]): string {
@@ -201,7 +208,10 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
   const { code } = await execFileNoThrow('tmux', args, {
     input: text,
     useCwd: false,
-    timeout: 2000
+    timeout: 2000,
+    // tmux may daemonize a server while retaining the inherited stdio pipes;
+    // only the child exit code is needed for this call site.
+    resolveOnExit: true
   })
 
   return code === 0
@@ -308,9 +318,26 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
 // Cached after first attempt so repeated mouse-ups skip the probe chain.
 let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
 
+/** Per-tool copy arguments: wl-copy reads stdin, xclip/xsel need clipboard flags. */
+function linuxCopyArgs(tool: 'wl-copy' | 'xclip' | 'xsel'): string[] {
+  switch (tool) {
+    case 'wl-copy':
+      return []
+
+    case 'xclip':
+      return ['-selection', 'clipboard']
+
+    case 'xsel':
+      return ['--clipboard', '--input']
+  }
+}
+
 /** Internal: probe once and cache — wl-copy first, then xclip, then xsel. */
 async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
-  const opts = { useCwd: false, timeout: 500 }
+  // resolveOnExit: wl-copy daemonizes and the daemon inherits stdio pipes,
+  // so 'close' never fires and the await would hang past the timeout.
+  // 'exit' fires on the immediate child's exit — what we actually care about.
+  const opts = { useCwd: false, timeout: 500, resolveOnExit: true }
 
   const r = await execFileNoThrow('wl-copy', [], opts)
 
@@ -318,13 +345,13 @@ async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
     return 'wl-copy'
   }
 
-  const r2 = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
+  const r2 = await execFileNoThrow('xclip', linuxCopyArgs('xclip'), opts)
 
   if (r2.code === 0) {
     return 'xclip'
   }
 
-  const r3 = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
+  const r3 = await execFileNoThrow('xsel', linuxCopyArgs('xsel'), opts)
 
   return r3.code === 0 ? 'xsel' : null
 }
@@ -347,7 +374,11 @@ async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
  * we skip probing entirely and treat linuxCopy as permanently null.
  */
 function copyNative(text: string): boolean {
-  const opts = { input: text, useCwd: false, timeout: 2000 }
+  // resolveOnExit: pbcopy/wl-copy/xclip/xsel/clip all daemonize or hold
+  // the system selection live in a forked process. Without resolveOnExit,
+  // the inherited stdio pipes keep node from seeing 'close' → the
+  // fire-and-forget await never resolves and the actual copy never runs.
+  const opts = { input: text, useCwd: false, timeout: 2000, resolveOnExit: true }
 
   switch (process.platform) {
     case 'darwin':
@@ -363,17 +394,13 @@ function copyNative(text: string): boolean {
         }
 
         // linuxCopy is a known-working tool; fire-and-forget.
-        void execFileNoThrow(linuxCopy, linuxCopy === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
+        void execFileNoThrow(linuxCopy, linuxCopyArgs(linuxCopy), opts)
 
         return true
       }
 
       // No display server → native tools will fail immediately. Cache null.
       if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error('[clipboard] [native] Linux: no DISPLAY or WAYLAND_DISPLAY — native clipboard unavailable')
-        }
-
         linuxCopy = null
 
         return false
@@ -386,13 +413,9 @@ function copyNative(text: string): boolean {
         const winner = await probeLinuxCopy()
         linuxCopy = winner
 
-        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error(`[clipboard] [native] Linux: clipboard probe complete → ${winner ?? 'no tool available'}`)
-        }
-
         // Actually perform the copy with the discovered tool.
         if (winner) {
-          void execFileNoThrow(winner, winner === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
+          void execFileNoThrow(winner, linuxCopyArgs(winner), opts)
         }
       })()
 
@@ -618,6 +641,7 @@ export function link(url: string, params?: Record<string, string>): string {
     return LINK_END
   }
 
+  url = sanitizeOsc8Url(url)
   const p = { id: osc8Id(url), ...params }
 
   const paramStr = Object.entries(p)

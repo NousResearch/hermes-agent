@@ -42,9 +42,66 @@ const stdoutOnly = (diff: ReturnType<LogUpdate['render']>) =>
     .map(p => (p as { type: 'stdout'; content: string }).content)
     .join('')
 
-const hasDecstbm = (text: string) => /\x1b\[\d+;\d+r/.test(text)
+const ESC = '\u001b'
+const hasDecstbm = (text: string) => new RegExp(`${ESC}\\[\\d+;\\d+r`).test(text)
 
 describe('LogUpdate.render diff contract', () => {
+  it.each([
+    ['adds a combining mark', 'ร', 'ร้', 0],
+    ['removes a combining mark', 'ร้', 'ร', 1],
+    ['replaces a combining mark', 'ร้', 'ร่', 2]
+  ])('clears a narrow grapheme cell before it %s', (_label, before, after, x) => {
+    const prev = mkScreen(4, 1)
+    const next = mkScreen(4, 1)
+
+    setCellAt(prev, x, 0, {
+      char: before,
+      styleId: stylePool.none,
+      width: CellWidth.Narrow,
+      hyperlink: undefined
+    })
+    setCellAt(next, x, 0, {
+      char: after,
+      styleId: stylePool.none,
+      width: CellWidth.Narrow,
+      hyperlink: undefined
+    })
+    next.damage = { x, y: 0, width: 1, height: 1 }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, 4, 1), mkFrame(next, 4, 1), true, false)
+    const writeIndex = diff.findIndex(part => part.type === 'stdout' && part.content === after)
+
+    expect(writeIndex).toBeGreaterThan(0)
+    expect(diff.slice(0, writeIndex)).toContainEqual({ type: 'stdout', content: ' ' })
+    expect(diff.slice(0, writeIndex)).toContainEqual({ type: 'cursorTo', col: x + 1 })
+  })
+
+  it('does not clear before replacing ordinary single-codepoint text', () => {
+    const prev = mkScreen(4, 1)
+    const next = mkScreen(4, 1)
+    paint(prev, 0, 'a')
+    paint(next, 0, 'b')
+    next.damage = { x: 0, y: 0, width: 1, height: 1 }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, 4, 1), mkFrame(next, 4, 1), true, false)
+
+    expect(stdoutOnly(diff)).toBe('b')
+    expect(diff.some(part => part.type === 'cursorTo')).toBe(false)
+    expect(diff.some(part => part.type === 'stdout' && part.content === ' ')).toBe(false)
+
+    // A fresh multi-codepoint grapheme over an empty cell has nothing to clear.
+    const fresh = mkScreen(4, 1)
+    setCellAt(fresh, 0, 0, { char: 'ก\u0E31', styleId: stylePool.none, width: CellWidth.Narrow, hyperlink: undefined })
+    fresh.damage = { x: 0, y: 0, width: 1, height: 1 }
+    expect(
+      log
+        .render(mkFrame(mkScreen(4, 1), 4, 1), mkFrame(fresh, 4, 1), true, false)
+        .filter(part => part.type === 'stdout' || part.type === 'cursorTo')
+    ).toEqual([{ type: 'stdout', content: 'ก\u0E31' }])
+  })
+
   it('emits only changed cells when most rows match', () => {
     const w = 20
     const h = 4
@@ -85,6 +142,25 @@ describe('LogUpdate.render diff contract', () => {
 
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
     expect(stdoutOnly(diff)).toContain('shorterrownow')
+  })
+
+  it('height growth emits a clearTerminal patch before repainting', () => {
+    const w = 20
+    const prevH = 3
+    const nextH = 6
+
+    const prev = mkScreen(w, prevH)
+    paint(prev, 0, 'old rows')
+
+    const next = mkScreen(w, nextH)
+    paint(next, 0, 'new rows')
+    next.damage = { x: 0, y: 0, width: w, height: nextH }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, w, prevH), mkFrame(next, w, nextH), true, false)
+
+    expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
+    expect(stdoutOnly(diff)).toContain('newrows')
   })
 
   it('drift repro: identical prev/next emits no heal, even when the physical terminal is stale', () => {
@@ -167,10 +243,12 @@ describe('LogUpdate.render diff contract', () => {
     paint(next, 1, 'row one')
 
     const prevFrame = mkFrame(prev, w, h)
+
     const nextFrame: Frame = {
       ...mkFrame(next, w, h),
       scrollHint: { top: 1, bottom: 4, delta: 1 }
     }
+
     const log = new LogUpdate({ isTTY: true, stylePool })
     const diff = log.render(prevFrame, nextFrame, true, true)
 
@@ -187,10 +265,12 @@ describe('LogUpdate.render diff contract', () => {
     paint(next, 1, 'row one')
 
     const prevFrame = mkFrame(prev, w, h)
+
     const nextFrame: Frame = {
       ...mkFrame(next, w, h),
       scrollHint: { top: 1, bottom: 5, delta: 1 }
     }
+
     const log = new LogUpdate({ isTTY: true, stylePool })
     const diff = log.render(prevFrame, nextFrame, true, true)
 

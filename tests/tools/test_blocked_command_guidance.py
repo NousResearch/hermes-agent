@@ -1,0 +1,76 @@
+"""Tests for blocked-command recovery guidance (parser-limit + backgrounding)."""
+
+
+from tools.approval import _hardline_block_result
+from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION
+from tools.terminal_tool import _foreground_background_guidance
+from tools import approval_floors
+
+
+class TestParserLimitRecovery:
+    def test_parser_limit_block_saves_payload_and_names_it(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        cmd = "python3 -c '" + "x = 1; " * 900 + "'"
+        r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, cmd)
+        assert r["approved"] is False
+        assert "RECOVERY" in r["message"]
+        assert "blocked-scripts" in r["message"]
+        import re as _re
+        m = _re.search(r"saved to (\S+\.sh)", r["message"])
+        assert m, r["message"]
+        from pathlib import Path
+        saved = Path(m.group(1))
+        assert saved.exists()
+        body = saved.read_text()
+        assert cmd in body
+        assert body.startswith("#!/usr/bin/env bash")
+        # `bash <saved>` would run a script the guard never read: the hint must not offer it.
+        assert f"bash {saved}" not in r["message"] and f"bash {saved}" not in body
+        assert "Do not run the payload from a file" in r["message"]
+
+    def test_save_failure_still_gives_the_recovery_steps(self, monkeypatch):
+        monkeypatch.setattr(approval_floors, "_save_blocked_payload", lambda c: None)
+        r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, "python3 -c 'x'")
+        assert "RECOVERY" in r["message"] and "smaller commands" in r["message"]
+        assert "bash /path/script.sh" not in r["message"] and "write_file" not in r["message"]
+
+
+
+    def test_real_hardline_blocks_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        r = _hardline_block_result("recursive delete of root filesystem", "rm -rf --no-preserve-root /")
+        assert "RECOVERY" not in r["message"]
+        assert "unconditional blocklist" in r["message"]
+        # And nothing was saved for a genuine hardline block.
+        assert not (tmp_path / ".hermes" / "cache" / "blocked-scripts").exists()
+
+    def test_old_saved_payloads_cleaned(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import os
+        d = tmp_path / ".hermes" / "cache" / "blocked-scripts"
+        d.mkdir(parents=True)
+        stale = d / "blocked-1-dead.sh"
+        stale.write_text("old")
+        os.utime(stale, (1, 1))
+        _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, "python3 -c 'y'")
+        assert not stale.exists()
+
+
+class TestBackgroundGuidanceRecipes:
+    def test_ampersand_block_names_exact_call_shape(self):
+        msg = _foreground_background_guidance("python3 server.py &")
+        assert msg is not None
+        assert "WITHOUT the '&'" in msg
+        assert "background=true" in msg
+
+    def test_nohup_block_names_exact_call_shape(self):
+        msg = _foreground_background_guidance("nohup ./worker.sh > /dev/null 2>&1")
+        assert msg is not None
+        assert "WITHOUT the wrapper" in msg
+        assert "notify_on_complete=true" in msg
+
+    def test_plain_command_unaffected(self):
+        assert _foreground_background_guidance("echo hello") is None
+
+    def test_quoted_ampersand_not_flagged(self):
+        assert _foreground_background_guidance('git commit -m "a & b"') is None

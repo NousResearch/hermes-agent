@@ -1,0 +1,18 @@
+name: realcryptocap
+title: RealCryptoCap
+repo: https://github.com/jamesparser/realcryptocap-hermes
+sha: 9df89e0c1ae2ddf0c91ba34f65b6ce3ac02b5f13
+version: "1.0.0"
+description: "Live crypto prices, real market cap rankings and AI market briefs from RealCryptoCap, free with no API key. Real market cap ranks native crypto only: stablecoins, wrapped/staked receipts and tokenized assets are left out. Three tools (rcc_price, rcc_top, rcc_market_brief), a /crypto slash command for an instant price table with no model call, and a bundled skill that tells the agent to use live data instead of quoting prices from memory. Disclosure — HTTPS GET requests to realcryptocap.com only (/api/cg, /api/market-analysis, /api/news); an optional REALCRYPTOCAP_API_KEY, read through Hermes's secret scope, is sent as a Bearer header to realcryptocap.com only; rcc_market_brief sends the fetched market data (prices, analysis, headlines, no conversation content) to the user's active model through ctx.llm. No shell, no file writes, no background processes, no telemetry, no stored credentials. Standard library only. Market data, not financial advice."
+maintainer: jamesparser
+tier: community
+category: tools
+docs_url: https://github.com/jamesparser/realcryptocap-hermes#readme
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [rcc_price, rcc_top, rcc_market_brief]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

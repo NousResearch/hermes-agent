@@ -1,0 +1,336 @@
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+
+// Bridges WSL/POSIX paths into forms the *Windows host* can open, for the case
+// where the desktop UI runs on Windows and the gateway runs inside WSL (remote
+// mode). Only the Windows-side direction lives here: the native folder dialog's
+// defaultPath and the fs read path. The reverse (whatever path the backend
+// receives → POSIX) is handled once, gateway-side, in
+// hermes_constants.translate_cwd_for_wsl_backend, so it stays picker-agnostic.
+
+const IS_WINDOWS = process.platform === 'win32'
+const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/
+// `/mnt/c` and `/mnt/c/...` (drvfs default automount root).
+const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
+
+// `/c/...`, `/cygdrive/c/...`, `/mnt/c/...` (Git Bash, Cygwin, drvfs) and the
+// `/E:/...` spelling some shells emit for `E:\...` — without the `:` branch a
+// perfectly valid Windows path fell through to the WSL branch below and became
+// `\\wsl.localhost\<distro>\E:\...`.
+//
+// The colon form is its own alternative so it can only follow a bare letter,
+// and it must be followed by a separator (or end the string). `/E:Users` is a
+// valid POSIX filename under WSL, and `/mnt/c:/notes.md` is a POSIX path whose
+// directory is literally `c:` — neither is the `C:` drive.
+const SHELL_DRIVE_RE = /^\/(?:(?:cygdrive\/|mnt\/)?([a-z])|([a-z]):)(?:\/+|$)/i
+
+let cachedDistro: null | string = null
+let cachedUncBase: null | string = null
+let cachedWslAvailability: null | boolean = null
+let wslAvailabilityRecheckAt = 0
+
+// A registry read that timed out or failed to start is not an answer: ask again
+// after this long instead of keeping "no WSL" for the whole run.
+const WSL_AVAILABILITY_RETRY_MS = 30_000
+
+const LXSS_ROOTS = [
+  ['HKCU', 'HKEY_CURRENT_USER'],
+  ['HKLM', 'HKEY_LOCAL_MACHINE']
+].map(([short, long]) => ({
+  long: `${long}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss`,
+  short: `${short}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss`
+}))
+
+/**
+ * True when `reg.exe query <Lxss root> /s` output holds a registered
+ * distribution: a non-empty `DistributionName` under an immediate `{guid}`
+ * subkey. An empty Lxss shell or a stale `DefaultDistribution` on the root is
+ * not a registration. reg.exe prints full HKEY_* names even when queried with
+ * the abbreviated hive, so both spellings are accepted.
+ */
+export function hasRegisteredWslDistribution(output: string, root: { long: string; short: string }): boolean {
+  const prefixes = [root.short, root.long].map(prefix => `${prefix.toLowerCase()}\\`)
+  let inDistribution = false
+
+  for (const line of output.split(/\r?\n/)) {
+    const key = line.trim().toLowerCase()
+
+    if (key.startsWith('hkey_') || key.startsWith('hkcu\\') || key.startsWith('hklm\\')) {
+      const prefix = prefixes.find(candidate => key.startsWith(candidate))
+      const tail = prefix ? key.slice(prefix.length) : ''
+      inDistribution = Boolean(tail) && !tail.includes('\\')
+    } else if (inDistribution && /^\s*DistributionName\s+REG_SZ\s+\S/i.test(line)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
+ * Whether this Windows host has WSL with at least one distribution. Reads the
+ * registry only (HKCU first, HKLM fallback): launching the wsl.exe stub or
+ * touching a \\\\wsl$ share on a WSL-less host pops the "install WSL" console
+ * (#128770). A missing key or an access error is a definite "no" for the run;
+ * a timeout or a failed start counts as "no" until it is checked again.
+ */
+function isWslAvailable(): boolean {
+  if (cachedWslAvailability !== null && (!wslAvailabilityRecheckAt || Date.now() < wslAvailabilityRecheckAt)) {
+    return cachedWslAvailability
+  }
+
+  if (!IS_WINDOWS) {
+    cachedWslAvailability = true
+
+    return true
+  }
+
+  let uncertain = false
+
+  cachedWslAvailability = LXSS_ROOTS.some(root => {
+    try {
+      const output = execFileSync('reg.exe', ['query', root.short, '/s'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1000,
+        windowsHide: true
+      })
+
+      return hasRegisteredWslDistribution(output, root)
+    } catch (error) {
+      // reg.exe ran and exited non-zero (missing key, access denied) only when an exit status is present.
+      uncertain ||= !(error instanceof Error && 'status' in error && typeof error.status === 'number')
+
+      return false
+    }
+  })
+  wslAvailabilityRecheckAt = !cachedWslAvailability && uncertain ? Date.now() + WSL_AVAILABILITY_RETRY_MS : 0
+
+  return cachedWslAvailability
+}
+
+/**
+ * WSL path eligibility belongs to the backend profile that produced the path.
+ * A single desktop process can keep a local primary backend and a remote pool
+ * backend alive simultaneously, so a process-global boolean can bleed between
+ * them. Unknown profiles retain the historical local default until Electron
+ * resolves and records their actual backend mode.
+ */
+const DEFAULT_WSL_BRIDGE_PROFILE = 'default'
+const wslBridgeProfiles = new Map<string, boolean>()
+let activeWslBridgeProfile = DEFAULT_WSL_BRIDGE_PROFILE
+
+function normalizeWslBridgeProfile(profile?: null | string): string {
+  return String(profile || '').trim() || DEFAULT_WSL_BRIDGE_PROFILE
+}
+
+/** Select the profile used by legacy callers that cannot pass one explicitly. */
+export function setActiveGatewayProfile(profile?: null | string): void {
+  activeWslBridgeProfile = normalizeWslBridgeProfile(profile)
+}
+
+/** Record whether paths returned by one profile belong to this host's WSL. */
+export function setWslBridgeProfileState(profile: null | string, active: boolean): void {
+  wslBridgeProfiles.set(normalizeWslBridgeProfile(profile), Boolean(active))
+}
+
+/** Backward-compatible toggle: update only the current fallback profile. */
+export function setWslBridgeActive(active: boolean): void {
+  setWslBridgeProfileState(activeWslBridgeProfile, active)
+}
+
+/** Whether this profile's backend is local, so its POSIX paths belong to this host. */
+function isWslBridgeLocal(profile?: null | string): boolean {
+  const key = profile == null ? activeWslBridgeProfile : normalizeWslBridgeProfile(profile)
+
+  return wslBridgeProfiles.get(key) ?? true
+}
+
+export function isWslBridgeActive(profile?: null | string): boolean {
+  // A local backend doesn't imply this Windows host has WSL; remote
+  // profiles short-circuit before the registry query.
+  return isWslBridgeLocal(profile) && isWslAvailable()
+}
+
+/**
+ * Pick the default distro from `wsl.exe -l -q` output.
+ *
+ * `wsl.exe` emits UTF-16LE without a BOM unless `WSL_UTF8=1` (WSL >= 0.64), so
+ * older builds leave NUL bytes between characters even when we ask for utf8 —
+ * strip them defensively before splitting. The default distro is the first
+ * (`*`-marked, decoration removed by `-q`) entry. See microsoft/WSL#4607.
+ */
+export function parseDefaultDistro(raw: string): null | string {
+  return (
+    String(raw || '')
+      .replace(/\0/g, '')
+      .split(/\r?\n/)
+      .map(line => line.replace(/^\*?\s*/, '').trim())
+      .find(Boolean) || null
+  )
+}
+
+/** Default WSL distro name (cached). Falls back to `Ubuntu`. */
+export function resolveDefaultWslDistro(): string {
+  if (cachedDistro) {
+    return cachedDistro
+  }
+
+  if (!IS_WINDOWS) {
+    cachedDistro = 'Ubuntu'
+
+    return cachedDistro
+  }
+
+  try {
+    const out = execFileSync('wsl.exe', ['-l', '-q'], {
+      encoding: 'utf8',
+      env: { ...process.env, WSL_UTF8: '1' },
+      // On WSL-less machines wsl.exe prints "The Windows Subsystem for Linux
+      // is not installed..." to stderr; stderr is inherited by default, so
+      // that banner leaks into whatever console the app is attached to
+      // (visible e.g. during the update hand-off). Discard it. (#80184)
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+      windowsHide: true
+    })
+
+    cachedDistro = parseDefaultDistro(out) || 'Ubuntu'
+  } catch {
+    cachedDistro = 'Ubuntu'
+  }
+
+  return cachedDistro
+}
+
+// `\\wsl.localhost\<distro>` (Win11 / Win10 >= 21364) with a `\\wsl$\<distro>`
+// fallback for older builds. Probed once; defaults to wsl.localhost.
+function wslUncBase(distro: string): string {
+  if (cachedUncBase) {
+    return cachedUncBase
+  }
+
+  const modern = `\\\\wsl.localhost\\${distro}`
+  const legacy = `\\\\wsl$\\${distro}`
+
+  try {
+    if (!fs.existsSync(modern) && fs.existsSync(legacy)) {
+      cachedUncBase = legacy
+
+      return cachedUncBase
+    }
+  } catch {
+    // Network-path probe failed — prefer the modern form.
+  }
+
+  cachedUncBase = modern
+
+  return cachedUncBase
+}
+
+/**
+ * A WSL/POSIX path → a path the Windows host can open: `/mnt/c/...` → `C:\...`
+ * (drvfs mount), any other absolute POSIX path → `\\wsl.localhost\<distro>\...`.
+ * Non-absolute or already-Windows paths pass through.
+ */
+export function wslPosixToWindowsAccessible(
+  posixPath: string,
+  distro?: string,
+  resolveDistro: () => string = resolveDefaultWslDistro
+): string {
+  const value = String(posixPath || '').trim()
+  const normalized = value.replace(/\\/g, '/')
+
+  if (!normalized.startsWith('/')) {
+    return value
+  }
+
+  const mount = normalized.match(WSL_MOUNT_RE)
+
+  if (mount) {
+    const tail = (mount[2] || '').replace(/\//g, '\\')
+
+    return tail ? `${mount[1].toUpperCase()}:\\${tail}` : `${mount[1].toUpperCase()}:\\`
+  }
+
+  const relative = normalized.replace(/^\/+/, '').replace(/\//g, '\\')
+
+  return `${wslUncBase(distro ?? resolveDistro())}\\${relative}`
+}
+
+/** Native folder dialog `defaultPath`: open a WSL cwd in the Windows picker. */
+export function resolvePickerDefaultPath(
+  defaultPath: string | undefined,
+  distro?: string,
+  profile?: null | string
+): string | undefined {
+  if (!defaultPath) {
+    return undefined
+  }
+
+  // Remote-gateway POSIX paths can't be opened via wsl.exe — no-op the bridge
+  // so the native dialog gets the raw path (it falls back gracefully) instead
+  // of triggering a wsl.exe spawn / install prompt. (#66433)
+  if (!isWslBridgeLocal(profile)) {
+    return defaultPath
+  }
+
+  const value = String(defaultPath).trim()
+
+  if (!value.startsWith('/') || WIN_DRIVE_RE.test(value)) {
+    return defaultPath
+  }
+
+  // `/mnt/<drive>` maps to the drive itself and needs no WSL; any other POSIX
+  // path waits on a registered distribution.
+  return WSL_MOUNT_RE.test(value.replace(/\\/g, '/')) || isWslAvailable()
+    ? wslPosixToWindowsAccessible(value, distro)
+    : defaultPath
+}
+
+/**
+ * Git Bash / Cygwin / drvfs drive spelling (`/c/...`, `/cygdrive/c/...`,
+ * `/mnt/c/...`) → the native `C:/...` path, but only when that native file
+ * exists. Native attachments use this spelling even while a local backend has
+ * WSL bridging on, and the WSL fallback would look for them under
+ * `\\wsl.localhost\<distro>\c\...`. The existence check keeps a real
+ * single-letter WSL directory (`/e/projects`) on the WSL bridge.
+ */
+export function shellDriveToNativePath(value: string, exists: (path: string) => boolean = fs.existsSync): null | string {
+  const drive = value.match(SHELL_DRIVE_RE)
+
+  if (!drive) {
+    return null
+  }
+
+  // Group 1 is the slash spelling at any prefix depth; group 2 is the bare
+  // `C:` colon spelling, which has no prefix.
+  const letter = drive[1] ?? drive[2]
+
+  const nativePath = `${letter.toUpperCase()}:/${value.slice(drive[0].length)}`
+
+  return exists(nativePath) ? nativePath : null
+}
+
+/** fs read path: on Windows, make a WSL cwd readable via its UNC / drive form. */
+export function resolveLocalReadPath(dirPath: string, distro?: string, profile?: null | string): string {
+  const value = String(dirPath || '').trim()
+
+  const nativeDrivePath = IS_WINDOWS ? shellDriveToNativePath(value) : null
+
+  if (nativeDrivePath) {
+    return nativeDrivePath
+  }
+
+  // In remote-gateway mode the POSIX paths belong to a host the Windows
+  // desktop cannot open locally — skip the WSL bridge entirely (no distro
+  // probe, no wsl.exe) so the file panel never spawns the install prompt on
+  // WSL-less machines. (#66433)
+  if (!isWslBridgeActive(profile)) {
+    return value
+  }
+
+  return IS_WINDOWS && value.startsWith('/') && !WIN_DRIVE_RE.test(value)
+    ? wslPosixToWindowsAccessible(value, distro)
+    : value
+}

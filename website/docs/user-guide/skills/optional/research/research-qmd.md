@@ -1,14 +1,14 @@
 ---
-title: "Qmd"
+title: "Qmd — Hybrid local search over notes, docs, and transcripts"
 sidebar_label: "Qmd"
-description: "Search personal knowledge bases, notes, docs, and meeting transcripts locally using qmd — a hybrid retrieval engine with BM25, vector search, and LLM reranking"
+description: "Hybrid local search over notes, docs, and transcripts"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Qmd
 
-Search personal knowledge bases, notes, docs, and meeting transcripts locally using qmd — a hybrid retrieval engine with BM25, vector search, and LLM reranking. Supports CLI and MCP integration.
+Hybrid local search over notes, docs, and transcripts.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Search personal knowledge bases, notes, docs, and meeting transcripts locally us
 | License | MIT |
 | Platforms | macos, linux |
 | Tags | `Search`, `Knowledge-Base`, `RAG`, `Notes`, `MCP`, `Local-AI` |
-| Related skills | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian), [`native-mcp`](/docs/user-guide/skills/bundled/mcp/mcp-native-mcp), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
+| Related skills | [`obsidian`](../../bundled/note-taking/note-taking-obsidian.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md), [`arxiv`](../../bundled/research/research-arxiv.md) |
 
 ## Reference: full SKILL.md
 
@@ -288,8 +288,9 @@ mcp_servers:
 
 #### macOS (launchd)
 
-```bash
-cat > ~/Library/LaunchAgents/com.qmd.daemon.plist << 'EOF'
+`write_file` `~/Library/LaunchAgents/com.qmd.daemon.plist`:
+
+```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -309,22 +310,22 @@ cat > ~/Library/LaunchAgents/com.qmd.daemon.plist << 'EOF'
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/qmd-daemon.log</string>
+  <string>/Users/YOU/.hermes/cache/scratch/qmd-daemon.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/qmd-daemon.log</string>
+  <string>/Users/YOU/.hermes/cache/scratch/qmd-daemon.log</string>
 </dict>
 </plist>
-EOF
+```
 
+```bash
 launchctl load ~/Library/LaunchAgents/com.qmd.daemon.plist
 ```
 
 #### Linux (systemd user service)
 
-```bash
-mkdir -p ~/.config/systemd/user
+`write_file` `~/.config/systemd/user/qmd-daemon.service` (it creates the directory):
 
-cat > ~/.config/systemd/user/qmd-daemon.service << 'EOF'
+```ini
 [Unit]
 Description=QMD MCP Daemon
 After=network.target
@@ -337,8 +338,9 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target
-EOF
+```
 
+```bash
 systemctl --user daemon-reload
 systemctl --user enable --now qmd-daemon
 systemctl --user status qmd-daemon

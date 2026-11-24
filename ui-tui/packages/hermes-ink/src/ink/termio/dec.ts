@@ -47,8 +47,53 @@ export const EXIT_ALT_SCREEN = decreset(DEC.ALT_SCREEN_CLEAR)
 // Mouse tracking: 1000 reports button press/release/wheel, 1002 adds drag
 // events (button-motion), 1003 adds all-motion (no button held — for
 // hover), 1006 uses SGR format (CSI < btn;col;row M/m) instead of legacy
-// X10 bytes. Combined: wheel + click/drag for selection + hover.
-export const ENABLE_MOUSE_TRACKING =
-  decset(DEC.MOUSE_NORMAL) + decset(DEC.MOUSE_BUTTON) + decset(DEC.MOUSE_ANY) + decset(DEC.MOUSE_SGR)
+// X10 bytes.
+//
+// Modes are addressable as a preset so users can opt out of 1003 (hover),
+// which is the noisy one inside tmux — every cursor cross of the prompt
+// row triggers a clipboard probe that surfaces as "No image in clipboard".
+// Presets:
+//   - 'off'     — no DECSET, terminal/tmux native selection + scroll work
+//   - 'wheel'   — 1000 + 1006: click + wheel only, no drag, no hover
+//   - 'buttons' — 1000 + 1002 + 1006: adds drag (text selection), no hover
+//   - 'all'     — 1000 + 1002 + 1003 + 1006: legacy behavior, hover-driven
+//                 UI (scrollbar paginate-on-hover, link mouseenter, etc.)
+export type MouseTrackingMode = 'all' | 'buttons' | 'off' | 'wheel'
+
+const MOUSE_NORMAL = decset(DEC.MOUSE_NORMAL)
+const MOUSE_BUTTON = decset(DEC.MOUSE_BUTTON)
+const MOUSE_ANY = decset(DEC.MOUSE_ANY)
+const MOUSE_SGR = decset(DEC.MOUSE_SGR)
+
+/** Sequence to enable the requested mouse tracking preset, or '' for 'off'. */
+export function enableMouseTrackingFor(mode: MouseTrackingMode): string {
+  switch (mode) {
+    case 'all':
+      return MOUSE_NORMAL + MOUSE_BUTTON + MOUSE_ANY + MOUSE_SGR
+
+    case 'buttons':
+      return MOUSE_NORMAL + MOUSE_BUTTON + MOUSE_SGR
+
+    case 'wheel':
+      return MOUSE_NORMAL + MOUSE_SGR
+
+    case 'off':
+      return ''
+
+    default:
+      // Defensive fallback: the type system guarantees exhaustiveness, but
+      // JS callers / corrupted config / hot-reloads in dev could reach this
+      // with an unknown value. Without a default, an unmatched mode returns
+      // undefined which then concatenates as the literal string "undefined"
+      // into the terminal byte stream — visibly garbling output. Treat
+      // unknown as 'off' (no DEC sequences) so the worst case is silent
+      // input loss rather than a wrecked screen.
+      return ''
+  }
+}
+
+/** Legacy alias for the maximal preset (1000 + 1002 + 1003 + 1006). */
+export const ENABLE_MOUSE_TRACKING = enableMouseTrackingFor('all')
+/** Reset every mouse mode unconditionally — safe to send when any subset is on. */
 export const DISABLE_MOUSE_TRACKING =
   decreset(DEC.MOUSE_SGR) + decreset(DEC.MOUSE_ANY) + decreset(DEC.MOUSE_BUTTON) + decreset(DEC.MOUSE_NORMAL)

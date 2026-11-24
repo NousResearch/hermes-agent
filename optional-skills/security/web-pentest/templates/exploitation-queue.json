@@ -1,0 +1,34 @@
+{
+  "schema": "hermes-web-pentest exploitation-queue v1",
+  "vuln_class": "injection|xss|auth|authz|ssrf|infra",
+  "generated_at": "ISO 8601 timestamp",
+  "engagement_id": "<engagement slug>",
+  "candidates": [
+    {
+      "id": "INJ-001",
+      "vuln_subclass": "sql_injection|command_injection|path_traversal|ssti|lfi|rfi|deserialization",
+      "endpoint": {
+        "method": "GET",
+        "url": "https://target.example/api/items",
+        "parameter": "id",
+        "location": "query|body|header|cookie|path"
+      },
+      "source_ref": "path/to/file.py:123",
+      "slot_type": "SQL-val|CMD-argument|PATH-segment|...",
+      "suspected_defense": "none|parameterized|escape|allowlist|...",
+      "verdict": "identified|partial|confirmed|critical|false_positive",
+      "confidence": 0.7,
+      "witness_payload": "' AND 1=1--",
+      "witness_response_signal": "row count change | timing | reflected marker | ...",
+      "bypass_attempts": [
+        {
+          "payload": "%2527%20OR%201=1--",
+          "blocked": true,
+          "notes": "WAF returned 403 on encoded variant"
+        }
+      ],
+      "notes": "free text",
+      "next_action": "send_witness | escalate_to_L3 | classify_FP | abort_scope_concern"
+    }
+  ]
+}

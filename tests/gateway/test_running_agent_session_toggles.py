@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -74,9 +74,7 @@ def _make_runner():
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -87,7 +85,6 @@ def _make_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
 
     # Simulate agent actively running for this session so the guard fires.
@@ -105,7 +102,7 @@ def _make_runner():
         "max_iterations": 60,
     }
     runner._running_agents[sk] = agent_mock
-    runner._running_agents_ts[sk] = time.time()
+    runner._session_state(sk).turn.started_ts = time.time()
     return runner
 
 
@@ -136,55 +133,33 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fast_rejected_mid_run():
-    """/fast mid-run must hit the busy catch-all — config-only, next message."""
-    runner = _make_runner()
-    runner._handle_fast_command = AsyncMock(
-        side_effect=AssertionError("/fast should not dispatch mid-run")
-    )
+async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
+    """Total turn age must not evict an agent with fresh activity.
 
-    result = await runner._handle_message(_make_event("/fast"))
-
-    runner._handle_fast_command.assert_not_awaited()
-    assert result is not None
-    assert "can't run mid-turn" in result
-    assert "/fast" in result
-
-
-@pytest.mark.asyncio
-async def test_reasoning_rejected_mid_run():
-    """/reasoning mid-run must hit the busy catch-all — config-only, next message."""
-    runner = _make_runner()
-    runner._handle_reasoning_command = AsyncMock(
-        side_effect=AssertionError("/reasoning should not dispatch mid-run")
-    )
-
-    result = await runner._handle_message(_make_event("/reasoning high"))
-
-    runner._handle_reasoning_command.assert_not_awaited()
-    assert result is not None
-    assert "can't run mid-turn" in result
-    assert "/reasoning" in result
-
-
-@pytest.mark.asyncio
-async def test_btw_dispatches_mid_run():
-    """/btw mid-run must dispatch to /background's handler, not hit the catch-all.
-
-    /btw is an alias of /background (see hermes_cli/commands.py). Typing
-    /btw mid-turn must spawn a parallel background task — that's the whole
-    point of the command. Before the mid-turn bypass was added for
-    /background, /btw fell through to the "Agent is running — wait or
-    /stop first" catch-all, making it useless in exactly the scenario it
-    was designed for. The alias and the bypass together make it work.
+    A long autonomous turn can legitimately run beyond the emergency wall TTL.
+    Evicting it solely by age forgets the control handle while its session-ID
+    lease remains held, so /steer and /stop fall into the lease waiter instead
+    of reaching the live agent.
     """
+    import time
+
     runner = _make_runner()
-    runner._handle_background_command = AsyncMock(
-        return_value='🚀 Background task started: "what module owns titles?"'
-    )
+    sk = build_session_key(_make_source())
+    agent = runner._running_agents[sk]
+    agent.get_activity_summary.return_value = {
+        "seconds_since_activity": 3.0,
+        "last_activity_desc": "receiving stream response",
+        "api_call_count": 1186,
+        "max_iterations": 2000,
+    }
+    runner._session_state(sk).turn.started_ts = time.time() - 31_471
+    runner._handle_verbose_command = AsyncMock(return_value="tool progress: new")
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
 
-    result = await runner._handle_message(_make_event("/btw what module owns titles?"))
+    result = await runner._handle_message(_make_event("/verbose"))
 
-    runner._handle_background_command.assert_awaited_once()
-    assert result is not None
-    assert "can't run mid-turn" not in result
+    runner._handle_verbose_command.assert_awaited_once()
+    assert runner._running_agents[sk] is agent
+    assert result == "tool progress: new"
+
+

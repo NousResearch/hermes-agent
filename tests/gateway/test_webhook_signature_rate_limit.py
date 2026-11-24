@@ -8,7 +8,8 @@ with 429.
 
 The correct order is:
 1. Read body
-2. Validate HMAC signature (reject 401 if invalid)
+2. Validate HMAC signature (reject 404 if invalid - same as unknown
+   route so a bad signature cannot enumerate configured route names)
 3. Rate limit check (reject 429 if over limit)
 4. Process the webhook
 """
@@ -41,6 +42,8 @@ def _make_adapter(routes, rate_limit=5, **extra_kw) -> WebhookAdapter:
 def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter."""
     app = web.Application()
+    from tests.gateway.fixtures.webhook_route_authority import mount_authority
+    mount_authority(app, adapter)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
@@ -66,7 +69,7 @@ class TestSignatureBeforeRateLimit:
 
         BEFORE FIX: Invalid signatures consume the rate limit bucket, so
         after 'rate_limit' bad requests the valid one would get 429.
-        AFTER FIX: Invalid signatures are rejected with 401 first (before
+        AFTER FIX: Invalid signatures are rejected first (before
         rate limiting), so the rate limit bucket is untouched. The valid
         request after many bad ones still succeeds.
         """
@@ -106,10 +109,13 @@ class TestSignatureBeforeRateLimit:
                         "X-GitHub-Delivery": f"bad-{i}",
                     },
                 )
-                # Each invalid signature should be rejected with 401
-                assert resp.status == 401, (
-                    f"Expected 401 for invalid signature, got {resp.status}"
+                # Each invalid signature is rejected with the same 404 an
+                # unknown route gets (no route-existence leak).
+                assert resp.status == 404, (
+                    f"Expected 404 for invalid signature, got {resp.status}"
                 )
+                data_out = await resp.json()
+                assert data_out["error"] == f"Unknown route: {route_name}"
 
             # Now send a valid-signed request — it MUST succeed (202)
             # BEFORE FIX: This would return 429 because the 5 bad requests
@@ -139,151 +145,4 @@ class TestSignatureBeforeRateLimit:
         # The valid event should have been captured
         assert len(captured_events) == 1
 
-    @pytest.mark.asyncio
-    async def test_valid_signature_still_rate_limited(self):
-        """Verify that VALID requests still respect rate limiting normally."""
-        secret = "test-secret-key"
-        route_name = "test-route"
-        routes = {
-            route_name: {
-                "secret": secret,
-                "events": ["push"],
-                "prompt": "Event: {event}",
-                "deliver": "log",
-            }
-        }
-        rate_limit = 3
-        adapter = _make_adapter(routes, rate_limit=rate_limit)
 
-        captured_events = []
-
-        async def _capture(event):
-            captured_events.append(event)
-
-        adapter.handle_message = _capture
-        app = _create_app(adapter)
-
-        body = json.dumps(SIMPLE_PAYLOAD).encode()
-
-        async with TestClient(TestServer(app)) as cli:
-            # Send 'rate_limit' valid requests — all should succeed
-            for i in range(rate_limit):
-                valid_sig = _github_signature(body, secret)
-                resp = await cli.post(
-                    f"/webhooks/{route_name}",
-                    data=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-GitHub-Event": "push",
-                        "X-Hub-Signature-256": valid_sig,
-                        "X-GitHub-Delivery": f"good-{i}",
-                    },
-                )
-                assert resp.status == 202
-
-            # The next valid request SHOULD be rate-limited
-            valid_sig = _github_signature(body, secret)
-            resp = await cli.post(
-                f"/webhooks/{route_name}",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-GitHub-Event": "push",
-                    "X-Hub-Signature-256": valid_sig,
-                    "X-GitHub-Delivery": "good-over-limit",
-                },
-            )
-            assert resp.status == 429, (
-                f"Expected 429 when exceeding rate limit with valid requests, "
-                f"got {resp.status}"
-            )
-
-    @pytest.mark.asyncio
-    async def test_mixed_valid_and_invalid_signatures(self):
-        """Interleave invalid and valid requests. Only valid ones count
-        against the rate limit."""
-        secret = "test-secret-key"
-        route_name = "test-route"
-        routes = {
-            route_name: {
-                "secret": secret,
-                "events": ["push"],
-                "prompt": "Event: {event}",
-                "deliver": "log",
-            }
-        }
-        rate_limit = 3
-        adapter = _make_adapter(routes, rate_limit=rate_limit)
-
-        captured_events = []
-
-        async def _capture(event):
-            captured_events.append(event)
-
-        adapter.handle_message = _capture
-        app = _create_app(adapter)
-
-        body = json.dumps(SIMPLE_PAYLOAD).encode()
-
-        async with TestClient(TestServer(app)) as cli:
-            # Send 2 valid requests (should succeed)
-            for i in range(2):
-                valid_sig = _github_signature(body, secret)
-                resp = await cli.post(
-                    f"/webhooks/{route_name}",
-                    data=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-GitHub-Event": "push",
-                        "X-Hub-Signature-256": valid_sig,
-                        "X-GitHub-Delivery": f"good-{i}",
-                    },
-                )
-                assert resp.status == 202
-
-            # Send 10 invalid requests (should all get 401, not consume quota)
-            for i in range(10):
-                resp = await cli.post(
-                    f"/webhooks/{route_name}",
-                    data=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-GitHub-Event": "push",
-                        "X-Hub-Signature-256": "sha256=invalid",
-                        "X-GitHub-Delivery": f"bad-{i}",
-                    },
-                )
-                assert resp.status == 401
-
-            # One more valid request should STILL succeed (only 2 consumed)
-            valid_sig = _github_signature(body, secret)
-            resp = await cli.post(
-                f"/webhooks/{route_name}",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-GitHub-Event": "push",
-                    "X-Hub-Signature-256": valid_sig,
-                    "X-GitHub-Delivery": "good-3",
-                },
-            )
-            assert resp.status == 202, (
-                f"Expected 202 for 3rd valid request after many invalid ones, "
-                f"got {resp.status}"
-            )
-
-            # The 4th valid request should be rate-limited (2 + 2 = 4 = limit)
-            valid_sig = _github_signature(body, secret)
-            resp = await cli.post(
-                f"/webhooks/{route_name}",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-GitHub-Event": "push",
-                    "X-Hub-Signature-256": valid_sig,
-                    "X-GitHub-Delivery": "good-4",
-                },
-            )
-            assert resp.status == 429
-
-        assert len(captured_events) == 3

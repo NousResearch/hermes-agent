@@ -1,0 +1,259 @@
+"""Regression: blocking I/O must not run while session_store._lock is held.
+
+``get_or_create_session`` previously held the store lock during SQLite
+SELECTs (``_is_session_ended_in_db``), a full routing-index rewrite +
+``os.fsync`` (``_save``), and a recovery DB query
+(``_recover_session_from_db``) -- all on every inbound message.
+
+These tests assert those three I/O calls are invoked *outside* the lock.
+They follow the mock-DB idiom from ``test_session_store_runtime_stale_guard``.
+"""
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from gateway.config import GatewayConfig, Platform
+from gateway.session import SessionEntry, SessionSource, SessionStore
+
+
+# ---------------------------------------------------------------------------
+# Test helpers
+# ---------------------------------------------------------------------------
+
+class _TrackedLock:
+    """Drop-in replacement for ``threading.Lock`` that tracks hold state.
+
+    Used to assert that blocking I/O runs only when the lock is released.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._held = False
+
+    def acquire(self, *a, **kw):
+        r = self._lock.acquire(*a, **kw)
+        if r:
+            self._held = True
+        return r
+
+    def release(self):
+        self._held = False
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *a):
+        self.release()
+
+    @property
+    def held(self) -> bool:
+        return self._held
+
+
+def _record(row: dict) -> SimpleNamespace:
+    """A ``sessions.get`` record carrying *row*'s fields, whose ``as_session_row()`` is the row dict."""
+    return SimpleNamespace(**row, as_session_row=lambda: dict(row))
+
+
+def _db_with_rows(rows: dict) -> MagicMock:
+    """Mock store (legacy and storage handle) where ``get_session`` / ``sessions.get`` map session_id -> row."""
+    db = MagicMock()
+    db.get_session.side_effect = lambda sid: rows.get(sid)
+    db.sessions.get.side_effect = lambda sid: _record(rows[sid]) if sid in rows else None
+    db.routing.latest_session_for_peer.return_value = None
+    # Identity compression tip (no child session).
+    db.get_compression_tip.side_effect = db.lineage.tip.side_effect = lambda sid: sid
+    return db
+
+
+def _peer(**row):
+    """The ``routing.latest_session_for_peer`` answer for a recovered row."""
+    session = SimpleNamespace(session_id=row.pop("id"), session_key=row.pop("session_key", None), message_count=0,
+                              last_activity_at=None, origin=None, **row)
+    return SimpleNamespace(session=session, has_messages=False)
+
+
+def _make_store(tmp_path, db_mock=None) -> SessionStore:
+    """Build a SessionStore with a ``_TrackedLock``, bypassing disk load."""
+    config = GatewayConfig()
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+    if db_mock is not None:
+        store._db, store._persistence_beside = db_mock, lambda db: db
+    store._loaded = True
+    store._lock = _TrackedLock()
+    return store
+
+
+def _source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="12345",
+    )
+
+
+def _seed_entry(store, key, session_id) -> SessionEntry:
+    now = datetime.now()
+    entry = SessionEntry(
+        session_key=key,
+        session_id=session_id,
+        created_at=now - timedelta(hours=2),
+        updated_at=now - timedelta(hours=1),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    store._entries[key] = entry
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+class TestStaleCheckOutsideLock:
+    def test_is_session_ended_not_holding_lock(self, tmp_path):
+        """``_is_session_ended_in_db`` must run with the lock released."""
+        source = _source()
+        db = _db_with_rows({
+            "sid_alive": {"end_reason": None, "id": "sid_alive"},
+        })
+        store = _make_store(tmp_path, db)
+        key = store._generate_session_key(source)
+        _seed_entry(store, key, "sid_alive")
+
+        lock = store._lock
+        calls_under_lock = []
+
+        orig = store._is_session_ended_in_db
+
+        def tracking(sid):
+            if lock.held:
+                calls_under_lock.append(sid)
+            return orig(sid)
+
+        store._is_session_ended_in_db = tracking  # type: ignore[method-assign]
+
+        store.get_or_create_session(source)
+
+        assert not calls_under_lock, (
+            f"_is_session_ended_in_db called {len(calls_under_lock)} "
+            f"time(s) while lock was held"
+        )
+
+
+class TestSaveOutsideLock:
+    def test_save_not_holding_lock(self, tmp_path):
+        """``_save`` must run with the lock released."""
+        source = _source()
+        db = _db_with_rows({})
+        store = _make_store(tmp_path, db)
+
+        lock = store._lock
+        save_calls_under_lock = []
+
+        orig_save = store._save_entries
+
+        def tracking_save():
+            if lock.held:
+                save_calls_under_lock.append(True)
+            orig_save()
+
+        store._save_entries = tracking_save  # type: ignore[method-assign]
+
+        # force_new bypasses the existing-entry path, goes straight to create.
+        store.get_or_create_session(source, force_new=True)
+
+        assert not save_calls_under_lock, (
+            f"_save called {len(save_calls_under_lock)} time(s) "
+            f"while lock was held"
+        )
+
+
+class TestRecoverOutsideLock:
+    def test_recover_not_holding_lock(self, tmp_path):
+        """``_recover_session_from_db`` must run with the lock released."""
+        source = _source()
+        db = _db_with_rows({})
+        db.routing.latest_session_for_peer.return_value = _peer(
+            id="sid_recovered", started_at=datetime.now().timestamp())
+        store = _make_store(tmp_path, db)
+        # No entry seeded -- forces the recovery path.
+
+        lock = store._lock
+        recover_calls_under_lock = []
+
+        orig = store._query_recoverable_session
+
+        def tracking(**kw):
+            if getattr(lock, "held", False):
+                recover_calls_under_lock.append(True)
+            return orig(**kw)
+
+        store._query_recoverable_session = tracking  # type: ignore[method-assign]
+
+        store.get_or_create_session(source)
+
+        assert not recover_calls_under_lock, (
+            f"_recover_session_from_db called "
+            f"{len(recover_calls_under_lock)} time(s) while lock was held"
+        )
+
+
+def test_concurrent_same_key_returns_one_published_session(tmp_path):
+    """Concurrent first messages for one routing key must converge on one ID."""
+    source = _source()
+    db = _db_with_rows({})
+    store = _make_store(tmp_path, db)
+    owner_started = threading.Event()
+    release_owner = threading.Event()
+    original_query = store._query_recoverable_session
+
+    def synchronized_query(**kwargs):
+        owner_started.set()
+        assert release_owner.wait(timeout=10)
+        return original_query(**kwargs)
+
+    store._query_recoverable_session = synchronized_query  # type: ignore[method-assign]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        owner = pool.submit(store.get_or_create_session, source)
+        assert owner_started.wait(timeout=10)
+        follower = pool.submit(store.get_or_create_session, source)
+        release_owner.set()
+        entries = [owner.result(timeout=10), follower.result(timeout=10)]
+
+    key = store._generate_session_key(source)
+    assert entries[0] is entries[1]
+    assert entries[0].session_id == store._entries[key].session_id
+    created_ids = {call.args[0].session_id for call in db.sessions.create.call_args_list}
+    assert created_ids == {entries[0].session_id}
+
+
+def test_auto_reset_does_not_recover_session_being_ended(tmp_path):
+    source = _source()
+    db = _db_with_rows({})
+    store = _make_store(tmp_path, db)
+    key = store._generate_session_key(source)
+    old = _seed_entry(store, key, "old-session")
+    old.suspended = True
+    db.routing.latest_session_for_peer.return_value = _peer(
+        id=old.session_id, session_key=key, started_at=old.created_at.timestamp())
+
+    entry = store.get_or_create_session(source)
+
+    assert entry.session_id != old.session_id
+    assert entry.was_auto_reset is True
+    db.sessions.reopen.assert_not_called()
+    # Auto-reset now writes through sessions.promote_to_reset (upgrades
+    # accidental agent_close/ws_orphan_reap ends) with the specific
+    # auditable reason — a suspended session resets as "suspended".
+    db.sessions.promote_to_reset.assert_called_once_with(old.session_id, "suspended")
+    db.sessions.end.assert_not_called()

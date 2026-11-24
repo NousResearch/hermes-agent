@@ -1,0 +1,23 @@
+name: common-ground
+title: Common Ground
+repo: https://github.com/knownquantity/common-ground
+sha: 44ec9e73c096474ce84705af8e095711eb8a505e
+maintainer: knownquantity
+version: "0.1.0"
+description: Durable collaboration records, mutual contributions and evidence-backed commitments.
+tier: community
+category: tools
+requires_hermes: ">=0.23.1,<0.24"
+readme: true
+known_issues:
+  - Applying proposals relies on conversational user approval, not an independently authenticated approval gate.
+  - Model extraction requires review; guided live tests needed corrections to inferred actions and discrepancy handling.
+capabilities:
+  provides_tools:
+    - common_ground_capture
+    - common_ground_update
+    - common_ground_query
+    - common_ground_brief
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

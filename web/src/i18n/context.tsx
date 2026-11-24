@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { applyDocumentLocale, LOCALE_ENDONYMS } from "@hermes/shared/i18n";
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
@@ -16,6 +17,7 @@ import { ga } from "./ga";
 import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
+import { ar } from "./ar";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -34,32 +36,17 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   pt,
   ru,
   hu,
-};
-
-// Display metadata for the language picker — endonym (native name) so users
-// recognize their language even if they don't speak the current UI language,
-// plus a flag emoji for visual scanning.  Exposed as a constant so the
-// LanguageSwitcher and any future settings page can share the same list.
-export const LOCALE_META: Record<Locale, { name: string; flag: string }> = {
-  en: { name: "English", flag: "🇬🇧" },
-  zh: { name: "简体中文", flag: "🇨🇳" },
-  "zh-hant": { name: "繁體中文", flag: "🇹🇼" },
-  ja: { name: "日本語", flag: "🇯🇵" },
-  de: { name: "Deutsch", flag: "🇩🇪" },
-  es: { name: "Español", flag: "🇪🇸" },
-  fr: { name: "Français", flag: "🇫🇷" },
-  tr: { name: "Türkçe", flag: "🇹🇷" },
-  uk: { name: "Українська", flag: "🇺🇦" },
-  af: { name: "Afrikaans", flag: "🇿🇦" },
-  ko: { name: "한국어", flag: "🇰🇷" },
-  it: { name: "Italiano", flag: "🇮🇹" },
-  ga: { name: "Gaeilge", flag: "🇮🇪" },
-  pt: { name: "Português", flag: "🇵🇹" },
-  ru: { name: "Русский", flag: "🇷🇺" },
-  hu: { name: "Magyar", flag: "🇭🇺" },
+  ar,
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
+
+// Display metadata for the language picker — endonyms from @hermes/shared so the
+// desktop and web pickers can never disagree on a language's native name.
+export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
+  SUPPORTED_LOCALES.map((id) => [id, { name: LOCALE_ENDONYMS[id] }]),
+) as Record<Locale, { name: string }>;
+
 const STORAGE_KEY = "hermes-locale";
 
 function isLocale(value: string): value is Locale {
@@ -99,6 +86,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       // ignore
     }
   }, []);
+
+  useEffect(() => {
+    applyDocumentLocale(locale);
+  }, [locale]);
 
   const value: I18nContextValue = {
     locale,

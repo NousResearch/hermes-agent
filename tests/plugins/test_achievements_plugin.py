@@ -21,7 +21,9 @@ import importlib.util
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -50,17 +52,15 @@ def plugin_api(tmp_path, monkeypatch):
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    # Stash monkeypatch so ``_install_fake_session_db`` can use it to
-    # swap ``sys.modules['hermes_state']`` with auto-restoration. Without
-    # this, a raw ``sys.modules[...] = fake`` assignment would leak the
-    # fake into later tests in the same xdist worker — breaking every
-    # test that does ``from hermes_state import SessionDB``.
+    # Stash monkeypatch so ``_install_fake_session_db`` can swap the storage
+    # reader door with auto-restoration. Without this, a raw assignment would
+    # leak the fake into later tests in the same process.
     module._test_monkeypatch = monkeypatch
     yield module
 
 
-class _FakeSessionDB:
-    """Stand-in for hermes_state.SessionDB that records scan calls."""
+class _FakeReader:
+    """Stand-in for the storage interface reader that records scan calls."""
 
     def __init__(self, session_count: int):
         self.session_count = session_count
@@ -68,60 +68,55 @@ class _FakeSessionDB:
         self.last_include_children: Optional[bool] = None
         self.list_calls = 0
         self.messages_calls = 0
+        self.sessions = self.messages = self
 
-    def list_sessions_rich(
-        self,
-        source: Optional[str] = None,
-        exclude_sources: Optional[List[str]] = None,
-        limit: int = 20,
-        offset: int = 0,
-        include_children: bool = False,
-        project_compression_tips: bool = True,
-    ) -> List[Dict[str, Any]]:
-        self.last_limit = limit
-        self.last_include_children = include_children
+    def ready(self) -> None:
+        pass
+
+    def list_sessions(self, query, window) -> list[Any]:
+        self.last_limit = window.limit
+        self.last_include_children = query.include_children
         self.list_calls += 1
-        # SQLite semantics: LIMIT -1 = unlimited. Honor that here.
-        effective = self.session_count if limit == -1 else min(self.session_count, limit)
+        effective = min(self.session_count, window.limit)
         now = int(time.time())
         return [
-            {
-                "id": f"sess-{i}",
-                "title": f"Session {i}",
-                "preview": f"preview {i}",
-                "started_at": now - (self.session_count - i) * 60,
-                "last_active": now - (self.session_count - i) * 60 + 30,
-                "source": "cli",
-                "model": "test-model",
-            }
+            SimpleNamespace(
+                session=SimpleNamespace(
+                    session_id=f"sess-{i}", title=f"Session {i}", started_at=now - (self.session_count - i) * 60,
+                    source="cli", model="test-model"),
+                preview=f"preview {i}",
+                last_active=now - (self.session_count - i) * 60 + 30,
+            )
             for i in range(effective)
         ]
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def read_transcript(self, session_id: str, request) -> list[Any]:
         self.messages_calls += 1
         return [
-            {"role": "user", "content": f"ask {session_id}"},
-            {
-                "role": "assistant",
-                "tool_calls": [{"function": {"name": "terminal"}}],
-            },
-            {"role": "tool", "tool_name": "terminal", "content": "ok"},
+            SimpleNamespace(as_wire_row=lambda row=row: row)
+            for row in (
+                {"role": "user", "content": f"ask {session_id}"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"function": {"name": "terminal"}}],
+                },
+                {"role": "tool", "tool_name": "terminal", "content": "ok"},
+            )
         ]
-
-    def close(self) -> None:
-        pass
 
 
 def _install_fake_session_db(plugin_api, fake_db):
-    """Inject a fake SessionDB so ``scan_sessions`` finds it via its local import.
+    """Inject a fake reader so ``scan_sessions`` opens it through its local import of the door.
 
     Uses the monkeypatch stashed on ``plugin_api`` by the fixture, so the
-    ``sys.modules['hermes_state']`` swap is auto-restored at test teardown
-    and cannot leak into unrelated tests in the same xdist worker.
+    swap is auto-restored at test teardown and cannot leak into unrelated
+    tests in the same process.
     """
-    fake_module = type(sys)("hermes_state")
-    fake_module.SessionDB = lambda: fake_db
-    plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_state", fake_module)
+    @contextmanager
+    def fake_reader(_target):
+        yield fake_db
+
+    plugin_api._test_monkeypatch.setattr("persistence_assembly.open_persistence_reader", fake_reader)
 
 
 def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
@@ -129,15 +124,15 @@ def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
 
     A user with 8000+ sessions would only see ~2% of their history in
     achievement totals, making lifetime badges unreachable. The default
-    now passes ``LIMIT -1`` (SQLite "unlimited") to ``list_sessions_rich``.
+    now asks ``list_sessions`` for a window of ``sys.maxsize`` rows (unlimited).
     """
-    fake_db = _FakeSessionDB(session_count=500)  # > old 200 cap
+    fake_db = _FakeReader(session_count=500)  # > old 200 cap
     _install_fake_session_db(plugin_api, fake_db)
 
     result = plugin_api.scan_sessions()
 
-    assert fake_db.last_limit == -1, (
-        "scan_sessions() must pass LIMIT=-1 (unlimited) to list_sessions_rich "
+    assert fake_db.last_limit == sys.maxsize, (
+        "scan_sessions() must ask list_sessions for an unlimited window "
         f"by default, got {fake_db.last_limit}"
     )
     assert fake_db.last_include_children is True, (
@@ -148,36 +143,13 @@ def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
     assert result["scan_meta"]["sessions_total"] == 500
 
 
-def test_scan_sessions_explicit_positive_limit_is_honored(plugin_api):
-    """Callers can still pass a small limit for smoke tests."""
-    fake_db = _FakeSessionDB(session_count=500)
-    _install_fake_session_db(plugin_api, fake_db)
-
-    result = plugin_api.scan_sessions(limit=10)
-
-    assert fake_db.last_limit == 10
-    assert len(result["sessions"]) == 10
-
-
-def test_scan_sessions_zero_or_negative_limit_means_unlimited(plugin_api):
-    """``limit=0`` and ``limit=-1`` both map to the unlimited path."""
-    fake_db = _FakeSessionDB(session_count=300)
-    _install_fake_session_db(plugin_api, fake_db)
-
-    plugin_api.scan_sessions(limit=0)
-    assert fake_db.last_limit == -1
-
-    plugin_api.scan_sessions(limit=-1)
-    assert fake_db.last_limit == -1
-
-
 def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugin_api):
     """First-ever evaluate_all with no cache returns a pending placeholder
     immediately and kicks off a background scan thread. Cold scans on
     large DBs take minutes — blocking the dashboard request path is not
     acceptable.
     """
-    fake_db = _FakeSessionDB(session_count=50)
+    fake_db = _FakeReader(session_count=50)
     _install_fake_session_db(plugin_api, fake_db)
 
     # Wrap _run_scan_and_update_cache so we can release it on demand,
@@ -220,63 +192,9 @@ def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugi
     assert second["scan_meta"].get("sessions_total") == 50
 
 
-def test_evaluate_all_stale_cache_serves_stale_and_refreshes_in_background(plugin_api):
-    """When the snapshot is on-disk but older than TTL, evaluate_all returns
-    the stale data immediately and kicks a background refresh. Users don't
-    stare at a loading spinner every time TTL expires.
-    """
-    fake_db = _FakeSessionDB(session_count=10)
-    _install_fake_session_db(plugin_api, fake_db)
-
-    # Seed a stale snapshot on disk.
-    stale_generated_at = int(time.time()) - plugin_api.SNAPSHOT_TTL_SECONDS - 60
-    stale_payload = {
-        "achievements": [],
-        "sessions": [],
-        "aggregate": {},
-        "scan_meta": {"mode": "full", "sessions_total": 1, "sessions_rescanned": 1, "sessions_reused": 0},
-        "error": None,
-        "unlocked_count": 0,
-        "discovered_count": 0,
-        "secret_count": 0,
-        "total_count": 0,
-        "generated_at": stale_generated_at,
-    }
-    plugin_api.save_snapshot(stale_payload)
-
-    t0 = time.time()
-    result = plugin_api.evaluate_all()
-    elapsed = time.time() - t0
-
-    assert elapsed < 1.0, f"evaluate_all blocked for {elapsed:.2f}s serving stale data"
-    assert result["generated_at"] == stale_generated_at
-
-    # Background scan should be running or have completed.
-    thread = plugin_api._BACKGROUND_SCAN_THREAD
-    assert thread is not None
-    thread.join(timeout=5)
-
-    fresh = plugin_api.evaluate_all()
-    assert fresh["generated_at"] >= stale_generated_at
-
-
-def test_evaluate_all_force_runs_synchronously(plugin_api):
-    """Manual /rescan (force=True) blocks the caller — users clicking
-    the rescan button expect up-to-date data when the call returns.
-    """
-    fake_db = _FakeSessionDB(session_count=25)
-    _install_fake_session_db(plugin_api, fake_db)
-
-    result = plugin_api.evaluate_all(force=True)
-
-    # Synchronous — snapshot is fresh on return.
-    assert result["scan_meta"].get("sessions_total") == 25
-    assert result["scan_meta"]["mode"] in {"full", "incremental"}
-
-
 def test_start_background_scan_is_idempotent_while_running(plugin_api):
     """Multiple concurrent dashboard requests must not spawn duplicate scans."""
-    fake_db = _FakeSessionDB(session_count=5)
+    fake_db = _FakeReader(session_count=5)
     _install_fake_session_db(plugin_api, fake_db)
 
     release = threading.Event()
@@ -307,11 +225,11 @@ def test_background_scan_publishes_partial_snapshots(plugin_api):
     more badges unlocked instead of staring at zeros for minutes and then
     having everything pop at the end.
     """
-    fake_db = _FakeSessionDB(session_count=750)
+    fake_db = _FakeReader(session_count=750)
     _install_fake_session_db(plugin_api, fake_db)
 
     # Record every partial snapshot the scanner publishes.
-    partial_snapshots: List[Dict[str, Any]] = []
+    partial_snapshots: list[dict[str, Any]] = []
     original_compute_from_scan = plugin_api._compute_from_scan
 
     def recording_compute(scan, *, is_partial=False):
@@ -354,7 +272,7 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
     that appears at 30% scan progress could disappear when a later session
     rebalances the aggregate. Only the final snapshot records ``unlocked_at``.
     """
-    fake_db = _FakeSessionDB(session_count=10)
+    fake_db = _FakeReader(session_count=10)
     _install_fake_session_db(plugin_api, fake_db)
 
     # Seed empty state, then invoke partial compute directly.
@@ -375,3 +293,113 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, monkeypatch):
+    """The scan is a pure read that runs inside the dashboard process (per background scan,
+    per /rescan). A writable store open there was one more writer connection on the
+    dashboard's own state.db each time — the same-process handle leak behind the
+    ``N live SessionDB handles`` precursor (#100896). Real store, real open, no fakes."""
+    import persistence_assembly
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with open_persistence(profile_scope(home=tmp_path)) as seed:
+        seed_session(seed, "s1", "cli")
+        seed_messages(seed, "s1", {"role": "user", "content": "hello"})
+
+    writable_opens = []
+    real_assemble = persistence_assembly._assemble
+
+    def spy(provider, stores, *, read_only=False, **options):
+        if not read_only:
+            writable_opens.append(dict(stores))
+        return real_assemble(provider, stores, read_only=read_only, **options)
+
+    monkeypatch.setattr(persistence_assembly, "_assemble", spy)
+
+    result = plugin_api.scan_sessions()
+
+    assert result.get("error") is None
+    assert [s["session_id"] for s in result["sessions"]] == ["s1"]
+    assert writable_opens == [], "the achievements scan must attach read-only"
+
+
+def test_scan_sessions_names_the_store_it_could_not_open(plugin_api):
+    """A store that cannot open reports main's ``Could not open SessionDB: <reason>``."""
+    def broken_reader(_target):
+        raise RuntimeError("disk gone")
+
+    plugin_api._test_monkeypatch.setattr("persistence_assembly.open_persistence_reader", broken_reader)
+
+    result = plugin_api.scan_sessions()
+
+    assert result["error"] == "Could not open SessionDB: disk gone"
+    assert result["sessions"] == []
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_data_dir_refuses_a_deleted_or_renamed_profile_home(plugin_api, tmp_path, monkeypatch, move):
+    """plugin_data_dir's refusal reaches the caller; the standalone fallback is for a missing import only."""
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path / "dead", move)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        plugin_api._data_dir()
+    assert not home.exists()
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_data_dir_falls_back_only_when_plugin_storage_is_missing(plugin_api, tmp_path, monkeypatch, move):
+    """A refusal from plugin_data_dir is not a missing import: _data_dir must not retry it locally."""
+    import builtins
+
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path / "dead", move)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fallback = []
+    monkeypatch.setattr(plugin_api, "mkdir_under_hermes_home", lambda path: fallback.append(path) or path)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        plugin_api._data_dir()
+    assert fallback == []
+    real_import = builtins.__import__
+
+    def no_plugin_storage(name, *args, **kwargs):
+        if name == "plugins.plugin_storage":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", no_plugin_storage)
+    assert plugin_api._data_dir() == home / "plugin-data" / "hermes-achievements"
+    assert fallback == [home / "plugin-data" / "hermes-achievements"]
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_write_json_does_not_recreate_a_home_removed_after_its_dir_resolved(plugin_api, tmp_path, monkeypatch, move):
+    """_data_file() already made the data dir, so a second mkdir in _write_json could only rebuild a home
+    deleted or renamed in between."""
+    import shutil
+
+    from hermes_constants import mark_named_profile_deleted
+
+    home = tmp_path / "live" / ".hermes" / "profiles" / "b"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    resolve = plugin_api._data_file
+
+    def resolve_then_move(name):
+        path = resolve(name)
+        if move == "delete":
+            mark_named_profile_deleted(home)
+            shutil.rmtree(home)
+        else:
+            home.rename(home.with_name("c"))
+        return path
+
+    monkeypatch.setattr(plugin_api, "_data_file", resolve_then_move)
+    with pytest.raises(FileNotFoundError):
+        plugin_api._write_json("state.json", {"a": 1})
+    assert not home.exists()

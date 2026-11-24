@@ -2,7 +2,13 @@
 name: manim-video
 description: "Manim CE animations: 3Blue1Brown math/algo videos."
 version: 1.0.0
+author: SHL0MS, Hermes Agent
+license: MIT
 platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [Manim, Animation, Math, Video]
+    related_skills: []
 ---
 
 # Manim Video Production Pipeline
@@ -177,11 +183,14 @@ manim -qh script.py Scene1_Introduction Scene2_CoreConcept  # production
 
 ### Step 4: Stitch
 
-```bash
-cat > concat.txt << 'EOF'
+`write_file` `concat.txt`:
+
+```
 file 'media/videos/script/480p15/Scene1_Introduction.mp4'
 file 'media/videos/script/480p15/Scene2_CoreConcept.mp4'
-EOF
+```
+
+```bash
 ffmpeg -y -f concat -safe 0 -i concat.txt -c copy final.mp4
 ```
 

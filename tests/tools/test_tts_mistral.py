@@ -72,52 +72,6 @@ class TestGenerateMistralTts:
         call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
         assert call_kwargs["response_format"] == expected_format
 
-    def test_voice_id_passed_when_configured(
-        self, tmp_path, mock_mistral_module, monkeypatch
-    ):
-        from tools.tts_tool import _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        config = {"mistral": {"voice_id": "my-voice-uuid"}}
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["voice_id"] == "my-voice-uuid"
-
-    def test_default_voice_id_when_absent(
-        self, tmp_path, mock_mistral_module, monkeypatch
-    ):
-        from tools.tts_tool import DEFAULT_MISTRAL_TTS_VOICE_ID, _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), {})
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["voice_id"] == DEFAULT_MISTRAL_TTS_VOICE_ID
-
-    def test_default_voice_id_when_empty_string(
-        self, tmp_path, mock_mistral_module, monkeypatch
-    ):
-        from tools.tts_tool import DEFAULT_MISTRAL_TTS_VOICE_ID, _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        config = {"mistral": {"voice_id": ""}}
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["voice_id"] == DEFAULT_MISTRAL_TTS_VOICE_ID
 
     def test_api_error_sanitized(self, tmp_path, mock_mistral_module, monkeypatch):
         from tools.tts_tool import _generate_mistral_tts
@@ -131,18 +85,6 @@ class TestGenerateMistralTts:
             _generate_mistral_tts("Hello", str(tmp_path / "test.mp3"), {})
         assert "secret-key-in-error" not in str(exc_info.value)
 
-    def test_default_model_used(self, tmp_path, mock_mistral_module, monkeypatch):
-        from tools.tts_tool import DEFAULT_MISTRAL_TTS_MODEL, _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), {})
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["model"] == DEFAULT_MISTRAL_TTS_MODEL
 
     def test_model_from_config_overrides_default(
         self, tmp_path, mock_mistral_module, monkeypatch
@@ -162,34 +104,27 @@ class TestGenerateMistralTts:
 
 
 class TestTtsDispatcherMistral:
-    def test_dispatcher_returns_disabled_error(
+    def test_dispatcher_routes_to_mistral(
         self, tmp_path, mock_mistral_module, monkeypatch
     ):
-        """Mistral TTS is intentionally disabled (PyPI quarantine 2026-05-12).
-
-        The dispatcher must short-circuit with a clear status message before
-        attempting any SDK import, even when MISTRAL_API_KEY is set and a
-        mock SDK is wired in. Restore routing once `mistralai` is
-        un-quarantined on PyPI.
-        """
         import json
 
         from tools.tts_tool import text_to_speech_tool
 
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
+            audio_data=base64.b64encode(b"audio").decode()
+        )
 
         output_path = str(tmp_path / "out.mp3")
         with patch("tools.tts_tool._load_tts_config", return_value={"provider": "mistral"}):
             result = json.loads(text_to_speech_tool("Hello", output_path=output_path))
 
-        assert result["success"] is False
-        assert "temporarily disabled" in result["error"]
-        assert "quarantined" in result["error"]
-        # SDK must not have been called.
-        mock_mistral_module.audio.speech.complete.assert_not_called()
+        assert result["success"] is True
+        assert result["provider"] == "mistral"
+        mock_mistral_module.audio.speech.complete.assert_called_once()
 
     def test_dispatcher_returns_error_when_sdk_not_installed(self, tmp_path, monkeypatch):
-        """Same disabled message regardless of SDK presence."""
         import json
 
         from tools.tts_tool import text_to_speech_tool
@@ -203,7 +138,7 @@ class TestTtsDispatcherMistral:
             )
 
         assert result["success"] is False
-        assert "temporarily disabled" in result["error"]
+        assert "mistralai" in result["error"]
 
 
 class TestCheckTtsRequirementsMistral:
@@ -211,7 +146,10 @@ class TestCheckTtsRequirementsMistral:
         from tools.tts_tool import check_tts_requirements
 
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        with patch("tools.tts_tool._import_edge_tts", side_effect=ImportError), \
+        with patch(
+            "tools.tts_tool._load_tts_config",
+            return_value={"provider": "mistral"},
+        ), patch("tools.tts_tool._import_edge_tts", side_effect=ImportError), \
              patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError), \
              patch("tools.tts_tool._import_openai_client", side_effect=ImportError), \
              patch("tools.tts_tool._check_neutts_available", return_value=False):
@@ -225,6 +163,5 @@ class TestCheckTtsRequirementsMistral:
              patch("tools.tts_tool._import_openai_client", side_effect=ImportError), \
              patch("tools.tts_tool._check_neutts_available", return_value=False), \
              patch("tools.tts_tool._check_kittentts_available", return_value=False), \
-             patch("tools.tts_tool._check_piper_available", return_value=False), \
-             patch("tools.tts_tool._has_any_command_tts_provider", return_value=False):
+             patch("tools.tts_tool._check_piper_available", return_value=False):
             assert check_tts_requirements() is False

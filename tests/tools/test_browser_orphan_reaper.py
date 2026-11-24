@@ -1,410 +1,360 @@
-"""Tests for _reap_orphaned_browser_sessions() — kills orphaned agent-browser
-daemons whose Python parent exited without cleaning up."""
+"""Tests for the browser orphan reaper: Chromium launched by a Hermes process that exited without
+cleaning up is found through the launcher's per-profile records and stopped, but only after its
+identity is proven (``tools.browser_launcher.reap_orphaned_browsers``, driven by
+``browser_session_lifecycle.reap_orphaned_browser_sessions``)."""
 
+import json
 import os
-import signal
-import textwrap
+import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
+from tests.waiting import wait_until
+from tools import browser_launcher as launcher
+from tools.browser_launcher_holders import ns_identity
+from tools import browser_session as bs
+from tools import browser_session_lifecycle as lifecycle
+
+_DEAD_OWNER = 99999
+_LIVE_OTHER_OWNER = 88888
+
 
 @pytest.fixture
-def fake_tmpdir(tmp_path):
-    """Patch _socket_safe_tmpdir to return a temp dir we control."""
-    with patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)):
-        yield tmp_path
+def records(monkeypatch):
+    """The test profile's launch records dir; nothing is ever signalled (``_terminate`` only records)."""
+    from hermes_constants import get_hermes_home
+    home = Path(get_hermes_home())
+    path = home / "cache" / "browser" / "chromium-records"
+    path.mkdir(mode=0o700, parents=True)
+    monkeypatch.setattr(launcher, "_records_dir", lambda *_home: path)  # this profile's dir, from any caller
+    monkeypatch.setattr(launcher, "_served_homes", set(), raising=False)
+    monkeypatch.setattr(launcher, "_browsers", {})
+    monkeypatch.setattr(launcher, "_procs", {})
+    terminated = []
+    monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: terminated.append(pid))
+    return SimpleNamespace(dir=path, terminated=terminated,
+                           ephemeral=lambda name: str(home / "cache" / "browser" / "chromium" / name))
 
 
-@pytest.fixture(autouse=True)
-def _isolate_sessions():
-    """Ensure _active_sessions is empty for each test."""
-    import tools.browser_tool as bt
-    orig = bt._active_sessions.copy()
-    bt._active_sessions.clear()
-    yield
-    bt._active_sessions.clear()
-    bt._active_sessions.update(orig)
+def _record(records, *, pid: int, udd: str, owner_pid: int = _DEAD_OWNER, start_time=777,
+            ephemeral: bool = True) -> Path:
+    path = records.dir / f"rec-{pid}.json"
+    path.write_text(json.dumps({"owner_pid": owner_pid, "owner_start_time": None, "pid": pid,
+                                "start_time": start_time, "user_data_dir": udd, "home_key": "x",
+                                "ephemeral": ephemeral, "ns": ns_identity()}))
+    return path
 
 
-def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
-    """Create a fake agent-browser socket directory with optional PID files.
-
-    Args:
-        tmpdir: base temp directory
-        session_name: name like "h_abc1234567" or "cdp_abc1234567"
-        pid: daemon PID to write to <session>.pid (None = no file)
-        owner_pid: owning hermes PID to write to <session>.owner_pid
-                   (None = no file; tests the legacy path)
-    """
-    d = tmpdir / f"agent-browser-{session_name}"
-    d.mkdir()
-    if pid is not None:
-        (d / f"{session_name}.pid").write_text(str(pid))
-    if owner_pid is not None:
-        (d / f"{session_name}.owner_pid").write_text(str(owner_pid))
-    return d
+def _alive(*pids):
+    return lambda pid: pid in pids
 
 
 class TestReapOrphanedBrowserSessions:
     """Tests for the orphan reaper function."""
 
-    def test_no_socket_dirs_is_noop(self, fake_tmpdir):
-        """No socket dirs => nothing happens, no errors."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-        _reap_orphaned_browser_sessions()  # should not raise
+    def test_real_profile_browser_is_reaped_when_owner_is_dead_and_its_copy_kept(self, records, tmp_path,
+                                                                                 monkeypatch):
+        """#100855: the shared real-profile browser is not ``<prefix>_<hex>`` named, so it must still be
+        found. Same owner-liveness rule as every other lane: dead owner => reaped. Its persistent
+        profile copy is never deleted by the reap."""
+        copy_dir = tmp_path / "browser-profile" / "chrome"
+        copy_dir.mkdir(parents=True)
+        rec = _record(records, pid=4242, udd=str(copy_dir), ephemeral=False)
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(4242))  # browser alive, owning hermes gone
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+        monkeypatch.setattr("tools.browser_lightpanda.reap_orphaned_lightpanda", lambda: 0)
 
-    def test_stale_dir_without_pid_file_is_removed(self, fake_tmpdir):
-        """Socket dir with no PID file is cleaned up."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-        d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
-        assert d.exists()
-        _reap_orphaned_browser_sessions()
-        assert not d.exists()
+        assert lifecycle.reap_orphaned_browser_sessions() == 1
 
-    def test_stale_dir_with_dead_pid_is_removed(self, fake_tmpdir):
-        """Socket dir whose daemon PID is dead gets cleaned up."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-        d = _make_socket_dir(fake_tmpdir, "h_dead123456", pid=999999999)
-        assert d.exists()
-        _reap_orphaned_browser_sessions()
-        assert not d.exists()
+        assert records.terminated == [4242]
+        assert not rec.exists()
+        assert copy_dir.exists()
 
-    def test_orphaned_alive_daemon_is_killed(self, fake_tmpdir):
-        """Alive daemon not tracked by _active_sessions gets SIGTERM (legacy path).
+    def test_unfingerprintable_browser_is_refused(self, records, tmp_path, monkeypatch):
+        """No start-time fingerprint -> the kill is refused (fail closed).
 
-        No owner_pid file => falls back to tracked_names check.
+        A PID whose identity cannot be pinned could be recycled between the verify and the
+        tree-kill, so it must be left alone.
         """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        _record(records, pid=12345, udd=records.ephemeral("p"), start_time=None)
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(12345))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
 
-        d = _make_socket_dir(fake_tmpdir, "h_orphan12345", pid=12345)
+        launcher.reap_orphaned_browsers()
 
-        kill_calls = []
+        assert records.terminated == []
 
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-            # Don't actually kill anything
 
-        # Post-#21561 the liveness probe goes through
-        # ``gateway.status._pid_exists`` (which wraps ``psutil.pid_exists``
-        # so it's safe on Windows — ``os.kill(pid, 0)`` is bpo-14484).
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("os.kill", side_effect=mock_kill):
-            _reap_orphaned_browser_sessions()
+    def test_corrupt_record_is_cleaned(self, records, monkeypatch):
+        """A record that is not a JSON object is removed and nothing is signalled."""
+        bad = records.dir / "corrupt.json"
+        bad.write_text("not-json")
+        listed = records.dir / "list.json"
+        listed.write_text("[1, 2]")
 
-        assert (12345, signal.SIGTERM) in kill_calls
-
-    def test_tracked_session_is_not_reaped(self, fake_tmpdir):
-        """Sessions tracked in _active_sessions are left alone (legacy path)."""
-        import tools.browser_tool as bt
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        session_name = "h_tracked1234"
-        d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
-
-        # Register the session as actively tracked
-        bt._active_sessions["some_task"] = {"session_name": session_name}
-
-        kill_calls = []
-
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-
-        with patch("os.kill", side_effect=mock_kill):
-            _reap_orphaned_browser_sessions()
-
-        # Should NOT have tried to kill anything
-        assert len(kill_calls) == 0
-        # Dir should still exist
-        assert d.exists()
-
-    def test_alive_legacy_daemon_is_reaped(self, fake_tmpdir):
-        """Alive, untracked, legacy (no owner_pid) daemon is reaped.
-
-        Post-#21561 the liveness probe goes through
-        ``gateway.status._pid_exists`` (which wraps ``psutil.pid_exists``
-        because ``os.kill(pid, 0)`` is a footgun on Windows — bpo-14484).
-        With no owner_pid file and no tracked-name entry, the reaper
-        SIGTERMs the daemon and removes its socket dir regardless of
-        whether SIGTERM succeeded (best-effort semantics).
-        """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        d = _make_socket_dir(fake_tmpdir, "h_perm1234567", pid=12345)
-
-        sigterm_calls = []
-
-        def mock_kill(pid, sig):
-            sigterm_calls.append((pid, sig))
-
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("os.kill", side_effect=mock_kill):
-            _reap_orphaned_browser_sessions()
-
-        assert (12345, signal.SIGTERM) in sigterm_calls
-        assert not d.exists()
-
-    def test_cdp_sessions_are_also_reaped(self, fake_tmpdir):
-        """CDP sessions (cdp_ prefix) are also scanned."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        d = _make_socket_dir(fake_tmpdir, "cdp_abc1234567")
-        assert d.exists()
-        _reap_orphaned_browser_sessions()
-        # No PID file → cleaned up
-        assert not d.exists()
-
-    def test_non_hermes_dirs_are_ignored(self, fake_tmpdir):
-        """Socket dirs that don't match our naming pattern are left alone."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        # Create a dir that doesn't match h_* or cdp_* pattern
-        d = fake_tmpdir / "agent-browser-other_session"
-        d.mkdir()
-        (d / "other_session.pid").write_text("12345")
-
-        _reap_orphaned_browser_sessions()
-
-        # Should NOT be touched
-        assert d.exists()
-
-    def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
-        """PID file with non-integer content is cleaned up."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
-        (d / "h_corrupt1234.pid").write_text("not-a-number")
-
-        _reap_orphaned_browser_sessions()
-        assert not d.exists()
+        assert launcher.reap_orphaned_browsers() == 0
+        assert not bad.exists() and not listed.exists()
+        assert records.terminated == []
 
 
 class TestOwnerPidCrossProcess:
-    """Tests for owner_pid-based cross-process safe reaping.
+    """Owner-based cross-process safe reaping: concurrent Hermes processes never reap each other's
+    browsers, so orphans from crashed processes are reaped without touching live ones."""
 
-    The owner_pid file records which hermes process owns a daemon so that
-    concurrent hermes processes don't reap each other's active browser
-    sessions.  Added to fix orphan accumulation from crashed processes.
+    def test_alive_owner_is_not_reaped_even_when_untracked(self, records, tmp_path, monkeypatch):
+        """A browser with a live owner is NOT reaped, even though this process does not track it.
+
+        This is the core cross-process safety check: Process B scanning while Process A is using a
+        browser must not kill A's browser.
+        """
+        rec = _record(records, pid=12345, udd=records.ephemeral("p"), owner_pid=_LIVE_OTHER_OWNER)
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(12345, _LIVE_OTHER_OWNER))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+
+        assert launcher.reap_orphaned_browsers() == 0
+        assert records.terminated == []
+        assert rec.exists()
+
+
+class TestReaperIdentityGuard:
+    """The #14073 guard: before signalling a live PID the reaper confirms it really is the recorded
+    browser (its argv names the recorded ``--user-data-dir``), defeating planted records and
+    recycled PIDs that would otherwise become an arbitrary same-user DoS."""
+
+    class _FakeProc:
+        def __init__(self, cmdline):
+            self._cmdline = cmdline
+
+        def cmdline(self):
+            return self._cmdline
+
+    def _run(self, cmdline, udd, *, no_such=False, access_denied=False):
+        import psutil
+
+        def _factory(pid):
+            if no_such:
+                raise psutil.NoSuchProcess(pid)
+            if access_denied:
+                raise psutil.AccessDenied(pid)
+            return self._FakeProc(cmdline)
+
+        with patch("psutil.Process", side_effect=_factory):
+            return launcher._cmdline_names_dir(12345, udd)
+
+    def test_real_browser_bound_via_cmdline_is_reapable(self):
+        udd = "/home/u/.hermes/cache/browser/chromium/abc"
+        assert self._run(["chrome", "--remote-debugging-port=0", f"--user-data-dir={udd}"], udd) is True
+
+    def test_recycled_pid_browser_not_bound_to_our_dir_is_refused(self):
+        """A Chromium for a DIFFERENT profile dir must not be reaped (PID reuse / an unrelated browser)."""
+        udd = "/home/u/.hermes/cache/browser/chromium/abc"
+        assert self._run(["chrome", "--user-data-dir=/home/u/.hermes/cache/browser/chromium/OTHER"], udd) is False
+
+    def test_recycled_pid_carrying_only_the_dir_as_a_bare_token_is_refused(self):
+        """The dir anywhere in argv is not a binding (#116884): a recycled PID whose argv merely mentions
+        it (a grep, a shell) must not pass; only the exact ``--user-data-dir=<dir>`` token binds."""
+        udd = "/home/u/.hermes/cache/browser/chromium/abc"
+        assert self._run(["grep", udd, "/var/log/syslog"], udd) is False
+        assert self._run(["grep", "abc", "/var/log/syslog"], udd) is False
+        # Control: the normalized full path as the flag token still binds.
+        assert self._run(["chrome", f"--user-data-dir={udd}/"], udd) is True
+
+    def test_unreadable_identity_fails_closed(self):
+        udd = "/home/u/.hermes/cache/browser/chromium/abc"
+        assert self._run([], udd, no_such=True) is False
+        assert self._run([], udd, access_denied=True) is False
+
+
+class TestLeakedBrowserOfThisProcess:
+    """A record owned by THIS (live) process but no longer tracked by it is a leak: reap it. A browser
+    this process still tracks is never reaped, however old."""
+
+    def test_untracked_own_browser_is_reaped(self, records, tmp_path, monkeypatch):
+        rec = _record(records, pid=12345, udd=records.ephemeral("p"), owner_pid=os.getpid())
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(12345, os.getpid()))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+
+        assert launcher.reap_orphaned_browsers() == 1
+        assert records.terminated == [12345]
+        assert not rec.exists()
+
+    def test_tracked_own_browser_is_spared(self, records, tmp_path, monkeypatch):
+        udd = records.ephemeral("p")
+        rec = _record(records, pid=12345, udd=udd, owner_pid=os.getpid())
+        launcher._browsers["mine"] = launcher.LaunchedBrowser(
+            key="mine", pid=12345, start_time=777, cdp_url="ws://127.0.0.1:1/devtools/browser/x",
+            http_url="http://127.0.0.1:1", user_data_dir=udd, owned=True, ephemeral=True, home_key="x")
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(12345, os.getpid()))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+
+        assert launcher.reap_orphaned_browsers() == 0
+        assert records.terminated == []
+        assert rec.exists()
+
+    def test_identity_guard_still_gates_the_leak_path(self, records, tmp_path, monkeypatch):
+        """The leak path must not bypass the argv identity check."""
+        _record(records, pid=12345, udd=records.ephemeral("p"), owner_pid=os.getpid())
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(12345, os.getpid()))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: False)
+
+        assert launcher.reap_orphaned_browsers() == 0
+        assert records.terminated == []
+
+
+def test_throwaway_profile_of_a_crashed_owner_is_removed_even_when_its_browser_died_too(records, monkeypatch):
+    """Throwaway profiles are per process, so no later launch wipes a crashed process's dir: the reap does."""
+    udd = Path(records.ephemeral("crashed-abc-99999"))
+    (udd / "Default").mkdir(parents=True)
+    rec = _record(records, pid=4242, udd=str(udd))
+    monkeypatch.setattr(launcher, "_pid_alive", _alive())  # owner and browser both gone
+
+    assert launcher.reap_orphaned_browsers() == 0
+    assert records.terminated == []
+    assert not udd.exists() and not rec.exists()
+
+
+def test_browser_attached_after_its_owner_crashed_is_never_reaped_while_in_use(records, tmp_path, monkeypatch):
+    """The next process ATTACHES to a crashed owner's persistent-profile Chromium (owned=False). The record
+    still names the dead owner; this process takes it over, so no reaper kills the browser it handed out."""
+    udd = str(tmp_path / "persistent-profile")
+    monkeypatch.setattr(launcher, "_pid_alive", _alive(4242))  # the browser survived, its owner did not
+    monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+    monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+    monkeypatch.setattr(launcher, "running_instance", lambda d: (41234, "/devtools/browser/abc", 4242) if d == udd else None)
+    from hermes_constants import hermes_home_key
+    crashed = launcher.LaunchedBrowser(key=f"profile:{udd}", pid=4242, start_time=777, cdp_url="", http_url="",
+                                       user_data_dir=udd, owned=True, ephemeral=False, home_key=hermes_home_key())
+    record = launcher._record_path(crashed)  # where the crashed owner left it
+    record.write_text(json.dumps({"owner_pid": _DEAD_OWNER, "owner_start_time": None, "pid": 4242, "start_time": 777,
+                                  "user_data_dir": udd, "home_key": crashed.home_key, "ephemeral": False,
+                                  "ns": ns_identity()}))
+
+    attached, err = launcher.launch_chromium(f"profile:{udd}", executable="/opt/chrome", user_data_dir=udd,
+                                             ephemeral=False)
+    assert err is None and attached.owned is False
+
+    assert launcher.reap_orphaned_browsers() == 0
+    assert records.terminated == []
+    assert json.loads(record.read_text())["owner_pid"] == os.getpid()  # other processes see a live owner
+
+
+class TestPrivatePerProfileRecords:
+    """Launcher state lives in a private per-profile dir: a records dir that is not a real directory of this
+    user closed to other writers is never read, and the reaper deletes nothing outside the profile's
+    ephemeral root (``<HERMES_HOME>/cache/browser/chromium/``)."""
+
+    @staticmethod
+    def _orphan(records, monkeypatch, pid=12345):
+        rec = _record(records, pid=pid, udd=records.ephemeral("p"))
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(pid))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+        return rec
+
+    @pytest.mark.platforms("posix")
+    def test_records_dir_writable_by_others_is_not_read(self, records, monkeypatch):
+        rec = self._orphan(records, monkeypatch)
+        records.dir.chmod(0o777)
+
+        assert launcher.reap_orphaned_browsers() == 0
+        assert records.terminated == [] and rec.exists()
+
+    @pytest.mark.platforms("posix")
+    def test_symlinked_records_dir_is_not_read(self, records, tmp_path, monkeypatch):
+        real = tmp_path / "elsewhere"
+        records.dir.rename(real)
+        records.dir.symlink_to(real, target_is_directory=True)
+        rec = self._orphan(records, monkeypatch)
+
+        assert launcher.reap_orphaned_browsers() == 0
+        assert records.terminated == [] and rec.exists()
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.live_system_guard_bypass  # the stand-in process is our own child
+    def test_ephemeral_record_outside_the_ephemeral_root_is_neither_signalled_nor_deleted(self, records, tmp_path):
+        """A live process carrying the recorded ``--user-data-dir=`` token with a matching start time: still
+        refused when the "ephemeral" dir is not one the launcher creates."""
+        outside = tmp_path / "not-a-launcher-profile"
+        (outside / "Default").mkdir(parents=True)
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"--user-data-dir={outside}"])
+        try:
+            start_time = wait_until(lambda: launcher._start_time(proc.pid), what="the stand-in's start time")
+            _record(records, pid=proc.pid, udd=str(outside), start_time=start_time)
+
+            assert launcher.reap_orphaned_browsers() == 0
+            assert records.terminated == []
+            assert (outside / "Default").is_dir()
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.mark.platforms("posix")
+def test_records_of_every_served_profile_are_reaped(tmp_path, monkeypatch):
+    """One process serves many profiles; the janitor/atexit reap runs outside any profile scope. Each served
+    home's records are read by path: the launch profile's and a live session's owning profile's."""
+    from hermes_constants import get_hermes_home
+    home_a, home_b = Path(get_hermes_home()), tmp_path / "profile-b"
+    monkeypatch.setattr(launcher, "_browsers", {})
+    monkeypatch.setattr(launcher, "_served_homes", set(), raising=False)
+    terminated = []
+    monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: terminated.append(pid))
+    monkeypatch.setattr(launcher, "_pid_alive", _alive(1111, 2222))
+    monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+    monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+    monkeypatch.setattr("tools.browser_lightpanda.reap_orphaned_lightpanda", lambda: 0)
+    for home, pid in ((home_a, 1111), (home_b, 2222)):
+        rec_dir = home / "cache" / "browser" / "chromium-records"
+        rec_dir.mkdir(mode=0o700, parents=True)
+        udd = home / "cache" / "browser" / "chromium" / f"orphan-{pid}"
+        udd.mkdir(parents=True)
+        _record(SimpleNamespace(dir=rec_dir), pid=pid, udd=str(udd))
+    monkeypatch.setitem(bs._session_owner_homes, "task-on-b", str(home_b))
+
+    assert lifecycle.reap_orphaned_browser_sessions() == 2
+    assert sorted(terminated) == [1111, 2222]
+    assert not (home_b / "cache" / "browser" / "chromium" / "orphan-2222").exists()
+
+
+class TestPeriodicOrphanReap:
+    """The reaper must run repeatedly, not only at cleanup-thread startup.
+
+    A startup-only reap can never recover from a leak that appears *after*
+    boot — which is exactly what happens in a hermes process that stays up
+    for days.
     """
 
-    def test_alive_owner_is_not_reaped_even_when_untracked(self, fake_tmpdir):
-        """Daemon with alive owner_pid is NOT reaped, even if not in our _active_sessions.
+    def test_reaper_runs_on_every_interval_not_just_startup(self):
+        cycles_to_run = 21
+        reap_calls = []
+        remaining = {"n": cycles_to_run}
 
-        This is the core cross-process safety check: Process B scanning while
-        Process A is using a browser must not kill A's daemon.
-        """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        def fake_cleanup():
+            remaining["n"] -= 1
+            if remaining["n"] <= 0:
+                bs._cleanup_running = False
 
-        # Use our own PID as the "owner" — guaranteed alive
-        d = _make_socket_dir(
-            fake_tmpdir, "h_alive_owner", pid=12345, owner_pid=os.getpid()
-        )
+        orig_running = bs._cleanup_running
+        bs._cleanup_running = True
+        try:
+            with patch("tools.browser_session_lifecycle.reap_orphaned_browser_sessions",
+                       side_effect=lambda: reap_calls.append(1)), \
+                 patch("tools.browser_session_lifecycle.cleanup_inactive_sessions",
+                       side_effect=fake_cleanup), \
+                 patch("tools.browser_session_lifecycle.time.sleep"):
+                lifecycle._janitor()
+        finally:
+            bs._cleanup_running = orig_running
 
-        kill_calls = []
-
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-
-        # Owner alive → reaper skips without ever probing the daemon.
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("os.kill", side_effect=mock_kill):
-            _reap_orphaned_browser_sessions()
-
-        assert (12345, signal.SIGTERM) not in kill_calls
-        assert d.exists()
-
-    def test_dead_owner_triggers_reap(self, fake_tmpdir):
-        """Daemon whose owner_pid is dead gets reaped."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        # PID 999999999 almost certainly doesn't exist
-        d = _make_socket_dir(
-            fake_tmpdir, "h_dead_owner1", pid=12345, owner_pid=999999999
-        )
-
-        kill_calls = []
-
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-
-        # Owner 999999999 dead, daemon 12345 alive.
-        pid_alive = {999999999: False, 12345: True}
-        with patch("gateway.status._pid_exists",
-                   side_effect=lambda pid: pid_alive.get(int(pid), False)), \
-             patch("os.kill", side_effect=mock_kill):
-            _reap_orphaned_browser_sessions()
-
-        assert (12345, signal.SIGTERM) in kill_calls
-        assert not d.exists()
-
-    def test_corrupt_owner_pid_falls_back_to_legacy(self, fake_tmpdir):
-        """Corrupt owner_pid file → fall back to tracked_names check."""
-        import tools.browser_tool as bt
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        session_name = "h_corrupt_own"
-        d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
-        # Write garbage to owner_pid file
-        (d / f"{session_name}.owner_pid").write_text("not-a-pid")
-
-        # Register session so legacy fallback leaves it alone
-        bt._active_sessions["task"] = {"session_name": session_name}
-
-        kill_calls = []
-
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("os.kill", side_effect=mock_kill):
-            _reap_orphaned_browser_sessions()
-
-        # Legacy path took over → tracked → not reaped
-        assert (12345, signal.SIGTERM) not in kill_calls
-        assert d.exists()
-
-    def test_owner_pid_permission_error_treated_as_alive(self, fake_tmpdir):
-        """Owner PID owned by another user → treat as alive.
-
-        Post-#21561 this is handled inside ``gateway.status._pid_exists``
-        (via psutil's ``OpenProcess`` returning ``ERROR_ACCESS_DENIED`` on
-        Windows, or via the POSIX fallback's ``except PermissionError``
-        branch). Exposed to callers as ``alive=True``.
-        """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        d = _make_socket_dir(
-            fake_tmpdir, "h_perm_owner1", pid=12345, owner_pid=22222
-        )
-
-        kill_calls = []
-
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-
-        # Owner 22222 reported alive (PermissionError collapses to True
-        # inside _pid_exists). Daemon never probed, never SIGTERMed.
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("os.kill", side_effect=mock_kill):
-            _reap_orphaned_browser_sessions()
-
-        assert (12345, signal.SIGTERM) not in kill_calls
-        assert d.exists()
-
-    def test_write_owner_pid_creates_file_with_current_pid(
-        self, fake_tmpdir, monkeypatch
-    ):
-        """_write_owner_pid(dir, session) writes <session>.owner_pid with os.getpid()."""
-        import tools.browser_tool as bt
-
-        session_name = "h_ownertest01"
-        socket_dir = fake_tmpdir / f"agent-browser-{session_name}"
-        socket_dir.mkdir()
-
-        bt._write_owner_pid(str(socket_dir), session_name)
-
-        owner_pid_file = socket_dir / f"{session_name}.owner_pid"
-        assert owner_pid_file.exists()
-        assert owner_pid_file.read_text().strip() == str(os.getpid())
-
-    def test_write_owner_pid_is_idempotent(self, fake_tmpdir):
-        """Calling _write_owner_pid twice leaves a single owner_pid file."""
-        import tools.browser_tool as bt
-
-        session_name = "h_idempot1234"
-        socket_dir = fake_tmpdir / f"agent-browser-{session_name}"
-        socket_dir.mkdir()
-
-        bt._write_owner_pid(str(socket_dir), session_name)
-        bt._write_owner_pid(str(socket_dir), session_name)
-
-        files = list(socket_dir.glob("*.owner_pid"))
-        assert len(files) == 1
-        assert files[0].read_text().strip() == str(os.getpid())
-
-    def test_write_owner_pid_swallows_oserror(self, fake_tmpdir, monkeypatch):
-        """OSError (e.g. permission denied) doesn't propagate — the reaper
-        falls back to the legacy tracked_names heuristic in that case.
-        """
-        import tools.browser_tool as bt
-
-        def raise_oserror(*a, **kw):
-            raise OSError("permission denied")
-
-        monkeypatch.setattr("builtins.open", raise_oserror)
-
-        # Must not raise
-        bt._write_owner_pid(str(fake_tmpdir), "h_readonly123")
-
-    def test_run_browser_command_calls_write_owner_pid(
-        self, fake_tmpdir, monkeypatch
-    ):
-        """_run_browser_command wires _write_owner_pid after mkdir."""
-        import tools.browser_tool as bt
-
-        session_name = "h_wiringtest1"
-
-        # Short-circuit Popen so we exit after the owner_pid write
-        class _FakePopen:
-            def __init__(self, *a, **kw):
-                raise RuntimeError("short-circuit after owner_pid")
-
-        monkeypatch.setattr(bt.subprocess, "Popen", _FakePopen)
-        monkeypatch.setattr(bt, "_find_agent_browser", lambda: "/bin/true")
-        monkeypatch.setattr(
-            bt, "_requires_real_termux_browser_install", lambda *a: False
-        )
-        monkeypatch.setattr(bt, "_chromium_installed", lambda: True)
-        monkeypatch.setattr(
-            bt, "_get_session_info",
-            lambda task_id: {"session_name": session_name},
-        )
-
-        calls = []
-        orig_write = bt._write_owner_pid
-
-        def _spy(*a, **kw):
-            calls.append(a)
-            orig_write(*a, **kw)
-
-        monkeypatch.setattr(bt, "_write_owner_pid", _spy)
-
-        with patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(fake_tmpdir)):
-            try:
-                bt._run_browser_command(task_id="test_task", command="goto", args=[])
-            except Exception:
-                pass
-
-        assert calls, "_run_browser_command must call _write_owner_pid"
-        # First positional arg is the socket_dir, second is the session_name
-        socket_dir_arg, session_name_arg = calls[0][0], calls[0][1]
-        assert session_name_arg == session_name
-        assert session_name in socket_dir_arg
-
-
-class TestEmergencyCleanupRunsReaper:
-    """Verify atexit-registered cleanup sweeps orphans even without an active session."""
-
-    def test_emergency_cleanup_calls_reaper(self, fake_tmpdir, monkeypatch):
-        """_emergency_cleanup_all_sessions must call _reap_orphaned_browser_sessions."""
-        import tools.browser_tool as bt
-
-        # Reset the _cleanup_done flag so the cleanup actually runs
-        monkeypatch.setattr(bt, "_cleanup_done", False)
-
-        reaper_called = []
-        orig_reaper = bt._reap_orphaned_browser_sessions
-
-        def _spy_reaper():
-            reaper_called.append(True)
-            orig_reaper()
-
-        monkeypatch.setattr(bt, "_reap_orphaned_browser_sessions", _spy_reaper)
-
-        # No active sessions — reaper should still run
-        bt._emergency_cleanup_all_sessions()
-
-        assert reaper_called, (
-            "Reaper must run on exit even with no active sessions"
-        )
+        assert len(reap_calls) > 1, "startup-only reap would give exactly 1"

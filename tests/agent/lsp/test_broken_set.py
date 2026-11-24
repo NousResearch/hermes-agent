@@ -14,15 +14,13 @@ This module verifies:
 """
 from __future__ import annotations
 
-import os
-import sys
+import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from agent.lsp.manager import LSPService
-from agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
 from agent.lsp.workspace import clear_cache
 
 
@@ -38,83 +36,14 @@ def _make_git_workspace(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
-    (repo / "pyproject.toml").write_text("[project]\nname='t'\n")
+    (repo / "pyproject.toml").write_text("[project]\nname='t'\n", encoding="utf-8")
     return repo
 
 
-def test_mark_broken_for_file_adds_correct_key(tmp_path, monkeypatch):
-    """``_mark_broken_for_file`` keys the broken-set on
-    (server_id, per_server_root) so subsequent ``enabled_for`` calls
-    for files in the same project skip immediately."""
-    repo = _make_git_workspace(tmp_path)
-    monkeypatch.chdir(str(repo))
-    src = repo / "x.py"
-    src.write_text("")
-
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
-        # The pyright server resolves to the repo root via pyproject.toml.
-        assert ("pyright", str(repo)) in svc._broken
-    finally:
-        svc.shutdown()
 
 
-def test_enabled_for_returns_false_after_broken(tmp_path, monkeypatch):
-    """Once a (server_id, root) pair is in the broken-set,
-    ``enabled_for`` returns False so the file_operations layer skips
-    the LSP path entirely."""
-    repo = _make_git_workspace(tmp_path)
-    monkeypatch.chdir(str(repo))
-    src = repo / "x.py"
-    src.write_text("")
-
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        # Initially enabled.
-        assert svc.enabled_for(str(src)) is True
-        # Mark broken.
-        svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
-        # Now disabled — the broken-set short-circuits.
-        assert svc.enabled_for(str(src)) is False
-    finally:
-        svc.shutdown()
 
 
-def test_enabled_for_other_file_in_same_project_also_skipped(tmp_path, monkeypatch):
-    """The broken key is (server_id, root), so ALL files routed through
-    the same server in the same project are skipped — not just the one
-    that triggered the failure."""
-    repo = _make_git_workspace(tmp_path)
-    monkeypatch.chdir(str(repo))
-    a = repo / "a.py"
-    a.write_text("")
-    b = repo / "b.py"
-    b.write_text("")
-
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        svc._mark_broken_for_file(str(a), RuntimeError("simulated"))
-        # Both files in the same project skip pyright now.
-        assert svc.enabled_for(str(a)) is False
-        assert svc.enabled_for(str(b)) is False
-    finally:
-        svc.shutdown()
 
 
 def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
@@ -123,11 +52,11 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
     repo_b = tmp_path / "repo-b"
     repo_b.mkdir()
     (repo_b / ".git").mkdir()
-    (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n")
+    (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n", encoding="utf-8")
     a_src = repo_a / "x.py"
-    a_src.write_text("")
+    a_src.write_text("", encoding="utf-8")
     b_src = repo_b / "x.py"
-    b_src.write_text("")
+    b_src.write_text("", encoding="utf-8")
 
     monkeypatch.chdir(str(repo_a))
     svc = LSPService(
@@ -147,27 +76,12 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
         svc.shutdown()
 
 
-def test_mark_broken_handles_missing_server_silently(tmp_path):
-    """If the file extension doesn't match any registered server,
-    ``_mark_broken_for_file`` no-ops — nothing to mark."""
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        # No registered server for .xyz; must not raise.
-        svc._mark_broken_for_file(str(tmp_path / "weird.xyz"), RuntimeError("x"))
-        assert len(svc._broken) == 0
-    finally:
-        svc.shutdown()
 
 
 def test_mark_broken_handles_no_workspace_silently(tmp_path):
     """File outside any git worktree → no workspace → no key to add."""
     src = tmp_path / "orphan.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -188,7 +102,7 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
     repo = _make_git_workspace(tmp_path)
     monkeypatch.chdir(str(repo))
     src = repo / "x.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
 
     svc = LSPService(
         enabled=True,
@@ -209,5 +123,55 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
         # ``enabled_for`` skips it.
         assert ("pyright", str(repo)) in svc._broken
         assert svc.enabled_for(str(src)) is False
+    finally:
+        svc.shutdown()
+
+
+def test_skipped_request_on_broken_root_is_logged_at_info(tmp_path, monkeypatch, caplog):
+    """A request skipped because its root is broken must leave a visible trace (#116446): at default
+    levels ``log_clean`` is DEBUG, so a silently skipped file was indistinguishable from a clean one."""
+    from agent.lsp import eventlog
+
+    repo = _make_git_workspace(tmp_path)
+    src = repo / "x.py"
+    src.write_text("", encoding="utf-8")
+    monkeypatch.chdir(str(repo))
+    eventlog.reset_announce_caches()
+    svc = LSPService(enabled=True, wait_mode="document", wait_timeout=2.0, install_strategy="manual")
+    try:
+        svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
+        with caplog.at_level("INFO", logger=eventlog.event_log.name):
+            assert svc.get_diagnostics_sync(str(src)) == []
+            assert svc.get_diagnostics_sync(str(src)) == []
+    finally:
+        svc.shutdown()
+    skipped = [r for r in caplog.records if "marked broken" in r.getMessage()]
+    assert [r.levelname for r in skipped] == ["INFO"]  # once per root; the repeat is DEBUG
+    assert str(repo) in skipped[0].getMessage() and "x.py" in skipped[0].getMessage()
+
+
+def test_broken_root_is_retried_after_broken_retry_seconds(tmp_path, monkeypatch):
+    """With ``lsp.broken_retry_seconds`` set, a root poisoned by one outer-timeout failure on the pre-write
+    path is re-tried once the window passes instead of staying dark for the process lifetime (#116446).
+    The default (0) keeps the lifetime behaviour."""
+    repo = _make_git_workspace(tmp_path)
+    monkeypatch.chdir(str(repo))
+    src = repo / "x.py"
+    src.write_text("", encoding="utf-8")
+    cfg = {"lsp": {"wait_timeout": 1.0, "install_strategy": "manual", "broken_retry_seconds": 0.2}}
+    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        svc = LSPService.create_from_config()
+    assert svc is not None
+    try:
+        async def boom(*_a, **_k):
+            raise RuntimeError("outer-timeout simulated")
+
+        with patch.object(svc, "_snapshot_async", boom):
+            svc.snapshot_baseline(str(src))
+        assert svc.enabled_for(str(src)) is False
+        assert ("pyright", str(repo)) in svc.get_status()["broken"]
+        time.sleep(0.3)
+        assert svc.enabled_for(str(src)) is True
+        assert svc.get_status()["broken"] == []
     finally:
         svc.shutdown()

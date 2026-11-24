@@ -1,10 +1,9 @@
-import asyncio
 from unittest.mock import MagicMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
 
@@ -20,7 +19,6 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: _PendingAdapter()}
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._is_user_authorized = lambda _source: True
     return runner

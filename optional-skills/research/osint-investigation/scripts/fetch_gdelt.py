@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sys
 import time
 import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get_json  # noqa: E402
+from _http import get_json
 
 BASE = "https://api.gdeltproject.org/api/v2/doc/doc"
 
@@ -82,7 +81,7 @@ def fetch(
             print(f"GDELT error: {e}", file=sys.stderr)
             payload = {}
             break
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"GDELT error: {e}", file=sys.stderr)
             payload = {}
             break

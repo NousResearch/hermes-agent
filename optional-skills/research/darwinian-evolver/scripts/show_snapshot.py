@@ -25,10 +25,33 @@ def main() -> int:
         help="Organism attribute to display. Defaults to the first str field found.",
     )
     ap.add_argument("--top", type=int, default=None, help="Show only top N by score.")
+    ap.add_argument(
+        "--i-trust-this-file",
+        action="store_true",
+        help=(
+            "Required acknowledgement that the snapshot is from a trusted source. "
+            "pickle.loads executes arbitrary code embedded in the file (RCE) and "
+            "must NEVER be run on snapshots received from untrusted parties."
+        ),
+    )
     args = ap.parse_args()
 
     if not args.snapshot.exists():
         sys.exit(f"snapshot not found: {args.snapshot}")
+
+    if not args.i_trust_this_file:
+        sys.exit(
+            "refusing to unpickle: pickle.loads is equivalent to executing arbitrary "
+            "code from the snapshot file. Only proceed if you created/control this "
+            "file, then re-run with --i-trust-this-file.\n"
+            f"  file: {args.snapshot}"
+        )
+
+    print(
+        f"WARNING: unpickling {args.snapshot} — this executes code embedded in the "
+        "file. Only safe for snapshots you produced yourself.",
+        file=sys.stderr,
+    )
 
     # The outer pickle wraps a dict; the inner pickle contains the actual organism
     # objects, which must be importable under their original dotted path. If you

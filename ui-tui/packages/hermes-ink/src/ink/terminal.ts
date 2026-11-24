@@ -67,16 +67,26 @@ export function isProgressReportingAvailable(): boolean {
  * Checks if the terminal supports DEC mode 2026 (synchronized output).
  * When supported, BSU/ESU sequences prevent visible flicker during redraws.
  */
-export function isSynchronizedOutputSupported(): boolean {
+export function isSynchronizedOutputSupported(env: NodeJS.ProcessEnv = process.env): boolean {
   // tmux parses and proxies every byte but doesn't implement DEC 2026.
   // BSU/ESU pass through to the outer terminal but tmux has already
   // broken atomicity by chunking. Skip to save 16 bytes/frame + parser work.
-  if (process.env.TMUX) {
+  if (env.TMUX) {
     return false
   }
 
-  const termProgram = process.env.TERM_PROGRAM
-  const term = process.env.TERM
+  // Zellij is the same class of hazard as tmux: it sits between us and the
+  // outer terminal, parsing/proxying (and chunking) the stream, so we can't
+  // trust the outer terminal's DEC 2026 support advertised via TERM_PROGRAM
+  // (e.g. WezTerm). Trusting it wraps frames in BSU/ESU that Zellij has
+  // already broken atomicity on, repeating old frames into scrollback.
+  // Zellij sets ZELLIJ to the session index (e.g. "0"), so guard on presence.
+  if (env.ZELLIJ) {
+    return false
+  }
+
+  const termProgram = env.TERM_PROGRAM
+  const term = env.TERM
 
   // Modern terminals with known DEC 2026 support
   if (
@@ -92,7 +102,7 @@ export function isSynchronizedOutputSupported(): boolean {
   }
 
   // kitty sets TERM=xterm-kitty or KITTY_WINDOW_ID
-  if (term?.includes('kitty') || process.env.KITTY_WINDOW_ID) {
+  if (term?.includes('kitty') || env.KITTY_WINDOW_ID) {
     return true
   }
 
@@ -112,17 +122,17 @@ export function isSynchronizedOutputSupported(): boolean {
   }
 
   // Zed uses the alacritty_terminal crate which supports DEC 2026
-  if (process.env.ZED_TERM) {
+  if (env.ZED_TERM) {
     return true
   }
 
   // Windows Terminal
-  if (process.env.WT_SESSION) {
+  if (env.WT_SESSION) {
     return true
   }
 
   // VTE-based terminals (GNOME Terminal, Tilix, etc.) since VTE 0.68
-  const vteVersion = process.env.VTE_VERSION
+  const vteVersion = env.VTE_VERSION
 
   if (vteVersion) {
     const version = parseInt(vteVersion, 10)
@@ -172,6 +182,134 @@ export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = pro
   return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'
 }
 
+// -- OSC-detected terminal colors (populated async at startup) --
+//
+// Env heuristics (COLORFGBG, TERM_PROGRAM allow-lists) can't see the actual
+// terminal colors — xterm.js hosts (VS Code / Cursor) set neither, so a
+// light-themed editor terminal reads as "dark" and gets an unreadable
+// palette. OSC 11 (background) and OSC 10 (foreground) ask the terminal
+// directly; App.tsx fires both in the same startup batch as XTVERSION.
+// The foreground matters because transparent profiles LIE about the
+// background (xterm reports the unset default, pure black) while reporting
+// the theme's real foreground — its luminance is the only trustworthy
+// polarity signal on such hosts. Readers treat undefined as "not yet
+// known / unsupported".
+
+interface ReportedColorSlot {
+  set(hex: string): void
+  get(): string | undefined
+  on(listener: (hex: string) => void): void
+}
+
+function reportedColorSlot(): ReportedColorSlot {
+  let value: string | undefined
+  const listeners = new Set<(hex: string) => void>()
+
+  return {
+    // First writer wins (defend against re-probe).
+    set(hex) {
+      if (value !== undefined) {
+        return
+      }
+
+      value = hex
+
+      for (const listener of listeners) {
+        listener(hex)
+      }
+
+      listeners.clear()
+    },
+    get: () => value,
+    // Fires immediately when already known, otherwise once on the reply.
+    on(listener) {
+      if (value !== undefined) {
+        listener(value)
+
+        return
+      }
+
+      listeners.add(listener)
+    }
+  }
+}
+
+const background = reportedColorSlot()
+const foreground = reportedColorSlot()
+
+/** Record the OSC 11 response. */
+export const setTerminalBackgroundHex = (hex: string): void => background.set(hex)
+
+/** The terminal's reported background as `#rrggbb`, or undefined if the
+ *  reply hasn't arrived (or the terminal ignored the query). */
+export const terminalBackgroundHex = (): string | undefined => background.get()
+
+/** Subscribe to the background color. */
+export const onTerminalBackground = (listener: (hex: string) => void): void => background.on(listener)
+
+/** Record the OSC 10 response. */
+export const setTerminalForegroundHex = (hex: string): void => foreground.set(hex)
+
+/** The terminal's reported foreground as `#rrggbb`, or undefined if the
+ *  reply hasn't arrived (or the terminal ignored the query). */
+export const terminalForegroundHex = (): string | undefined => foreground.get()
+
+/** Subscribe to the foreground color. */
+export const onTerminalForeground = (listener: (hex: string) => void): void => foreground.on(listener)
+
+/**
+ * Parse an OSC color reply payload into `#rrggbb`.
+ *
+ * Terminals answer OSC 10/11 queries with X11 color specs: most commonly
+ * `rgb:RRRR/GGGG/BBBB` (1-4 hex digits per channel, scaled to the channel
+ * max), sometimes `rgba:...` (alpha ignored) or a plain `#hex` form.
+ * Returns undefined for anything unrecognized.
+ */
+export function parseOscColor(data: string): string | undefined {
+  const value = data.trim().toLowerCase()
+
+  const scaled = (component: string): null | number => {
+    if (!/^[0-9a-f]{1,4}$/.test(component)) {
+      return null
+    }
+
+    const max = 16 ** component.length - 1
+
+    return Math.round((parseInt(component, 16) / max) * 255)
+  }
+
+  const rgbMatch = /^rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})(?:\/[0-9a-f]{1,4})?$/.exec(value)
+
+  if (rgbMatch) {
+    const channels = [rgbMatch[1]!, rgbMatch[2]!, rgbMatch[3]!].map(scaled)
+
+    if (channels.every(c => c !== null)) {
+      return '#' + channels.map(c => c!.toString(16).padStart(2, '0')).join('')
+    }
+
+    return undefined
+  }
+
+  const hexMatch = /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{12})$/.exec(value)
+
+  if (!hexMatch) {
+    return undefined
+  }
+
+  const hex = hexMatch[1]!
+
+  if (hex.length === 6) {
+    return `#${hex}`
+  }
+
+  if (hex.length === 3) {
+    return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`
+  }
+
+  // 12-digit form: 4 digits per channel, take the top byte of each.
+  return `#${hex.slice(0, 2)}${hex.slice(4, 6)}${hex.slice(8, 10)}`
+}
+
 // Terminals known to correctly implement the Kitty keyboard protocol
 // (CSI >1u) and/or xterm modifyOtherKeys (CSI >4;2m) for ctrl+shift+<letter>
 // disambiguation. We previously enabled unconditionally (#23350), assuming
@@ -186,6 +324,16 @@ const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tm
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
   return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+}
+
+/** True when the Kitty keyboard protocol push (CSI >1u) must be skipped for
+ *  this terminal even though extended keys are supported. Ghostty's Kitty
+ *  disambiguate-mode implementation strips the Alt modifier from Backspace —
+ *  Option+Backspace arrives as bare \x7f instead of CSI-u \x1b[127;3u —
+ *  breaking backward-kill-word. Ghostty implements modifyOtherKeys correctly,
+ *  so it gets only that push (mirrors cli.py's Ghostty exception). */
+export function skipKittyKeyboardProtocol(): boolean {
+  return env.terminal === 'ghostty'
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up

@@ -1,0 +1,151 @@
+"""s6 leg of the one-gateway-per-host convergence, shared by container boot and in-process migration.
+
+Inside the official image every profile has an s6 slot (``/run/hermes-service/gateway-<profile>``). The
+container's boot (``hermes_cli/container_boot.py``) registers every NAMED slot down and lets the
+root slot inherit their autostart intent; ``hermes gateway migrate --multiplex`` (and the hook
+``hermes update`` runs) must be able to do the same thing to a slot that is UP, from inside the
+running container, without a container restart. Both paths decide "which named intents fold into
+the root slot" through :func:`fold_named_slot_intent` so they can never disagree.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Optional, Sequence
+
+logger = logging.getLogger(__name__)
+
+#: Only this desired state autostarts; everything else (startup_failed, starting, stopped, missing)
+#: waits for the operator — no crash-loop of a broken gateway across ``docker restart``.
+AUTOSTART_STATES = frozenset({"running"})
+
+
+@dataclass(frozen=True)
+class FoldDecision:
+    #: Named profiles whose autostart intent the root slot takes over.
+    folded: tuple[str, ...]
+    #: Whether the root slot must be up after the fold.
+    root_should_start: bool
+
+
+def fold_named_slot_intent(default_prior_state: Optional[str],
+                           named_states: Iterable[tuple[str, Optional[str]]]) -> FoldDecision:
+    """The ONE rule for folding per-profile s6 slots into the root slot.
+
+    A named slot is never booted from its own intent (a started named slot IS a second gateway on
+    this host); its ``running`` intent moves to the root slot, which is the process that serves it.
+    Without the fold an image only ever driven as ``hermes -p coder gateway start`` came up with
+    ZERO gateways: no root state, every named slot registered down, every action "registered".
+    """
+    folded = tuple(sorted(name for name, prior in named_states if prior in AUTOSTART_STATES))
+    return FoldDecision(folded=folded,
+                        root_should_start=default_prior_state in AUTOSTART_STATES or bool(folded))
+
+
+def named_slot_name(profile: str) -> str:
+    from hermes_cli.service_manager import S6_SERVICE_PREFIX
+    return f"{S6_SERVICE_PREFIX}{profile}"
+
+
+def running_named_slots(profiles: Sequence[str], manager=None) -> list[str]:
+    """Named profiles whose s6 slot is UP right now — the only s6 state that is a second gateway.
+
+    A registered-down slot (what boot leaves behind) is a start target for ``hermes -p X gateway
+    start``, not a running gateway, and must never veto the multiplex default.
+    """
+    manager = manager or _manager()
+    up: list[str] = []
+    for profile in profiles:
+        if profile == "default":
+            continue
+        try:
+            if manager.is_running(named_slot_name(profile)):
+                up.append(profile)
+        except Exception:  # an unprobeable slot is not a running gateway
+            logger.debug("could not probe s6 slot for %s", profile, exc_info=True)
+    return up
+
+
+def slot_is_up(profile: str, manager=None) -> bool:
+    return bool(running_named_slots([profile], manager))
+
+
+def park_named_slot(profile: str, manager=None) -> None:
+    """Stop a named profile's slot and write its ``down`` file so a supervisor restart does not
+    revive it (``s6-svc -d`` alone is undone by the next ``s6-svscanctl -a``/container restart)."""
+    manager = manager or _manager()
+    slot = named_slot_name(profile)
+    if manager.is_running(slot):
+        manager.stop(slot)
+        _wait_down(manager.scandir / slot)
+    _set_down_marker(manager.scandir / slot, down=True)
+
+
+def _set_down_marker(service_dir: Path, *, down: bool) -> None:
+    """Create or remove a slot's ``down`` file without following symlinks.
+
+    Slots live in the hermes-owned scandir, so a root caller must not ``touch`` through a ``down``
+    (or slot) symlink planted there. The slot is opened O_NOFOLLOW and ``down`` is handled
+    relative to that fd. An existing marker that resolves is left untouched; a dangling ``down``
+    symlink (which s6 would not honour) is replaced by a regular file.
+    """
+    from hermes_cli.service_manager import _root_hermes_account
+
+    slot_fd = os.open(service_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if not down:
+            try:
+                os.unlink("down", dir_fd=slot_fd)  # unlink never follows a symlink
+            except FileNotFoundError:
+                pass
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        try:
+            fd = os.open("down", flags, 0o644, dir_fd=slot_fd)
+        except FileExistsError:
+            try:
+                os.stat("down", dir_fd=slot_fd)  # s6 follows the marker, so a resolvable one parks
+                return
+            except FileNotFoundError:
+                pass
+            # A dangling symlink does not park the slot: replace the link itself, never its target.
+            os.unlink("down", dir_fd=slot_fd)
+            fd = os.open("down", flags, 0o644, dir_fd=slot_fd)
+        try:
+            account = _root_hermes_account()
+            if account is not None:
+                os.fchown(fd, account.pw_uid, account.pw_gid)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(slot_fd)
+
+
+def _wait_down(service_dir: Path, timeout_ms: int = 15000) -> None:
+    from hermes_cli.service_manager import S6ServiceManager
+    try:
+        # As root, s6-svwait would create its subscription FIFO through a hermes-owned event/.
+        S6ServiceManager._s6("s6-svwait", "-d", "-t", str(timeout_ms), str(service_dir),
+                             timeout=timeout_ms / 1000 + 5)
+    except Exception:
+        logger.debug("s6-svwait failed for %s", service_dir, exc_info=True)
+
+
+def bring_root_slot_up(manager=None) -> str:
+    """Start (or restart, so it re-reads its config) the root slot; returns a one-line description."""
+    manager = manager or _manager()
+    slot = named_slot_name("default")
+    _set_down_marker(manager.scandir / slot, down=False)
+    if manager.is_running(slot):
+        manager.restart(slot)
+        return "restarted the root gateway slot (s6)"
+    manager.start(slot)
+    return "started the root gateway slot (s6)"
+
+
+def _manager():
+    from hermes_cli.service_manager import S6ServiceManager
+    return S6ServiceManager()

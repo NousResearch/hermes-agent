@@ -77,7 +77,7 @@ python $HERMES_HOME/skills/devops/watchers/scripts/watch_rss.py \
   --name hn --url https://news.ycombinator.com/rss --max 5
 ```
 
-Watch a GitHub repo (set `GITHUB_TOKEN` in `~/.hermes/.env` to avoid the 60 req/hr anonymous rate limit):
+Watch a GitHub repo (set `GITHUB_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` to avoid the 60 req/hr anonymous rate limit):
 
 ```bash
 python $HERMES_HOME/skills/devops/watchers/scripts/watch_github.py \
@@ -102,11 +102,8 @@ The agent invokes the script via the terminal tool inside the cron job's agent l
 
 ## State files
 
-Every watcher writes `$HERMES_HOME/watcher-state/<name>.json`. Inspect:
-
-```bash
-cat $HERMES_HOME/watcher-state/hn.json
-```
+Every watcher writes `$HERMES_HOME/watcher-state/<name>.json`. Inspect it with
+`read_file` (e.g. `$HERMES_HOME/watcher-state/hn.json`).
 
 Force a replay (next run treated as first poll):
 

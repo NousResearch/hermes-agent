@@ -1,0 +1,331 @@
+import { isGatewayReauthRequired } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useRef } from 'react'
+
+import type { HermesGateway } from '@/hermes'
+import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_TRANSITION_MAX_MS,
+  backendTransitionFor,
+  waitForBackendTransitionEnd
+} from '@/store/backend-transition'
+import {
+  $gateway,
+  activeGateway,
+  activeGatewayConnectionId,
+  activeGatewayProfileKey,
+  ensureActiveGatewayOpen,
+  gatewayActivationEpoch,
+  isActivePrimary
+} from '@/store/gateway'
+import { probeLauncherTransition } from '@/store/launcher-transition'
+import { $gatewayState, setConnection } from '@/store/session'
+
+export function useGatewayRequest() {
+  const gatewayState = useStore($gatewayState)
+  // Reactive companion to `gatewayRef`. The ref exists so `requestGateway`
+  // keeps a stable identity and always reaches the live socket, but it is only
+  // populated by the subscription effect below — i.e. AFTER the first render.
+  // A component that reads `gatewayRef.current` while rendering therefore sees
+  // null on mount, and if the connection state doesn't happen to flip
+  // afterwards it never re-renders to pick the instance up. Anything that needs
+  // the gateway as a render-time VALUE (props, memo deps) must use this.
+  const gateway = useStore($gateway) as HermesGateway | null
+  const gatewayRef = useRef<HermesGateway | null>(null)
+
+  const connectionRef = useRef<Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null>(
+    null
+  )
+
+  const gatewayStateRef = useRef(gatewayState)
+  const reconnectingRef = useRef<Promise<HermesGateway | null> | null>(null)
+  // Holds the reauth error from the most recent failed reconnect so
+  // requestGateway can surface the gateway's "session expired, sign in again"
+  // message instead of the opaque "connection closed" that triggered the retry.
+  const reauthErrorRef = useRef<unknown>(null)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    gatewayStateRef.current = gatewayState
+  }, [gatewayState])
+
+  // Track the active gateway (primary or a background profile's socket) so
+  // outbound requests and overlay props always target the focused profile.
+  useEffect(
+    () =>
+      $gateway.subscribe(gateway => {
+        gatewayRef.current = gateway as HermesGateway | null
+      }),
+    []
+  )
+
+  const ensureGatewayOpen = useCallback(async () => {
+    // The ref is populated by the subscription effect after first render; the
+    // registry is the source of truth when it has not caught up yet.
+    const existing = gatewayRef.current ?? activeGateway()
+
+    if (!existing) {
+      return null
+    }
+
+    // gatewayStateRef mirrors $gatewayState through a render + effect, so it
+    // still reads 'open' for a beat after a socket drop rejected the caller's
+    // in-flight request. Trusting it alone skipped the reconnect and re-sent
+    // on the dead socket ("Hermes gateway is not connected", #121680). Ask the
+    // socket itself.
+    if (gatewayStateRef.current === 'open' && existing.connectionState === 'open') {
+      return existing
+    }
+
+    if (reconnectingRef.current) {
+      return reconnectingRef.current
+    }
+
+    reconnectingRef.current = (async () => {
+      const desktop = window.hermesDesktop
+
+      if (!desktop) {
+        return null
+      }
+
+      reauthErrorRef.current = null
+
+      // Main resolves the profile-less lookup through the window's CURRENT
+      // route. If another source took the foreground meanwhile, the answer may
+      // describe that source, and either outcome is no longer ours to publish
+      // over the newer descriptor. The boot hook's own-route reconnect loop
+      // still restores the primary socket.
+      const activationEpoch = gatewayActivationEpoch()
+      const ownsForeground = () => isActivePrimary() && gatewayActivationEpoch() === activationEpoch
+
+      try {
+        // This path recovers only the window primary (requestGateway routes
+        // secondaries to ensureActiveGatewayOpen). Call getConnection() with no
+        // profile so main resolves the sender's full route — passing the
+        // profile name would look it up in the LOCAL pool, which fails for a
+        // profile that exists only on a remote gateway (peer windows).
+        // Both awaits below are IPC round-trips into the main process with no
+        // timeout of their own (#93454) — a wedged main-process round-trip
+        // otherwise hangs this await forever, latching reconnectingRef.current
+        // so every later requestGateway() call returns the same never-settling
+        // promise. Bound the same way use-gateway-boot.ts bounds the primary
+        // boot/soft-switch equivalents.
+        const conn = await withTimeout(
+          desktop.getConnection(),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out reconnecting to Hermes backend'
+        )
+
+        if (!ownsForeground()) {
+          return null
+        }
+
+        connectionRef.current = conn
+        setConnection(conn)
+
+        // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
+        // and short-lived, so the cached conn.wsUrl ticket is dead here;
+        // resolveGatewayWsUrl() never connects with a stale ticket. An explicit
+        // auth rejection becomes a reauth error; transport failures remain
+        // retryable. Stash only the former so requestGateway can show the
+        // actionable "sign in again" message.
+        const wsUrl = await withTimeout(
+          resolveDesktopGatewayWsUrl(desktop, conn),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out re-minting the gateway WebSocket URL'
+        )
+
+        if (!ownsForeground()) {
+          return null
+        }
+
+        await existing.connect(wsUrl)
+
+        return existing
+      } catch (error) {
+        if (isGatewayReauthRequired(error)) {
+          reauthErrorRef.current = error
+        }
+
+        if (ownsForeground()) {
+          connectionRef.current = null
+          setConnection(null)
+        }
+
+        return null
+      } finally {
+        reconnectingRef.current = null
+      }
+    })()
+
+    return reconnectingRef.current
+  }, [])
+
+  const requestGateway = useCallback(
+    async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal) => {
+      const gateway = gatewayRef.current ?? activeGateway()
+
+      if (!gateway) {
+        throw new Error('Hermes gateway unavailable')
+      }
+
+      // Bind retries to the dispatch owner, not whichever source is focused
+      // when a delayed transport failure (or its reconnect) finishes.
+      const connectionId = activeGatewayConnectionId()
+      const profile = activeGatewayProfileKey()
+
+      const isDispatchRouteActive = () =>
+        (gatewayRef.current ?? activeGateway()) === gateway &&
+        activeGatewayConnectionId() === connectionId &&
+        activeGatewayProfileKey() === profile
+
+      try {
+        return await gateway.request<T>(method, params, timeoutMs, signal)
+      } catch (error) {
+        if (!isGatewayTransportError(error)) {
+          throw error
+        }
+
+        // A plugin-run profile whose sandbox is restarting (or switching) on
+        // purpose: a request that is safe to send twice waits for its backend
+        // to come back and is sent on the new socket, instead of failing
+        // ("WebSocket heartbeat acknowledgement timed out", "Restore failed").
+        // Any other request gets its error here. An unplanned drop, or a
+        // transition that does not end as planned, takes the path below.
+        if (!(await sentAgainAfterReconnect(error, profile, method, params))) {
+          throw error
+        }
+
+        // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
+        // single-use ticket). Background profiles stay on the registry's
+        // connection-owned reconnect path, including composite remote/SSH
+        // sources.
+        const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
+
+        // Recovery follows the CURRENT route (ensureGatewayOpen resolves
+        // profile-less through main's foreground route, unlike the boot hook's
+        // own-route reconnect), so replay only on the socket that was dispatched.
+        if (!isDispatchRouteActive() || (recovered && recovered !== gateway)) {
+          throw error
+        }
+
+        if (!recovered) {
+          // Prefer the reauth error from the failed reconnect (OAuth session
+          // expired) over the generic transport error that triggered the retry.
+          const reauthError = reauthErrorRef.current
+          reauthErrorRef.current = null
+
+          if (reauthError) {
+            throw reauthError
+          }
+
+          throw error
+        }
+
+        return recovered.request<T>(method, params, timeoutMs, signal)
+      }
+    },
+    [ensureGatewayOpen]
+  )
+
+  return { connectionRef, gateway, gatewayRef, requestGateway }
+}
+
+const GATEWAY_TRANSPORT_ERROR_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ERR_NETWORK',
+  'ERR_SOCKET_CLOSED'
+])
+
+function errorCode(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const code = (value as { code?: unknown }).code
+
+  return typeof code === 'string' ? code.toUpperCase() : null
+}
+
+const HEARTBEAT_TIMEOUT_RE = /heartbeat acknowledgement timed out/i
+
+/**
+ * The requests sent again after a planned transition although the backend may
+ * already have answered them: each only reads, or attaches a stored chat again
+ * with the same result. A method that is not listed is not sent again.
+ */
+export const READS_SENT_AGAIN: ReadonlySet<string> = new Set(['session.history', 'session.resume'])
+
+const NEVER_SENT_RE = /not connected/i
+
+const hasKey = (value: unknown) => typeof value === 'string' && value !== ''
+
+/**
+ * Whether a request the transport cut can be sent a second time without
+ * running anything twice: the socket was down before it was written, it is
+ * one of the listed reads, or it carries a key by which the backend
+ * recognises a request it has already taken.
+ */
+function safeToSendAgain(message: string, method: string, params: Record<string, unknown>): boolean {
+  return (
+    NEVER_SENT_RE.test(message) ||
+    READS_SENT_AGAIN.has(method) ||
+    hasKey(params.submission_id) ||
+    hasKey(params.input_id)
+  )
+}
+
+/**
+ * Whether a request the transport failed is sent again once the connection is
+ * back. During a planned transition of the profile's backend (a plugin
+ * restarting or switching it): only a request that is safe to send twice, and
+ * only when the transition ends as planned. The backend that held any other
+ * request may have run it (a paid generation, a background task), so its
+ * caller gets the error. Otherwise a closed or refused connection is retried
+ * as before, and a heartbeat timeout is not: the socket went silent, so the
+ * backend may be alive and may have run the request, and the caller gets the
+ * error to decide.
+ */
+async function sentAgainAfterReconnect(
+  error: unknown,
+  profile: string,
+  method: string,
+  params: Record<string, unknown>
+): Promise<boolean> {
+  const message = error instanceof Error ? error.message : String(error)
+
+  if (backendTransitionFor(profile) || (await probeLauncherTransition(profile))) {
+    return safeToSendAgain(message, method, params) && waitForBackendTransitionEnd(profile, BACKEND_TRANSITION_MAX_MS)
+  }
+
+  return !HEARTBEAT_TIMEOUT_RE.test(message)
+}
+
+function isGatewayTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  // A heartbeat timeout invalidated the socket: a transport loss like a close (sentAgainAfterReconnect
+  // decides whether its request is sent again).
+  if (
+    /not connected|connection closed|connection reset|ECONNRESET/i.test(message) ||
+    HEARTBEAT_TIMEOUT_RE.test(message)
+  ) {
+    return true
+  }
+
+  const cause = typeof error === 'object' && error !== null ? (error as { cause?: unknown }).cause : undefined
+
+  return [error, cause].some(value => {
+    const code = errorCode(value)
+
+    return code !== null && GATEWAY_TRANSPORT_ERROR_CODES.has(code)
+  })
+}

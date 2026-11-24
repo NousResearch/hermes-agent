@@ -4,10 +4,9 @@
  * Themes customise three orthogonal layers:
  *
  *   1. `palette`       — the 3-layer color triplet (background/midground/
- *                         foreground) + warm-glow + noise opacity. The
- *                         design-system cascade in `src/index.css` derives
- *                         every shadcn-compat token (card, muted, border,
- *                         primary, etc.) from this triplet via `color-mix()`.
+ *                         foreground). Legacy `warmGlow` / `noiseOpacity`
+ *                         fields remain for theme YAML compat but are unused
+ *                         by the lightweight shell.
  *   2. `typography`    — font families, base font size, line height,
  *                         letter spacing. An optional `fontUrl` is injected
  *                         as `<link rel="stylesheet">` so self-hosted and
@@ -33,10 +32,9 @@ export interface ThemePalette {
   /** Top-layer highlight. In LENS_0 this is white @ alpha 0 — invisible by
    *  default but still drives `--color-ring`-style accents. */
   foreground: ThemeLayer;
-  /** Warm vignette color for <Backdrop />, as an rgba() string. */
+  /** Legacy palette field — kept for theme YAML compat. */
   warmGlow: string;
-  /** Scalar multiplier (0–1.2) on the noise overlay. Lower for softer themes
-   *  like Mono and Rosé, higher for grittier themes like Cyberpunk. */
+  /** Legacy palette field — kept for theme YAML compat. */
   noiseOpacity: number;
 }
 
@@ -79,12 +77,11 @@ export interface ThemeLayout {
 export type ThemeLayoutVariant = "standard" | "cockpit" | "tiled";
 
 /** Named hero/background assets a theme can populate. Each value is
- *  emitted as a CSS var (`--theme-asset-<name>`). The default shell
- *  consumes `bg` in `<Backdrop />` when present; other slots are
- *  plugin-facing — a cockpit sidebar plugin reads `--theme-asset-hero`
- *  to render its hero render without coupling to the theme name. */
+ *  emitted as a CSS var (`--theme-asset-<name>`). Plugin slots and
+ *  shell chrome may consume these via CSS. */
 export interface ThemeAssets {
-  /** Full-viewport background image URL, injected under the noise layer. */
+  /** Full-viewport background image URL. Exposed as `--theme-asset-bg` for
+   *  the `backdrop` plugin slot or theme `customCSS`. */
   bg?: string;
   /** Hero render (Gundam, mascot, wallpaper) — for plugin sidebars/overlays. */
   hero?: string;
@@ -103,7 +100,7 @@ export interface ThemeAssets {
 
 /** Component-style override buckets. Each bucket's entries become CSS
  *  vars (`--component-<bucket>-<kebab-property>`) that shell components
- *  (Card, Backdrop, App header/footer, etc.) read. Values are plain CSS
+ *  (Card, App header/footer, etc.) read. Values are plain CSS
  *  strings — we don't parse them, so themes can use `clip-path`,
  *  `border-image`, `background`, `box-shadow`, and anything else CSS
  *  accepts. */
@@ -117,6 +114,19 @@ export interface ThemeComponentStyles {
   badge?: Record<string, string>;
   backdrop?: Record<string, string>;
   page?: Record<string, string>;
+}
+
+/** Data-series accent colors for chart + table visualisations (Analytics,
+ *  Models, etc.). Themes provide hex strings; the provider emits them as
+ *  `--series-input-token` / `--series-output-token` CSS vars consumed
+ *  inline by pages that render input-vs-output token flows. Themes can
+ *  omit either field to inherit the default token defined in
+ *  `index.css` (Hermes-teal `#ffe6cb` for input, `#34d399` for output). */
+export interface ThemeSeriesColors {
+  /** Input-tokens series accent (Analytics chart bars + table values). */
+  inputTokenAccent?: string;
+  /** Output-tokens series accent. */
+  outputTokenAccent?: string;
 }
 
 /** Optional hex overrides keyed by shadcn-compat token name (without the
@@ -162,6 +172,17 @@ export interface DashboardTheme {
   /** Per-component CSS-var overrides. See `ThemeComponentStyles`. */
   componentStyles?: ThemeComponentStyles;
   colorOverrides?: ThemeColorOverrides;
+  /** Data-series accent colors for Analytics/Models token charts. */
+  seriesColors?: ThemeSeriesColors;
+  /** Explicit 3-color swatch override for the theme picker. Order matches the
+   *  default swatch cells: [background, midground, warmGlow]. */
+  swatchColors?: [string, string, string];
+  /** Background color for the embedded terminal pane (xterm.js).
+   *  Hex string. Defaults to `"#000000"` when absent. */
+  terminalBackground?: string;
+  /** Default text/cursor color for the embedded terminal pane (xterm.js).
+   *  Hex string. Defaults to `"#f0e6d2"` when absent. */
+  terminalForeground?: string;
 }
 
 /**

@@ -1,15 +1,24 @@
 declare global {
   interface Window {
-    /** Set true by the server only for `hermes dashboard --tui` (or HERMES_DASHBOARD_TUI=1). */
+    /**
+     * Injected by the server as `true`. The embedded TUI Chat surface
+     * (`/chat`, `/api/ws`, `/api/pty`) is always enabled, so this is
+     * effectively a constant; kept on `window` for any consumer that reads
+     * it directly and for parity with the server's bootstrap script.
+     */
     __HERMES_DASHBOARD_EMBEDDED_CHAT__?: boolean;
-    /** @deprecated Older injected name; treated as on when true. */
-    __HERMES_DASHBOARD_TUI__?: boolean;
   }
 }
 
-/** True only when the dashboard was started with embedded TUI Chat (`hermes dashboard --tui`). */
+/**
+ * Whether the dashboard's embedded TUI Chat surface is available.
+ *
+ * The embedded chat (`/chat` tab, `/api/ws` + `/api/pty` WebSockets) is now
+ * an unconditional part of the dashboard — the desktop app and the in-browser
+ * Chat tab both depend on it — so this always returns `true`. The function is
+ * retained as a stable seam so call sites don't need to change if the surface
+ * ever becomes conditional again.
+ */
 export function isDashboardEmbeddedChatEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  if (window.__HERMES_DASHBOARD_EMBEDDED_CHAT__ === true) return true;
-  return window.__HERMES_DASHBOARD_TUI__ === true;
+  return true;
 }

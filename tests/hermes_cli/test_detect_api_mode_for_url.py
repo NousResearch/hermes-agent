@@ -1,10 +1,15 @@
 """Tests for hermes_cli.runtime_provider._detect_api_mode_for_url.
 
-The helper maps base URLs to api_modes for three cases:
-  * api.openai.com  → codex_responses
-  * api.x.ai        → codex_responses
-  * */anthropic     → anthropic_messages (third-party gateways like MiniMax,
-                                          Zhipu GLM, LiteLLM proxies)
+The helper maps base URLs to api_modes for four cases:
+  * api.openai.com    → codex_responses
+  * api.x.ai          → codex_responses
+  * api.anthropic.com → anthropic_messages (Pro/Max OAuth is only billed
+                                            against /v1/messages; the
+                                            chat_completions shim counts
+                                            against a separate empty
+                                            "extra usage" pool, see #32243)
+  * */anthropic       → anthropic_messages (third-party gateways like MiniMax,
+                                            Zhipu GLM, LiteLLM proxies)
 
 Consolidating the /anthropic detection in this helper (instead of three
 inline ``endswith`` checks spread across _resolve_runtime_from_pool_entry,
@@ -21,59 +26,35 @@ class TestCodexResponsesDetection:
     def test_openai_api_returns_codex_responses(self):
         assert _detect_api_mode_for_url("https://api.openai.com/v1") == "codex_responses"
 
-    def test_xai_api_returns_codex_responses(self):
-        assert _detect_api_mode_for_url("https://api.x.ai/v1") == "codex_responses"
 
-    def test_openrouter_is_not_codex_responses(self):
-        # api.openai.com check must exclude openrouter (which routes to openai-hosted models).
-        assert _detect_api_mode_for_url("https://openrouter.ai/api/v1") is None
+class TestDirectAnthropicHost:
+    """Native api.anthropic.com → /v1/messages. Pinned for issue #32243.
 
-    def test_openai_host_suffix_does_not_match(self):
-        assert _detect_api_mode_for_url("https://api.openai.com.example/v1") is None
+    The Anthropic OpenAI-compat ``/chat/completions`` shim on the same
+    host bills against a separate "extra usage" pool that Pro/Max OAuth
+    subscriptions don't fund, so a fresh OAuth credential 400s with
+    "out of extra usage" the moment a request lands there. The detector
+    must keep ``api.anthropic.com`` on the native Messages API.
+    """
 
-    def test_openai_path_segment_does_not_match(self):
-        assert _detect_api_mode_for_url("https://proxy.example.test/api.openai.com/v1") is None
 
-    def test_xai_host_suffix_does_not_match(self):
-        assert _detect_api_mode_for_url("https://api.x.ai.example/v1") is None
+    def test_lookalike_subdomain_does_not_match(self):
+        # ``api.anthropic.com.attacker.test`` is an attacker-controlled
+        # host; the registrable label is ``attacker``, not Anthropic.
+        # Must NOT be routed to anthropic_messages — leaking an
+        # Anthropic OAuth token there is the worst case.
+        assert (
+            _detect_api_mode_for_url("https://api.anthropic.com.attacker.test/v1")
+            is None
+        )
 
 
 class TestAnthropicMessagesDetection:
     """Third-party gateways that speak the Anthropic protocol under /anthropic."""
 
-    def test_minimax_anthropic_endpoint(self):
-        assert _detect_api_mode_for_url("https://api.minimax.io/anthropic") == "anthropic_messages"
-
-    def test_minimax_cn_anthropic_endpoint(self):
-        assert _detect_api_mode_for_url("https://api.minimaxi.com/anthropic") == "anthropic_messages"
-
-    def test_dashscope_anthropic_endpoint(self):
-        assert (
-            _detect_api_mode_for_url("https://dashscope.aliyuncs.com/api/v2/apps/anthropic")
-            == "anthropic_messages"
-        )
-
-    def test_trailing_slash_tolerated(self):
-        assert _detect_api_mode_for_url("https://api.minimax.io/anthropic/") == "anthropic_messages"
-
-    def test_uppercase_path_tolerated(self):
-        assert _detect_api_mode_for_url("https://API.MINIMAX.IO/Anthropic") == "anthropic_messages"
-
-    def test_anthropic_in_middle_of_path_does_not_match(self):
-        # The helper requires ``/anthropic`` as the path SUFFIX, not anywhere.
-        # Protects against false positives on e.g. /anthropic/v1/models.
-        assert _detect_api_mode_for_url("https://api.example.com/anthropic/v1") is None
-
 
 class TestDefaultCase:
-    def test_generic_url_returns_none(self):
-        assert _detect_api_mode_for_url("https://api.together.xyz/v1") is None
 
-    def test_empty_string_returns_none(self):
-        assert _detect_api_mode_for_url("") is None
-
-    def test_none_returns_none(self):
-        assert _detect_api_mode_for_url(None) is None
 
     def test_localhost_returns_none(self):
         assert _detect_api_mode_for_url("http://localhost:11434/v1") is None

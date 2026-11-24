@@ -1,0 +1,169 @@
+"""Compression hygiene: small-context threshold floor, reasoning-trace
+exclusion, and bounded summary size.
+
+Covers the July 2026 compression tuning pass:
+
+1. Reasoning traces (native ``reasoning`` field AND inline ``<think>``-style
+   blocks) must never reach the summarizer prompt, and traces emitted BY the
+   summarizer model must never be stored in the summary.
+2. Head/tail protection budgets stay proportionate (tail = 20% of threshold).
+3. Summary token budget is bounded to the 1K-10K envelope.
+4. Models with context windows below 512K get their compression threshold
+   floored at 75% (raise-only — a higher configured value always wins).
+"""
+
+from unittest.mock import patch
+
+import agent.context_compressor as cc
+from agent.context_compressor import ContextCompressor
+
+
+def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
+    with patch.object(cc, "get_model_context_length", return_value=ctx):
+        comp = ContextCompressor(
+            model="test/model", threshold_percent=pct, quiet_mode=True,
+        )
+        # Resolve while the mock is active — lazy init (#32221) defers the
+        # window probe (and the floor application) past __init__.
+        _ = comp.context_length
+        return comp
+
+
+class TestSmallContextThresholdFloor:
+
+
+
+
+    def test_update_model_rederives_floor_both_directions(self):
+        comp = _make(128_000, pct=0.50)
+        assert comp.threshold_percent == 0.75
+        # small -> large: back to the configured 50%
+        comp.update_model("big", 1_000_000)
+        assert comp.threshold_percent == 0.50
+        assert comp.threshold_tokens == 500_000
+        # large -> small: floor re-applies
+        comp.update_model("small", 200_000)
+        assert comp.threshold_percent == 0.75
+        assert comp.threshold_tokens == 150_000
+
+
+class TestReasoningExcludedFromSummarizer:
+    def test_serializer_drops_inline_think_blocks(self):
+        comp = _make(128_000)
+        turns = [
+            {"role": "user", "content": "do the thing"},
+            {"role": "assistant", "content": "<think>INLINE_TRACE</think>visible answer"},
+            {"role": "assistant", "content": "<reasoning>VARIANT_TRACE</reasoning>other answer"},
+        ]
+        ser = comp._serialize_for_summary(turns)
+        assert "INLINE_TRACE" not in ser
+        assert "VARIANT_TRACE" not in ser
+        assert "visible answer" in ser
+        assert "other answer" in ser
+
+
+    def test_summarizer_output_think_block_stripped_before_store(self):
+        comp = _make(128_000)
+
+        class FakeMsg:
+            content = "<think>OUTPUT_TRACE</think>\n## Active Task\nUser asked X"
+
+        class FakeChoice:
+            message = FakeMsg()
+
+        class FakeResp:
+            choices = [FakeChoice()]
+
+        with patch.object(cc, "call_llm", return_value=FakeResp()):
+            out = comp._generate_summary([{"role": "user", "content": "hi"}])
+        assert out is not None
+        assert "OUTPUT_TRACE" not in out
+        # The iterative-update seed must be clean too, or the trace compounds
+        # across every subsequent compaction.
+        assert "OUTPUT_TRACE" not in (comp._previous_summary or "")
+
+
+
+class TestSummaryBudgetEnvelope:
+    def test_no_max_tokens_wire_cap_on_summary_call(self):
+        """The summary budget is PROMPT GUIDANCE only ("Target ~N tokens").
+
+        A wire-level max_tokens cap truncates summaries mid-section on the
+        Anthropic Messages / NVIDIA NIM paths (which forward the param), and
+        thinking models burn the cap on reasoning before emitting the summary
+        body — producing truncated or thinking-only summaries and compaction
+        loops. The call must NOT carry max_tokens.
+        """
+        comp = _make(128_000)
+        captured = {}
+
+        class FakeMsg:
+            content = "## Active Task\nUser asked X"
+
+        class FakeChoice:
+            message = FakeMsg()
+
+        class FakeResp:
+            choices = [FakeChoice()]
+
+        def fake_call_llm(**kw):
+            captured.update(kw)
+            return FakeResp()
+
+        with patch.object(cc, "call_llm", side_effect=fake_call_llm):
+            out = comp._generate_summary([{"role": "user", "content": "hi"}])
+        assert out is not None
+        assert "max_tokens" not in captured
+
+
+
+
+
+class TestTailBudgetProportionality:
+    def test_tail_budget_is_target_ratio_of_threshold(self):
+        # Legacy-mode contract: the threshold-proportional formula. The
+        # default is lean (clamped 10K-25K) since the tail-default flip, so
+        # this pins the LEGACY path explicitly.
+        comp = _make(128_000)
+        comp.tail_mode = "legacy"
+        comp._tail_token_budget = None  # force mode-aware recompute
+        assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
+        # Sanity: tail protection stays a modest slice of the window (<= 20%).
+        assert comp.tail_token_budget <= comp.context_length * 0.20
+
+
+    def test_tail_budget_never_exceeds_window_share(self):
+        """The lean 10K floor is 61% of a 16K window and 122% of an 8K one: on a local 27B the
+        "protected" tail was the whole request and compaction reclaimed nothing. Whatever the
+        formula, the verbatim tail stays within ``TAIL_MAX_CONTEXT_FRACTION`` of the window."""
+        from agent.context_compressor import LEAN_TAIL_FLOOR_TOKENS, TAIL_MAX_CONTEXT_FRACTION
+
+        for ctx in (8_192, 16_384, 32_768):
+            comp = _make(ctx)
+            assert comp.tail_token_budget <= ctx * TAIL_MAX_CONTEXT_FRACTION, ctx
+            assert comp.tail_token_budget > 0, ctx
+        # Big windows are untouched: the lean clamp still binds.
+        assert _make(131_072).tail_token_budget == LEAN_TAIL_FLOOR_TOKENS
+
+    def test_small_window_compress_leaves_a_real_middle(self):
+        """End to end through the boundary walk: on an 8K window a tool-heavy transcript must yield a
+        compressible middle that is most of the transcript, and the retained tail must stay near the
+        window share (one atomic tool group of overrun is allowed for the required anchors)."""
+        from agent.context_compressor import TAIL_MAX_CONTEXT_FRACTION, _estimate_msg_budget_tokens
+
+        ctx = 8_192
+        comp = _make(ctx)
+        msgs: list = [{"role": "system", "content": "sys"}]
+        for i in range(12):
+            msgs.append({"role": "user", "content": f"step {i}"})
+            msgs.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+            })
+            msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "x" * 4_000})
+            msgs.append({"role": "assistant", "content": f"done {i}"})
+        start, end = comp._compress_window(msgs)
+        tail_tokens = sum(_estimate_msg_budget_tokens(m) for m in msgs[end:])
+        one_turn = sum(_estimate_msg_budget_tokens(m) for m in msgs[-4:])
+        assert tail_tokens <= ctx * TAIL_MAX_CONTEXT_FRACTION + one_turn
+        assert end - start >= (len(msgs) - start) // 2, (start, end, len(msgs))

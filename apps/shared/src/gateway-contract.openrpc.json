@@ -7717,7 +7717,7 @@
       },
       "BotRelayDeliverResult": {
         "additionalProperties": false,
-        "description": "The target authority's receipt, unchanged across the relay bridge.",
+        "description": "A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same\non the canonical door and across this relay bridge. It names its admission, unless ``refused``: the\nFIFO refused the delivery before anything was committed, a terminal ``failed`` receipt with no\nadmission that the relay settles as the sender's answer.",
         "properties": {
           "status": {
             "title": "Status",
@@ -8438,133 +8438,6 @@
           "id"
         ],
         "title": "CanonicalBotDeliverParams",
-        "type": "object"
-      },
-      "CanonicalBotDeliverResult": {
-        "additionalProperties": false,
-        "description": "The authority and its legacy relay bridge return the same receipt.",
-        "properties": {
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "delivery_id": {
-            "title": "Delivery Id",
-            "type": "string"
-          },
-          "profile_home": {
-            "title": "Profile Home",
-            "type": "string"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "admission_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Admission Id"
-          },
-          "refused": {
-            "anyOf": [
-              {
-                "const": true,
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Refused"
-          },
-          "message": {
-            "title": "Message",
-            "type": "string"
-          },
-          "reply": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reply"
-          },
-          "retry_admission_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry Admission Id"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          },
-          "target_state": {
-            "anyOf": [
-              {
-                "enum": [
-                  "idle",
-                  "working",
-                  "waiting_approval",
-                  "waiting_clarify",
-                  "paused"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Target State"
-          }
-        },
-        "required": [
-          "status",
-          "delivery_id",
-          "profile_home",
-          "session_id",
-          "message"
-        ],
-        "title": "CanonicalBotDeliverResult",
         "type": "object"
       },
       "CanonicalClientIdentity": {
@@ -50931,7 +50804,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+          "$ref": "#/components/schemas/BotRelayDeliverResult"
         }
       }
     },
@@ -50949,7 +50822,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+          "$ref": "#/components/schemas/BotRelayDeliverResult"
         }
       }
     },

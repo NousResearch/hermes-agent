@@ -344,16 +344,20 @@ def test_deliver_dispatch_preserves_delivery_identity_and_receipt(home, monkeypa
     assert all(not any(key in params for key in SENDER) for _, params in forwarded)
 
 
-@pytest.mark.parametrize("extra", [{"unexpected": True}, {"id": None}, {"id": "../evil"}])
-def test_deliver_dispatch_rejects_invalid_requests_before_authority(home, monkeypatch, extra):
+@pytest.mark.parametrize("extra, code, reason", [
+    ({"unexpected": True}, 4000, None),
+    ({"id": None}, 4090, "invalid_params"),
+    ({"id": "../evil"}, 4090, "invalid_params"),
+    ({"id": ...}, 4090, "invalid_params"),
+])
+def test_deliver_dispatch_rejects_invalid_requests_before_authority(home, monkeypatch, extra, code, reason):
     from tools import bot_live_delivery as live
 
     monkeypatch.setattr(live, "authority_delivery", lambda *a, **k: pytest.fail("invalid delivery reached authority"))
     params = {"id": "a" * 32, "profile": "ops", "message": "ping", **extra}
-    response = srv.handle_request({"id": 1, "method": "bot_relay.deliver", "params": params})
-    error = response["error"]
-    if "unexpected" in extra:
-        assert error["code"] == 4000
+    params = {key: value for key, value in params.items() if value is not ...}
+    error = srv.handle_request({"id": 1, "method": "bot_relay.deliver", "params": params})["error"]
+    assert error["code"] == code
+    assert (error.get("data") or {}).get("reason") == reason
+    if code == 4000:
         assert "unexpected" in error["message"]
-    else:
-        assert error["data"]["reason"] == "invalid_params"

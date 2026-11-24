@@ -652,7 +652,10 @@ class BotRelayDeliverParams(Params):
 
 
 class BotRelayDeliverResult(Result):
-    """The target authority's receipt, unchanged across the relay bridge."""
+    """A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same
+    on the canonical door and across this relay bridge. It names its admission, unless ``refused``: the
+    FIFO refused the delivery before anything was committed, a terminal ``failed`` receipt with no
+    admission that the relay settles as the sender's answer."""
 
     status: str
     delivery_id: str

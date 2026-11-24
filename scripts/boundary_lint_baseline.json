@@ -284,8 +284,6 @@
     "plugins/model-providers/openrouter/__init__.py hermes_cli.models_reasoning_caps.openrouter_model_reasoning_capabilities": 1,
     "plugins/model-providers/router/__init__.py agent.reasoning_effort.EFFORT_LADDER": 1,
     "plugins/model-providers/router/__init__.py providers.base._profile_user_agent": 1,
-    "plugins/model-providers/solstice/__init__.py agent.reasoning_effort.gemini_top_thinking_level": 1,
-    "plugins/model-providers/solstice/__init__.py agent.transports.chat_completions._build_gemini_thinking_config": 1,
     "plugins/model-providers/solstice/auth.py hermes_cli.auth._default_verify": 1,
     "plugins/model-providers/solstice/auth.py hermes_cli.auth._nous_portal_base_url": 1,
     "plugins/model-providers/solstice/auth.py hermes_cli.auth.get_provider_auth_state": 1,

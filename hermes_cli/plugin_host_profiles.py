@@ -35,12 +35,15 @@ def load_hosted_profiles(plugin_dir: Path, module_name: str) -> tuple[list[Any],
     ``{profile name: reason}`` for its profiles that cannot cross the host boundary (the caller
     loads those in-process)."""
     from providers.base import ProviderProfile
-    payload = _cached_extraction(Path(plugin_dir), module_name)
+    # One address for the extraction and the proxies, taken first: a profile link repointed while the extraction
+    # runs would otherwise pair one installation's profiles with another directory's copy of the path.
+    address = _host_address(Path(plugin_dir))
+    payload = _cached_extraction(Path(address), module_name)
     if payload.get("error"):
         raise PluginHostUnavailable(str(payload["error"]))
     entries = payload.get("profiles") or []
     in_process = {str(e["name"]): str(e["in_process"]) for e in entries if e.get("in_process")}
-    hosted = [_profile_proxy(ProviderProfile, _host_address(Path(plugin_dir)), module_name, e)
+    hosted = [_profile_proxy(ProviderProfile, address, module_name, e)
               for e in entries if not e.get("in_process")]
     return hosted, in_process
 

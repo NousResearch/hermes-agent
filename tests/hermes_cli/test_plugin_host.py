@@ -1331,6 +1331,48 @@ def test_a_hosted_model_provider_of_a_renamed_linked_profile_still_runs_after_a_
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_hosted_model_providers_address_names_the_installation_its_profiles_were_extracted_from(
+        tmp_path, monkeypatch):
+    """A hosted provider's profiles come from a one-shot extraction and its overrides run in the host, addressed
+    by the plugin's directory. Both name one installation: a profile link repointed while the extraction runs,
+    then restored, leaves the provider runnable, never addressed at the other directory's copy of the path."""
+    import providers
+    from hermes_cli import plugin_host_profiles
+
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
+    plugin_dir = target / "plugins" / "model-providers" / "hostmodel"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    elsewhere = _home_with_plugins(tmp_path / "elsewhere", monkeypatch, {})
+    link = tmp_path / "root" / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    extract = plugin_host_profiles._extract
+
+    def extract_then_repoint(*args, **kwargs):
+        payload = extract(*args, **kwargs)
+        link.unlink()
+        link.symlink_to(elsewhere, target_is_directory=True)
+        return payload
+
+    monkeypatch.setattr(plugin_host_profiles, "_extract", extract_then_repoint)
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        profile = providers.get_provider_profile("hostmodel")
+        assert profile is not None
+        link.unlink()
+        link.symlink_to(target, target_is_directory=True)
+        assert profile.build_extra_body(session_id="s1")["session_id"] == "s1"
+    finally:
+        host = getattr(plugins_mod.get_plugin_manager(), "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
 def test_a_hosted_model_provider_whose_install_link_was_removed_stays_removed_after_a_host_crash(
         tmp_path, monkeypatch):

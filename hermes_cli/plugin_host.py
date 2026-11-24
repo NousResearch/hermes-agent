@@ -151,6 +151,10 @@ class PluginHost:
             if self.alive:
                 return self._channel  # type: ignore[return-value]
             self._stopping = False
+            home = Path(self._manager.owner_home)  # at each start: a renamed link's old name leads nowhere
+            if home != self._home:
+                self._home = home
+                self._base_context = self._build_base_context()
             argv = self._argv()
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=self._env(), cwd=str(self._home),

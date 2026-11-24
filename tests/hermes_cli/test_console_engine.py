@@ -224,17 +224,19 @@ def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
     assert "Triggered job" in triggered.output
 
 
-@pytest.mark.parametrize("disabled_only", [False, True], ids=["paused", "disabled-only"])
-def test_cron_run_refuses_paused_or_disabled_job(_isolate_hermes_home, disabled_only):
+@pytest.mark.parametrize("stored", ["paused", "disabled-only", "enabled-state-paused"])
+def test_cron_run_refuses_paused_or_disabled_job(_isolate_hermes_home, stored):
     """Regression for #156575: console run must preserve an operator's pause."""
-    from cron.jobs import create_job, get_job, pause_job, update_job
+    from cron.jobs import create_job, get_job, load_jobs, pause_job, save_jobs, update_job
     from hermes_constants import get_hermes_home
 
     job = create_job(prompt="say hello", schedule="every 1h", name="paused-check")
-    if disabled_only:
+    if stored == "disabled-only":
         update_job(job["id"], {"enabled": False})
-    else:
+    elif stored == "paused":
         pause_job(job["id"], reason="paused by owner")
+    else:  # half-paused record the scheduler's claim gate still refuses
+        save_jobs([{**load_jobs()[0], "state": "paused", "paused_reason": "paused by owner"}])
     before = get_job(job["id"])
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     before_bytes = jobs_file.read_bytes()

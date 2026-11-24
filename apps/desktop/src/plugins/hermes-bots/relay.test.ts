@@ -934,11 +934,108 @@ describe('the drain loop wires drain → deliver → reply', () => {
     expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
     await pushAndSettle()
     expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
-    await pushAndSettle()
+    // A queued acknowledgement keeps its lane alive; no third outbox signal is needed.
+    await vi.advanceTimersByTimeAsync(5_000)
     const deliveries = calls.filter(call => call.method === 'bot_relay.deliver')
     expect(deliveries).toHaveLength(3)
     expect(deliveries.every(call => call.params.id === envelope.id)).toBe(true)
     expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toEqual({id: envelope.id, reply: 'exact reply'})
+    stopBotRelay()
+  })
+
+  it('polls an admitted delivery directly until settled without another outbox signal', async () => {
+    let drained = false
+    let delivered = 0
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        if (call.connectionId !== 'a' || drained) {return { envelopes: [] }}
+        drained = true
+
+        return { envelopes: [envelope] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        delivered += 1
+
+        return { status: delivered === 1 ? 'queued' : delivered === 2 ? 'claimed' : 'settled', delivery_id: envelope.id,
+          admission_id: 'admission-1', reply: delivered < 3 ? '' : 'eventual answer' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle(1, { connectionId: 'a' })
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(10_000)
+    const deliveries = calls.filter(call => call.method === 'bot_relay.deliver')
+    expect(deliveries).toHaveLength(3)
+    expect(deliveries[1].params).toEqual(deliveries[0].params)
+    expect(deliveries[2].params).toEqual(deliveries[0].params)
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toEqual({
+      id: envelope.id, reply: 'eventual answer'
+    })
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain' && call.connectionId === 'a')).toHaveLength(1)
+    stopBotRelay()
+  })
+
+  it('does not resume an old pending poll after stop and restart', async () => {
+    let drained = false
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        if (call.connectionId !== 'a' || drained) {return { envelopes: [] }}
+        drained = true
+
+        return { envelopes: [envelope] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { status: 'queued', delivery_id: envelope.id, admission_id: 'admission-1' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle(1, { connectionId: 'a' })
+    expect(calls.filter(call => call.method === 'bot_relay.deliver')).toHaveLength(1)
+    stopBotRelay()
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(calls.filter(call => call.method === 'bot_relay.deliver')).toHaveLength(1)
+    stopBotRelay()
+  })
+
+  it('stops polling at the delivery deadline without posting a false failure', async () => {
+    let drained = false
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        if (call.connectionId !== 'a' || drained) {return { envelopes: [] }}
+        drained = true
+
+        return { envelopes: [envelope] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { status: 'queued', delivery_id: envelope.id, admission_id: 'admission-1' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle(1, { connectionId: 'a' })
+    expect(calls.filter(call => call.method === 'bot_relay.deliver')).toHaveLength(1)
+    vi.setSystemTime(Date.now() + RELAY_DELIVER_TIMEOUT_MS)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(calls.filter(call => call.method === 'bot_relay.deliver')).toHaveLength(1)
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
     stopBotRelay()
   })
 

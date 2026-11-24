@@ -154,6 +154,12 @@
   },
   {
     "path": "hermes_cli/doctor_platform.py",
+    "symbol": "_check_link_dir_on_path",
+    "kind": "bare_which",
+    "reason": "asks which file a new terminal's PATH runs for Hermes's own command; the answer is about the user's PATH, not where a managed runtime lives"
+  },
+  {
+    "path": "hermes_cli/doctor_platform.py",
     "symbol": "_macos_desktop_dr",
     "kind": "bare_which"
   },

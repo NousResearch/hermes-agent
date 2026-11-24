@@ -48,3 +48,17 @@ it('reserves the left cluster only for the band tools the window shows', () => {
   })
   expect(result.current.left).toBe(1)
 })
+
+// HADESK-118. The layout editor holds the Simple/Advanced picker. Hidden in Simple, choosing Simple
+// there took away the control that switches back.
+it('keeps the layout editor in the band in Simple mode, where the way back to Advanced lives', () => {
+  const { result } = renderHook(() => useBandHiddenTools())
+  expect(result.current.has('layout')).toBe(false)
+
+  act(() => setInterfaceMode('simple'))
+  expect(result.current.has('layout')).toBe(false)
+
+  // A compact band has no room for it; Settings carries the same switch.
+  act(() => $widthClass.set('compact'))
+  expect(result.current.has('layout')).toBe(true)
+})

@@ -56,7 +56,7 @@ export function useBandHiddenTools(): ReadonlySet<BandToolId> {
     'history-back': noHistory,
     'history-forward': noHistory,
     hud: !canUseHud(),
-    layout: portal && (mode === 'simple' || portalCompact),
+    layout: portalCompact,
     'right-sidebar': false,
     settings: portal,
     sidebar: portal && (narrow ? workspacePage && !compact : reveal !== 'band')

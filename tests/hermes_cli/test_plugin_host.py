@@ -539,7 +539,8 @@ def repointed_profile_link(tmp_path, monkeypatch):
 
     def runner(name):
         ran, script = tmp_path / f"{name}.ran", tmp_path / name
-        script.write_text(f'#!/bin/sh\necho "ran ${{OPENAI_API_KEY:-unset}}" >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+        script.write_text(f'#!/bin/sh\necho "ran ${{OPENAI_API_KEY:-unset}} ${{LAUNCH_SETTING:-unset}}" >> "{ran}"\n'
+                          f'exec "$@"\n', encoding="utf-8")
         script.chmod(0o755)
         return ran
 
@@ -660,28 +661,38 @@ def test_a_secondary_host_takes_no_launch_env_value_after_the_launch_link_is_rep
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
 @pytest.mark.parametrize("caller", ["bound_to_the_secondary", "none"])
-def test_a_secondary_hosts_child_takes_no_launch_only_credential_after_the_launch_link_is_repointed_at_it(
+def test_a_secondary_hosts_child_takes_no_launch_only_value_after_the_launch_link_is_repointed_at_it(
         repointed_profile_link, tmp_path, monkeypatch, caller):
-    """The host child of another profile never inherits a credential only the launch profile's service env holds.
-    After the launch profile's own link is repointed at a secondary's directory, the secondary's host child is
-    still another profile's, whether a body bound to the secondary starts it or not."""
+    """The host child of another profile never inherits the launch profile's values: neither a credential only its
+    service env holds nor a setting its ``.env`` loaded into the process env. After the launch profile's own link is
+    repointed at a secondary's directory, the secondary's host child is still another profile's, whether a body
+    bound to the secondary starts it or not."""
     import contextlib
 
+    from hermes_cli import env_loader
     from hermes_constants import hermes_home_key
     from tui_gateway import server
 
     env = repointed_profile_link
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set())
+    monkeypatch.setenv("LAUNCH_SETTING", "registered-for-restore")
+    monkeypatch.delenv("LAUNCH_SETTING")
     monkeypatch.setenv("OPENAI_API_KEY", "the-launch-profiles-key")
+    launch_env_file = env.dirs["old"] / ".env"
+    launch_env_file.write_text(launch_env_file.read_text(encoding="utf-8") + "LAUNCH_SETTING=from-the-launch-env-file\n",
+                               encoding="utf-8")
     env.point("old")
     monkeypatch.setenv("HERMES_HOME", str(env.link))
     hermes_home_key(env.link)  # the process served its own profile, the old directory, under this name
+    env_loader.load_hermes_dotenv(hermes_home=env.link, load_external_secrets=False)
     host = env.host_for(env.dirs["new"])
     body = (server._session_profile_runtime_scope({"profile_home": str(env.dirs["new"])}, hydrate_secrets=False)
             if caller == "bound_to_the_secondary" else contextlib.nullcontext())
     with body:
         env.point("new")
         host.ensure_started()
-    assert (tmp_path / "new-runner.ran").read_text(encoding="utf-8").split() == ["ran", "unset"]
+    assert (tmp_path / "new-runner.ran").read_text(encoding="utf-8").split() == ["ran", "unset", "unset"]
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts

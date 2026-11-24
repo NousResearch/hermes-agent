@@ -1,18 +1,16 @@
 ---
 sidebar_position: 11
 title: "Feishu / Lark"
-description: "Feishu / Lark moved out of Hermes core into the feishu Hermes Labs plugin"
+description: "Feishu / Lark moved out of Hermes core into the official feishu plugin"
 ---
 
 # Feishu / Lark
 
-:::warning Hermes Labs plugin
-Feishu / Lark is now a Hermes Labs plugin: built by Nous Research, not supported. Fixes from the community are welcome.
-:::
-
-The [Feishu / Lark](https://open.feishu.cn/) gateway platform and its document-comment tools (`feishu_doc_read`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment`, `feishu_drive_add_comment`) are no longer part of Hermes core. They ship as the `feishu` plugin in [NousResearch/hermes-labs-plugins](https://github.com/NousResearch/hermes-labs-plugins/tree/main/feishu), which carries the full setup guide (WebSocket and webhook modes, QR onboarding, group policies, document comments, meeting invites).
+The [Feishu / Lark](https://open.feishu.cn/) gateway platform and its document-comment tools (`feishu_doc_read`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment`, `feishu_drive_add_comment`) are no longer part of Hermes core. They ship as the official `feishu` plugin in [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/feishu), which carries the full setup guide (WebSocket and webhook modes, QR onboarding, group policies, document comments, meeting invites).
 
 ## Install
+
+The plugin is opt-in: new installs don't get it until you install it.
 
 ```bash
 hermes plugins install feishu

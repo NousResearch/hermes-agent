@@ -103,7 +103,7 @@ For local files, a full unredacted read (including all pages of the same file ve
 
 **Yuanbao tools** (`yb_query_group_info`, `yb_query_group_members`, `yb_send_dm`, `yb_search_sticker`, `yb_send_sticker`, toolset `yuanbao`) are no longer built-in. They come from the `yuanbao` Hermes Labs plugin (`hermes plugins install yuanbao`). See [Yuanbao](../user-guide/messaging/yuanbao.md).
 
-**Feishu / Lark tools** (`feishu_doc_read`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment`, `feishu_drive_add_comment`, toolsets `feishu_doc` / `feishu_drive`) are no longer built-in. They come from the `feishu` Hermes Labs plugin (`hermes plugins install feishu`). See [Feishu / Lark](../user-guide/messaging/feishu.md).
+**Feishu / Lark tools** (`feishu_doc_read`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment`, `feishu_drive_add_comment`, toolsets `feishu_doc` / `feishu_drive`) are no longer built-in. They come from the official `feishu` plugin (`hermes plugins install feishu`). See [Feishu / Lark](../user-guide/messaging/feishu.md).
 :::
 
 ## `image_gen` toolset

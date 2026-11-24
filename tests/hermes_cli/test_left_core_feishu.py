@@ -65,7 +65,7 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use(tmp_path, name):
     assert lcm.legacy_plugin_alias(name) == "feishu"
 
 
-def test_a_feishu_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
+def test_a_feishu_home_gets_the_plugin_once_with_no_placement_notice(tmp_path):
     home = _home(tmp_path, env=_CREDS, config="agent:\n  disabled_toolsets: [hermes-feishu]\n")
     calls, said = [], []
 
@@ -77,7 +77,9 @@ def test_a_feishu_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
     assert lcm.migrate_home(home, install=install, say=said.append) == ["feishu"]
     assert lcm.migrate_home(home, install=install, say=said.append) == []
     assert calls == ["feishu"]
-    assert "Feishu / Lark is now a Hermes Labs plugin: built by Nous Research, not supported" in said[0]
+    # An official plugin: the outcome line carries no "not supported" placement sentence.
+    assert len(said) == 1 and "not supported" not in said[0] and "Labs" not in said[0]
+    assert lcm._feishu_notice(home) == ""
     from hermes_cli.config import read_user_config_raw
     config = read_user_config_raw(home / "config.yaml")
     # The feishu_* tools lived only in hermes-feishu: every other platform keeps them off.
@@ -108,7 +110,7 @@ def test_a_string_saved_selection_counts_as_use(tmp_path):
     assert lcm.feishu_in_use(home) is True
 
 
-def test_a_home_with_both_labs_platforms_keeps_each_ones_tools_off_on_the_other(tmp_path):
+def test_a_home_with_both_catalog_platforms_keeps_each_ones_tools_off_on_the_other(tmp_path):
     from hermes_cli.tools_config import _enabled_plugin_toolsets
     home = _home(tmp_path, env=_CREDS + "YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n")
     lcm.migrate_home(home, install=lambda n: {"ok": True}, say=lambda m: None)

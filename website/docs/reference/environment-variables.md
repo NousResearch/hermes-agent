@@ -458,7 +458,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `FEISHU_ENCRYPT_KEY` | Optional encryption key for webhook mode |
 | `FEISHU_VERIFICATION_TOKEN` | Optional verification token for webhook mode |
 | `FEISHU_ALLOWED_USERS` | Comma-separated Feishu user IDs allowed to message the bot |
-| `FEISHU_ALLOW_BOTS` | `none` (default) / `mentions` / `all` — accept inbound messages from other bots. See [bot-to-bot messaging](https://github.com/NousResearch/hermes-labs-plugins/tree/main/feishu#bot-to-bot-messaging) in the `feishu` plugin guide |
+| `FEISHU_ALLOW_BOTS` | `none` (default) / `mentions` / `all` — accept inbound messages from other bots. See [bot-to-bot messaging](https://github.com/NousResearch/hermes-official-plugins/tree/main/feishu#bot-to-bot-messaging) in the `feishu` plugin guide |
 | `FEISHU_REQUIRE_MENTION` | `true` (default) / `false` — whether group messages must @mention the bot. Override per-chat via `group_rules.<chat_id>.require_mention`. |
 | `FEISHU_HOME_CHANNEL` | Feishu chat ID for cron delivery and notifications |
 | `FEISHU_HOME_CHANNEL_NAME` | Display name for the Feishu home channel. |

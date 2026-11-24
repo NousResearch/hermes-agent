@@ -1,20 +1,16 @@
 ---
 sidebar_position: 11
 title: "飞书 / Lark"
-description: "飞书 / Lark 已从 Hermes 核心移出，成为 feishu Hermes Labs 插件"
+description: "飞书 / Lark 已从 Hermes 核心移出，成为官方 feishu 插件"
 ---
 
 # 飞书 / Lark
 
-:::warning Hermes Labs 插件
-Feishu / Lark is now a Hermes Labs plugin: built by Nous Research, not supported. Fixes from the community are welcome.
-
-飞书 / Lark 现在是 Hermes Labs 插件：由 Nous Research 构建，不提供支持。欢迎社区贡献修复。
-:::
-
-[飞书 / Lark](https://open.feishu.cn/) 网关平台及其文档评论工具（`feishu_doc_read`、`feishu_drive_list_comments`、`feishu_drive_list_comment_replies`、`feishu_drive_reply_comment`、`feishu_drive_add_comment`）已不再属于 Hermes 核心。它们作为 [NousResearch/hermes-labs-plugins](https://github.com/NousResearch/hermes-labs-plugins/tree/main/feishu) 中的 `feishu` 插件发布，完整的配置指南也在那里。
+[飞书 / Lark](https://open.feishu.cn/) 网关平台及其文档评论工具（`feishu_doc_read`、`feishu_drive_list_comments`、`feishu_drive_list_comment_replies`、`feishu_drive_reply_comment`、`feishu_drive_add_comment`）已不再属于 Hermes 核心。它们作为 [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/feishu) 中的官方 `feishu` 插件发布，完整的配置指南也在那里。
 
 ## 安装
+
+该插件需手动安装：新安装的 Hermes 不会默认带上它。
 
 ```bash
 hermes plugins install feishu

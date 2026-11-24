@@ -230,21 +230,18 @@ feishu_in_use = platform_in_use(
 # Core put the feishu_* tools in ``hermes-feishu`` only (and ``hermes-gateway``, which included it).
 _FEISHU_OFF_PLATFORMS = _core_platforms_except("feishu", "homeassistant", "yuanbao")
 
-_FEISHU_NOTICE = ("Feishu / Lark is now a Hermes Labs plugin: built by Nous Research, not supported. "
-                  "Fixes from the community are welcome.")
-
-
 def _feishu_notice(home: Path, *, process_env: bool = False) -> str:
+    """An official plugin like the other official rows: no placement sentence, only what changed for *home*."""
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-    notice = _FEISHU_NOTICE
+    notes = []
     # Core's adapter ignored a bare ``feishu`` in plugins.disabled; the catalog plugin does not (see _yuanbao_notice).
     if plugin_present("feishu", home) and _plugins_listed(home, ("feishu",))[1]:
-        notice += " plugins.disabled lists 'feishu', which now turns Feishu off; remove it to keep using Feishu."
+        notes.append("plugins.disabled lists 'feishu', which now turns Feishu off; remove it to keep using Feishu.")
     # The bundled adapter was exempt from host isolation; a catalog platform adapter cannot run in the host.
     if isolation_mode(_read_config(home)) == ISOLATION_HOST:
-        notice += (" This profile sets plugins.isolation: host, where platform adapters cannot load: Feishu "
-                   "stays off until the profile loads plugins in-process.")
-    return notice
+        notes.append("This profile sets plugins.isolation: host, where platform adapters cannot load: Feishu "
+                     "stays off until the profile loads plugins in-process.")
+    return " ".join(notes)
 
 
 def _auth_store(home: Path) -> dict:

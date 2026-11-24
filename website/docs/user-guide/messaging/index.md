@@ -45,7 +45,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
-| Feishu/Lark (Labs plugin) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feishu/Lark (plugin) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | — |
@@ -842,7 +842,7 @@ Each platform has its own toolset:
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
-| Feishu/Lark (Labs plugin) | `hermes-feishu` | Full tools + the `feishu_doc` / `feishu_drive` document-comment tools from the `feishu` Hermes Labs plugin |
+| Feishu/Lark (plugin) | `hermes-feishu` | Full tools + the `feishu_doc` / `feishu_drive` document-comment tools from the official `feishu` plugin |
 | WeCom | `hermes-wecom` | Full tools including terminal |
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
@@ -1100,7 +1100,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
-- [Feishu/Lark](feishu.md) (Hermes Labs plugin)
+- [Feishu/Lark](feishu.md) (official plugin)
 - [WeCom Setup](wecom.md)
 - [WeCom Callback Setup](wecom-callback.md)
 - [Weixin Setup (WeChat)](weixin.md)

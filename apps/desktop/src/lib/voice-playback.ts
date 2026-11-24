@@ -1,5 +1,6 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
+import { openGatewaySocket } from '@/api/canonical-protocol'
 import type { OwnerScope } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
 import { directTtsConfig, type DirectTtsConfig, synthesizeSpeechClientDirect } from '@/lib/voice-client-direct'
@@ -145,6 +146,15 @@ export async function resolveSpeakStreamUrl(owner?: OwnerScope): Promise<null | 
     // desktop-remote voice report, Aug 2026).
     const profile = owner?.profile || getApiRequestProfile()
     const connectionId = owner?.connectionId || getApiRequestConnection()
+
+    // A host whose gateway ticket opens only `/api/ws` mints the stream its own ticket.
+    if (desktop.getAudioWsUrl) {
+      return await withTimeout(
+        desktop.getAudioWsUrl({ connectionId, path: '/api/audio/speak-stream', profile }),
+        RECONNECT_ATTEMPT_TIMEOUT_MS,
+        `Timed out minting the speech stream URL for profile "${profile}"`
+      )
+    }
 
     // Both awaits below are IPC round-trips into the main process with no
     // timeout of their own (#93454) — a wedged main-process round-trip
@@ -380,7 +390,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
  * stream (ChatGPT-style) with no per-sentence connection or synthesis gaps.
  */
 function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechStreamSession {
-  const ws = new WebSocket(wsUrl)
+  const ws = openGatewaySocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 
   let context: AudioContext | null = null

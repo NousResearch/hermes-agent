@@ -18,15 +18,10 @@ def _client():
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    import hermes_state
-    from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-    # Keep the state DB under the isolated HERMES_HOME for any handler that
-    # touches it.
-    hermes_state.DEFAULT_DB_PATH = get_hermes_home() / "state.db"
     return client, _SESSION_HEADER_NAME
 
 
@@ -396,6 +391,24 @@ class TestWebhookEndpoints:
         from hermes_cli.webhook import _load_subscriptions
         assert _load_subscriptions()["todoist"]["enabled"] is False
 
+    @pytest.mark.parametrize("pin", ["github", False, ""])  # the gateway refuses an invalid pin; dropping it unpins
+    def test_re_post_keeps_the_route_signature_pin(self, pin):
+        """A re-POST replaces the record; losing the pin would republish the route accepting body-only
+        GitHub/Linear MACs again (#84265)."""
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.webhook import _load_subscriptions, _mutate_subscriptions
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"host": "0.0.0.0", "port": 8644}}
+        save_config(cfg)
+        assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200
+        assert _load_subscriptions()["gh"]["signature"] == "generic"  # new dashboard routes are pinned
+        _mutate_subscriptions(lambda subs: subs["gh"].update(signature=pin))
+
+        assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200
+
+        assert _load_subscriptions()["gh"]["signature"] == pin
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         from hermes_cli.config import load_config
 
@@ -515,11 +528,11 @@ class TestSessionManagementEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB()
-        db.create_session(session_id="sess-x", source="cli")
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            seed_session(db, "sess-x", "cli")
 
 
     def test_prune_attr_filter_suppresses_default_cutoff(self):
@@ -527,12 +540,11 @@ class TestSessionManagementEndpoints:
         # ages (mirrors the CLI: any filter disables the implicit 90-day
         # default). dry_run so nothing is deleted; the seeded session is
         # recent + ended, so it would be invisible under a 90-day cutoff.
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB()
-        db.create_session(session_id="sess-recent-ended", source="cli")
-        db.end_session("sess-recent-ended", "completed")
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            seed_session(db, "sess-recent-ended", "cli", end_reason="completed")
 
         r = self.client.post(
             "/api/sessions/prune",
@@ -547,16 +559,16 @@ class TestSessionManagementEndpoints:
         assert all("last_active" in session for session in body["sessions"])
 
     def test_prune_reports_open_sessions_excluded_by_safety_guard(self):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_holder import raw_holder
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB()
-        db.create_session(session_id="sess-old-open", source="skip-test")
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (1.0, "sess-old-open"),
-        )
-        db._conn.commit()
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            seed_session(db, "sess-old-open", "skip-test")
+            raw_holder(db)._execute_write(lambda conn: conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (1.0, "sess-old-open"),
+            ))
 
         r = self.client.post(
             "/api/sessions/prune",
@@ -567,9 +579,8 @@ class TestSessionManagementEndpoints:
         assert body["removed"] == 0
         assert body["skipped_open"] == 1
 
-        db = SessionDB()
-        assert db.get_session("sess-old-open") is not None
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            assert db.sessions.get("sess-old-open") is not None
 
 
 class _FakeMeta:
@@ -769,7 +780,7 @@ class TestSkillsHubScanEndpoint:
         )
         monkeypatch.setattr(
             "tools.skills_guard.scan_skill",
-            lambda path, source="community": fake_result,
+            lambda path, source="community", trust_level=None: fake_result,
         )
         # Avoid touching the filesystem during cleanup.
         monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)
@@ -827,6 +838,28 @@ class TestUpdateCheckEndpoint:
         assert body["can_apply"] is True
 
 
+    @pytest.mark.parametrize("version", [None, "", "1.2.3"])
+    @pytest.mark.parametrize("held", [True, False], ids=["held", "rollback"])
+    def test_release_message_names_only_a_known_version(self, monkeypatch, version, held):
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {
+            "behind": 0 if held else -1, "held": "downgrade" if held else None,
+            "rollback": not held, "sourceVersion": version, "channel": "preview", "commits": [],
+        })
+
+        response = self.client.get("/api/hermes/update/check")
+        assert response.status_code == 200
+        body = response.json()
+        release = "preview release" + (f" v{version}" if version else "")
+        assert body["message"].startswith(f"This build is newer than {release}," if held else
+                                          f"This build is newer than {release}.")
+        assert body["update_available"] is not held
+        assert body["source_version"] == version
+        if held:
+            assert body["held"] == "downgrade"
+        else:
+            assert "Updating moves it back" in body["message"]
+
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
 
         monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: True)
@@ -870,19 +903,24 @@ class TestDebugShareEndpoint:
         (logs / "gateway.log").write_text("gw line\n")
 
 
-    def test_redact_false_is_honored(self, monkeypatch):
+    def test_redact_false_cannot_publish_log_text(self, monkeypatch):
+        """The public paste is an allowlisted summary (#46006): redact=false has no log text to
+        leave raw, so the endpoint reports redacted and the upload carries no log line."""
         import hermes_cli.debug as dbg
 
+        uploaded = []
         monkeypatch.setattr(
-            dbg, "upload_to_pastebin", lambda c, expiry_days=7: "https://paste.rs/x"
-        )
+            dbg, "upload_to_pastebin",
+            lambda c, expiry_days=7: uploaded.append(c) or "https://paste.rs/x")
         monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
-        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": False})
+        r = self.client.post("/api/ops/debug-share", json={"consent": True, "redact": False})
         assert r.status_code == 200
-        assert r.json()["redacted"] is False
+        assert r.json()["redacted"] is True
+        assert list(r.json()["urls"]) == ["Report"]
+        assert len(uploaded) == 1
+        assert "agent line" not in uploaded[0] and "err line" not in uploaded[0]
 
     def test_default_body_redacts(self, monkeypatch):
         import hermes_cli.debug as dbg
@@ -894,10 +932,26 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        # No JSON body at all — should default redact=True.
-        r = self.client.post("/api/ops/debug-share")
+        r = self.client.post("/api/ops/debug-share", json={"consent": True})
         assert r.status_code == 200
         assert r.json()["redacted"] is True
+
+    @pytest.mark.parametrize("body", [None, {}, {"redact": True}, {"consent": False}])
+    def test_missing_consent_is_refused_without_uploading(self, monkeypatch, body):
+        """An empty/unconfirmed POST must never publish logs (#94876)."""
+        import hermes_cli.debug as dbg
+
+        uploads = []
+        monkeypatch.setattr(dbg, "upload_to_pastebin",
+                            lambda c, expiry_days=7: uploads.append(c) or "https://paste.rs/x")
+        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
+        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
+        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+
+        r = (self.client.post("/api/ops/debug-share") if body is None
+             else self.client.post("/api/ops/debug-share", json=body))
+        assert r.status_code == 400
+        assert uploads == []
 
     def test_upload_failure_returns_502(self, monkeypatch):
         import hermes_cli.debug as dbg
@@ -911,7 +965,7 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+        r = self.client.post("/api/ops/debug-share", json={"consent": True, "redact": True})
         assert r.status_code == 502
 
 
@@ -1244,3 +1298,23 @@ def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
         pass
 
     assert seen["min_age_s"] == _REAP_MIN_AGE_SECONDS
+
+
+class TestSkillHubUpdatesEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_lists_only_skills_with_an_upstream_update(self, monkeypatch):
+        rows = [
+            {"name": "gif-search", "identifier": "official/gifs/gif-search", "source": "official",
+             "status": "update_available", "bundle": object()},
+            {"name": "ascii-art", "identifier": "official/creative/ascii-art", "source": "official",
+             "status": "up_to_date"},
+            {"name": "gone", "identifier": "x/gone", "source": "github", "status": "orphaned"},
+        ]
+        monkeypatch.setattr("tools.skills_hub_install.check_for_skill_updates", lambda **_: rows)
+        r = self.client.get("/api/skills/hub/updates")
+        assert r.status_code == 200
+        assert r.json() == {"updates": [
+            {"name": "gif-search", "identifier": "official/gifs/gif-search", "source": "official"}]}

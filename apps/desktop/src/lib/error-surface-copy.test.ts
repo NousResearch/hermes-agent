@@ -65,6 +65,7 @@ it('does not blame a slow reply when the provider could not be reached', () => {
 
   const copy = errorCardText(TRANSLATIONS.en.assistant.thread, surface)
 
-  expect(copy.title).toBe('Could not reach the AI service')
-  expect(copy.body).toContain('OpenCode Go could not be reached')
+  expect(copy.title).toBe("Can't reach OpenCode Go")
+  expect(copy.body).toContain("couldn't reach OpenCode Go")
+  expect(copy.body).not.toMatch(/in time|slow/i)
 })

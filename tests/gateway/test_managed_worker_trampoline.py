@@ -6,7 +6,7 @@ own pid/birth, and the OWNER proves that pid is alive, has that birth, and desce
 reserved handle before binding the adoption digest to the real worker.
 """
 import asyncio
-from contextlib import closing
+from contextlib import closing, suppress
 import json
 import os
 from pathlib import Path
@@ -17,9 +17,12 @@ from types import SimpleNamespace
 
 import psutil
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from hermes_cli.process_identity import worker_birth
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 from tests.waiting import async_wait_until
 
@@ -31,7 +34,7 @@ LAUNCHER = ('import subprocess, sys\n'
 
 def _hello(pid):
     proc = psutil.Process(pid)
-    return {'type': 'hello', 'pid': pid, 'birth': proc.create_time(),
+    return {'type': 'hello', 'pid': pid, 'birth': worker_birth(proc),
             'ancestors': [p.pid for p in proc.parents()[:4]]}
 
 
@@ -45,13 +48,14 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
         real = int(launcher.stdout.readline())
         # One hop on POSIX; a venv trampoline (Windows) nests a second launcher in the chain.
         assert real != launcher.pid and launcher.pid in [p.pid for p in psutil.Process(real).parents()]
-        with closing(SessionDB(tmp_path / 'state.db')) as db:
-            db.create_session('owned', 'cli')
-            epoch = begin_runtime_epoch(db, instance_id='owner')
-            authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
-            admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
-            claim_session_input(db, epoch=epoch, session_id='owned')
-            kwargs = dict(admission_id=admitted['admission_id'], process=launcher, principal_id='human')
+        with closing(open_persistence(profile_scope(home=tmp_path))) as db:
+            seed_session(db, 'owned', 'cli')
+            epoch = db.runtime.begin_epoch(instance_id='owner')
+            authority = SimpleNamespace(epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
+                                        persistence=storage_handle(tmp_path))
+            admitted, _ = db.admissions.admit(epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+            db.admissions.claim(epoch=epoch, session_id='owned')
+            kwargs = dict(admission_id=admitted.admission_id, process=launcher, principal_id='human')
             # Alive, truthful birth, same user — but a sibling, not a descendant of the reserved handle.
             with pytest.raises(Exception, match='permission_denied'):
                 reserve_admission_worker(authority, hello=_hello(stranger.pid), **kwargs)
@@ -61,9 +65,10 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
             # A worker claiming the owner's own pid never adopts.
             with pytest.raises(Exception, match='permission_denied'):
                 reserve_admission_worker(authority, hello=_hello(os.getpid()), **kwargs)
-            assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
+            with raw_holder(db)._read_ctx() as conn:
+                assert conn.execute('SELECT COUNT(*) FROM worker_executions').fetchone()[0] == 0
             scope = reserve_admission_worker(authority, hello=_hello(real), **kwargs)
-            assert (scope['pid'], scope['birth']) == (real, psutil.Process(real).create_time())
+            assert (scope['pid'], scope['birth']) == (real, worker_birth(psutil.Process(real)))
             assert scope['pid'] != launcher.pid
     finally:
         # The real interpreter first, while it is still the launcher's child: killing the launcher
@@ -138,11 +143,27 @@ def test_managed_worker_completes_through_interpreter_trampoline(tmp_path):
             workers = [json.loads(l) for l in launches.read_text(encoding='utf-8').splitlines()
                        if json.loads(l)['argv'][-2:] == ['-m', 'agent.managed_worker']]
             assert len(workers) == 1 and workers[0]['launcher'] != workers[0]['child'], evidence
-            # The launcher chain is fully reaped: neither the launcher nor the real worker survives
-            # the owner's close (which runs after the admission commits terminal; bounded wait).
+            # The launcher chain is fully reaped: neither the launcher nor the real worker (nor
+            # anything under them) survives the owner's close, which runs after the admission
+            # commits terminal and has the process dead within its terminate/kill waits (5s + 5s).
+            # Only the chain counts: the owner legitimately runs other children meanwhile (the
+            # passive update check's git probes), which can outlive any budget on a slow runner.
+            chain = {workers[0]['launcher'], workers[0]['child']}
+
             def leftovers():
-                return [(p.pid, p.cmdline()) for p in psutil.Process(owner.pid).children(recursive=True)
-                        if p.is_running() and p.status() != psutil.STATUS_ZOMBIE]
+                alive = []
+                for p in psutil.Process(owner.pid).children(recursive=True):
+                    with suppress(psutil.NoSuchProcess):
+                        if ({p.pid, *(a.pid for a in p.parents())} & chain
+                                and p.status() != psutil.STATUS_ZOMBIE):
+                            alive.append((p.pid, p.cmdline()))
+                # A chain member reparented out of the owner's subtree still counts as a survivor.
+                for pid in chain - {pid for pid, _ in alive}:
+                    with suppress(psutil.NoSuchProcess):
+                        p = psutil.Process(pid)
+                        if p.status() != psutil.STATUS_ZOMBIE and p.cmdline()[-2:] == ['-m', 'agent.managed_worker']:
+                            alive.append((pid, p.cmdline()))
+                return alive
             await async_wait_until(lambda: not leftovers(), timeout=15, interval=.1, what='the launcher chain to be reaped')
             assert leftovers() == []
             print(json.dumps({'owner_pid': owner.pid, 'launcher_pid': workers[0]['launcher'], 'worker_pid': workers[0]['child']}))

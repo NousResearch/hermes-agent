@@ -27,7 +27,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home
-from hermes_state_ids import new_session_id as mint_session_id
+from session_rules.session_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
@@ -41,6 +41,7 @@ from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
 from hermes_cli.cli_browser_gateway import _normalize_cdp_url
+from hermes_cli.cli_commands_handoff import CLIHandoffMixin, _db_unavailable_line
 
 
 # Output helpers. Slash-command text is user-visible: every literal below is load-bearing.
@@ -184,11 +185,6 @@ def _without_session_meta(messages) -> list:
     return [m for m in (messages or []) if m.get("role") != "session_meta"]
 
 
-def _db_unavailable_line() -> str:
-    from hermes_state import format_session_db_unavailable
-    return f"  {format_session_db_unavailable(details=True)}"
-
-
 def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:
     """Print a worker-thread result (/bg, /btw, /login) into the scrollback: accent rules around
     ``header_lines``, then ``body`` in a skinned Rich panel (or ``empty_note``).
@@ -233,9 +229,9 @@ def _refresh_tui_before_print(cli) -> None:
 def _print_lightpanda_engine_status() -> None:
     """``/browser status`` line(s) about ``browser.engine: lightpanda`` — silent unless set;
     says whether it is in use or which higher-precedence setting shadows it."""
-    if not _probe("tools.browser_tool_lightpanda_fallback", "_using_lightpanda_engine", False):
+    if not _probe("tools.browser_lightpanda", "using_lightpanda_engine", False):
         return
-    used, reason = _probe("tools.browser_tool_lightpanda_fallback", "lightpanda_engine_status", (None, None))
+    used, reason = _probe("tools.browser_lightpanda", "lightpanda_engine_status", (None, None))
     if reason is None:
         return
     if not used:
@@ -248,19 +244,6 @@ def _print_lightpanda_engine_status() -> None:
         return
     print(f"   {_t('browser.binary', path=lightpanda_bin)}" if lightpanda_bin
           else f"   {_t('browser.binary_not_found', hint=LIGHTPANDA_INSTALL_HINT)}")
-
-
-def _browser_use(cli, arg: str) -> None:
-    """/browser use [off] — toggle Browser Use mode (browser.backend); resets the session."""
-    from tools.browser_use_cli import set_browser_use_mode
-    if arg not in {"on", "off"}:
-        return _say_block(
-            _t("browser.use_usage"),
-            f"   {_t('browser.use_on_hint')}", f"   {_t('browser.use_off_hint')}")
-    set_browser_use_mode(arg == "on")
-    headline = _t("browser.use_enabled" if arg == "on" else "browser.use_disabled")
-    cli.new_session()
-    _say_block(headline, f"   {_t('browser.session_reset')}")
 
 
 def _launch_default_cdp_browser(port: int):
@@ -303,7 +286,7 @@ def _browser_connect(cli, cdp_url: str) -> None:
         return
     cdp_url, port = normalized
     # Clear any existing browser sessions so the next tool call uses the new backend
-    _probe("tools.browser_tool_lifecycle", "cleanup_all_browsers", None)
+    _probe("tools.browser_session_lifecycle", "cleanup_all_browsers", None)
     print()
     # Already serving CDP? For the default-local URL probe both loopbacks: a squatter
     # on 127.0.0.1:<port> (e.g. an IDE debugger) can push the browser to bind [::1] only.
@@ -322,14 +305,14 @@ def _browser_connect(cli, cdp_url: str) -> None:
         return _say_block(_t("browser.not_connected"))
     os.environ["BROWSER_CDP_URL"] = found
     # Eagerly start the CDP supervisor so pending_dialogs + frame_tree show up in the next snapshot.
-    _probe("tools.browser_tool_cdp", "_ensure_cdp_supervisor", None, "default")
+    _probe("tools.browser_session_cdp", "ensure_cdp_supervisor", None, "default")
     _say_block(_t("browser.connected"), f"   {_t('browser.endpoint', url=found)}")
     # Tell the model the CDP browser was made available on purpose.
     if hasattr(cli, '_pending_input'):
         cli._pending_input.put(
             "[System note: The user invoked /browser connect and connected your browser tools to "
             "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
-            "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
+            "Your browser tools (browser_exec, browser_cdp) now "
             "control that CDP browser. The command itself is a signal that using browser tools for "
             "their current browser-related request is expected; do not wait for separate permission "
             "just because CDP is connected. This is typically a Hermes-managed isolated debug "
@@ -343,9 +326,9 @@ def _browser_disconnect(cli) -> None:
         return _say_block(_t("browser.already_default"))
     os.environ.pop("BROWSER_CDP_URL", None)
     with suppress(Exception):
-        from tools.browser_tool_lifecycle import cleanup_all_browsers
-        from tools.browser_tool_cdp import _stop_cdp_supervisor
-        _stop_cdp_supervisor("default")
+        from tools.browser_session_lifecycle import cleanup_all_browsers
+        from tools.browser_session_cdp import stop_cdp_supervisor
+        stop_cdp_supervisor("default")
         cleanup_all_browsers()
     _say_block(_t("browser.disconnected"), f"   {_t('browser.reverted')}")
     if hasattr(cli, '_pending_input'):
@@ -357,8 +340,7 @@ def _browser_disconnect(cli) -> None:
 # /browser status headline per local browser.engine value: (headline key, *detail keys) under
 # ``cli.commands.browser.*``; detail lines are indented at print time.
 _LOCAL_ENGINE_LINES = {
-    "lightpanda": ("status_lightpanda", "status_lightpanda_note", "status_lightpanda_fallback"),
-    "chrome": ("status_chrome",),
+    "lightpanda": ("status_lightpanda", "status_lightpanda_note"),
     "auto": ("status_auto",)}
 
 
@@ -370,10 +352,6 @@ def _local_engine_lines(engine: str) -> list:
 def _browser_status() -> None:
     current = os.environ.get("BROWSER_CDP_URL", "").strip()
     print()
-    if _probe("tools.browser_use_cli", "is_browser_use_cli_mode", False):
-        _pr(_t("browser.status_browser_use"), f"   {_t('browser.status_browser_use_note')}")
-        _print_lightpanda_engine_status()
-        return _say_block(f"   {_t('browser.status_use_off_hint')}")
     if current:
         _pr(_t("browser.status_connected"), f"   {_t('browser.endpoint', url=current)}")
         _print_lightpanda_engine_status()
@@ -387,12 +365,12 @@ def _browser_status() -> None:
         except Exception:
             print(f"   {_t('browser.status_unreachable')}")
     else:
-        provider = _probe("tools.browser_tool_cloud", "_get_cloud_provider", None)
+        provider = _probe("tools.browser_session_cloud", "get_cloud_provider", None)
         if provider is not None:
             print(_t("browser.status_cloud", provider=provider.display_name))
             _print_lightpanda_engine_status()
         else:
-            engine = _probe("tools.browser_tool_cloud", "_get_browser_engine", "auto")
+            engine = _probe("tools.browser_session_cloud", "get_browser_engine", "auto")
             _pr(*_local_engine_lines(engine))
             if engine == "lightpanda":
                 _print_lightpanda_engine_status()
@@ -402,14 +380,13 @@ def _browser_status() -> None:
 # /browser subcommand word → handler(cli, rest); ``rest`` is the raw (case-preserved)
 # remainder of the line. Adding a subcommand is one row here plus a usage line.
 _BROWSER_SUBCOMMANDS = {
-    "use": lambda cli, rest: _browser_use(cli, rest.lower() or "on"),
     "connect": lambda cli, rest: _browser_connect(cli, rest or DEFAULT_BROWSER_CDP_URL),
     "disconnect": lambda cli, rest: _browser_disconnect(cli),
     "status": lambda cli, rest: _browser_status(),
 }
 
 
-class CLICommandsMixin(CLICommandsSessionToolsMixin):
+class CLICommandsMixin(CLICommandsSessionToolsMixin, CLIHandoffMixin):
     """Mixin holding the interactive-CLI slash-command handlers."""
 
     # ---- /rollback ------------------------------------------------------------------------
@@ -425,7 +402,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_rollback_command(self, command: str):
         """Handle /rollback [diff] <N> [<file>|--all] — list, diff, or restore checkpoints.
         A restore also undoes the last chat turn; ``--all`` overwrites user hand-edits too."""
-        from tools.checkpoint_manager import format_checkpoint_list
+        from agent.checkpoints.manager import format_checkpoint_list
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             # Checkpoints are taken by the gateway's tools: list/diff/restore are the owner's.
@@ -493,6 +470,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 print(f"\n{diff}")
 
     def _rollback_restore(self, mgr, cwd, target_hash: str, file_path, restore_all: bool) -> None:
+        taken = self._checkpoint_taken_at(cwd, target_hash)
         result = mgr.restore(cwd, target_hash, file_path=file_path,
                              safe=not restore_all and not file_path)
         if not result["success"]:
@@ -502,10 +480,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
               else f"  {_t('rollback.restored_all', **restored)}")
         _rollback_kept(result)
         print(f"  {_t('rollback.snapshot_saved')}")
-        # Also undo the last conversation turn so the agent's context matches the restored files.
-        if self.conversation_history:
-            self.undo_last(prefill=False)
-            print(f"  {_t('rollback.chat_turn_undone')}")
+        # Also undo the last chat turn so the agent's context matches the files (not one /undo kept).
+        self._rollback_chat_turn(taken)
 
     # ---- /diff ----------------------------------------------------------------------------
     def _handle_diff_command(self, command: str):
@@ -663,158 +639,6 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                     print(f"  {_t('import.wrapper_created', path=wrapper_path)}")
         print(f"  {_t('import.use_it', name=imported)}")
 
-    # ---- /handoff -------------------------------------------------------------------------
-
-    _HANDOFF_PENDING_TIMEOUT = 60.0
-    _HANDOFF_RUNNING_TIMEOUT = 900.0  # full synthetic agent turn + delivery
-    _HANDOFF_HEARTBEAT_EVERY = 30.0
-
-    @staticmethod
-    def _handoff_keep(*lines: str) -> bool:
-        """Print ``lines`` and keep the CLI session (the True verdict of /handoff)."""
-        _cp(*lines)
-        return True
-
-    def _handle_handoff_command(self, cmd_original: str) -> bool:
-        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
-
-        Validate target → prepare session row → mark pending → block-poll (see ``_handoff_wait``).
-        Returns False only on ``completed`` (caller exits like /quit); True keeps the session."""
-        platform_name = _command_arg(cmd_original).lower()
-        if not platform_name:
-            return self._handoff_keep(
-                f"  {_t('handoff.usage')}", f"  {_t('handoff.usage_detail_1')}",
-                f"  {_t('handoff.usage_detail_2')}")
-        home = self._handoff_validate_target(platform_name)
-        if home is None:
-            return True
-        session_title = self._handoff_prepare_session()
-        if session_title is None:
-            return True
-        if not self._session_db.request_handoff(self.session_id, platform_name):
-            return self._handoff_keep(f"  {_t('handoff.already_in_flight')}")
-        _cp(f"  {_t('handoff.queued', title=session_title, platform=platform_name, home=home.name)}",
-            f"  {_t('handoff.waiting')}")
-        return self._handoff_wait(platform_name, session_title)
-
-    def _handoff_validate_target(self, platform_name: str):
-        """Resolve the destination home channel via the live gateway config; None (after printing
-        the reason) when the platform is unknown, disabled, or has no home channel."""
-        try:
-            from gateway.config import load_gateway_config, Platform
-        except Exception as exc:  # pragma: no cover — gateway pkg always shipped
-            return _cp(f"  {_t('handoff.config_load_failed', error=exc)}")
-        try:
-            platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            return _cp(f"  {_t('handoff.unknown_platform', platform=platform_name)}")
-        try:
-            gw_config = load_gateway_config()
-        except Exception as exc:
-            return _cp(f"  {_t('handoff.config_load_failed', error=exc)}")
-        pcfg = gw_config.platforms.get(platform)
-        if not pcfg or not pcfg.enabled:
-            # Relay aliasing: a relay-fronted gateway has only a RELAY block yet /handoff discord
-            # is deliverable. UX pre-check only — the gateway watcher re-checks before dispatch.
-            relay_fronts = False
-            with suppress(Exception):
-                from gateway.relay import relay_platform_identities
-                relay_cfg = gw_config.platforms.get(Platform.RELAY)
-                if relay_cfg and relay_cfg.enabled:
-                    relay_fronts = platform_name in {p for p, _ in relay_platform_identities()}
-            if not relay_fronts:
-                return _cp(f"  {_t('handoff.platform_not_enabled', platform=platform_name)}")
-        home = gw_config.get_home_channel(platform)
-        if not home or not home.chat_id:
-            return _cp(f"  {_t('handoff.no_home_channel', platform=platform_name)}",
-                       f"  {_t('handoff.set_home_hint')}")
-        return home
-
-    def _handoff_prepare_session(self):
-        """Refuse mid-turn, make sure a SessionDB handle + session row exist, and return the
-        display title (None after printing why the handoff cannot start)."""
-        # An in-flight agent run would race the gateway's switch_session and the synthetic turn.
-        if getattr(self, "_agent_running", False):
-            return _cp(f"  {_t('shared.agent_busy', command='/handoff')}")
-        if not self._session_db:
-            with suppress(Exception):
-                from hermes_state_registry import acquire
-                self._session_db = acquire()
-        if not self._session_db:
-            return _cp(_db_unavailable_line())
-        # Ensure the session row exists (an empty session has flushed nothing yet): the gateway
-        # needs a row to switch_session onto; set_session_title's INSERT OR IGNORE creates it.
-        try:
-            if not self._session_db.get_session(self.session_id):
-                self._session_db.set_session_title(self.session_id, f"handoff-{self.session_id[:8]}")
-        except Exception as exc:
-            return _cp(f"  {_t('handoff.session_row_failed', error=exc)}")
-        session_title = ""
-        with suppress(Exception):
-            session_title = (self._session_db.get_session(self.session_id) or {}).get("title") or ""
-        return session_title or self.session_id[:8]
-
-    def _handoff_wait(self, platform_name: str, session_title: str) -> bool:
-        """Two-phase 0.5s poll. PENDING (unclaimed): 60s, then CAS-fail the row so the user can
-        retry (a claim racing this instant wins). RUNNING (claimed): the gateway replays the
-        transcript via a synthetic turn (routinely >60s) — wait 15 min with heartbeats and on
-        timeout do NOT touch the row; failing it here was the split-brain bug."""
-        pending_deadline = time.time() + self._HANDOFF_PENDING_TIMEOUT
-        running_deadline = None
-        next_heartbeat = None
-        last_state = "pending"
-        while True:
-            try:
-                state_row = self._session_db.get_handoff_state(self.session_id)
-            except Exception:
-                state_row = None
-            current = (state_row or {}).get("state") or "pending"
-            if current != last_state:
-                if current == "running":
-                    _cp(f"  {_t('handoff.picked_up')}")
-                    running_deadline = time.time() + self._HANDOFF_RUNNING_TIMEOUT
-                    next_heartbeat = time.time() + self._HANDOFF_HEARTBEAT_EVERY
-                last_state = current
-            if current == "completed":
-                _cp("", f"  {_t('handoff.complete', platform=platform_name)}",
-                    f"  {_t('handoff.resume_hint', title=session_title)}", "")
-                # _run_cleanup must NOT finalize the row on exit: the gateway owns it now, and an
-                # end_reason set under it would drop the handoff leg from session history/search.
-                # See #88234.
-                from cli import _handed_off_session_ids
-                _handed_off_session_ids.add(self.session_id)
-                self._should_exit = True  # same exit semantics as /quit
-                return False
-            if current == "failed":
-                err = (state_row or {}).get("error") or _t("handoff.unknown_error")
-                return self._handoff_keep(
-                    f"  {_t('handoff.failed', error=err)}", f"  {_t('handoff.session_intact_retry')}")
-            now = time.time()
-            if current == "pending":
-                if now >= pending_deadline:
-                    break
-            else:  # running
-                if next_heartbeat is not None and now >= next_heartbeat:
-                    _cp(f"  {_t('handoff.still_transferring')}")
-                    next_heartbeat = now + self._HANDOFF_HEARTBEAT_EVERY
-                if running_deadline is not None and now >= running_deadline:
-                    # Do NOT fail the row: the gateway owns it (split-brain bug otherwise).
-                    return self._handoff_keep(
-                        f"  {_t('handoff.taking_long')}",
-                        f"  {_t('handoff.check_platform', platform=platform_name)}",
-                        f"  {_t('handoff.no_longer_waiting')}", f"  {_t('handoff.retry_when_settled')}")
-            time.sleep(0.5)
-        try:  # pending timed out: CAS-clear so the user can retry
-            self._session_db.fail_handoff(
-                self.session_id, "timed out waiting for gateway", only_states=("pending",))
-        except TypeError:
-            # Older SessionDB without only_states (mixed installs): legacy unconditional fail.
-            with suppress(Exception):
-                self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
-        except Exception:
-            pass
-        return self._handoff_keep(f"  {_t('handoff.timed_out')}", f"  {_t('handoff.session_intact')}")
-
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
@@ -959,7 +783,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         try:
             new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
             branch_title = branch_name or self._session_db.get_next_title_in_lineage(
-                self._session_db.get_session_title(self.session_id) or "branch")
+                self._session_db.get_session_title(self._title_session_id()) or "branch")
             parent_session_id = self.session_id
             parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
             if not isinstance(parent_prompt, str) or not parent_prompt:
@@ -1381,6 +1205,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
         def produce():
             from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+            from gateway.session_context import declare_stateless_channel
+            declare_stateless_channel()  # nothing drains a bg_* session's completions later: delegations join (#140569)
             set_sudo_password_callback(self._sudo_password_callback)
             set_approval_callback(self._approval_callback)
             set_unlock_prompt_callback(self._vault_unlock_callback)
@@ -1396,7 +1222,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                                                    "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
                     side_agent=True,
-                    session_db=self._session_db, reasoning_config=self.reasoning_config,
+                    session_db=self._session_db, persistence=getattr(self._session_db, "persistence", None), reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()})
@@ -1421,10 +1247,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                         response = _gt("model.error_prefix", error=result["error"])
                     return response
                 finally:
-                    # One agent per /bg task in a long-lived CLI process: close()
-                    # is the owner boundary (memory shutdown, tool subprocesses,
-                    # httpx clients); an unclosed side agent leaks all of them
-                    # until the CLI exits (#50197).
+                    # One agent per /bg task in a long-lived CLI: close() is the owner boundary (memory,
+                    # tool subprocesses, httpx clients); unclosed, they leak until the CLI exits (#50197).
                     with suppress(Exception):
                         bg_agent.close()
             finally:
@@ -1597,7 +1421,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _cp("\n" + _dim_line(_t("bundles.invoke_hint")))
 
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
+        """Handle /browser connect|disconnect|status — manage the live Chromium-family CDP connection."""
         # The subcommand word is matched case-insensitively; the raw argument keeps
         # its case because a CDP URL's path segment is case-sensitive.
         parts = _command_arg(cmd).split(None, 1)
@@ -1607,7 +1431,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if handler is None:
             _say_block(
                 _t("browser.usage"), "",
-                *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status", "use")))
+                *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status")))
             return
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
@@ -2115,16 +1939,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /debug, /update, /voice, /wake ---------------------------------------------------
     def _handle_debug_command(self, cmd_original: str = ""):
-        """Handle /debug [nous|local] — upload debug report + logs and print share URLs.
-        Default: public paste service; ``nous``: Nous-internal (staff-only); ``local``: render to
-        stdout, no upload. ``local`` wins if both are given (never touches the network)."""
-        from hermes_cli.debug import run_debug_share
-        from types import SimpleNamespace
-        words = {w.lower() for w in cmd_original.split()[1:]}
-        local = "local" in words
-        # Typing /debug is the upload consent (yes=True); input() would hang in prompt_toolkit anyway.
-        run_debug_share(SimpleNamespace(
-            lines=200, expire=7, local=local, nous="nous" in words and not local, yes=True))
+        """Handle /debug [upload|nous upload|local] (see ``hermes_cli.debug.run_debug_slash``)."""
+        from hermes_cli.debug import run_debug_slash
+        run_debug_slash(cmd_original)
 
     def _handle_update_command(self) -> bool:
         """Handle /update — exit the session and relaunch as ``hermes update``. Returns True when

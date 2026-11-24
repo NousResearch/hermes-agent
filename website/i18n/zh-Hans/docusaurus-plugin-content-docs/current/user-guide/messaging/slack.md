@@ -355,9 +355,6 @@ slack:
   mention_patterns:
     - "hey hermes"
     - "hermes,"
-
-  # 每条发出消息前添加的文本
-  reply_prefix: ""
 ```
 
 :::tip 何时使用 `strict_mention`

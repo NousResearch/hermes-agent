@@ -43,7 +43,6 @@ def test_session_status_path_uses_owning_profile_home(monkeypatch, tmp_path):
 
     server._sessions["status-profile-home"] = _session(profile_home)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.status", "params": {"session_id": "status-profile-home"}}

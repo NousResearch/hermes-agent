@@ -194,7 +194,6 @@ describe('a build whose CapabilitiesView cannot route connections', () => {
     expect(sdk.seen.CapabilitiesView).toHaveLength(0)
     expect(sdk.seen.ConnectorsTab).toHaveLength(0)
     expect(sdk.seen.ToolsetConfigPanel).toHaveLength(0)
-    expect(screen.queryByText('Skills Hub')).toBeNull()
     expect(screen.queryByRole('button', { name: /Set up/ })).toBeNull()
     // Model + SOUL still edit, and stay staged until the user saves.
     expect(container.querySelector('textarea')).toBeTruthy()
@@ -213,9 +212,8 @@ describe('a build whose CapabilitiesView cannot route connections', () => {
       toolsets: [{ enabled: true, name: 'local-tools' }]
     })
 
-    // The staged checklist and the hub search section both survive here.
+    // The staged checklist survives here.
     expect(screen.getByText('staged-skill')).toBeTruthy()
-    expect(screen.getByText(translateBots('tools.skillsHub'))).toBeTruthy()
     expect(sdk.seen.ToolsetConfigPanel[0]).toEqual({
       profile: { connectionId: 'local', profile: 'default' },
       toolset: 'local-tools'

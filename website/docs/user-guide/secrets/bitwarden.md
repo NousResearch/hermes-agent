@@ -43,7 +43,7 @@ It will:
 
 1. If `bws` is absent, request its pinned package from PM.
 2. Prompt you for the access token (input is hidden). Stored in `~/.hermes/.env` as `BWS_ACCESS_TOKEN`.
-3. Ask which Bitwarden region your machine account belongs to — **US Cloud**, **EU Cloud**, or **self-hosted / custom URL**. Stored in `config.yaml` as `secrets.bitwarden.server_url` and passed to `bws` as `BWS_SERVER_URL`.
+3. Ask which Bitwarden region your machine account belongs to — **US Cloud**, **EU Cloud**, or **self-hosted / custom URL** (`https://`, or `http://` for localhost only). Stored in `config.yaml` as `secrets.bitwarden.server_url` and passed to `bws` as `BWS_SERVER_URL`.
 4. List the projects the machine account can see; pick one. Stored in `config.yaml` as `secrets.bitwarden.project_id`.
 5. Test-fetch the project's secrets and show you which env vars will resolve.
 6. Flip `secrets.bitwarden.enabled: true`.
@@ -119,11 +119,11 @@ secrets:
 |---|---|---|
 | `enabled` | `false` | Master switch. When false, Bitwarden is never contacted. |
 | `access_token_env` | `BWS_ACCESS_TOKEN` | Env var name that holds the bootstrap token. Change this if you already use `BWS_ACCESS_TOKEN` for something else. |
-| `project_id` | `""` | UUID of the project to sync from. |
-| `server_url` | `""` | Bitwarden region or self-hosted endpoint. Empty = `bws` default (US Cloud, `https://vault.bitwarden.com`). Set to `https://vault.bitwarden.eu` for EU Cloud, or your own URL for self-hosted. Plumbed into the `bws` subprocess as `BWS_SERVER_URL`. |
+| `project_id` | `""` | UUID of the project to sync from. Rejected if it isn't UUID-shaped. |
+| `server_url` | `""` | Bitwarden region or self-hosted endpoint. Empty = `bws` default (US Cloud, `https://vault.bitwarden.com`). Set to `https://vault.bitwarden.eu` for EU Cloud, or your own URL for self-hosted. Plumbed into the `bws` subprocess as `BWS_SERVER_URL`. Must be `https://` — the access token is sent to this endpoint, so plaintext `http://` is refused except for `localhost`. A `BWS_SERVER_URL` inherited from your shell is held to the same rule and dropped (with a warning) if it fails. |
 | `cache_ttl_seconds` | `300` | How long an in-process or disk fetch result is reused. Set to `0` to disable fresh-cache reuse. |
-| `encrypted_cache.enabled` | `false` | Store the last successful fetch in an AES-GCM encrypted cache at `~/.hermes/cache/bws_cache.enc.json`. |
-| `encrypted_cache.max_stale_seconds` | `0` | When encrypted caching is enabled, allow that cache to be used only after network/timeout failures, up to this age. Authentication failures never use stale secrets. A successful encrypted write removes the legacy plaintext `cache/bws_cache.json`. |
+| `encrypted_cache.enabled` | `false` | Store the last successful fetch in an AES-GCM encrypted cache at `~/.hermes/bws_cache.enc.json`. |
+| `encrypted_cache.max_stale_seconds` | `0` | When encrypted caching is enabled, allow that cache to be used only after network/timeout failures, up to this age. Authentication failures never use stale secrets. A successful encrypted write removes the plaintext `bws_cache.json`. |
 | `override_existing` | `true` | When true, Bitwarden values overwrite anything already in env (so rotation in the web app actually takes effect). Flip to `false` if you want `.env` / shell exports to win locally. |
 | `auto_install` | `true` | Requests the PM-pinned `bws` package when no binary exists. PM's lazy-install policy also applies. |
 
@@ -146,6 +146,7 @@ Startup warnings now include a `→` remediation line telling you exactly which 
 
 - The bootstrap token (`BWS_ACCESS_TOKEN`) is itself sensitive — anyone with it can read every secret the machine account has access to. Treat it the same as any other API key.
 - Hermes will refuse to let Bitwarden overwrite the bootstrap token itself, even with `override_existing: true`. If you store `BWS_ACCESS_TOKEN` as a secret inside the project, it's silently skipped during apply.
+- `BWS_ACCESS_TOKEN` is stripped from the processes the agent and its tools spawn (terminal, `execute_code`, background processes, cron scripts, CLI helpers). `terminal.env_passthrough` and skill `required_environment_variables` cannot re-allow it, so `bws` run by the agent never sees the token. Hermes's own processes for the same profile still get it: its `bws` child, a gateway it starts or restarts, and `key_cmd` helpers. Run `bws` yourself from your own shell.
 - PM checks the managed archive against its SHA-256 hash in `pm/lock.json`. A mismatch aborts installation.
 - The same lock declares the version. First use does not resolve a "latest" release. External binaries remain outside these PM checks.
 

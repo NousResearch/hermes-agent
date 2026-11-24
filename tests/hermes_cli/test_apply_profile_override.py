@@ -72,6 +72,49 @@ def _run_apply_profile_override(
 
 
 @pytest.mark.parametrize("argv", [
+    ["hermes", "-p", "work", "config", "path"],  # explicit flag
+    ["hermes", "config", "path"],  # sticky active_profile file
+])
+def test_unexpected_profile_lookup_failure_exits_nonzero(
+    tmp_path, monkeypatch, capsys, argv,
+):
+    """An unexpected failure resolving a REQUESTED profile must exit non-zero,
+    not silently fall back to the default profile (#152716): the fallback
+    would read and write the default profile's config, .env and state.db."""
+    import hermes_cli.profiles as profiles_mod
+
+    def _broken_lookup(_name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", _broken_lookup)
+    with pytest.raises(SystemExit) as exc:
+        _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=None, active_profile="work", argv=argv,
+        )
+    assert exc.value.code == 1
+    assert "profile override failed" in capsys.readouterr().err
+
+
+def test_broken_profile_lookup_ignored_when_no_profile_requested(
+    tmp_path, monkeypatch,
+):
+    """With no profile requested, a broken profile lookup must not block
+    startup: the silent fallback survives only for the unrequested case
+    (#152716)."""
+    import hermes_cli.profiles as profiles_mod
+
+    def _broken_lookup(_name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", _broken_lookup)
+    result = _run_apply_profile_override(
+        tmp_path, monkeypatch, hermes_home=None, active_profile=None,
+        argv=["hermes", "config", "path"],
+    )
+    assert result is None
+
+
+@pytest.mark.parametrize("argv", [
     ["hermes", "profile", "list"],
     ["hermes", "profile", "use", "default"],
     ["hermes", "uninstall"],
@@ -396,3 +439,22 @@ class TestS6ContainerGatewayRun:
                 tmp_path, monkeypatch, hermes_home=str(root), active_profile="coder", argv=argv,
             )
             assert result == str(root / "profiles" / "coder"), argv
+
+
+def test_module_entry_keeps_an_explicit_default_profile_over_the_sticky_one(tmp_path):
+    """`python -m hermes_cli.main --profile default` (how Hermes spawns its own CLI) stays on the root
+    home while active_profile names another profile: a second import of the module must not re-read
+    the stripped argv and fall to the sticky profile."""
+    import subprocess
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "work").mkdir(parents=True)
+    (root / "profiles" / "work" / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (root / "active_profile").write_text("work\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
+    env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(root),
+               PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+
+    out = subprocess.run([sys.executable, "-m", "hermes_cli.main", "--profile", "default", "config", "path"],
+                         env=env, capture_output=True, text=True, timeout=120, check=True).stdout
+
+    assert Path(out.strip().splitlines()[-1]).resolve() == (root / "config.yaml").resolve()

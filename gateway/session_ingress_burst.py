@@ -19,6 +19,7 @@ import logging
 import time
 
 from gateway.platforms.event import MessageEvent, MessageType
+from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +58,12 @@ async def burst_gate(adapter, event, session_key):
     """``handle_message``'s entry check. True: a held or committing burst owns the route, so this
     shared-runtime input must queue behind it. A command on a serial reader first waits for every
     input that reader already returned on, as main's reader reached it only after their commits:
-    /stop, /new and /reset drop their own chat's held burst (main dropped the debounce buffer),
-    every other held burst commits now, and every pending commit lands before the command runs."""
+    every held burst commits now, and every pending commit lands before the command runs. That
+    includes the chat's own burst under /stop, /new and /reset: the sender is not authorized yet,
+    so an accepted command cancels the queued row (``_hm_stop_owner_turn``), a refused one keeps it."""
     if adapter._shared_runtime_owns_input(event):
         return holds_busy_burst(adapter, session_key)
-    if (cmd := event.get_command()) and _serial(adapter):
-        from hermes_cli.commands import is_interrupt_then_dispatch
-        if is_interrupt_then_dispatch(cmd):
-            discard_busy_burst(adapter, session_key)
+    if event.get_command() and _serial(adapter):
         for key, burst in list(adapter.__dict__.get('_shared_bursts', {}).items()):
             _flush(adapter, key, burst)
         if pending := list(adapter.__dict__.get('_shared_burst_commits', {}).values()):
@@ -79,12 +78,14 @@ async def dispatch_busy_burst(adapter, event, session_key):
     queue-mode TEXT+TEXT burst first."""
     from gateway.platforms.base import merge_pending_message_event
     from gateway.session_ingress import dispatch_shared_busy
+    stamp_busy_arrival(adapter, event)
     kind, bursts = _kind(adapter, event), _state(adapter, '_shared_bursts')
     while (burst := bursts.get(session_key)) is not None:
         if kind is not None and kind == _kind(adapter, burst.head) and adapter._can_merge_text_debounce_events(
                 burst.head, event):
             merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind == 'text')
             burst.absorbed.append(event)
+            note_busy_merged(burst.head, event)
             burst.last_ts = time.monotonic()
             _arm(adapter, session_key, burst)
             return await _accepted(adapter, burst, event)
@@ -210,4 +211,5 @@ def discard_busy_burst(adapter, session_key):
     burst = adapter.__dict__.get('_shared_bursts', {}).pop(session_key, None)
     if burst is not None:
         burst.timer.cancel()
+        settle_busy_arrival(burst.head, discarded=True)
         burst.done.done() or burst.done.set_result(None)

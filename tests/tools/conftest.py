@@ -15,12 +15,11 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_host_browser_use_cli():
-    """Keep the host's PM-managed browser-use install out of tests.
+    """Keep the host's browser-harness install out of tests.
 
-    Browser Use mode is default-on when the CLI is runnable, so a developer
-    machine with the CLI installed would silently flip every built-in-browser test
-    into CLI mode. Pin discovery to "not installed"; tests that exercise the
-    CLI path monkeypatch ``bu_cli._find_cli`` themselves.
+    browser_exec is advertised whenever browser-harness is importable, so a developer machine
+    would expose (and could spawn) the real harness in every tool-surface test. Pin discovery to
+    "not installed"; tests that exercise the CLI path monkeypatch ``bu_cli._find_cli`` themselves.
     """
     try:
         import tools.browser_use_cli as bu_cli
@@ -32,6 +31,19 @@ def _no_host_browser_use_cli():
     if not hasattr(bu_cli, "_find_cli_unpatched"):
         bu_cli._find_cli_unpatched = bu_cli._find_cli
     with patch.object(bu_cli, "_find_cli", lambda: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_chromium_download():
+    """A test that reaches the launcher without a fake binary must never start PM's ~170 MB Chromium
+    download; the one-shot auto-install is pinned to "declined"."""
+    try:
+        import tools.browser_launcher as launcher
+    except Exception:
+        yield
+        return
+    with patch.object(launcher, "_maybe_autoinstall_chromium", lambda: False):
         yield
 
 
@@ -160,6 +172,54 @@ def web_registry_populated():
     yield
     from agent.web_search_registry import _reset_for_tests
     _reset_for_tests()
+
+
+class FakeKeepWarmTimer:
+    """Inert TTS keep-warm ``threading.Timer``: records its interval; ``fire()`` runs the unload."""
+
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval, self.function, self.args = interval, function, tuple(args or ())
+        self.started = self.cancelled = self.daemon = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    @property
+    def pending(self):
+        return self.started and not self.cancelled
+
+    def fire(self):
+        self.function(*self.args)
+
+
+@pytest.fixture
+def tts_keep_warm_timers(monkeypatch):
+    """Every keep-warm timer the TTS lease lifecycle creates, as ``FakeKeepWarmTimer``s."""
+    from tools import tts_tool_lifecycle
+    created: list = []
+
+    def make(*args, **kwargs):
+        created.append(timer := FakeKeepWarmTimer(*args, **kwargs))
+        return timer
+    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", make)
+    return created
+
+
+@pytest.fixture
+def tts_lifecycle_reset():
+    """Empty TTS leases, owners and resident local models around a test; opt in per module."""
+    from tools import tts_tool_lifecycle, tts_tool_local
+
+    def reset():
+        tts_tool_lifecycle._reset_tts_leases_for_tests()
+        for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
+            cache.clear()
+    reset()
+    yield
+    reset()
 
 
 @pytest.fixture

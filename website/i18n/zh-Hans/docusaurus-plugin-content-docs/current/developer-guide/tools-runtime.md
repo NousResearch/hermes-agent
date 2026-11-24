@@ -74,7 +74,7 @@ def discover_builtin_tools(tools_dir=None):
 
 - **API 密钥是否存在** — 例如，`lambda: bool(os.environ.get("SERP_API_KEY"))` 用于网络搜索
 - **服务是否运行** — 例如，检查 Honcho 服务器是否已配置
-- **二进制文件是否已安装** — 例如，验证浏览器工具的 `playwright` 是否可用
+- **依赖是否已安装** — 例如，验证 `browser_exec` 所需的 `browser-harness` 是否可导入
 
 当 `registry.get_definitions()` 为模型构建 schema 列表时，会运行每个工具的 `check_fn()`：
 
@@ -115,7 +115,7 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
 
 4. **注册表过滤** — 解析后的工具名称集合传递给 `registry.get_definitions()`，后者应用 `check_fn` 过滤并返回 OpenAI 格式的 schema。
 
-5. **动态 schema 修补** — 过滤后，`execute_code` 和 `browser_navigate` 的 schema 会被动态调整，仅引用实际通过过滤的工具（防止模型幻觉出不可用的工具）。
+5. **动态 schema 修补** — 过滤后，`execute_code`、`browser_cdp` 和 `delegate_task` 等工具的 schema 会被动态调整，仅引用实际通过过滤的工具（防止模型幻觉出不可用的工具）。
 
 ### 旧版 toolset 名称
 

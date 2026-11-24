@@ -87,32 +87,32 @@ def test_a_bare_forwarded_label_fails_closed(tmp_path):
 def test_a_forwarded_subject_matching_the_row_owner_takes_the_mutation(tmp_path):
     """The reviewer-repro shape: a stored ``desktop`` row owned by a dashboard account is
     deletable by a forwarded actor acting as that account, and refused for any other."""
-    from gateway.session_contract import Principal
-    from hermes_state import SessionDB
-    from hermes_state_mutation_binding import authorize_history
+    from gateway.session_contract import SessionActor
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    try:
-        db.create_session("cold-desktop", source="desktop", user_id=FORWARDED)
-        same = Principal(
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, "cold-desktop", "desktop", user_id=FORWARDED)
+        same = SessionActor(
             FORWARDED,
             str(tmp_path),
             frozenset({"session:read", "session:create"}),
             "native-http:x",
         )
-        other = Principal(
+        other = SessionActor(
             'auth:v1:["basic","","someone-else"]',
             str(tmp_path),
             frozenset({"session:read", "session:create"}),
             "native-http:y",
         )
-        with db._read_ctx() as conn:
-            assert authorize_history(conn, same, "cold-desktop") is True
-            try:
-                authorize_history(conn, other, "cold-desktop")
-            except Exception as exc:
-                assert getattr(exc, "reason", None) == "permission_denied"
-            else:
-                raise AssertionError("a foreign principal must not take the mutation")
-    finally:
-        db.close()
+        assert store.bindings.authorize_history(
+            session_id="cold-desktop", profile_id=same.profile_id, subject=same.subject,
+            may_create="session:create" in same.capabilities, owner=None) is True
+        try:
+            store.bindings.authorize_history(
+                session_id="cold-desktop", profile_id=other.profile_id, subject=other.subject,
+                may_create="session:create" in other.capabilities, owner=None)
+        except Exception as exc:
+            assert getattr(exc, "reason", None) == "permission_denied"
+        else:
+            raise AssertionError("a foreign principal must not take the mutation")

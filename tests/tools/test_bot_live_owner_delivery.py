@@ -56,8 +56,6 @@ def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path,
         mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "different", delivery_id=delivery_id)
     # Reading the receipt resolves through the same admission, not a local guess.
     assert mailbox.read_delivery_result(tmp_path, delivery_id)["status"] == "queued"
-    # The retired UI claim consumer never hands out work.
-    assert mailbox.claim_pending_delivery(tmp_path, _owner(tmp_path)) is None
     if os.name != "nt":
         for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
             assert path.stat().st_mode & 0o077 == 0
@@ -104,12 +102,12 @@ def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, inten
     intent read back intact, a pinned intent is never replaced by a rewritten payload, and a
     damaged intent retains its evidence instead of retrying a transport."""
     import hermes_cli.gateway_runtime as runtime
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
     from tools import bot_mode_dm
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="chat", source="cli")
-    db.set_session_title("chat", "Bot Chat")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "chat", "cli", title="Bot Chat")
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
     authority = _FakeAuthority()
     monkeypatch.setattr(mailbox, "authority_delivery", authority)
@@ -175,21 +173,6 @@ def test_receipt_read_retains_the_immutable_author_without_replaying_admission(t
     assert [params.get("author") for _home, params in authority.calls] == [author]
 
 
-@pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
-def test_terminal_receipt_is_immutable(tmp_path, terminal_status):
-    delivery_id = "c" * 32
-    with mailbox._locked(tmp_path) as root:
-        mailbox._write(root / f"{delivery_id}.json", dict(delivery_id=delivery_id, status="claimed",
-                                                          message="hello", created_at=1))
-    receipt = mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer")
-    assert mailbox.read_delivery_result(tmp_path, delivery_id) == receipt
-    assert mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer") == receipt
-    with pytest.raises(ValueError):
-        mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="rewrite")
-    with pytest.raises(ValueError):
-        mailbox.complete_delivery(tmp_path, "d" * 32, status="not-terminal")
-
-
 def _ready(instance_id):
     from types import SimpleNamespace
 
@@ -197,8 +180,9 @@ def _ready(instance_id):
 
 
 def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
     import hermes_cli.gateway_runtime as runtime
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     from types import SimpleNamespace
 
@@ -209,20 +193,18 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
 
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
     assert mailbox.find_canonical_live_owner(tmp_path) is None  # no state.db yet
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session(session_id="scratch", source="cli")
-        db.set_session_title("scratch", "Scratch")
+        seed_session(db, "scratch", "cli", title="Scratch")
         # No Bot Chat yet is still a deliverable owner: the authority creates the chat on
         # first delivery (create-if-missing), so discovery reports an empty tip, not None.
         assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == ""
-        db.create_session(session_id="chat", source="cli")
-        db.set_session_title("chat", "Bot Chat")
+        seed_session(db, "chat", "cli", title="Bot Chat")
         owner = mailbox.find_canonical_live_owner(tmp_path)
         assert owner["canonical"] is True and owner["lease_id"] == "authority-1"
         assert owner["session_id"] == owner["live_session_id"] == "chat"
-        db.end_session("chat", "compression")
-        db.create_session(session_id="tip", source="cli", parent_session_id="chat")
+        db.sessions.end("chat", "compression")
+        seed_session(db, "tip", "cli", parent_session_id="chat")
         assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == "tip"
     finally:
         db.close()

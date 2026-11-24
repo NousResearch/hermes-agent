@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "identifier": "com.nousresearch.hermes.setup",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "pnpm run dev",
     "devUrl": "http://127.0.0.1:5175",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "pnpm run build",
     "frontendDist": "../dist"
   },
   "app": {

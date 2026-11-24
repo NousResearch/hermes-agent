@@ -25,7 +25,7 @@ from typing import Optional
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
 from tools.terminal_tool_config import (
-    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
+    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,
 )
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
@@ -93,10 +93,6 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
-# Module-level binding: tests patch ``docker._load_hermes_env_vars`` to fake the .env file.
-_load_hermes_env_vars = load_hermes_env_vars
-
-
 # Docker label values must match [a-zA-Z0-9_.-] and stay <=63 chars to round-trip
 # through `docker ps --filter label=key=value`.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -110,18 +106,15 @@ def _sanitize_label_value(value: str) -> str:
 
 
 # task_id -> host directory name; shared with every backend persisting per-task
-# state on the host (Singularity overlays) so the mapping is fixed in one place.
+# state on the host (the singularity plugin's overlays) so the mapping is fixed in one place.
 _sandbox_dir_name = sanitize_task_id_for_path
 
 
 def _get_active_profile_name() -> str:
-    """Active Hermes profile name, or ``"default"`` on any error. Resolved at container-create
-    time so a container stays tagged with its creator even if the process switches profiles."""
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "default"
-    except Exception:
-        return "default"
+    """Active Hermes profile name (the container key's own lookup), or ``"default"`` on error. Resolved
+    at container-create time so a container stays tagged with its creator even if the process switches
+    profiles."""
+    return home_profile_name()
 
 
 def _container_identity(shared_key: str = "") -> str:
@@ -339,7 +332,7 @@ _BASE_SECURITY_ARGS = [
 # Fork-bomb guard, applied only when the pids cgroup controller is available. The pids cgroup counts
 # THREADS, and a sandbox that hosts the Bot Screen runs a desktop in here: measured on
 # hermes-sandbox:desktop, the idle container is 2 tasks, Xvnc + Xfce + dbus 44, one Chromium with one
-# tab 212, plus the agent's own agent-browser Chromium with two tabs 488. The old 256 was hit in normal
+# tab 212, plus the agent's own Chromium with two tabs 488. The old 256 was hit in normal
 # use and every further `docker exec` (browser command, cua-driver, thumbnail, CDP forward) died with
 # runc's "procReady not received". 2048 leaves room for a working browser and is still three orders of
 # magnitude under the host's pid_max.
@@ -649,7 +642,7 @@ class DockerEnvironment(BaseEnvironment):
     size-limited tmpfs). The container is the security boundary — its filesystem stays
     writable so agents can install packages. Persistence bind-mounts /workspace and /root."""
 
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
     _profile_scoped_passthrough = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
@@ -1089,7 +1082,7 @@ class DockerEnvironment(BaseEnvironment):
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
         """See ``remote_common.resolve_passthrough_env``; explicit docker_forward_env bypasses the blocklist."""
-        return resolve_passthrough_env(self._forward_env, hermes_env_loader=_load_hermes_env_vars)
+        return resolve_passthrough_env(self._forward_env, hermes_env_loader=load_hermes_env_vars)
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
         """Runtime name-only forwarding args, names absent from scope, and the values
@@ -1107,7 +1100,10 @@ class DockerEnvironment(BaseEnvironment):
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
         assert self._container_id, "Container not started"
-        cmd = [self._docker_exe, "exec"]
+        # Docker exec inherits the container's configured -w. If that directory
+        # was removed, OCI refuses to launch bash before the session wrapper can
+        # recover its logical cwd. Start at /; the wrapper cd's to the right place.
+        cmd = [self._docker_exe, "exec", "-w", "/"]
         if stdin_data is not None:
             cmd.append("-i")
 
@@ -1297,6 +1293,7 @@ class DockerEnvironment(BaseEnvironment):
         the thread to finish before the interpreter exits, so ``docker stop`` / ``docker rm`` actually
         completes when we do trigger it.
         """
+        self.stop_all_processes()  # streams into the container: their host-side exec clients too
         container_id = self._container_id
         if not container_id:
             # Bind-mount dirs are still dropped in non-persistent mode.

@@ -125,7 +125,6 @@ class TestFileOpsCwdSanitizedAtCallSite:
         config = {
             "env_type": env_type,
             "docker_image": "pytorch/pytorch:latest",
-            "singularity_image": "docker://pytorch/pytorch:latest",
             "modal_image": "pytorch/pytorch:latest",
             "daytona_image": "pytorch/pytorch:latest",
             "cwd": config_cwd,
@@ -191,7 +190,7 @@ class TestFileOpsCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
         assert cwd == "/workspace/task42"
 
-    def test_host_override_sanitized_on_singularity(self, monkeypatch):
+    def test_host_override_sanitized_on_daytona(self, monkeypatch):
         cwd = self._run_and_capture_cwd(
-            monkeypatch, "/Users/me/workspace", env_type="singularity")
+            monkeypatch, "/Users/me/workspace", env_type="daytona")
         assert cwd == "/workspace"

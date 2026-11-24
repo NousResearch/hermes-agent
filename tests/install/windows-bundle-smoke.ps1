@@ -42,6 +42,7 @@ Start-Transcript -Path (Join-Path $Out 'native-install.log') | Out-Null
 $attempted = $false
 $installedFullName = $null
 $failed = $false
+$smokeStart = Get-Date
 try {
     $beforeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Artifact).Hash.ToLowerInvariant()
     @{ path=$Artifact; sha256=$beforeHash } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'artifact.json')
@@ -95,6 +96,11 @@ try {
 } catch {
     $failed = $true
     $_ | Out-String | Set-Content -LiteralPath (Join-Path $Out 'native-install-error.txt')
+    # An app that dies before Playwright attaches leaves its faulting module and exception code
+    # (Application Error / Windows Error Reporting / SideBySide) only in the Application log.
+    Get-WinEvent -FilterHashtable @{ LogName='Application'; Level=1,2; StartTime=$smokeStart } -ErrorAction SilentlyContinue |
+        Format-List TimeCreated, Id, ProviderName, Message | Out-String -Width 4096 |
+        Set-Content -LiteralPath (Join-Path $Out 'native-app-error-events.txt')
     Write-Error $_ -ErrorAction Continue
 } finally {
     try {

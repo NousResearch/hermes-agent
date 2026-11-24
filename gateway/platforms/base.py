@@ -1457,6 +1457,10 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
             ("image", SUPPORTED_IMAGE_DOCUMENT_TYPES, ".jpg", cache_image_from_bytes, True),
             ("video", SUPPORTED_VIDEO_TYPES, ".mp4", cache_video_from_bytes, False),
             ("audio", _AUDIO_MIME_TYPES, ".ogg", cache_audio_from_bytes, True)):
+        if kind == "image" and (mime == "image/svg+xml" or ext == ".svg"):
+            # Vector, not raster: cache_image_from_bytes rejects it and None would drop the file.
+            # Skipping the image branch lets it fall through to the document cache below.
+            continue
         if not (mime.startswith(f"{kind}/") or ext in table or default_kind == kind):
             continue
         kind_ext = ext if ext in table else default_ext

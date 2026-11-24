@@ -27,3 +27,4 @@ capabilities:
 screenshots:
   - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65/docs/hero.png
   - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65/docs/locales.png
+requires_hermes: ">=0.23.0"

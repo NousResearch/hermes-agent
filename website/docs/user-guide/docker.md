@@ -72,6 +72,8 @@ docker run -d \
   nousresearch/hermes-agent gateway run
 ```
 
+A detached container started with no command at all (`docker run -d ... nousresearch/hermes-agent`) also runs the supervised gateway: the interactive CLI needs a terminal, so without `-it` the image picks the gateway instead of exiting.
+
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./features/api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
 :::tip Gateway runs supervised

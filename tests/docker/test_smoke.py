@@ -88,3 +88,35 @@ def test_hermes_help_under_wrapped_init(built_image: str) -> None:
     assert "Traceback" not in r.stderr, (
         f"hermes --help produced a traceback under --init: {r.stderr[-2000:]!r}"
     )
+
+
+
+def test_detached_start_with_no_command_stays_up_as_the_gateway(built_image: str) -> None:
+    """``docker run -d <image>`` (no command, no TTY) keeps running the supervised gateway.
+
+    Regression for #159590: the no-argument path exec'd the interactive CLI, which quits on a
+    non-TTY stdin, so the container exited and ``--restart unless-stopped`` looped every ~65 s.
+    """
+    from tests.waiting import wait_until
+
+    cid = subprocess.run(["docker", "run", "-d", built_image], capture_output=True, text=True,
+                         timeout=60, check=True).stdout.strip()
+
+    def _docker(*args: str) -> str:
+        r = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=30, check=False)
+        return r.stdout + r.stderr
+
+    def _settled() -> str:
+        # Either the old CLI path ended the container, or the main program handed off to the
+        # supervised gateway (its handoff notice; s6's own profile service alone never prints it).
+        if _docker("inspect", cid, "--format", "{{.State.Running}}").strip() != "true":
+            return "exited"
+        return "gateway" if "running under s6 supervision" in _docker("logs", cid) else ""
+
+    try:
+        outcome = wait_until(_settled, timeout=150, interval=2, what="container exit or a running gateway")
+        logs = _docker("logs", cid)
+        assert outcome == "gateway", f"container exited on a detached start: {logs[-2000:]!r}"
+        assert "Input is not a terminal" not in logs
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True, timeout=60, check=False)

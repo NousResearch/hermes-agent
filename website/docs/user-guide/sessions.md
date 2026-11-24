@@ -130,7 +130,7 @@ Each session is tagged with its source platform:
 | `wecom` | WeCom (WeChat Work) |
 | `weixin` | Weixin (personal WeChat) |
 | `bluebubbles` | Apple iMessage via BlueBubbles macOS server |
-| `qqbot` | QQ Bot (Tencent QQ) via Official API v2 |
+| `qqbot` | QQ Bot (Tencent QQ) via Official API v2 (Labs plugin) |
 | `homeassistant` | Home Assistant events (plugin) |
 | `webhook` | Incoming webhooks |
 | `api-server` | API server requests |

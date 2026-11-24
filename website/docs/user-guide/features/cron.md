@@ -687,7 +687,7 @@ When scheduling jobs, you specify where the output goes:
 | `"wecom"` | WeCom | |
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
-| `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"qqbot"` | QQ Bot (Tencent QQ) (plugin) | Uses `QQBOT_HOME_CHANNEL`; requires the [`qqbot` plugin](../messaging/qqbot.md) |
 | `"bot-chat"` | This profile's canonical Bot Chat — the bot reads the output and responds | Machine-local |
 | `"bot-chat:research"` | Another local profile's Bot Chat | Validated at create time |
 | `"all"` | Fan out to every connected home channel | Resolved at fire time |

@@ -366,7 +366,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `BLUEBUBBLES_HOME_CHANNEL` | cron/通知投递的手机/邮箱 |
 | `BLUEBUBBLES_ALLOWED_USERS` | 逗号分隔的授权用户 |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | 允许所有用户（`true`/`false`） |
-| `QQ_APP_ID` | 来自 [q.qq.com](https://q.qq.com) 的 QQ Bot App ID |
+| `QQ_APP_ID` | QQ Bot 插件：来自 [q.qq.com](https://q.qq.com) 的 App ID（需要 `qqbot` Hermes Labs 插件，见 [QQ Bot](../user-guide/messaging/qqbot.md)） |
 | `QQ_CLIENT_SECRET` | 来自 [q.qq.com](https://q.qq.com) 的 QQ Bot App Secret |
 | `QQ_STT_API_KEY` | 外部 STT 回退提供商的 API 密钥（可选，当 QQ 内置 ASR 未返回文本时使用） |
 | `QQ_STT_BASE_URL` | 外部 STT 提供商的 base URL（可选） |

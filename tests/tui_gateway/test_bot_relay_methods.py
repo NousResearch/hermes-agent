@@ -345,6 +345,20 @@ def test_deliver_dispatch_preserves_delivery_identity_and_receipt(home, monkeypa
     assert all(not any(key in params for key in SENDER) for _, params in forwarded)
 
 
+@pytest.mark.parametrize("fields", [
+    {"status": "queued"},
+    {"status": "failed", "admission_id": "admission-1", "refused": True},
+    {"status": "queued", "refused": True},
+])
+def test_deliver_receipt_names_its_admission_or_is_a_refused_failure(fields):
+    from pydantic import ValidationError
+    from tui_gateway.contracts.groups_bot_relay import BotRelayDeliverResult
+
+    base = {"delivery_id": "a" * 32, "profile_home": "/h", "session_id": "s", "message": "ping"}
+    with pytest.raises(ValidationError, match="names its admission"):
+        BotRelayDeliverResult.model_validate({**base, **fields})
+
+
 @pytest.mark.parametrize("extra, code, reason", [
     ({"unexpected": True}, 4000, None),
     ({"id": None}, 4090, "invalid_params"),

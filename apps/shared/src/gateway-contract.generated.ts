@@ -1974,7 +1974,7 @@ export interface BotRelayDeliverParams {
   from_handle?: string | null
   from_connection?: string | null
 }
-/** A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same on the canonical door and across this relay bridge. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed, a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
+/** A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same on the canonical door and across this relay bridge. It names its admission, unless ``refused``: a terminal ``failed`` receipt for a delivery that was never admitted (refused by the FIFO, or settled as not sent), which the relay settles as the sender's answer. */
 export interface BotRelayDeliverResult {
   status: string
   delivery_id: string

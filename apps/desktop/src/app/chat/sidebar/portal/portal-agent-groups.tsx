@@ -214,10 +214,10 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
           const open = Boolean(query) || (props.expanded[gatewayId] ?? true)
           const selected = connectionId === (activeConnection ?? owner)
           const label = agents.find(agent => agent.connectionId === connectionId)!.gateway
-          // An installed agent of the machine, from the roster or (this window's machine) its own
+          // An installed agent the machine serves, from the roster or (this window's machine) its own
           // profile list: a row listed only for its chats may be of a profile the machine no longer
           // has, and the dialog reads and creates through this one.
-          const rostered = roster?.agents.find(agent => agent.connectionId === connectionId)
+          const rostered = roster?.agents.find(agent => agent.connectionId === connectionId && agent.reachable !== false)
           const installed = rostered ? rostered.targetProfile || rostered.profile : connectionId === owner ? profiles[0]?.name : undefined
 
           return (

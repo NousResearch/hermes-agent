@@ -112,6 +112,18 @@ it('borrows only an installed agent of the machine, and waits where it knows non
   expect(onNewAgent).not.toHaveBeenCalled()
 })
 
+it('passes over an agent the machine lists but does not serve', () => {
+  $fleetRoster.set({
+    agents: [{ ...installed('lab', 'default'), reachable: false }, installed('lab', 'ops'), installed('studio', 'default')],
+    sources: [source('studio'), source('lab')]
+  } as never)
+  mount([agent('studio', 'default', 'Studio'), agent('lab', 'ops', 'Lab box')])
+
+  fireEvent.click(newAgentOn('Lab box'))
+
+  expect(onNewAgent).toHaveBeenLastCalledWith({ connectionId: 'lab', profile: 'ops' })
+})
+
 it('reads this window’s own machine from its profile list where there is no roster', () => {
   $fleetRoster.set(null)
   $profiles.set([{ name: 'default' }] as never)

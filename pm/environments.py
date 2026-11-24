@@ -524,21 +524,25 @@ def activate_dependencies(project_root: Path) -> None:
         directories.append(venv_bin_dir(environment))
     prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
-        if not _startup_path_prefix:
-            _startup_path_prefix[:] = prefix
+        _remember_inherited_path()
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 
 
-# The directories this process's first activate_dependencies() put ahead of the PATH it inherited.
-_startup_path_prefix: list[str] = []
+# PATH as this process inherited it, kept by the first activate_dependencies() that put Hermes's own
+# command dirs ahead of it. Later startup steps put more in front (pm.install.activate's tool dirs).
+_inherited_path: str | None = None
+
+
+def _remember_inherited_path() -> None:
+    global _inherited_path
+    if _inherited_path is None:
+        _inherited_path = os.environ.get("PATH", "")
 
 
 def inherited_path() -> str:
-    """PATH as this process inherited it: without the command directories startup put first,
-    while they still lead it. A new terminal starts from this PATH, not from the led one."""
-    path = os.environ.get("PATH", "")
-    lead = os.pathsep.join(_startup_path_prefix) + os.pathsep
-    return path[len(lead):] if _startup_path_prefix and path.startswith(lead) else path
+    """PATH as this process inherited it, before startup put Hermes's own directories first: the
+    PATH a new terminal starts from. PATH itself when startup never changed it."""
+    return os.environ.get("PATH", "") if _inherited_path is None else _inherited_path
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

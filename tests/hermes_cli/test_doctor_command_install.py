@@ -395,6 +395,10 @@ from pm.environments import activate_dependencies
 
 project = Path(sys.argv[1])
 activate_dependencies(project)
+# main() then runs pm.install.activate(), which moves the tool store's dirs to the front of PATH.
+import pm.install
+pm.install._store_path_dirs = lambda: [sys.argv[2]]
+os.environ["PATH"] = pm.install.store_first_path(os.environ["PATH"])
 print("startup PATH=" + os.environ["PATH"], file=sys.stderr)
 from hermes_cli import doctor, doctor_platform
 doctor.PROJECT_ROOT = project
@@ -404,7 +408,7 @@ sys.exit(doctor.run_doctor(Namespace(fix=False)))
 """
 
 
-def _doctor_after_startup(project: Path, inherited: str) -> subprocess.CompletedProcess:
+def _doctor_after_startup(project: Path, inherited: str, tools: Path) -> subprocess.CompletedProcess:
     """Doctor's command check in a child that boots like `hermes doctor`: real activation first."""
     repo = Path(__file__).resolve().parents[2]
     # The payload venv stands in for the bundle's own dependencies.
@@ -412,7 +416,7 @@ def _doctor_after_startup(project: Path, inherited: str) -> subprocess.Completed
         "\n".join(entry for entry in sys.path if entry.endswith("site-packages")) + "\n", encoding="utf-8"
     )
     env = {**os.environ, "PATH": inherited, "HOME": str(Path.home()), "PYTHONPATH": str(repo)}
-    return subprocess.run([sys.executable, "-c", _DOCTOR_AFTER_STARTUP, str(project)],
+    return subprocess.run([sys.executable, "-c", _DOCTOR_AFTER_STARTUP, str(project), str(tools)],
                           cwd=repo, env=env, capture_output=True, text=True, check=False)
 
 
@@ -433,10 +437,13 @@ def test_path_check_judges_the_path_doctor_inherited(tmp_path, monkeypatch, inhe
     other_bin.mkdir()
     (other_bin / "hermes").symlink_to(launcher)
     first = {"system": [], "payload_bin": [str(launcher.parent)], "other_link": [str(other_bin)]}[inherited]
+    tools = tmp_path / "store" / "node" / "bin"
+    tools.mkdir(parents=True)
 
-    done = _doctor_after_startup(project, os.pathsep.join([*first, "/usr/bin", "/bin"]))
+    done = _doctor_after_startup(project, os.pathsep.join([*first, "/usr/bin", "/bin"]), tools)
 
-    assert f"startup PATH={launcher.parent}{os.pathsep}{venv_hermes.parent}{os.pathsep}" in done.stderr
+    sep = os.pathsep
+    assert f"startup PATH={tools}{sep}{launcher.parent}{sep}{venv_hermes.parent}{sep}" in done.stderr, done.stderr
     assert done.returncode == rc, done.stdout + done.stderr
     assert ("~/.local/bin is not on your PATH" in done.stdout) == (rc == 1)
 

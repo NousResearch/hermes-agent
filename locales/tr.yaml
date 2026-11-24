@@ -1504,10 +1504,6 @@ platform:
   email:
     image_line: "Görüntü: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Düşünüyor"
-      done: "🥳Tamamlandı"
   irc:
     quit_message: "Hermes Agent kapatılıyor"
     standalone_quit: "teslim edildi"

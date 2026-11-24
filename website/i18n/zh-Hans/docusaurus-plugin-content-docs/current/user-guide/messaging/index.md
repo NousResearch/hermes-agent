@@ -25,7 +25,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Home Assistant（插件） | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
+| DingTalk（Labs 插件） | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
@@ -56,7 +56,7 @@ flowchart TB
             ha[Home Assistant]
             mm[Mattermost]
             mx[Matrix]
-            dt[DingTalk]
+            dt["DingTalk (plugin)"]
     fs[Feishu/Lark]
     wc[WeCom]
     wcb[WeCom Callback]
@@ -437,7 +437,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Home Assistant（插件） | `hermes-homeassistant` | 完整工具 + HA 设备控制（ha_list_entities、ha_get_state、ha_call_service、ha_list_services），由插件目录中的 `homeassistant` 插件提供 |
 | Mattermost | `hermes-mattermost` | 完整工具，包括终端 |
 | Matrix | `hermes-matrix` | 完整工具，包括终端 |
-| DingTalk | `hermes-dingtalk` | 完整工具，包括终端 |
+| DingTalk（Labs 插件） | `hermes-dingtalk` | 完整工具，包括终端，由 `dingtalk` Hermes Labs 插件提供 |
 | Feishu/Lark | `hermes-feishu` | 完整工具，包括终端 |
 | WeCom | `hermes-wecom` | 完整工具，包括终端 |
 | WeCom Callback | `hermes-wecom-callback` | 完整工具，包括终端 |
@@ -561,7 +561,7 @@ display:
 - [Home Assistant 集成](homeassistant.md)（插件目录）
 - [Mattermost 配置](mattermost.md)
 - [Matrix 配置](matrix.md)
-- [DingTalk 配置](dingtalk.md)
+- [DingTalk](dingtalk.md)（Hermes Labs 插件）
 - [Feishu/Lark 配置](feishu.md)
 - [WeCom 配置](wecom.md)
 - [WeCom Callback 配置](wecom-callback.md)

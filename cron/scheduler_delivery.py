@@ -40,7 +40,7 @@ _NON_PUSH_ORIGIN_PLATFORMS = frozenset({"api_server"})
 # ``cron_deliver_env_var``. Other plugin platforms follow by name (a fresh process loads deferred
 # entries in name order, so this is the order they had when they trailed a static table).
 _HOME_TARGET_PRIORITY = (
-    "matrix", "telegram", "discord", "slack", "signal", "mattermost", "sms", "email", "dingtalk",
+    "matrix", "telegram", "discord", "slack", "signal", "mattermost", "sms", "email",
     "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "whatsapp", "whatsapp_cloud",
 )
 

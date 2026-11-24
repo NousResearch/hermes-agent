@@ -685,11 +685,10 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
     def register_platform_handler(self, platform: str, factory: Callable) -> None:
         """Register ``factory(native, adapter)``, invoked at ``connect()`` before/as the core handlers
         register (``adapter`` read-only). ``native``: telegram PTB ``Application``, discord
-        ``commands.Bot``, slack ``AsyncApp``, matrix client, teams ``App``, dingtalk
-        ``DingTalkStreamClient``, line aiohttp ``web.Application``, others ``None``. Keep SDK imports
-        inside the factory; exceptions are logged and the platform still connects. Scope handlers in
-        first-match dispatch tables so core flows keep working. Raises ``ValueError`` when not callable
-        or platform is empty."""
+        ``commands.Bot``, slack ``AsyncApp``, matrix client, teams ``App``, line aiohttp
+        ``web.Application``, others ``None``. Keep SDK imports inside the factory; exceptions are
+        logged and the platform still connects. Scope handlers in first-match dispatch tables so core
+        flows keep working. Raises ``ValueError`` when not callable or platform is empty."""
         if not callable(factory):
             raise self._refuse("a platform handler factory with a non-callable factory")
         key = (platform or "").strip().lower()

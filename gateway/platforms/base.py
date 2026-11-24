@@ -2605,7 +2605,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send ``content`` (may be markdown) to a chat; returns SendResult with message id."""
 
-    # Surfaces needing an explicit finalize edit (DingTalk AI Cards): the consumer never skips it.
+    # Surfaces needing an explicit finalize edit (e.g. a plugin adapter's AI Cards): the consumer never skips it.
     REQUIRES_EDIT_FINALIZE: bool = False
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -2617,8 +2617,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a sent message (optional: success=False makes callers send anew). ``finalize`` marks
-        the last edit of a streamed response; surfaces with a distinct "in progress" state (DingTalk
-        AI Cards) close the message on it and set ``REQUIRES_EDIT_FINALIZE`` so it's routed even
+        the last edit of a streamed response; surfaces with a distinct "in progress" state (plugin
+        adapters such as DingTalk's AI Cards) close the message on it and set ``REQUIRES_EDIT_FINALIZE`` so it's routed even
         when content is unchanged."""
         return SendResult(success=False, error="Not supported")
 

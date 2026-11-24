@@ -1521,10 +1521,6 @@ platform:
   email:
     image_line: "Kép: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Gondolkodom"
-      done: "🥳Kész"
   irc:
     quit_message: "Hermes Agent leáll"
     standalone_quit: "kézbesítve"

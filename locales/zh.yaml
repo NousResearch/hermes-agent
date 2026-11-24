@@ -1504,10 +1504,6 @@ platform:
   email:
     image_line: "图片：{url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔思考中"
-      done: "🥳完成"
   irc:
     quit_message: "Hermes Agent 正在关闭"
     standalone_quit: "已送达"

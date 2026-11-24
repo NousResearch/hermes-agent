@@ -101,7 +101,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `hermes-email` | 与 `hermes-cli` 相同。 |
 | `hermes-sms` | 与 `hermes-cli` 相同。 |
 | `hermes-bluebubbles` | 与 `hermes-cli` 相同。 |
-| `hermes-dingtalk` | 与 `hermes-cli` 相同。 |
 | `hermes-feishu` | 添加了五个 `feishu_doc_*` / `feishu_drive_*` 工具（仅由文档评论处理器使用，不用于常规聊天适配器）。 |
 | `hermes-qqbot` | 与 `hermes-cli` 相同。 |
 | `hermes-wecom` | 与 `hermes-cli` 相同。 |

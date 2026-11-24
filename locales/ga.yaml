@@ -1504,10 +1504,6 @@ platform:
   email:
     image_line: "Íomhá: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Ag smaoineamh"
-      done: "🥳Déanta"
   irc:
     quit_message: "Hermes Agent ag múchadh"
     standalone_quit: "seachadta"

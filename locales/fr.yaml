@@ -1753,10 +1753,6 @@ platform:
   email:
     image_line: "Image : {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Réflexion"
-      done: "🥳Terminé"
   irc:
     quit_message: "Hermes Agent s'arrête"
     standalone_quit: "livré"

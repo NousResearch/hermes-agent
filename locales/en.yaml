@@ -1574,11 +1574,6 @@ platform:
     image_line: "Image: {url}"
     standalone_subject: "Hermes Agent"
 
-  dingtalk:
-    emotion:
-      thinking: "🤔Thinking"
-      done: "🥳Done"
-
   irc:
     quit_message: "Hermes Agent shutting down"
     standalone_quit: "delivered"

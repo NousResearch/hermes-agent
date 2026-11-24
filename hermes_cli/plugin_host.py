@@ -77,24 +77,29 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     A profile a plugin runs elsewhere expands its ``${VAR}``s against the process env, as ``host_launcher``
     documents for the managed overlay's launcher. A caller already bound to *home*'s secrets (stamped with it, or
     unstamped, which marks the launch profile's) lends them: the TUI gateway binds the launch profile's ``.env``
-    over the live env even single-profile, and the launcher reads what the rest of that body reads. With no such
-    caller the launch profile outside multiplexing uses the process env, so a restart reads what the process
-    loaded. The process env holds the launch profile's values, so any other profile's launcher expands through
-    its own secrets (``owner_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a
-    sibling under task-local multiplexing, which a fresh context does not carry. Under multiplexing the launch
-    profile's expands through its own scope too (``launch_secret_scope``: its env-only keys and files). The
-    launch profile is the one whose directory the process's own path keys, as ``serves_routed_profile`` asks:
-    after that link is renamed, *home* is the new name, which ``owner_secret_scope`` would take for another
-    profile, and the old name leads to no files. No terminal policy: the launcher is only read here."""
-    from agent.secret_scope import current_secret_scope, current_secret_scope_home
+    over the live env even single-profile, and the launcher reads what the rest of that body reads, under its
+    task-local multiplexing too: a name the lent scope lacks stays unresolved, as in the body, rather than read
+    from the live env. With no such caller the launch profile outside multiplexing uses the process env, so a
+    restart reads what the process loaded. The process env holds the launch profile's values, so any other
+    profile's launcher expands through its own secrets (``owner_secret_scope``), multiplexing or not: a desktop
+    backend's cron ticker serves a sibling under task-local multiplexing, which a fresh context does not carry.
+    Under multiplexing the launch profile's expands through its own scope too (``launch_secret_scope``: its
+    env-only keys and files). The launch profile is the one whose directory the process's own path keys, as
+    ``serves_routed_profile`` asks: after that link is renamed, *home* is the new name, which
+    ``owner_secret_scope`` would take for another profile, and the old name leads to no files. No terminal
+    policy: the launcher is only read here."""
+    from agent.secret_scope import (current_secret_scope, current_secret_scope_home, is_multiplex_active,
+                                    set_multiplex_context)
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     own = hermes_home_key(get_routing_process_hermes_home()) == hermes_home_key(home)
     stamp = current_secret_scope_home()
     lent = current_secret_scope() if (hermes_home_key(stamp) == hermes_home_key(home) if stamp else own) else None
+    multiplexed = is_multiplex_active()
 
     def choose() -> list:
-        from agent.secret_scope import is_multiplex_active
         from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if lent is not None and multiplexed:
+            set_multiplex_context(True)  # this context's own copy, dropped with it
         if run_elsewhere_refusal(home) is not None or (lent is None and own and not is_multiplex_active()):
             from hermes_cli.plugins_loader import _plugin_home_scope
             with _plugin_home_scope(home):

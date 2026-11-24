@@ -202,8 +202,9 @@ export default function ChannelsPage() {
   const openConfig = (platform: MessagingPlatform) => {
     const initial: Record<string, string> = {};
     platform.env_vars.forEach((v) => {
-      // Allowlists open with their saved entries (they are IDs, not secrets).
-      initial[v.key] = v.is_list ? v.value || "" : "";
+      // Secrets stay blank (the redacted preview is only a placeholder).
+      // Every other saved value, allowlist or not, opens as plain text.
+      initial[v.key] = v.is_password ? "" : v.value || "";
     });
     setDraftEnv(initial);
     setFieldErrors({});
@@ -218,14 +219,15 @@ export default function ChannelsPage() {
     const clearEnv: string[] = [];
     editing.env_vars.forEach((field) => {
       const v = (draftEnv[field.key] || "").trim();
-      if (field.is_list) {
-        // Allowlists are prefilled, so an unchanged one is not an edit and an emptied one is a clear.
-        if (v === (field.value || "")) return;
+      if (field.is_password) {
+        // A blank secret keeps the saved credential.
         if (v) env[field.key] = v;
-        else if (field.is_set) clearEnv.push(field.key);
-      } else if (v) {
-        env[field.key] = v;
+        return;
       }
+      // Prefilled plain values: unchanged is not an edit, emptied is a clear.
+      if (v === (field.value || "")) return;
+      if (v) env[field.key] = v;
+      else if (field.is_set) clearEnv.push(field.key);
     });
     if (Object.keys(env).length === 0 && clearEnv.length === 0) {
       showToast("Nothing to save — fill in at least one field.", "error");
@@ -540,7 +542,7 @@ export default function ChannelsPage() {
                     type={field.is_password ? "password" : "text"}
                     className="text-base leading-6 sm:text-xs sm:leading-4"
                     placeholder={
-                      field.is_set
+                      field.is_password && field.is_set
                         ? field.redacted_value || "•••••• (set — leave blank to keep)"
                         : field.placeholder || field.key
                     }

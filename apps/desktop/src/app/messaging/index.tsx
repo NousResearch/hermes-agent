@@ -95,7 +95,10 @@ function platformChanges(platform: MessagingPlatformInfo, draft: Record<string, 
   const env = trimEdits(draft)
 
   const clearEnv = platform.env_vars
-    .filter(field => field.is_list && field.is_set && draft[field.key]?.trim() === '')
+    .filter(
+      field =>
+        !field.is_password && field.is_set && field.key in draft && (draft[field.key] ?? '').trim() === ''
+    )
     .map(field => field.key)
 
   return clearEnv.length ? { env, clear_env: clearEnv } : { env }
@@ -1159,9 +1162,13 @@ function MessagingField({
               className={CREDENTIAL_CONTROL_CLASS}
               id={fieldId}
               onChange={event => onEdit(field.key, event.target.value)}
-              placeholder={field.is_set ? credentialPreview(field.redacted_value) || m.replaceValue : copy.placeholder}
+              placeholder={
+                field.is_password && field.is_set
+                  ? credentialPreview(field.redacted_value) || m.replaceValue
+                  : copy.placeholder
+              }
               type={field.is_password ? 'password' : 'text'}
-              value={edits[field.key] || ''}
+              value={edits[field.key] ?? (field.is_password ? '' : field.value || '')}
             />
             {tools}
           </div>

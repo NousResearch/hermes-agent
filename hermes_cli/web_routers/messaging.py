@@ -264,7 +264,10 @@ def _messaging_platform_payload(
         env_vars.append({
             "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
-            "value": value if info["is_list"] else None, **info,
+            # Secrets stay masked (value is None; clients show redacted_value).
+            # password:false settings, including allowlists and the LINE group
+            # filters, round-trip as plain text so a saved value is editable.
+            "value": None if info["is_password"] else value, **info,
         })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)

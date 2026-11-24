@@ -952,15 +952,15 @@ class TestLineFilterDashboardEnv:
         ignore = OPTIONAL_ENV_VARS["LINE_IGNORE_GROUP_MESSAGE_TYPES"]
         media = OPTIONAL_ENV_VARS["LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES"]
         mention = OPTIONAL_ENV_VARS["LINE_REQUIRE_MENTION_CHATS"]
-        assert ignore["password"] is False and ignore["placeholder"] == "sticker,emoji"
+        assert ignore["password"] is False and ignore["placeholder"] == "Ex: sticker,emoji"
         assert "sticker,emoji" in ignore["help"]
-        assert media["placeholder"] == "image,video"
-        assert mention["is_list"] is True and mention["placeholder"] == "Cxxxx,Rxxxx"
+        assert media["placeholder"] == "Ex: image,video"
+        assert mention["is_list"] is True and mention["placeholder"] == "Ex: Cxxxx,Rxxxx"
         for meta in (ignore, media, mention):
             assert meta["category"] == "messaging"
             assert meta["description"] and meta["prompt"]
 
-        assert _messaging_env_info("LINE_IGNORE_GROUP_MESSAGE_TYPES")["placeholder"] == "sticker,emoji"
+        assert _messaging_env_info("LINE_IGNORE_GROUP_MESSAGE_TYPES")["placeholder"] == "Ex: sticker,emoji"
         assert _messaging_env_info("LINE_IGNORE_GROUP_MESSAGE_TYPES")["is_list"] is False
         assert _messaging_env_info("LINE_REQUIRE_MENTION_CHATS")["is_list"] is True
         assert _messaging_env_info("LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES")["help"]
@@ -976,6 +976,53 @@ class TestLineFilterDashboardEnv:
         assert env_vars[card_rooms + 1:card_rooms + 4] == names[rooms + 1:rooms + 4]
         assert env_vars.count("LINE_REQUIRE_MENTION_CHATS") == 1
         assert env_vars.count("LINE_IGNORE_GROUP_MESSAGE_TYPES") == 1
+
+    def test_saved_filter_values_are_plain_text_not_redacted(self):
+        """Channels payload returns these settings unmasked, like the allowlists.
+
+        Non-list fields used to ship only ``redacted_value`` (``«redacted:…``),
+        and the form showed that preview as the placeholder of a saved field.
+        """
+        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.web_routers.messaging import _messaging_platform_payload
+        from hermes_cli.web_server_messaging import _messaging_platform_catalog
+
+        discover_plugins()
+        entry = next(item for item in _messaging_platform_catalog() if item["id"] == "line")
+        saved = {
+            "LINE_CHANNEL_ACCESS_TOKEN": "secret-channel-token",
+            "LINE_ALLOWED_GROUPS": "Callowed",
+            "LINE_REQUIRE_MENTION_CHATS": "Cneed,Rneed",
+            "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES": "image,video",
+            "LINE_IGNORE_GROUP_MESSAGE_TYPES": "sticker,emoji",
+        }
+        payload = _messaging_platform_payload(entry, saved, runtime={}, scoped=True)
+        fields = {field["key"]: field for field in payload["env_vars"]}
+
+        groups = fields["LINE_ALLOWED_GROUPS"]
+        assert groups["is_password"] is False
+        assert groups["value"] == "Callowed"
+        assert "redacted" not in (groups["value"] or "")
+
+        expected = {
+            "LINE_REQUIRE_MENTION_CHATS": "Cneed,Rneed",
+            "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES": "image,video",
+            "LINE_IGNORE_GROUP_MESSAGE_TYPES": "sticker,emoji",
+        }
+        for key, plain in expected.items():
+            field = fields[key]
+            assert field["is_password"] is False
+            assert field["is_set"] is True
+            assert field["value"] == plain
+            assert "redacted" not in field["value"]
+            assert field["value"] != field["redacted_value"]
+            assert field["placeholder"].startswith("Ex: ")
+
+        token = fields["LINE_CHANNEL_ACCESS_TOKEN"]
+        assert token["is_password"] is True
+        assert token["value"] is None
+        assert token["redacted_value"]
+        assert "secret-channel-token" not in str(token["redacted_value"])
 
 
 class TestLineBotInfo:

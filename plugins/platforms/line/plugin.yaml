@@ -55,20 +55,20 @@ optional_env:
     description: "Comma-separated group/room IDs (C…/R…) that reply only when the bot is @mentioned. Other allowlisted groups and rooms respond normally. DMs are never mention-gated."
     prompt: "Mention-required group/room IDs"
     help: "Example: Cxxxx,Rxxxx. Leave empty to reply in every allowlisted group and room without an @mention."
-    placeholder: "Cxxxx,Rxxxx"
+    placeholder: "Ex: Cxxxx,Rxxxx"
     password: false
     is_list: true
   - name: LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES
     description: "Comma-separated LINE message types that still get a reply in mention-required groups and rooms. Empty means no media bypasses the @mention."
     prompt: "Media types that skip @mention"
     help: "Works with LINE_REQUIRE_MENTION_CHATS. Example: image,video. Also accepts audio, file, sticker, location."
-    placeholder: "image,video"
+    placeholder: "Ex: image,video"
     password: false
   - name: LINE_IGNORE_GROUP_MESSAGE_TYPES
     description: "Comma-separated LINE message types silently ignored in groups and rooms, before the mention gate. Empty ignores nothing. DMs are never filtered. emoji means a text message that is only LINE emoji placeholders."
     prompt: "Group message types to ignore"
     help: "Example: sticker,emoji. Also accepts image, video, audio, file, location. Mixed text + emoji is not emoji."
-    placeholder: "sticker,emoji"
+    placeholder: "Ex: sticker,emoji"
     password: false
   - name: LINE_ALLOW_ALL_USERS
     description: "Allow any LINE user to talk to the bot (dev only — disables allowlist)"

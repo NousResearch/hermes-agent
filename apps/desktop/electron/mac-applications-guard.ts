@@ -57,21 +57,32 @@ export interface MacApplicationsGuardDeps {
   log: (message: string) => void
 }
 
-const LOCATION_DETAILS: Readonly<Record<MacUnsafeBundleLocation, (appName: string) => string>> = {
-  'app-translocation': appName =>
-    `${appName} is running from a temporary macOS App Translocation folder (usually because it was opened from Downloads). ` +
-    `Automatic updates cannot install from here. Moving ${appName} to Applications fixes this.`,
-  'desktop-folder': appName =>
-    `${appName} is running from your Desktop folder. ` +
-    'Moving it to Applications keeps automatic updates working reliably.',
-  'downloads-folder': appName =>
-    `${appName} is running from your Downloads folder. ` +
-    'Moving it to Applications keeps automatic updates working reliably.',
-  'read-only-volume': appName =>
-    `${appName} is running from a read-only volume (such as a disk image). ` +
-    `Automatic updates cannot install from here, and ${appName} stops working once the volume is ejected. ` +
-    `Moving ${appName} to Applications fixes both.`
-}
+// Only an artifact Squirrel.Mac updates in place gains automatic updates by moving; a commit build
+// (updateMechanism external) doesn't update in-app, so its copy names only the location's own problem.
+const LOCATION_DETAILS: Readonly<Record<MacUnsafeBundleLocation, (appName: string, inAppUpdates: boolean) => string>> =
+  {
+    'app-translocation': (appName, inAppUpdates) =>
+      `${appName} is running from a temporary macOS App Translocation folder (usually because it was opened from Downloads). ` +
+      (inAppUpdates
+        ? `Automatic updates cannot install from here. Moving ${appName} to Applications fixes this.`
+        : `macOS gives it a new read-only location on every launch. Moving ${appName} to Applications gives it a permanent one.`),
+    'desktop-folder': (appName, inAppUpdates) =>
+      `${appName} is running from your Desktop folder. ` +
+      (inAppUpdates
+        ? 'Moving it to Applications keeps automatic updates working reliably.'
+        : 'Moving it to Applications gives it a permanent home.'),
+    'downloads-folder': (appName, inAppUpdates) =>
+      `${appName} is running from your Downloads folder. ` +
+      (inAppUpdates
+        ? 'Moving it to Applications keeps automatic updates working reliably.'
+        : 'Moving it to Applications gives it a permanent home.'),
+    'read-only-volume': (appName, inAppUpdates) =>
+      `${appName} is running from a read-only volume (such as a disk image). ` +
+      (inAppUpdates
+        ? `Automatic updates cannot install from here, and ${appName} stops working once the volume is ejected. ` +
+          `Moving ${appName} to Applications fixes both.`
+        : `${appName} stops working once the volume is ejected. Moving ${appName} to Applications fixes this.`)
+  }
 
 export function resolveMacAppBundle(exePath: string, platform: NodeJS.Platform = process.platform): string | null {
   if (platform !== 'darwin' || !exePath) {
@@ -399,12 +410,16 @@ function installedCopyBlockingMove(
   return null
 }
 
-function buildMovePromptOptions(appName: string, location: MacUnsafeBundleLocation): MessageBoxOptions {
+function buildMovePromptOptions(
+  appName: string,
+  location: MacUnsafeBundleLocation,
+  inAppUpdates: boolean
+): MessageBoxOptions {
   return {
     type: 'warning',
     title: `Move ${appName} to Applications`,
     message: `Move ${appName} to the Applications folder?`,
-    detail: LOCATION_DETAILS[location](appName),
+    detail: LOCATION_DETAILS[location](appName, inAppUpdates),
     buttons: ['Move to Applications', 'Keep running here'],
     defaultId: 0,
     cancelId: 1,
@@ -646,7 +661,7 @@ export async function guardMacApplicationsLaunch(deps: MacApplicationsGuardDeps)
     detectedLocation = check.location
 
     const { response, checkboxChecked } = await deps.dialog.showMessageBox(
-      buildMovePromptOptions(deps.appName, check.location)
+      buildMovePromptOptions(deps.appName, check.location, deps.installStamp?.updateMechanism === 'electron-updater')
     )
 
     if (response !== 0) {

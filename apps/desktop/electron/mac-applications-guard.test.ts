@@ -360,6 +360,40 @@ describe('guardMacApplicationsLaunch', () => {
     )
   })
 
+  it.each([
+    ['an in-app updater', 'electron-updater', true],
+    ['no in-app updater (a commit build)', 'external', false]
+  ] as const)(
+    'promises automatic updates after the move only for a build with %s',
+    async (_label, updateMechanism, promised) => {
+      for (const exe of [
+        '/Volumes/Hermes Agent/Hermes Agent.app/Contents/MacOS/Hermes Agent',
+        '/private/var/folders/aa/bb/T/AppTranslocation/1111/d/Hermes Agent.app/Contents/MacOS/Hermes Agent',
+        '/Users/alice/Downloads/Hermes Agent.app/Contents/MacOS/Hermes Agent'
+      ]) {
+        const { deps, app, dialog, userDataDir } = makeDeps({
+          installStamp: { payload: 'bundled', updateMechanism },
+          access: exe.startsWith('/Volumes/')
+            ? () => {
+                throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+              }
+            : () => undefined
+        })
+
+        app.getPath = vi.fn((name: string) =>
+          name === 'exe' ? exe : userDataDir
+        ) as unknown as MacApplicationsGuardDeps['app']['getPath']
+        dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+
+        await guardMacApplicationsLaunch(deps)
+
+        const [options] = dialog.showMessageBox.mock.calls[0] as unknown as [{ detail: string }]
+
+        expect(/update/i.test(options.detail)).toBe(promised)
+      }
+    }
+  )
+
   it('still prompts for App Translocation even if isInApplicationsFolder reports true', async () => {
     const { deps, app, dialog, userDataDir } = makeDeps({ access: () => undefined })
 

@@ -20,7 +20,8 @@ from typing import Any, Dict, List, NamedTuple, Optional
 
 from hermes_cli.plugin_catalog import (
     CATALOG_TIERS, PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
-    find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
+    find_catalog_entry_for_user, find_removed, get_live_catalog_entry, load_catalog_live, match_removed,
+    resolved_removed_entries,
     _NAME_RE, _normalize_repo,
 )
 from pm.filesystem import is_junction
@@ -55,7 +56,7 @@ def raise_if_removed(*candidates: str) -> None:
 def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
     """Bare name → live catalog entry, or exit 1 with a pointer to ``search``."""
     from hermes_cli.plugins_cmd import _fail
-    entry = get_live_catalog_entry(identifier)
+    entry = find_catalog_entry_for_user(identifier)
     if entry is None:
         _fail(console, (
             f"[red]Error:[/red] '{identifier}' is not in the Hermes plugin catalog and is not a Git URL or "
@@ -840,7 +841,7 @@ def cmd_search(term: str = "", *, json_output: bool = False) -> None:
 def cmd_info(name: str) -> None:
     """Full catalog entry for *name*; falls back to installed-plugin details for non-catalog names."""
     from hermes_cli.plugins_cmd import _console, cmd_show
-    entry = get_live_catalog_entry(name)
+    entry = find_catalog_entry_for_user(name)
     if entry is None:
         cmd_show(name)
         return

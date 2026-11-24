@@ -630,11 +630,16 @@ def live_removed_list() -> list[RemovedEntry]:
 
 
 def get_live_catalog_entry(name: str) -> Optional[PluginCatalogEntry]:
-    """The live entry named *name*, or the one a bundled name that left core (``google_meet``) now names."""
+    """Exact lookup: saved install records name their entry, and must never drift to another one."""
+    return next((e for e in load_catalog_live() if e.name == name), None)
+
+
+def find_catalog_entry_for_user(name: str) -> Optional[PluginCatalogEntry]:
+    """What a user typed (``hermes plugins install|info <name>``): the exact entry, else the one a bundled
+    name that left core (``google_meet``) now names (``google-meet``)."""
     from hermes_cli.left_core_migration import legacy_plugin_alias
-    names = {name, legacy_plugin_alias(name) or name}
-    entries = load_catalog_live()
-    return next((e for e in entries if e.name == name), None) or next((e for e in entries if e.name in names), None)
+    alias = legacy_plugin_alias(name)
+    return get_live_catalog_entry(name) or (get_live_catalog_entry(alias) if alias else None)
 
 
 # ── Human summaries ──────────────────────────────────────────────────────────

@@ -65,14 +65,16 @@ def test_old_keys_stay_aliases_of_the_catalog_plugins():
     assert "teams_pipeline" in lcm.legacy_plugin_keys("teams-pipeline")
 
 
-def test_the_old_bundled_name_finds_the_catalog_entry(monkeypatch):
-    """`hermes plugins install|info google_meet` share this lookup."""
+def test_the_old_bundled_name_finds_the_catalog_entry_but_saved_names_stay_exact(monkeypatch):
+    """`hermes plugins install|info google_meet` accept the old name; a saved install record's name
+    (update / repin) never drifts to another entry."""
     from types import SimpleNamespace
 
     from hermes_cli import plugin_catalog
 
     entries = [SimpleNamespace(name="google-meet"), SimpleNamespace(name="teams-pipeline")]
     monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: entries)
-    assert plugin_catalog.get_live_catalog_entry("google_meet") is entries[0]
-    assert plugin_catalog.get_live_catalog_entry("teams_pipeline") is entries[1]
-    assert plugin_catalog.get_live_catalog_entry("google-meet") is entries[0]
+    assert plugin_catalog.find_catalog_entry_for_user("google_meet") is entries[0]
+    assert plugin_catalog.find_catalog_entry_for_user("teams_pipeline") is entries[1]
+    assert plugin_catalog.find_catalog_entry_for_user("google-meet") is entries[0]
+    assert plugin_catalog.get_live_catalog_entry("google_meet") is None

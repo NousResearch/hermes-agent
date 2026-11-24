@@ -414,17 +414,22 @@ def test_promote_refuses_when_the_macos_feed_is_missing(tmp_path, monkeypatch, r
 
 
 
-def _controller_promote(monkeypatch, https_origin, manifest, base, root):
-    """Promote the way the stable sequencer does: the admitted candidate through
-    channel_releases.promote_stable_feeds, never the release_artifacts CLI."""
+def _controller_promote(monkeypatch, https_origin, manifest, base, root, *, pinned=None):
+    """Promote the way publish_release does: admit the candidate through accepted_stable against
+    a separately pinned digest (the release receipt's), then promote_stable_feeds. Never the CLI."""
     import urllib.request
 
-    from scripts.releases import channel_releases
+    from scripts.releases import channel_releases, r2
+    from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 
     monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
-    stored = https_origin.store[f"releases/tag/{manifest['archive']}/release-candidates.json"][0]
-    candidate = artifacts.read_admitted_candidate(manifest['tag'], manifest['commit'], base,
-                                                  hashlib.sha256(stored).hexdigest(), archive=manifest['archive'])
+    key = f"releases/tag/{manifest['archive']}/release-candidates.json"
+    pinned = pinned or hashlib.sha256(https_origin.store[key][0]).hexdigest()
+    publisher = ChannelPublisher(R2ChannelStore(*r2.credentials()), 'fixture/release', base,
+                                 authorize=lambda _action, _record: None)
+    env = {'CANDIDATE_MANIFEST_SHA256': pinned, 'CANDIDATE_MANIFEST_URL': f'{base}/{key}'}
+    candidate = channel_releases.accepted_stable(publisher, env, manifest['archive'], manifest['commit'],
+                                                 manifest['releaseEpoch'], lanes=lane_set.DEFAULT)
     channel_releases.promote_stable_feeds(candidate, root, base)
 
 
@@ -573,14 +578,20 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, monkeypa
 
 
 @pytest.mark.platforms('posix')
-def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server, staged_candidate, candidate_workflow_step):
-    manifest, _, _ = staged_candidate
+def test_candidate_smoke_admission_fails_before_publication(tmp_path, monkeypatch, r2_server, https_origin,
+                                                            staged_candidate, candidate_workflow_step):
+    manifest, _, base = staged_candidate
     jobs, run, body_file = candidate_workflow_step
     key = f"releases/tag/{manifest['archive']}/release-candidates.json"
     raw = r2_server.store[key][0]
-    for fault, message in [('legacy', 'Candidate manifest'), ('missing', 'Candidate smoke results'),
-                           ('failed', 'smoke-win32-x64=failure'), ('identity', 'release identity'),
-                           ('tampered', 'digest mismatch')]:
+    # The controller reads the archive through its pinned-digest channel reader, so a tampered
+    # manifest fails there as a SHA256 mismatch; the renderer's own read calls it a digest mismatch.
+    for fault, message, controller_message in [
+            ('legacy', 'Candidate manifest', 'Candidate manifest'),
+            ('missing', 'Candidate smoke results', 'Candidate smoke results'),
+            ('failed', 'smoke-win32-x64=failure', 'smoke-win32-x64=failure'),
+            ('identity', 'release identity', 'release identity'),
+            ('tampered', 'digest mismatch', 'SHA256 mismatch')]:
         invalid = copy.deepcopy(manifest)
         if fault == 'legacy':
             invalid['schema'] = 1
@@ -595,7 +606,13 @@ def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server,
         r2_server.store[key] = (data, '"fault"')
         digest = hashlib.sha256(raw if fault == 'tampered' else data).hexdigest()
         before = dict(r2_server.store), body_file.read_bytes()
-        # Exercise both commands independently, not just shell short-circuiting.
+        # Exercise the controller's admission and the renderer step independently.
+        r2_server.requests.clear()
+        with pytest.raises(ValueError, match=controller_message):
+            _controller_promote(monkeypatch, https_origin, manifest, base, tmp_path / f'promote-{fault}',
+                                pinned=digest)
+        assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
+        assert (dict(r2_server.store), body_file.read_bytes()) == before
         for step in jobs['controller-promote']['steps']:
             if 'run' not in step:
                 continue

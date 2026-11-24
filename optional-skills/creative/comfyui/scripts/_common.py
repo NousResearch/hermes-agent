@@ -551,9 +551,9 @@ if HAS_REQUESTS:
         critical when ComfyUI Cloud's `/api/view` redirects to a signed S3 URL.
         """
 
-        def __init__(self, trace: _Attempt):
+        def __init__(self, trace: _Attempt | None = None):
             super().__init__()
-            self.trace = trace
+            self.trace = trace or _Attempt()
 
         def rebuild_auth(self, prepared_request, response):  # type: ignore[override]
             self.trace.redirected = True

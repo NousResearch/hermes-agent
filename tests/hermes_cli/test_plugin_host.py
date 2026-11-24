@@ -769,31 +769,73 @@ def test_a_host_started_inside_the_launch_profiles_bound_scope_takes_its_launche
         plugins_mod._reset_plugin_managers_for_tests()
 
 
-@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
-def test_a_lent_launch_scope_keeps_the_callers_task_local_multiplexing_for_a_missing_launcher_value(
-        tmp_path, monkeypatch):
-    """A launch-profile body under task-local multiplexing (the desktop cron ticker) never reads a name its scope
-    lacks from the live process env, which another profile's task may have written. The launcher it lends its
-    scope to leaves such a name unresolved too, as the body would."""
-    from agent import secret_scope as ss
-    from tui_gateway import server
-
+def _tagging_launch_host(tmp_path, monkeypatch, dotenv: str):
+    """The launch profile's host with a ``[runner, ${RUNNER_TAG}]`` launcher whose runner records its tag, the home's
+    ``.env`` set to *dotenv*. Returns the host, the tags file and the home."""
     tags, runner = tmp_path / "tags", tmp_path / "runner"
     runner.write_text(f'#!/bin/sh\necho "$1" >> "{tags}"\nshift\nexec "$@"\n', encoding="utf-8")
     runner.chmod(0o755)
     home = _home_with_plugins(tmp_path, monkeypatch, {})
     (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
         "enabled": [], "isolation": "host", "host": {"launcher": [str(runner), "${RUNNER_TAG}"]}}}), encoding="utf-8")
-    monkeypatch.delenv("RUNNER_TAG", raising=False)
+    (home / ".env").write_text(dotenv, encoding="utf-8")
     plugins_mod._reset_plugin_managers_for_tests()
-    host = plugins_mod.get_plugin_manager()._plugin_host()
+    return plugins_mod.get_plugin_manager()._plugin_host(), tags, home
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+@pytest.mark.parametrize("dotenv, expected", [
+    ("", "${RUNNER_TAG}"),  # a name the launch scope lacks stays unresolved
+    ("RUNNER_TAG=${RUNNER_OVERRIDE:-from-the-env-file}\n", "from-the-env-file"),  # a template keeps its default
+], ids=["missing_name", "env_file_template"])
+def test_a_launch_body_under_task_local_multiplexing_gives_its_launcher_no_value_written_to_the_live_env_since(
+        tmp_path, monkeypatch, dotenv, expected):
+    """A launch-profile body under task-local multiplexing (the desktop cron ticker) never reads a value from the
+    live process env, which another profile's task may have written since: a name its scope lacks stays
+    unresolved, and a ``.env`` template resolves against the launch env frozen when multiplexing began. The
+    launcher of a host it starts reads its values the same way."""
+    from agent import secret_scope as ss
+    from tui_gateway import server
+
+    for name in ("RUNNER_TAG", "RUNNER_OVERRIDE"):
+        monkeypatch.delenv(name, raising=False)
+    host, tags, _ = _tagging_launch_host(tmp_path, monkeypatch, dotenv)
     context_token = ss.set_multiplex_context(True)
     try:
         with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
-            monkeypatch.setenv("RUNNER_TAG", "written-after-the-scope-was-bound")
-            assert ss.get_secret("RUNNER_TAG") is None
+            for name in ("RUNNER_TAG", "RUNNER_OVERRIDE"):
+                monkeypatch.setenv(name, "written-after-the-scope-was-bound")
+            assert ss.get_secret("RUNNER_TAG") == (expected if dotenv else None)
             host.ensure_started()
-        assert tags.read_text(encoding="utf-8").split() == ["${RUNNER_TAG}"]
+        assert tags.read_text(encoding="utf-8").split() == [expected]
+    finally:
+        host.shutdown()
+        ss.reset_multiplex_context(context_token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_launch_launchers_env_file_template_resolves_as_the_process_loaded_the_file(tmp_path, monkeypatch):
+    """Under multiplexing the launch profile's launcher resolves its ``.env`` templates against the frozen launch
+    env with the process's own dotenv output peeled back, as the process loaded the file and the body reads it: a
+    line naming a key the file only sets later takes its default, not that later value."""
+    from agent import secret_scope as ss
+    from hermes_cli import env_loader
+    from tui_gateway import server
+
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    for name in ("RUNNER_TAG", "RUNNER_BASE"):
+        monkeypatch.setenv(name, "registered-for-restore")
+        monkeypatch.delenv(name)
+    host, tags, home = _tagging_launch_host(tmp_path, monkeypatch, "RUNNER_TAG=${RUNNER_BASE:-unset}/tag\nRUNNER_BASE=/opt\n")
+    env_loader.load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+    assert os.environ["RUNNER_TAG"] == "unset/tag"
+    context_token = ss.set_multiplex_context(True)
+    try:
+        with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+            assert ss.get_secret("RUNNER_TAG") == "unset/tag"
+            host.ensure_started()
+        assert tags.read_text(encoding="utf-8").split() == ["unset/tag"]
     finally:
         host.shutdown()
         ss.reset_multiplex_context(context_token)

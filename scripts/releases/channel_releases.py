@@ -468,8 +468,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("role", choices=("canary",),
                         help="Protected release policy, not a channel name. Stable publication runs only "
-                             "through the Stable Release Publication sequencer (python -m "
-                             "scripts.releases.sequencer), which checks the final release receipt")
+                             "through the Stable Release Publication workflow, which holds the "
+                             "stable-release lock and checks the final release receipt")
 
     parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)

@@ -67,11 +67,11 @@ import { TreeNode } from './tree-node'
 const SASH_KEY_STEP_PX = 16
 const SASH_KEY_STEP_LARGE_PX = 64
 
-/** The single group id a subtree resolves to, or null when it holds several
- *  zones — the sash can only collapse a boundary that IS exactly one zone. */
 /** A Browser tab's tile: main by placement, docked beside the main column. */
 const isPreviewTile = (id: string) => id.startsWith(`${PREVIEW_TILE_PREFIX}:`)
 
+/** The single group id a subtree resolves to, or null when it holds several
+ *  zones — the sash can only collapse a boundary that IS exactly one zone. */
 function groupIdOf(node: LayoutNode): null | string {
   if (node.type === 'group') {
     return node.id

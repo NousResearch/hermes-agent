@@ -561,6 +561,11 @@
   & :is([data-slot='pane-tab-close'] > button, [data-slot='zone-minimize']) {
     color: var(--portal-text-secondary);
   }
+
+  /* The resting ink above outranks the buttons' own hover utility: say it again here. */
+  & :is([data-slot='pane-tab-close'] > button, [data-slot='zone-minimize']):is(:hover, :focus-visible) {
+    color: var(--ui-text-primary);
+  }
 }
 
 /* Kept-alive pane hosts (terminal, browser) float over their zone's body: the outer corners too. */

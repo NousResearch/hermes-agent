@@ -369,6 +369,54 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script; SIGKILL
+def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_the_restarted_host(
+        tmp_path, monkeypatch):
+    """A rename leaves the kept manager holding a name that leads nowhere. The host restarted after the profile
+    was marked under its new name must find that marker, so the profile's own launcher stays unused."""
+    import signal
+
+    from hermes_cli import profiles_run_elsewhere as pre
+    from tests.waiting import wait_until
+    from tools.registry import registry
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {"whereprobe": (
+        "import json, os\ndef register(ctx):\n"
+        "    ctx.register_tool(name='whereprobe_pid', toolset='whereprobe', schema={'name': 'whereprobe_pid',\n"
+        "        'description': 'd', 'parameters': {'type': 'object', 'properties': {}}},\n"
+        "        handler=lambda args, **kw: json.dumps({'pid': os.getpid()}))\n")})
+    (target / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["whereprobe"], "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    root = tmp_path / "root"
+    (root / "profiles").mkdir(parents=True)
+    (root / "profiles" / "ops").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+
+    def served():
+        out = registry.dispatch("whereprobe_pid", {}, scope=manager.scope_key)
+        return out if '"pid"' in out else None
+
+    try:
+        first = json.loads(served())["pid"]
+        assert ran.read_text(encoding="utf-8").count("ran") == 1  # unmarked: its launcher is the profile's own
+        (root / "profiles" / "ops").rename(root / "profiles" / "ops2")
+        pre.mark_profile_run_elsewhere("ops2", "sandbox-plugin", root=root)
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops2"))
+        os.kill(first, signal.SIGKILL)
+        assert json.loads(wait_until(served, timeout=15, what="the restarted host"))["pid"] != first
+        assert ran.read_text(encoding="utf-8").count("ran") == 1
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink
 def test_a_host_whose_new_home_failed_to_bind_binds_it_on_the_next_start(tmp_path, monkeypatch):
     """A start that moves the host to the manager's current home and fails to build that home's context leaves
@@ -474,11 +522,13 @@ def test_a_recall_matched_by_the_recorded_repo_refuses_a_linked_profiles_plugin(
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
-def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugins_back_after_a_crash(
-        tmp_path, monkeypatch):
-    """A process keeps one manager per directory, so a linked profile renamed while it runs keeps the manager
-    it was opened by under the old name. The host restarted after a crash must find the profile, not the
-    link that is gone, and a reloaded plugin is told the profile of the home that host runs under."""
+@pytest.mark.parametrize("change", ["renamed", "removed"])
+def test_a_linked_profile_whose_link_moves_while_its_manager_is_kept_gets_its_host_plugins_back_after_a_crash(
+        change, tmp_path, monkeypatch):
+    """A process keeps one manager per directory, so a linked profile renamed (or its link removed) while it
+    runs keeps the manager it was opened by under the old name. The host restarted after a crash runs under the
+    profile's new name, or the directory when no name leads there, never the link that is gone; a reloaded
+    plugin is told the profile of the home that host runs under."""
     import signal
 
     from hermes_cli.plugins_loader import _plugin_home_scope
@@ -500,9 +550,14 @@ def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugin
     manager.discover_and_load()
     try:
         first = json.loads(registry.dispatch("whereprobe_pid", {}, scope=manager.scope_key))["pid"]
-        (profiles / "ops").rename(profiles / "ops2")
-        monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
+        if change == "renamed":
+            (profiles / "ops").rename(profiles / "ops2")
+            monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
+        else:
+            (profiles / "ops").unlink()
+            monkeypatch.setenv("HERMES_HOME", str(target))
         assert plugins_mod.get_plugin_manager() is manager
+        assert manager.owner_home == {"renamed": profiles / "ops2", "removed": manager.home_path}[change]
         os.kill(first, signal.SIGKILL)
 
         def served():

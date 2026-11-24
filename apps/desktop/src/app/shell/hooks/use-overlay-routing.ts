@@ -8,8 +8,10 @@ import {
   COMMAND_CENTER_ROUTE,
   isOverlayView,
   NEW_CHAT_ROUTE,
+  ROUTES_AREA,
   STARMAP_ROUTE
 } from '@/app/routes'
+import { useContributions } from '@/contrib/react/use-contributions'
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
 
@@ -17,7 +19,10 @@ export function useOverlayRouting() {
   const location = useLocation()
   const navigate = useNavigate()
 
-  const currentView = appViewForPath(location.pathname)
+  // The snapshot re-derives the view when a plugin route registers after boot
+  // (a reload or deep link on its page), not only when the path changes.
+  const routeSnapshot = useContributions(ROUTES_AREA)
+  const currentView = appViewForPath(location.pathname, routeSnapshot)
   const settingsOpen = currentView === 'settings'
   const commandCenterOpen = currentView === 'command-center'
   const agentsOpen = currentView === 'agents'

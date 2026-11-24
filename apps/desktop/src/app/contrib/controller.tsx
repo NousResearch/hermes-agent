@@ -34,6 +34,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import { $diskPluginsScanPending } from '@/contrib/disk-scan'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
@@ -116,7 +117,7 @@ import { usePresenceRoute } from '../hooks/use-presence-route'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
-import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
+import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA, workspaceHeaderVetoed } from '../routes'
 import { Butterbar } from '../shell/butterbar'
 import { TermsButterbar } from '../shell/terms-butterbar'
 
@@ -517,8 +518,9 @@ const syncWorkspaceTitle = () => {
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.
       tabTitle: stored ? undefined : () => <SessionDraftTitle scope={selected} />,
-      // Pages aren't tab-able: the main zone's bar stands down while one shows.
-      headerVeto: $workspaceIsPage.get(),
+      // Pages aren't tab-able: the main zone's bar stands down while one shows,
+      // and while the route may still be a plugin page that has not registered.
+      headerVeto: workspaceHeaderVetoed(),
       // Page-owned controls take the vetoed tab row. Deliberately NOT the
       // `titleBar.center` slot: that one stays mounted in the titlebar on every
       // route so plugin components (and their effects) survive navigation.
@@ -547,6 +549,7 @@ $messagingSessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
+$diskPluginsScanPending.listen(syncWorkspaceTitle)
 registry.subscribeArea(WORKSPACE_PAGE_HEADER_AREA, syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the

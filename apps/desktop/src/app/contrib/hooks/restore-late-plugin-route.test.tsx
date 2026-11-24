@@ -8,8 +8,8 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { $diskPluginsScanPending } from '@/contrib/disk-scan'
 import { registry } from '@/contrib/registry'
-import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import {
   _resetLegacyDiscardForTests,
   getRememberedRoute,

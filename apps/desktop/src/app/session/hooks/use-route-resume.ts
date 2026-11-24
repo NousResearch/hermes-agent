@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { $diskPluginsScanPending } from '@/contrib/disk-scan'
 import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
@@ -93,7 +95,7 @@ export function useRouteResume({
   activeSessionId,
   activeSessionIdRef,
   creatingSessionRef,
-  currentView,
+  currentView: routeView,
   freshDraftReady,
   gatewayState,
   locationPathname,
@@ -107,6 +109,13 @@ export function useRouteResume({
   selectedStoredSessionIdRef,
   startFreshSessionDraft
 }: RouteResumeOptions) {
+  // A plugin page's path reads as a session id until its route registers, and
+  // disk plugins register async. Hold the routed resume through the disk
+  // door's first scan, as the remembered-route restore does
+  // (use-desktop-integrations): resuming `/html-gallery` as a session misses, and
+  // the miss replaces a reloaded or deep-linked plugin page with a fresh draft.
+  const diskPluginsScanPending = useStore($diskPluginsScanPending)
+  const currentView = routedSessionId && diskPluginsScanPending ? 'plugin-scan' : routeView
   const lastPathnameRef = useRef<string | null>(null)
   const seenGatewayStateRef = useRef(false)
   const wasGatewayOpenRef = useRef(false)

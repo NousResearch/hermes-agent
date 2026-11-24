@@ -2,6 +2,7 @@ import { atom, onMount } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import { $diskPluginsScanPending } from '@/contrib/disk-scan'
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import type { InterfaceTier } from '@/store/interface-mode'
@@ -116,8 +117,8 @@ export function contributedRoutes(
     .filter(route => Boolean(route.path.startsWith('/') && route.render) && !RESERVED_PATHS.has(route.path))
 }
 
-function isContributedPath(pathname: string): boolean {
-  return contributedRoutes().some(route => route.path === pathname)
+function isContributedPath(pathname: string, contributions?: readonly Contribution[]): boolean {
+  return contributedRoutes(contributions).some(route => route.path === pathname)
 }
 
 // ── Contributed sidebar nav — the `sidebar.nav` registry area ────────────────
@@ -201,10 +202,14 @@ export function isNewChatRoute(pathname: string): boolean {
   return routePathname(pathname) === NEW_CHAT_ROUTE
 }
 
-export function routeSessionId(pathname: string): string | null {
+/** The stored session id a one-segment route names, or null. A plugin page's
+ *  path reads as a session id until its route registers: React consumers pass
+ *  their `useContributions(ROUTES_AREA)` snapshot so a late registration
+ *  re-derives it (see contributedRoutes). */
+export function routeSessionId(pathname: string, contributions?: readonly Contribution[]): string | null {
   const path = routePathname(pathname)
 
-  if (!path.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(path) || isContributedPath(path)) {
+  if (!path.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(path) || isContributedPath(path, contributions)) {
     return null
   }
 
@@ -234,14 +239,14 @@ export function sessionRoute(sessionId: string): string {
   return `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
 }
 
-export function appViewForPath(pathname: string): AppView {
+export function appViewForPath(pathname: string, contributions?: readonly Contribution[]): AppView {
   const path = routePathname(pathname)
 
-  if (isNewChatRoute(path) || routeSessionId(path)) {
+  if (isNewChatRoute(path) || routeSessionId(path, contributions)) {
     return 'chat'
   }
 
-  if (isContributedPath(path)) {
+  if (isContributedPath(path, contributions)) {
     return 'extension'
   }
 
@@ -251,8 +256,8 @@ export function appViewForPath(pathname: string): AppView {
 /** Does `to` land on a full page rendered INSIDE the workspace pane
  *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
  *  they float over whatever the workspace is already showing. */
-export function isWorkspacePageRoute(to: string): boolean {
-  const view = appViewForPath(to)
+export function isWorkspacePageRoute(to: string, contributions?: readonly Contribution[]): boolean {
+  const view = appViewForPath(to, contributions)
 
   return view !== 'chat' && !isOverlayView(view)
 }
@@ -263,6 +268,17 @@ export function isWorkspacePageRoute(to: string): boolean {
  *  it as `headerVeto` so the zone tab bar stands down on pages. Overlays
  *  (settings/…) don't count — the chat stays beneath them. */
 export const $workspaceIsPage = atom(false)
+
+/** Whether the main zone's tab bar stands down: on a page, and while a
+ *  one-segment route may still be a plugin page that has not registered yet
+ *  (until the disk door's first scan settles). A reload or deep link on a
+ *  plugin page then never shows a "New session" tab over it first; a real
+ *  session route gets its bar back once the scan settles. */
+export function workspaceHeaderVetoed(
+  pathname: string = typeof window === 'undefined' ? '' : window.location.hash.replace(/^#/, '')
+): boolean {
+  return $workspaceIsPage.get() || ($diskPluginsScanPending.get() && Boolean(routeSessionId(pathname)))
+}
 
 /** Page-owned controls (kanban's board switcher) projected into the workspace
  *  panel's tab-header space while `$workspaceIsPage` holds — the page's title
@@ -288,8 +304,8 @@ function revealWorkspacePane(): void {
  * in: sidebar, keybinds, command palette, Command Center, contributed
  * statusbar/titlebar `to` targets, back/forward, and cold-start restore.
  */
-export function syncWorkspaceRoute(pathname: string): void {
-  const isPage = isWorkspacePageRoute(pathname)
+export function syncWorkspaceRoute(pathname: string, contributions?: readonly Contribution[]): void {
+  const isPage = isWorkspacePageRoute(pathname, contributions)
 
   if (isPage !== $workspaceIsPage.get()) {
     $workspaceIsPage.set(isPage)

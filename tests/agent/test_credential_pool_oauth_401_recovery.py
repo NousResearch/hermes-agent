@@ -375,3 +375,21 @@ class TestRefreshFailedEntryOutcome:
         with pytest.raises(OSError):
             pool._refresh_entry_impl(row, force=True)
         assert recovered == ["cx-rt-1"]
+
+    def test_a_forced_nous_refresh_adopts_a_key_a_peer_rotated(self, monkeypatch):
+        row = PooledCredential(provider="nous", id="nx", label="nx", auth_type=AUTH_TYPE_OAUTH, priority=0,
+                               source="manual:device_code", access_token="nx-at-0", refresh_token="nx-rt-0",
+                               agent_key="nx-ak-0")
+        pool = CredentialPool("nous", [row])
+        peer = replace(row, access_token="nx-at-1", refresh_token="nx-rt-1", agent_key="nx-ak-1")
+        refreshes = []
+        # The runtime key is a NAS invoke JWT; the fixture keys stand in for usable ones.
+        monkeypatch.setattr(PooledCredential, "runtime_api_key", property(lambda e: e.agent_key or ""))
+        monkeypatch.setattr(pool, "_sync_nous_entry_from_auth_store", lambda _e: peer)
+        monkeypatch.setattr("agent.credential_pool.auth_mod.resolve_nous_runtime_credentials",
+                            lambda **kw: refreshes.append(kw))
+
+        adopted = pool._refresh_entry_impl(row, force=True, failed_key=row.runtime_api_key)
+
+        assert adopted is peer
+        assert refreshes == []

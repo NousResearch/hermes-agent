@@ -1668,53 +1668,50 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             return "plugin"
         return "nous" if self.provider == "nous" else None
 
-    # A step receives ``rows`` (the failed row first) and appends any synced row it moves to, so a
-    # failure recovers against the pair it POSTed, in the one handler in ``_refresh_entry_impl``.
-    def _refresh_via_anthropic(self, rows: list[PooledCredential], force: bool, failed_key: Optional[str]):
-        return self._refresh_anthropic(rows[-1])
+    def _sync_nous_or_adopt(self, entry: PooledCredential, force: bool, sent: Optional[str]) -> PooledCredential:
+        synced = self._sync_nous_entry_from_auth_store(entry)
+        # A peer persisted a DIFFERENT usable key: adopt it without re-spending the refresh token.
+        if synced is not entry and force and synced.runtime_api_key and synced.runtime_api_key != sent:
+            logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", synced.id)
+            raise _RefreshDone(synced)
+        return synced
 
-    def _refresh_via_tokens(self, rows: list[PooledCredential], force: bool, failed_key: Optional[str]):
-        rows.append(self._sync_entry_from_auth_store(rows[-1]))
-        return self._post_tokens_refresh(rows[-1])
+    def _post_nous_refresh(self, entry: PooledCredential, force: bool, sent: Optional[str]) -> PooledCredential:
+        auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=sent or None)
+        return self._sync_nous_entry_from_auth_store(entry)
 
-    def _refresh_via_plugin(self, rows: list[PooledCredential], force: bool, failed_key: Optional[str]):
-        rotated = plugin_refresh_hook(self.provider)(rows[-1])
+    def _post_plugin_refresh(self, entry: PooledCredential, force: bool, sent: Optional[str]) -> PooledCredential:
+        rotated = plugin_refresh_hook(self.provider)(entry)
         if not rotated:
             # ``None``/empty = the plugin could not rotate: bench like a failed refresh POST, never
             # report the stale row as refreshed (the loop would replay the dead bearer).
             raise RuntimeError("provider refresh_credential returned no rotated fields")
-        return apply_plugin_refresh_result(rows[-1], rotated)
+        return apply_plugin_refresh_result(entry, rotated)
 
-    def _refresh_via_nous(self, rows: list[PooledCredential], force: bool, failed_key: Optional[str]):
-        entry = rows[-1]
-        # The bearer the request SENT, not this row's (maybe older) copy: adopting it replays the 401.
-        stale_key = failed_key or entry.runtime_api_key or entry.agent_key or entry.access_token
-        synced = self._sync_nous_entry_from_auth_store(entry)
-        if synced is not entry:
-            rows.append(synced)
-            # A peer persisted a DIFFERENT usable key: adopt it without re-spending the refresh token.
-            if force and synced.runtime_api_key and synced.runtime_api_key != stale_key:
-                logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", synced.id)
-                raise _RefreshDone(synced)
-        auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=stale_key or None)
-        return self._sync_nous_entry_from_auth_store(rows[-1])
-
-    _REFRESH_VIA = {"anthropic": _refresh_via_anthropic, "tokens": _refresh_via_tokens,
-                    "plugin": _refresh_via_plugin, "nous": _refresh_via_nous}
+    # path -> (sync, post). Sync adopts fresher stored tokens BEFORE the refresh_token is spent.
+    _REFRESH_VIA = {
+        "anthropic": (lambda _pool, e, _force, _sent: e, lambda pool, e, _force, _sent: pool._refresh_anthropic(e)),
+        "tokens": (lambda pool, e, _force, _sent: pool._sync_entry_from_auth_store(e),
+                   lambda pool, e, _force, _sent: pool._post_tokens_refresh(e)),
+        "plugin": (lambda _pool, e, _force, _sent: e, _post_plugin_refresh),
+        "nous": (_sync_nous_or_adopt, _post_nous_refresh),
+    }
 
     def _refresh_entry_impl(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None):
         path = self._refresh_path()
         if path is None:
             return entry
-        rows = [entry]
+        sync, post = self._REFRESH_VIA[path]
+        # The bearer the request SENT, not this row's (maybe older) copy: adopting it replays the 401.
+        sent = failed_key or entry.runtime_api_key or entry.agent_key or entry.access_token
         try:
-            updated = self._REFRESH_VIA[path](self, rows, force, failed_key)
+            entry = sync(self, entry, force, sent)  # a failure below recovers against the pair it POSTed
+            updated = post(self, entry, force, sent)
         except _RefreshDone as done:
             return done.result
         except Exception as exc:
-            logger.debug("Credential refresh failed for %s/%s: %s", self.provider, rows[-1].id, exc)
-            return self._recover_failed_refresh(rows[-1], exc)
-        entry = rows[-1]
+            logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+            return self._recover_failed_refresh(entry, exc)
 
         updated = replace(updated, **_MARK_OK)
         self._replace_entry(entry, updated)

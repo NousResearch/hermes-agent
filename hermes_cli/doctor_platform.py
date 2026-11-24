@@ -18,6 +18,9 @@ from hermes_cli.doctor_report import (
 )
 from hermes_constants import is_termux as _is_termux
 from hermes_cli._startup_fast import project_root_str
+from hermes_cli.steward import is_bundled_payload, read_install_stamp
+from hermes_platform.resolver import LookupContext, locate_command
+from pm.environments import cli_command_name, inherited_path, payload_command_dir
 
 
 def _python_repair_hint() -> str:
@@ -787,8 +790,6 @@ def _display_rc_path(rc_path: Path) -> str:
 def _check_link_dir_on_path(
     link_dir: Path, display: str, cmd_name: str, entry_point: Path, termux: bool, f: Finding
 ) -> None:
-    from hermes_platform.resolver import LookupContext, locate_command
-    from pm.environments import inherited_path
 
     # Startup put Hermes's own command dirs first on this PATH; a new terminal won't have them.
     terminal_path = inherited_path()
@@ -818,8 +819,6 @@ def _check_link_dir_on_path(
 
 
 def _bundled_launcher_target(project_root: Path) -> Path:
-    from hermes_cli.steward import read_install_stamp
-    from pm.environments import cli_command_name, payload_command_dir
 
     root = Path(project_root).resolve()
     payload_root = root.parent
@@ -875,7 +874,6 @@ def _replace_symlink(link: Path, target: Path) -> None:
 
 
 def _resolve_command_entry_point(project_root: Path, f: Finding) -> tuple[Path, str, bool, bool] | None:
-    from hermes_cli.steward import is_bundled_payload
 
     if is_bundled_payload(project_root):
         try:

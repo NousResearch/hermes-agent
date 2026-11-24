@@ -149,34 +149,55 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
         _read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}), own_platform="homeassistant")
 
 
-def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
-    """What made core run Yuanbao for *home*. The adapter: unless the merged gateway config block says
-    ``enabled: false`` (core never re-enabled an explicitly disabled platform), the platform on there
-    (:func:`platform_configured_on`) or its credential gate passing as core's ``_is_connected`` read it,
-    per field: App ID from the block's ``app_id`` (``extra`` or top level), else ``YUANBAO_APP_ID``, else
-    the legacy ``YUANBAO_APP_KEY``; App Secret from the block's ``app_secret``, else ``YUANBAO_APP_SECRET``
-    (env read through :func:`_home_env`; the process env too for the launch home with *process_env*). The
-    tools: the ``yuanbao`` / ``hermes-yuanbao`` toolset selected for another platform or in the top-level
-    ``toolsets`` list. The shipped ``yuanbao: [hermes-yuanbao]`` platform_toolsets row is not use: it scoped
-    Yuanbao's own sessions, which need the platform on. Nothing counts when ``plugins.disabled`` names
-    ``platforms/yuanbao`` or core's manifest name ``yuanbao-platform``: core's loader never ran the adapter
-    there. A bare ``yuanbao`` there did not stop core's adapter, so it is still use (the notice says it
-    now turns the plugin off)."""
-    if _plugins_listed(home, ("platforms/yuanbao", "yuanbao-platform"))[1]:
-        return False
-    block = _merged_platform_block(home, "yuanbao")
-    if block is not None and "enabled" in block and not _platform_config(block).enabled:
-        return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
-    if platform_configured_on(home, "yuanbao"):
-        return True
-    extra = _platform_config(block).extra if block is not None else {}
+# A credential field: (block key, env name, legacy env names...). A credential set is a tuple of fields that
+# must ALL be present; a platform with several connection modes passes one set per mode.
+CredField = tuple[str, ...]
 
-    def field(key: str, *env_names: str) -> bool:
-        return bool(str(extra.get(key) or "").strip()) or any(
-            _home_env(home, env_name, process_env=process_env) for env_name in env_names)
-    if field("app_id", "YUANBAO_APP_ID", "YUANBAO_APP_KEY") and field("app_secret", "YUANBAO_APP_SECRET"):
-        return True
-    return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
+
+def platform_in_use(platform: str, *, plugin_keys: tuple[str, ...] = (),
+                    cred_sets: tuple[tuple[CredField, ...], ...] = (),
+                    toolsets: tuple[str, ...] = ()) -> Callable[..., bool]:
+    """The ``in_use`` predicate for a bundled platform leaving core: what made core run *platform* for a home.
+
+    The adapter: unless the merged gateway config block says ``enabled: false`` (core never re-enabled an
+    explicitly disabled platform), the platform on there (:func:`platform_configured_on`) or one of
+    *cred_sets* passing as core's ``_is_connected`` read it, per field: the block's key (``extra`` or top
+    level), else any of the field's env names (read through :func:`_home_env`; the process env too for the
+    launch home with *process_env*). The tools: a toolset in *toolsets* selected for another platform or in
+    the top-level ``toolsets`` list; the platform's own ``platform_toolsets`` row is not use (it scoped the
+    platform's own sessions, which need the platform on). Nothing counts when ``plugins.disabled`` names one
+    of *plugin_keys* (``platforms/<x>``, core's manifest name): core's loader never ran the adapter there."""
+    names = frozenset(toolsets)
+
+    def tools_selected(home: Path) -> bool:
+        return bool(names) and _toolset_listed(_read_config(home), names, own_platform=platform)
+
+    def in_use(home: Path, *, process_env: bool = False) -> bool:
+        if plugin_keys and _plugins_listed(home, plugin_keys)[1]:
+            return False
+        block = _merged_platform_block(home, platform)
+        if block is not None and "enabled" in block and not _platform_config(block).enabled:
+            return tools_selected(home)
+        if platform_configured_on(home, platform):
+            return True
+        extra = _platform_config(block).extra if block is not None else {}
+
+        def present(field: CredField) -> bool:
+            key, *env_names = field
+            return bool(str(extra.get(key) or "").strip()) or any(
+                _home_env(home, env_name, process_env=process_env) for env_name in env_names)
+        if any(all(present(field) for field in fields) for fields in cred_sets):
+            return True
+        return tools_selected(home)
+    return in_use
+
+
+# Yuanbao: a bare ``yuanbao`` in plugins.disabled did not stop core's adapter, so it is still use (the notice
+# says it now turns the plugin off).
+yuanbao_in_use = platform_in_use(
+    "yuanbao", plugin_keys=("platforms/yuanbao", "yuanbao-platform"),
+    cred_sets=((("app_id", "YUANBAO_APP_ID", "YUANBAO_APP_KEY"), ("app_secret", "YUANBAO_APP_SECRET")),),
+    toolsets=("yuanbao", "hermes-yuanbao"))
 
 
 # ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports

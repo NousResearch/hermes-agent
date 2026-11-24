@@ -1,6 +1,6 @@
 name: exaone-provider
 repo: https://github.com/ykoh42/hermes-exaone-provider
-sha: b9fcdfb9a20a41121eddfd1285ae45fcdbe346b9
+sha: 7b88ddf9943a053f0bde9e1d031a2e49aa2f11fe
 title: "EXAONE API Platform"
 description: "Community provider for K-EXAONE 2.5 via the EXAONE API Platform. Disclosure — prompts, tool schemas, and EXAONE_API_KEY are sent to api.exaone.ai, or to the endpoint configured with EXAONE_BASE_URL."
 maintainer: ykoh42

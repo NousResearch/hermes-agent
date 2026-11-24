@@ -133,13 +133,14 @@ class TestForwardRelayFrontedRun:
         assert sent["json"] == {"prompt": "focus on EU numbers"}
 
     def test_paused_job_is_not_forwarded(self):
-        """The gateway's run route resumes the job, so a paused one must hit the local refusal."""
+        """The gateway's run route resumes the job and a local run has no relay sender: refuse."""
         paused = {"id": "j1", "enabled": False, "state": "paused", "paused_at": "2026-11-24T00:00:00"}
         with patch.object(
             cronjob_tools, "_relay_fronted_delivery_platforms", return_value={"discord"}
         ), patch("httpx.post") as post:
-            assert cronjob_tools._forward_relay_fronted_run(paused) is None
+            out = json.loads(cronjob_tools._forward_relay_fronted_run(paused))
         post.assert_not_called()
+        assert out == {"success": False, "error": "Job is paused/disabled; resume it before running."}
 
 
 

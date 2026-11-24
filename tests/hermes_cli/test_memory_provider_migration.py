@@ -357,3 +357,50 @@ def test_maintained_provider_install_line_carries_no_labs_notice(home, monkeypat
     said: list[str] = []
     mig.migrate_home(home, install=lambda n: (home / "plugins" / n).mkdir(parents=True) or {"ok": True}, say=said.append)
     assert len(said) == 1 and "Hermes Labs" not in said[0]
+
+
+def _labs_profile(tmp_path, monkeypatch, name="byterover"):
+    """A named profile configured for a Labs provider, seen from a process launched on another home."""
+    launch = tmp_path / "launch"
+    work = launch / "profiles" / "work"
+    work.mkdir(parents=True)
+    (work / "config.yaml").write_text(f"memory:\n  provider: {name}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    return work
+
+
+def test_labs_provider_messages_aim_every_command_at_the_affected_profile(tmp_path, monkeypatch):
+    """A line printed by the `work` profile's gateway or Desktop is pasted into a shell whose default
+    profile is another one: every command it names must carry `-p work`, on success and on failure."""
+    work = _labs_profile(tmp_path, monkeypatch)
+    said: list[str] = []
+    assert mig.migrate_home(work, install=lambda n: {"ok": False, "error": "offline"}, say=said.append) is None
+    assert mig.migrate_home(work, install=lambda n: (work / "plugins" / n).mkdir(parents=True) or {"ok": True},
+                            say=said.append) == "byterover"
+    failed, installed = said
+    assert "`hermes -p work plugins install byterover`" in failed and "not supported" in failed
+    assert "`hermes -p work memory status`" in installed and "not supported" in installed
+
+
+@pytest.mark.parametrize("allow_lazy_installs", [True, False])
+def test_labs_notice_reaches_startup_whether_or_not_lazy_installs_are_allowed(tmp_path, monkeypatch,
+                                                                             allow_lazy_installs):
+    """With lazy installs off Hermes fetches nothing, but the line telling the user to install the
+    Labs provider themselves must still say it is unsupported, and aim at the profile that printed it."""
+    from pm import install as pm_install
+
+    work = _labs_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: allow_lazy_installs)
+    monkeypatch.setattr(mig, "_install_into", lambda home, *, consent=None: lambda n: {"ok": False, "error": "offline"})
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    said: list[str] = []
+    token = set_hermes_home_override(work)
+    try:
+        assert mig.recover_at_startup("byterover", say=said.append) is False
+    finally:
+        reset_hermes_home_override(token)
+    assert len(said) == 1
+    assert "ByteRover is now a Hermes Labs plugin: built by Nous Research, not supported" in said[0]
+    assert "`hermes -p work plugins install byterover`" in said[0]

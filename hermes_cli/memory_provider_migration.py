@@ -143,21 +143,25 @@ def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str
         return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "
-            f"Install it with `hermes plugins install <source>` or change memory.provider.")
+            f"Install it with `{_profile_command('plugins install <source>', home)}` or change memory.provider.")
         return None
     return name
 
 
 def _install_command(name: str, home: Path) -> str:
-    """The exact command that installs *name* into *home*. ``-p`` is dropped only for the default
-    home while no sticky profile is set: a bare command run from a shell targets the sticky
-    profile, never the home of the agent (Desktop, gateway, ``hermes -p``) that printed it."""
+    return _profile_command(f"plugins install {name}", home)
+
+
+def _profile_command(command: str, home: Path) -> str:
+    """``hermes <command>`` aimed at *home*. ``-p`` is dropped only for the default home while no
+    sticky profile is set: a bare command run from a shell targets the sticky profile, never the
+    home of the agent (Desktop, gateway, ``hermes -p``) that printed it."""
     from hermes_cli.profiles import get_active_profile
     from hermes_constants import profile_name_for_home
     profile = profile_name_for_home(home)
     if profile is None or (profile == "default" and get_active_profile() == "default"):
-        return f"hermes plugins install {name}"
-    return f"hermes -p {profile} plugins install {name}"
+        return f"hermes {command}"
+    return f"hermes -p {profile} {command}"
 
 
 def kept_off_sentence(name: str, home: Path) -> str:
@@ -180,11 +184,11 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
     if result.get("ok"):
         say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the catalog "
             f"(memory.provider and your stored memories are unchanged; check its settings with "
-            f"`hermes memory status`)." + _LABS_NOTICES.get(name, ""))
+            f"`{_profile_command('memory status', home)}`)." + _LABS_NOTICES.get(name, ""))
         return True
     error = str(result.get("error") or "unknown error").rstrip(". ")
     say(f"  ⚠ Memory provider '{name}' moved out of core and could not be installed automatically: "
-        f"{error}. Run `{_install_command(name, home)}`.")
+        f"{error}. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
     return False
 
 
@@ -322,7 +326,7 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
     if not lazy_installs_allowed():
         report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
                f"security.allow_lazy_installs is off, so Hermes did not fetch it: "
-               f"run `{_install_command(name, home)}`.")
+               f"run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
         return False
     # Agent init cannot answer a dependency prompt: under the CLI the prompt_toolkit input owns the
     # terminal (the question hangs the turn), elsewhere there is no terminal (the install is refused,

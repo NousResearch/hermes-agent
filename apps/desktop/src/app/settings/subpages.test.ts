@@ -154,17 +154,17 @@ describe('settings subpage routing', () => {
 
     afterEach(() => $shellChoice.set(null))
 
-    it('is Spacing in the redesign, found by that word', () => {
+    it('is Spacing in the redesign', () => {
       $shellChoice.set(true)
 
       expect(target().label).toBe('Spacing')
-      expect(target().keywords).toContain('spacing')
     })
 
-    it('is the session list density in classic', () => {
+    it('is the session list density in classic, which a search for "spacing" does not find', () => {
       $shellChoice.set(false)
 
       expect(target().label).toBe(TRANSLATIONS.en.settings.appearance.sessionDensityTitle)
+      expect([target().label, target().description, ...target().keywords].join(' ').toLowerCase()).not.toContain('spacing')
     })
   })
 

@@ -111,7 +111,7 @@ export const SETTINGS_MANIFEST = {
     // One id, two rows: classic's session list density, the redesign's Spacing.
     sessionDensity: {
       subpage: 'window-layout',
-      keywords: ['sidebar', 'sessions', 'compact', 'comfortable', 'density', 'spacing'],
+      keywords: ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
       copy: t => {
         const [label, description] = appearanceAdvancedCopy(getRuntimeI18nLocale()).density
 

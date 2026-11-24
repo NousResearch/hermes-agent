@@ -147,8 +147,8 @@ def _flag(value: Any, default: bool) -> bool:
 
 
 def _int_at_least(value: Any, default: int, minimum: int) -> int:
-    if isinstance(value, bool):  # YAML ``yes``/``no`` is not a count
-        return default
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        return default  # YAML ``yes``/``no``, ``.inf`` and fractions are not counts
     try:
         parsed = int(value)
     except (TypeError, ValueError):

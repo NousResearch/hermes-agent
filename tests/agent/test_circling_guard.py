@@ -187,4 +187,7 @@ class TestConfig:
         assert settings_from_config("not a mapping") == d
         assert settings_from_config({"window_units": True, "stale_ratio": 0}) == d
         assert RecoverySettings.from_mapping({"max_attempts": -1, "reasoning": "sometimes"}) == RecoverySettings()
+        for count in (float("inf"), float("nan"), 0.5):  # YAML .inf (raised OverflowError at agent build), .nan, a fraction
+            assert RecoverySettings.from_mapping({"max_attempts": count}) == RecoverySettings()
+            assert settings_from_config({"window_units": count}) == d
         assert RecoverySettings.from_mapping([1]) == RecoverySettings()

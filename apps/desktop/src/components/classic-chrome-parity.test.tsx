@@ -65,5 +65,5 @@ it('a classic narrow overlay keeps main’s width style', () => {
   const input = { chatSidebar: false, overlayWidth: '16rem', side: 'right' as const, titlebarHeight: 40, wcOverlap: null }
 
   expect(overlayStyle({ ...input, portal: false })).toEqual({ paddingTop: undefined, width: 'min(16rem, 85vw)' })
-  expect(overlayStyle({ ...input, portal: true })).toMatchObject({ maxWidth: '100%' })
+  expect(overlayStyle({ ...input, portal: true })).toMatchObject({ maxWidth: 'var(--portal-sheet-end-max-width, 100%)' })
 })

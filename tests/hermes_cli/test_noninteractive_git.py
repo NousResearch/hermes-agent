@@ -91,6 +91,8 @@ class TestNoninteractiveGitEnv:
         assert env["PAGER"] == "cat"
         assert env["GIT_EDITOR"] == "true"
         assert values["core.fsmonitor"] == "false"
+        # System config is blanked above, so Git for Windows' own core.fscache=true must be re-pinned.
+        assert values["core.fscache"] == "true"
         assert values["core.hooksPath"] == os.devnull
         assert values["core.editor"] == "true"
         assert values["sequence.editor"] == "true"

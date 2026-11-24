@@ -26,8 +26,13 @@ _COOLDOWN_ROW_SQL = (
 )
 
 
+# A worker run's own segment, however an older row records it: ``created_source`` is unset on a row from
+# before schema history 29 (nothing backfills it), and the peer stamp may have relabelled ``source``.
+_WORKER_PARENT_SQL = ("(COALESCE(parent.created_source, '') = 'subagent' OR COALESCE(parent.source, '') = 'subagent'"
+    f" OR COALESCE({_sql_json_extract('parent.model_config', '$._delegate_from')}, '') <> '')")
 # A chat's continuation is never a row its subagent created; a worker's own segments continue each other
 # (compression copies ``created_source`` from the parent, so a subagent parent's continuation is one too).
+_SUBAGENT_CHILD_CLAUSE = f"AND NOT (NOT {_WORKER_PARENT_SQL} AND {_DELEGATE_CHILD_SQL.format(a='child')})"
 _CHAIN_STEP_SQL = f"""
                     SELECT child.id
                     FROM sessions parent
@@ -38,8 +43,7 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
-                      AND NOT (COALESCE(parent.created_source, '') <> 'subagent'
-                               AND {_DELEGATE_CHILD_SQL.format(a='child')})
+                      {_SUBAGENT_CHILD_CLAUSE}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -51,6 +55,9 @@ _CHAIN_STEP_SQL = f"""
                       child.id DESC
                     LIMIT 1
                     """
+# A reader never migrates, so a store from before ``created_source`` lacks the column; none of its rows can
+# then be subagent-created without the ``_delegate_from`` marker the step already excludes.
+_CHAIN_STEP_SQL_WITHOUT_CREATED = _CHAIN_STEP_SQL.replace(_SUBAGENT_CHILD_CLAUSE, "")
 
 
 def _cooldown_row(exists: bool, cooldown_until, error) -> dict[str, Any]:
@@ -690,9 +697,13 @@ def get_compression_chain(holder: StoreHolder, session_id: str) -> list[str]:
     written, while a stale websocket later creates a sibling that passes it). Instead exclude
     branch/delegate/tool children and prefer children that continue the chain or are still live over
     stale closed siblings such as ``ws_orphan_reap``."""
+    sql = _CHAIN_STEP_SQL
+    if holder.read_only and not any(row[1] == "created_source" for row in holder._read_all("PRAGMA table_info(sessions)")):
+        sql = _CHAIN_STEP_SQL_WITHOUT_CREATED
+
     def step(current: str):
         with holder._read_ctx() as conn:
-            return conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
+            return conn.execute(sql, (current,)).fetchone()
     return _walk_compression_chain(session_id, step)
 
 

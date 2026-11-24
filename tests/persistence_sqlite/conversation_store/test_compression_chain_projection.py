@@ -11,6 +11,7 @@ from persistence.sqlite.conversation._store.compression import (
     publish_compression_child,
     get_compression_lineage,
     get_compression_tip,
+    stamp_legacy_compression_chains,
 )
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import (
@@ -19,6 +20,9 @@ from persistence.sqlite.conversation._store.sessions import (
     list_sessions_rich,
     update_session_cwd,
 )
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
@@ -30,8 +34,6 @@ def store(backend, scope_a):
 def db(store):
     """The store's StoreHolder, shared with its repositories."""
     return store.holder()
-
-from tests.fixtures.storage_seed import seed_session
 
 
 ROUTE = dict(user_id="u1", session_key="agent:main:telegram:dm:42", chat_id="42", chat_type="dm")
@@ -74,6 +76,24 @@ class TestChainStepSkipsSubagentRows:
         _compress(db, "worker-c1", "worker-c2", "subagent")
         assert store.lineage.tip("worker") == "worker-c2"
         assert store.lineage.lineage("worker-c2") == ("worker", "worker-c1", "worker-c2")
+
+    def test_a_worker_parent_from_before_created_source_still_continues(self, store, db):
+        seed_session(store, "worker", "subagent")
+        _compress(db, "worker", "worker-c1", "subagent")
+        db._execute_write(lambda conn: conn.execute("UPDATE sessions SET created_source = NULL WHERE id = 'worker'"))
+        assert store.lineage.tip("worker") == "worker-c1"
+        assert stamp_legacy_compression_chains(db) == 1
+        assert get_session(db, "worker")["created_source"] == "subagent"
+
+    def test_a_reader_on_a_store_without_created_source_follows_the_chain(self, tmp_path):
+        with open_persistence(profile_scope(home=tmp_path)) as writer:
+            seed_session(writer, "chat", "telegram", **ROUTE)
+            _compress(raw_holder(writer), "chat", "chat-c1", "telegram")
+            raw_holder(writer)._execute_write(lambda conn: (
+                conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started"),
+                conn.execute("ALTER TABLE sessions DROP COLUMN created_source")))
+        with open_persistence_reader(tmp_path / "state.db") as reader:
+            assert reader.lineage.tip("chat") == "chat-c1"
 
 
 class TestCompressionChainProjection:

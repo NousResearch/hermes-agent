@@ -108,6 +108,25 @@ def test_an_update_serves_new_sessions_whole_while_old_clients_stay_on_their_ver
     assert before.create_client().version == "v1"
 
 
+def test_the_frozen_copy_leaves_out_the_trees_the_provider_never_imports(plugin):
+    # Regression for #159414: tests/ and evals/ were copied under the long snapshot prefix, so one deep test file
+    # passed Windows' MAX_PATH and the plugin never staged ("Could not stage provider plugin").
+    from providers import get_provider_profile
+
+    _write(plugin, 1)
+    for skipped in ("tests", "evals", "nested/tests"):
+        (plugin / skipped).mkdir(parents=True)
+        (plugin / skipped / "test_client.py").write_text("")
+    (plugin / "nested" / "data.json").write_text("{}")
+
+    profile = get_provider_profile("demo-provider")
+    copy = Path(sys.modules[type(profile).__module__].__file__).parent
+
+    assert copy != plugin and profile.create_client().version == "v1"
+    assert (copy / "nested" / "data.json").is_file()
+    assert not [p for p in copy.rglob("*") if p.is_dir() and p.name in ("tests", "evals")]
+
+
 def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
     from hermes_cli.plugins_activation import activation_hint, find_activation, plugin_activation_summary
     from providers import get_provider_profile

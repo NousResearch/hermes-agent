@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Directories inside a plugin tree that never hold code the provider imports.
 _SKIP_DIRS = frozenset({"__pycache__", ".git", "node_modules", "tests", "evals", ".venv"})
-_SNAPSHOT_IGNORE = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".venv")
+_SNAPSHOT_IGNORE = shutil.ignore_patterns(*_SKIP_DIRS)
 # The directory is Hermes-private, and these names are reserved in it. A sweep reclaims "owned-" roots (made under
 # the setup lock) once their owner.lock exists and nobody holds it, and finishes "_REAPING_PREFIX" claims; entries
 # under any other name are never touched.

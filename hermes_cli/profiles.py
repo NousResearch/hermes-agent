@@ -1771,6 +1771,13 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _released_logs:
             print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
 
+    # The profile's plugin host (``plugins.isolation: host``) runs with the profile home as its
+    # working directory, so on Windows the final rmdir fails with WinError 32 while it runs (#159497).
+    with contextlib.suppress(Exception):
+        from hermes_cli.plugins import shutdown_plugin_host_for_home
+        if shutdown_plugin_host_for_home(profile_dir):
+            print("✓ Stopped this profile's plugin host")
+
     # 3. Remove wrapper script
     if wrapper_path and remove_wrapper_script(canon):
         print(f"✓ Removed {wrapper_path}")

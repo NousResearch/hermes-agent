@@ -2070,6 +2070,17 @@ def _dispatch_lane_task(
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    # Review-lane guard: a card parked in ``review`` with assignee ==
+    # implementer (legacy, or written by a path that bypassed request_review)
+    # is rerouted through the same policy before it is claimed, so the review
+    # round cannot come back to the implementer. Once only: the reassign makes
+    # the guard's own condition false on later ticks.
+    if lane == "review" and not dry_run:
+        rerouted = _kb.reroute_legacy_review(
+            conn, task_id, profile_exists=_profile_exists_fn(),
+        )
+        if rerouted is not None:
+            assignee = rerouted
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix

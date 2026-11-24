@@ -60,7 +60,7 @@ def test_whitespace_stored_result_does_not_count(conn):
     assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "done"
 
 
-def test_review_approval_exempt(conn):
+def test_review_approval_exempt(conn, all_assignees_spawnable):
     tid = kb.create_task(conn, title="review-me", assignee="coder")
     assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
     assert kb.request_review(conn, tid, summary="please look") is True

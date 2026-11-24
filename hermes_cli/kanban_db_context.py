@@ -84,11 +84,23 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
     )
 
 
-def _ctx_header(lines: list[str], task: Task) -> None:
+def _ctx_reviewer(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Reviewer named by the latest ``review_requested`` handoff, if any."""
+    event = _kb._latest_event(conn, task_id, "review_requested")
+    reviewer = _kb._json_dict(_kb._row_get(event, "payload")).get("reviewer")
+    return reviewer if isinstance(reviewer, str) and reviewer.strip() else None
+
+
+def _ctx_header(lines: list[str], task: Task, conn: Optional[sqlite3.Connection] = None) -> None:
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
+    # Who the review round goes to: a worker reading ``kanban_show`` should see
+    # the separation decision, not just infer it from the assignee.
+    reviewer = _ctx_reviewer(conn, task.id) if conn is not None else None
+    if reviewer:
+        lines.append(f"Reviewer: {reviewer}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")

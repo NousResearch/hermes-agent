@@ -59,6 +59,13 @@ def client(kanban_home):
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
 
+
+@pytest.fixture
+def spawnable_profiles(monkeypatch):
+    """Reviewer-routing policy candidates resolve as installed."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
 # ---------------------------------------------------------------------------
 # GET /board on an empty DB
 # ---------------------------------------------------------------------------
@@ -250,6 +257,48 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
             for event in kb.list_events(conn, task["id"])
         )
 
+def test_patch_review_refuses_assignee_equal_to_the_implementer(client):
+    """A combined ``status=review`` patch whose assignee is the implementer is a
+    self-review: the refusal must surface as an actionable 400, not a silent
+    no-op or a generic "transition not valid"."""
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "no self review", "assignee": "builder"},
+    ).json()["task"]
+    with kbc.connect() as conn:
+        assert kb.claim_task(conn, task["id"]) is not None
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "review", "assignee": "builder", "summary": "ready"},
+    )
+    assert r.status_code == 400, r.text
+    assert "self-review" in r.json()["detail"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task["id"]).status == "running"
+        assert kb.get_task(conn, task["id"]).assignee == "builder"
+
+
+def test_patch_review_routes_to_a_different_assignee(client):
+    """The same combined patch naming a different reviewer routes to it."""
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "route review", "assignee": "builder"},
+    ).json()["task"]
+    with kbc.connect() as conn:
+        assert kb.claim_task(conn, task["id"]) is not None
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "review", "assignee": "reviewer", "summary": "ready"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["assignee"] == "reviewer"
+    with kbc.connect() as conn:
+        event = [e for e in kb.list_events(conn, task["id"]) if e.kind == "review_requested"][-1]
+        assert event.payload["implementer"] == "builder"
+        assert event.payload["reviewer"] == "reviewer"
+        assert event.payload["reviewer_source"] == "explicit"
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 
@@ -286,7 +335,7 @@ def test_reopening_parent_demotes_ready_child(client):
     ).json()["task"]
     assert child_after_reopen["status"] == "todo"
 
-def test_reopening_parent_retracts_review_and_blocks_approval(client):
+def test_reopening_parent_retracts_review_and_blocks_approval(client, spawnable_profiles):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent", assignee="planner")
         assert kb.complete_task(conn, parent_id, result="done")
@@ -402,7 +451,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
         assert child is not None and child.status == "ready"
         assert grandchild is not None and grandchild.status == "todo"
 
-def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
+def test_dashboard_reclaim_of_active_review_preserves_review_phase(client, spawnable_profiles):
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="active review", assignee="reviewer")
         implementation = kb.claim_task(conn, task_id)
@@ -421,8 +470,10 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
         json={"status": "ready"},
     )
     assert response.status_code == 200, response.text
+    # The reviewer is policy-resolved (implementer "reviewer" maps off itself),
+    # but the reclaim must preserve the review PHASE regardless of who holds it.
     assert response.json()["task"]["status"] == "review"
-    assert response.json()["task"]["assignee"] == "reviewer"
+    assert response.json()["task"]["assignee"] == "architect"
     with kbc.connect() as conn:
         run = kb.latest_run(conn, task_id)
         assert run is not None

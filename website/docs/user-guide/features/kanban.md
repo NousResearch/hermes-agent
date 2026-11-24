@@ -332,6 +332,12 @@ kanban:
                                    # claims. Fail-closed: an empty list, `null`
                                    # or a bare `dispatch_profiles:` claims
                                    # nothing, and so does an unreadable config.
+  review_routing:                    # who reviews a card when the implementer
+    implementer_patterns: [coder, cloudops, dev*]  # omits reviewer= (glob on
+    implementer_reviewer: qa         # the implementer profile name)
+    default_reviewer: architect      # implementers outside those patterns
+    fallback_reviewers: [qa, architect, reviewer]  # first installed profile
+    allow_self_review: false         # true lets an implementer review itself
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`

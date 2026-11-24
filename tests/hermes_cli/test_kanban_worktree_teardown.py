@@ -300,7 +300,7 @@ def _running_scratch_parent(conn, title: str = "parent") -> tuple[str, Path]:
 
 @pytest.mark.parametrize("live_status", ["running", "blocked", "review"])
 def test_live_parent_scratch_survives_last_child_archived(
-    kanban_home: Path, live_status: str
+    kanban_home: Path, all_assignees_spawnable, live_status: str
 ) -> None:
     """#133501: the deferred sweep must not reap a still-live parent's scratch.
 

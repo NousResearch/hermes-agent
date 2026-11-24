@@ -13,6 +13,9 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import profiles
+    # The reviewer-routing policy needs at least one installed fallback profile.
+    monkeypatch.setattr(profiles, 'profile_exists', lambda name: True)
     from tools import kanban_tools  # register actual handlers
     from tools.registry import registry
     kb._INITIALIZED_PATHS.clear()

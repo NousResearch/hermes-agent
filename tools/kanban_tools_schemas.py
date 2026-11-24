@@ -237,7 +237,15 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
         )),
         "reviewer": _prop("string", (
                 "Optional reviewer profile. When provided, the task is "
-                "reassigned to that profile before review dispatch."
+                "reassigned to that profile before review dispatch, and a "
+                "reviewer equal to the implementer is refused (self-review "
+                "is not allowed unless kanban.review_routing.allow_self_review "
+                "is set). When omitted, the reviewer is resolved by policy: "
+                "the prior changes_requested reviewer if it still exists, "
+                "else qa for coder/cloudops/dev* implementers and architect "
+                "otherwise, walking kanban.review_routing.fallback_reviewers "
+                "for the first installed profile. The task is never left on "
+                "its implementer."
         )),
         "metadata": {
             "type": "object",

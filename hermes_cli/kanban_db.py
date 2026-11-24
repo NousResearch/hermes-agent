@@ -15,6 +15,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import json
 import os
 import re
@@ -27,7 +28,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
@@ -2682,10 +2683,29 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, worker_pid, worker_started_at, current_run_id "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
+        # Closing a REVIEWER's run is an act by the reviewing profile: stamp it
+        # server-side so Run History names who reviewed without trusting worker
+        # prose, and mirror it onto the ``completed`` event payload. A review run
+        # is recognised by its ``claimed`` provenance (claim_review_task), not by
+        # the task status -- claiming flips the card to ``running``.
+        reviewer = None
+        if trow["current_run_id"] is not None:
+            claimed = _latest_event(conn, task_id, "claimed", trow["current_run_id"])
+            is_review_run = (
+                _json_dict(_row_get(claimed, "payload")).get("source_status") == "review"
+            )
+            if is_review_run:
+                rrow = conn.execute(
+                    "SELECT profile FROM task_runs WHERE id = ?", (trow["current_run_id"],),
+                ).fetchone()
+                reviewer = _nonblank_str(rrow["profile"]) if rrow else None
+        if reviewer:
+            metadata = {**(metadata or {}), "reviewer": reviewer}
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
         # _claim_is_live for what "live" means.
@@ -2730,7 +2750,7 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(result, event_summary, verified_cards, metadata, reviewer),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -2837,11 +2857,13 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
 
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
+    reviewer: Optional[str] = None,
 ) -> dict:
     """``completed`` event payload: first summary line (400 chars) so gateway
-    notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
+    notifiers / dashboard WS render without a second round-trip; the reviewing
+    profile when the card was closed out of ``review``; verified cards; and
+    ``metadata["artifacts"]`` promoted so the notifier can upload them as native
+    attachments without fetching the run row."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
     # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
     # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
@@ -2853,6 +2875,8 @@ def _completed_event_payload(
     }
     if verified_cards:
         payload["verified_cards"] = verified_cards
+    if reviewer:
+        payload["reviewer"] = reviewer
     if isinstance(metadata, dict):
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
@@ -3256,6 +3280,84 @@ def redact_review_value(value: Any) -> Any:
     return value
 
 
+REVIEW_ROUTING_DEFAULTS = {
+    "implementer_patterns": ("coder", "cloudops", "dev*"),
+    "implementer_reviewer": "qa",
+    "default_reviewer": "architect",
+    "fallback_reviewers": ("qa", "architect", "reviewer"),
+    "allow_self_review": False,
+}
+
+
+def review_routing_config() -> dict:
+    """``kanban.review_routing`` merged over :data:`REVIEW_ROUTING_DEFAULTS`.
+
+    The defaults already realise the separation rule, so a host needs no config
+    change; the section exists to reorder fallbacks or widen the implementer
+    mapping (e.g. send design work to ``devmanager`` instead of ``qa``).
+    """
+    cfg = dict(REVIEW_ROUTING_DEFAULTS)
+    try:
+        from hermes_cli.config import load_config
+        section = (load_config() or {}).get("kanban", {}).get("review_routing")
+    except Exception:
+        section = None
+    if isinstance(section, Mapping):
+        for key in cfg:
+            value = section.get(key)
+            if value is not None:
+                cfg[key] = value
+    return cfg
+
+
+def _installed_profile(name: str) -> bool:
+    """Whether ``name`` resolves to a live profile. An unimportable/degenerate
+    profiles module fails open: absence of introspection must not turn every
+    handoff into a hard failure."""
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        return True
+    try:
+        return bool(profile_exists(name))
+    except Exception:
+        return True
+
+
+def resolve_default_reviewer(
+    implementer: Optional[str], cfg: Mapping, profile_exists: Callable[[str], bool],
+) -> tuple[Optional[str], Optional[str]]:
+    """Pure policy resolver returning ``(reviewer, source)``.
+
+    Candidate order is the mapped reviewer — ``implementer_reviewer`` when the
+    implementer glob-matches ``implementer_patterns``, else ``default_reviewer``
+    — followed by ``fallback_reviewers``. The implementer and duplicates are
+    skipped and the first candidate whose profile exists wins, so a card can
+    never be routed back to its implementer. ``(None, None)`` means nothing is
+    eligible: the caller fails closed instead of silently self-reviewing.
+    """
+    patterns = [
+        str(p) for p in (
+            cfg.get("implementer_patterns") or REVIEW_ROUTING_DEFAULTS["implementer_patterns"]
+        ) if str(p).strip()
+    ]
+    impl_canon = _canonical_assignee(implementer)
+    if any(fnmatch.fnmatchcase(impl_canon or "", pattern) for pattern in patterns):
+        mapped = cfg.get("implementer_reviewer", REVIEW_ROUTING_DEFAULTS["implementer_reviewer"])
+    else:
+        mapped = cfg.get("default_reviewer", REVIEW_ROUTING_DEFAULTS["default_reviewer"])
+    fallbacks = list(cfg.get("fallback_reviewers") or REVIEW_ROUTING_DEFAULTS["fallback_reviewers"])
+    seen: set[str] = set()
+    for raw in [mapped, *fallbacks]:
+        name = _canonical_assignee(raw if isinstance(raw, str) and raw.strip() else None)
+        if name is None or name == impl_canon or name in seen:
+            continue
+        seen.add(name)
+        if profile_exists(name):
+            return name, "policy"
+    return None, None
+
+
 def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
@@ -3264,10 +3366,14 @@ def request_review(
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
     Implementer and reviewer are recorded on the event so requested changes
-    route back to the right profile; ``reviewer`` reassigns the task, and on
-    re-review defaults to the latest ``changes_requested`` provenance. A live
-    claim is only cleared with proof of ownership (``expected_run_id``) or
-    ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+    route back to the right profile; ``reviewer`` reassigns the task. An
+    omitted reviewer is resolved: explicit > the latest ``changes_requested``
+    provenance (only when it names a different installed profile) > the
+    ``kanban.review_routing`` policy, which always skips the implementer. A
+    self-review is refused and an unroutable handoff fails closed rather than
+    leaving the card on its implementer. A live claim is only cleared with
+    proof of ownership (``expected_run_id``) or ``force=True``. Returns
+    ``bool``, or ``(ok, reason)`` with ``with_reason``.
 
     ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
@@ -3311,15 +3417,6 @@ def request_review(
                     "(worker ownership) or force=True (explicit operator "
                     "override) instead of clearing the live run's claim",
                 )
-            if reviewer is None:
-                reviewer = _prior_reviewer(conn, task_id)
-                if reviewer is False:
-                    return _ret(
-                        False, "re-review has no durable reviewer provenance (the "
-                        "latest changes_requested event is missing or "
-                        "malformed); pass reviewer= explicitly",
-                    )
-            reviewer = _canonical_assignee(reviewer)
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
             # whoever the operator assigned -- possibly the reviewer itself,
@@ -3335,12 +3432,52 @@ def request_review(
                     (trow["current_run_id"],),
                 ).fetchone()
                 implementer = arow["profile"] if arow else None
-            if implementer is None and trow["assignee"] != reviewer:
+
+            # Reviewer resolution order: explicit > provenance > policy default.
+            # An omitted reviewer is RESOLVED here rather than leaving the card
+            # on its implementer -- that silence is how a review round used to
+            # come back to the implementer (t_2fafba53).
+            cfg = review_routing_config()
+            reviewer_source: Optional[str] = None
+            if _nonblank_str(reviewer) is not None:
+                reviewer = _canonical_assignee(reviewer)
+                reviewer_source = "explicit"
+            if implementer is None and _canonical_assignee(trow["assignee"]) != reviewer:
                 implementer = trow["assignee"]
-            assignee_sql = ", assignee = ?" if reviewer is not None else ""
+            impl_canon = _canonical_assignee(implementer)
+            if (
+                reviewer is not None and impl_canon is not None and reviewer == impl_canon
+                and not bool(cfg.get("allow_self_review"))
+            ):
+                return _ret(
+                    False,
+                    f"self-review refused: {reviewer!r} implemented this task; review must go "
+                    f"to a different profile. Pass reviewer=<installed profile> explicitly, or "
+                    f"set kanban.review_routing.allow_self_review: true to override.",
+                )
+            if reviewer is None:
+                prior = _prior_reviewer(conn, task_id)
+                if isinstance(prior, str) and prior.strip():
+                    prior = _canonical_assignee(prior)
+                    # Provenance heals the observed loop only when it names a
+                    # real, DIFFERENT reviewer; otherwise fall through to policy.
+                    if prior != impl_canon and _installed_profile(prior):
+                        reviewer, reviewer_source = prior, "provenance"
+            if reviewer is None:
+                reviewer, reviewer_source = resolve_default_reviewer(
+                    implementer, cfg, _installed_profile,
+                )
+            if reviewer is None:
+                return _ret(
+                    False,
+                    "no eligible reviewer profile for this handoff: the policy mapping and "
+                    "fallback chain (kanban.review_routing) name only missing profiles. "
+                    "Pass reviewer=<installed profile> explicitly or install a fallback profile.",
+                )
+            assignee_sql = ", assignee = ?"
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
-                *(() if reviewer is None else (reviewer,)), task_id,
+                reviewer, task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
             cur = conn.execute(
@@ -3373,6 +3510,7 @@ def request_review(
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                "reviewer_source": reviewer_source,
             }
             staged = _cleaned_artifact_paths(metadata)
             if staged:
@@ -3399,6 +3537,51 @@ def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
     changes_event = _latest_event(conn, task_id, "changes_requested", changes_run["id"])
     reviewer = _json_dict(_row_get(changes_event, "payload")).get("reviewer")
     return reviewer if isinstance(reviewer, str) and reviewer.strip() else False
+
+
+def reroute_legacy_review(
+    conn: sqlite3.Connection, task_id: str,
+    *, profile_exists: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
+    """Reassign a ``review`` card still parked on its implementer.
+
+    Defense in depth for the window between this fix shipping and legacy cards
+    already sitting in ``review`` with ``assignee == implementer`` (and for any
+    writer that bypasses :func:`request_review`). Returns the new assignee when
+    a reroute happened, else ``None`` — including the fail-closed case where no
+    eligible reviewer profile exists, which leaves the card parked rather than
+    sending it back to the implementer.
+    """
+    exists = profile_exists or _installed_profile
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ? AND status = 'review'", (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        event = _latest_event(conn, task_id, "review_requested")
+        payload = _json_dict(_row_get(event, "payload"))
+        implementer = _nonblank_str(payload.get("implementer"))
+        impl_canon = _canonical_assignee(implementer)
+        assignee = _canonical_assignee(row["assignee"])
+        if impl_canon is None or assignee is None or assignee != impl_canon:
+            return None
+        reviewer, _source = resolve_default_reviewer(
+            implementer, review_routing_config(), exists,
+        )
+        if reviewer is None or reviewer == assignee:
+            return None
+        cur = conn.execute(
+            "UPDATE tasks SET assignee = ? "
+            "WHERE id = ? AND status = 'review' AND assignee = ?",
+            (reviewer, task_id, row["assignee"]),
+        )
+        if cur.rowcount != 1:
+            return None
+        _append_event(conn, task_id, "review_rerouted", {
+            "from": assignee, "to": reviewer, "implementer": implementer,
+        })
+        return reviewer
 
 
 def _nonblank_str(value: Any) -> Optional[str]:
@@ -3908,7 +4091,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
-    _ctx_header(lines, task)
+    _ctx_header(lines, task, conn)
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)

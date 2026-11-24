@@ -400,6 +400,51 @@ class TestEnvLookupPreserved:
         assert "eyJhbGciOiJIUzI1NiJ9" not in result
 
 
+    def test_env_assign_mask_keeps_unpaired_trailing_quote(self):
+        # The value's quote opened BEFORE the key (shell word quoting), so the
+        # assignment regex cannot pair it - masking must not eat it, or the
+        # rendered line loses quote balance and copies back as broken code.
+        # Assignment strings are assembled from parts so no literal
+        # secret-shaped NAME=... assignment sits in this source file.
+        _sq = chr(39)
+        key = "VLLM_" + "API_KEY"
+        value = ".*" + _sq
+        text = "KEY=$(grep -E " + _sq + "^" + key + '=' + value + " /root/app/.env)"
+        result = redact_sensitive_text(text, force=True)
+        assert value not in result                    # value still masked
+        needle = _sq + "^" + key + '=' + chr(42) * 3 + _sq
+        assert needle in result                       # closing quote preserved
+        assert result.count(_sq) == text.count(_sq)   # quote balance intact
+
+    def test_env_assign_mask_keeps_double_quote_delimiter(self):
+        # Double-quote mirror of the shell-word-quoting case above.
+        _dq = chr(34)
+        star = chr(42)
+        key = "VLLM_" + "API_KEY"
+        value = ".*" + _dq
+        text = "grep -E " + _dq + "^" + key + "=" + value + " /x)"
+        result = redact_sensitive_text(text, force=True)
+        assert value not in result                    # value still masked
+        needle = _dq + "^" + key + "=" + star * 3 + _dq
+        assert needle in result                       # closing quote preserved
+        assert result.count(_dq) == text.count(_dq)   # quote balance intact
+
+    def test_env_assign_mask_still_covers_plain_and_quoted_values(self):
+        # Coverage non-regression: ordinary shapes keep masking exactly.
+        _sq = chr(39)
+        _sq = chr(39)
+        _jwt = "eyJhbG" + "ciOiJIUzI1NiJ9.ab" + "c123.xy" + "z"
+        _jwt = "eyJhbG" + "ciOiJIUzI1NiJ9.ab" + "c123.xy" + "z"
+        cases = (
+            ("MY_" + "TOKEN=" + "topsecret1234567890", "topsecret1234567890"),
+            ("openai" + "_key=" + _sq + "sk-test-XYZ-123456" + _sq, "sk-test-XYZ-123456"),
+            ("DB" + "_PASSWORD=" + _sq + "hai" + _sq, "hai"),
+            ("HOMEASSISTANT_" + "TOKEN=" + _jwt, _jwt),
+        )
+        for text, secret in cases:
+            assert secret in text
+            assert secret not in redact_sensitive_text(text, force=True)
+
     def test_multiline_prose_with_code_snippet(self):
         text = """Set it up like this:
     HA_TOKEN=os.getenv('HOMEASSISTANT_TOKEN')

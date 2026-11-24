@@ -168,11 +168,10 @@ class CredentialPoolRefreshMixin:
         WITHOUT the proactive refresh: the forced refresh must spend a rotating refresh token exactly once.
         """
         with self._lock:
-            entry = self._identify_failed_entry(credential_id, api_key_hint) if key_wins else None
-            entry = entry or (self._find(lambda e: e.id == credential_id) if credential_id else None)
-            if entry is None and api_key_hint:
-                entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
-            elif entry is None:
+            by_id, by_key = self._failed_entry_matches(credential_id, api_key_hint)
+            id_sent_key = by_id is not None and (not api_key_hint or by_id.runtime_api_key == api_key_hint)
+            entry = (by_id if id_sent_key else by_key or by_id) if key_wins else (by_id or by_key)
+            if entry is None and not api_key_hint:
                 entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
                 return NO_REFRESH

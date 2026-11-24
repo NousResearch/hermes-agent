@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
-from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+from hermes_cli.auth_plugin_providers import is_refreshable_oauth_provider, plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
     fingerprint_secret_value,
@@ -1475,7 +1475,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             if force:
                 self._mark_exhausted(entry, None)
             return NO_REFRESH
-        if self.provider not in REFRESHABLE_OAUTH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
+        if not is_refreshable_oauth_provider(self.provider):
             return NO_REFRESH  # ``_refresh_entry_impl`` would hand the row back unchanged: nothing was refreshed
         # Plugin providers with a ``refresh_credential`` hook are treated as single-use by default:
         # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
@@ -2111,15 +2111,13 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         self, credential_id: Optional[str], api_key_hint: Optional[str],
     ) -> Optional[PooledCredential]:
         """Resolve the entry that issued a failed request from its supplied identity."""
-        entry = None
-        if credential_id:
-            entry = self._find(lambda e: e.id == credential_id)
+        entry, hint_entry = self._failed_entry_matches(credential_id, api_key_hint)
+        if entry is not None:
             # #79156: when both identities disagree, trust the key that made
             # the request. A stale ``_credential_pool_entry_id`` (per-turn env
             # refresh rewrote ``api_key`` without rebinding the id) would
             # otherwise quarantine a healthy fallback for days.
-            if entry is not None and api_key_hint and entry.runtime_api_key != api_key_hint:
-                hint_entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
+            if api_key_hint and entry.runtime_api_key != api_key_hint:
                 if hint_entry is not None:
                     logger.info(
                         "credential pool: credential_id %s runtime key "
@@ -2131,12 +2129,17 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 # Otherwise the id is stale and the request key is not in the
                 # pool — drop the id so we do not mark the wrong entry.
                 entry = hint_entry
-        if entry is None and api_key_hint:
-            # Prefer the entry whose key actually failed: on a pool freshly
-            # loaded from disk current() is None and _select_unlocked() would
-            # return the NEXT key — the wrong one.
-            entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
-        return entry
+        # Prefer the entry whose key actually failed: on a pool freshly loaded from disk
+        # current() is None and _select_unlocked() would return the NEXT key — the wrong one.
+        return entry if entry is not None else hint_entry
+
+    def _failed_entry_matches(
+        self, credential_id: Optional[str], api_key_hint: Optional[str],
+    ) -> tuple[Optional[PooledCredential], Optional[PooledCredential]]:
+        """The rows a failed request names: by its credential id, and by the key it sent."""
+        by_id = self._find(lambda e: e.id == credential_id) if credential_id else None
+        by_key = self._find(lambda e: e.runtime_api_key == api_key_hint) if api_key_hint else None
+        return by_id, by_key
 
     def _rotate_unmatched(self) -> Optional[PooledCredential]:
         """Rotate without marking anything when the failed identity matches no entry.

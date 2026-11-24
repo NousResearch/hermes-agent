@@ -337,3 +337,10 @@ class TestRefreshFailedEntryOutcome:
         outcome = pool.refresh_failed_entry("ex-at-0", "ex", key_wins=True)
 
         assert outcome.kind is RefreshKind.NEEDS_ROTATION and outcome.entry is None
+
+    def test_the_named_row_wins_over_a_sibling_sharing_its_key(self, endpoint, fake_pool_store):
+        pool = CredentialPool("anthropic", [_row("a", access="shared"), _row("b", access="shared", priority=1)])
+
+        outcome = pool.refresh_failed_entry("shared", "b", key_wins=True)
+
+        assert outcome.row.id == "b"

@@ -94,10 +94,9 @@ def _install_record(plugin_dir: Path) -> Optional[dict]:
     directory, while the plugins dir is spelled through the name the profile was opened by."""
     from hermes_cli.plugins_cmd import PluginOperationError, _plugins_dir, _read_install_metadata
     plugins_dir = _plugins_dir()
-    try:
-        if plugin_dir.parent != plugins_dir and not os.path.samefile(plugin_dir.parent, plugins_dir):
-            return None
-    except OSError:
+    # Canonical paths, not samefile: a filesystem that reports file id 0 (FAT) gives every directory one id.
+    if plugin_dir.parent != plugins_dir and (os.path.normcase(os.path.realpath(plugin_dir.parent))
+                                             != os.path.normcase(os.path.realpath(plugins_dir))):
         return None
     try:
         record = _read_install_metadata().get(plugin_dir.name)

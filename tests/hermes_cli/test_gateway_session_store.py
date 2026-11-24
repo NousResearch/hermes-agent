@@ -89,6 +89,59 @@ def test_a_finite_run_creates_mains_oneshot_session_so_bare_c_finds_it(store, mo
     assert client.calls[-1][1]["source"] == "cli"
 
 
+def _serving_sources(client):
+    """The owner's ``runtime.describe`` as gateway.session_controls answers it: the create sources it serves."""
+    from gateway.session_policy import SURFACES
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "runtime.describe":
+            client.calls.append((method, params))
+            return {"session_create": {"sources": sorted(SURFACES), "parameters": []}}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+
+
+@pytest.mark.parametrize("inherited", ["kanban", "cron", "webui"])
+@pytest.mark.parametrize(("finite", "expected"), [(True, "oneshot"), (False, "cli")])
+def test_an_inherited_label_the_owner_cannot_serve_falls_back_to_this_runs_own(
+        store, monkeypatch, inherited, finite, expected):
+    """#143653: a shell spawned by a Kanban worker, cron job or WebUI session inherits its
+    HERMES_SESSION_SOURCE. Sent as is, the owner's create contract refused it (``invalid_params``
+    fields=['source']) and `hermes chat -q` from that shell could not start."""
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", inherited)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE_EXPLICIT", raising=False)
+    if finite:
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    else:
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    db, client = store
+    _serving_sources(client)
+    db.open_session(cli(), {})
+    method, params = client.calls[-1]
+    assert method == "session.create" and params["source"] == expected
+    assert canonical_param_problems(CANONICAL_METHODS["session.create"], params) == []
+
+
+def test_an_explicit_source_is_mapped_to_its_surface_or_refused_before_create(store, monkeypatch):
+    """An explicit --source is the caller's choice, never replaced: ``desktop`` is created as its ``gui``
+    surface (#143593), and a label the owner cannot serve gets the thin client's refusal rather than a
+    bare ``invalid_params`` blamed on the model connection."""
+    monkeypatch.setenv("HERMES_SESSION_SOURCE_EXPLICIT", "1")
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "desktop")
+    db, client = store
+    _serving_sources(client)
+    db.open_session(cli(), {})
+    assert client.calls[-1][0] == "session.create" and client.calls[-1][1]["source"] == "gui"
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "dispatch")
+    creates = sum(method == "session.create" for method, _ in client.calls)
+    with pytest.raises(GatewayClientError, match="does not support source 'dispatch'"):
+        db.open_session(cli(), {})
+    assert sum(method == "session.create" for method, _ in client.calls) == creates
+
+
 def test_resume_attaches_and_unknown_target_is_left_to_mains_not_found_path(store):
     db, client = store
     assert db.open_session(cli("local-old", resumed=True)) == "local-old"

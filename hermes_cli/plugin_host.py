@@ -79,10 +79,10 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     the launch profile's values, so any other profile's launcher expands through its own secrets
     (``owner_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a sibling under
     task-local multiplexing, which a fresh context does not carry. Under multiplexing the launch profile's
-    expands through its own scope too (its env-only keys and files). The launch profile is the one whose
-    directory the process's own path keys, as ``serves_routed_profile`` asks: after that link is renamed,
-    *home* is the new name, which ``owner_secret_scope`` would take for another profile. No terminal policy:
-    the launcher is only read here."""
+    expands through its own scope too (``launch_secret_scope``: its env-only keys and files). The launch profile
+    is the one whose directory the process's own path keys, as ``serves_routed_profile`` asks: after that link
+    is renamed, *home* is the new name, which ``owner_secret_scope`` would take for another profile, and the old
+    name leads to no files. No terminal policy: the launcher is only read here."""
 
     def choose() -> list:
         from agent.secret_scope import is_multiplex_active
@@ -95,8 +95,10 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
             with _plugin_home_scope(home):
                 return host_launcher(home=home)
         from agent.runtime_scope import bind_state, scope_for_profile
-        from tui_gateway.launch_profile_policy import owner_secret_scope
-        with bind_state(scope_for_profile(home), secrets=owner_secret_scope(launch if own else home), terminal=False):
+        from tui_gateway.launch_profile_policy import launch_secret_scope, owner_secret_scope
+        # The launch profile's scope with its files read through *home*, the name that leads there now.
+        secrets = launch_secret_scope(home) if own else owner_secret_scope(home)
+        with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
             return host_launcher(home=home)
 
     return contextvars.Context().run(choose)

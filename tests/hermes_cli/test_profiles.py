@@ -1914,7 +1914,7 @@ class TestCloneAllExcludesRuntimeTrees:
 
     RUNTIME_TREES = ("models", "runtimes", "node")
     KANBAN_ROOT_ENTRIES = (
-        "kanban.db", "kanban.db-wal", "kanban.db-shm",
+        "kanban.db", "kanban.db-wal", "kanban.db-shm", "kanban.db-journal",
         "kanban.db.dispatch.lock", "kanban.db.init.lock", "kanban",
     )
 
@@ -1927,7 +1927,7 @@ class TestCloneAllExcludesRuntimeTrees:
         (home / "skills" / "greet").mkdir(parents=True)
         (home / "skills" / "greet" / "SKILL.md").write_text("# greet\n", encoding="utf-8")
         (home / "config.yaml").write_text("model: test\n", encoding="utf-8")
-        for f in self.KANBAN_ROOT_ENTRIES[:5]:
+        for f in self.KANBAN_ROOT_ENTRIES[:-1]:
             (home / f).write_text("k", encoding="utf-8")
         (home / "kanban").mkdir(); (home / "kanban" / "board.json").write_text("{}", encoding="utf-8")
 

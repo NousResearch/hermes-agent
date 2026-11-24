@@ -80,7 +80,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     # (install/profile bucket split; see test_install_bucket_separation).
     ".hermes-runtime", "node",
     # Shared kanban board (anchored on kanban_home()) at default root (#159604).
-    "kanban.db", "kanban.db-wal", "kanban.db-shm",
+    "kanban.db", "kanban.db-wal", "kanban.db-shm", "kanban.db-journal",
     "kanban.db.dispatch.lock", "kanban.db.init.lock", "kanban",
 }) | LOCAL_RUNTIME_ROOT_DIRS
 

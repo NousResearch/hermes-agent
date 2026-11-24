@@ -10,6 +10,7 @@ the recovered text.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from unittest.mock import MagicMock, patch
@@ -87,6 +88,15 @@ def test_no_tools_offered_never_fires():
     assert find_leaked_tool_call(None, TOOLS) is None
 
 
+@pytest.mark.parametrize("arguments", [
+    "[" * 100_000 + "]" * 100_000,  # nested inline: the call body's own decode recurses
+    json.dumps("[" * 100_000 + "]" * 100_000),  # nested inside a string: the arguments decode recurses
+], ids=["inline", "in-string"])
+def test_deeply_nested_arguments_are_an_incomplete_call_not_an_error(arguments):
+    leak = find_leaked_tool_call(f'<tool_call>{{"name": "terminal", "arguments": {arguments}}}</tool_call>', TOOLS)
+    assert (leak.name, leak.complete) == ("terminal", False)
+
+
 # Hosted Nemotron 3.5 Bolt eval archive: the reasoning starts mid-call, so only the TAIL survives.
 FRAGMENT_TAILS = [
     "The debug script ran but produced no output. Let me check what happened.\n</parameter>",
@@ -114,6 +124,8 @@ def test_trailing_call_closers_without_an_opener_are_a_fragment(text):
     # Closers inside code.
     "The template ends like this:\n```xml\n</parameter>\n</function>\n</tool_call>\n```",
     "Unclosed fence at the end:\n```\n</parameter>\n</function>",
+    # A closer in prose, then a code block that ends the reply.
+    "Close each argument with\n</parameter>\n```python\nprint('hello')\n```",
     "Close the block with `</tool_call>`",
     # An opener is present (unknown tool): not a fragment, and not a named leak either.
     "<function=launch_rockets><parameter=n>3</parameter></function>",
@@ -240,6 +252,36 @@ def test_prose_content_with_call_in_reasoning_gets_the_nudge(loop_agent):
     assert "search_files" in _sent(loop_agent, 1)[-1]["content"]
 
 
+THINK_WITH_CALL = ('<think>\nI should list the files first.\n'
+                   '<tool_call>{"name": "terminal", "arguments": {"command": "ls"}}</tool_call>\n</think>\n')
+
+
+@pytest.mark.parametrize("reply, extra, nudged", [
+    # A transcript example in a fence: the reply's fence masking covers its <think> block too.
+    (f"Qwen writes it like this:\n```text\n{THINK_WITH_CALL}```\nThat is the format.", {}, False),
+    (THINK_WITH_CALL + "Listing them now.", {}, True),
+    ("Let me look.", {"reasoning": LEAKED_REASONING}, True),
+    ("Let me look.", {"reasoning_details": [{"type": "reasoning.summary", "summary": LEAKED_REASONING}]}, True),
+], ids=["fenced-example", "bare-think", "reasoning", "reasoning-details"])
+def test_inline_think_blocks_are_judged_with_the_reply(loop_agent, reply, extra, nudged):
+    from tests.agent.test_run_agent import _mock_response
+
+    result, statuses = _run(loop_agent, [_mock_response(content=reply, finish_reason="stop", **extra),
+                                         _mock_response(content="Done.", finish_reason="stop")])
+
+    assert sum("as text — re-prompting" in s for s in statuses) == int(nudged)
+    assert result["api_calls"] == 1 + int(nudged)
+
+
+def test_typed_thinking_blocks_are_still_scanned(loop_agent):
+    from agent.turn_final_response import _reprompt_leaked_tool_call
+    from tests.agent.test_run_agent import _mock_assistant_msg
+
+    # List content carries its thinking as typed blocks that the reply scan can't read.
+    msg = _mock_assistant_msg(content=[{"type": "thinking", "thinking": LEAKED_REASONING}])
+    assert _reprompt_leaked_tool_call(loop_agent, msg, "stop", []) is True
+
+
 def test_call_markup_in_content_gets_the_nudge(loop_agent):
     from tests.agent.test_run_agent import _mock_response
 
@@ -307,6 +349,26 @@ def test_stop_gate_follow_up_keeps_the_spent_budget(loop_agent):
     assert result["api_calls"] == 4
 
 
+def test_not_executed_status_fires_once_per_turn(loop_agent):
+    from tests.agent.test_run_agent import _mock_response
+
+    text = ('The tests are probably under /app.\n'
+            '<tool_call>{"name": "search_files", "arguments": {"path": "/app"}}</tool_call>')
+
+    def leaks(n):
+        return [_mock_response(content="", finish_reason="stop", reasoning_content=text) for _ in range(n)]
+
+    # The third and fourth leaks both find the budget spent: one warning for the turn, not two.
+    notes = iter(["[System note: the language server reported problems in files you edited.]"])
+    with patch("agent.turn_stop_gates._late_lsp_verdicts", side_effect=lambda agent: next(notes, None)):
+        _, statuses = _run(loop_agent, leaks(4))
+    assert sum("not executed" in s for s in statuses) == 1
+
+    # A new turn warns again.
+    _, statuses = _run(loop_agent, leaks(3))
+    assert sum("not executed" in s for s in statuses) == 1
+
+
 def test_budget_resets_on_a_clean_final_answer(loop_agent):
     from tests.agent.test_run_agent import _mock_response
 
@@ -357,3 +419,73 @@ def test_non_chat_completions_routes_are_unchanged(loop_agent):
         messages = []
         assert _reprompt_leaked_tool_call(loop_agent, msg, "stop", messages) is False
         assert messages == []
+
+
+def test_call_drafted_then_rejected_in_reasoning_does_not_override_a_full_answer(loop_agent):
+    # The model considered a call in its reasoning, decided against it, and answered. The call is
+    # not the tail of the reasoning and the content is a complete answer: nothing was left undone.
+    from tests.agent.test_run_agent import _mock_response
+
+    reasoning = ('I could run <tool_call>{"name": "search_files", "arguments": {"path": "/app"}}'
+                 '</tool_call> but the user already pasted the tree, so I can answer directly.')
+    answer = "The tests are in /app/tests (from the tree you pasted)."
+    result, statuses = _run(loop_agent, [
+        _mock_response(content=answer, finish_reason="stop", reasoning_content=reasoning),
+        _mock_response(content="SECOND ANSWER", finish_reason="stop"),
+    ])
+
+    assert result["api_calls"] == 1
+    assert result["final_response"] == answer
+    assert not any("as text" in s for s in statuses)
+
+
+def test_call_drafted_then_rejected_in_reasoning_still_counts_without_an_answer(loop_agent):
+    # Blank content: nothing reached the user, so any call in the reasoning still gets the nudge.
+    from tests.agent.test_run_agent import _mock_response
+
+    reasoning = ('I could run <tool_call>{"name": "search_files", "arguments": {"path": "/app"}}'
+                 '</tool_call> but maybe not.')
+    result, statuses = _run(loop_agent, [
+        _mock_response(content="", finish_reason="stop", reasoning_content=reasoning),
+        _mock_response(content="The tests are in /app/tests.", finish_reason="stop"),
+    ])
+
+    assert result["api_calls"] == 2
+    assert sum("as text — re-prompting" in s for s in statuses) == 1
+
+
+_SEARCH_CALL = '<tool_call>{"name": "search_files", "arguments": {"path": "/app"}}</tool_call>'
+
+
+@pytest.mark.parametrize("text, name", [
+    (f"Searching now.\n{_SEARCH_CALL}\n", "search_files"),
+    # Parallel calls at the end: the run of calls is the tail.
+    (f'{_SEARCH_CALL}\n<tool_call>{{"name": "terminal", "arguments": {{}}}}</tool_call>', "terminal"),
+    # A draft set aside, then the real call at the end.
+    (f"Maybe {_SEARCH_CALL}? No, list first.\n"
+     '<tool_call>{"name": "terminal", "arguments": {"command": "ls"}}</tool_call>', "terminal"),
+    # Wrapper and end tokens that belong to the call.
+    ("Look.\n<tool_call>\n<function=read_file>\n<parameter=path>\n/a\n</parameter>\n</function>\n</tool_call>",
+     "read_file"),
+    ('commentary to=functions.terminal <|constrain|>json<|message|>{"command": "ls"}<|call|>', "terminal"),
+    # Unclosed: the call runs to the end.
+    ('Then <tool_call>{"name": "search_files", "arguments": {"path": "/a', "search_files"),
+    (FRAGMENT_TAILS[1], ""),
+])
+def test_trailing_scan_finds_a_call_the_text_ends_on(text, name):
+    from agent.leaked_tool_call import find_trailing_leaked_tool_call
+
+    assert find_trailing_leaked_tool_call(text, TOOLS).name == name
+
+
+@pytest.mark.parametrize("text", [
+    f"I could run {_SEARCH_CALL} but the tree is already here.",
+    f"{_SEARCH_CALL}\n```text\nexample\n```",
+    'Example: {"name": "read_file", "arguments": {"path": "/x"}} is how a call looks; not needed.',
+    "No call at all.",
+    None,
+])
+def test_trailing_scan_ignores_calls_followed_by_more_text(text):
+    from agent.leaked_tool_call import find_trailing_leaked_tool_call
+
+    assert find_trailing_leaked_tool_call(text, TOOLS) is None

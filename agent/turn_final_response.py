@@ -11,7 +11,9 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Callable, Dict, Optional
 
-from agent.leaked_tool_call import find_leaked_tool_call, leaked_tool_call_nudge
+from agent.leaked_tool_call import (
+    find_leaked_tool_call, find_trailing_leaked_tool_call, leaked_tool_call_nudge,
+)
 from agent.message_metadata import append_message
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
@@ -143,6 +145,24 @@ def _reprompt_dropped_tool_call(agent: Any, final_msg: dict, assistant_message: 
     return False
 
 
+def _find_leaked_tool_call(agent: Any, assistant_message: Any) -> Optional[tuple[str, Any]]:
+    """``(where, leak)`` for a tool call left as text in the reasoning or the reply, else None."""
+    # Inline <think> blocks of a string reply are scanned with the reply, where fenced examples are
+    # masked; only structured reasoning (or typed content blocks) needs its own scan.
+    content = assistant_message.content
+    inline_only = isinstance(content, str) and not any(
+        getattr(assistant_message, key, None) for key in ("reasoning", "reasoning_content", "reasoning_details"))
+    reasoning = None if inline_only else agent._extract_reasoning(assistant_message)
+    # With an answer already in the reply, a call in the reasoning counts only if the reasoning ends
+    # on it: one drafted there and then rejected left nothing undone.
+    scan_reasoning = (find_trailing_leaked_tool_call if agent._has_content_after_think_block(content)
+                      else find_leaked_tool_call)
+    for where, text, scan in (("reasoning", reasoning, scan_reasoning), ("reply", content, find_leaked_tool_call)):
+        if leak := scan(text, agent.valid_tool_names):
+            return where, leak
+    return None
+
+
 def _reprompt_leaked_tool_call(agent: Any, assistant_message: Any, finish_reason: Any, messages: Any) -> bool:
     """Chat-completions reply with no ``tool_calls`` but a call to an offered tool written as text
     in its reasoning or content (local llama.cpp/vLLM tool parsers missing the markup).
@@ -156,12 +176,10 @@ def _reprompt_leaked_tool_call(agent: Any, assistant_message: Any, finish_reason
         or not getattr(agent, "valid_tool_names", None)
     ):
         return False
-    for where, text in (("reasoning", agent._extract_reasoning(assistant_message)),
-                        ("reply", assistant_message.content)):
-        if leak := find_leaked_tool_call(text, agent.valid_tool_names):
-            break
-    else:
+    found = _find_leaked_tool_call(agent, assistant_message)
+    if found is None:
         return False
+    where, leak = found
     retries = getattr(agent, "_leaked_toolcall_retries", 0)
     if retries >= _LEAKED_TOOLCALL_MAX_RETRIES:
         logger.warning(
@@ -170,9 +188,11 @@ def _reprompt_leaked_tool_call(agent: Any, assistant_message: Any, finish_reason
             leak.label, where, retries, leak.fmt, leak.complete, agent.model, agent.provider,
             leak.snippet,
         )
-        agent._emit_diagnostic_status(
-            f"⚠ Model wrote a {leak.label} as text instead of calling it — not executed"
-        )
+        if not getattr(agent, "_leaked_toolcall_warned", False):  # once per turn, not per later reply
+            agent._leaked_toolcall_warned = True
+            agent._emit_diagnostic_status(
+                f"⚠ Model wrote a {leak.label} as text instead of calling it — not executed"
+            )
         return False
     agent._leaked_toolcall_retries = retries + 1
     logger.warning(

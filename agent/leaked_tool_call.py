@@ -35,20 +35,30 @@ _BARE_JSON_RE = re.compile(r'\{\s*"name"\s*:\s*"(' + _NAME + r')"\s*,\s*"(?:argu
 # not a regex search: ``\s*`` backtracks quadratically over the blank runs ``_mask_code`` leaves.
 _XML_FRAGMENT_CLOSERS = ("</parameter>", "</function>", "</tool_call>")
 _XML_OPENER_RE = re.compile(r"<(?:function|parameter|tool_call)\b")
+# Closing tokens that may follow a call and still belong to it.
+_XML_WRAPPER_CLOSE_RE = re.compile(r"(?:\s*</tool_call>)?")
+_HARMONY_CALL_END_RE = re.compile(r"(?:\s*<\|call\|>)?")
+# Calls drafted mid-text that ``find_trailing_leaked_tool_call`` steps past before giving up.
+_MAX_TRAILING_SCANS = 8
 
 _DECODER = json.JSONDecoder()
+
+# (start, name, fmt, complete, end): ``end`` is just past the call, or the text's end if unclosed.
+_Match = tuple[int, str, str, bool, int]
 
 
 @dataclass(frozen=True)
 class LeakedToolCall:
     """``fmt``: ``hermes_json`` | ``xml_function`` | ``gemma`` | ``harmony`` | ``bare_json`` |
     ``xml_fragment``. ``complete`` is True only when the markup is closed and its arguments
-    parse. ``name`` is ``""`` for ``xml_fragment``: only the call's closing tags survived."""
+    parse. ``name`` is ``""`` for ``xml_fragment``: only the call's closing tags survived.
+    ``end`` indexes the scanned text just past the call."""
 
     name: str
     fmt: str
     snippet: str
     complete: bool
+    end: int
 
     @property
     def label(self) -> str:
@@ -65,12 +75,13 @@ def _mask_code(text: str) -> str:
     return _INLINE_CODE_RE.sub(_blank, _FENCED_CODE_RE.sub(_blank, text))
 
 
-def _decode_object(text: str, start: int) -> Optional[dict]:
+def _decode_object(text: str, start: int) -> tuple[Optional[dict], int]:
+    """The JSON object at ``start`` and the offset past it, or ``(None, len(text))``."""
     try:
-        obj, _ = _DECODER.raw_decode(text, start)
-    except ValueError:
-        return None
-    return obj if isinstance(obj, dict) else None
+        obj, end = _DECODER.raw_decode(text, start)
+    except (ValueError, RecursionError):  # deeply nested JSON exhausts the C decoder
+        return None, len(text)
+    return (obj, end) if isinstance(obj, dict) else (None, len(text))
 
 
 def _arguments_ok(obj: dict) -> bool:
@@ -78,29 +89,31 @@ def _arguments_ok(obj: dict) -> bool:
     if isinstance(args, str):
         try:
             args = json.loads(args) if args.strip() else {}
-        except ValueError:
+        except (ValueError, RecursionError):
             return False
     return isinstance(args, dict)
 
 
-def _hermes_json(text: str) -> Iterator[tuple[int, str, str, bool]]:
+def _hermes_json(text: str) -> Iterator[_Match]:
     for m in _HERMES_OPEN_RE.finditer(text):
         close = text.find(_HERMES_CLOSE, m.end())
         body = text[m.end():close if close >= 0 else len(text)]
+        end = close + len(_HERMES_CLOSE) if close >= 0 else len(text)
         if "<function=" in body:
             continue  # Qwen3-coder XML inside <tool_call>: the XML scanner owns it.
         stripped = body.lstrip()
         if stripped.startswith("{"):
-            obj = _decode_object(text, m.end() + len(body) - len(stripped))
+            obj, obj_end = _decode_object(text, m.end() + len(body) - len(stripped))
             if obj is not None and isinstance(obj.get("name"), str):
-                yield m.start(), obj["name"], "hermes_json", close >= 0 and _arguments_ok(obj)
+                yield (m.start(), obj["name"], "hermes_json", close >= 0 and _arguments_ok(obj),
+                       end if close >= 0 else obj_end)
                 continue
         name = _JSON_NAME_RE.search(body)
         if name:
-            yield m.start(), name.group(1), "hermes_json", False
+            yield m.start(), name.group(1), "hermes_json", False, end
 
 
-def _xml_function(text: str) -> Iterator[tuple[int, str, str, bool]]:
+def _xml_function(text: str) -> Iterator[_Match]:
     for m in _XML_FUNCTION_RE.finditer(text):
         close = text.find("</function>", m.end())
         nxt = _XML_FUNCTION_RE.search(text, m.end())
@@ -108,42 +121,50 @@ def _xml_function(text: str) -> Iterator[tuple[int, str, str, bool]]:
             close = -1  # a second call opened before this one closed
         body = text[m.end():close if close >= 0 else len(text)]
         balanced = body.count("<parameter=") == body.count("</parameter>")
-        yield m.start(), m.group(1), "xml_function", close >= 0 and balanced
+        if close >= 0:
+            end = _XML_WRAPPER_CLOSE_RE.match(text, close + len("</function>")).end()
+        else:
+            end = nxt.start() if nxt else len(text)
+        yield m.start(), m.group(1), "xml_function", close >= 0 and balanced, end
 
 
-def _gemma(text: str) -> Iterator[tuple[int, str, str, bool]]:
+def _gemma(text: str) -> Iterator[_Match]:
     for m in _GEMMA_OPEN_RE.finditer(text):
         done = _GEMMA_COMPLETE_RE.match(text, m.end())
         complete = False
         if done:
             args = _GEMMA_QUOTED_RE.sub('""', done.group(1))
             complete = args.count("{") == args.count("}") and "<|" not in args
-        yield m.start(), m.group(1), "gemma", complete
+        yield m.start(), m.group(1), "gemma", complete, done.end() if done else len(text)
 
 
-def _harmony(text: str) -> Iterator[tuple[int, str, str, bool]]:
+def _harmony(text: str) -> Iterator[_Match]:
     for m in _HARMONY_RE.finditer(text):
         lead = _HARMONY_ARGS_RE.match(text, m.end())
-        obj = _decode_object(text, lead.end()) if lead else None
-        yield m.start(), m.group(1), "harmony", obj is not None
+        obj, end = _decode_object(text, lead.end()) if lead else (None, len(text))
+        if obj is not None:
+            end = _HARMONY_CALL_END_RE.match(text, end).end()
+        yield m.start(), m.group(1), "harmony", obj is not None, end
 
 
-def _bare_json(text: str) -> Iterator[tuple[int, str, str, bool]]:
+def _bare_json(text: str) -> Iterator[_Match]:
     for m in _BARE_JSON_RE.finditer(text):
-        obj = _decode_object(text, m.start())
-        yield m.start(), m.group(1), "bare_json", obj is not None and _arguments_ok(obj)
+        obj, end = _decode_object(text, m.start())
+        yield m.start(), m.group(1), "bare_json", obj is not None and _arguments_ok(obj), end
 
 
-_SCANNERS: tuple[Callable[[str], Iterator[tuple[int, str, str, bool]]], ...] = (
+_SCANNERS: tuple[Callable[[str], Iterator[_Match]], ...] = (
     _hermes_json, _xml_function, _gemma, _harmony, _bare_json,
 )
 
 
 def _xml_fragment(text: str, masked: str) -> Optional[LeakedToolCall]:
     # No known tool name is required here: closers at the very end of a reply are unambiguous.
-    if not masked.rstrip().endswith(_XML_FRAGMENT_CLOSERS) or _XML_OPENER_RE.search(masked):
+    # Cut at the reply's own last character: a trailing code block masks to blanks, not to its end.
+    if not masked[:len(text.rstrip())].endswith(_XML_FRAGMENT_CLOSERS) or _XML_OPENER_RE.search(masked):
         return None
-    return LeakedToolCall(name="", fmt="xml_fragment", snippet=text.rstrip()[-_SNIPPET_CHARS:], complete=False)
+    return LeakedToolCall(name="", fmt="xml_fragment", snippet=text.rstrip()[-_SNIPPET_CHARS:], complete=False,
+                          end=len(text))
 
 
 def _known(name: str, tool_names: Collection[str]) -> Optional[str]:
@@ -160,18 +181,35 @@ def find_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Optional[Le
     masked = _mask_code(text)
     # Every named match must name an offered tool: skip the scanners when none appears.
     named = any(name in text for name in tool_names)
-    best: Optional[tuple[int, str, str, bool]] = None
+    best: Optional[_Match] = None
     for scan in _SCANNERS if named else ():
-        for start, raw_name, fmt, complete in scan(masked):
+        for start, raw_name, fmt, complete, end in scan(masked):
             name = _known(raw_name, tool_names)
             if name:  # matches arrive in order: this is the scanner's earliest
                 if best is None or start < best[0]:
-                    best = (start, name, fmt, complete)
+                    best = (start, name, fmt, complete, end)
                 break
     if best is None:
         return _xml_fragment(text, masked)
-    start, name, fmt, complete = best
-    return LeakedToolCall(name=name, fmt=fmt, snippet=text[start:start + _SNIPPET_CHARS], complete=complete)
+    start, name, fmt, complete, end = best
+    return LeakedToolCall(name=name, fmt=fmt, snippet=text[start:start + _SNIPPET_CHARS], complete=complete,
+                          end=end)
+
+
+def find_trailing_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Optional[LeakedToolCall]:
+    """The leaked call ``text`` ends on (only whitespace after it), or None. Calls drafted mid-text
+    and then set aside are stepped past; an unclosed call runs to the end, so it always counts."""
+    if not isinstance(text, str):
+        return None
+    offset = 0
+    for _ in range(_MAX_TRAILING_SCANS):
+        leak = find_leaked_tool_call(text[offset:], tool_names)
+        if leak is None:
+            return None
+        offset += leak.end
+        if not text[offset:].strip():
+            return leak
+    return None
 
 
 def leaked_tool_call_nudge(call: LeakedToolCall, where: str) -> str:

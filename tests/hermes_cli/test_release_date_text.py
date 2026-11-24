@@ -3,6 +3,8 @@
 import datetime
 import time
 
+import pytest
+
 import hermes_cli
 from hermes_cli.version_info import VersionInfo
 
@@ -11,6 +13,7 @@ def _info(commit_date: int | None) -> VersionInfo:
     return VersionInfo("0.23.3", "0.23.3+4.gabcdef0", 4, "a" * 40, "main", "git", False, commit_date)
 
 
+@pytest.mark.platforms("posix")  # time.tzset() is POSIX-only
 def test_banner_prints_the_running_commit_date_in_compact_calver(monkeypatch):
     from hermes_cli import banner
 

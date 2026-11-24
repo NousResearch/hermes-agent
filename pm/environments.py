@@ -40,9 +40,10 @@ def named_install_state_dir() -> Path | None:
     A launcher names one when it starts Hermes on an interpreter it prepared, where the install's own
     state cannot be used: a sandbox that may read the selected environment and nothing else of
     ``installs/<key>`` still sees that folder, cannot read or lock it, and would end at start on it.
-    Such a process and its children keep their locks and markers in the named folder and run on the
-    interpreter they were started with (``_recorded_venv``). A value that is not an absolute path
-    names nothing.
+    Such a process and its children keep their locks and markers in the named folder. Start-up reads
+    nothing from it: the process is not restarted (``prepare_launch``), repairs nothing
+    (``recover_if_needed``) and selects no recorded environment (``activate_dependencies``). A value
+    that is not an absolute path names nothing.
     """
     # health: allow HX002 -- a launcher's fact about one process tree, read at start before any config loads
     value = os.environ.get("HERMES_INSTALL_STATE_DIR", "").strip()
@@ -489,7 +490,8 @@ def activate_dependencies(project_root: Path) -> None:
     import sys
 
     state = install_state_dir(project_root)
-    if state.is_dir():
+    # A folder a launcher named holds no selection of this process: nothing in it is read or replayed.
+    if named_install_state_dir() is None and state.is_dir():
         from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
         # The lock's holder may be another profile's backend running a full dependency rebuild;
         # this process only reads the committed selection, so it proceeds without waiting rather
@@ -510,7 +512,8 @@ def activate_dependencies(project_root: Path) -> None:
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
     else:
-        # Sealed payloads still select once, before imports.
+        # Sealed payloads still select once, before imports: the environment one ships is part of
+        # its tree, not of install state.
         # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
         environment = payload_venv(project_root)
         if environment is None:

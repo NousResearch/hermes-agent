@@ -4,6 +4,8 @@ It does so when it starts Hermes on an interpreter it prepared, somewhere the in
 used: a sandbox that may read the selected environment and nothing else of ``installs/<key>``. There the state
 folder is still seen, cannot be read or locked, and start-up ends on it.
 """
+import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -37,8 +39,8 @@ def _entries(folder: Path) -> list[str]:
 
 
 def test_a_process_with_a_named_state_folder_starts_on_the_interpreter_it_was_given(tmp_path, monkeypatch):
-    """It selects no environment, from the install's own state or from the named folder, and writes nothing into
-    the install's own state: its lock is taken in the named folder."""
+    """It selects no environment, from the install's own state or from the named folder, and start-up writes
+    nothing into either."""
     from pm import environments
 
     root = tmp_path / "repo"
@@ -49,7 +51,7 @@ def test_a_process_with_a_named_state_folder_starts_on_the_interpreter_it_was_gi
     _committed_environment(own, "committed", "the install's")
     named = tmp_path / "named"
     _committed_environment(named, "placed", "placed in the named folder")
-    before = _entries(own)
+    before, placed = _entries(own), _entries(named)
 
     code = ("import importlib.util, sys; from pathlib import Path; from pm.environments import activate_dependencies; "
             "activate_dependencies(Path(sys.argv[1])); print(importlib.util.find_spec('probe_package') is None)")
@@ -59,7 +61,7 @@ def test_a_process_with_a_named_state_folder_starts_on_the_interpreter_it_was_gi
     assert process.returncode == 0, process.stderr
     assert process.stdout.splitlines() == ["True"]
     assert _entries(own) == before
-    assert (named / "locks").is_dir()
+    assert _entries(named) == placed
 
 
 def test_a_process_with_a_named_state_folder_does_not_repair_the_install(tmp_path, monkeypatch):
@@ -120,6 +122,84 @@ def test_a_process_with_a_named_state_folder_is_not_restarted_and_completes_no_s
     assert venv_sync.prepare_launch(root, []) is None
     assert synced == [] and spawned == []
     assert list(named.iterdir()) == []
+
+
+def test_a_process_with_a_named_state_folder_leaves_an_unfinished_update_to_the_install(tmp_path, monkeypatch):
+    """An update that stopped half way leaves a marker in the checkout, and the next process of the install
+    repairs its dependencies. A process given another state folder is not that process: it repairs nothing and
+    leaves the marker as it is."""
+    from hermes_cli import _early_recovery
+    from pm import recovery
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    repaired = []
+    monkeypatch.setattr(recovery, "repair_dependencies", repaired.append)
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    assert _early_recovery.recover_if_needed(root, ["chat"]) is False
+    assert repaired == []
+    assert marker.read_text(encoding="utf-8") == '{"attempts": 0}'
+    assert _entries(named) == []
+
+
+@pytest.mark.parametrize("journal", ["damaged", "rollback"])
+def test_a_journal_placed_in_the_named_folder_is_not_replayed_at_start(tmp_path, journal):
+    """An install replays an unfinished publication at start, which can put a config file back. The named folder
+    is one its process can write, so a journal placed there is never replayed and never stops a start."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_bytes(b"model: kept\n")
+    named = tmp_path / "named"
+    named.mkdir()
+    row = "{" if journal == "damaged" else json.dumps({
+        "config": str(config), "previous": base64.b64encode(b"model: replaced\n").decode("ascii"),
+        "config_after": hashlib.sha256(config.read_bytes()).hexdigest(), "facts_before": None, "committed": False})
+    (named / "publication.json").write_text(row, encoding="utf-8")
+
+    code = ("import sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+            "activate_dependencies(Path(sys.argv[1]))")
+    process = subprocess.run([sys.executable, "-c", code, str(root)], text=True, capture_output=True, timeout=60,
+                             env={**os.environ, "HERMES_HOME": str(home), "HERMES_INSTALL_STATE_DIR": str(named)},
+                             check=False)
+
+    assert process.returncode == 0, process.stderr
+    assert config.read_bytes() == b"model: kept\n"
+    assert _entries(named) == ["publication.json"]
+
+
+def test_a_sealed_install_with_a_named_state_folder_still_runs_on_the_environment_it_ships(tmp_path):
+    """The environment a sealed install ships is part of its tree, named by the manifest beside it: no record of
+    install state, and its own interpreter carries no packages without it. A named state folder leaves it
+    selected, whatever is placed in the folder."""
+    payload = tmp_path / "payload"
+    root = payload / "repo"
+    root.mkdir(parents=True)
+    shipped = payload / "venv"
+    _site_of(shipped).mkdir(parents=True)
+    (shipped / "pyvenv.cfg").write_text("home = test", encoding="utf-8")
+    (_site_of(shipped) / "probe_package.py").write_text("version = 'shipped'", encoding="utf-8")
+    (payload / "manifest.json").write_text(json.dumps({"repo": "repo", "venv": "venv"}), encoding="utf-8")
+    named = tmp_path / "named"
+    _committed_environment(named, "placed", "placed in the named folder")
+
+    code = ("import sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+            "activate_dependencies(Path(sys.argv[1])); import probe_package; print(probe_package.version)")
+    process = subprocess.run([sys.executable, "-c", code, str(root)], text=True, capture_output=True, timeout=60,
+                             env={**os.environ, "HERMES_HOME": str(tmp_path / "home"),
+                                  "HERMES_INSTALL_STATE_DIR": str(named)}, check=False)
+
+    assert process.returncode == 0, process.stderr
+    assert process.stdout.splitlines() == ["shipped"]
 
 
 def test_a_kanban_worker_keeps_the_named_state_folder(tmp_path):

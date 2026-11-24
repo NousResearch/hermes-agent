@@ -336,8 +336,10 @@ Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 14% fills.
 
 The global rail (rail 16292:15233) carries no brand badge: Figma hides that layer and draws the
-window's traffic lights at the top of the column, so the destinations start 90px down on every host
-(clear of macOS lights), 30px navy tiles with 16px glyphs at .4 ink on a 50px pitch, the open one a
+window's traffic lights at the top of the column, so Figma starts the destinations 90px down on a 50px pitch; the
+build starts them at 77px on a 45px pitch, the developer rail's own start and rhythm, so the two
+rails share their rows (the lights sit in the 60px band above either way): 30px navy tiles with
+16px glyphs at .4 ink, the open one a
 brighter tile with its glyph in full ink; the foot (usage, Settings) carries 20px glyphs 40px off the
 floor, and Routines draws a clock. The rail never moves between states and has no edge of its own. The redesigned chat sidebar
 (340px, "Prod - Desktop" Panel 16292:15497) opens with its header (Top 16292:15498): the "Hermes"
@@ -888,10 +890,10 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 |---|---|---|---|
 | `--portal-rail-width` | `3.375rem` | ″ | The global rail and the developer rail: 54px, 12px either side of a 30px button, the inset the band's trailing cluster keeps from the window. Figma draws 60 (1036:7202); the owner asked for less canvas around the rails. app/shell/titlebar.ts mirrors the number for the band's lead. |
 | `--portal-rail-reserve` | `var(--portal-rail-width)` | ″ | What the rail takes from the layout: its width, none on compact, where it rides the sheet. `(max-width: 639.98px)`: `0px`. |
-| `--portal-rail-top` | `5.625rem` | ″ | The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every row), the destinations from 90px down on every host, clear of macOS traffic lights in the column; 30px buttons (the chrome row, the touch target on a coarse pointer), 20px apart, the foot's 40px off the window floor. Every glyph is 20px: Figma draws the destinations at 16 and the foot at 20, and the designer's review of the build (rev 11/16, 1260:39312) asks for 20 throughout. |
+| `--portal-rail-top` | `4.8125rem` | ″ | The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every row), the destinations from 77px down and 15px apart, the developer rail's own start and rhythm (Figma draws 90 and 20; two rails of the same buttons then never share a row), clear of the macOS traffic lights, which sit in the 60px band above; 30px buttons (the chrome row, the touch target on a coarse pointer), the foot's 40px off the window floor. Every glyph is 20px: Figma draws the destinations at 16 and the foot at 20, and the designer's review of the build (rev 11/16, 1260:39312) asks for 20 throughout. |
 | `--portal-rail-button` | `var(--portal-row-chrome)` | ″ |  |
 | `--portal-rail-glyph` | `1.25rem` | ″ |  |
-| `--portal-rail-gap` | `1.25rem` | ″ |  |
+| `--portal-rail-gap` | `0.9375rem` | ″ |  |
 | `--portal-rail-bottom` | `2.5rem` | ″ |  |
 | `--portal-rail-popover-offset` | `calc( (var(--portal-rail-width) - var(--portal-rail-button)) / 2 + var(--portal-space-tight) )` | ″ | A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. |
 | `--portal-panel-reveal-width` | `2.75rem` | ″ | The way back to a folded sidebar or page panel in Simple mode (1061:7816): a 44×40 floating button at the stage's top-leading corner, clear of the band. Advanced keeps it in the band. |

@@ -9,14 +9,15 @@
   /* What the rail takes from the layout: its width, none on compact, where it rides the sheet. */
   --portal-rail-reserve: var(--portal-rail-width);
   /* The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every
-     row), the destinations from 90px down on every host, clear of macOS traffic lights in the column;
-     30px buttons (the chrome row, the touch target on a coarse pointer), 20px apart, the foot's 40px
-     off the window floor. Every glyph is 20px: Figma draws the destinations at 16 and the foot at 20,
+     row), the destinations from 77px down and 15px apart, the developer rail's own start and rhythm
+     (Figma draws 90 and 20; two rails of the same buttons then never share a row), clear of the
+     macOS traffic lights, which sit in the 60px band above; 30px buttons (the chrome row, the touch
+     target on a coarse pointer), the foot's 40px off the window floor. Every glyph is 20px: Figma draws the destinations at 16 and the foot at 20,
      and the designer's review of the build (rev 11/16, 1260:39312) asks for 20 throughout. */
-  --portal-rail-top: 5.625rem;
+  --portal-rail-top: 4.8125rem;
   --portal-rail-button: var(--portal-row-chrome);
   --portal-rail-glyph: 1.25rem;
-  --portal-rail-gap: 1.25rem;
+  --portal-rail-gap: 0.9375rem;
   --portal-rail-bottom: 2.5rem;
   /* A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size
      (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. */

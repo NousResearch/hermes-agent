@@ -241,8 +241,9 @@
   padding-block: 1.0625rem 1.25rem;
 }
 
-/* The global rail runs from the window top, its destinations at --portal-rail-top (90px, clear of
-   native traffic lights in the column) on a 50px pitch, its foot 40px off the floor (16292:15233). It
+/* The global rail runs from the window top, its destinations at --portal-rail-top (77px, below the
+   band and its native traffic lights) on a 45px pitch, row for row with the developer rail, its
+   foot 40px off the floor (16292:15233). It
    reads the same on every destination and in every sidebar state: nothing in it moves. It sits on the
    canvas with no edge of its own: the workspace frame beside it carries the separation. */
 :root[data-shell='portal'] [data-slot='global-nav'].portal-rail {

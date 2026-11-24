@@ -218,6 +218,15 @@ def test_circling_reasoning_is_cut_and_the_turn_recovers_with_feedback(endpoint,
     assert guard_decisions == [("block", "circling_reasoning_cut"), ("retry", "repetition_recovery")]
 
 
+def test_the_recovery_call_keeps_the_output_cap_of_the_cut_call(endpoint):
+    server = endpoint(Reply(reasoning=_restated_plan(80)), Reply(content=_ANSWER))
+
+    _assert_recovered(server, _run(_agent(server)))
+
+    cut, retry = ({k: v for k, v in body.items() if k in ("max_tokens", "max_completion_tokens")} for body in server.bodies)
+    assert retry == cut  # no cap on the cut call, none on the recovery
+
+
 def test_a_model_that_circles_again_ends_the_turn_after_one_recovery(endpoint, guard_decisions):
     server = endpoint(Reply(reasoning=_restated_plan(80)))
 

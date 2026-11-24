@@ -483,7 +483,7 @@ def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional
         "_length_continuation_nudge": True,
     })
     agent._session_messages = st.messages
-    _retry.restart_with_length_continuation = True
+    _retry.restart_with_repetition_feedback = True
     return st.done("break")
 
 

@@ -425,6 +425,24 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_session import session_viewers
         return session_viewers()
 
+    def session_source(self) -> str:
+        """The label the calling local session was created with, or ``""`` (``plugin_session.session_source``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import session_source
+        return session_source()
+
+    def in_delegated_child(self, *, include_subprocesses: bool = False) -> bool:
+        """Whether the calling code runs for a ``delegate_task`` child (``plugin_session.in_delegated_child``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import in_delegated_child
+        return in_delegated_child(include_subprocesses=include_subprocesses)
+
+    def fork_origin(self) -> str:
+        """The detached fork's label, ``""`` for a regular agent (``plugin_session.fork_origin``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import fork_origin
+        return fork_origin()
+
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
         place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""

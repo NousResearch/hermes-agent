@@ -227,6 +227,14 @@
       ]
     },
     {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks",
+      "entries": [
+        "hermes_cli.plugin_session:session_source",
+        "hermes_cli.plugin_session:in_delegated_child",
+        "hermes_cli.plugin_session:fork_origin"
+      ]
+    },
+    {
       "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
       "entries": [
         "agent.file_safety:get_read_block_error",

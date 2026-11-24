@@ -2,13 +2,13 @@
 name: antemuse
 title: Antemuse
 repo: https://github.com/roosiq/antemuse-plugin
-sha: b19cca81d5a5ff90553e1ad715f042b9a3564a83
-description: "The agent takes a walk, daydreams, dreams, doomscrolls, or gets unstuck: a bounded change to how it works, with a dose rather than a duration. Walks step through WordNet, dreams recombine FrameNet roles, daydreams draw on stored memories, doomscrolls on live feeds. No model calls on the state path. Disclosure — By default, once per session, reads the last 14 days of your Hermes session messages (read-only) and your MEMORY.md/USER.md as daydream and dream material (turn off with the `session_scan` setting); dream reads commit subjects from the current git repository (or the repos you list in `dream_projects`); doomscroll fetches public RSS feeds from fixed news and comedy sites."
+sha: 2aec31aa6614b93d8da1f5ab463bd4454ba02c8c
+description: "Five short agent states, one at a time: walk, daydream, doomscroll, dream, unstuck. /walk takes 6 hops across the concept map and comes back with the path while your work keeps going. /daydream puts two things you said side by side. /doomscroll pulls 3 posts from public feeds. /dream mixes up your day. /unstuck suggests one next move from your day and the map. /explore is the map you fly yourself. No model calls on the state path. What it reads: daydream reads this chat's own recent messages. Dream and unstuck read this chat's own day - your messages and concepts the plugin served - and use local git commit subjects when the chat is in a repository. Doomscroll feed text is untrusted and never saved. A read-only scan of the last 14 days of sessions is controlled by the `session_scan` setting. What it keeps: a 60-entry state journal whose text is cut to 800 characters per entry, holding the material a state served and its closing account - for daydream, dream and unstuck that is drawn from what you said in this chat - plus at most 24 of your recent turns per chat at 400 characters each, for the last 8 chats. Feed text is never kept. Disclosure — By default, once per session, reads the last 14 days of your Hermes session messages (read-only) to steer walks away from ground you have covered (turn off with the `session_scan` setting); daydream, dream and unstuck use this chat's own recent messages, and the plugin keeps up to 24 of your recent turns per chat for the last 8 chats (400 characters each) plus a 60-entry state journal in its data folder; dream and unstuck read recent commit subjects, and walks read the README/AGENTS.md, from the chat's current git repository; walks can read corpus graph JSON files you place in the plugin's `graphs/` data folder; doomscroll fetches public RSS feeds from theonion.com, reddit.com (r/BrandNewSentence) and hnrss.org, sending no user data, and treats their text as untrusted and never stores it."
 maintainer: roosiq
 tier: community
-category: general
+category: desktop
 docs_url: https://github.com/roosiq/antemuse-plugin#readme
-version: "0.10.44"
+version: "0.12.14"
 requires_hermes: ">=0.21.6"
 platforms:
 - linux
@@ -29,11 +29,12 @@ capabilities:
   provides_middleware: []
   requires_env: []
 known_issues:
-- The picture is the desktop app's Antemuse pane only. Chat carries no visualization and a terminal gets the same text record; there is no terminal takeover since 0.10.30.
+- The picture is two desktop panes — the Antemuse map, and the cockpit /explore is flown in. Chat carries no visualization and a terminal gets the same text record; there is no terminal takeover since 0.10.30.
 - 'Windows: the installer and runtime are pure Python and the suite passes on Linux; there is no Windows-specific path, so the pane is expected to work but is unverified there.'
 - The exploration library (spark, keep, collider, selection) is present but runtime-gated behind experimental.enabled and makes no quality claim.
-image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/b19cca81d5a5ff90553e1ad715f042b9a3564a83/docs/screenshots/banner.png
+image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/2aec31aa6614b93d8da1f5ab463bd4454ba02c8c/docs/screenshots/banner.png
 screenshots:
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/b19cca81d5a5ff90553e1ad715f042b9a3564a83/docs/screenshots/pane-walk.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/b19cca81d5a5ff90553e1ad715f042b9a3564a83/docs/screenshots/return-account.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/b19cca81d5a5ff90553e1ad715f042b9a3564a83/docs/screenshots/blocked-tool.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/2aec31aa6614b93d8da1f5ab463bd4454ba02c8c/docs/screenshots/pane-walk.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/2aec31aa6614b93d8da1f5ab463bd4454ba02c8c/docs/screenshots/cockpit.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/2aec31aa6614b93d8da1f5ab463bd4454ba02c8c/docs/screenshots/return-account.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/2aec31aa6614b93d8da1f5ab463bd4454ba02c8c/docs/screenshots/blocked-tool.png

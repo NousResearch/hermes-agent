@@ -1250,6 +1250,10 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         if not exec_cmd:
             self._console_print(f"[bold red]{_t('cli.quick.no_command', command=base_cmd)}[/]")
             return True
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if refused := run_elsewhere_refusal():  # asked per command: this chat may predate the marker
+            self._console_print(f"[bold red]{refused}[/]")
+            return True
         try:
             # shell=True is intentional (user-authored config snippets, never LLM controlled);
             # the env is sanitized because this process holds every API key.
@@ -1639,7 +1643,8 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     def _create_worktree() -> None:
         try:
             # The session freezes this cwd: recorded so a resume recreates the tree quit removed (N8).
-            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=get_hermes_home() / "state.db")
+            from hermes_cli.worktree_ops import _retention_store
+            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=_retention_store())
         except Exception:
             logger.debug("worktree setup failed", exc_info=True)
             _wt_result["info"] = None

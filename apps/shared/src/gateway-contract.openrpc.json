@@ -187,6 +187,24 @@
       }
     },
     {
+      "name": "bot_delivery.list",
+      "summary": "Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotDeliveryListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotDeliveryListResult"
+        }
+      }
+    },
+    {
       "name": "bot_relay.deliver",
       "summary": "Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).",
       "params": [
@@ -309,6 +327,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CliExecResult"
+        }
+      }
+    },
+    {
+      "name": "client.activity",
+      "summary": "Whether the user is at this client, sent only when ``client.capabilities`` answered ``client_activity: true``; each report replaces the connection's last one, is kept in memory per connection and session, and grants nothing.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientActivityParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EmptyResult"
         }
       }
     },
@@ -3859,6 +3895,24 @@
       }
     },
     {
+      "name": "shared_metrics.desktop_long_frames",
+      "summary": "Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopLongFramesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsDesktopDailyResult"
+        }
+      }
+    },
+    {
       "name": "shared_metrics.desktop_onboarding",
       "summary": "Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on).",
       "params": [
@@ -5321,6 +5375,14 @@
         "title": "AgentsListResult",
         "type": "object"
       },
+      "ApprovalAccessLevel": {
+        "enum": [
+          "read",
+          "read_write"
+        ],
+        "title": "ApprovalAccessLevel",
+        "type": "string"
+      },
       "ApprovalCancelledPayload": {
         "additionalProperties": false,
         "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
@@ -5367,6 +5429,15 @@
           "deny"
         ],
         "title": "ApprovalChoice",
+        "type": "string"
+      },
+      "ApprovalKind": {
+        "enum": [
+          "command",
+          "access",
+          "network"
+        ],
+        "title": "ApprovalKind",
         "type": "string"
       },
       "ApprovalPendingParams": {
@@ -5459,7 +5530,7 @@
       },
       "ApprovalRequestParams": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.",
+        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.\n\n``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with\n``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``\n(``host``, and an optional display ``label``). ``risk`` is one short line shown under the\nfolder or site. On those two kinds ``once`` allows until the sandbox is switched off and\n``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.\n\nAn ``access`` request without a ``path`` and a ``network`` request without a ``host`` are\nrefused: the desktop answers with an error and shows no card. A card that outlives its turn\nstays on screen only while its sender lists it in ``approval.pending``: the desktop removes\na card that list does not name.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5545,6 +5616,76 @@
             ],
             "default": null,
             "title": "Gateway Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "access": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalAccessLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Host"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Risk"
           }
         },
         "required": [
@@ -5556,7 +5697,7 @@
       },
       "ApprovalRespondParams": {
         "additionalProperties": false,
-        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest.",
+        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason`` is\nwhy the user denied an ``access`` or ``network`` card; command approvals ignore it.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5609,6 +5750,18 @@
             ],
             "default": null,
             "title": "Request Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -5633,6 +5786,7 @@
       },
       "ApprovalResult": {
         "additionalProperties": false,
+        "description": "``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it.",
         "properties": {
           "choice": {
             "$ref": "#/components/schemas/ApprovalChoice"
@@ -5648,6 +5802,18 @@
             ],
             "default": null,
             "title": "All"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -7360,6 +7526,134 @@
         "title": "BillingStepUpVerificationPayload",
         "type": "object"
       },
+      "BotDeliveryListParams": {
+        "additionalProperties": false,
+        "description": "``profile`` is the SENDER bot; it routes the call to that profile's connection.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotDeliveryListParams",
+        "type": "object"
+      },
+      "BotDeliveryListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/BotDeliveryRow"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sender",
+          "deliveries"
+        ],
+        "title": "BotDeliveryListResult",
+        "type": "object"
+      },
+      "BotDeliveryRow": {
+        "additionalProperties": false,
+        "description": "``tools/bot_delivery_status.py::list_sender_deliveries``. ``since`` is the receipt's last\nwrite (epoch seconds); ``waiting_on`` is set for ``waiting_on_you``, ``reason`` (+ ``error``)\nfor ``failed`` \u2014 ``unknown_outcome`` means the target may have acted: never resend it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_handle": {
+            "title": "Target Handle",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BotDeliveryState"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Waiting On"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "target",
+          "target_handle",
+          "state",
+          "since",
+          "preview"
+        ],
+        "title": "BotDeliveryRow",
+        "type": "object"
+      },
+      "BotDeliveryState": {
+        "enum": [
+          "queued",
+          "claimed",
+          "working",
+          "waiting_on_you",
+          "failed"
+        ],
+        "title": "BotDeliveryState",
+        "type": "string"
+      },
       "BotRelayDeliverParams": {
         "additionalProperties": false,
         "description": "``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds).",
@@ -8157,7 +8451,7 @@
       },
       "CanonicalClientIdentity": {
         "additionalProperties": false,
-        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``).",
+        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and\n``mobile`` are known; another is kept off the label, not refused). Attribution only: on\n``session.create`` (owners advertising ``session-client-v1``) and in the per-connection hello\n(``client.capabilities`` ``client``).",
         "properties": {
           "name": {
             "title": "Name",
@@ -8174,6 +8468,18 @@
             ],
             "default": null,
             "title": "Version"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
           }
         },
         "required": [
@@ -8184,7 +8490,7 @@
       },
       "CanonicalClientLabel": {
         "additionalProperties": false,
-        "description": "The client a session's creator declared itself as (``session.create`` ``client``).",
+        "description": "The client a session's creator declared itself as (``session.create`` ``client``); ``kind`` only\nwhen it named one this owner knows.",
         "properties": {
           "name": {
             "title": "Name",
@@ -8201,6 +8507,18 @@
             ],
             "default": null,
             "title": "Version"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
           }
         },
         "required": [
@@ -12346,6 +12664,51 @@
         "title": "CliExecResult",
         "type": "object"
       },
+      "ClientActivityParams": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Sessions",
+            "type": "array"
+          },
+          "idle_seconds": {
+            "minimum": 0,
+            "title": "Idle Seconds",
+            "type": "number"
+          },
+          "basis": {
+            "enum": [
+              "system",
+              "page"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "can_alert": {
+            "default": true,
+            "title": "Can Alert",
+            "type": "boolean"
+          },
+          "away": {
+            "default": false,
+            "title": "Away",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessions",
+          "idle_seconds",
+          "basis"
+        ],
+        "title": "ClientActivityParams",
+        "type": "object"
+      },
       "ClientCapabilitiesParams": {
         "additionalProperties": false,
         "properties": {
@@ -12358,6 +12721,17 @@
             "default": false,
             "title": "Desktop Local",
             "type": "boolean"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "ClientCapabilitiesParams",
@@ -12381,6 +12755,11 @@
           "canonical_clarify_batch": {
             "default": false,
             "title": "Canonical Clarify Batch",
+            "type": "boolean"
+          },
+          "client_activity": {
+            "default": false,
+            "title": "Client Activity",
             "type": "boolean"
           }
         },
@@ -18550,6 +18929,12 @@
         "title": "EmptyRequestParams",
         "type": "object"
       },
+      "EmptyResult": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyResult",
+        "type": "object"
+      },
       "ErrorPayload": {
         "additionalProperties": false,
         "description": "Every ``_emit(\"error\", \u2026)`` site sets exactly ``message``.",
@@ -24364,7 +24749,7 @@
       },
       "MessageCompletePayload": {
         "additionalProperties": false,
-        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /\n``compute_host_bridge`` (``text`` + ``status``).",
+        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) /\n``compute_host_bridge`` (``text`` + ``status``).",
         "properties": {
           "text": {
             "anyOf": [
@@ -24550,6 +24935,18 @@
               }
             ],
             "default": null
+          },
+          "paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paused"
           }
         },
         "title": "MessageCompletePayload",
@@ -24779,7 +25176,7 @@
       },
       "MessageReaction": {
         "additionalProperties": true,
-        "description": "One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
+        "description": "One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is\nstamped once announced.",
         "properties": {
           "emoji": {
             "title": "Emoji",
@@ -33640,6 +34037,28 @@
             "default": {},
             "title": "Coverage",
             "type": "object"
+          },
+          "warming_off": {
+            "default": false,
+            "title": "Warming Off",
+            "type": "boolean"
+          },
+          "tier_pending": {
+            "default": false,
+            "title": "Tier Pending",
+            "type": "boolean"
+          },
+          "learned": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Learned"
           }
         },
         "required": [
@@ -39408,6 +39827,18 @@
             ],
             "default": null,
             "title": "Expected Hosted Task Id"
+          },
+          "resume": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resume"
           }
         },
         "required": [
@@ -39911,7 +40342,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
+        "description": "``operation`` + ``payload`` are validated by ``persistence.authority.runtime.parse_mutation``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -40039,7 +40470,7 @@
       },
       "SessionPruneParams": {
         "additionalProperties": false,
-        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "description": "Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
         "properties": {
           "filters": {
             "anyOf": [
@@ -42639,6 +43070,72 @@
           "detail"
         ],
         "title": "SharedMetricsDesktopFrictionParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFrameCount": {
+        "additionalProperties": false,
+        "description": "Long animation frames counted in one duration bucket while the window was visible.",
+        "properties": {
+          "bucket": {
+            "enum": [
+              "50ms_to_100ms",
+              "100ms_to_250ms",
+              "250ms_to_1s",
+              "1s_to_5s",
+              "gte_5s"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket",
+          "count"
+        ],
+        "title": "SharedMetricsDesktopLongFrameCount",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFramesParams": {
+        "additionalProperties": false,
+        "description": "One finished UTC day's long-frame histogram and visible window time, aggregated on the client.\n``day`` (YYYY-MM-DD) only latches a resend and is never recorded.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopLongFrameCount"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "visible_ms": {
+            "default": 0,
+            "title": "Visible Ms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "SharedMetricsDesktopLongFramesParams",
         "type": "object"
       },
       "SharedMetricsDesktopModeDay": {
@@ -51244,7 +51741,7 @@
   "x-server-requests": [
     {
       "name": "approval",
-      "summary": "A dangerous command awaits the user's decision.",
+      "summary": "A dangerous command, or a sandbox's folder or site request, awaits the user's decision.",
       "params": [
         {
           "name": "params",

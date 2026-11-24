@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $projectTree } from '@/store/project-tree'
+import { approvalKindFields, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import {
   $activeSessionId,
   $messagingSessions,
@@ -10,6 +11,7 @@ import {
   $unreadFinishedSessionIds
 } from '@/store/session'
 import {
+  $attentionSessionIds,
   $sessionStates,
   $sessionTiles,
   closeSessionTile,
@@ -41,6 +43,7 @@ beforeEach(() => {
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   $unreadFinishedSessionIds.set([])
+  clearAllPrompts()
 })
 
 describe('publish-time eviction', () => {
@@ -206,5 +209,28 @@ describe('closeSessionTile eviction', () => {
     publishSessionState('rt-1', state('stored-1', { busy: false }))
     expect($sessionStates.get()['rt-1']?.messages).toEqual([])
     expect($sessionStates.get()['rt-1']).toMatchObject({ storedSessionId: 'stored-1', busy: false })
+  })
+
+  it('keeps a chat marked as waiting when its tab is closed while a folder or site card is open', () => {
+    // Such a card outlives its turn: the session is settled and the person still owes an answer.
+    $sessions.set([makeSessionInfo({ id: 'stored-1' })])
+    $sessionTiles.set([{ runtimeId: 'rt-1', storedSessionId: 'stored-1' }])
+    publishSessionState('rt-1', state('stored-1', { busy: false }))
+    setApprovalRequest({
+      sessionId: 'rt-1',
+      command: '',
+      description: '',
+      requestId: 'card-1',
+      ...approvalKindFields({ access: 'read', kind: 'access', path: '/srv/data' })
+    })
+
+    closeSessionTile('stored-1')
+
+    expect($attentionSessionIds.get()).toContain('stored-1')
+
+    // Once the card is gone the chat is no longer marked.
+    clearAllPrompts('rt-1')
+
+    expect($attentionSessionIds.get()).not.toContain('stored-1')
   })
 })

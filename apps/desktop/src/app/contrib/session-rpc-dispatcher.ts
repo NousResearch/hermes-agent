@@ -58,6 +58,25 @@ export interface SessionRpcDispatcherDeps {
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
 }
 
+/** The owner the dispatcher routes a session RPC to from what is known now, before any probe.
+ *  Read-only, so a caller that must not dial can ask where a request would go. */
+export function sessionRpcOwner(routingSessionId: null | string, paramSessionId?: string): SessionOwnerScope {
+  return resolveSessionRpcOwner({
+    // An owner an inbound runtime event already proved for THIS session (#97511):
+    // the exact (connectionId, profile) of the socket that delivered its
+    // events. It outranks the connection-blind row/rung profile — the rung
+    // that makes two connections sharing a profile name collapse onto the
+    // primary socket (another machine) instead of the session's own.
+    eventOwner: storedSessionId =>
+      runtimeSessionOwner(storedSessionId) ??
+      (paramSessionId && paramSessionId !== storedSessionId ? runtimeSessionOwner(paramSessionId) : undefined),
+    routingSessionId,
+    sessionOwnerHint: storedSessionId => getSessionOwnerHint(storedSessionId),
+    sessionRowOwner: storedSessionId => knownSessionOwner(ownerLookupSessionRows(), storedSessionId),
+    tileOwnerRoute: sessionTileOwnerRoute
+  })
+}
+
 export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): AmbientGatewayRequest {
   const { ambientRequest, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef } = deps
 
@@ -75,20 +94,7 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
         undefined
     })
 
-    let owner: SessionOwnerScope = resolveSessionRpcOwner({
-      // An owner an inbound runtime event already proved for THIS session (#97511):
-      // the exact (connectionId, profile) of the socket that delivered its
-      // events. It outranks the connection-blind row/rung profile — the rung
-      // that makes two connections sharing a profile name collapse onto the
-      // primary socket (another machine) instead of the session's own.
-      eventOwner: storedSessionId =>
-        runtimeSessionOwner(storedSessionId) ??
-        (paramSessionId && paramSessionId !== storedSessionId ? runtimeSessionOwner(paramSessionId) : undefined),
-      routingSessionId,
-      sessionOwnerHint: storedSessionId => getSessionOwnerHint(storedSessionId),
-      sessionRowOwner: storedSessionId => knownSessionOwner(ownerLookupSessionRows(), storedSessionId),
-      tileOwnerRoute: sessionTileOwnerRoute
-    })
+    let owner = sessionRpcOwner(routingSessionId, paramSessionId)
 
     if (!owner && routingSessionId) {
       // Unknown owner for a REAL session: probe across profiles (REST, not the

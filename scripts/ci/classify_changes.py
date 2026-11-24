@@ -434,7 +434,7 @@ _SHARED_HUBS = frozenset({
     "hermes_cli/profiles.py",
     "hermes_cli/version_info.py",
     "utils/__init__.py",
-    "hermes_state.py",
+    "persistence_assembly.py",
     "agent/__init__.py",
     "cron/jobs.py",
     "tools/environments/local.py",
@@ -451,7 +451,10 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/e2e/",
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
-        "hermes_state",
+        "persistence/sqlite/",
+        # journal mode, WAL fallback and durability barriers; MOVES folds hermes_state_wal into it, so the
+        # guards see it under that oldest name
+        original_path("sqlite_support.py"),
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
         "tests/gateway/test_session_terminal_cwd_restart.py",
@@ -473,10 +476,14 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/update_",
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
-        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
-        "hermes_state_holders.py",
-        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
-        "hermes_state_fts.py",
+        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) and the search-index notice
+        # (hermes_cli/update_cmd_maint.py) read state.db through the store admin: its contract, the
+        # ledger probes and read-only URI, and the stored FTS layout read.
+        "persistence/core/admin.py",
+        "persistence/sqlite/admin/_backup.py",
+        "persistence/sqlite/_state/holders.py",
+        "persistence/sqlite/admin/_maintenance.py",
+        "persistence/sqlite/_schema_ddl.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",
@@ -488,6 +495,10 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_agent/__init__.py",
         "hermes_agent/compat/",
         "hermes_cli/main_install",
+        # The old-backend notice (hermes_cli/update_backend_notice.py) reads the backend-migration marker.
+        "hermes_cli/backend_migration_marker.py",
+        # The same notice asks whether a plugin runs the profile elsewhere, and prints nothing when one does.
+        "hermes_cli/profiles_run_elsewhere.py",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
         *_UPDATE_DEPENDENCIES,

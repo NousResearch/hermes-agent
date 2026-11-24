@@ -87,14 +87,20 @@ def _heal_exec_bit(binary: Path, *, heal: bool = True) -> bool:
 
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
-                        roots: tuple[Path, ...] | None = None, heal: bool = True):
+                        roots: tuple[Path, ...] | None = None, heal: bool = True,
+                        root_facts: dict[Path, Facts] | None = None):
     """Prefer the current pin. An explicit read may retain a prior PM install. ``heal=False``
-    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch)."""
+    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch).
+    ``root_facts`` maps each root to its already-read facts, for a caller looking up many packages."""
     search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
+    primary = paths.store_root() if root_facts is None else None
     fallback = None
     for root in search_roots:
         store = Store(root)
-        facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
+        if root_facts is not None:
+            facts = root_facts[root]
+        else:
+            facts = _facts() if root == primary else Facts(root / "facts.json")
         # Every row may hold the exact pin, but only the selected (first) row may be the outdated
         # fallback, never an older pin another install keeps; a later root's fallback still
         # replaces it, as before.
@@ -133,6 +139,8 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     if package.internal:
         raise ValueError(f"{name} is internal PM tooling, not an application package")
     target = current_target()
+    if package.native_abi_reason(target):
+        return None
     location = _installed_location(package, _lockfile(), target, allow_outdated=allow_outdated)
     if location is None:
         return None
@@ -211,7 +219,8 @@ def enabled_extras() -> list[str]:
 
 
 def is_installed(name: str) -> bool:
-    return _installed_location(get_package(name), _lockfile(), current_target()) is not None
+    package, target = get_package(name), current_target()
+    return package.native_abi_reason(target) is None and _installed_location(package, _lockfile(), target) is not None
 
 
 def sealed() -> bool:
@@ -478,7 +487,7 @@ def _install(
             package.name, "not in the lockfile", "add it with `hermes pm lock --bump`"
         )
 
-    reason = package.missing_reason(target)
+    reason = package.missing_reason(target) or package.native_abi_reason(target)
     if reason is not None:
         raise InstallError(package.name, f"unavailable on {target}: {reason}", "none")
 
@@ -634,6 +643,8 @@ def ensure(
         _operation.lock()
     missing = []
     for package in chain:
+        if reason := package.native_abi_reason(target):
+            raise InstallError(package.name, reason, "select a compatible package")
         identity = (package.name, lockfile.version(package.name), target,
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:
@@ -997,6 +1008,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
     ("ok" with ``venv_rebuild`` false) and refusals ("failed") both get
     a receipt. Plugin selection data is discovered and published by the worker
     under this lock; no executable transaction phases cross the process boundary."""
+    from pm.environments import refuse_dependency_change
+
+    refuse_dependency_change()  # before the receipt: nothing of this install is touched
     from pm import receipt
 
     token = receipt.begin("sync")
@@ -1128,11 +1142,18 @@ def _store_path_dirs() -> list[str]:
 
     lockfile = _lockfile()
     target = current_target()
+    # Resolved once per call, not once per package: each resolution walks the install stamp and
+    # payload manifest from disk and re-reads facts.json, and every terminal command composes this
+    # PATH (~11 ms -> <1 ms).
+    primary = paths.store_root()
+    roots = tuple(dict.fromkeys((primary, paths.writable_store_root())))
+    root_facts = {root: _facts() if root == primary else Facts(root / "facts.json") for root in roots}
     locations: dict[str, object] = {}
 
     def located(package):
         if package.name not in locations:
-            locations[package.name] = _installed_location(package, lockfile, target)
+            locations[package.name] = _installed_location(
+                package, lockfile, target, roots=roots, root_facts=root_facts)
         return locations[package.name]
 
     dirs: list[str] = []

@@ -232,7 +232,11 @@ function copyDomImage(imageUrl: string) {
   }
 }
 
-function domImageSection(target: ContextMenuDomTarget, copy: Translations['contextMenu'], openInApp: boolean): ReactNode[] {
+function domImageSection(
+  target: ContextMenuDomTarget,
+  copy: Translations['contextMenu'],
+  openInApp: boolean
+): ReactNode[] {
   const imageIsWeb = isWebUrl(target.imageUrl)
 
   return [
@@ -804,8 +808,16 @@ export function AppContextMenu() {
     >
       <DropdownMenuTrigger asChild>
         {/* A zero-size anchor at the click point: the menu positions against
-            it exactly like a real trigger. */}
-        <span aria-hidden style={{ left: open.x, position: 'fixed', top: open.y }} />
+            it exactly like a real trigger. Convert viewport click coords into
+            CSS px when the Webapp applies CSS zoom on <html>. */}
+        <span
+          aria-hidden
+          style={{
+            left: `calc(${open.x}px / var(--browser-ui-scale, 1))`,
+            position: 'fixed',
+            top: `calc(${open.y}px / var(--browser-ui-scale, 1))`
+          }}
+        />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"

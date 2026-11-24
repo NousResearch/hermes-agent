@@ -460,6 +460,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
         return None
+    from pm.environments import named_install_state_dir
+
+    if named_install_state_dir() is not None:
+        return None  # It keeps the interpreter its launcher chose; the install's update is not its to finish.
     stamp = read_install_stamp(root)
     if not stamp:
         from hermes_cli.post_update import step_adopt_blessed_checkout

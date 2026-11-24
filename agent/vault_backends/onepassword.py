@@ -44,6 +44,9 @@ class OnePasswordLoginBackend(LoginBackend):
     # ── auth ────────────────────────────────────────────────────────────────
 
     def _op(self) -> Path:
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if (refused := run_elsewhere_refusal()) is not None:  # that backend writes the binary_path named here
+            raise RuntimeError(refused)
         op = find_op(str(self.cfg.get("binary_path") or ""))
         if op is None:
             raise RuntimeError("1Password CLI (op) not found — install it or set vault.onepassword.binary_path")

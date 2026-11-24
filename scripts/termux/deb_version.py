@@ -6,7 +6,7 @@ tests/scripts/test_termux_deb_version.py (Task 4 of .hermes/plans/2026-08-31_ter
 
 Mapping:
     v1.2.3                              -> 1.2.3-1
-    v1.2.3+canary.20260831T120000Z      -> 1.2.3~canary.20260831T120000Z-1
+    canary.20260831T120000Z-v1.2.3      -> 1.2.3~canary.20260831T120000Z-1
 
 The ``~`` ranks the canary below the corresponding stable in dpkg's version
 ordering.
@@ -23,8 +23,8 @@ import re
 import sys
 
 _TAG_RE = re.compile(
-    r"^v(?P<major>0|[1-9]\d{0,2})\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-    r"(?:\+canary\.(?P<ts>20\d{6}T\d{6}Z))?$"
+    r"^(?:(?P<kind>canary|commit)\.(?P<ts>20\d{6}T\d{6}Z)-)?"
+    r"v(?P<major>0|[1-9]\d{0,2})\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
 )
 
 
@@ -33,7 +33,7 @@ def _match_tag(tag: str) -> re.Match[str]:
     if m is None:
         raise ValueError(
             f"malformed release tag {tag!r}: expected v<MAJOR>.<MINOR>.<PATCH> "
-            "or v<MAJOR>.<MINOR>.<PATCH>+canary.<UTC timestamp>"
+            "or canary|commit.<UTC timestamp>-v<MAJOR>.<MINOR>.<PATCH>"
         )
     return m
 
@@ -45,32 +45,42 @@ def deb_version_for_tag(tag: str) -> str:
     ts = m.group("ts")
     if ts is None:
         return f"{base}-1"
-    return f"{base}~canary.{ts}-1"
+    return f"{base}~{m.group('kind')}.{ts}-1"
+
+
+def release_version_for_tag(tag: str) -> str:
+    """The version a release tag carries: ``X.Y.Z``, ``X.Y.Z+canary.<stamp>`` or ``X.Y.Z+commit.<stamp>``.
+
+    The same value as hermes_cli.update_channel.release_version; build_deb.sh stamps it as the
+    package's base version and cannot import the application package.
+    """
+    m = _match_tag(tag)
+    base = f"{m.group('major')}.{m.group('minor')}.{m.group('patch')}"
+    return f"{base}+{m.group('kind')}.{m.group('ts')}" if m.group("ts") else base
 
 
 def channel_for_tag(tag: str) -> str:
-    """Map a release tag to its channel: 'canary' or 'stable'.
+    """Map a release tag to its channel: 'stable', 'canary' or 'commit'.
 
     Derived from the same _TAG_RE as deb_version_for_tag, so the two can never
     drift: a tag that yields a '~canary' deb version is canary, and the
-    malformed-tag rejection is identical.
+    malformed-tag rejection is identical. Commit builds never publish an APT repo.
     """
     m = _match_tag(tag)
-    return "canary" if m.group("ts") else "stable"
+    return m.group("kind") or "stable"
 
 
 def main(argv: list[str]) -> int:
     args = argv[1:]
-    channel_mode = False
-    if args and args[0] == "--channel":
-        channel_mode = True
+    mode = deb_version_for_tag
+    if args and args[0] in ("--channel", "--release-version"):
+        mode = channel_for_tag if args[0] == "--channel" else release_version_for_tag
         args = args[1:]
     if len(args) != 1:
-        mode = "deb_version.py --channel <tag>" if channel_mode else "deb_version.py <tag>"
-        print(f"usage: {mode}", file=sys.stderr)
+        print("usage: deb_version.py [--channel | --release-version] <tag>", file=sys.stderr)
         return 2
     try:
-        print(channel_for_tag(args[0]) if channel_mode else deb_version_for_tag(args[0]))
+        print(mode(args[0]))
     except ValueError as exc:
         print(f"deb_version: {exc}", file=sys.stderr)
         return 1

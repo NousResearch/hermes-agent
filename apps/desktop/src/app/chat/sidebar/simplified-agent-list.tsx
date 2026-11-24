@@ -179,8 +179,8 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
   const scroll = useAgentScroll(props)
   const open = useStore($portalAgentsSectionOpen)
   const hidden = useStore($hiddenSidebarAgents)
-  // The New agent dialog, for the machine whose "+" opened it (no owner is this window's own).
-  const [creating, setCreating] = useState<{ owner?: AgentSettingsOwner } | null>(null)
+  // The New agent dialog's owner: an agent of the machine whose "+" opened it.
+  const [creating, setCreating] = useState<AgentSettingsOwner | null>(null)
   useFleetRoster(true)
 
   // The badge counts what the section lists: hidden agents live in their own row below it.
@@ -203,7 +203,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       <div className="portal-section-body" hidden={!open}>
         <PortalAgentGroups
           {...props}
-          onNewAgent={owner => setCreating({ owner })}
+          onNewAgent={setCreating}
           onOpenAgent={agent => void openAgent(agent)}
           pending={pending}
           scrollRef={scroll}
@@ -211,7 +211,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       </div>
       {creating && (
         <Suspense fallback={null}>
-          <NewAgentDialog onClose={() => setCreating(null)} owner={creating.owner} />
+          <NewAgentDialog onClose={() => setCreating(null)} owner={creating} />
         </Suspense>
       )}
     </section>

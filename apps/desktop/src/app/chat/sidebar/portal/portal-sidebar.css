@@ -490,6 +490,8 @@ button.portal-section-title:hover {
 
 /* An action that waits (a machine that cannot take an agent yet) stays in place, stepped back. */
 .portal-sidebar .portal-section-action[aria-disabled='true'] {
+  background: none;
+  color: var(--portal-sidebar-label);
   opacity: var(--portal-text-quiet-opacity);
   cursor: default;
 }
@@ -810,6 +812,11 @@ button.portal-section-title:hover {
   text-overflow: ellipsis;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+/* The row's own action ends where the section headers' do. */
+[data-slot='gateway-heading'] > .portal-section-action {
+  margin-inline-end: 0.25rem;
 }
 
 /* The status ends on the row's 12px inset. */

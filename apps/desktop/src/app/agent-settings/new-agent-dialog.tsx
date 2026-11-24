@@ -5,8 +5,8 @@ import type { AgentSettingsOwner } from './data'
 import { newAgentTarget } from './new-agent-button'
 
 interface NewAgentDialogProps {
-  /** An agent of the machine the new one is made on; absent for the window's own. */
-  owner?: AgentSettingsOwner
+  /** An agent of the machine the new one is made on. */
+  owner: AgentSettingsOwner
   onClose: () => void
 }
 

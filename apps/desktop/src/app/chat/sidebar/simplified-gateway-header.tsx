@@ -33,8 +33,8 @@ interface SimplifiedGatewayHeaderProps {
   open: boolean
   /** Absent while a search holds the machine open: the row then stands as a disabled disclosure. */
   onToggle?: () => void
-  /** Start a new agent on this machine. */
-  onNewAgent: () => void
+  /** Start a new agent on this machine; absent while none of its installed agents is known. */
+  onNewAgent?: () => void
 }
 
 /** A machine row (Figma 147:7470): name with its organisation as a quiet inline tag, the status at
@@ -71,7 +71,10 @@ export function SimplifiedGatewayHeader({
     error: t.shell.gatewayMenu.offline
   }[state]
 
-  const newAgentLabel = state === 'open' ? t.profiles.newProfile : `${t.profiles.newProfile} · ${status}`
+  const canAdd = state === 'open' && onNewAgent !== undefined
+  // What it waits for: the machine itself, or its agents still being read.
+  const waiting = state === 'open' ? t.common.loading : status
+  const newAgentLabel = canAdd ? t.profiles.newProfile : `${t.profiles.newProfile} · ${waiting}`
 
   return (
     <div
@@ -109,13 +112,13 @@ export function SimplifiedGatewayHeader({
         <span aria-hidden className="portal-status-dot" />
         <span id={statusId}>{status}</span>
       </MachineStatusPopover>
-      {/* Only a connected machine can take an agent; elsewhere the button stays and says why. */}
+      {/* Only a connected machine whose agents are known can take one; else the button says why. */}
       <Tip label={newAgentLabel}>
         <Button
-          aria-disabled={state === 'open' ? undefined : true}
+          aria-disabled={canAdd ? undefined : true}
           aria-label={newAgentLabel}
           className="portal-section-action"
-          onClick={state === 'open' ? onNewAgent : undefined}
+          onClick={canAdd ? onNewAgent : undefined}
           size="icon-xs"
           variant="ghost"
         >

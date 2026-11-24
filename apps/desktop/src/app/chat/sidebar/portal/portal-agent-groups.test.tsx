@@ -1,0 +1,123 @@
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+
+import { $apiRequestScope } from '@/api/client'
+import { newAgentTarget } from '@/app/agent-settings/new-agent-button'
+import { StableNavigateProvider } from '@/app/stable-navigate'
+import { RootTooltipProvider } from '@/components/ui/tooltip'
+import { en } from '@/i18n/en'
+import { $fleetRoster } from '@/store/fleet-roster'
+import { $profiles } from '@/store/profile'
+import { $connection, $gatewayState } from '@/store/session'
+import { stubMenuDomApis } from '@/test/jsdom'
+
+import type { SimplifiedAgent } from '../use-simplified-agents'
+
+import { PortalAgentGroups } from './portal-agent-groups'
+
+const agent = (connectionId: string, profile: string, gateway: string): SimplifiedAgent => ({
+  connectionId,
+  gateway,
+  id: JSON.stringify([connectionId, profile]),
+  label: profile,
+  profile
+})
+
+const source = (connectionId: string) => ({ connectionId, reachable: true })
+const installed = (connectionId: string, profile: string) => ({ connectionId, profile })
+const onNewAgent = vi.fn()
+
+/** Studio is this window's machine; Lab box is another. */
+function mount(agents: SimplifiedAgent[]) {
+  return render(
+    <MemoryRouter>
+      <StableNavigateProvider>
+        <RootTooltipProvider>
+          <PortalAgentGroups
+            agents={{ agents, owner: 'studio', sessionsByAgent: new Map() }}
+            allSessions={[]}
+            expanded={{}}
+            onNewAgent={onNewAgent}
+            onOpenAgent={() => {}}
+            onResumeSession={() => {}}
+            onToggle={() => {}}
+            pending={null}
+            query=""
+            renderSessions={() => null}
+            scrollRef={{ current: null }}
+          />
+        </RootTooltipProvider>
+      </StableNavigateProvider>
+    </MemoryRouter>
+  )
+}
+
+const newAgentOn = (machine: string) =>
+  within(screen.getByRole('group', { name: machine })).getByRole('button', { name: new RegExp(`^${en.profiles.newProfile}`) })
+
+beforeEach(() => {
+  stubMenuDomApis()
+  onNewAgent.mockReset()
+  $gatewayState.set('open')
+  $connection.set({ connectionId: 'studio' } as never)
+  $fleetRoster.set({
+    agents: [installed('studio', 'default'), installed('lab', 'ops')],
+    sources: [source('studio'), source('lab')]
+  } as never)
+})
+
+afterEach(() => {
+  cleanup()
+  $fleetRoster.set(null)
+  $profiles.set([])
+  $connection.set(null)
+  $gatewayState.set('idle')
+  $apiRequestScope.set({ connectionId: null, profile: null })
+})
+
+it('gives every machine its own New agent, each for its own machine', () => {
+  mount([agent('studio', 'default', 'Studio'), agent('lab', 'ops', 'Lab box')])
+
+  fireEvent.click(newAgentOn('Lab box'))
+  expect(onNewAgent).toHaveBeenLastCalledWith({ connectionId: 'lab', profile: 'ops' })
+
+  fireEvent.click(newAgentOn('Studio'))
+  expect(onNewAgent).toHaveBeenLastCalledWith({ connectionId: 'studio', profile: 'default' })
+})
+
+it('makes the agent on the row’s machine while another machine’s agent is in front', () => {
+  mount([agent('studio', 'default', 'Studio'), agent('lab', 'ops', 'Lab box')])
+  // An agent of Lab box in front: requests are scoped to it.
+  $apiRequestScope.set({ connectionId: 'lab', profile: 'ops' })
+
+  fireEvent.click(newAgentOn('Studio'))
+
+  expect(newAgentTarget(onNewAgent.mock.lastCall?.[0]).owner).toEqual({ connectionId: 'studio', profile: 'default' })
+})
+
+it('borrows only an installed agent of the machine, and waits where it knows none', () => {
+  // Lab box is listed for a chat of a profile it no longer has; its roster names another.
+  mount([agent('studio', 'default', 'Studio'), agent('lab', 'aaa-gone', 'Lab box')])
+  fireEvent.click(newAgentOn('Lab box'))
+  expect(onNewAgent).toHaveBeenLastCalledWith({ connectionId: 'lab', profile: 'ops' })
+
+  cleanup()
+  onNewAgent.mockReset()
+  $fleetRoster.set({ agents: [installed('studio', 'default')], sources: [source('studio'), source('lab')] } as never)
+  mount([agent('studio', 'default', 'Studio'), agent('lab', 'aaa-gone', 'Lab box')])
+  fireEvent.click(newAgentOn('Lab box'))
+
+  expect(newAgentOn('Lab box').getAttribute('aria-disabled')).toBe('true')
+  expect(onNewAgent).not.toHaveBeenCalled()
+})
+
+it('reads this window’s own machine from its profile list where there is no roster', () => {
+  $fleetRoster.set(null)
+  $profiles.set([{ name: 'default' }] as never)
+  mount([agent('studio', 'default', 'Studio')])
+
+  fireEvent.click(newAgentOn('Studio'))
+
+  expect(onNewAgent).toHaveBeenLastCalledWith({ connectionId: 'studio', profile: 'default' })
+})

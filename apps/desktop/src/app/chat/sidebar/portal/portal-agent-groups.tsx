@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode, RefObject } from 'react'
 
 import type { AgentSettingsOwner } from '@/app/agent-settings/data'
+import { agentMachine } from '@/app/agent-settings/landing'
 import { SIDEBAR_PROFILE_GROUP_HEADER_AREA } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { FadeScroll } from '@/components/ui/fade-scroll'
@@ -13,8 +14,9 @@ import { ChevronDown, Plus } from '@/lib/icons'
 import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
+import { $fleetRoster } from '@/store/fleet-roster'
 import { recordIaAction } from '@/store/ia-metrics'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $sessionProfilesTruncated, $sessionProfilesUsage, knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
@@ -25,7 +27,7 @@ import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
-import { agentKey, agentOwner, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
+import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
 
 import { type AgentChatCount, agentChatCount } from './agent-chat-cap'
 import { PortalAgentMenu } from './portal-agent-menu'
@@ -40,9 +42,8 @@ interface PortalAgentGroupsProps {
   query: string
   pending: string | null
   onOpenAgent: (agent: SimplifiedAgent) => void
-  /** Start a new agent on the machine whose header was used: one of its agents, or nothing for the
-   *  window's own machine. */
-  onNewAgent: (owner?: AgentSettingsOwner) => void
+  /** Start a new agent on the machine whose header was used, named by one of its installed agents. */
+  onNewAgent: (owner: AgentSettingsOwner) => void
   onResumeSession: (id: string, row?: SessionInfo) => void
   scrollRef: RefObject<HTMLDivElement | null>
 }
@@ -154,6 +155,8 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const tiles = useStore($sessionTiles)
   const truncated = useStore($sessionProfilesTruncated)
   const usage = useStore($sessionProfilesUsage)
+  const roster = useStore($fleetRoster)
+  const profiles = useStore($profiles)
   const { agents, sessionsByAgent, owner } = props.agents
   const query = props.query.trim().toLowerCase()
   const chatsOf = (agent: SimplifiedAgent) => sessionsByAgent.get(agentKey(agent)) ?? []
@@ -210,16 +213,22 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
           const gatewayId = JSON.stringify(['gateway', connectionId])
           const open = Boolean(query) || (props.expanded[gatewayId] ?? true)
           const selected = connectionId === (activeConnection ?? owner)
-          const first = agents.find(agent => agent.connectionId === connectionId)!
-          const label = first.gateway
+          const label = agents.find(agent => agent.connectionId === connectionId)!.gateway
+          // An installed agent of the machine, from the roster or (this window's machine) its own
+          // profile list: a row listed only for its chats may be of a profile the machine no longer
+          // has, and the dialog reads and creates through this one.
+          const rostered = roster?.agents.find(agent => agent.connectionId === connectionId)
+          const installed = rostered ? rostered.targetProfile || rostered.profile : connectionId === owner ? profiles[0]?.name : undefined
 
           return (
             <div data-open={open && group.length > 0} data-slot="gateway-group" key={gatewayId}>
               <SimplifiedGatewayHeader
                 connectionId={connectionId}
                 label={label}
-                onNewAgent={() =>
-                  props.onNewAgent(connectionId && !selected ? { connectionId, profile: agentOwner(first).profile } : undefined)
+                onNewAgent={
+                  installed
+                    ? () => props.onNewAgent({ connectionId: agentMachine(connectionId), profile: installed })
+                    : undefined
                 }
                 onToggle={query ? undefined : () => props.onToggle(gatewayId, open)}
                 open={open}

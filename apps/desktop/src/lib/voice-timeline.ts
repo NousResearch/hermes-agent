@@ -75,6 +75,23 @@ export function setVoiceLevelSource(source: AnalyserNode | HTMLAudioElement) {
   levelSource = source
 }
 
+/** A whole clip in an `<audio>` element: one sentence, from when it starts playing until it ends. */
+export function followVoiceElement(audio: HTMLAudioElement, text: string) {
+  setVoiceLevelSource(audio)
+
+  audio.addEventListener(
+    'playing',
+    () => {
+      const endMs = Number.isFinite(audio.duration) ? audio.duration * 1000 : Infinity
+
+      publishVoiceSegment(text, [{ endMs, kind: 'sentence', startMs: 0, text }], performance.now() + outputLatencyMs)
+    },
+    { once: true }
+  )
+
+  audio.addEventListener('ended', () => extendVoiceSentence(performance.now() + outputLatencyMs), { once: true })
+}
+
 /** RMS loudness 0..1 of the voice now playing; 0 when nothing is. */
 export function readVoiceLevel(): number {
   if (!levelSource || $voice.get().status !== 'speaking') {

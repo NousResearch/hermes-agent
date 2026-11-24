@@ -6,6 +6,7 @@ import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/herm
 import { directTtsConfig, type DirectTtsConfig, synthesizeSpeechClientDirect } from '@/lib/voice-client-direct'
 import {
   extendVoiceSentence,
+  followVoiceElement,
   listenerMsForContextTime,
   publishVoiceSegment,
   setVoiceLevelSource,
@@ -318,7 +319,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
             playing = audio
-            setVoiceLevelSource(audio)
+            followVoiceElement(audio, sentence)
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
             void audio.play().catch(reject)
@@ -454,7 +455,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   liveStops.add(stop)
 
   const finishWhenDrained = () => {
-    const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
+    // Until the last audio is heard, not just handed to the device.
+    const remainingMs = context ? Math.max(0, listenerMsForContextTime(context, nextStartAt) - performance.now()) : 0
     window.setTimeout(() => settle('done'), remainingMs + 100)
   }
 
@@ -675,7 +677,7 @@ async function playSpeechDataUrl(
   const audio = new Audio(response.data_url)
   currentAudio = audio
   setVoicePlaybackState(currentState('speaking', options, audio))
-  setVoiceLevelSource(audio)
+  followVoiceElement(audio, speakableText)
 
   await new Promise<void>((resolve, reject) => {
     let stall: number | null = null

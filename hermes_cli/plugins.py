@@ -357,15 +357,30 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
 
     @property
     def owner_home(self) -> Path:
-        """The home this manager's code runs under (discovery, a plugin's calls, the plugin host): the name
-        the profile was opened by, while that name still leads to this manager's directory, because a marked
-        profile whose directory is a link out of the Hermes root is found by that name only. Once it doesn't
-        (the link was renamed or removed while the process kept this manager), the directory itself.
+        """The home this manager's code runs under (discovery, a plugin's calls, the plugin host): the profile's
+        name, because a marked profile whose directory is a link out of the Hermes root is found by that name
+        only. That is the name it was opened by while it still leads to this manager's directory; after a
+        rename, the name beside it that does. With no such name left, the directory itself.
         ``home_path`` stays the registries' key."""
         named = self._named_home
-        if named == self.home_path or os.path.normcase(os.path.realpath(named)) == self.scope_key:
+        if named == self.home_path or self._leads_here(named):
             return named
-        return self.home_path
+        renamed = next((p for p in self._profile_names_beside(named) if self._leads_here(p)), self.home_path)
+        self._named_home = renamed  # remembered: a name gone for good is not searched for at every bind
+        return renamed
+
+    def _leads_here(self, path: Path) -> bool:
+        return os.path.normcase(os.path.realpath(path)) == self.scope_key
+
+    @staticmethod
+    def _profile_names_beside(named: Path) -> list[Path]:
+        """The other named profiles of the root *named* is a profile of (none for a home outside ``profiles/``)."""
+        if named.parent.name != "profiles":
+            return []
+        try:
+            return sorted(p for p in named.parent.iterdir() if p.name != named.name and not p.name.startswith("."))
+        except OSError:
+            return []
 
     @property
     def has_gateway_message_injector(self) -> bool:

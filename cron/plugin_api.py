@@ -9,11 +9,26 @@ from __future__ import annotations
 
 import contextlib as _contextlib
 from pathlib import Path as _Path
-from typing import Any as _Any, Optional as _Optional
+from typing import TYPE_CHECKING as _TYPE_CHECKING, Any as _Any, Optional as _Optional
 
 from cron.jobs import AmbiguousJobReference
 
-__all__ = ["AmbiguousJobReference", "delivery_platforms", "ensure_named_job"]
+if _TYPE_CHECKING:
+    from cron.scheduler import CronSchedulerRegistrationError
+
+__all__ = [
+    "AmbiguousJobReference",
+    "CronSchedulerRegistrationError",
+    "delivery_platforms",
+    "ensure_named_job",
+]
+
+
+def __getattr__(name: str) -> _Any:
+    if name == "CronSchedulerRegistrationError":
+        from cron.scheduler import CronSchedulerRegistrationError
+        return CronSchedulerRegistrationError
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @_contextlib.contextmanager
@@ -107,31 +122,30 @@ def delivery_platforms(
 ) -> _Optional[tuple[str, ...]]:
     """The platforms cron would deliver a job's output to right now, lower-cased, in order.
 
-    ``job_id=None`` answers for the cron run bound in this process's calling context, and returns
-    ``None`` outside one: a hook in a plugin host has no such binding, so it passes
-    ``ctx.current_cron_execution().job_id``. ``None`` also when no stored job has that id. ``()`` for
-    a job that delivers nowhere. It reads the normal delivery lane; a ``failure_deliver`` override
-    is not consulted. The answer is the stored job's: an edit saved while a run is in
-    flight shows here, though that run delivers with the settings it started with. The
+    ``job_id=None`` answers for the cron run bound in this process's calling context using that
+    firing run's own delivery settings — edits or deletions saved to the job store mid-run do not
+    change the answer — and returns ``None`` outside one (or in a delegated child). A hook in a
+    plugin host has no cron run bound in its own process and calls ``ctx.cron_delivery_platforms()``
+    instead so the lookup runs in the gateway. Passing an explicit ``job_id`` previews the saved job
+    in the store (returning ``None`` when no stored job has that id). ``()`` means the job delivers
+    nowhere. It reads the normal delivery lane; a ``failure_deliver`` override is not consulted. The
     targets come from cron's own resolver, so ``all``, the ``origin`` fallback, home channels and
     Bot Chat tokens follow cron's rules. Only platform names are returned, never chat or thread ids.
     ``home`` runs the call against that profile's home, cron store and secrets; ``None`` when it
     is not an existing directory, which is not created.
     """
-    from cron.execution_identity import current_cron_execution
+    from cron.execution_identity import _current_cron_execution_job
     from cron.jobs import get_job
     from cron.scheduler_delivery import _resolve_delivery_targets
 
     home = _expanded(home)
     if home is not None and not home.is_dir():
         return None
-    if job_id is None:
-        run = current_cron_execution()
-        if run is None:
-            return None
-        job_id = run.job_id
+    firing_job = _current_cron_execution_job() if job_id is None else None
+    if job_id is None and firing_job is None:
+        return None
     with _home_scope(home):
-        job = get_job(job_id)
+        job = firing_job if job_id is None else get_job(job_id)
         if job is None:
             return None
         platforms = [str(target["platform"]).lower() for target in _resolve_delivery_targets(job)]

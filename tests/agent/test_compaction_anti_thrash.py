@@ -105,6 +105,21 @@ class TestSavingsBasis:
         assert cc._last_compression_savings_pct < 50
 
 class TestFutilityGuard:
+    def test_provider_usage_after_feasibility_skip_does_not_block_compression(self):
+        cc = _compressor(threshold_tokens=24_576)
+        prompt_tokens = cc.threshold_tokens + 100
+        cc.record_completed_compaction()
+        cc.update_from_response({"prompt_tokens": prompt_tokens})
+        assert cc.should_compress_info() == (True, None)
+
+        cc.record_completed_compaction(used_fallback=True, feasibility_skip=True)
+        cc.update_from_response({"prompt_tokens": prompt_tokens + 100})
+        assert cc.should_compress_info() == (True, None)
+
+        cc.record_completed_compaction()
+        cc.update_from_response({"prompt_tokens": prompt_tokens + 100})
+        assert cc.should_compress_info() == (False, "ineffective")
+
     def test_stops_when_floor_alone_meets_threshold(self):
         """Incompressible floor >= threshold -> shrinking messages cannot help."""
         cc = _compressor(threshold_tokens=24_576)

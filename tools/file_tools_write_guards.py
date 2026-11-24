@@ -146,8 +146,12 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             _writes_host_filesystem(task_id) and _same_existing_file(candidates[0], hermes_config))):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
-            "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+            "Agent cannot modify security-sensitive configuration with file tools. "
+            # The CLI is the sanctioned route (a change to the approval policy through it asks
+            # first), not editing this same file, and the profile's path differs per platform
+            # (%LOCALAPPDATA%\hermes on Windows), so none is named here (#150443).
+            "Change a setting with 'hermes config set <key> <value>' and read it back with "
+            "'hermes config get <key>'; 'hermes config path' prints where the file is.")
     # A hosted path names the tenant's sandbox, and its skills are not this host's: resolving it
     # against this profile's locked skills would stat host paths and name host skills.
     from tools.hosted_tool_policy import host_feature_enabled

@@ -1161,3 +1161,24 @@ def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
         reset_hermes_home_override(tok)
     assert err is not None and "Refusing to write to Hermes config file" in err
     assert other is None
+
+
+def test_config_refusal_names_the_cli_not_a_path_to_edit(tmp_path):
+    """The refusal sends the agent to `hermes config set`, not to editing the file it was just
+    refused, and names no ~/.hermes path, which is not where the profile is on Windows (#150443)."""
+    import tools.file_tools_write_guards as ft
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+    tok = set_hermes_home_override(str(home))
+    try:
+        err = ft._check_sensitive_path(str(home / "config.yaml"), "default")
+    finally:
+        reset_hermes_home_override(tok)
+    assert err is not None and "Refusing to write to Hermes config file" in err
+    assert "hermes config set <key> <value>" in err
+    assert "hermes config path" in err
+    assert "~/.hermes" not in err
+    assert "directly" not in err

@@ -10,7 +10,8 @@ import sys
 
 import pytest
 
-from hermes_cli import _launchers, doctor, doctor_platform
+from hermes_cli import _launchers, doctor, doctor_platform, env_loader
+from pm import environments
 from pm.environments import install_state_dir, site_packages
 
 
@@ -644,6 +645,24 @@ def test_command_installation_path_check_accepts_trailing_slash_or_other_path_sy
     rc_alt = doctor.run_doctor(Namespace(fix=False))
     assert rc_alt == 0
     assert "is not on your PATH" not in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+def test_path_check_ignores_a_path_only_the_hermes_env_file_sets(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    # A process whose startup put nothing in front of PATH, then loaded ~/.hermes/.env as main.py does.
+    monkeypatch.setattr(environments, "_inherited_path", None)
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    env_file = Path(os.environ["HERMES_HOME"]) / ".env"
+    env_file.write_text(f"PATH={link_dir}:${{PATH}}\n", encoding="utf-8")
+    env_loader.load_hermes_dotenv(hermes_home=env_file.parent, load_external_secrets=False)
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(link_dir)
+
+    # Hermes's own processes see the .env PATH; a new terminal never reads that file.
+    assert doctor.run_doctor(Namespace(fix=False)) == 1
+
+    assert "~/.local/bin is not on your PATH" in capsys.readouterr().out
 
 
 @pytest.mark.platforms("posix")

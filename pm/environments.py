@@ -529,7 +529,8 @@ def activate_dependencies(project_root: Path) -> None:
 
 
 # PATH as this process inherited it, kept before the first startup step that writes PATH: this
-# module's activate_dependencies() (Hermes's own command dirs) or pm.install.activate() (tool dirs).
+# module's activate_dependencies() (Hermes's own command dirs), pm.install.activate() (tool dirs) or
+# a PATH line in a Hermes .env file (hermes_cli.env_loader).
 _inherited_path: str | None = None
 
 

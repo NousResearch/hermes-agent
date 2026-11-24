@@ -13,6 +13,7 @@ import asyncio
 import base64
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -323,7 +324,12 @@ async def _resolve_container_fallback(
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+    # The payload is fenced between unique markers (as ``BaseEnvironment.fetch_file`` does), so text
+    # the transport or a login shell prints around it (e.g. ssh's ControlMaster-fallback lines when
+    # many reads run at once) cannot turn a readable image into "non-image data".
+    marker = f"__HERMES_IMG_{uuid.uuid4().hex[:12]}__"
+    cmd = (f"echo {marker}; head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'; "
+           f"echo; echo {marker}")
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
         last_res = await asyncio.to_thread(env.execute, cmd)
@@ -336,8 +342,12 @@ async def _resolve_container_fallback(
         first = next((ln.strip() for ln in diag if ln.strip()), "")
         suffix = f" ({first[:200]})" if first else ""
         raise SourceNotFound(f"could not read '{p}' inside the sandbox{suffix}", src=src, origin="container")
+    output = last_res.get("output") or ""
+    start, end = output.find(marker), output.rfind(marker)
+    # A reply without the fence (an env that returns the bare payload) is decoded whole, as before.
+    payload = output[start + len(marker):end] if start != -1 and end > start else output
     try:
-        data = base64.b64decode(last_res.get("output", ""), validate=True)
+        data = base64.b64decode("".join(payload.split()), validate=True)
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:

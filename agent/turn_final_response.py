@@ -120,7 +120,7 @@ def _reprompt_dropped_tool_call(agent: Any, final_msg: dict, assistant_message: 
                                 messages: Any, nudge: str) -> bool:
     """Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with
     empty tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls). False
-    is a genuine turn end, which clears both tool-call stall budgets."""
+    is a genuine turn end, which clears the stall budget."""
     if (
         finish_reason == "tool_calls"
         and not assistant_message.tool_calls
@@ -140,7 +140,6 @@ def _reprompt_dropped_tool_call(agent: Any, final_msg: dict, assistant_message: 
         _append_nudge_pair(agent, messages, final_msg, nudge)
         return True
     agent._dropped_toolcall_retries = 0
-    agent._leaked_toolcall_retries = 0
     return False
 
 
@@ -455,6 +454,7 @@ def finish_text_response(
     if _sg.continue_turn:
         final_response = None
         return _verdict("continue")
+    agent._leaked_toolcall_retries = 0  # only once accepted: a stop gate's follow-up keeps the spent budget
 
     # Plugins rewrite the reply BEFORE it is appended and flushed: SQLite treats a non-blank
     # assistant row as settled, so a transform after this write would reach the user but never

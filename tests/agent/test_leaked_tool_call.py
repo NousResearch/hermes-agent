@@ -11,6 +11,7 @@ the recovered text.
 from __future__ import annotations
 
 import logging
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -119,6 +120,15 @@ def test_trailing_call_closers_without_an_opener_are_a_fragment(text):
 ])
 def test_closers_that_are_not_a_trailing_fragment_are_ignored(text):
     assert find_leaked_tool_call(text, TOOLS) is None
+
+
+def test_long_code_block_reply_is_scanned_in_linear_time():
+    # _mask_code blanks a fenced block into one long run of spaces; a tail check that backtracks
+    # over that run took ~8 s on this 120 KB reply, and it runs on every final reply.
+    text = "Here is the file:\n```python\n" + "x = 1\n" * 20_000 + "```\nDone."
+    started = time.perf_counter()
+    assert find_leaked_tool_call(text, TOOLS) is None
+    assert time.perf_counter() - started < 2.0
 
 
 @pytest.mark.parametrize("xml", [
@@ -281,12 +291,46 @@ def test_budget_exhaustion_falls_through_with_a_warning(loop_agent, caplog):
     assert any("not executed" in s for s in statuses)
 
 
+def test_stop_gate_follow_up_keeps_the_spent_budget(loop_agent):
+    from tests.agent.test_run_agent import _mock_response
+
+    text = ('The tests are probably under /app.\n'
+            '<tool_call>{"name": "search_files", "arguments": {"path": "/app"}}</tool_call>')
+    leaked = [_mock_response(content="", finish_reason="stop", reasoning_content=text) for _ in range(4)]
+    notes = iter(["[System note: the language server reported problems in files you edited.]"])
+    # The third leak ends on the normal path and a stop gate sends the turn back once: the fourth
+    # leak finds the budget still spent instead of drawing a third nudge.
+    with patch("agent.turn_stop_gates._late_lsp_verdicts", side_effect=lambda agent: next(notes, None)):
+        result, statuses = _run(loop_agent, [*leaked, _mock_response(content="NEVER REACHED")])
+
+    assert sum("as text — re-prompting" in s for s in statuses) == 2
+    assert result["api_calls"] == 4
+
+
 def test_budget_resets_on_a_clean_final_answer(loop_agent):
     from tests.agent.test_run_agent import _mock_response
 
     leak = _mock_response(content="", finish_reason="stop", reasoning_content=LEAKED_REASONING)
     _run(loop_agent, [leak, leak, _mock_response(content="done", finish_reason="stop")])
     assert loop_agent._leaked_toolcall_retries == 0
+
+
+def test_budget_resets_on_a_real_tool_round(loop_agent):
+    from tests.agent.test_run_agent import _mock_response, _mock_tool_call
+
+    leak = _mock_response(content="", finish_reason="stop", reasoning_content=LEAKED_REASONING)
+    rounds = [_mock_response(content="", finish_reason="tool_calls",
+                             tool_calls=[_mock_tool_call(name="search_files", arguments='{"path": "/app"}')])
+              for _ in range(3)]
+    # Three leaks in one turn, each followed by the real call: every tool round restores the
+    # budget, so the third leak is still re-prompted instead of ending the turn.
+    with patch("model_tools.handle_function_call", return_value="ok"):
+        result, statuses = _run(loop_agent, [leak, rounds[0], leak, rounds[1], leak, rounds[2],
+                                             _mock_response(content="Done.", finish_reason="stop")])
+
+    assert result["final_response"] == "Done."
+    assert sum("as text — re-prompting" in s for s in statuses) == 3
+    assert not any("not executed" in s for s in statuses)
 
 
 def test_plain_reasoning_only_answer_is_still_promoted(loop_agent):

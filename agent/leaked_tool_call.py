@@ -31,8 +31,9 @@ _HARMONY_RE = re.compile(r"(?:^|(?<=[\s>|]))to=functions\.(" + _NAME + r")")
 _HARMONY_ARGS_RE = re.compile(r"[^\n{]{0,80}?(?:<\|message\|>)?\s*(?=\{)")
 _BARE_JSON_RE = re.compile(r'\{\s*"name"\s*:\s*"(' + _NAME + r')"\s*,\s*"(?:arguments|parameters)"\s*:')
 # The TAIL of an XML call ending the reply when the reasoning starts mid-call (seen on hosted
-# Nemotron 3.5): closers only, at the very end, with no opener anywhere in the text.
-_XML_FRAGMENT_TAIL_RE = re.compile(r"(?:\s*</(?:parameter|function|tool_call)>)+\s*\Z")
+# Nemotron 3.5): closers only, at the very end, with no opener anywhere in the text. A suffix test,
+# not a regex search: ``\s*`` backtracks quadratically over the blank runs ``_mask_code`` leaves.
+_XML_FRAGMENT_CLOSERS = ("</parameter>", "</function>", "</tool_call>")
 _XML_OPENER_RE = re.compile(r"<(?:function|parameter|tool_call)\b")
 
 _DECODER = json.JSONDecoder()
@@ -140,8 +141,7 @@ _SCANNERS: tuple[Callable[[str], Iterator[tuple[int, str, str, bool]]], ...] = (
 
 def _xml_fragment(text: str, masked: str) -> Optional[LeakedToolCall]:
     # No known tool name is required here: closers at the very end of a reply are unambiguous.
-    tail = _XML_FRAGMENT_TAIL_RE.search(masked)
-    if tail is None or _XML_OPENER_RE.search(masked):
+    if not masked.rstrip().endswith(_XML_FRAGMENT_CLOSERS) or _XML_OPENER_RE.search(masked):
         return None
     return LeakedToolCall(name="", fmt="xml_fragment", snippet=text.rstrip()[-_SNIPPET_CHARS:], complete=False)
 

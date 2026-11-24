@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -108,6 +109,61 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
         "assert cfg.api_key_env_vars == ('ZZZ_LATE_PROBE_KEY',), cfg\n"
         "assert cfg.inference_base_url == 'https://zzz-late-probe.example/v1', cfg\n",
     )
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+
+
+def test_overlapping_profile_scans_both_publish_to_the_picker(tmp_path):
+    names = ("parallel-probe-a", "parallel-probe-b")
+    for name in names:
+        _write_plugin(
+            tmp_path / name, name,
+            "from __main__ import wait_for_release\n"
+            f"wait_for_release({name!r})\n"
+            + _PLAIN_PROFILE.format(name=name, alias=f"{name}-alias", env="PARALLEL_PROBE_KEY"),
+        )
+
+    probe = _run_probe(tmp_path, dedent(f"""
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path
+        from threading import Event
+
+        import providers
+        from hermes_cli.models_catalog_static import CANONICAL_PROVIDERS
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root = Path({str(tmp_path)!r})
+        first, second = {names!r}
+        entered = {{name: Event() for name in (first, second)}}
+        release = {{name: Event() for name in (first, second)}}
+
+        def wait_for_release(name):
+            entered[name].set()
+            if not release[name].wait(10):
+                raise TimeoutError(name)
+
+        def discover(name):
+            token = set_hermes_home_override(root / name)
+            try:
+                return {{p.name for p in providers.list_providers()}}
+            finally:
+                reset_hermes_home_override(token)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a = pool.submit(discover, first)
+            try:
+                assert entered[first].wait(10)
+                b = pool.submit(discover, second)
+                assert entered[second].wait(10)
+                release[first].set()
+                assert first in a.result(timeout=10)
+            finally:
+                release[first].set()
+                release[second].set()
+            assert second in b.result(timeout=10)
+
+        slugs = {{entry.slug for entry in CANONICAL_PROVIDERS}}
+        assert {{first, second}} <= slugs, {{first, second}} - slugs
+    """))
     assert probe.returncode == 0, probe.stdout + probe.stderr
 
 

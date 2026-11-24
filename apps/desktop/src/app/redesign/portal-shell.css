@@ -558,13 +558,9 @@
     pointer-events: auto;
   }
 
-  & :is([data-slot='pane-tab-close'] > button, [data-slot='zone-minimize']) {
+  /* At rest only, so the buttons' own hover ink applies. */
+  & :is([data-slot='pane-tab-close'] > button, [data-slot='zone-minimize']):not(:hover, :focus-visible) {
     color: var(--portal-text-secondary);
-  }
-
-  /* The resting ink above outranks the buttons' own hover utility: say it again here. */
-  & :is([data-slot='pane-tab-close'] > button, [data-slot='zone-minimize']):is(:hover, :focus-visible) {
-    color: var(--ui-text-primary);
   }
 }
 

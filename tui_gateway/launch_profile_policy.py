@@ -204,7 +204,7 @@ def launch_terminal_env() -> dict[str, str]:
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
 
-def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
+def launch_secret_scope(launch_home: str | Path, *, frozen_templates: bool = False) -> dict[str, str]:
     """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
     (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
     its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
@@ -219,14 +219,19 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     not purely "stricter" for the launch tenant, it also changes which of the launch profile's own
     two values it sees. Env-only keys (systemd ``Environment=``, ``op run``, Compose) are unaffected:
     nothing in the files shadows them.
+
+    *frozen_templates* resolves the ``.env``'s ``${VAR}``s against that same launch env, frozen under
+    multiplexing, rather than the live one: for a caller that builds the mapping again later in a body
+    (the plugin host's launcher), which must not follow a write to the live env since the body bound.
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
     from gateway.bridged_env import follow_bridged_env
-    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
+    env = _launch_env()
+    scope = {k: v for k, v in env.items() if not _is_global_env(k)}
     # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
     # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
     follow_bridged_env(scope)
-    scope.update(build_profile_secret_scope(Path(launch_home)))
+    scope.update(build_profile_secret_scope(Path(launch_home), process_env=env if frozen_templates else None))
     return scope
 
 

@@ -74,15 +74,19 @@
   --artwork-h: 1113.51;
 }
 
-/* None (Settings › Appearance, the artwork switched off): Vanilla's ground with no image on it. The
-   panels keep their grain (--artwork-panel-noise), so the window is its colour and that texture. */
-:root.dark[data-shell='portal'][data-artwork-dark='none'] {
-  --portal-surface-canvas: var(--portal-artwork-ground-vanilla);
+/* None (Settings › Appearance, the artwork switched off): each theme's Vanilla ground with no image
+   on it. The panels keep their grain (--artwork-panel-noise), so the window is its colour and that
+   texture. */
+:root[data-shell='portal']:is(.dark[data-artwork-dark='none'], :not(.dark)[data-artwork-light='none']) {
   --artwork-image: linear-gradient(transparent);
   --artwork-x: 0;
   --artwork-y: 0;
   --artwork-w: 1280;
   --artwork-h: 880;
+}
+
+:root.dark[data-shell='portal'][data-artwork-dark='none'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-vanilla);
 }
 
 /* Wing (Group 2 16292:14353): the RGB wing (portal-wing.svg: blue .8 and its color-dodge fringes),
@@ -210,14 +214,8 @@
   --artwork-h: 1113.51;
 }
 
-/* Light, none: Light Vanilla's ground with no hatch. */
 :root[data-shell='portal']:not(.dark)[data-artwork-light='none'] {
   --portal-surface-canvas: var(--portal-artwork-ground-light);
-  --artwork-image: linear-gradient(transparent);
-  --artwork-x: 0;
-  --artwork-y: 0;
-  --artwork-w: 1280;
-  --artwork-h: 880;
 }
 
 /* Light Ascend (16292:27188): Ascend's photo, desaturated and its contrast lowered 8%, differenced

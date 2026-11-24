@@ -354,9 +354,9 @@ export function SimplifiedSessionList({
   const reorder = props.searching ? undefined : onReorder
 
   // Rows past the cap and in the other partition keep their places: only the moved ones trade slots.
-  const commit = (keys: string[]) => {
-    const byKey = new Map(ordered.map(row => [sessionRowKey(row), row]))
+  const byKey = new Map(ordered.map(row => [sessionRowKey(row), row]))
 
+  const commit = (keys: string[]) => {
     reorder?.(
       mergeVisibleReorder(
         ordered.map(row => sessionRowKey(row)),
@@ -382,11 +382,11 @@ export function SimplifiedSessionList({
   // feedback up there; dnd-kit's DragOverlay if the row should be seen all the way.
   const pinDrop: OutsideDrop = {
     accepts: key => {
-      const row = ordered.find(candidate => sessionRowKey(candidate) === key)
+      const row = byKey.get(key)
 
       return Boolean(row && !props.ambiguousIds.has(row.id) && !props.pinPending?.(row))
     },
-    onDrop: key => props.onUpdate(ordered.find(row => sessionRowKey(row) === key)!, 'pinned', true),
+    onDrop: key => props.onUpdate(byKey.get(key)!, 'pinned', true),
     target: () => queryVisible<HTMLElement>(PIN_DROP_SELECTOR)
   }
 

@@ -165,6 +165,7 @@ import { useTitlebarClusterCounts } from '../shell/band-tools'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
+  bandEndsAtWindow,
   TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
@@ -1300,6 +1301,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <ContribWiringContext.Provider value={api}>
         <div
           className="contents"
+          data-band-end={bandEndsAtWindow(nativeOverlayWidth) ? 'window' : undefined}
           style={
             {
               ...controlsVars,

@@ -157,7 +157,7 @@ function useRoutinesAlert(): string | undefined {
   return count ? copy.railAttention(count) : undefined
 }
 
-/** The redesign's 60px global rail (rail 16292:15233): destinations from the top, status and
+/** The redesign's global rail (rail 16292:15233): destinations from the top, status and
  *  settings at its foot. The brand moved to the chat sidebar's wordmark; Figma hides the rail's badge
  *  layer and draws the window's traffic lights in its place. Only the redesigned shell mounts it. */
 export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavProps) {

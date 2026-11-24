@@ -168,8 +168,9 @@
   /* The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the
      stage at 400), after the Back/Forward group. */
   --portal-session-tab-inset: 1.5625rem;
-  /* The band's trailing Agent settings ends 15px inside the workspace frame (settings-2 16292:15303):
-     the trailing cluster stands 12px off the window, the frame 10px, so the button steps 13px in. */
+  /* The band's trailing Agent settings (settings-2 16292:15303) steps 13px in from the trailing
+     cluster's end, which stands 12px off the window or beside the native caption buttons: 25px from
+     the window's end, 10px inside a frame that ends 15px from it. */
   --portal-band-trail-inset: 0.8125rem;
   /* Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). */
   --portal-row-chrome: 1.875rem;
@@ -181,13 +182,17 @@
   --portal-chrome-button-size: var(--portal-row-chrome);
 }
 
-/* Medium (breakpoints.ts: max-width 1023.98px). */
-/* Over the developer rail the band's trailing cluster ends on the rail's own column of buttons, not
-   inside a frame that no longer reaches the window's end. */
-:root[data-shell='portal'][data-developer-rail] {
-  --portal-band-trail-inset: 0rem;
+/* Over the developer rail, where it has a column, the band's trailing cluster ends on the rail's own
+   column of buttons. Only where the band runs to the window's end: beside native caption buttons
+   (Windows, Linux) the inset is the cluster's one gap from them, and the rail's column is not under
+   it anyway. */
+@media (min-width: 640px) {
+  :root[data-shell='portal'][data-developer-rail] [data-band-end='window'] {
+    --portal-band-trail-inset: 0rem;
+  }
 }
 
+/* Medium (breakpoints.ts: max-width 1023.98px). */
 @media (max-width: 1023.98px) {
   :root[data-shell='portal'] {
     --portal-settings-top: var(--portal-page-top);

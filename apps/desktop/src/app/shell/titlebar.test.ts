@@ -7,6 +7,7 @@ import { $connection } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
 
 import {
+  bandEndsAtWindow,
   MACOS_TAHOE_DARWIN_MAJOR,
   PORTAL_COMPACT_TITLEBAR_HEIGHT,
   PORTAL_RAIL_WIDTH,
@@ -78,6 +79,15 @@ describe('titlebarToolsRightCss', () => {
 
   it('matches the left edge inset on macOS fullscreen', () => {
     expect(titlebarToolsRightCss(0, { darwinMajor: 25, isFullscreen: true })).toBe(`${TITLEBAR_EDGE_INSET}px`)
+  })
+})
+
+describe('bandEndsAtWindow', () => {
+  it('is false beside native caption buttons and true where the corner is free', () => {
+    // Windows, Linux, WSLg: the caption overlay holds the corner.
+    expect(bandEndsAtWindow(144)).toBe(false)
+    // macOS (lights at the start) and the browser report no overlay.
+    expect(bandEndsAtWindow(0)).toBe(true)
   })
 })
 
@@ -154,7 +164,7 @@ describe('portalBandLeadingInset', () => {
     expect(portalBandLeadingInset(undefined, false, true)).toBe(150)
   })
 
-  it('aligns with the content inset (x=80) on Windows/Linux/web', () => {
+  it('aligns with the content inset, 20px into the frame, on Windows/Linux/web', () => {
     expect(portalBandLeadingInset(null, false, false)).toBe(PORTAL_RAIL_WIDTH + 20)
     expect(portalBandLeadingInset(undefined, false, false)).toBe(PORTAL_RAIL_WIDTH + 20)
   })
@@ -166,7 +176,8 @@ describe('portalBandLeadingInset', () => {
 
   it('moves in by the rail on a compact window, where the rail has no column', () => {
     expect(portalBandLeadingInset(null, false, false, true)).toBe(20)
-    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true, true)).toBe(150 - PORTAL_RAIL_WIDTH)
+    // The lights do not move with the rail: a compact macOS band still starts at 90.
+    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true, true)).toBe(90)
   })
 
   it('publishes the live start on the root for the band clusters and page toolbars', () => {

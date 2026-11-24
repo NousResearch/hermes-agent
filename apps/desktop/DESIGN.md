@@ -299,9 +299,12 @@ pane header buttons are chrome buttons (`--portal-surface-chrome*`); the open de
 pane wears the brand selection with a brand ring. The titlebar band is a shell property: 60px in the
 redesign (Figma's header; content starts at y 60), 34px classic (44px browser
 touch). Electron reads the shell choice from the shared UI preferences before
-creating a window and re-seats the macOS traffic lights (centred, in the rail
+creating a window and re-seats the macOS traffic lights (from x 23, over and past the rail
 column) and the Windows/Linux caption overlay when it flips
 (`electron/window-chrome.ts`); the popped-out Browser keeps the classic band.
+The band's trailing Agent settings steps `--portal-band-trail-inset` in from the cluster's end;
+over the developer rail that inset is 0 where the band runs to the window's end (macOS, the
+browser), so the button stands on the rail's column, and it stays beside native caption buttons.
 The band carries the leading cluster past the rail (Back and Forward through the window's own router
 history on every screen, `app/shell/history-position.ts`; a page with nothing behind it closes to the
 chat), the open session's title pill with "+" at the stage's leading edge, and the panel toggles at
@@ -954,7 +957,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-settings-nav-head-gap` | `3.5rem` | ″ |  |
 | `--portal-dialog-action-height` | `2.75rem` | ″ | The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. |
 | `--portal-session-tab-inset` | `1.5625rem` | ″ | The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the stage at 400), after the Back/Forward group. |
-| `--portal-band-trail-inset` | `0.8125rem` | ″ | The band's trailing Agent settings ends 15px inside the workspace frame (settings-2 16292:15303): the trailing cluster stands 12px off the window, the frame 10px, so the button steps 13px in. |
+| `--portal-band-trail-inset` | `0.8125rem` | ″ | The band's trailing Agent settings (settings-2 16292:15303) steps 13px in from the trailing cluster's end, which stands 12px off the window or beside the native caption buttons: 25px from the window's end, 10px inside a frame that ends 15px from it. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
 | `--portal-row-panel` | `2.5rem` | ″ | `(hover: hover) and (pointer: fine)` on `:root[data-shell='portal'][data-portal-density='compact']`: `2rem`; `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
 | `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |

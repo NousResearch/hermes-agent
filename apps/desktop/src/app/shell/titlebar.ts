@@ -87,6 +87,10 @@ export function titlebarControlsYNudge({
   return TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE
 }
 
+/** Whether the band's trailing cluster runs to the window's end: no native caption buttons hold
+ *  that corner (macOS keeps its lights at the start; the browser has none). */
+export const bandEndsAtWindow = (nativeOverlayWidth: number): boolean => nativeOverlayWidth <= 0
+
 /** Right-cluster inset — WCO width when present; macOS fullscreen matches left edge inset. */
 export function titlebarToolsRightCss(
   nativeOverlayWidth: number,
@@ -161,6 +165,8 @@ export const PORTAL_RAIL_WIDTH = 54
 /** Band controls clear macOS traffic lights, which Electron seats from x 23 whatever the rail's
  *  width: Figma's breadcrumb starts its Back/Forward group at x = 150 (navigation 16292:15284). */
 export const PORTAL_BAND_LEAD_MAC = 150
+/** The same, in a compact window: the lights do not move, and the band there starts at x = 90. */
+export const PORTAL_BAND_LEAD_MAC_COMPACT = 90
 /** With no native lights on the left (Windows/Linux and the browser report no position, macOS
  *  fullscreen hides them), controls align with the sidebar and page-nav text inset, 20px into the
  *  frame. */
@@ -191,10 +197,9 @@ export function portalBandLeadingInset(
   isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform),
   compact = false
 ): number {
-  const rail = compact ? PORTAL_RAIL_WIDTH : 0
+  if (windowLightsInRail(windowButtonPosition, isFullscreen, isMac)) {
+    return compact ? PORTAL_BAND_LEAD_MAC_COMPACT : PORTAL_BAND_LEAD_MAC
+  }
 
-  return (
-    (windowLightsInRail(windowButtonPosition, isFullscreen, isMac) ? PORTAL_BAND_LEAD_MAC : PORTAL_BAND_LEAD_PLAIN) -
-    rail
-  )
+  return PORTAL_BAND_LEAD_PLAIN - (compact ? PORTAL_RAIL_WIDTH : 0)
 }

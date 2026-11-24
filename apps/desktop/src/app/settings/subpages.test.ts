@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
 import { SECTIONS } from './constants'
@@ -145,5 +146,27 @@ describe('settings subpage routing', () => {
         TRANSLATIONS.en.settings.about.updates
       ])
     )
+  })
+
+  // Two controls act only through the native app's bridge. The redesign leaves them out of search
+  // where that bridge has no such member (the Webapp); the app itself, and classic anywhere, keep them.
+  it('offers the native-only controls in search where the app can act on them', () => {
+    const labels = () => settingSearchTargets(TRANSLATIONS.en).map(target => target.label)
+    const previous = window.hermesDesktop
+
+    try {
+      window.hermesDesktop = { ...previous, setDisableF12: () => undefined, setKeepAwake: () => undefined } as never
+      $shellChoice.set(true)
+      expect(labels()).toEqual(expect.arrayContaining(['Keep computer awake', 'Disable F12 DevTools']))
+
+      window.hermesDesktop = previous
+      expect(labels()).not.toContain('Keep computer awake')
+
+      $shellChoice.set(false)
+      expect(labels()).toEqual(expect.arrayContaining(['Keep computer awake', 'Disable F12 DevTools']))
+    } finally {
+      window.hermesDesktop = previous
+      $shellChoice.set(null)
+    }
   })
 })

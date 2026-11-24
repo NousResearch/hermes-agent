@@ -29,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _snapshot: Optional[dict[str, str]] = None
-# What the launch ``.env``'s ``${VAR}``s resolve against in the snapshot: it with this process's own dotenv
-# output peeled back, by the publication record of the capture (a later reload's no longer matches it).
-_snapshot_template_env: Optional[dict[str, str]] = None
+# This process's dotenv publication record when the snapshot froze. The launch ``.env``'s ``${VAR}``s
+# resolve against the snapshot with that output peeled back: by this record, as a later reload's no
+# longer matches the frozen values, applied to the snapshot as it is now, as it follows secret sources.
+_snapshot_dotenv_record: dict[str, tuple[Optional[str], str, int]] = {}
 # Per (profile home key, name): a secret-source write the frozen launch env holds — (source, value the
 # source put in the snapshot, the snapshot's value before the source's first write or None). Kept apart
 # from env_loader's ``os.environ`` write record on purpose: that record is dropped or retargeted whenever
@@ -46,22 +47,24 @@ def capture_launch_env() -> dict[str, str]:
     Called at activation, immediately before the first secondary home is registered as
     served — the last moment ambient env is provably the launch profile's.
     """
-    global _snapshot, _snapshot_template_env, _source_writes
+    global _snapshot, _snapshot_dotenv_record, _source_writes
     with _lock:
         if _snapshot is None:
             _snapshot = dict(os.environ)
-            loader = sys.modules.get("hermes_cli.env_loader")  # not imported yet: no dotenv output to peel
-            _snapshot_template_env = loader.dotenv_lookup_from(_snapshot) if loader is not None else dict(_snapshot)
+            loader = sys.modules.get("hermes_cli.env_loader")  # not imported yet: nothing published
+            _snapshot_dotenv_record = loader.dotenv_publication_record() if loader is not None else {}
             _source_writes = _source_writes_held_by(_snapshot)
         return dict(_snapshot)
 
 
 def launch_template_env() -> dict[str, str]:
     """What the launch ``.env``'s ``${VAR}``s resolve against in the frozen launch env (see
-    ``_snapshot_template_env``)."""
+    ``_snapshot_dotenv_record``)."""
     capture_launch_env()
     with _lock:
-        return dict(_snapshot_template_env)
+        snapshot, record = dict(_snapshot), _snapshot_dotenv_record
+    loader = sys.modules.get("hermes_cli.env_loader")
+    return loader.dotenv_lookup_from(snapshot, record) if loader is not None else snapshot
 
 
 def _source_writes_held_by(snapshot: dict[str, str]) -> dict[tuple[str, str], tuple[str, str, Optional[str]]]:

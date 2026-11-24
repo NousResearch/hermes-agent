@@ -3,7 +3,6 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $lastRoster } from '@/plugins/hermes-bots/data'
 import { botsText } from '@/plugins/hermes-bots/i18n'
-import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import type * as ScreenPortal from '@/plugins/hermes-bots/screen-portal'
 import { $gatewayState } from '@/store/session'
 
@@ -18,24 +17,10 @@ const plugin = vi.hoisted(() => ({
   route: null as unknown
 }))
 
-vi.mock('@/plugins/hermes-bots/i18n', async original => {
-  const module = await original<typeof BotsI18n>()
-
-  return { ...module, useBots: () => module.botsText() }
-})
-vi.mock('@/plugins/hermes-bots/screen-portal', async original => ({
-  ...(await original<typeof ScreenPortal>()),
-  profileScreenCommand: (route: unknown) => {
-    plugin.route = route
-
-    return { label: '', run: plugin.open }
-  },
-  useScreenPortalState: (bot: unknown) => {
-    plugin.bots.push(bot)
-
-    return { lease: null, status: null, tone: plugin.tone }
-  }
-}))
+vi.mock('@/plugins/hermes-bots/i18n', async original => (await import('@/test/bots-screen-mocks')).botsI18nMock(original))
+vi.mock('@/plugins/hermes-bots/screen-portal', async original =>
+  (await import('@/test/bots-screen-mocks')).screenPortalMock(original, plugin)
+)
 
 const copy = botsText().screen
 const OPS: SimplifiedAgent = { connectionId: 'lab', gateway: 'Lab box', id: 'lab/ops', label: 'ops', profile: 'ops' }

@@ -8,7 +8,6 @@ import { pluginSettingsRouteHref } from '@/contrib/settings-pages'
 import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { botsText } from '@/plugins/hermes-bots/i18n'
-import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import type * as GatewayStore from '@/store/gateway'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -54,20 +53,10 @@ vi.mock('@/app/chat/sidebar/simplified-bot-chat-row', async original => ({
   ...(await original<object>()),
   useBotModeLoaded: () => true
 }))
-vi.mock('@/plugins/hermes-bots/i18n', async original => {
-  const module = await original<typeof BotsI18n>()
-
-  return { ...module, useBots: () => module.botsText() }
-})
-vi.mock('@/plugins/hermes-bots/screen-portal', async original => ({
-  ...(await original<object>()),
-  profileScreenCommand: (route: unknown) => {
-    screenPlugin.route = route
-
-    return { label: '', run: screenPlugin.open }
-  },
-  useScreenPortalState: () => ({ lease: null, status: null, tone: screenPlugin.tone })
-}))
+vi.mock('@/plugins/hermes-bots/i18n', async original => (await import('@/test/bots-screen-mocks')).botsI18nMock(original))
+vi.mock('@/plugins/hermes-bots/screen-portal', async original =>
+  (await import('@/test/bots-screen-mocks')).screenPortalMock(original, screenPlugin)
+)
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })

@@ -13,7 +13,7 @@ import { $connection, $gatewayState } from '@/store/session'
 import { stubMenuDomApis } from '@/test/jsdom'
 
 import type * as BotChatRow from '../simplified-bot-chat-row'
-import type { SimplifiedAgent } from '../use-simplified-agents'
+import { agentKey, type SimplifiedAgent } from '../use-simplified-agents'
 
 import { useNewAgentOffers } from './new-agent-offers'
 import { PortalAgentGroups } from './portal-agent-groups'
@@ -44,7 +44,7 @@ function Groups(props: Omit<Parameters<typeof PortalAgentGroups>[0], 'newAgent'>
   return <PortalAgentGroups {...props} newAgent={useNewAgentOffers(props.agents)} />
 }
 
-function mount(agents: SimplifiedAgent[]) {
+function mount(agents: SimplifiedAgent[], expanded: Record<string, boolean> = {}) {
   return render(
     <MemoryRouter>
       <StableNavigateProvider>
@@ -52,7 +52,7 @@ function mount(agents: SimplifiedAgent[]) {
           <Groups
             agents={{ agents, owner: 'studio', sessionsByAgent: new Map() }}
             allSessions={[]}
-            expanded={{}}
+            expanded={expanded}
             onNewAgent={onNewAgent}
             onOpenAgent={() => {}}
             onResumeSession={() => {}}
@@ -161,4 +161,11 @@ it('keeps that to the machine the list was read from while another machine’s a
   mount([agent('studio', 'default', 'Studio'), agent('lab', 'ops', 'Lab box')])
 
   expect(screen.getAllByTestId('screen-row').map(row => row.dataset.agent)).toEqual(['default'])
+})
+
+it('reads no Screen for an agent whose card is folded', () => {
+  const studio = agent('studio', 'default', 'Studio')
+  mount([studio], { [agentKey(studio)]: false })
+
+  expect(screen.queryByTestId('screen-row')).toBeNull()
 })

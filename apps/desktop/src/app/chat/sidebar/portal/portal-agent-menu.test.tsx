@@ -2,11 +2,10 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { RootTooltipProvider } from '@/components/ui/tooltip'
-import { $botMeta } from '@/plugins/hermes-bots/data'
+import { $botMeta, botMetaKey } from '@/plugins/hermes-bots/data'
 import { botsText } from '@/plugins/hermes-bots/i18n'
-import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import type * as ScreenOpen from '@/plugins/hermes-bots/screen-open'
-import type * as ScreenPortal from '@/plugins/hermes-bots/screen-portal'
+import type { RosterRow } from '@/plugins/hermes-bots/types'
 import { stubMenuDomApis } from '@/test/jsdom'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
@@ -16,25 +15,17 @@ import { PortalAgentMenu } from './portal-agent-menu'
 const plugin = vi.hoisted(() => ({ loaded: true, open: vi.fn(), toggle: vi.fn(), route: null as unknown }))
 
 vi.mock('../simplified-bot-chat-row', () => ({ useBotModeLoaded: () => plugin.loaded }))
-vi.mock('@/plugins/hermes-bots/i18n', async original => {
-  const module = await original<typeof BotsI18n>()
-
-  return { ...module, useBots: () => module.BOTS_LOCALES.en }
-})
-vi.mock('@/plugins/hermes-bots/screen-portal', async original => ({
-  ...(await original<typeof ScreenPortal>()),
-  profileScreenCommand: (route: unknown) => {
-    plugin.route = route
-
-    return { label: '', run: plugin.open }
-  }
-}))
+vi.mock('@/plugins/hermes-bots/i18n', async original => (await import('@/test/bots-screen-mocks')).botsI18nMock(original))
+vi.mock('@/plugins/hermes-bots/screen-portal', async original =>
+  (await import('@/test/bots-screen-mocks')).screenPortalMock(original, plugin)
+)
 vi.mock('@/plugins/hermes-bots/screen-open', async original => ({
   ...(await original<typeof ScreenOpen>()),
   toggleBotScreenAutoOpen: plugin.toggle
 }))
 
 const copy = botsText().screen
+const LAB_OPS = { connectionId: 'lab', connectionKind: 'remote', name: 'ops', sourceScoped: true } as RosterRow
 const OPS: SimplifiedAgent = { connectionId: 'lab', gateway: 'Lab box', id: 'lab/ops', label: 'ops', profile: 'ops' }
 
 function openMenu() {
@@ -69,8 +60,10 @@ it('opens this agent’s Screen, whichever chat is in front', async () => {
 
 it('turns "open Screen when it is used" on and off for this agent, showing what is stored', async () => {
   openMenu()
+  // What classic stored for this agent, under the roster's own key for a row on another machine.
+  $botMeta.set({ [botMetaKey(LAB_OPS)]: { screenAutoOpen: true } })
   const item = await screen.findByRole('menuitemcheckbox', { name: copy.autoOpenMenu })
-  expect(item.getAttribute('aria-checked')).toBe('false')
+  expect(item.getAttribute('aria-checked')).toBe('true')
 
   fireEvent.click(item)
 

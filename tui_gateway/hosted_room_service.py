@@ -1230,9 +1230,8 @@ class HostedRoomService:
         member_activity = []
         for task in tasks:
             # Recovery keeps its durable uncertainty until a receipt arrives, even while the
-            # peer confirms the same attempt is running. Project that observation as live work.
+            # member confirms the same attempt is running. Project that observation as live work.
             recovered_active = (task["status"] == "indeterminate"
-                and self._member_is_peer(room_id, task_member_id(task))
                 and task_is_active(room_id, task["identity"].task_id, int(task["execution_generation"])))
             if task["status"] in _LIVE_STATUSES or recovered_active:
                 member_activity.append(_member_activity({**task, "status": "running"} if recovered_active else task))

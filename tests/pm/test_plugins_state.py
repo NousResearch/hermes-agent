@@ -225,3 +225,11 @@ def test_a_bundled_key_that_left_core_keeps_its_catalog_plugin_a_member(homes):
     (plugin / "pyproject.toml").write_text('[project]\ndependencies = ["playwright==1.64.0"]\n')
     _write_config(home, ["google_meet"])
     assert enabled_member_dirs() == [plugin]
+
+
+def test_an_install_in_flight_under_the_catalog_name_counts_for_the_old_key(homes):
+    """First install with only ``google_meet`` saved: the pending ``plugins/google-meet`` is the member."""
+    from pm.workspace import selected_plugin_dir
+    home, _ = homes
+    pending = home / "plugins" / "google-meet"
+    assert selected_plugin_dir(home / "plugins", "google_meet", installing=pending) == pending

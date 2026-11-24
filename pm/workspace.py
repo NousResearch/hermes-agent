@@ -367,17 +367,17 @@ def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None
     relative = Path(name)
     if relative.is_absolute() or ".." in relative.parts:
         raise InstallError("venv", f"invalid plugin key: {name}")
-    plugin_dir = plugins_dir / relative
-    if installing is not None and plugin_dir.resolve() == installing.resolve():
-        return plugin_dir
-    if not _is_directory(plugin_dir):
-        plugin_dir = paths.repo_root() / "plugins" / relative
-    if not _is_directory(plugin_dir):
-        # A bundled key that left core (``google_meet``) still selects its catalog plugin's tree
-        # (``google-meet``), as the loader's gate reads it, so the sync keeps that plugin's dependencies.
-        from hermes_cli.left_core_migration import legacy_plugin_alias
-        alias = legacy_plugin_alias(name)
-        plugin_dir = plugins_dir / alias if alias else plugin_dir
+    # A bundled key that left core (``google_meet``) still selects its catalog plugin's tree
+    # (``google-meet``), as the loader's gate reads it, so the sync keeps that plugin's dependencies;
+    # the alias is tried before core's tree because an install in flight does not exist on disk yet.
+    from hermes_cli.left_core_migration import legacy_plugin_alias
+    alias = legacy_plugin_alias(name)
+    candidates = [plugins_dir / relative, *([plugins_dir / alias] if alias else [])]
+    if installing is not None:
+        hit = next((c for c in candidates if c.resolve() == installing.resolve()), None)
+        if hit is not None:
+            return hit
+    plugin_dir = next((c for c in candidates if _is_directory(c)), paths.repo_root() / "plugins" / relative)
     return plugin_dir if _is_directory(plugin_dir) else None
 
 

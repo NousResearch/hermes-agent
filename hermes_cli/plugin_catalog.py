@@ -630,7 +630,11 @@ def live_removed_list() -> list[RemovedEntry]:
 
 
 def get_live_catalog_entry(name: str) -> Optional[PluginCatalogEntry]:
-    return next((e for e in load_catalog_live() if e.name == name), None)
+    """The live entry named *name*, or the one a bundled name that left core (``google_meet``) now names."""
+    from hermes_cli.left_core_migration import legacy_plugin_alias
+    names = {name, legacy_plugin_alias(name) or name}
+    entries = load_catalog_live()
+    return next((e for e in entries if e.name == name), None) or next((e for e in entries if e.name in names), None)
 
 
 # ── Human summaries ──────────────────────────────────────────────────────────

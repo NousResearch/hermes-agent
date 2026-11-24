@@ -1,6 +1,6 @@
 name: chat-backgrounds
 repo: https://github.com/samieshmil-blip/hermes-chat-backgrounds
-sha: 3ecb085ea2693065845335608ecbdc70d1ecb63f
+sha: f439cb6798c8f590b13df5d0336025da6bdd4d6a
 description: >-
   Per-chat background colour for the Hermes desktop. Every chat wears its own
   session colour, washed into the theme's own background, and the chat in focus
@@ -30,10 +30,10 @@ capabilities:
   provides_middleware: []
   requires_env: []
 screenshots:
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/3ecb085ea2693065845335608ecbdc70d1ecb63f/docs/hero.png
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/3ecb085ea2693065845335608ecbdc70d1ecb63f/docs/hero-light.png
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/3ecb085ea2693065845335608ecbdc70d1ecb63f/docs/variants.png
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/3ecb085ea2693065845335608ecbdc70d1ecb63f/docs/menu-session.png
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/3ecb085ea2693065845335608ecbdc70d1ecb63f/docs/menu-tab.png
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/3ecb085ea2693065845335608ecbdc70d1ecb63f/docs/picker.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/f439cb6798c8f590b13df5d0336025da6bdd4d6a/docs/hero.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/f439cb6798c8f590b13df5d0336025da6bdd4d6a/docs/hero-light.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/f439cb6798c8f590b13df5d0336025da6bdd4d6a/docs/variants.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/f439cb6798c8f590b13df5d0336025da6bdd4d6a/docs/menu-session.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/f439cb6798c8f590b13df5d0336025da6bdd4d6a/docs/menu-tab.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/f439cb6798c8f590b13df5d0336025da6bdd4d6a/docs/picker.png
 requires_hermes: ">=0.23.0"

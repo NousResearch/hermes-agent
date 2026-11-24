@@ -20,6 +20,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env`, or `hermes auth add openrouter --type oauth` (browser login via OpenRouter's PKCE flow; stores a key in the credential pool) |
 | **Ramp Router** | `RAMP_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `router`; aliases: `ramp-router`, `ramp`, `router.com`; Responses-native gateway, live account-scoped catalog) |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
+| **Cerebras** | `CEREBRAS_API_KEY` in `~/.hermes/.env` (provider: `cerebras`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
@@ -363,6 +364,12 @@ hermes migrate xai --apply  # rewrite ~/.hermes/config.yaml in place
 ```
 
 **xAI Web Search backend.** When the [Web Search](../user-guide/features/web-search.md) toolset is enabled, `web.backend: xai` routes search through xAI's hosted search endpoint using the same `XAI_API_KEY` / OAuth credentials. No additional setup required if xAI is already configured as a provider.
+
+### Cerebras
+
+Create an API key in the [Cerebras Cloud Console](https://cloud.cerebras.ai/) and select **Cerebras** in `hermes model`. For a direct run, set `CEREBRAS_API_KEY` in your profile's `.env` and run `hermes chat --provider cerebras --model qwen-3.8-27b`.
+
+Hermes reads the models available to your key from the Cerebras API. If the catalog is unavailable, the picker offers `qwen-3.8-27b` and `gpt-oss-120b`.
 
 ### NovitaAI
 
@@ -1259,7 +1266,6 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
 | [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
-| [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
 | [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | Enterprise OpenAI |

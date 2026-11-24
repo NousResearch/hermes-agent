@@ -8,7 +8,6 @@ Service is never touched), use uniquely named dummy entries, and delete them in 
 
 from __future__ import annotations
 
-import sys
 import uuid
 
 import pytest
@@ -16,6 +15,7 @@ from cryptography.fernet import Fernet
 
 from agent import vault_keychain as kc
 from agent.vault_store import VaultStore
+from hermes_platform.host.facts import os_family
 
 _LOGIN = {"identifier_type": "email", "identifier": "ci@example.com", "password": "dummy-pw-not-real-42"}
 _NO_SUCH_LOGON_SESSION = 1312
@@ -47,7 +47,7 @@ def os_keychain():
         backend = kc.os_keyring()
     except kc.KeychainUnavailable as exc:
         pytest.skip(f"no OS keychain on this host: {exc}")
-    if sys.platform == "win32":
+    if os_family() == "win32":
         _skip_without_logon_session(backend)
     made: list[dict] = []
     yield made

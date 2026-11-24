@@ -670,8 +670,8 @@ tool_loop_guardrails:
 # Repetition Guard
 # =============================================================================
 # A reasoning stream that keeps restating the same statements is cut mid-stream,
-# and the call is re-issued with a message naming what was repeated and asking
-# for one different action or a blocker report. The cut reasoning is dropped.
+# and the call is re-issued with a message saying how often it repeated itself and
+# asking for one different action or a blocker report. The cut reasoning is dropped.
 repetition_guard:
   circling:
     enabled: true

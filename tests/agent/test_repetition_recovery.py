@@ -1,7 +1,7 @@
 """After a reply is cut for repetition, the turn re-issues the call with feedback, bounded per turn.
 
-The cut reply is dropped, never replayed (#112764), and the re-issued request names the
-statements the model kept restating. ``repetition_guard`` in config.yaml turns the circling watch
+The cut reply is dropped, never replayed (#112764), and the re-issued request says how often the
+model restated itself without quoting the reasoning. ``repetition_guard`` in config.yaml turns the circling watch
 off, bounds the recoveries, and can send the re-issued call with reasoning off. Every turn here is
 a real ``AIAgent`` against a scripted local endpoint; the circling text is synthetic.
 """
@@ -200,8 +200,9 @@ def _assert_recovered(server: _Endpoint, result: dict, requests: int = 2) -> Non
     assert len(server.bodies) == requests
     retry = server.requests[1]
     assert _FEEDBACK_MARK in retry
-    assert _PLAN[1] not in retry  # the cut reasoning is never replayed
-    assert not any(_PLAN[1] in json.dumps(m, ensure_ascii=False) for m in result["messages"])
+    assert not any(statement.lower() in retry.lower() for statement in _PLAN)  # the cut reasoning is never replayed
+    assert not any(statement.lower() in json.dumps(m, ensure_ascii=False).lower()
+                   for m in result["messages"] for statement in _PLAN)  # nor stored in the user's row
 
 
 @pytest.mark.parametrize("api_mode", [_CHAT, _ANTHROPIC])
@@ -234,8 +235,8 @@ def test_a_model_that_circles_again_ends_the_turn_after_one_recovery(endpoint, g
 
     assert (result["completed"], result["failure_reason"]) == (False, "truncated")
     assert "Repetition Detected" in result["final_response"]
-    assert "kept restating" in result["final_response"]  # the user sees what was repeated
-    assert any(statement.lower() in result["final_response"] for statement in _PLAN)
+    assert "restated the same statements" in result["final_response"]
+    assert not any(statement.lower() in result["final_response"].lower() for statement in _PLAN)  # reasoning stays private
     assert len(server.bodies) == 2  # the first call and one recovery, never a third
     assert (result["repetition"]["cuts"], result["repetition"]["recoveries"]) == (2, 1)
     assert ("halt", "repetition_recovery_exhausted") in guard_decisions

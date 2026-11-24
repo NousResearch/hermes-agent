@@ -83,14 +83,15 @@ class TestCirclingStreamWatch:
 
         assert loose < strict
 
-    def test_feedback_names_the_most_repeated_statements(self):
+    def test_feedback_counts_the_repeats_and_quotes_no_reasoning(self):
         watch = CirclingStreamWatch()
         _fired_at(watch, restated_plan(80))
 
         message = recovery_feedback(watch.repeated_units())
 
         assert message.startswith("[System: ")
-        assert any(sentence.lower() in message for sentence in PLAN)
+        assert f"{watch.repeated_units()[0][0]} times" in message
+        assert not any(sentence.lower() in message.lower() for sentence in PLAN)
         assert "blocker report" in message
 
 

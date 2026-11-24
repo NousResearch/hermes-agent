@@ -2349,10 +2349,10 @@ Legitimately slow work is not penalized: streaming responses, tool heartbeats (e
 A reasoning model can spend a whole reply restating the same plan without acting: the same few
 statements come back every few thousand characters with other text in between. Hermes watches the
 reasoning stream while it arrives and cuts it once the reply is circling, then re-issues the call
-with a short message that names the repeated statements and asks for one different concrete action
-or a blocker report. The cut reasoning is dropped, never replayed. If the re-issued call is cut too,
-the turn ends with "Response Stopped — Repetition Detected" and the statements the model kept
-restating.
+with a short message that says how often the reply restated itself and asks for one different
+concrete action or a blocker report. The cut reasoning is dropped, never replayed or quoted. If the
+re-issued call is cut too, the turn ends with "Response Stopped — Repetition Detected" and how often
+the reasoning repeated itself.
 
 ```yaml
 repetition_guard:

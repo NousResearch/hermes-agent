@@ -454,7 +454,7 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
 
 
 def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
-    """Re-issue the call with feedback naming the repeated statements, up to
+    """Re-issue the call with feedback counting the repeated statements, up to
     ``repetition_guard.recovery.max_attempts`` times per turn; None once they are spent. The cut
     reply is dropped, never replayed: looped text in the next request re-seeds the loop (#112764)."""
     from agent.circling_guard import DEFAULT_RECOVERY_ATTEMPTS, recovery_feedback, repetition_turn
@@ -488,7 +488,7 @@ def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional
 
 
 def _end_turn_on_repetition_cut(st: _Trunc) -> TruncationVerdict:
-    """Recoveries spent (or off): end the turn, naming what the model kept restating."""
+    """Recoveries spent (or off): end the turn, saying how often the model restated itself."""
     from agent.circling_guard import repeated_statements_copy, repetition_result, repetition_turn
     from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision
 

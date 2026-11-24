@@ -317,11 +317,12 @@ _FEEDBACK_UNIT_CHARS = 160
 def recovery_feedback(repeated: Sequence[tuple[int, str]] | None) -> str:
     """The message sent in place of a reply that was cut for circling.
 
-    It names what was repeated and asks for one different concrete action or a blocker report.
-    The cut reply itself is never replayed: looped text in the next request re-seeds the loop (#112764).
+    It says how often a statement came back and asks for one different concrete action or a blocker
+    report. It quotes none of the reasoning: this row is stored with the turn (merged into the user's
+    own row when it follows it), shown on resume and replayed in every later request. The cut reply
+    itself is never replayed: looped text in the next request re-seeds the loop (#112764).
     """
-    examples = ", ".join(f'"{unit[:_FEEDBACK_UNIT_CHARS]}" ({count} times)' for count, unit in (repeated or [])[:2])
-    restated = f", for example: {examples}" if examples else ""
+    restated = f" (one of them {repeated[0][0]} times)" if repeated else ""
     return (
         "[System: Your previous reply was stopped because it kept restating the same statements without "
         f"acting{restated}. Do not deliberate over this again. Either make exactly one concrete tool call that "
@@ -331,8 +332,8 @@ def recovery_feedback(repeated: Sequence[tuple[int, str]] | None) -> str:
 
 
 def repeated_statements_copy(repeated: Sequence[tuple[int, str]] | None) -> str:
-    """Appended to the final copy once the recoveries are spent: what the model kept restating."""
+    """Appended to the final copy once the recoveries are spent. Counts only: reasoning is private on
+    most routes, so none of its text reaches the visible reply (#111761)."""
     if not repeated:
         return ""
-    lines = "\n".join(f'- "{unit[:_FEEDBACK_UNIT_CHARS]}" ({count} times)' for count, unit in repeated[:3])
-    return f"\n\nThe reply kept restating:\n{lines}"
+    return f"\n\nThe reasoning restated the same statements up to {repeated[0][0]} times."

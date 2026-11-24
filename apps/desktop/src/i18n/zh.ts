@@ -3967,9 +3967,10 @@ export const zhOverrides = {
       low: '低',
       medium: '中',
       high: '高',
-      xhigh: '极高',
+      // Ascends with EFFORT_LADDER (high < xhigh < max < ultra): 最高 is max, 极限 is the tier above it
+      xhigh: '超高',
       max: '最高',
-      ultra: '超高',
+      ultra: '极限',
       sendsOnRoute: (level: string) => `此路由实际发送 ${level}`,
       updateFailed: '模型选项更新失败',
       fastFailed: '快速模式更新失败',

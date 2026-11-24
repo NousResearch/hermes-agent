@@ -1093,9 +1093,11 @@ class DockerEnvironment(BaseEnvironment):
         passthrough_env, unset_names = self._resolve_passthrough_env()
         return _name_only_env_args(passthrough_env), tuple(sorted(unset_names)), dict(passthrough_env)
 
+    supports_secret_env = True
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None, secret_env: dict[str, str] | None = None) -> subprocess.Popen:
         """Spawn bash inside the container. Init seeds the snapshot; profile-scoped passthrough
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
@@ -1120,6 +1122,11 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
+        if secret_env:
+            for key in secret_env:
+                cmd.extend(["-e", key])
+            env_values.update(secret_env)
+            unset_names = tuple(name for name in unset_names if name not in secret_env)
         cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)

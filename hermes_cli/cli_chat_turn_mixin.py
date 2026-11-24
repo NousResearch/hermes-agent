@@ -400,11 +400,13 @@ class CLIChatTurnMixin:
             set_sudo_password_callback,
         )
         from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+        from tools.secure_input_tool import set_secure_input_callback
         # terminal_tool callbacks are thread-local: run()'s registration is invisible here.
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
         set_unlock_prompt_callback(self._vault_unlock_callback)
+        set_secure_input_callback(self._secure_input_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
         # Bind the approval session key so ``is_current_session_yolo_enabled()`` resolves
@@ -507,6 +509,7 @@ class CLIChatTurnMixin:
                 set_sudo_password_callback(None)
                 set_approval_callback(None)
                 set_secret_capture_callback(None)
+                set_secure_input_callback(None)
                 set_unlock_prompt_callback(None)
                 set_save_login_prompt_callback(None)
                 set_code_prompt_callback(None)

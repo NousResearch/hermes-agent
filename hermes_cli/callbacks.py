@@ -50,6 +50,30 @@ def _secret_result(var_name: str, value: str) -> dict:
         "message": "Secret stored securely. The secret value was not exposed to the model."}
 
 
+def prompt_for_secure_input(cli, purpose: str, prompt: str, metadata=None) -> str:
+    """Use the existing masked UI, returning only to the in-memory broker, never .env."""
+    if not getattr(cli, "_app", None):
+        try:
+            return masked_secret_prompt(f"{prompt} (hidden, empty Enter to cancel): ")
+        except (EOFError, KeyboardInterrupt):
+            return ""
+    response_queue = queue.Queue()
+    cli._secret_state = {"var_name": purpose, "prompt": prompt,
+                         "metadata": {**(metadata or {}), "secure_input": True}, "response_queue": response_queue}
+    cli._secret_deadline = _time.monotonic() + 120
+    _clear_secret_input(cli)
+    _invalidate(cli)
+    try:
+        return response_queue.get(timeout=120) or ""
+    except queue.Empty:
+        return ""
+    finally:
+        cli._secret_state = None
+        cli._secret_deadline = 0
+        _clear_secret_input(cli)
+        _invalidate(cli)
+
+
 def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
     """Prompt for a secret value through the TUI (e.g. API keys for skills).
 

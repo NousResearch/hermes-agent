@@ -27,7 +27,7 @@ from typing import Any
 
 # Toolsets a one-shot session never gets (``toolsets.session_disabled_toolsets(oneshot=True)``): the toolset is
 # the surface gate, so the tool list, the tool_search bridge and delegate children all lose them together.
-ONESHOT_DISABLED_TOOLSETS = ("clarify",)
+ONESHOT_DISABLED_TOOLSETS = ("clarify", "secure_input")
 
 
 def is_single_query_session() -> bool:

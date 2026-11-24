@@ -8,6 +8,8 @@ On the session authority the skill runs in the gateway, where a gateway surface 
 server→client request (``tui_gateway/contracts/server_requests.py``: ``SecretRequestParams`` →
 ``ValueResult``) to the attached viewers, saves a non-empty answer in this profile's ``.env`` here,
 and returns main's callback result. The value travels only in the viewer's response frame.
+Ephemeral ``request_secure_input`` uses the same masked request but never the persistence
+callback; its turn-scoped answer is accepted only for the live session generation.
 """
 from __future__ import annotations
 
@@ -28,8 +30,10 @@ def _skipped(var_name, reason, message):
 def secret_prompt_scope(turn, agent):
     """Bind this turn's secret-capture callback (a ContextVar, so parallel tool workers inherit it)."""
     from gateway.run_turn_progress import local_viewer_turn
+    from tools.secure_input_tool import bind_secure_input_callback
     if not local_viewer_turn(turn):
-        yield
+        with bind_secure_input_callback(None):
+            yield
         return
     from tools.skills_tool import bind_turn_secret_capture
     authority, session_id, _generation = turn._approval_owner
@@ -48,5 +52,22 @@ def secret_prompt_scope(turn, agent):
         return {**save_env_value_secure(var_name, value), "skipped": False,
                 "message": "Secret stored securely. The secret value was not exposed to the model."}
 
-    with bind_turn_secret_capture(callback):
+    def ephemeral_callback(purpose, prompt, metadata=None):
+        from gateway.session_server_requests import ask_viewer
+        live = authority.sessions.get(session_id)
+
+        def current_owner():
+            row = authority.db.get_session(session_id)
+            return (live is not None and authority.sessions.get(session_id) is live
+                    and row is not None and row["runtime_generation"] == _generation
+                    and not getattr(agent, "_interrupt_requested", False))
+
+        if not current_owner():
+            return ""
+        value = ask_viewer(live.event_stream, session_id, "secret",
+                           {"env_var": purpose, "prompt": prompt, "metadata": metadata or {}},
+                           timeout=SECRET_TIMEOUT_S, cancelled=lambda: not current_owner())
+        return value if current_owner() else ""
+
+    with bind_turn_secret_capture(callback), bind_secure_input_callback(ephemeral_callback):
         yield

@@ -1256,10 +1256,12 @@ class LocalEnvironment(BaseEnvironment):
         and read a different file. On Windows ``_resolve_safe_cwd`` also normalises ``/c/...``."""
         return _resolve_safe_cwd(self.cwd)
 
+    supports_secret_env = True
+
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None, secret_env: dict[str, str] | None = None) -> subprocess.Popen:
         bash = _find_bash()
-        run_env = _make_run_env(self.env)
+        run_env = {**_make_run_env(self.env), **(secret_env or {})}
         handoff = getattr(self, "_secret_handoff", None)  # absent on bare test doubles (__new__)
         session_id = getattr(self, "_session_id", "")
         token = _secret_fd_token(session_id)

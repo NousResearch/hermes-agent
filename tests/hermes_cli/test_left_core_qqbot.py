@@ -188,6 +188,17 @@ def test_a_bare_hermes_qqbot_row_reads_as_its_core_tools_without_the_plugin():
     assert tools_config._get_platform_tools(config, "telegram") >= {"file", "terminal", "web"}
 
 
+def test_an_mcp_server_named_hermes_qqbot_does_not_shadow_the_old_preset(monkeypatch):
+    """The static bundle won over a same-named MCP toolset on main; the left-core preset still does."""
+    import toolsets
+    from hermes_cli import tools_config
+    real = toolsets.resolve_toolset
+    monkeypatch.setattr(toolsets, "resolve_toolset",
+                        lambda name, *a, **k: ["mcp_tool"] if name == "hermes-qqbot" else real(name, *a, **k))
+    config = {"platform_toolsets": {"telegram": ["hermes-qqbot", "file"]}}
+    assert tools_config._get_platform_tools(config, "telegram") >= {"file", "terminal", "web"}
+
+
 def test_a_newer_yaml_disable_under_the_old_key_beats_a_gateway_json_enable(tmp_path):
     """Layer order decides between the two spellings: config.yaml's ``qqbot-platform: {enabled: false}`` is
     newer than gateway.json's ``qqbot`` enable, as startup reads them."""

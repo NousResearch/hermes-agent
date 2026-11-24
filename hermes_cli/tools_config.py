@@ -490,10 +490,11 @@ def _left_core_core_bundles() -> set[str]:
 
 
 def _resolve_preset(name: str) -> list[str]:
-    """``resolve_toolset``, plus a left-core core-tools bundle (:func:`_left_core_core_bundles`) read as the
-    core tools it carried whether or not the plugin is loaded: both picker paths read it the same way."""
+    """``resolve_toolset``, except a left-core core-tools bundle (:func:`_left_core_core_bundles`): the core
+    tools it carried, plugin loaded or not, and ahead of a same-named MCP server or plugin toolset, as when
+    it was a static ``TOOLSETS`` entry. Both picker paths read it the same way."""
     from toolsets import _HERMES_CORE_TOOLS, resolve_toolset
-    return resolve_toolset(name) or (list(_HERMES_CORE_TOOLS) if name in _left_core_core_bundles() else [])
+    return list(_HERMES_CORE_TOOLS) if name in _left_core_core_bundles() else resolve_toolset(name)
 
 
 def _platform_default_keys() -> set[str]:

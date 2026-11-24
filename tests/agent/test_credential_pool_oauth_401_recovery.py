@@ -199,3 +199,24 @@ class TestRefreshCap:
         assert _status(pool, "claude-3") == STATUS_EXHAUSTED
         # No refresh past the cap: it would only revoke the token the row's other holders have.
         assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1"]
+
+    def test_at_the_cap_without_another_row_the_call_fails_without_a_post(self, endpoint, fake_pool_store):
+        pool = CredentialPool("anthropic", [_row("claude-3")])
+        child = _DelegatedChild(pool, "claude-3")
+
+        assert _two_refreshes_then_401(child) == (False, False)
+        assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1"]
+
+    def test_issue_timeline_401s_ten_minutes_apart_keep_refreshing(self, endpoint, fake_pool_store, monkeypatch):
+        import types
+        import agent.credential_auth_recovery as rec
+        clock = [1000.0]
+        monkeypatch.setattr(rec, "time", types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: None))
+        pool = CredentialPool("anthropic", [_row("claude-3"), _row("claude-4", priority=1)])
+        child = _DelegatedChild(pool, "claude-3")
+        for _ in range(4):
+            assert _on_401(child) == (True, False)
+            clock[0] += 600.0  # Retry-After wait between 401s, as in the #138337 log
+
+        assert child._credential_pool_entry_id == "claude-3"
+        assert len(endpoint.posts) == 4

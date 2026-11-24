@@ -12,6 +12,7 @@ import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import type * as GatewayStore from '@/store/gateway'
 import { requestGatewayForAgent } from '@/store/gateway'
+import { $notifications } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $settingsScopeOverride } from '@/store/settings-scope'
 import { $shellChoice } from '@/store/shell-variant'
@@ -164,6 +165,8 @@ beforeAll(async () => {
 beforeEach(() => {
   screenPlugin.tone = 'unknown'
   screenPlugin.open.mockReset()
+  closed.mockReset()
+  $notifications.set([])
   queryClient.clear()
   api.mockClear()
   api.mockImplementation(defaultApi)
@@ -194,11 +197,13 @@ function LocationProbe() {
   return <span data-testid="location">{`${location.pathname}${location.search}`}</span>
 }
 
+const closed = vi.fn()
+
 function mount(path: string) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
-        <SettingsView onClose={() => {}} />
+        <SettingsView onClose={closed} />
         <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>
@@ -536,6 +541,29 @@ it.each([
   fireEvent.click(row)
   expect(screenPlugin.open).toHaveBeenCalledTimes(1)
   expect(screenPlugin.route).toMatchObject({ profile: 'default' })
+  // The Screen is a tab beside the chat: the page steps aside once it has opened.
+  await waitFor(() => expect(closed).toHaveBeenCalledTimes(1))
+})
+
+it('stays on the Overview and says so when the Screen could not be opened', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'off'
+  screenPlugin.open.mockRejectedValue(new Error('no route to that agent'))
+  mount('/settings?agentProfile=default')
+
+  fireEvent.click(await screen.findByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) }))
+
+  await waitFor(() => expect($notifications.get().some(note => note.kind === 'error')).toBe(true))
+  expect(closed).not.toHaveBeenCalled()
+})
+
+it('says the Screen is being checked until its state is known', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'unknown'
+  mount('/settings?agentProfile=default')
+
+  const row = await screen.findByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) })
+  expect(row.textContent).toContain(botsText().screen.heroConnecting)
 })
 
 it('leaves Screen off the Overview where an agent cannot have one', async () => {

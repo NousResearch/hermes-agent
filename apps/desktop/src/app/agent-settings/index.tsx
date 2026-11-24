@@ -224,10 +224,7 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
   return (
     <SettingRow
       detail={says}
-      onClick={() => {
-        open()
-        onOpened()
-      }}
+      onClick={() => void open().then(opened => opened && onOpened())}
       title={b.screen.portalTitle}
     />
   )

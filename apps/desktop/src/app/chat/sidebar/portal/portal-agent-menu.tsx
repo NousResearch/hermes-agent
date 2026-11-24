@@ -16,14 +16,13 @@ import { $botMeta } from '@/plugins/hermes-bots/data'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import { botRosterMeta } from '@/plugins/hermes-bots/routing'
 import { toggleBotScreenAutoOpen } from '@/plugins/hermes-bots/screen-open'
-import { profileScreenCommand } from '@/plugins/hermes-bots/screen-portal'
 import { setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
 
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { useBotModeLoaded } from '../simplified-bot-chat-row'
 import { agentOwner, type SimplifiedAgent } from '../use-simplified-agents'
 
-import { useScreenBot } from './portal-agent-screen'
+import { openAgentScreen, useScreenBot } from './portal-agent-screen'
 
 function HiddenAgentExplanation() {
   const c = useHiddenAgentCopy()
@@ -52,12 +51,11 @@ function HiddenAgentExplanation() {
 function ScreenItems({ agent }: { agent: SimplifiedAgent }) {
   const b = useBots()
   const meta = useStore($botMeta)
-  const route = { connectionId: agent.connectionId, profile: agent.profile }
   const bot = useScreenBot(agent.connectionId, agent.profile)
 
   return (
     <>
-      <DropdownMenuItem onSelect={() => void profileScreenCommand(route).run()}>
+      <DropdownMenuItem onSelect={() => void openAgentScreen(agent.connectionId, agent.profile)}>
         <Monitor aria-hidden />
         {b.screen.menu}
       </DropdownMenuItem>

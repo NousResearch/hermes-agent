@@ -3,7 +3,7 @@ import { useState } from 'react'
 
 import { RowButton } from '@/components/ui/row-button'
 import { $lastRoster, botSelectionKey } from '@/plugins/hermes-bots/data'
-import { useBots } from '@/plugins/hermes-bots/i18n'
+import { botsText, useBots } from '@/plugins/hermes-bots/i18n'
 import {
   type PortalTone,
   profileScreenCommand,
@@ -12,14 +12,31 @@ import {
   useScreenPortalState
 } from '@/plugins/hermes-bots/screen-portal'
 import type { RosterRow } from '@/plugins/hermes-bots/types'
+import { notifyError } from '@/store/notifications'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
 interface AgentScreen {
   tone: PortalTone
-  /** Where the screen stands, in the plugin's own words; none while that is not known or it cannot exist. */
+  /** Where the screen stands, in the plugin's own words; none where it cannot exist. */
   says?: string
-  open: () => void
+  /** Opens the Screen; resolves to whether it did (a failure is reported, not thrown). */
+  open: () => Promise<boolean>
+}
+
+/** Open an agent's Screen through the plugin's own action for a machine and profile. That action
+ *  looks the agent's route up first, which can fail (an agent that is gone, a machine that does not
+ *  answer): the failure is said, and the caller learns nothing opened. */
+export async function openAgentScreen(connectionId: null | string, profile: string): Promise<boolean> {
+  try {
+    await profileScreenCommand({ connectionId, profile }).run()
+
+    return true
+  } catch (error) {
+    notifyError(error, botsText().screen.menu)
+
+    return false
+  }
 }
 
 /** The roster row that owns an agent's Screen: the one the plugin's Open Screen action resolves
@@ -49,10 +66,11 @@ export function useAgentScreen(connectionId: null | string, profile: string): Ag
     human: b.screen.portalYouControl,
     other: b.screen.portalOtherControls,
     off: b.screen.portalStopped,
-    missing: b.screen.portalNotInstalled
+    missing: b.screen.portalNotInstalled,
+    unknown: b.screen.heroConnecting
   }
 
-  return { tone, says: says[tone], open: () => void profileScreenCommand({ connectionId, profile }).run() }
+  return { tone, says: says[tone], open: () => openAgentScreen(connectionId, profile) }
 }
 
 /** The row's mark, in a chat row's own states: the agent at work on its screen, or someone holding it. */
@@ -84,7 +102,7 @@ export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
             </span>
           </span>
           {/* One line that gives way at its end: who holds the screen is a phrase, not a chat's age. */}
-          <RowButton className="portal-session-open" onClick={open}>
+          <RowButton className="portal-session-open" onClick={() => void open()}>
             <span className="portal-session-title">{`${b.screen.portalTitle} · ${says}`}</span>
           </RowButton>
         </div>

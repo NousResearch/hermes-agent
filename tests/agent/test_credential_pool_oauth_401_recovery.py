@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import base64
 import itertools
+import json
 import time
-from contextlib import nullcontext
 from dataclasses import replace
 
 import pytest
 
 from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential
+from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential, load_pool
 from agent.credential_pool_selection import RefreshKind
 
 _API = "https://api.anthropic.com"
@@ -314,20 +315,36 @@ def test_a_truncated_reply_ends_the_episode_before_its_continuation(endpoint, fa
     assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]
 
 
-class TestRefreshFailedEntryOutcome:
-    def test_a_capped_codex_refresh_adopts_a_token_a_peer_rotated(self, monkeypatch):
-        row = PooledCredential(provider="openai-codex", id="cx", label="cx", auth_type=AUTH_TYPE_OAUTH, priority=0,
-                               source="manual:device_code", access_token="cx-at-0", refresh_token="cx-rt-0")
-        pool = CredentialPool("openai-codex", [row])
-        monkeypatch.setattr("agent.credential_pool._auth_store_lock", lambda **_: nullcontext())
-        monkeypatch.setattr("agent.credential_pool._codex_access_token_is_expiring", lambda *_: False)
-        monkeypatch.setattr(pool, "_sync_entry_from_auth_store",
-                            lambda e: replace(e, access_token="cx-at-1", refresh_token="cx-rt-1"))
+def _codex_jwt(exp: float, generation: str) -> str:
+    def seg(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
 
-        outcome = pool.refresh_failed_entry("cx-at-0", "cx", key_wins=True, may_post=lambda _row: False)
+    claims = {"exp": int(exp), "sub": "user-A", "gen": generation,
+              "https://api.openai.com/auth": {"chatgpt_account_id": "acct-A"}}
+    return f"{seg({'alg': 'none'})}.{seg(claims)}.sig"
+
+
+class TestRefreshFailedEntryOutcome:
+    def test_a_capped_codex_refresh_adopts_a_token_a_peer_rotated(self, tmp_path, monkeypatch):
+        # A peer process already rotated the pair into auth.json; this request failed on the old bearer.
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        old, rotated = _codex_jwt(time.time() + 8 * 3600, "0"), _codex_jwt(time.time() + 8 * 3600, "1")
+        (home / "auth.json").write_text(json.dumps({
+            "version": 1, "active_provider": "openai-codex",
+            "providers": {"openai-codex": {"tokens": {"access_token": rotated, "refresh_token": "cx-rt-1"},
+                                           "auth_mode": "chatgpt"}},
+            "credential_pool": {"openai-codex": [
+                {"id": "cx", "label": "device_code", "auth_type": "oauth", "priority": 0, "source": "device_code",
+                 "access_token": old, "refresh_token": "cx-rt-0"}]},
+        }), encoding="utf-8")
+        pool = load_pool("openai-codex")
+
+        outcome = pool.refresh_failed_entry(old, "cx", key_wins=True, may_post=lambda _row: False)
 
         assert outcome.kind is RefreshKind.ADOPTED
-        assert outcome.entry.access_token == "cx-at-1"
+        assert outcome.entry.access_token == rotated
 
     def test_a_provider_without_a_refresh_path_reports_no_refresh(self):
         row = PooledCredential(provider="example-oauth", id="ex", label="ex", auth_type=AUTH_TYPE_OAUTH, priority=0,

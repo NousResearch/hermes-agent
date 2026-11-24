@@ -62,3 +62,25 @@ def test_runtime_collector_keeps_a_current_lease_with_v0_23_3_runtime_state(tmp_
     finally:
         release()
     assert collect_runtime_generations(root) == [generations["busy"]]
+
+
+def test_orphan_reclaim_keeps_a_state_a_current_worker_leases_with_v0_23_3_runtime_state(tmp_path: Path, monkeypatch):
+    """pm.install_states' orphan check must see a lease a current worker takes outside the generation."""
+    from pm.install_states import collect_orphan_install_states
+    from pm.leases import lease_directory
+
+    installs = tmp_path / "home" / "installs"
+    state = installs / "aaaa"
+    (state / "inputs").mkdir(parents=True)
+    (state / "inputs" / ".project-root").write_text(str(tmp_path / "home" / "cache" / "gone"), encoding="utf-8")
+    generation = state / "environments" / "gen"
+    generation.mkdir(parents=True)
+    (generation / ".lease-managed").touch()
+    release = lease_directory(generation)
+    _old_boot(monkeypatch)
+    try:
+        assert collect_orphan_install_states(installs) == []
+        assert generation.is_dir()
+    finally:
+        release()
+    assert collect_orphan_install_states(installs) == [state]

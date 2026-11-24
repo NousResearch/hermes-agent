@@ -7,6 +7,8 @@ import importlib.util
 import os
 from pathlib import Path
 
+import pytest
+
 import hermes_constants
 import pm.filesystem
 
@@ -38,6 +40,27 @@ def test_old_constants_still_report_an_incomplete_delete(tmp_path, monkeypatch):
     assert old_process.named_profile_delete_incomplete(home)
     assert "did not finish" in old_process.delete_incomplete_message("work", home)
 
+
+@pytest.mark.parametrize("state, expected", [
+    ("live", False), ("missing", False), ("finished", False),
+    ("incomplete", True), ("legacy_identity", True), ("unreadable_record", True),
+])
+def test_old_constants_check_answers_as_the_current_one(tmp_path, monkeypatch, state, expected):
+    """The fallback rebuilds named_profile_delete_incomplete: on every branch it answers as the real one."""
+    home = tmp_path / "profiles" / "work"
+    tombstone = hermes_constants.profile_tombstone_path(home)
+    tombstone.parent.mkdir(parents=True, exist_ok=True)
+    if state != "missing":
+        (home / "memories").mkdir(parents=True)
+    if state in ("live", "legacy_identity"):
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    if state == "unreadable_record":
+        tombstone.mkdir()
+    elif state != "live":
+        tombstone.write_bytes(b"deleted\n" if state in ("finished", "legacy_identity") else b"incomplete\n")
+    assert hermes_constants.named_profile_delete_incomplete(home) is expected
+    monkeypatch.delattr(hermes_constants, "named_profile_delete_incomplete")
+    assert _fresh("hermes_cli.profiles_remove").named_profile_delete_incomplete(home) is expected
 
 def test_old_filesystem_lock_excludes_the_current_lock_both_ways(tmp_path, monkeypatch):
     old, new = tmp_path / ".install.lock", tmp_path / "locks" / "install.lock"
@@ -94,9 +117,18 @@ def test_old_local_env_still_starts_a_gateway_with_the_deployment_stamps(tmp_pat
     target = tmp_path / "profiles" / "work"
     target.mkdir(parents=True)
     base = {"PATH": os.environ.get("PATH", ""), "GATEWAY_RELAY_SLEEP_URL": "https://relay.invalid/s"}
+    base["OPENROUTER_API_KEY"] = "launching-profile-key"
+
+    def v0_23_3_served_profile_child_env(base, *, target_home, inherit_credentials):
+        """v0.23.3's shape: True overlays the target profile's own .env keys, False scrubs credentials."""
+        env = {key: value for key, value in base.items() if key != "OPENROUTER_API_KEY"}
+        if inherit_credentials:
+            env["OPENROUTER_API_KEY"] = "work-profile-key"
+        return {**env, "HERMES_HOME": str(target_home)}
+
     monkeypatch.delattr(local, "_profile_child_env")
-    monkeypatch.setattr(local, "served_profile_child_env",
-                        lambda base, *, target_home, inherit_credentials: {**base, "HERMES_HOME": str(target_home)})
+    monkeypatch.setattr(local, "served_profile_child_env", v0_23_3_served_profile_child_env)
     env = local_gateway_env.gateway_child_env(target, base)
     assert env["HERMES_HOME"] == str(target)
+    assert env.get("OPENROUTER_API_KEY") == "work-profile-key", "a gateway runs with its profile's own credentials"
     assert env["GATEWAY_RELAY_SLEEP_URL"] == "https://relay.invalid/s"

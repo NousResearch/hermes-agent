@@ -527,6 +527,32 @@ def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_n
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
+def test_a_single_profile_launcher_expands_against_the_process_env_not_a_later_env_file(tmp_path, monkeypatch):
+    """Outside multiplexing a launcher's ``${VAR}`` is the running process's value, as on main: an ``.env`` edited
+    after the process loaded it does not pick a different launcher for the next host start."""
+    def runner(name):
+        ran, script = tmp_path / f"{name}.ran", tmp_path / name
+        script.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+        script.chmod(0o755)
+        return ran
+
+    loaded_ran, edited_ran = runner("loaded-runner"), runner("edited-runner")
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+    monkeypatch.setenv("PLUGIN_RUNNER", str(tmp_path / "loaded-runner"))
+    (home / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / 'edited-runner'}\n", encoding="utf-8")
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        host.ensure_started()
+        assert loaded_ran.exists() and not edited_ran.exists()
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts; SIGKILL
 @pytest.mark.parametrize("crashed", ["secondary", "launch"])
 def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_path, monkeypatch, crashed):

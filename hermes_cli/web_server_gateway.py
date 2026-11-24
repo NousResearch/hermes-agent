@@ -13,7 +13,11 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
+from hermes_cli._subprocess_compat import (
+    reap_in_background,
+    windows_detach_flags,
+    windows_detach_flags_without_breakaway,
+)
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -574,6 +578,10 @@ def _spawn_hermes_action(
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
+    # The handle stays here until /api/actions/<name>/status polls it, so CPython never reaps it: a
+    # finished action nobody asked about would sit as a zombie under the dashboard. poll() still
+    # reports the exit code the reaper collected.
+    reap_in_background(proc)
     _ACTION_LOG_STARTS[name] = (proc.pid, section_start)
     if action_id:
         _ACTION_IDS[name] = action_id

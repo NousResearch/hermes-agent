@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
@@ -273,6 +274,22 @@ def windows_detach_popen_kwargs() -> dict:
         return {"creationflags": windows_detach_flags()}
     # detached-spawn: ok — the detach helper itself; every call site is checked on its own
     return {"start_new_session": True}
+
+
+def reap_in_background(proc: subprocess.Popen) -> None:
+    """Reap a detached, fire-and-forget child once it exits; returns at once, never raises.
+
+    A child nobody waits for stays a zombie (STAT=Z) under a long-lived parent: CPython only polls
+    abandoned ``Popen`` objects when the same process starts another one, and a process that spawns
+    one helper and nothing else (a plugin host, an idle dashboard) never does. A daemon thread
+    blocked in ``wait()`` holds that one responsibility and ends with the child; it dies with a
+    short-lived parent, whose exit already hands the child to init.
+    """
+    try:
+        # health: allow HX012 -- the thread only wait()s on one child; it reads no profile scope
+        threading.Thread(target=proc.wait, name=f"reap-child-{proc.pid}", daemon=True).start()
+    except RuntimeError:  # "can't start new thread": the child stays unreaped until its parent exits
+        pass
 
 
 # Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes

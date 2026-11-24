@@ -246,7 +246,11 @@ def spawn_install(home: Optional[Path] = None) -> bool:
     fetching), unless the last attempt failed recently. A running child sees the request when it finishes
     and scans again. Never waits."""
     from hermes_cli._launchers import runtime_command
-    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
+    from hermes_cli._subprocess_compat import (
+        reap_in_background,
+        windows_detach_flags_without_breakaway,
+        windows_detach_popen_kwargs,
+    )
     from hermes_cli.memory_provider_migration import _failed_recently
     from hermes_cli._subprocess_compat import IS_WINDOWS
     from pm.environments import dependency_home_root
@@ -264,12 +268,13 @@ def spawn_install(home: Optional[Path] = None) -> bool:
     kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     try:
         # detached-spawn: ok — git and dependency installs must neither delay a boot or a create nor die with it; one installer at a time (OS lock)
-        subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
+        proc = subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
     except OSError:
         if not IS_WINDOWS:
             raise
         # A job object without BREAKAWAY_OK refuses CREATE_BREAKAWAY_FROM_JOB; retry without it.
-        subprocess.Popen(argv, **kwargs, creationflags=windows_detach_flags_without_breakaway())
+        proc = subprocess.Popen(argv, **kwargs, creationflags=windows_detach_flags_without_breakaway())
+    reap_in_background(proc)
     return True
 
 

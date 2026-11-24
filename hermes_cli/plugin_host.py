@@ -136,6 +136,14 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list],
     return contextvars.Context().run(choose)
 
 
+def extraction_launcher(home: Path) -> list:
+    """The launcher a provider-extraction child for *home* runs under: the one a host start for *home* chooses
+    (``_launcher_for``, with ``_is_launch_home``'s answer), whichever context the extraction runs in. Only the
+    launcher: that child's env carries no credentials."""
+    from hermes_cli.plugin_isolation import host_launcher
+    return _launcher_for(home, host_launcher, _is_launch_home(home))[0]
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 

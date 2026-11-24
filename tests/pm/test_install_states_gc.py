@@ -4,6 +4,7 @@ whose checkout this process merely cannot see, is kept (``pm/install_states.py``
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import time
 
@@ -12,6 +13,16 @@ import pytest
 from hermes_cli.worktree_ops import _prune_stale_worktrees
 from pm.filesystem import lock_fd
 from pm.install_states import collect_orphan_install_states, orphan_install_states
+
+
+def _set_fixture_mtime(path, timestamp):
+    # The fixtures age ordinary entries. The symlink test links their ancestor.
+    metadata = path.lstat()
+    ordinary = stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
+    redirected = getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    if not ordinary or redirected:
+        raise AssertionError(f"Expected an ordinary fixture entry: {path}")
+    os.utime(path, (timestamp, timestamp))
 
 
 def _state(installs, key, project_root):
@@ -101,7 +112,7 @@ def test_unprovable_missing_checkout_is_reclaimed_once_unused_past_retention(tmp
     month_ago = time.time() - 30 * 86400
     for state in (idle, leased, present):
         for path in sorted(state.rglob("*"), reverse=True) + [state]:
-            os.utime(path, (month_ago, month_ago), follow_symlinks=False)
+            _set_fixture_mtime(path, month_ago)
     try:
         assert collect_orphan_install_states(installs) == [idle]
     finally:
@@ -121,7 +132,7 @@ def test_retention_days_from_config_yaml_decides_reclaim(tmp_path, days, reclaim
     state = _state(installs, "aaaa", tmp_path / "review" / "gone")
     two_days_ago = time.time() - 2 * 86400
     for path in sorted(state.rglob("*"), reverse=True) + [state]:
-        os.utime(path, (two_days_ago, two_days_ago), follow_symlinks=False)
+        _set_fixture_mtime(path, two_days_ago)
     assert (collect_orphan_install_states(installs) == [state]) is reclaimed
     assert state.exists() is not reclaimed
 
@@ -129,7 +140,7 @@ def test_retention_days_from_config_yaml_decides_reclaim(tmp_path, days, reclaim
 def _age(state, days):
     then = time.time() - days * 86400
     for path in sorted(state.rglob("*"), reverse=True) + [state]:
-        os.utime(path, (then, then), follow_symlinks=False)
+        _set_fixture_mtime(path, then)
 
 
 @pytest.mark.parametrize(("root_days", "profile_days", "reclaimed"), [(0, None, False), (None, 0, True)])

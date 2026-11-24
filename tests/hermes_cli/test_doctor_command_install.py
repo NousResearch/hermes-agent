@@ -330,6 +330,27 @@ def test_bundled_payload_fix_symlinks_bundle_trampoline(tmp_path, monkeypatch, c
 
 
 @pytest.mark.platforms("posix")
+def test_bundled_fix_keeps_a_command_published_after_the_check(tmp_path, monkeypatch, capsys):
+    _project, _launcher, link_dir = _bundled_tree(tmp_path, monkeypatch)
+    command = link_dir / "hermes"
+    other = "#!/bin/sh\necho other installer\n"
+    real_symlink = os.symlink
+
+    def other_installer_publishes_first(src, dst, *args, **kwargs):
+        if not os.path.lexists(command):
+            command.write_text(other, encoding="utf-8")
+        return real_symlink(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "symlink", other_installer_publishes_first)
+    rc = doctor.run_doctor(Namespace(fix=True))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not command.is_symlink() and command.read_text(encoding="utf-8") == other
+    assert "Fixed 1 issue" not in out
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("foreign_kind", ["other_tool", "other_app"])
 def test_bundled_payload_fix_preserves_live_foreign_symlink(tmp_path, monkeypatch, capsys, foreign_kind):
     _project, _launcher, link_dir = _bundled_tree(tmp_path, monkeypatch)

@@ -806,6 +806,15 @@ def _repair_command_link(
             )
             return
         check_ok(f"{verb} PM launcher: {display}/{cmd_name}")
+    elif verb == "Created":
+        try:
+            link.symlink_to(venv_bin)
+        except FileExistsError:
+            # Something published the command after the check; it isn't ours to replace.
+            check_warn(f"{display}/{cmd_name} appeared while doctor was creating it", "(left unchanged)")
+            f.manual_issues.append(f"Rerun '{cmd_name} doctor' to check {display}/{cmd_name}")
+            return
+        check_ok(f"{verb} symlink: {display}/{cmd_name} → {venv_bin}")
     else:
         _replace_symlink(link, venv_bin)
         check_ok(f"{verb} symlink: {display}/{cmd_name} → {venv_bin}")

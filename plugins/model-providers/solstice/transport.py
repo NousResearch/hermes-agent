@@ -16,6 +16,7 @@ found the same way, so this plugin imports only published core names besides its
 from __future__ import annotations
 
 import importlib
+import inspect
 import re
 import sys
 from types import ModuleType
@@ -49,10 +50,28 @@ _WIRE_MISSING = ("Solstice sends its requests through the gemini provider plugin
                  "Reinstall Hermes, or remove a gemini provider plugin that replaces the bundled one.")
 
 
+# What this transport calls on the discovered wire. A gemini plugin copy from before these existed (an older
+# profile-local copy) is refused here, before any request, instead of failing mid-call.
+_WIRE_NAMES = ("build_interactions_request", "finish_ceiling", "iter_events", "SINGLE_REQUEST_OUTPUT_CAP",
+               "StreamState", "translate_interaction", "translate_stream_event", "http_error")
+
+
 def interactions_wire() -> ModuleType:
     """The gemini provider plugin's ``interactions`` module: the ``interactions`` submodule of the package the
-    registered ``gemini`` profile was loaded from. Raises ``GeminiAPIError`` when there is none."""
-    return gemini_plugin_module("interactions")
+    registered ``gemini`` profile was loaded from. Raises ``GeminiAPIError`` when there is none, or when it
+    lacks what this transport calls (including ``http_error``'s ``key_guidance``)."""
+    wire = gemini_plugin_module("interactions")
+    missing = [name for name in _WIRE_NAMES if not hasattr(wire, name)]
+    if not missing:
+        try:
+            inspect.signature(wire.http_error).bind_partial(key_guidance=False)
+        except (TypeError, ValueError):
+            missing.append("http_error(key_guidance=...)")
+    if missing:
+        raise GeminiAPIError(_WIRE_MISSING.format(why=f"the loaded gemini provider plugin ({wire.__name__}) is too "
+                                                      f"old for it (missing {', '.join(missing)})"),
+                             code="gemini_wire_unavailable")
+    return wire
 
 
 def gemini_plugin_module(name: str) -> ModuleType:

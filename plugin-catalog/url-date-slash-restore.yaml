@@ -1,0 +1,18 @@
+name: url-date-slash-restore
+repo: https://github.com/Harry-2546/hermes-url-date-slash-restore
+sha: b04854e483ef84b01e96c6aa199f64f610fe55d6
+subdir: ""
+description: "Fix broken links in the final reply: when the model rewrites a URL copied from a tool result (e.g. date slashes turned into hyphens, /2026/11/17/ -> /2026-11-17/, so the link 404s), restore the exact source URL. Replaces only on a unique match; logs every change to a local jsonl."
+maintainer: Harry-2546
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

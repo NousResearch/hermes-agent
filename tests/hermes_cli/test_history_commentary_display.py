@@ -126,12 +126,37 @@ def test_owner_profile_settings_apply_to_rest_and_rpc(monkeypatch, tmp_path, dis
     assert observed == [str(enabled_home), str(disabled_home), str(enabled_home)] * 2
 
 
+class _WireRow:
+    """Transcript row stand-in: ``as_wire_row`` answers the stored dict, as ``TranscriptRow`` does."""
+
+    def __init__(self, row):
+        self._row = row
+
+    def as_wire_row(self):
+        return dict(self._row)
+
+
+class _FakeStore:
+    """Storage interface stand-in serving ``row`` as the whole transcript and as the prompt page."""
+
+    def __init__(self, row):
+        from types import SimpleNamespace
+
+        from persistence.conversation.messages import PromptPage
+
+        page = PromptPage(messages=(_WireRow(row),), row_id=1, limit=120, returned=1, offset=0, total=1,
+                          has_older=False, has_newer=False)
+        self.sessions = SimpleNamespace(resolve_id=lambda sid: sid)
+        self.lineage = SimpleNamespace(resolve_resume_target=lambda sid: sid)
+        self.messages = SimpleNamespace(read_transcript=lambda *args, **kwargs: (_WireRow(row),),
+                                        read_prompt_page=lambda *args, **kwargs: page)
+
+
 def test_rest_pages_bind_the_history_owner_for_messages_and_around(
     monkeypatch, tmp_path
 ):
     from hermes_cli import config as config_mod
     from hermes_cli.web_routers import sessions
-    import hermes_state_timeline
 
     row = _row()
     homes = {name: tmp_path / name for name in ("visible", "hidden")}
@@ -149,25 +174,10 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
         },
     )
 
-    class FakeDB:
-        def resolve_session_id(self, sid):
-            return sid
-
-        def resolve_resume_session_id(self, sid):
-            return sid
-
-        def get_messages(self, *args, **kwargs):
-            return [row]
-
     monkeypatch.setattr(
-        sessions, "_with_db", lambda profile, fn, read_only: fn(FakeDB())
+        sessions, "_with_db", lambda profile, fn, read_only: fn(_FakeStore(row))
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda db, sid, owner: sid)
-    monkeypatch.setattr(
-        hermes_state_timeline,
-        "get_session_messages_around",
-        lambda *args, **kwargs: {"messages": [row], "pagination": {}},
-    )
+    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: sid)
 
     async def exercise():
         for profile, expected in (
@@ -196,7 +206,6 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     from hermes_cli import config as config_mod
     from hermes_cli.web_routers import sessions
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    import hermes_state_timeline
 
     custom, default = tmp_path / "custom", tmp_path / "default"
     monkeypatch.setattr(
@@ -213,25 +222,10 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     )
     row = _row()
 
-    class FakeDB:
-        def resolve_session_id(self, sid):
-            return sid
-
-        def resolve_resume_session_id(self, sid):
-            return sid
-
-        def get_messages(self, *args, **kwargs):
-            return [row]
-
     monkeypatch.setattr(
-        sessions, "_with_db", lambda profile, fn, read_only: fn(FakeDB())
+        sessions, "_with_db", lambda profile, fn, read_only: fn(_FakeStore(row))
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda db, sid, owner: sid)
-    monkeypatch.setattr(
-        hermes_state_timeline,
-        "get_session_messages_around",
-        lambda *args, **kwargs: {"messages": [row], "pagination": {}},
-    )
+    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: sid)
 
     async def exercise():
         page = await sessions.get_session_messages(
@@ -514,3 +508,17 @@ def test_overlapping_public_items_do_not_leave_partial_text_in_final_or_thinking
     for projected in (_project_for_display([row])[0], _history_to_messages([row])[0]):
         assert projected["display_content"] == row["content"]
         assert projected["display_commentary"] == []
+
+
+def test_history_commentary_keeps_whitespace_part_before_memory_fence():
+    """Replayed commentary is assembled like live commentary: a newline-only part keeps an
+    echoed <memory-context> block on its own line, so the fence drops it (#81312)."""
+    row = _row()
+    row["codex_message_items"][0]["content"] = [
+        {"type": "output_text", "text": "Checking the inbox."},
+        {"type": "output_text", "text": "\n"},
+        {"type": "output_text", "text": "<memory-context>\nSENTINEL_note\n</memory-context>"},
+    ]
+    projected = _project_for_display([row])[0]
+
+    assert projected["display_commentary"] == ["Checking the inbox."]

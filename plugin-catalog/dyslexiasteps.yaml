@@ -1,0 +1,18 @@
+name: dyslexiasteps
+title: Dyslexia Steps
+repo: https://github.com/Dyslexia-Steps/dyslexiasteps-agent-plugin
+sha: b0e2de8c64db61ee4d1e6cbe7dff2b90efc0bfd1
+version: "1.0.0"
+description: "Phonics and sight word lists by grade from dyslexiasteps.com through its hosted MCP server (Streamable HTTP at https://mcp.dyslexiasteps.com/mcp, no sign-in, no keys): CVC words, word families, Dolch sight words, digraphs and vowel patterns for pre-K to grade 3, word lists in German, Spanish, French, Dutch and Brazilian Portuguese, pattern search and the source of every grade placement. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call, with its arguments, goes to mcp.dyslexiasteps.com; no account or personal data is needed. All six tools are read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Dyslexia Steps
+tier: community
+category: tools
+docs_url: https://github.com/Dyslexia-Steps/dyslexiasteps-agent-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

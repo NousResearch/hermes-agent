@@ -1,0 +1,17 @@
+name: renor
+repo: https://github.com/renorai/hermes-renor
+sha: "91320b6f936205b8566e6d6444a420d9bed553d0"
+version: "0.2.0"
+title: Renor
+description: "Renor memory provider: one durable memory shared by Hermes, Claude Code, Codex and Cursor over MCP, so what you tell one agent the others already know. Recalls before each turn within a hard deadline (1.5 s by default; the turn goes on without it) and saves the durable statements you make (preferences, decisions, rules, \"remember that ...\") after it, through a bounded background queue with retries; also on compaction and at session end. Stored text never enters the prompt automatically: recall reports a count and the agent reads matches with renor_recall, labelled untrusted data. Hosted (mcp.renor.cloud, connection key) or the open-source engine, offline. Standard library only. Maintained by Renor. Disclosure — in hosted mode each non-trivial user message (as the recall query), the durable statements picked out of user messages, renor_remember saves and Hermes built-in memory entries are sent over HTTPS to mcp.renor.cloud (or the configured RENOR_MCP_URL) under RENOR_API_KEY; RENOR_AUTO_SAVE=turns also sends each turn's user message and reply. The plugin has no telemetry. Renor's own learning setting is the hosted workspace owner's (anonymous usage numbers by default, never text; off under Settings > Learning); in self-hosted mode the plugin starts the user's RENOR_ENGINE_COMMAND as one long-lived child process with DO_NOT_TRACK=1 and RENOR_SHARING=off unless RENOR_ALLOW_SHARING=1, and makes no network calls of its own."
+maintainer: renorai
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/renorai/hermes-renor#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

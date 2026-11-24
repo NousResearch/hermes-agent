@@ -1,0 +1,23 @@
+name: skillcheck
+title: SkillCheck
+repo: https://github.com/neta-gym/skillcheck
+sha: 501cc11c89b1437eed96ed387451185616bf57d2
+description: "CI for agent skills: snapshots the pre-write state of skill writes arriving through Hermes's in-band tool surface (skill_manage create/edit/patch/write_file/remove_file/delete and write_file/patch/edit_file into the skills dir; hooks observe landed writes, no pre-write blocking; creates have no prior state, out-of-band edits are detected at run time but carry no snapshot), LLM-generates regression cases as human-review drafts, re-runs them against the candidate revision in child sessions launched through the Hermes subagent lifecycle API with allowed_toolsets=() (no file, shell, browser or network tools; timed-out children get a cancellation request whose accepted/refused outcome is reported), and reports GREEN / REGRESSION / FIRST-RUN. Promotion and revert are user-invoked only (slash command or CLI; not registered as model tools), and revert validates the skill name, stays strictly inside the skill folder, skips dotfiles and restores byte-exact snapshots. Disclosure — reads your skills directory and stores pre-edit snapshots of skill files plus its own state in its plugin data folder; `/skillcheck revert` (user-run only) deletes and rewrites files inside that one skill's folder to restore the snapshot, keeping the pre-revert state as another snapshot; case generation and the optional judge call the session's configured model."
+maintainer: neta-gym
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/neta-gym/skillcheck/blob/501cc11c89b1437eed96ed387451185616bf57d2/README.md
+version: "0.2.1"
+capabilities:
+  provides_tools:
+    - skillcheck_status
+    - skillcheck_generate
+    - skillcheck_cases
+    - skillcheck_run
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_skill_lifecycle
+  provides_middleware: []
+  requires_env: []

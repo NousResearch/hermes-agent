@@ -92,6 +92,14 @@ export const hu: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktív memóriaszolgáltató",
+    noProvider: "nincs — csak beépített",
+    builtinLayer: "Beépített réteg",
+    builtinNote: "A MEMORY.md és a USER.md a Hermes saját memóriája, független minden külső szolgáltatótól. Alapértelmezés szerint mindkettő betöltődik a munkamenetekbe; a (memory.memory_enabled / memory.user_profile_enabled) beállítások külön-külön kikapcsolják őket. A szolgáltató kiegészíti őket, de sosem helyettesíti.",
+  },
+
   status: {
     actionFailed: "Művelet sikertelen",
     actionFinished: "Befejezve",
@@ -362,6 +370,13 @@ export const hu: Translations = {
     authRequired: "Hitelesítés szükséges",
     authRequiredHint: "Futtassa ezt a parancsot a hitelesítéshez:",
     updateGit: "Git pull",
+    updateAll: "Összes frissítése",
+    updatingAll: "Bővítmények frissítése…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Frissítve ${updated}, ellenőrzést igényel ${needsReview}, sikertelen ${failed}`,
+    autoUpdate: "Automatikus frissítés",
+    autoUpdateDesc: (hours: number) =>
+      `A bővítményfrissítések automatikus alkalmazása, amikor az átjáró ellenőriz (${hours} óránként). A frissített kód új munkamenetekben töltődik be.`,
     versionBadge: "Verzió",
     showInSidebar: "Megjelenítés az oldalsávon",
     hideFromSidebar: "Elrejtés az oldalsávról",

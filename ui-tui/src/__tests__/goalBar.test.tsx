@@ -46,6 +46,14 @@ it('shows a standing goal (active, parked, paused) and hides it once done or cle
     detail: 'budget · 3/20 turns',
     label: 'goal paused'
   })
+  expect(
+    goalLine(
+      goal({
+        gates: [{ attempts: 0, command: 'pytest', max_retries: 2, timeout_seconds: 60 }],
+        subgoals: ['tests pass', 'docs updated']
+      })
+    )
+  ).toMatchObject({ detail: '3/20 turns · 2 subgoals · 1 gate' })
   expect(goalLine(goal({ status: 'done' }))).toBeNull()
   expect(goalLine(null)).toBeNull()
 

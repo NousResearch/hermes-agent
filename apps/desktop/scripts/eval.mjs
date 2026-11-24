@@ -3,7 +3,7 @@
 //   node scripts/eval.mjs "document.title"
 //   HERMES_DESKTOP_CDP_PORT=9333 node scripts/eval.mjs "document.title"
 //
-// Needs a renderer with a debugging port: launch `hgui` / `npm run dev` with
+// Needs a renderer with a debugging port: launch `hgui` / `pnpm run dev` with
 // HERMES_DESKTOP_CDP_PORT set (see electron/dev-cdp.ts).
 const port = Number(process.env.HERMES_DESKTOP_CDP_PORT || 9222)
 let targets
@@ -13,7 +13,7 @@ try {
 } catch {
   console.error(
     `no renderer debugging port on 127.0.0.1:${port}. ` +
-      'Dev-server runs (`npm run dev` / `hgui`) open one automatically — check the app is running, ' +
+      'Dev-server runs (`pnpm run dev` / `hgui`) open one automatically — check the app is running, ' +
       'and that HERMES_DESKTOP_CDP_PORT is not set to "off" or another port.'
   )
   process.exit(1)

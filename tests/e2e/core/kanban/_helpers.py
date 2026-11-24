@@ -77,6 +77,9 @@ class Board:
             "  api_max_retries: 1\n"
             "updates:\n"
             "  check: false\n"
+            # Workers run inside the profile's owner daemon; its embedded dispatcher would race
+            # the explicit ticks these tests count. A test that wants it brings its own block.
+            + ("" if "kanban:" in self.extra_config else "kanban:\n  dispatch_in_gateway: false\n")
             + self.extra_config,
             encoding="utf-8",
         )

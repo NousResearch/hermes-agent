@@ -44,6 +44,24 @@ def test_exec_schtasks_decodes_ansi_output_under_utf8_mode(monkeypatch):
 
 
 @pytest.mark.platforms("windows")
+def test_registered_task_launchers_reads_each_hermes_task_action(monkeypatch):
+    """The install probe's view of the Scheduled Tasks: the launcher each ``Hermes_Gateway*`` task
+    starts, as the task XML this module writes names it, and a pre-``wscript`` task's ``.cmd``."""
+    launcher = r"C:\Users\Ann Lee\custom hermes\gateway-service\Hermes_Gateway_work.vbs"
+    legacy = r"C:\Users\ann\h2\gateway-service\Hermes_Gateway.cmd"
+    current = gateway_windows._build_scheduled_task_xml("Hermes_Gateway_work", Path(launcher), "PC\\ann")
+    older = current.replace("<Command>wscript.exe</Command>", f"<Command>{legacy}</Command>").replace(
+        f'//B //Nologo "{launcher}"', "")
+    listing = ('\r\n"\\Microsoft\\Windows\\Defrag\\ScheduledDefrag","N/A","Ready"\r\n'
+               '"\\Hermes_Gateway_work","N/A","Ready"\r\n"\\Hermes_Gateway","N/A","Running"\r\n')
+    xml = {"Hermes_Gateway_work": current, "Hermes_Gateway": older}
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks",
+                        lambda args, timeout=None: (0, listing if "/FO" in args else xml[args[2]], ""))
+
+    assert gateway_windows.registered_task_launchers() == [launcher, legacy]
+
+
+@pytest.mark.platforms("windows")
 def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     """Real schtasks.exe on a real task whose argument carries a non-ASCII (ANSI-representable)
     character, queried from a UTF-8-mode interpreter: the template/live comparison in
@@ -368,7 +386,8 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True)" in content  # hidden window; waits, so the task sees the gateway's exit (#146976)
+    assert content.rstrip().endswith("WScript.Quit code")
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
@@ -472,6 +491,23 @@ def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     gateway_windows.reconcile_autostart_launchers()
     assert gateway_windows.redundant_autostart_entries() == []
     assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
+
+
+def test_reconcile_rewrites_an_older_startup_entry_as_utf16(monkeypatch, tmp_path):
+    """wscript.exe reads a BOM-less .vbs in the ANSI code page: an older UTF-8 Startup entry chaining a
+    non-ASCII path quits silently at logon (FileExists on the garbled target is false). The update
+    reconcile rewrites it as UTF-16 with a BOM."""
+    import codecs
+    startup, script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path / "Usuário 方舟")
+    (startup / "Hermes_Gateway_alice.cmd").unlink()
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+
+    assert gateway_windows.reconcile_autostart_launchers() == ([], [])
+    raw = (startup / "Hermes_Gateway_alice.vbs").read_bytes()
+    assert raw.startswith(codecs.BOM_UTF16_LE)
+    assert raw.decode("utf-16") == gateway_windows._build_startup_launcher(script)
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.vbs"]
 
 
 def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):
@@ -651,6 +687,43 @@ def test_scheduled_task_drift_is_silent_when_aligned_or_unqueryable(monkeypatch)
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
     gateway_windows._print_scheduled_task_drift("Hermes_Gateway")
     assert printed == []
+
+
+def test_install_scheduled_task_registers_the_xml_principal_only(monkeypatch, tmp_path):
+    """#152218: ``/RU <user> /NP`` on top of ``/XML`` replaced the template's InteractiveToken +
+    LeastPrivilege principal with S4U, which an elevated install ran at High integrity in session 0.
+    The task must be created from the XML alone, and that XML must carry the user's principal."""
+    creates: list[list[str]] = []
+    xml_seen: dict[str, str] = {}
+
+    def fake_schtasks(args):
+        if args[0] == "/Create":
+            creates.append(list(args))
+            xml_seen["text"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "SUCCESS", "")
+
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    ok, _detail = gateway_windows._install_scheduled_task("Hermes_Gateway", tmp_path / "gateway.cmd")
+
+    assert ok is True
+    assert len(creates) == 1
+    assert not {"/RU", "/RP", "/NP", "/IT", "/RL"} & set(creates[0])
+    assert "<UserId>PC\\me</UserId>" in xml_seen["text"]
+    assert "<LogonType>InteractiveToken</LogonType>" in xml_seen["text"]
+    assert "<RunLevel>LeastPrivilege</RunLevel>" in xml_seen["text"]
+
+
+def test_scheduled_task_drift_flags_an_s4u_principal():
+    """An install registered before #152218 (S4U principal) is drift, so ``start()`` / ``hermes
+    update`` re-register it; an export that omits LogonType is not."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    s4u = template.replace("<LogonType>InteractiveToken</LogonType>", "<LogonType>S4U</LogonType>")
+    assert s4u != template
+    assert gateway_windows.compare_scheduled_task_drift(s4u, template) == ["LogonType S4U"]
+    no_logon = template.replace("<LogonType>InteractiveToken</LogonType>", "")
+    assert gateway_windows.compare_scheduled_task_drift(no_logon, template) == []
 
 
 def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_path):
@@ -842,3 +915,11 @@ def test_wizard_install_service_asks_once_and_never_starts_after_windows_install
 
     assert installs == [{"force": False, "start_now": True, "start_on_login": True}]
     assert starts == []
+
+
+def test_decode_schtasks_output_honours_a_utf16_bom():
+    """A genuine UTF-16 write (BOM) decodes as UTF-16, never as a code page; a malformed one falls
+    back like any other bytes instead of raising past callers that catch only timeout/OS errors."""
+    text = "Herm\u00e9s"
+    assert gateway_windows._decode_schtasks_output(text.encode("utf-16")) == text
+    assert gateway_windows._decode_schtasks_output(b"\xff\xfe<\x00?")

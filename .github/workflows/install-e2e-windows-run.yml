@@ -45,6 +45,10 @@ name: install-e2e windows leg
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       install-method:
         description: 'How OLD gets installed. Supported: desktop-installer@latest (website exe, AHK-clicked), installer-script (irm | iex install.ps1) and installer-script+desktop (the same with -IncludeDesktop). Declared-but-TODO methods skip.'
         required: true
@@ -82,8 +86,8 @@ on:
         required: false
         type: number
         # Green legs take up to ~40 min; from v2026.9.24 the update alone runs the venv->PM
-        # takeover plus npm ci and a Desktop rebuild (24 min in 108542725043, 11 of them one
-        # npm ci), and the app-update driver may wait 30 min. pty-run.py's deadline and the
+        # takeover plus the JS install and a Desktop rebuild (24 min in 108542725043, 11 of them
+        # one npm ci), and the app-update driver may wait 30 min. pty-run.py's deadline and the
         # per-step budgets bound real hangs, so the job cap only has to clear a slow runner.
         default: 90
       bundle-manifest-url:
@@ -100,16 +104,20 @@ on:
 permissions:
   contents: read
 
+env:
+  # A stable run is on the default branch, so GITHUB_SHA is not the commit under test.
+  HERMES_TESTED_COMMIT: ${{ inputs.commit || github.sha }}
+
 jobs:
   bundled-e2e:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
-    runs-on: ${{ inputs.bundle-arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
+    runs-on: ${{ inputs.bundle-arch == 'arm64' && 'windows-latest-32-arm-core' || 'blacksmith-32vcpu-windows-2025' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
       - name: Set up driver tools only
         uses: ./.github/actions/setup-pm
         with:
@@ -120,11 +128,13 @@ jobs:
           cache-node: false
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
       - name: Verify native helpers
         shell: pwsh
         run: |
           node --test tests/install/e2e-assets/windows-bundled-helpers.test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/e2e-assets/windows-bundled-processes.test.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Start recording
         uses: ./.github/actions/e2e-screen-record
@@ -174,7 +184,8 @@ jobs:
         || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
         || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
             && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
-    runs-on: windows-latest-32-core
+    # Extra cores save little time on installs and updates.
+    runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:
@@ -191,7 +202,7 @@ jobs:
       # in that clone. A shallow checkout cannot serve either need.
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
 
       # Old installers refresh PATH after winget installs ripgrep, dropping the
@@ -207,7 +218,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       # A released tag prints its one-shot chat through prompt_toolkit, whose Windows
       # output object needs a console screen buffer -- piping the CLI's stdout into the
@@ -249,16 +260,35 @@ jobs:
       # installers' uv/ripgrep).
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -UpdateRef "${{ inputs.update-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          UPDATE_REF: ${{ inputs.update-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -UpdateRef $env:UPDATE_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       - name: Install ${{ inputs.install-ref }} (${{ inputs.install-method }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
         id: update
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       # After everything, including the new runtime's launch and its smoke
       # checks: the bootstrap marker can complete on a later run than the
@@ -267,7 +297,13 @@ jobs:
       - name: Verify install stamps describe the updated checkout
         if: steps.update.outputs.known_failure == ''
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase verify-stamp -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase verify-stamp -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       - name: Stage known-failure receipt
         if: steps.update.outputs.known_failure != ''

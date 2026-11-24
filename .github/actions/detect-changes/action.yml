@@ -55,7 +55,7 @@ outputs:
     description: Run the PM project-lock check (pyproject.toml / uv.lock changes only).
     value: ${{ steps.classify.outputs.uv_lock }}
   npm_lock:
-    description: Post/update the semantic package-lock.json diff PR comment.
+    description: Post/update the semantic JS lockfile (pnpm-lock.yaml / package-lock.json) diff PR comment.
     value: ${{ steps.classify.outputs.npm_lock }}
   bootstrap:
     description: Run the bootstrap installer lane (install.sh sandbox + stamp verification).
@@ -66,6 +66,12 @@ outputs:
   rust:
     description: Run `cargo test` for the Tauri bootstrap installer.
     value: ${{ steps.classify.outputs.rust }}
+  remote_backends:
+    description: Run the SSH and Docker terminal backends against a real sshd and Docker daemon.
+    value: ${{ steps.classify.outputs.remote_backends }}
+  catalog:
+    description: Run the plugin-catalog tests (catalog-only diffs run these instead of the Python suite).
+    value: ${{ steps.classify.outputs.catalog }}
 
 runs:
   using: composite
@@ -106,12 +112,13 @@ runs:
           # die with "cannot iterate over: null", which fails every retry
           # and forces the fail-open path (seen on stacked PRs). The full
           # file list (up to the API's 300-file cap) is on page one.
+          # One line per file: the path, then the old path of a rename.
           CHANGED=""
           for i in 1 2 3; do
             if CHANGED="$(gh api \
               --paginate \
               "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
-              --jq '.files[]?.filename')"; then
+              --jq '.files[]? | [.filename, .previous_filename // empty] | @tsv')"; then
               break
             fi
             if [ "$i" = 3 ]; then

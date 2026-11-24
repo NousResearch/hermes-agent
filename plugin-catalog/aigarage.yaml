@@ -1,0 +1,25 @@
+name: aigarage
+title: AI Garage
+repo: https://github.com/tonbistudio/aigarage-plugin
+sha: "c2c0943be90a6ac9f51f91de8c5c661365510297"
+description: "Search AI Garage's YouTube videos (answers link to the exact chapter), the AI Garage Weekly newsletter and the creator's own X posts, plus the Agent Wikis reference library (source-backed wikis, skills, agent tools and routines), through two hosted MCP servers on agentwikis.com, with three workflow skills bundled. Portable Agent Plugins v1 package (mcp.json + skills/), no code. Disclosure — hosted-only connectors: every tool call goes to agentwikis.com (/content/aigarage/mcp and /mcp); IP addresses are used in memory for rate limiting and not stored, and wiki searches are kept only as anonymous counts of the query text (agentwikis.com/privacy). X results are links only, searched server-side with the publisher's own X API access. Free without a key; an optional Agent Wikis Pro key is added with hermes mcp add, kept in the profile's .env and sent only to agentwikis.com/mcp. With Pro, read_agent_tool can return a short-lived download link for an agent tool that runs on your machine; the bundled skill tells the model to explain it and get your explicit OK before downloading, running or scheduling anything. No telemetry."
+maintainer: tonbistudio
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.7"
+docs_url: https://github.com/tonbistudio/aigarage-plugin/tree/c2c0943be90a6ac9f51f91de8c5c661365510297#readme
+readme: true
+image: https://raw.githubusercontent.com/tonbistudio/aigarage-plugin/c2c0943be90a6ac9f51f91de8c5c661365510297/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/tonbistudio/aigarage-plugin/c2c0943be90a6ac9f51f91de8c5c661365510297/assets/gallery-1.png
+  - https://raw.githubusercontent.com/tonbistudio/aigarage-plugin/c2c0943be90a6ac9f51f91de8c5c661365510297/assets/gallery-2.png
+  - https://raw.githubusercontent.com/tonbistudio/aigarage-plugin/c2c0943be90a6ac9f51f91de8c5c661365510297/assets/gallery-3.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "The Agent Wikis Pro key is optional and needs one extra command, because a portable mcp.json cannot carry an optional header: hermes mcp add agentwikis --url \"https://agentwikis.com/mcp\" --auth header, answer yes, paste the key, then /reload-mcp. Without it everything free keeps working."

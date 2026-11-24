@@ -25,8 +25,7 @@
  *
  * Kept in a standalone ts module (no Electron imports, dependencies passed
  * as parameters) so it can be unit-tested with `node --test` without
- * mocking Electron or the filesystem, same pattern as backend-probes.ts and
- * backend-command.ts.
+ * mocking Electron or the filesystem, same pattern as backend-probes.ts.
  */
 
 /**

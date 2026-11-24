@@ -356,6 +356,20 @@ def _deps_hold_resume(root: Path) -> bool:
         return False
 
 
+def _paused_on_unreadable_head(token: dict) -> bool:
+    """Every pause in the set already found HEAD unreadable and none bound a tree move since.
+
+    The gateways were serving exactly this tree when they stopped, and no step of the update wrote
+    a file (``_checkout_move`` records its targets/paths before git writes), so restarting them
+    leaves the tree as they knew it. Without this a ``.git`` git rejects (an empty ``HEAD``) kept
+    the set stopped on every later launch, since no update can fetch until the checkout is repaired.
+    """
+    baselines = token.get("baselines") or []
+    return bool(baselines) and all(
+        b.get("pre_sha") is None and not (b.get("move_targets") or b.get("move_paths") or b.get("landed"))
+        for b in baselines)
+
+
 def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
     """May paused gateways start on this checkout now? ``(verdict, reason when not)``."""
     from hermes_cli._early_recovery import interrupted_pull_marker
@@ -365,6 +379,8 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
             return False, "the checkout is mid-pull (interrupted-pull marker present)"
         head = head_sha(root)
         if head is None:
+            if _paused_on_unreadable_head(token):
+                return True, ""
             return False, "the checkout HEAD is unreadable"
         baselines = token.get("baselines") or []
         at_head = [b for b in baselines if b.get("pre_sha") == head]
@@ -856,13 +872,23 @@ def drop_never_stopped(token: dict) -> dict:
 
 def split_draining(token: dict) -> dict:
     """Remove and return ``{"profiles", "unmapped", "posix_units"}`` whose recorded process is still
-    running: it was asked to stop and has not exited yet, so it can only be restarted once it has."""
+    running: it was asked to stop and has not exited yet, so it can only be restarted once it has.
+    A supervised unit whose ``--force`` stop did not settle is held while its stop job still runs
+    (its gateway PID may be gone already): a start now would queue behind that job."""
     live = _live_pids(token)
     draining = {"profiles": {p: pid for p, pid in (token.get("profiles") or {}).items() if str(pid) in live},
                 "unmapped": [u for u in (token.get("unmapped") or []) if str(u.get("pid")) in live],
                 "posix_units": [u for u in (token.get("posix_units") or []) if str(u.get("pid")) in live]}
     _without(token, live)
+    if stopping := [u for u in token.get("posix_units") or [] if u.get("stop_unsettled") and _unit_stop_pending(u)]:
+        draining["posix_units"] += stopping
+        token["posix_units"] = [u for u in token["posix_units"] if u not in stopping]
     return draining
+
+
+def _unit_stop_pending(unit: dict) -> bool:
+    from hermes_cli.update_cmd_posix_pause import unit_stop_pending
+    return unit_stop_pending(unit)
 
 
 def merge_into(token: dict | None, adopted: dict) -> dict:

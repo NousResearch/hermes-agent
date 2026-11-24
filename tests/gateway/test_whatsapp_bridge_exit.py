@@ -63,6 +63,7 @@ def _make_adapter(session_path: Path, bridge_script: str = "/tmp/test-bridge.js"
     adapter._bridge_port = 19877
     adapter._bridge_script = bridge_script
     adapter._session_path = session_path
+    adapter._profile_home = session_path.parent
     adapter._bridge_process = None
     adapter._bridge_log_fh = None
     adapter._bridge_log = None

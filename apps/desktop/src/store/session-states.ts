@@ -22,7 +22,7 @@ import { atom, computed } from 'nanostores'
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
-import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $layoutTree,
   focusedSessionTabAnchor,
@@ -33,16 +33,17 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
-import type { ErrorSurface } from '@/lib/error-surface'
+import { dropBrowserProfilePrefs, migrateBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
+import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropQueuedLaunchPicksForProfile, migrateQueuedLaunchPicksForProfile } from './composer-queued-pick'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
-import { recordDislike } from './desktop-metrics'
+import { dropDesktopMetricsForProfile, migrateDesktopMetricsForProfile, recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
 import {
   adoptPendingRuntimeTabs,
@@ -54,6 +55,7 @@ import {
 import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { renameLocalOwnerRoute } from './profile-owner-rename'
 import { $projectTree } from './project-tree'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
@@ -83,8 +85,10 @@ import {
   setTileSessionFocusStartedAt,
   setTurnStartedAt
 } from './session'
+import { $sessionsWaitingOnCard, sessionNeedsInput } from './session-card-wait'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
+import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -93,7 +97,9 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { mergeSessionTile, ownerProfileKey, sameSessionOwner, tilesShareOwner } from './session-tile-identity'
+import { orderTilesByTree } from './session-tile-order'
+import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -202,7 +208,7 @@ export function liveSessionScopes(): Set<string> {
   const scopes = new Set<string>()
 
   for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
-    if (!state || (!state.busy && !state.needsInput)) {
+    if (!state || (!state.busy && !sessionNeedsInput(state, runtimeId))) {
       continue
     }
 
@@ -347,7 +353,11 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
 // Bound on the status request itself; past it the check counts as unanswered.
 export const LIVE_TURN_PROBE_TIMEOUT_MS = 15_000
-const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// One re-armed deadline per live session. A streaming turn can emit 30-80
+// events/s; the old shape cleared and allocated a new timeout for every one of
+// them. The timer now stays armed and reads `lastEventAt` when it fires, so a
+// token costs a number write instead of a timer swap.
+const sessionEventSilenceTimers = new Map<string, { lastEventAt: number; timer: ReturnType<typeof setTimeout> }>()
 // One token per status check in flight: an event, a settle, or a newer check
 // drops it, so a late answer cannot act on a turn that moved on.
 const silentTurnChecks = new Map<string, object>()
@@ -378,12 +388,12 @@ export function setLiveTurnBackend(backend: LiveTurnBackend): () => void {
 }
 
 function clearEventSilence(runtimeId: string) {
-  const timer = sessionEventSilenceTimers.get(runtimeId)
+  const armed = sessionEventSilenceTimers.get(runtimeId)
 
   silentTurnChecks.delete(runtimeId)
 
-  if (timer) {
-    clearTimeout(timer)
+  if (armed) {
+    clearTimeout(armed.timer)
     sessionEventSilenceTimers.delete(runtimeId)
   }
 }
@@ -485,58 +495,6 @@ function settleEndedLiveTurn(runtimeId: string) {
   })
 }
 
-// Raised only after the backend confirmed the turn is over and no reply reached
-// this window, so Retry cannot run the prompt twice.
-const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }
-const NO_REPLY_ERROR = 'Hermes ended this turn without a reply.'
-
-function turnHasReply(messages: ChatMessage[]): boolean {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-
-    if (message.hidden) {
-      continue
-    }
-
-    if (message.role === 'user') {
-      return false
-    }
-
-    if (message.role === 'assistant' && (message.error || chatMessageText(message).trim())) {
-      return true
-    }
-  }
-
-  return false
-}
-
-function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
-  const last = messages.findLast(message => !message.hidden)
-
-  // A turn that ran tools but never wrote text carries the notice on its own bubble.
-  if (last?.role === 'assistant') {
-    return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
-    )
-  }
-
-  const occurredAt = Date.now() / 1000
-
-  return [
-    ...messages,
-    {
-      completedAt: occurredAt,
-      error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
-      id: `assistant-no-reply-${Date.now()}`,
-      parts: [],
-      pending: false,
-      role: 'assistant',
-      timestamp: occurredAt
-    }
-  ]
-}
-
 /** Stamp the retry card on an ended turn that has no reply, never an intentional
  *  interruption. A newer turn is either live (skipped) or has its own reply. */
 function markTurnWithoutReply(runtimeId: string) {
@@ -569,7 +527,22 @@ async function recoverEndedLiveTurn(runtimeId: string) {
  *  also keeps it — the stall hint and Stop remain — and asks again next window.
  *  Only a backend that reports the turn over settles it. */
 async function onEventSilence(runtimeId: string) {
-  sessionEventSilenceTimers.delete(runtimeId)
+  const armed = sessionEventSilenceTimers.get(runtimeId)
+
+  if (armed) {
+    // Events landed after this timer was armed: the deadline is measured from
+    // the LAST event, so re-arm for the remainder instead of probing while the
+    // turn is still demonstrably producing.
+    const remaining = armed.lastEventAt + LIVE_TURN_EVENT_SILENCE_MS - performance.now()
+
+    if (remaining > 0) {
+      armed.timer = setTimeout(() => void onEventSilence(runtimeId), remaining)
+
+      return
+    }
+
+    sessionEventSilenceTimers.delete(runtimeId)
+  }
 
   if (!isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
     return
@@ -604,46 +577,83 @@ export function noteSessionEvent(runtimeId: string) {
   }
 
   const current = $sessionStates.get()[runtimeId]
+  const armed = sessionEventSilenceTimers.get(runtimeId)
 
-  clearEventSilence(runtimeId)
+  // Any real event invalidates an in-flight silence verdict, armed or not.
+  silentTurnChecks.delete(runtimeId)
 
   if (!isLiveTurnAwaitingEvents(current)) {
+    if (armed) {
+      clearTimeout(armed.timer)
+      sessionEventSilenceTimers.delete(runtimeId)
+    }
+
     return
   }
 
-  sessionEventSilenceTimers.set(
-    runtimeId,
-    setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
-  )
-}
+  // Monotonic: setTimeout runs on it, so a wall-clock jump cannot move the deadline.
+  const now = performance.now()
 
-const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  if (armed) {
+    armed.lastEventAt = now
 
-function armWatchdog(runtimeId: string) {
-  const existing = sessionWatchdogTimers.get(runtimeId)
-
-  if (existing) {
-    clearTimeout(existing)
+    return
   }
 
-  sessionWatchdogTimers.set(
-    runtimeId,
-    setTimeout(() => {
-      sessionWatchdogTimers.delete(runtimeId)
-      const current = $sessionStates.get()[runtimeId]
+  sessionEventSilenceTimers.set(runtimeId, {
+    lastEventAt: now,
+    timer: setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
+  })
+}
 
-      if (current?.busy) {
-        setSessionStalled(current.storedSessionId, true)
-      }
-    }, SESSION_WATCHDOG_TIMEOUT_MS)
-  )
+// One re-armed deadline per busy session. `handleTransition` calls this on EVERY
+// busy publish (a streamed delta every ~40 ms), and the old shape cleared and
+// allocated a 5-minute timeout on each one. The timer stays armed and re-checks
+// `lastBusyAt` when it fires, so a publish costs a number write.
+const sessionWatchdogTimers = new Map<string, { lastBusyAt: number; timer: ReturnType<typeof setTimeout> }>()
+
+function fireWatchdog(runtimeId: string) {
+  const armed = sessionWatchdogTimers.get(runtimeId)
+
+  if (armed) {
+    const remaining = armed.lastBusyAt + SESSION_WATCHDOG_TIMEOUT_MS - performance.now()
+
+    if (remaining > 0) {
+      armed.timer = setTimeout(() => fireWatchdog(runtimeId), remaining)
+
+      return
+    }
+
+    sessionWatchdogTimers.delete(runtimeId)
+  }
+
+  const current = $sessionStates.get()[runtimeId]
+
+  if (current?.busy) {
+    setSessionStalled(current.storedSessionId, true)
+  }
+}
+
+function armWatchdog(runtimeId: string) {
+  const armed = sessionWatchdogTimers.get(runtimeId)
+
+  if (armed) {
+    armed.lastBusyAt = performance.now()
+
+    return
+  }
+
+  sessionWatchdogTimers.set(runtimeId, {
+    lastBusyAt: performance.now(),
+    timer: setTimeout(() => fireWatchdog(runtimeId), SESSION_WATCHDOG_TIMEOUT_MS)
+  })
 }
 
 function clearWatchdog(runtimeId: string) {
-  const t = sessionWatchdogTimers.get(runtimeId)
+  const armed = sessionWatchdogTimers.get(runtimeId)
 
-  if (t) {
-    clearTimeout(t)
+  if (armed) {
+    clearTimeout(armed.timer)
     sessionWatchdogTimers.delete(runtimeId)
   }
 }
@@ -815,9 +825,22 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
 /** Mark a completed turn unread unless the user is already looking at it. */
 function lightUnreadCompletion(storedId: string, runtimeId?: string) {
+  // The marker's profile bucket comes from the loaded row when there is one;
+  // with no row, the socket-proven owner profile keeps a background profile's
+  // finish out of the ACTIVE profile's bucket (#91710). The same owner decides
+  // whether the completion is a messaging conversation's.
+  const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
+
+  const profileHint =
+    typeof owner === 'string'
+      ? owner
+      : typeof owner?.profile === 'string' && owner.profile.trim()
+        ? owner.profile
+        : undefined
+
   // FOCUSED, not selected: a session finishing in the tile the user is
   // watching is already seen, and a tile is never the primary selection.
-  if (storedId === $focusedStoredSessionId.get()) {
+  if (storedId === $focusedStoredSessionId.get() || isMessagingCompletion(storedId, profileHint)) {
     return
   }
 
@@ -829,20 +852,7 @@ function lightUnreadCompletion(storedId: string, runtimeId?: string) {
 
   if (Date.now() > lastReadAt) {
     // Flags the transient atom AND persists a marker, so the green dot
-    // survives an app restart (see session-unread.ts). The marker's profile
-    // bucket comes from the loaded row when there is one; with no row, the
-    // socket-proven owner profile keeps a background profile's finish out of
-    // the ACTIVE profile's bucket — the per-profile rail unread (#91710)
-    // would otherwise light the wrong square.
-    const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
-
-    const profileHint =
-      typeof owner === 'string'
-        ? owner
-        : typeof owner?.profile === 'string' && owner.profile.trim()
-          ? owner.profile
-          : undefined
-
+    // survives an app restart (see session-unread.ts).
     markSessionUnreadFinished(storedId, profileHint)
   }
 }
@@ -889,9 +899,9 @@ function runtimeReferenced(runtimeId: string, storedSessionId: null | string): b
  *  on the user) and neither the primary view nor any tile holds the runtime.
  *  `needsInput` states stay — the sidebar's attention dot reads them. */
 function evictable(runtimeId: string, state: ClientSessionState): boolean {
-  return (
-    !state.busy && !state.needsInput && !state.awaitingResponse && !runtimeReferenced(runtimeId, state.storedSessionId)
-  )
+  const live = state.busy || state.awaitingResponse || sessionNeedsInput(state, runtimeId)
+
+  return !live && !runtimeReferenced(runtimeId, state.storedSessionId)
 }
 
 /** Publish one session's state. Automatically fires transition side-effects
@@ -988,14 +998,14 @@ export function dropSessionState(runtimeId: string) {
  *  wiped gateway's sessions must not fire stale clears or linger in the
  *  sidebar merge keep-set after the switch. */
 export function clearAllSessionStates() {
-  for (const timer of sessionWatchdogTimers.values()) {
-    clearTimeout(timer)
+  for (const armed of sessionWatchdogTimers.values()) {
+    clearTimeout(armed.timer)
   }
 
   sessionWatchdogTimers.clear()
 
-  for (const timer of sessionEventSilenceTimers.values()) {
-    clearTimeout(timer)
+  for (const armed of sessionEventSilenceTimers.values()) {
+    clearTimeout(armed.timer)
   }
 
   sessionEventSilenceTimers.clear()
@@ -1127,12 +1137,12 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
 const storedIds = (
   states: Record<string, ClientSessionState>,
   sessions: readonly SessionInfo[],
-  pred: (s: ClientSessionState) => boolean
+  pred: (s: ClientSessionState, runtimeId: string) => boolean
 ) => {
   const ids = new Set<string>()
 
   for (const [runtimeId, state] of Object.entries(states)) {
-    if (!pred(state)) {
+    if (!pred(state, runtimeId)) {
       continue
     }
 
@@ -1156,12 +1166,8 @@ export const $workingSessionIds = computed(
 
 let attentionIds: readonly string[] = []
 export const $attentionSessionIds = computed(
-  [$sessionStates, $sessions],
-  (states, sessions) =>
-    (attentionIds = stableArray(
-      attentionIds,
-      storedIds(states, sessions, s => s.needsInput)
-    ))
+  [$sessionStates, $sessions, $sessionsWaitingOnCard],
+  (states, sessions) => (attentionIds = stableArray(attentionIds, storedIds(states, sessions, sessionNeedsInput)))
 )
 
 // An open session nothing has ever been sent to — the ⌘T tab whose backend
@@ -1524,51 +1530,8 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
 }
 
-function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
-  if (isSessionOwnerRoute(left) && isSessionOwnerRoute(right)) {
-    return (
-      left.connectionId.trim() === right.connectionId.trim() &&
-      normalizeProfileKey(left.profile) === normalizeProfileKey(right.profile) &&
-      normalizeProfileKey(left.targetProfile ?? left.profile) ===
-        normalizeProfileKey(right.targetProfile ?? right.profile)
-    )
-  }
-
-  if (typeof left === 'string' && typeof right === 'string') {
-    return normalizeProfileKey(left) === normalizeProfileKey(right)
-  }
-
-  return false
-}
-
 function tileWorkspaceMode(tile: SessionTile): WorkspaceMode {
   return tile.workspaceMode ?? 'sessions'
-}
-
-function tilesShareOwner(left: SessionTile, right: SessionTile): boolean {
-  if (left.workspaceMode && right.workspaceMode && left.workspaceMode !== right.workspaceMode) {
-    return false
-  }
-
-  const workspaceMode = left.workspaceMode ?? right.workspaceMode ?? 'sessions'
-
-  if (workspaceMode === 'bots') {
-    if (left.workspaceOwnerKey && right.workspaceOwnerKey) {
-      return left.workspaceOwnerKey === right.workspaceOwnerKey
-    }
-
-    if (left.ownerRoute && right.ownerRoute) {
-      return sameSessionOwner(left.ownerRoute, right.ownerRoute)
-    }
-
-    return true
-  }
-
-  if (left.ownerRoute && right.ownerRoute) {
-    return sameSessionOwner(left.ownerRoute, right.ownerRoute)
-  }
-
-  return true
 }
 
 function tileBelongsToMain(tile: SessionTile, selectedStoredSessionId: string, tileProfile = profileKey()): boolean {
@@ -1583,48 +1546,6 @@ function tileBelongsToMain(tile: SessionTile, selectedStoredSessionId: string, t
   }
 
   return typeof mainOwner === 'string' && normalizeProfileKey(mainOwner) === normalizeProfileKey(tileProfile)
-}
-
-function mergeSessionTile(previous: SessionTile, next: SessionTile, storedSessionId: string): SessionTile {
-  const merged: SessionTile = { ...previous, storedSessionId }
-
-  if (next.anchor !== undefined) {
-    merged.anchor = next.anchor
-  }
-
-  if (next.before !== undefined) {
-    merged.before = next.before
-  }
-
-  if (next.dir !== undefined) {
-    merged.dir = next.dir
-  }
-
-  if (next.error !== undefined) {
-    merged.error = next.error
-  }
-
-  if (next.ownerRoute !== undefined) {
-    merged.ownerRoute = next.ownerRoute
-  }
-
-  if (next.runtimeId !== undefined) {
-    merged.runtimeId = next.runtimeId
-  }
-
-  if (next.workspaceMode !== undefined) {
-    merged.workspaceMode = next.workspaceMode
-  }
-
-  if (next.workspaceOwnerKey !== undefined) {
-    merged.workspaceOwnerKey = next.workspaceOwnerKey
-  }
-
-  if (next.workspaceTabTitle !== undefined) {
-    merged.workspaceTabTitle = next.workspaceTabTitle
-  }
-
-  return merged
 }
 
 function rekeyTileList(
@@ -1659,14 +1580,6 @@ function rekeyTileList(
   }
 
   return tiles.map(t => (t === stale ? { ...t, storedSessionId: nextStoredSessionId } : t))
-}
-
-function ownerProfileKey(owner: SessionOwnerScope): string | undefined {
-  if (isSessionOwnerRoute(owner)) {
-    return normalizeProfileKey(owner.profile)
-  }
-
-  return typeof owner === 'string' ? normalizeProfileKey(owner) : undefined
 }
 
 /**
@@ -1814,7 +1727,7 @@ export function openTileGatewayScopes(): Set<string> {
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */
-export function knownOwnerForSession(sessionId: null | string | undefined): SessionOwnerScope {
+export function knownOwnerForSession(sessionId: null | string | undefined, rows = ownerLookupSessionRows()) {
   if (!sessionId) {
     return undefined
   }
@@ -1824,7 +1737,7 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   const durable =
     sessionTileOwner(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
-    knownSessionOwner(ownerLookupSessionRows(), storedSessionId)
+    knownSessionOwner(rows, storedSessionId)
 
   if (isSessionOwnerRoute(durable)) {
     return durable
@@ -1869,7 +1782,7 @@ syncPreviewScope()
 /** The mode of the backend that serves `owner`: the route's own `mode`, else
  *  its registry connection's kind, else the socket already dialed for it (a
  *  bare profile rides the primary or its own pool secondary). Null = unknown. */
-function ownerConnectionMode(owner: SessionOwnerScope): 'local' | 'remote' | null {
+export function ownerConnectionMode(owner: SessionOwnerScope): 'local' | 'remote' | null {
   if (!owner) {
     return null
   }
@@ -2139,17 +2052,17 @@ export function resetTileRuntimeBindings(
   const preservedStoredIds = new Set(
     tiles
       .filter(
-        // Any tile with an EXACT owner route — bot tabs always, and a
-        // sessions tile whose opener stamped one (a branch child on its
-        // parent's connection). Its runtime lives on that owner's socket,
-        // not the ambient gateway, so an unrelated connection's reconnect
-        // must not drop the binding: each drop re-arms the tile's resume,
-        // and a flapping sibling connection turns that into 4+ re-resumes
-        // inside the storm window — latching the "keeps losing its backend
-        // runtime" card over a session that is actually healthy.
+        // A tile bound to its own durable id (canonical gateway) survives any
+        // reconnect: see invalidateRuntimeBindings. So does any tile with an
+        // EXACT owner route — bot tabs always, and a sessions tile whose opener
+        // stamped one (a branch child on its parent's connection): its runtime
+        // lives on that owner's socket, so an unrelated connection's reconnect
+        // must not drop the binding (each drop re-arms the tile's resume; a
+        // flapping sibling latched "keeps losing its backend runtime").
         tile =>
-          Boolean(tile.ownerRoute?.connectionId) &&
-          (!(reconnected || liveConnectionIds) || !belongsToReconnectedRuntime(tile))
+          tile.runtimeId === tile.storedSessionId ||
+          (Boolean(tile.ownerRoute?.connectionId) &&
+            (!(reconnected || liveConnectionIds) || !belongsToReconnectedRuntime(tile)))
       )
       .map(tile => tile.storedSessionId)
   )
@@ -2231,11 +2144,11 @@ export interface SessionTileDelegate {
   branchSessionAtMessage(storedSessionId: string, runtimeId: string, messageId: string): Promise<boolean>
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
-  /** Run a slash command against a tile's session (app-level effects — e.g.
-   *  branch/handoff — act on the main surface, as they should). */
+  /** Run a slash command against a tile's session (app-level effects, e.g. branch/handoff, act on the main surface). */
   executeSlash(rawCommand: string, sessionId: string, options?: { typed?: boolean }): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
+  switchSessionModel?(runtimeId: string, model: string, provider: string): Promise<boolean>
   /** Drop the wiring cache's stored→runtime bindings. Called on gateway
    *  reconnect: a respawned backend re-mints runtime ids, so every binding
    *  recorded before the reconnect is suspect — without this, `resumeTile`'s
@@ -2251,8 +2164,12 @@ export interface SessionTileDelegate {
    *  the main view). Returns the runtime id, or throws.
    *  `refreshTranscript` forces a REST merge even when a warm cached
    *  transcript already exists — reopen-after-idle must not paint the
-   *  snapshot that was current when the panel last had a socket. */
-  resumeTile(storedSessionId: string, options?: { refreshTranscript?: boolean }): Promise<string>
+   *  snapshot that was current when the panel last had a socket.
+   *  `authoritativeSnapshot` forces a message-bearing gateway resume. */
+  resumeTile(
+    storedSessionId: string,
+    options?: { authoritativeSnapshot?: boolean; refreshTranscript?: boolean }
+  ): Promise<string>
   /** Retire one runtime's busy/awaiting claim through the wiring cache
    *  (updateSessionState), so cache, focused view, busyRef, and tile mirrors
    *  settle together. Returns false when the cache holds no busy state for
@@ -2293,48 +2210,6 @@ export function setSessionTileDelegate(next: SessionTileDelegate) {
 
 export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
-}
-
-/** Reorder tiles to match layout-tree encounter order (stored ids in the order
- *  their `session-tile:` panes are walked). Restore replays the array through
- *  sequential adoption (each center tile APPENDS after the ones before it), so
- *  array order IS strip order — no `before` stamping needed; a stale `before`
- *  naming an absent pane falls back to append anyway (see insertAtGroup). Tiles
- *  not yet adopted sort after placed ones, stably. Returns `null` when nothing
- *  moves so callers can skip a needless persist. */
-export function orderTilesByTree<T extends { storedSessionId: string }>(
-  tree: LayoutNode | null,
-  tiles: readonly T[]
-): null | T[] {
-  if (!tree || tiles.length < 2) {
-    return null
-  }
-
-  const order: string[] = []
-
-  const walk = (node: LayoutNode) => {
-    if (node.type === 'group') {
-      for (const id of node.panes) {
-        if (id.startsWith(TILE_PANE_PREFIX)) {
-          order.push(id.slice(TILE_PANE_PREFIX.length))
-        }
-      }
-
-      return
-    }
-
-    node.children.forEach(walk)
-  }
-
-  walk(tree)
-
-  const rank = new Map(order.map((id, i) => [id, i]))
-
-  const next = [...tiles].sort(
-    (a, b) => (rank.get(a.storedSessionId) ?? Infinity) - (rank.get(b.storedSessionId) ?? Infinity)
-  )
-
-  return next.some((t, i) => t !== tiles[i]) ? next : null
 }
 
 function syncTileStripOrder() {
@@ -2811,6 +2686,7 @@ export function dropTilesForProfile(
   // connection scope so deletion cannot erase same-named local tabs instead.
   const ambientConnection = tileConnectionId || LOCAL_CONNECTION_ID
   const removedScope = backendScopeKey(route ? routeConnection : ambientConnection, routeProfile || name)
+  dropDesktopMetricsForProfile(name, (route ? routeConnection : ambientConnection) || LOCAL_CONNECTION_ID)
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
     if (!owner) {
@@ -2880,9 +2756,11 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
-  // The rail is a profile-keyed family too: a deleted profile's tabs must not
-  // outlive it, or a later profile of the same name inherits them.
-  dropPreviewTabsForProfile(name)
+  // The rail is a profile-keyed family too (a later same-named profile must not inherit the tabs).
+  // F4: the cookie jar lives in LOCAL userData — clear it only for a LOCAL delete, never a remote one.
+  dropPreviewTabsForProfile(name, (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
+  dropBrowserProfilePrefs(name, route?.connectionId?.trim() || undefined)
+  dropQueuedLaunchPicksForProfile(name, route ? (route.connectionId ?? '') : undefined)
 }
 
 /**
@@ -2893,7 +2771,7 @@ export function dropTilesForProfile(
  * to a backend that no longer exists ("Couldn't open this session", #111868).
  * Local-connection state only; a remote gateway rename executes there.
  */
-export function migrateTilesForProfile(oldProfile: string, newProfile: string): void {
+export async function migrateTilesForProfile(oldProfile: string, newProfile: string): Promise<void> {
   const from = normalizeProfileKey(oldProfile)
   const to = normalizeProfileKey(newProfile)
 
@@ -2901,21 +2779,11 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     return
   }
 
-  const isLocal = (owner: SessionProfileRoute | undefined) =>
-    Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'
+  // Drain queued metric publications before changing local ownership. Keep all UI migrations
+  // below contiguous, so waiting for a frozen peer's coordinator cannot expose a half-rename.
+  await migrateDesktopMetricsForProfile(from, to)
 
-  const renamedOwner = (owner: SessionProfileRoute | undefined): SessionProfileRoute | undefined => {
-    if (!owner || !isLocal(owner)) {
-      return owner
-    }
-
-    const profile = normalizeProfileKey(owner.profile) === from ? to : owner.profile
-    const targetProfile = normalizeProfileKey(owner.targetProfile) === from ? to : owner.targetProfile
-
-    return profile === owner.profile && targetProfile === owner.targetProfile
-      ? owner
-      : { ...owner, profile, ...(targetProfile === undefined ? {} : { targetProfile }) }
-  }
+  const renamedOwner = (owner: SessionProfileRoute | undefined) => renameLocalOwnerRoute(owner, from, to)
 
   const moved = tilesByProfile[from]
 
@@ -2949,6 +2817,8 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   // Sibling family: the rail's profile-keyed buckets move with the rename, or
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)
+  migrateBrowserProfilePrefs(from, to)
+  migrateQueuedLaunchPicksForProfile(from, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

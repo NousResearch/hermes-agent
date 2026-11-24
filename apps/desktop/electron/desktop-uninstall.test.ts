@@ -2,7 +2,7 @@
  * Tests for electron/desktop-uninstall.ts.
  *
  * Run with: node --test electron/desktop-uninstall.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * (Wired into pnpm run test:desktop:platforms in package.json.)
  *
  * These are the pure helpers behind the desktop Chat GUI uninstaller: the
  * mode → CLI-flag mapping, the running-app-bundle resolution per OS, and the
@@ -152,6 +152,15 @@ test('resolveRemovableAppPath uses APPIMAGE on Linux when set', () => {
   assert.equal(
     resolveRemovableAppPath('/tmp/.mount_HermesXXXX/hermes', 'linux', { APPIMAGE: '/home/x/Apps/Hermes.AppImage' }),
     '/home/x/Apps/Hermes.AppImage'
+  )
+})
+
+// AppImage apps (terminals, IDEs) export APPIMAGE to everything they start;
+// uninstalling an unpacked Hermes launched from one must never rm -rf that app.
+test('resolveRemovableAppPath ignores an APPIMAGE inherited from another AppImage', () => {
+  assert.equal(
+    resolveRemovableAppPath('/opt/hermes/linux-unpacked/hermes', 'linux', { APPIMAGE: '/home/x/Apps/Other.AppImage' }),
+    '/opt/hermes/linux-unpacked'
   )
 })
 

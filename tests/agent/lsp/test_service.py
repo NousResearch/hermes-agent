@@ -108,7 +108,7 @@ def mock_pyright_silent(monkeypatch, tmp_path):
         pass
 
 
-def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
+def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent, monkeypatch):
     """``snapshot_baseline`` must wait at most ``lsp.wait_timeout``, not
     the hardcoded client fallback of 5s.
 
@@ -121,6 +121,18 @@ def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
     f = repo / "x.py"
     f.write_text("print('hi')\n")
 
+    # The budget is read off the call, not inferred from wall time: server spawn and initialize
+    # sit inside snapshot_baseline too, and on a loaded runner they ate the margin to 5s.
+    from agent.lsp.client import LSPClient
+    budgets = []
+    real_wait = LSPClient.wait_for_diagnostics
+
+    async def recording_wait(self, path, version, *, mode="document", timeout=None):
+        budgets.append(timeout)
+        return await real_wait(self, path, version, mode=mode, timeout=timeout)
+
+    monkeypatch.setattr(LSPClient, "wait_for_diagnostics", recording_wait)
+
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -132,12 +144,10 @@ def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
         svc.snapshot_baseline(str(f))
         elapsed = time.monotonic() - start
 
-        # The wait is deadline-based: it always runs the full budget
-        # (never less than wait_timeout) and the server never pushes,
-        # so both bounds are stable under load.
+        # The wait is deadline-based and the server never pushes, so it runs the full budget.
         assert elapsed >= 1.5, f"baseline returned before the wait budget: {elapsed:.2f}s"
-        assert elapsed < 4.5, (
-            f"baseline ignored wait_timeout=2.0 and ran the 5s fallback: {elapsed:.2f}s"
+        assert budgets and all(b == pytest.approx(2.0) for b in budgets), (
+            f"baseline must wait with wait_timeout=2.0, not the 5s fallback: {budgets}"
         )
         assert svc.get_status()["broken"] == []
         # No fresh data pre-edit -> empty (never stale) baseline.

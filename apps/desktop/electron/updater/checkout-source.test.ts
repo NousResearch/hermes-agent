@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 
 import { expect, it, vi } from 'vitest'
 
+import { releaseTagVersion } from '../feature-flags'
 import { markerPath } from '../update-marker'
 import * as updaterProcess from '../updater-process'
 
@@ -162,10 +163,10 @@ function buildManifest(
       channel,
       repository: 'NousResearch/hermes-agent',
       commit: sha,
-      sourceVersion: tag.replace(/^v/, '').split('+')[0],
+      sourceVersion: releaseTagVersion(tag)!.split('+')[0],
       releaseTag: tag,
       sequence,
-      version: tag.replace(/^v/, ''),
+      version: releaseTagVersion(tag)!,
       windowsVersion: `0.0.${sequence}.0`,
       identity,
       bundleEnv: {},
@@ -177,7 +178,7 @@ function buildManifest(
         arch: 'arm64',
         variant: 'bundled',
         identity: 'chat.nous.hermes',
-        version: tag.replace(/^v/, ''),
+        version: releaseTagVersion(tag)!,
         teamId: 'TESTTEAM12',
         artifact: {
           key: `releases/channel-builds/${id}/darwin-arm64.zip`,
@@ -238,7 +239,7 @@ it('carries each install channel from Python publication checks into the source 
       commits.push(git(['rev-parse', 'HEAD']))
     }
 
-    const tags: Record<'stable' | 'canary', string> = { stable: 'v1.2.3', canary: 'v1.2.3+canary.20260911T123456Z' }
+    const tags: Record<'stable' | 'canary', string> = { stable: 'v1.2.3', canary: 'canary.20260911T123456Z-v1.2.3' }
 
     for (const channel of ['stable', 'canary'] as const) {
       const sha: string = commits[channel === 'stable' ? 1 : 2]
@@ -272,22 +273,6 @@ it('carries each install channel from Python publication checks into the source 
       draft: false,
       prerelease: false
     })
-    // The 'main' subscription is a source-branch channel record under the R2 protocol.
-    responses.set(
-      '/releases/channels/main.json',
-      JSON.stringify({
-        schema: 1,
-        name: 'main',
-        repository: 'NousResearch/hermes-agent',
-        policy: 'source-branch',
-        state: 'active',
-        revision: 1,
-        nextSequence: 1,
-        identity: null,
-        head: null,
-        delivery: { kind: 'source-branch', branch: 'main' }
-      })
-    )
     git(['tag', 'v99.0.0'])
     git(['worktree', 'add', '-b', 'feature/gui', root])
     git(['remote', 'add', 'origin', origin])
@@ -410,8 +395,10 @@ if not getattr(urllib.request, '_hermes_loopback', False):
       (command: string, args: string[], options: SpawnOptions): updaterProcess.UpdaterChild => {
         spawned.push({ command, args, options })
         // C2: a hand-off has started only once the script takes the Desktop's
-        // bridge marker in its own (live, foreign) name — do that here.
-        fs.writeFileSync(markerPath(home), `${process.ppid}\n${Math.floor(Date.now() / 1000)}\n`)
+        // bridge marker in its own (live, foreign) name — do that here. Line 2
+        // echoes HERMES_UPDATE_STARTED_AT as posix.sh does; a fresh clock read
+        // misses the Desktop's stamp whenever the spawn lands in the next second.
+        fs.writeFileSync(markerPath(home), `${process.ppid}\n${options.env?.HERMES_UPDATE_STARTED_AT}\n`)
 
         return { unref: (): void => {} }
       }
@@ -490,9 +477,9 @@ if not getattr(urllib.request, '_hermes_loopback', False):
     fs.rmSync(markerPath(home), { force: true })
     fs.rmSync(scriptDirectory, { recursive: true, force: true })
     expect(await strategy.apply()).toMatchObject({ manual: true, command: 'hermes update --branch feature/gui' })
-    // apply() forces a fresh check; under the R2 protocol that re-resolution
-    // touches exactly the channel record — no GitHub or artifact chatter.
-    expect(requests.slice(count)).toEqual(['/releases/channels/main.json', '/releases/channels/main.json'])
+    // main IS the git branch: re-resolving it reads no channel record and makes no
+    // GitHub or artifact request, so a WAF that 403s the record can't stop the update.
+    expect(requests.slice(count)).toEqual([])
   } finally {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()

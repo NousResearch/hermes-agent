@@ -104,3 +104,26 @@ class TestResolveOpenaiAudioClientConfig:
         config = {"openai": {"api_key": "cfg-key"}}
         with patch.object(tts_tool, "_load_tts_config", return_value=config):
             assert tts_tool_openai._has_openai_audio_backend() is True
+
+
+@pytest.mark.parametrize("configured, sent", [
+    ("tts-1-hd", "tts-1-hd"), ("tts-1", "tts-1"), ("gpt-4o-mini-tts", "gpt-4o-mini-tts"),
+    ("gpt-4o-mini-tts-2025-12-15", "gpt-4o-mini-tts")])
+def test_managed_gateway_sends_served_models_and_coerces_the_rest(tmp_path, configured, sent):
+    """The managed gateway serves tts-1/tts-1-hd too; only unserved models fall back."""
+    created = []
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            self.audio = SimpleNamespace(speech=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            created.append(kwargs["model"])
+            return SimpleNamespace(stream_to_file=lambda p: open(p, "wb").write(b"ID3"))
+
+    with patch.object(tts_tool, "_import_openai_client", return_value=_Client), \
+         patch.object(tts_tool_openai, "_resolve_openai_audio_client_config",
+                      return_value=("managed-key", "https://openai-audio-gateway.example/v1", True)):
+        tts_tool_openai._generate_openai_tts(
+            "Hello", str(tmp_path / "out.mp3"), {"openai": {"model": configured}})
+    assert created == [sent]

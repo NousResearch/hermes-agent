@@ -1,0 +1,148 @@
+"""A real migration process SIGKILLed right after it renamed config.yaml or .env into place, then recovered.
+
+The real ``hermes`` entry point runs in its own process (``backend_migration_race_host``: the engine tests'
+fake service manager, process table and network; the home's files, the manifest and the staged copies are
+real and written by the real writers). The test pause sits in that test module, right after the rename.
+The next run's recovery must either put the file back to its backup's bytes or end incomplete (exit 5) with
+the steps printed; it never reports a clean rollback while the migration's settings are still in the file.
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from hermes_cli import gateway_migrate_backends_apply as engine
+from tests.hermes_cli.backend_migration_race_host import MODULE
+from tests.waiting import wait_until
+
+pytestmark = pytest.mark.platforms("linux", "macos")  # SIGKILL
+
+_REPO = Path(__file__).resolve().parents[2]
+_APPLY = ["gateway", "migrate", "--backends", "--apply", "--yes"]
+
+
+@pytest.fixture
+def scratch(tmp_path, monkeypatch):
+    home, race_dir = tmp_path / "hermes-home", tmp_path / "race"
+    (home / "logs").mkdir(parents=True)
+    race_dir.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
+    (home / ".env").write_text("OPENAI_API_KEY=***\n", encoding="utf-8")
+    os.chmod(home / ".env", 0o600)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    env = {**os.environ, "HERMES_HOME": str(home), "RACE_DIR": str(race_dir), "PYTHONPATH": str(_REPO)}
+    yield home, race_dir, env
+    (race_dir / "release").write_text("", encoding="utf-8")  # never leave a paused run behind
+
+
+def _killed_after_publishing(env, race_dir, name, *, before=False):
+    pause, marker = ("KILL_BEFORE_PUBLISH", "staged") if before else ("KILL_AFTER_PUBLISH", "published")
+    proc = subprocess.Popen([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO,
+                            env={**env, pause: name}, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    marker = race_dir / f"{marker}-{name}"
+    try:
+        wait_until(marker.exists, timeout=60, what=f"the run at the rename of {name} into place")
+    finally:
+        proc.send_signal(signal.SIGKILL)
+        out, _ = proc.communicate(timeout=60)
+    assert proc.returncode == -signal.SIGKILL
+    return out
+
+
+@pytest.mark.parametrize("name", ["config.yaml", ".env"])
+def test_a_run_killed_right_after_a_rename_never_recovers_as_rolled_back_with_the_change_in_place(scratch, name):
+    home, race_dir, env = scratch
+    before = {n: (home / n).read_bytes() for n in ("config.yaml", ".env")}
+
+    first = _killed_after_publishing(env, race_dir, name)
+    assert (home / name).read_bytes() != before[name], first  # the kill landed after the migration's rename
+    assert engine.read_manifest(home)["state"] == "running"
+
+    recovery = subprocess.run([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO, env=env, capture_output=True,
+                              text=True, timeout=120, check=False)
+    out = recovery.stdout + recovery.stderr
+    manifest = engine.read_manifest(home)
+    if (home / name).read_bytes() == before[name]:
+        return  # put back to the backup's bytes: a clean recovery is true
+    # The file still holds the migration's write: the run is reported incomplete, with the steps.
+    assert recovery.returncode == engine.EXIT_ROLLBACK_INCOMPLETE, out
+    assert manifest["state"] == "failed", manifest["state"]
+    assert "Rollback incomplete" in out and f"{home}/{name}" in out, out
+    (step,) = [s for s in engine.status_payload_from(None, manifest)["manual_steps"] if f"{home}/{name}" in s]
+    assert "stopped while writing" in step and "edited" not in step, step  # no edit was made: say what happened
+    assert step in out
+
+
+_LAUNCHD = {"supervisor": "launchd", "scope": "gui/501", "unit": "local.hermes-dashboard",
+            "unit_path": "/Users/u/Library/LaunchAgents/local.hermes-dashboard.plist"}
+
+
+@pytest.mark.parametrize("supervisor", ["systemd", "launchd"])
+def test_the_steps_after_a_kill_before_the_stop_leave_the_running_old_backend_alone(scratch, supervisor):
+    """Killed while writing config.yaml (before the old backend was stopped): the recovery ends incomplete, says
+    the old backend was not stopped, and its steps neither re-enable, start nor bootstrap it (it never stopped).
+    The file steps stay. Checked on the journal of the real killed run, for the systemd and launchd builders."""
+    home, race_dir, env = scratch
+    _killed_after_publishing(env, race_dir, "config.yaml")
+    killed = engine.read_manifest(home)
+    assert "stop_old_backend" not in killed["entered"], killed["entered"]
+
+    recovery = subprocess.run([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO, env=env, capture_output=True,
+                              text=True, timeout=120, check=False)
+    out = recovery.stdout + recovery.stderr
+    assert recovery.returncode == engine.EXIT_ROLLBACK_INCOMPLETE, out
+    assert "the old backend was not stopped" in out, out
+    manifest = engine.read_manifest(home)
+    if supervisor == "launchd":
+        manifest["old_backend"].update(_LAUNCHD)
+    steps = engine.status_payload_from(None, manifest)["manual_steps"]
+
+    unit = manifest["old_backend"]["unit"]
+    assert [s for s in steps if unit in s] == [], steps  # no enable / start / mv .disabled / bootstrap
+    assert any("stopped while writing" in s and f"{home}/config.yaml" in s for s in steps), steps
+    assert any(f"{home}/.env" in s for s in steps), steps
+
+
+@pytest.mark.parametrize("name", [".env", "config.yaml"])
+def test_a_run_killed_while_a_copy_is_staged_leaves_it_only_in_the_guarded_folder(scratch, monkeypatch, name):
+    """Killed between the staged write and its rename: the copy holding the migration's writes (for .env, the
+    new password) is in ``backend_migration/``, which the Files routes refuse, never directly in the home. The
+    next run's recovery removes it and the run after that migrates."""
+    from tests.hermes_cli.test_web_server_files import _client_with_app_state, _close_client, _restore_app_state
+    home, race_dir, env = scratch
+    before = {n: (home / n).read_bytes() for n in ("config.yaml", ".env")}
+
+    first = _killed_after_publishing(env, race_dir, name, before=True)
+    if name == ".env":  # the first write: nothing was renamed into the home yet
+        assert {n: (home / n).read_bytes() for n in before} == before, first
+    assert list(home.glob("*.migrate")) == [] and list(home.glob(".*.migrate")) == [], sorted(os.listdir(home))
+    (leftover,) = (home / "backend_migration").glob("*.migrate")
+    assert name != ".env" or b"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in leftover.read_bytes()
+
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(home.parent))
+    (home / "notes.txt").write_text("ordinary\n", encoding="utf-8")
+    client, prev_auth_required, prev_bound_host = _client_with_app_state()
+    try:
+        for path, code in ((leftover, 403), (home / "notes.txt", 200)):
+            for route in ("read", "download"):
+                got = client.get(f"/api/files/{route}", params={"path": str(path)})
+                assert got.status_code == code, (route, path, got.text)
+    finally:
+        _close_client(client)
+        _restore_app_state(prev_auth_required, prev_bound_host)
+
+    recovery = subprocess.run([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO, env=env, capture_output=True,
+                              text=True, timeout=120, check=False)
+    assert recovery.returncode == engine.EXIT_ROLLED_BACK, recovery.stdout + recovery.stderr
+    assert list(home.rglob("*.migrate")) == []
+    again = subprocess.run([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO, env=env, capture_output=True,
+                           text=True, timeout=120, check=False)
+    assert again.returncode == engine.EXIT_OK, again.stdout + again.stderr
+    assert engine.read_manifest(home)["state"] == "done"

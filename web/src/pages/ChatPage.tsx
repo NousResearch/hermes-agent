@@ -99,6 +99,8 @@ import {
 } from "@/lib/terminal-font-refit";
 import { generateChannelId } from "@/lib/chat-channel-id";
 import { sendCopyLastCommand } from "@/lib/chat-copy-last";
+import { isUserInitiatedTerminalInput } from "@/lib/learn-handoff";
+import { useLearnHandoff } from "@/lib/use-learn-handoff";
 import { CopyLastButton } from "@/lib/chat-copy-last-button";
 import {
   probeWebglSupport,
@@ -357,6 +359,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
   );
+  const learnHandoff = useLearnHandoff(isActive, channel);
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
@@ -365,7 +368,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [titleScope],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isActive) {
       setTitle(null);
       return;
@@ -1282,25 +1285,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the bottom so the latest output is in view; released once the user
       // scrolls up (#59591).
       if (resumeParam) stickToBottomRef.current = true;
-      // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
-      // skill" panel) is typed into the composer as a /learn command once the
-      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
-      // so this reuses the existing composer path — no special PTY protocol.
-      const learnSeed = searchParams.get("learn");
-      if (learnSeed) {
-        const next = new URLSearchParams(searchParams);
-        next.delete("learn");
-        setSearchParams(next, { replace: true });
-        const cmd = `/learn ${learnSeed}`.trim();
-        // Delay so Ink's composer has mounted and grabbed focus before input.
-        setTimeout(() => {
-          try {
-            wsRef.current?.send(cmd + "\r");
-          } catch {
-            /* PTY not ready / closed — user can retype */
-          }
-        }, 800);
-      }
+      learnHandoff.onSocketOpen(ws);
     };
 
     // Session resume: Ink's two-pass virtual scroll floods the PTY with
@@ -1396,6 +1381,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       }
       wsRef.current = null;
+      learnHandoff.onSocketClose(ws);
       connectInFlightRef.current = false;
       clearConnectingTimer();
       if (unmounting) {
@@ -1506,6 +1492,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
         );
         ptyInputLineRef.current = normalized.nextLine;
+        if (isUserInitiatedTerminalInput(normalized.data)) learnHandoff.onUserInput();
         if (normalized.normalized) {
           mobileReplacementInputUntilRef.current = 0;
         }
@@ -1583,6 +1570,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
+      learnHandoff.onTransportTeardown();
       host.removeEventListener("keydown", _imeCompositionGuard, true);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's
@@ -1601,12 +1589,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
   }, [
-    hasActivated,
-    channel,
-    clearReconnectTimer,
-    resumeParam,
-    scopedProfile,
-    reconnectNonce,
+    hasActivated, channel, clearReconnectTimer, learnHandoff,
+    resumeParam, scopedProfile, reconnectNonce,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners

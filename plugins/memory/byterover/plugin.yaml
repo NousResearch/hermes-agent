@@ -5,3 +5,6 @@ external_dependencies:
   - name: brv
     install: "curl -fsSL https://byterover.dev/install.sh | sh"
     check: "brv --version"
+config_keys:
+  - memory.byterover
+  - memory.provider_config  # legacy block name early docs used

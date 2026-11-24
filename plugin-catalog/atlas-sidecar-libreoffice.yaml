@@ -1,0 +1,251 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Atlas Omnia
+name: atlas-sidecar-libreoffice
+title: "Sidecar for LibreOffice"
+repo: https://github.com/AtlasOmnia/sidecar-libreoffice
+subdir: plugin
+docs_url: https://github.com/AtlasOmnia/sidecar-libreoffice/tree/ea7a4a41e5a8e91b37e104d1e18285dfa083f7d4#readme
+sha: ea7a4a41e5a8e91b37e104d1e18285dfa083f7d4
+version: "0.5.1"
+description: >-
+  Sidecar for LibreOffice by Atlas Omnia — your Hermes agent reads and edits the Calc,
+  Writer and Impress documents you already have open. 55 tools target documents by
+  document_id; supported edits are one named undo step and Hermes can undo its own changes.
+  Click Open Sidecar in LibreOffice's sidebar to chat in the separate Sidecar window.
+  The browser renders only the chat UI; document work stays in LibreOffice through Python-UNO.
+  On macOS it is an app window in Chrome, Edge, Brave or Chromium when installed, otherwise
+  a default-browser tab; Windows 0.5.1 uses a default-browser tab. Optional Follow LibreOffice
+  is macOS app-mode only and off by default, separately from chat.
+  Setup: Hermes installs only the plugin. Download sidecar-libreoffice.oxt from
+  https://github.com/AtlasOmnia/sidecar-libreoffice/releases/tag/v0.5.1
+  (SHA-256 d25ae7834e313adf90c4ef2f47d23d8b6e5699c8802959cecc73a103a0f1a9a1),
+  or build that tag, and add it in LibreOffice's Extension Manager (Tools > Extensions).
+  Check that 0.5.1 is enabled, then choose Restart Now or fully quit and reopen LibreOffice.
+  Pair using Tools > Copy Sidecar pairing token and save it as LIBREOFFICE_LIVE_BRIDGE_TOKEN
+  through Hermes. Chat is off by default (chat_port: 0); enabling it needs chat_port: 8661,
+  plugins.isolation: in_process and the Hermes API server with API_SERVER_KEY.
+  Disclosure — the extension runs a token-checked plain-HTTP listener on 127.0.0.1:8660
+  inside LibreOffice while LibreOffice runs. Its pairing token is owner-only in the
+  LibreOffice profile (user/hermes-bridge/token; protected DACL on Windows); Hermes stores
+  a copy in its profile's secret store. With chat enabled, the plugin listens on
+  127.0.0.1:8661 inside the gateway until unload or process exit, serves bundled hash-checked
+  static chat files and a page API, and forwards chats to the loopback Hermes API server
+  (api_server_port defaults to 8642). API_SERVER_KEY is read through Hermes's profile-scoped
+  secret lookup, kept in memory, never sent to LibreOffice or the browser or logged.
+  The extension and the chat endpoint authenticate each other by an HMAC challenge-response
+  keyed by the pairing token; a 0.5.x extension never sends the token to the chat port, but
+  the endpoint still accepts it as a bearer token on legacy /chat and /health routes for
+  0.4.x extensions until 0.6.0. One-time launch codes reach the browser through owner-only
+  bootstrap HTML files in the user cache, not process arguments. Codes expire after 30 seconds; files are deleted
+  within 30 seconds best effort, with startup/quit sweeps. The browser keeps its session
+  token only in script memory. On eligible macOS launches, window position/state is sent
+  locally to the plugin even with Follow off; HERMES_LO_SIDECAR_NO_FOLLOW=1 disables that
+  transport. Only on a click on Open Sidecar the extension starts a browser: on macOS
+  Chrome, Edge, Brave or Chromium in app mode with its own profile under
+  ~/Library/Caches/Sidecar for LibreOffice (about 60 MB once used), asked to quit when
+  LibreOffice quits; otherwise a default-browser tab through /usr/bin/open (macOS) or the
+  .html file association (Windows). On macOS /usr/bin/osascript raises the window. Argument
+  lists, no shell; it never reads your own browser profile, cookies or keychain.
+  The plugin starts no process.
+  Neither component makes third-party network calls, has telemetry or self-updates;
+  the browser's own vendor calls and LibreOffice document external links are outside
+  their control. Document content read by Hermes goes to its configured model.
+  calc_get_overview lists the titles and file locations of every open LibreOffice document.
+  Chat's tool fence is a pre_tool_call hook, not a Hermes-enforced per-run limit;
+  external-agent runtimes bypass it and are unsupported. Unresolved runs can continue
+  with full Hermes tools after disable/reload removes the hook. Read the pinned README
+  and SECURITY.md and the known issues before enabling chat. Not affiliated with or
+  endorsed by The Document Foundation, Microsoft or Nous Research; LibreOffice is a
+  trademark of The Document Foundation.
+maintainer: AtlasOmnia
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+readme: true
+platforms: [macos, windows]  # macOS Chrome native/bounded real-gateway; Windows Firefox tab with fake Runs API. Linux CI units only; Linux UI unsupported.
+known_issues:
+  - >-
+    Upgrade from released 0.4.x builds: do not remove the extension. Before updating,
+    wait for every Sidecar run to be confirmed finished or stopped, then close all
+    Sidecar windows. If any run's outcome is unresolved, stop the gateway serving
+    this profile completely before updating; closing a page or pressing Stop alone
+    does not prove settlement. Current Hermes can reload plugins during an update,
+    so a restart only afterward does not prevent the disclosed unload-fence gap.
+    Run hermes plugins update atlas-sidecar-libreoffice, then start or restart the
+    gateway serving this profile; quit and reopen Hermes Desktop if used. Add the
+    0.5.1 .oxt in Extension Manager, confirm it is enabled, then choose Restart Now
+    or fully quit and reopen LibreOffice. The released extension identifier is
+    unchanged; pairing, ports, API key and chat settings are retained. Chat that
+    was off stays off. Follow is a separate remembered browser preference, initially off.
+    Installed macOS release-archive evidence with real plugin/fake Runs API: 0.4.1 native
+    panel replied before replacement. Extension Manager replacement by 0.5.1 preserved the
+    pairing token; the already-loaded legacy panel stayed until LibreOffice restarted.
+    New extension plus 0.4.1 plugin clearly reported that the plugin is older and opened
+    no browser; no crash occurred. Old extension plus 0.5.1 plugin retained its native
+    panel and replied. Both 0.5.1 opened Sidecar, completed one turn, stopped a hanging
+    turn and closed the browser on normal Quit. A disposable Hermes local-source reinstall
+    from 0.4.1 to 0.5.1 retained configured ports/settings and the stored pairing token.
+    This was not a public-catalog update or a real-model run. Previous 0.5.0 mixed-pair
+    evidence is historical; its extension replacement used an early integration build,
+    not the release archive. Follow is a separate browser preference, not plugin config.
+    Older than 0.4.0: remove the earlier extension first (different identifier, same port),
+    and restart the gateway after replacing the old libreoffice-live plugin.
+  - >-
+    0.5.1 evidence is scoped in docs/release-0.5.1.md. macOS 27.2.1 Apple silicon,
+    LibreOffice 26.8.2.2 and Chrome 158.0.8127.36: installed integration extension with
+    real plugin/fake Runs API passed first/second/fifth-window and cold-channel performance,
+    guarded title-bar drags, Writer/Calc Print Preview OFF/ON and Writer second-view close;
+    seven native runs had 21 normal Quits exit 0. Windows 11, LibreOffice 26.8.3.1,
+    Firefox 160 as default browser, driven by an automated harness with posted (synthetic)
+    input, not by hand: Open Sidecar opened the tab, and a formatted reply, lost Send/Try
+    again, Stop and no-follow passed with real plugin/fake Runs API. A later 12-check
+    Windows regression passed 12/12 on the same executable bytes, including a document-close
+    retry while another document stayed open; closing with a real click on the window's
+    close button was not qualified on Windows.
+    These are integration observations, not fresh installed tests of the final documentation-only
+    archive; the ledger records the unchanged executable-byte boundary.
+  - >-
+    Real gateway/model evidence is macOS only. The bounded 2026-11-22 everyday-Mac run on
+    integration head 6109c14 used four real gateway/model turns (claude-opus-5-5, Anthropic):
+    A1=42 write/readback, Follow initially off then on, three combined moves/resizes,
+    undock/sticky/Reattach, Print Preview through a completed reply, Stop during an active
+    model API call, Follow off, normal Quit and clean restart. execute_code was refused by
+    the document-tool fence. Undo, document close during a reply, drag during an active reply
+    and Stop during a document tool were not exercised; process exit status was unavailable.
+    This is not full G9 signoff. Separately, the owner-reported 0.5.0 Mac run on 2026-11-21
+    used Hermes 0.23.1 and a configured model for a Calc write/readback, Stop and quit after
+    Extension Manager replacement of 0.4.0; it is one historical chat, not a 0.5.1 test or
+    complete scenario matrix. No Windows gateway/model run is claimed.
+  - >-
+    Automated shipped-page browser/accessibility checks passed, including named/keyboard
+    Reattach/Settings and announcement/focus policy; manual VoiceOver/NVDA were not run.
+    Second-display, negative-coordinate, Retina/2x and mixed-scale placement are untested,
+    as are display changes, native fullscreen/Spaces, Stage Manager, tiling, Windows 150%
+    scaling and Linux UI (unsupported). Edge/Brave/Chromium on macOS, Firefox on macOS,
+    Edge/Chrome as Windows default and managed-browser behavior are not qualified.
+    Full G6 native and G9 real-model matrices are incomplete; see the ledger's remaining rows.
+  - >-
+    Follow is off by default in the dedicated macOS profile; missing/invalid/unavailable
+    preference means off. A hand move/resize undocks until Reattach or a new session;
+    Reattach restores 400 points wide. Hand changes before placement/readback settle can
+    be overwritten. Following is delayed, not rigid docking; no linked minimise or following
+    across Spaces. Hidden/minimised LibreOffice pauses it. Fullscreen is ordinary-large-window
+    behavior, not native-Space detection. Intended other-display recovery is pause, move
+    Sidecar by hand and Reattach, or turn following off; no hardware pass is claimed.
+    No window-management permission is requested. Settings off stops page polling/movement,
+    not the extension's local bounds transport.
+  - >-
+    Chat must use a Hermes-managed model/tool loop. External agents such as codex_app_server
+    run tools outside Hermes hooks: keep chat_port: 0 with them. A dedicated profile limits
+    Hermes tools only, not external built-ins; explicitly configure its model, disable MCP
+    and other toolsets and verify before enabling forwarding. The hook permits the 55 document
+    tools plus read-only skill_view, skills_list, tool_search and tool_describe. Dispatch
+    without session identity is unfenced; SECURITY.md describes the older non-default API
+    execution-mode gap after compaction. Writes have no per-edit approval; document_id selects
+    a target, not a permission. Anyone able to read the pairing token as your user can drive
+    open documents and chat with your model using its credits and agent context.
+  - >-
+    Accepted unload limitation: disable/reload removes the pre_tool_call hook when the callback
+    returns, possibly before the 10-second stop budget ends. A run not confirmed stopped can
+    continue with full Hermes tools. Unload closes the listener, ends sessions/codes and asks
+    known run IDs to stop; an unanswered creation has no ID, and a late ID gets only a
+    best-effort stop outside the fence. Unresolved runs are not drained. Fixing this needs a
+    Hermes-side per-run restriction. Gateway shutdown/restart is different: Hermes drains then
+    interrupts API runs, which end with the process, without first unloading the plugin.
+    In a gateway serving several profiles the first profile to bind a chat port keeps it,
+    and another profile's unload does not close it: turn chat on in one profile only.
+    Chat needs plugins.isolation: in_process.
+  - >-
+    Plain HTTP loopback permits port takeover while listeners are down: the plugin sends the
+    pairing token to port 8660 and API_SERVER_KEY to the API-server port. Legacy 0.4.x panels
+    send the pairing token to the chat port even with chat off; new launchers use HMAC.
+    Windows listeners use SO_EXCLUSIVEADDRUSE while bound; socket/admin/LOCAL SERVICE probes
+    are not normal limited-token versus second-interactive-standard-account acceptance.
+    If another process takes the chat port after gateway stop, later page requests/messages
+    reach it and reload can show its page. Close Sidecar windows before stopping the gateway.
+    Normal tabs expose page/messages/session token to allowed browser extensions; history
+    can retain the spent launch link. The macOS dedicated profile disables extensions/component
+    background updates but organization policies still apply; forced extensions are unqualified.
+    Browser policies can block launch/connect and are not bypassed. Unsafe launch/browser-cache
+    files are refused, not permission-bypassed.
+  - >-
+    Attachment-scoped close safety applies only when attachment_release is negotiated by the
+    new pair. Capability hints are unsigned, not cryptographic downgrade resistance. Legacy
+    mixed pairs retain best-effort document-wide close: a delayed old request can close a
+    reopened document. Bounded close retries are not guaranteed delivery. Mixed-pair
+    close/replacement/old-plugin-preview matrices remain unverified. If LibreOffice crashes,
+    Sidecar stays open; hidden/minimised pages can notice document close about a minute late.
+    Browser crash can leave an already-open message for about two minutes (longer if still
+    polling). Closing/reloading stops a reply but does not undo prior edits. Open Sidecar
+    raises the browser, not necessarily the selected document, and does not reattach. Where
+    the page opens through the .html file association (Windows, and macOS tab fallback), an
+    association with an editor instead of a browser means the window does not connect.
+  - >-
+    Sidecar cannot answer approvals: press Stop or the run ends at its 600-second deadline.
+    Unknown run outcomes stay tracked; do not blindly resend edits. Chat has no word-by-word
+    streaming/live tool rows or prior-message restoration after reconnect. calc_activate_sheet
+    and calc_recalculate are not undoable; some Impress undo loses mixed text formatting.
+    Protection does not block bridge writes; impress_add_shape colours save to .pptx as theme
+    colours. Slide reorder and pivot tables are not implemented.
+capabilities:
+  provides_tools:
+    - calc_get_overview
+    - calc_get_range
+    - calc_set_range
+    - calc_import_csv
+    - calc_sort_range
+    - calc_filter_range
+    - calc_create_chart
+    - calc_list_charts
+    - calc_get_rules
+    - calc_add_conditional_format
+    - calc_set_validation
+    - calc_freeze_panes
+    - calc_protect_sheet
+    - calc_insert_table
+    - calc_activate_sheet
+    - calc_recalculate
+    - calc_format_range
+    - calc_clear_range
+    - calc_create_sheet
+    - calc_execute_plan
+    - writer_get_text
+    - writer_insert_text
+    - writer_insert_paragraphs
+    - impress_list_slides
+    - libreoffice_undo
+    - calc_rename_sheet
+    - calc_copy_sheet
+    - calc_delete_sheet
+    - calc_find_replace
+    - calc_autofill
+    - calc_range_stats
+    - calc_add_comment
+    - calc_get_comments
+    - calc_clear_comments
+    - writer_get_structure
+    - writer_get_table
+    - writer_set_paragraph_style
+    - writer_find_replace
+    - writer_apply_edits
+    - writer_get_selection
+    - writer_replace_selection
+    - writer_format_selection
+    - writer_get_comments
+    - writer_add_comment
+    - impress_get_slide
+    - impress_create_slide
+    - impress_delete_slide
+    - impress_set_shape_text
+    - impress_add_text_box
+    - impress_find_replace
+    - impress_set_slide_layout
+    - impress_format_text
+    - impress_add_shape
+    - impress_get_current_slide
+    - impress_list_layouts
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env:
+    - LIBREOFFICE_LIVE_BRIDGE_TOKEN
+    - API_SERVER_KEY

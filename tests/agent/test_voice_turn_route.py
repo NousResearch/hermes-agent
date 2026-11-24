@@ -7,6 +7,7 @@ server actually received rather than on agent attributes.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,14 +37,21 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
         agent = _agent(home, main.base_url)
 
         first = agent.run_conversation("typed question")
+        # Verdicts the main route earned: the voice route starts without them, main gets them back.
+        agent._stream_options_unsupported = True
+        agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected = False, True
         agent._voice_turn_pending = True
         spoken = agent.run_conversation("spoken question", conversation_history=first["messages"])
         agent.run_conversation("typed again", conversation_history=spoken["messages"])
+        assert agent._stream_options_unsupported is True
+        assert (agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected) == (False, True)
+        assert "stream_options" not in main.main_requests()[-1]
 
         main_models = [r["model"] for r in main.main_requests()]
         voice_models = [r["model"] for r in voice.main_requests()]
         if voice_window_ok:
             assert voice_models == ["voice-model"]
+            assert "stream_options" in voice.main_requests()[0]
             # Unconfigured effort: the voice turn goes out with reasoning off, the main turns untouched.
             assert voice.main_requests()[0]["reasoning_effort"] == "none"
             assert {r["reasoning_effort"] for r in main.main_requests()} == {"medium"}
@@ -74,18 +82,42 @@ def test_reasoning_off_falls_to_the_lowest_valid_level(model, api_mode, expected
     assert got == ({"enabled": True, "effort": expected} if expected else {"enabled": False})
 
 
-def test_voice_usage_never_becomes_the_session_route(tmp_path):
-    from hermes_state import SessionDB
+def test_session_runtime_view_preserves_requested_provider_during_voice_turn():
+    from agent.voice_turn_route import session_runtime_view
 
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s1", source="cli", model="main-model")
-    db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="voice-model",
-                           billing_provider="voicep", api_call_count=1, task="voice_chat")
-    row = db.get_session("s1")
-    assert row["model"] == "main-model"
-    assert row["input_tokens"] == 10
-    assert db.auxiliary_usage_by_task("s1")["voice_chat"]["input_tokens"] == 10
-    assert db.get_recent_session_model_route("s1") is None
+    main = SimpleNamespace(
+        model="voice-model", provider="custom", requested_provider="custom:voice",
+        base_url="https://voice.example/v1", api_mode="chat_completions",
+        reasoning_config={"enabled": False}, _voice_route_state=None,
+    )
+    main._voice_route_state = {
+        "snapshot": {
+            "model": "main-model", "provider": "custom", "requested_provider": "custom:main",
+            "base_url": "https://main.example/v1", "api_mode": "chat_completions",
+        },
+        "reasoning_config": {"enabled": True},
+    }
+    view = session_runtime_view(main)
+    assert (view.provider, view.requested_provider) == ("custom", "custom:main")
+
+
+def test_voice_usage_never_becomes_the_session_route(tmp_path):
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
+
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "s1", "cli", model="main-model")
+        db.usage.queue_usage("s1", UsageDelta(tokens=TokenCounts(input_tokens=10, output_tokens=5), api_call_count=1,
+                                              route=BillingRoute(model="voice-model", billing_provider="voicep"),
+                                              task="voice_chat"))
+        assert db.usage.flush_usage()
+        row = session_row(db, "s1")
+        assert row["model"] == "main-model"
+        assert row["input_tokens"] == 10
+        assert db.usage.auxiliary_usage_by_task("s1")["voice_chat"].tokens.input_tokens == 10
+        assert db.usage.recent_route("s1") is None
 
 
 @pytest.mark.parametrize("separate_voice_model", [False, True])

@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
+import { rollbackRelease } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import { shortVersion } from '@/lib/version-label'
 import {
@@ -67,6 +68,10 @@ interface UpdateStatusInput {
   u: Translations['updates']
   /** Names the pinned release when a source install is current on stable. */
   latestRelease?: (version: string) => string
+  /** Names a move back to an older stable release the checkout already contains. */
+  rollback?: (version: string) => string
+  /** Names a stable release the updater refuses, so this install stays where it is. */
+  held?: (version: string) => string
 }
 
 export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
@@ -84,10 +89,28 @@ export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
   return ordinaryUpdateStatus(input)
 }
 
+/** The waiting update, or the older stable release it would move back to. */
+function availableLine(
+  status: DesktopUpdateStatus | null,
+  behind: number,
+  u: Translations['updates'],
+  rollback?: (version: string) => string
+): string {
+  const back = rollbackRelease(status)
+
+  if (rollback && back) {
+    return rollback(back)
+  }
+
+  return behind > 0 ? u.updateReady(behind) : u.updateReadyUnknown
+}
+
 function ordinaryUpdateStatus({
   apply,
   checking,
+  held,
   latestRelease,
+  rollback,
   status,
   target,
   u
@@ -121,7 +144,7 @@ function ordinaryUpdateStatus({
   if (updateAvailable) {
     return {
       applying,
-      line: behind > 0 ? u.updateReady(behind) : u.updateReadyUnknown,
+      line: availableLine(status, behind, u, rollback),
       supported,
       tone: 'available',
       updateAvailable
@@ -129,22 +152,9 @@ function ordinaryUpdateStatus({
   }
 
   if (status) {
-    // Stable pins to a release; name it. A checkout ahead of it (forward-only) is newer
-    // than the release, so it keeps the generic line instead of claiming to be on it.
-    const pinned =
-      target === 'client' &&
-      latestRelease &&
-      status.channel === 'stable' &&
-      status.sourceVersion &&
-      // Older checkers omit the field and may also pin an ahead checkout to HEAD.
-      status.aheadOfRelease === false &&
-      status.targetSha &&
-      status.currentSha === status.targetSha
-
     return {
       applying,
-      line:
-        target === 'backend' ? u.latestBodyBackend : pinned ? latestRelease(`v${status.sourceVersion}`) : u.latestBody,
+      line: currentLine(status, target, u, latestRelease, held),
       supported,
       tone: 'idle',
       updateAvailable
@@ -152,6 +162,36 @@ function ordinaryUpdateStatus({
   }
 
   return { applying, line: checking ? u.checking : u.tapCheck, supported, tone: 'idle', updateAvailable }
+}
+
+/** The line for an install with nothing to apply: a held release, the pinned stable release, or "latest". */
+function currentLine(
+  status: DesktopUpdateStatus,
+  target: UpdateTarget,
+  u: Translations['updates'],
+  latestRelease?: (version: string) => string,
+  held?: (version: string) => string
+): string {
+  if (held && status.held && status.sourceVersion) {
+    return held(`v${status.sourceVersion}`)
+  }
+
+  if (target === 'backend') {
+    return u.latestBodyBackend
+  }
+
+  // Stable pins to a release; name it. A checkout ahead of it (forward-only) is newer
+  // than the release, so it keeps the generic line instead of claiming to be on it.
+  const pinned =
+    latestRelease &&
+    status.channel === 'stable' &&
+    status.sourceVersion &&
+    // Older checkers omit the field and may also pin an ahead checkout to HEAD.
+    status.aheadOfRelease === false &&
+    status.targetSha &&
+    status.currentSha === status.targetSha
+
+  return pinned ? latestRelease(`v${status.sourceVersion}`) : u.latestBody
 }
 
 function relativeTime(ms: number | undefined, u: Translations['updates']): string {
@@ -287,9 +327,27 @@ function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | 
  */
 export function UpdateStatusCard({
   showReleaseNotes = true,
-  target
+  target,
+  version
 }: {
   showReleaseNotes?: boolean
+  target: UpdateTarget
+  version: DesktopVersionInfo | null
+}): ReactElement {
+  // An installed bundle waiting only for a restart owns the client status; a
+  // stale check error beside it contradicts it (#128195).
+  if (target === 'client' && version?.bundleSwapPending) {
+    return <></>
+  }
+
+  return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} />
+}
+
+function UpdateStatusCardBody({
+  showReleaseNotes,
+  target
+}: {
+  showReleaseNotes: boolean
   target: UpdateTarget
 }): ReactElement {
   const { t } = useI18n()
@@ -303,7 +361,9 @@ export function UpdateStatusCard({
   const view = deriveUpdateStatus({
     apply,
     checking,
+    held: t.settings.about.channel.heldBody,
     latestRelease: t.settings.about.channel.latestRelease,
+    rollback: t.settings.about.channel.rollbackBody,
     status,
     target,
     u

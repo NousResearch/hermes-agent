@@ -11,14 +11,57 @@ These tests exercise the full run_job path (real imports, mocked AIAgent +
 resolve_runtime_provider against a temp HERMES_HOME) and the job-store pin helpers.
 """
 
+import asyncio
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 # Ensure project root is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from cron.scheduler import run_job
+
+def _run_owned_job(job, tmp_path):
+    """Exercise the production owner bridge with an isolated canonical store."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+
+    ref = SessionRef("test-profile", "cron-owner-session")
+    admission_id = "cron-owner-admission"
+    request_id = "cron-owner-request"
+    store = storage_handle(tmp_path)
+    seed_session(store, ref.session_id, "cron")
+    authority = SimpleNamespace(
+        persistence=store,
+        sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
+        pending_results={},
+    )
+    row = {
+        "admission_id": admission_id, "request_id": request_id,
+        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
+    }
+    policy = SimpleNamespace(request_json=json.dumps({
+        "cron_job": job, "extra_prompt": None, "request_id": request_id,
+    }))
+
+    async def run():
+        previous = current_execution()
+        try:
+            await execute(authority, ref, row, policy)
+        except RuntimeError as exc:
+            # Failed scheduler tuples are published before execute raises.
+            saved = authority.pending_results.get(admission_id)
+            if saved is None:
+                raise
+            assert str(exc) == saved["result"]["cron_result"][3]
+        assert current_execution() is previous
+        assert authority._cron_cancellations == {}
+        return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
+
+    return asyncio.run(run())
 
 
 def _base_job(**overrides):
@@ -67,19 +110,17 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
             "api_mode": "chat_completions",
         }
 
-    fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=fake_db), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
         mock_agent_cls.return_value = mock_agent
-        success, _output, _final, error = run_job(job)
+        success, _output, _final, error = _run_owned_job(job, tmp_path)
         agent_kwargs = mock_agent_cls.call_args.kwargs if mock_agent_cls.called else None
     return success, error, agent_kwargs, (resolve_kwargs or None)
 
@@ -130,6 +171,8 @@ class TestPinnedLocksTheMainModel:
         from cron import jobs
         (tmp_path / "config.yaml").write_text(f"model:\n  default: {main_model}\n")
         monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
+        from cron import jobs_model_pin  # the pin reads the main model's config where it lives
+        monkeypatch.setattr(jobs_model_pin, "get_hermes_home", lambda: tmp_path, raising=True)
         state = {"jobs": []}
         monkeypatch.setattr(jobs, "load_jobs", lambda: list(state["jobs"]), raising=True)
         monkeypatch.setattr(jobs, "save_jobs", lambda j: state.__setitem__("jobs", list(j)), raising=True)
@@ -142,7 +185,7 @@ class TestPinnedLocksTheMainModel:
     def test_pinned_true_locks_then_pinned_false_releases(self, monkeypatch, tmp_path):
         jobs, _ = self._store(monkeypatch, tmp_path)
 
-        from tools.cronjob_job_args import _format_job
+        from cron.job_args import _format_job
 
         unpinned = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
         assert (unpinned["model"], unpinned["provider"]) == (None, None)

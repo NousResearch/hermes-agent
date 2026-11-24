@@ -111,6 +111,28 @@ describe('readActivePreview (read_preview tool)', () => {
     })
   })
 
+  it('says a browser-hosted URL tab is unreadable instead of promising a retry', async () => {
+    // The Webapp renders URLs in a sandboxed iframe: no page reader can ever
+    // register, so "retry in a moment" would loop the agent forever.
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      openPreview(urlTarget('https://example.com'))
+
+      const result = await readActivePreview()
+
+      expect(result).toMatchObject({ kind: 'url', surface: 'iframe', text: '', url: 'https://example.com' })
+      expect(result?.note).toContain('web_extract')
+      expect(result?.note).not.toContain('retry')
+
+      openPreview(fileTarget('/work/notes.md'))
+
+      expect(await readActivePreview()).not.toHaveProperty('surface')
+    } finally {
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
+  })
+
   it('answers a file tab with its identity and points at read_file', async () => {
     openPreview(fileTarget('/work/notes.md'))
 

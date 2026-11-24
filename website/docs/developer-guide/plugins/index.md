@@ -999,6 +999,20 @@ def unit_convert(args: dict, **kwargs) -> str:
    delegator's `conversation_id`. Both are empty when the call has no session (for example, a tool call
    from inside an `execute_code` script).
 
+**Binding a tool action to the current messaging turn.** Pass the injected `session_id`
+to `ctx.messaging_turn_origin(session_id)`; do not put a session ID, actor or destination in the
+model-facing tool schema for this purpose. The result is a fresh dictionary with `session_id`,
+`session_key`, `profile` (runtime profile), `platform`, `chat_id`, `actor_id`, and optional route
+anchors `chat_type`, `thread_id`, `scope_id`, `parent_chat_id` (present as `None` when unset).
+`actor_id` is the sender of the input, not the owner of the chat.
+
+The reader returns `None` unless this is the original worker for a native messaging input with
+connector provenance, a single current actor, the exact physical session ID and this plugin's
+profile home. A viewer submitting to the same conversation, merged inputs from different senders,
+delegated or forked calls, cron, webhooks and unbound contexts have no such origin. Don't fall back
+to environment variables or the last known route. This is routing information, not consent to an
+action; plugins still own their authorization and confirmation policy.
+
 ## Step 5: Write the registration
 
 Create `__init__.py` — this wires schemas to handlers:

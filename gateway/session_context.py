@@ -8,7 +8,11 @@ other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
+
+if TYPE_CHECKING:
+    from gateway.platforms.event import MessageEvent
+    from gateway.turn_context import TurnContext
 
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
 _UNSET: Any = object()
@@ -258,6 +262,67 @@ def session_is_messaging_surface() -> bool:
     idents = (platform, get_session_env("HERMES_SESSION_SOURCE", ""))
     idents = (str(v or "").strip().lower() for v in idents)
     return any(ident and ident not in NON_MESSAGING_SESSION_SURFACES for ident in idents)
+
+
+_MESSAGING_TURN: ContextVar[tuple["MessageEvent", str, Callable[[], bool]] | None] = ContextVar("messaging_turn", default=None)
+
+
+@contextmanager
+def scoped_messaging_turn(turn: "TurnContext") -> Iterator[None]:
+    """Bind only the worker running this native input, not an in-band follow-up on its task."""
+    event = _SESSION_TURN_EVENT.get()
+    bound = None
+    if (event is not None and turn.session_id and turn.session_key
+            and getattr(event, "_native_turn_route", None) == turn.session_key
+            and turn.source is event.source and not turn._interrupt_depth
+            and turn.inbound_message_id and turn.inbound_message_id == str(event.message_id)
+            and not (event.internal or event.inherit_channel_pin or turn.source.is_bot)
+            and turn.source.platform.value not in NON_MESSAGING_SESSION_SURFACES | {"a2a", "ntfy", "raft"}):
+        bound = (event, turn.session_id, turn._run_still_current)
+    token = _MESSAGING_TURN.set(bound)
+    try:
+        yield
+    finally:
+        if bound is not None:
+            bound[0]._native_turn_route = None  # expire even ContextVars copied into a longer-lived task
+        _MESSAGING_TURN.reset(token)
+
+
+def messaging_turn_origin(session_id: str, plugin_home_key: str) -> dict[str, str | None] | None:
+    """Return detached route data only while this plugin's own native input is running."""
+    from agent.delegation_context import is_delegated_child_process_context
+    from agent.plugin_session_fork import current_turn_origin
+    from gateway.session_identity import identity_of
+    from hermes_constants import hermes_home_key
+    from hermes_scope import current_scope
+
+    bound = _MESSAGING_TURN.get()
+    if bound is None:
+        return None
+    event, physical_id, still_current = bound
+    if (not session_id or session_id != physical_id or session_id != _SESSION_ID.get()
+            or _CRON_SESSION.get() != ""
+            or is_delegated_child_process_context() or current_turn_origin() is not None):
+        return None
+
+    key = bound_session_key()
+    if not key or event is not _SESSION_TURN_EVENT.get() or event._native_turn_route != key or not still_current():
+        return None
+    source = event.source
+    identity = identity_of(source)
+    scope = current_scope()
+    actor = _bound_session_value("HERMES_SESSION_ACTOR_ID")
+    if (identity is None or scope is None or not scope.is_local
+            or hermes_home_key(identity.runtime_home) != plugin_home_key
+            or hermes_home_key(scope.agent) != plugin_home_key
+            or not isinstance(actor, str) or not actor.strip() or event.sender_id() != actor
+            or _SESSION_PLATFORM.get() != source.platform.value
+            or not source.chat_id or _SESSION_CHAT_ID.get() != source.chat_id):
+        return None
+    return {"session_id": session_id, "session_key": key, "profile": identity.runtime_profile,
+            "platform": source.platform.value, "chat_id": source.chat_id, "actor_id": actor,
+            "chat_type": source.chat_type or None, "thread_id": source.thread_id or None,
+            "scope_id": source.scope_id or None, "parent_chat_id": source.parent_chat_id or None}
 
 
 def declare_stateless_channel() -> None:

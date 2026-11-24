@@ -425,6 +425,11 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_session import session_viewers
         return session_viewers()
 
+    def messaging_turn_origin(self, session_id: str) -> dict[str, str | None] | None:
+        """Snapshot this plugin tool's bound messaging route; pass the dispatch kwarg, not a tool argument."""
+        from gateway.session_context import messaging_turn_origin
+        return messaging_turn_origin(session_id, self._manager.scope_key)
+
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
         place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""

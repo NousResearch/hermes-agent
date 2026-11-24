@@ -258,10 +258,10 @@ def _pending_controls(authority):
 
 @pytest.mark.asyncio
 async def test_a_desktop_row_relabelled_local_still_lists_its_verbs(tmp_path, monkeypatch):
-    """A peer refresh relabels an interactive receipt's own source to the generic ``local`` while keeping
-    its platform, so one Desktop chat is stored as ``desktop``, ``gui`` or ``local`` depending on when
-    the row was written. Reading only the stored label dropped Steer and Edit from exactly those rows
-    while the panel still showed them."""
+    """A peer refresh writes the generic ``local`` over an interactive receipt's own source while keeping
+    the surface it created, so one Desktop chat is stored as ``desktop``, ``gui`` or ``local`` depending
+    on when the row was written. Reading only the stored label dropped Steer and Edit from exactly those
+    rows while the panel still showed them."""
     db, authority = _authority(tmp_path, monkeypatch)
     interactive(authority.persistence, source='local', created_source='desktop')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -271,6 +271,21 @@ async def test_a_desktop_row_relabelled_local_still_lists_its_verbs(tmp_path, mo
         authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
         controls = _pending_controls(authority)
     assert controls['follower'] == ['steer', 'replace']
+
+
+@pytest.mark.asyncio
+async def test_a_local_row_recording_no_interactive_surface_lists_no_verbs(tmp_path, monkeypatch):
+    """``local`` is also what a routing write and an accounting insert leave behind, so a local row is
+    judged by the surface it records — not read as a creating surface of its own. A row recording none
+    (or a producer's) stays a whole turn."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        for created_source in (None, 'cron'):
+            interactive(authority.persistence, source='local', created_source=created_source)
+            request_id = f'queued-{created_source}'
+            await _submit(authority, request_id)
+            assert _pending_controls(authority)[request_id] == []
 
 
 @pytest.mark.asyncio

@@ -893,7 +893,8 @@ class SQLiteSessionRepository:
         if row is None:
             return None
         return SessionListRow(
-            session_id=SessionId(row["id"]), source=row["source"] or "", title=row["title"],
+            session_id=SessionId(row["id"]), source=row["source"] or "",
+            created_source=row.get("created_source"), title=row["title"],
             started_at=float(row["started_at"] or 0.0), ended_at=row["ended_at"],
             message_count=row["message_count"], model=row["model"], hidden=bool(row["hidden"]),
             archived=bool(row["archived"]),

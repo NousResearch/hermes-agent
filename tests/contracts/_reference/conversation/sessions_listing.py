@@ -397,8 +397,9 @@ class SessionListingMixin:
             return None
         record = self._listed_record(scope, row)
         return SessionListRow(
-            session_id=record.session_id, source=record.source, title=record.title, started_at=record.started_at,
-            ended_at=record.ended_at, message_count=record.message_count, model=record.model, hidden=record.hidden,
+            session_id=record.session_id, source=record.source, created_source=record.created_source,
+            title=record.title, started_at=record.started_at, ended_at=record.ended_at,
+            message_count=record.message_count, model=record.model, hidden=record.hidden,
             archived=record.archived,
         )
 

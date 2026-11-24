@@ -31,17 +31,29 @@ _TRANSFERABLE_CLI_TURN = frozenset({'clarify_batch'})
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
 # ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration);
-# ``local`` is the label a peer refresh writes over such a receipt's own source while keeping its
-# platform (gateway/session_policy's ``STORED_AS_LOCAL`` and ``#148473``), so a Desktop chat carries
-# ``desktop``, ``gui`` or ``local`` for the same surface and all three are the same client class.
-# cron, kanban, a2a and hosted-room (bot_room) producers keep their own labels and read a saved result
-# for every outcome they do not name, so a transfer or replacement would strand them: never offered.
-_INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp', 'local'})
+# cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
+# do not name, so a transfer or replacement would strand them: never offered, refused by name.
+_INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
+# ``local`` is not a surface: a peer refresh writes it over an interactive receipt's own source
+# (gateway/session_policy's ``STORED_AS_LOCAL``, #148473), a routing write carries it, and accounting
+# may insert a row before its creator stamps a surface. So a ``local`` row is judged by the surface it
+# records in ``created_source``, exactly as the store's own source predicate does
+# (persistence/sqlite/conversation/_store/sql_common.py ``session_source_predicate``); a local row that
+# records no surface stays unknown rather than being read as an interactive one.
+_GENERIC_LOCAL_SOURCE = 'local'
 
 
 def handlers(connection):
     return {'prompt.steer_queued': partial(steer_queued, connection),
             'prompt.replace_queued': partial(replace_queued, connection)}
+
+
+def _creating_surface(found):
+    """The surface a picker row records: its own label, or — under the generic ``local`` a refresh or a
+    routing write leaves behind — the surface ``created_source`` names."""
+    if found.source == _GENERIC_LOCAL_SOURCE:
+        return found.created_source or found.source
+    return found.source
 
 
 def _interactive(authority, session_id):
@@ -53,7 +65,7 @@ def _interactive(authority, session_id):
         found = authority_persistence(authority).sessions.list_row(session_id)
         if found is None:
             return False
-        sources[session_id] = found.source
+        sources[session_id] = _creating_surface(found)
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 

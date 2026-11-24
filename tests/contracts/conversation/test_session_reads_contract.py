@@ -263,7 +263,8 @@ def test_list_row_is_the_picker_columns_of_the_row(backend, scope_a):
     row = store_a.sessions.get(sid)
     # CONTRACT: the picker columns read what the full row reads, hidden and ended rows included; a missing row reads None.
     assert store_a.sessions.list_row(sid) == SessionListRow(
-        session_id=sid, source="telegram", title="Picker", started_at=row.started_at, ended_at=row.ended_at,
+        session_id=sid, source="telegram", created_source=row.created_source, title="Picker",
+        started_at=row.started_at, ended_at=row.ended_at,
         message_count=2, model="m1", hidden=True, archived=False,
     )
     assert store_a.sessions.list_row(SessionId("lr-missing")) is None

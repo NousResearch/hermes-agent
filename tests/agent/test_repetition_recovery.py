@@ -318,6 +318,18 @@ def test_two_recovery_attempts_allow_a_second_retry(endpoint):
     assert result["repetition"]["recoveries"] == 2
 
 
+def test_a_visible_text_cut_ends_the_turn_without_counting_as_exhaustion(endpoint, guard_decisions):
+    _write_config("repetition_guard:\n  recovery:\n    max_attempts: 2\n")
+    loop = "The deploy is still pending; checking the status again now.\n" * 2000
+    server = endpoint(Reply(reasoning=_restated_plan(80)), Reply(content=loop))
+
+    result = _run(_agent(server))
+
+    assert (result["completed"], result["failure_reason"]) == (False, "truncated")
+    assert len(server.bodies) == 2  # the reasoning cut recovered once; the visible-text cut ended the turn
+    assert ("halt", "repetition_recovery_exhausted") not in guard_decisions
+
+
 def test_recovery_with_reasoning_off_disables_reasoning_on_the_retry_only(endpoint):
     _write_config("agent:\n  reasoning_effort: high\nrepetition_guard:\n  recovery:\n    reasoning: off\n")
     server = endpoint(Reply(reasoning=_restated_plan(80)), Reply(content=_ANSWER), Reply(content=_ANSWER))

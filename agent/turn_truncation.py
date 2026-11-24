@@ -467,7 +467,8 @@ def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional
     if cut is not None and cut.detector == "circling":
         record_guardrail_decision(agent, "block", "circling_reasoning_cut")
     limit = getattr(agent, "_repetition_recovery_limit", DEFAULT_RECOVERY_ATTEMPTS)
-    if turn.recoveries >= limit:
+    # A visible-text cut already reached the user, and append-only streams cannot take it back.
+    if turn.recoveries >= limit or (cut is not None and cut.channel != "reasoning"):
         return None
     turn.recoveries += 1
     record_guardrail_decision(agent, "retry", "repetition_recovery")
@@ -488,15 +489,17 @@ def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional
 
 
 def _end_turn_on_repetition_cut(st: _Trunc) -> TruncationVerdict:
-    """Recoveries spent (or off): end the turn, saying how often the model restated itself."""
-    from agent.circling_guard import repeated_statements_copy, repetition_result, repetition_turn
+    """Recoveries spent or off, or a visible-text cut: end the turn, saying how often the model restated
+    itself."""
+    from agent.circling_guard import (DEFAULT_RECOVERY_ATTEMPTS, repeated_statements_copy, repetition_result,
+                                      repetition_turn)
     from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision
 
     agent = st.agent
     cut = getattr(st.response, "_repetition_cut", None)
     line, user_response, error = _REPETITION_STREAM_CUT
     recoveries = repetition_turn(agent).recoveries
-    if recoveries:
+    if recoveries and recoveries >= getattr(agent, "_repetition_recovery_limit", DEFAULT_RECOVERY_ATTEMPTS):
         record_guardrail_decision(agent, "halt", "repetition_recovery_exhausted")
         logger.warning("%sRepetition cut again after %d recovery attempt(s): ending the turn",
                        agent.log_prefix, recoveries)

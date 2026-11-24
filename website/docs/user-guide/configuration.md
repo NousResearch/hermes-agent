@@ -2369,9 +2369,9 @@ repetition_guard:
 
 Only the reasoning channel is watched this way: visible text and tool output often repeat lines on
 purpose (a requested repetition, a table, a log), and lines shorter than 30 characters are ignored.
-The recovery applies to every repetition cut, including the exact-loop cut on visible text. A
-re-issued call never re-runs a tool: a cut reply's tool calls are never dispatched. Bad values fall
-back to the defaults. A larger `repeat_count` or `window_units` cuts later and less often.
+The recovery applies to reasoning cuts only: a visible-text cut has already reached the user, so it
+ends the turn as before. A cut reply's tool calls are never dispatched. Bad values fall back to the
+defaults. A larger `repeat_count` or `window_units` cuts later and less often.
 
 ## TTS Configuration
 

@@ -97,3 +97,16 @@ def test_gateway_bridge_writes_false(monkeypatch):
         assert terminal_tool._get_env_config()["ssh_sync_files"] is False
     finally:
         os.environ.pop("TERMINAL_SSH_SYNC_FILES", None)
+
+
+@pytest.mark.parametrize("raw,expected", [("false", False), ("true", True), (None, True)])
+def test_env_var_reaches_ssh_environment(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("TERMINAL_SSH_SYNC_FILES", raising=False)
+    else:
+        monkeypatch.setenv("TERMINAL_SSH_SYNC_FILES", raw)
+    cfg = {**terminal_tool._get_env_config(), "ssh_host": "h", "ssh_user": "u"}
+    ssh_config = terminal_tool_backends._ssh_config_from_config(cfg)
+    with patch.object(terminal_tool_backends, "_SSHEnvironment") as env_cls:
+        terminal_tool_backends._build_ssh_env(cwd="~", timeout=10, ssh_config=ssh_config)
+    assert env_cls.call_args.kwargs["sync_files"] is expected

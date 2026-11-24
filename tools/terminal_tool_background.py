@@ -134,7 +134,6 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
     the chat mute for as long as that turn lasts (#112033). Before the gateway
     serves, or while it stops, the descriptor waits in ``pending_watchers`` for the
     startup / post-turn drain instead."""
-    proc_session.watcher_interval = 5
     watcher = {
         "session_id": proc_session.id, "check_interval": 5, "session_key": session_key,
         "platform": proc_session.watcher_platform,
@@ -145,8 +144,13 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
     runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
     runner = runner_ref() if callable(runner_ref) else None
     if runner is not None and runner.arm_process_watcher(watcher):
+        proc_session.watcher_interval = 5
         return
-    process_registry.pending_watchers.append(watcher)
+    with process_registry._lock:  # the gateway drain detaches the list under the same lock
+        process_registry.pending_watchers.append(watcher)
+    # Set only once the descriptor is really queued or armed: callers treat 0 as "no watcher yet"
+    # and re-arm on 0, so a raise before this point must not look like a registered watcher.
+    proc_session.watcher_interval = 5
 
 
 def spawn_background_process(

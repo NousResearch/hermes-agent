@@ -464,7 +464,7 @@ def check_process_notifications_private(provider: RecordingSandboxProvider, a: S
     previous_sink, registry.on_output = registry.on_output, lambda s, chunk: sunk.append(chunk)
     try:
         with _bind(a):
-            registry._publish_finished(session, True)
+            registry._publish_finished(session, queue_completion=True)
             session.exited = False
             registry._check_watch_patterns(session, f"{secret}\n")
             session._heartbeat_last, session.total_output_chars, session._heartbeat_total_at_last = 0.0, 10, 0

@@ -117,16 +117,9 @@ def _caller_receives_completion(session) -> bool:
 
 
 def _claim_notify_if_running(registry, session) -> bool:
-    """Set ``notify_on_complete`` unless the exit already won; False means it did.
-
-    ``_move_to_finished`` claims the finish under ``registry._lock`` and reads the flag afterwards to
-    decide whether to queue the completion, so flipping it under the same lock while the session is
-    still in ``_running`` guarantees the exit publication sees it."""
-    with registry._lock:
-        if session._finish_claimed or session.id not in registry._running:
-            return False
-        session.notify_on_complete = True
-        return True
+    """Set ``notify_on_complete`` unless the exit already won; False means it did (see
+    ``ProcessRegistry._claim_notify``, which owns the lock discipline)."""
+    return registry._claim_notify(session)
 
 
 def _promote(registry, session) -> None:
@@ -134,14 +127,9 @@ def _promote(registry, session) -> None:
 
     CLI, TUI/Desktop and ``hermes chat -q`` drain ``completion_queue``, which the exit path fills
     whenever the flag is set. The messaging gateway delivers only through a per-process watcher, so a
-    process started silently also needs the chat routing stamped and a watcher armed."""
-    from tools.terminal_tool_background import _register_completion_watcher, _stamp_gateway_routing
-    from gateway.session_context import get_session_env
-    if not session.watcher_platform:
-        _stamp_gateway_routing(session, get_session_env)
-    # watcher_interval is set only by _register_completion_watcher: 0 means no watcher yet.
-    if session.watcher_platform and not session.watcher_interval:
-        _register_completion_watcher(registry, session, session.session_key)
+    process started silently also needs the chat routing stamped and a watcher armed —
+    ``ProcessRegistry._arm_notify_fallback`` does exactly that (the watch breaker uses it too)."""
+    registry._arm_notify_fallback(session)
     try:
         registry._write_checkpoint()
     except Exception:

@@ -599,7 +599,9 @@ Off by default. When enabled, Hermes prepends a human-readable timestamp
 (e.g. `[Tue 2026-04-28 13:40:53 CEST]`) onto each **user** message *in the
 model's context* so the agent knows when messages were sent — useful for
 temporal reasoning ("you asked this morning…", noticing a long gap). It is
-**not** added to assistant messages or the system prompt.
+**not** added to assistant messages or the system prompt, or to runtime
+notices (delegation results, background process completions) that no person
+sent.
 
 ```yaml
 gateway:

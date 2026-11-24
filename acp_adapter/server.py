@@ -936,17 +936,28 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
 
-    @staticmethod
-    def _abandon_turn(state: SessionState, session_id: str, turn: Future) -> None:
+    def _abandon_turn(self, state: SessionState, session_id: str, turn: Future) -> None:
         """Release a session whose ``prompt()`` task was cancelled (e.g. connection shutdown).
 
         Task cancellation does not stop the worker thread, so stop the agent and go idle only
         once the worker has returned. Releasing earlier would let the next prompt run the same
-        agent concurrently; never releasing queues every later prompt behind a dead turn."""
+        agent concurrently; never releasing queues every later prompt behind a dead turn.
+        The cancelled task never reaches ``_finish_turn``, so a prompt accepted while the
+        worker still held the agent is drained from here, after that worker has returned."""
+        loop = asyncio.get_running_loop()
+
         def _release(_turn: Future) -> None:
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
+
+            def _drain() -> None:
+                asyncio.create_task(self._drain_queued_prompts(state, session_id, self._conn))
+
+            try:
+                loop.call_soon_threadsafe(_drain)
+            except RuntimeError:
+                logger.debug("Could not drain prompts queued during ACP cancel for %s", session_id, exc_info=True)
 
         with state.runtime_lock:
             if state.cancel_event:

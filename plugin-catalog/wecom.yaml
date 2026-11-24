@@ -2,14 +2,14 @@ name: wecom
 repo: https://github.com/NousResearch/hermes-labs-plugins
 sha: 1de1d0cd3ec6bb2b330ae0e2c12bf74fdd2e9726
 subdir: wecom
-description: 'WeCom (Enterprise WeChat) gateway platforms: wecom (AI Bot over the WeCom WebSocket gateway, native streaming
-  replies, media, QR-scan setup) and wecom_callback (self-built apps over an HTTP callback endpoint with AES message
-  crypto). Formerly built into Hermes core; existing users are migrated automatically. A Hermes Labs plugin: built
-  by Nous Research, not supported, and likely not maintained going forward. Fixes from the community are welcome.
-  Disclosure — the bot mode sends the agent''s replies and attachments over a WebSocket to WeCom
-  (openws.work.weixin.qq.com, or the server WECOM_WEBSOCKET_URL names) and downloads inbound media from WeCom URLs;
-  the callback mode sends replies and access-token requests to qyapi.weixin.qq.com and binds a local HTTP port (8645
-  by default) only when its corp credentials are configured. Credentials come from Hermes for the active profile
+description: 'WeCom (Enterprise WeChat) gateway platforms: the wecom AI Bot sends the agent''s replies and attachments
+  over a WebSocket to WeCom (openws.work.weixin.qq.com, or the server WECOM_WEBSOCKET_URL names) and downloads inbound
+  media from WeCom URLs, and wecom_callback receives self-built app messages on a local HTTP callback endpoint (port
+  8645 by default, AES message crypto) and sends replies and access-token requests to qyapi.weixin.qq.com. Formerly
+  built into Hermes core; existing users are migrated automatically. A Hermes Labs plugin: built by Nous Research,
+  not supported, and likely not maintained going forward. Fixes from the community are welcome. The bot mode streams
+  replies natively and supports QR-scan setup. Disclosure — the callback mode binds
+  its local port only when its corp credentials are configured. Credentials come from Hermes for the active profile
   (its scoped secrets); the plugin opens no credential file itself.'
 maintainer: NousResearch
 tier: community

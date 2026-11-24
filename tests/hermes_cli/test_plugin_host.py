@@ -499,6 +499,34 @@ def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_n
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
+def test_a_host_started_by_a_caller_bound_to_a_since_renamed_link_runs_the_profiles_launcher(tmp_path, monkeypatch):
+    """The launcher comes from the config of the home the host starts in, not from the caller's binding: a load
+    binds the name it read, which a rename can retire before that load starts the host."""
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
+    (target / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    host = manager._plugin_host()
+    try:
+        with plugins_mod._plugin_home_scope(manager.owner_home):  # a load binds the name it read
+            (profiles / "ops").rename(profiles / "ops2")
+            host.ensure_started()
+        assert host.home == profiles / "ops2"
+        assert ran.read_text(encoding="utf-8").count("ran") == 1
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink
 def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path, monkeypatch):
     """One start, one home: a profile name that appears while the host starts does not give the launcher check a

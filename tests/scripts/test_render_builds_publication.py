@@ -12,6 +12,7 @@ import pytest
 
 from hermes_cli.update_channel import release_version
 
+from scripts.releases.downloads_page import recorded_build
 from tests.scripts.test_release_r2 import r2_server
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -74,7 +75,7 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
         page = response.read().decode()
     release_url = rbt.r2.public_url_for('https://github.com/o/r/releases/tag', tag)
     assert set(re.findall(r'href="(http[^"]+)"', page)) == expected | {release_url}
-    assert rbt.recorded_build(page) == tag and 'Bundle environment' not in page
+    assert recorded_build(page) == tag and 'Bundle environment' not in page
     assert all(name not in page and name not in body for name in hidden)
     assert 'Linux' not in body.split('Native install/chat smoke')[0]
     for url in expected:

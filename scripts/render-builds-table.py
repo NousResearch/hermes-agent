@@ -64,11 +64,9 @@ from scripts.releases.downloads_page import (
     commit_claim_rows,
     filter_names_for_version,
     parse_assets,
-    recorded_build,
     render_page,
     smoke_html,
     smoke_markdown,
-    smoke_rows,
     supersedes,
     table_rows,
 )

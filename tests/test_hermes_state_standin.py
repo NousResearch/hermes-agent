@@ -159,6 +159,28 @@ def test_the_plugin_guides_resume_lookup_resolves_a_short_id_as_written(quiet, s
         db.close()
 
 
+def test_the_plugin_guides_lineage_read_gives_the_root_first_on_a_read_only_handle(store, legacy):
+    # website/docs/developer-guide/plugins/index.md: the replacement for get_compression_lineage
+    from persistence_assembly import open_persistence_reader
+
+    seed_session(store, "root", "telegram")
+    seed_messages(store, "root", {"role": "user", "content": "a"})
+    store.sessions.end("root", "compression")
+    seed_session(store, "mid", "telegram", parent_session_id="root")
+    seed_messages(store, "mid", {"role": "user", "content": "b"})
+    store.sessions.end("mid", "compression")
+    seed_session(store, "tip", "telegram", parent_session_id="mid")
+    seed_messages(store, "tip", {"role": "user", "content": "c"})
+
+    with open_persistence_reader(profile_scope().profile_dir) as reader:
+        assert reader.lineage.lineage("tip") == ("root", "mid", "tip")
+        assert reader.lineage.lineage("mid")[0] == "root"
+        assert reader.lineage.lineage("s1") == ("s1",)
+        assert reader.lineage.lineage("no-such-session") == ()
+    with pytest.raises(AttributeError, match="hermes_state-deprecated-use-the-storage-interface"):
+        legacy.get_compression_lineage("tip")
+
+
 def test_append_message_still_takes_the_old_compression_lock_holder_keyword(store, legacy):
     message_id = legacy.append_message("s1", "user", "kept", compression_lock_holder="holder-1")
     assert store.messages.read_transcript("s1")[-1].id == message_id

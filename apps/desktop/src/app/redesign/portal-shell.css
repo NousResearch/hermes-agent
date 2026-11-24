@@ -761,6 +761,14 @@
   inset-inline-start: var(--portal-rail-width);
 }
 
+/* The developer rail keeps its column too, wherever it has one (it has no compact form): a sheet
+   run to the window's end would put its rows under the rail's buttons. */
+@media (min-width: 640px) {
+  :root[data-shell='portal'][data-developer-rail] [data-narrow-overlay-side='right'] {
+    inset-inline-end: var(--portal-rail-width);
+  }
+}
+
 :root[data-shell='portal'] :is([data-narrow-overlay-backdrop], .portal-sheet-scrim) {
   position: fixed;
   z-index: var(--portal-layer-sheet-scrim);

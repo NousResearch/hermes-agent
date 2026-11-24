@@ -326,20 +326,24 @@ def _codex_jwt(exp: float, generation: str) -> str:
 
 class TestRefreshFailedEntryOutcome:
     def test_a_capped_codex_refresh_adopts_a_token_a_peer_rotated(self, tmp_path, monkeypatch):
-        # A peer process already rotated the pair into auth.json; this request failed on the old bearer.
+        # A peer rotates the pair into auth.json after this pool loaded; the request failed on the old bearer.
         home = tmp_path / "hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
         old, rotated = _codex_jwt(time.time() + 8 * 3600, "0"), _codex_jwt(time.time() + 8 * 3600, "1")
-        (home / "auth.json").write_text(json.dumps({
+        store = home / "auth.json"
+        store.write_text(json.dumps({
             "version": 1, "active_provider": "openai-codex",
-            "providers": {"openai-codex": {"tokens": {"access_token": rotated, "refresh_token": "cx-rt-1"},
+            "providers": {"openai-codex": {"tokens": {"access_token": old, "refresh_token": "cx-rt-0"},
                                            "auth_mode": "chatgpt"}},
             "credential_pool": {"openai-codex": [
                 {"id": "cx", "label": "device_code", "auth_type": "oauth", "priority": 0, "source": "device_code",
                  "access_token": old, "refresh_token": "cx-rt-0"}]},
         }), encoding="utf-8")
         pool = load_pool("openai-codex")
+        on_disk = json.loads(store.read_text(encoding="utf-8"))
+        on_disk["providers"]["openai-codex"]["tokens"] = {"access_token": rotated, "refresh_token": "cx-rt-1"}
+        store.write_text(json.dumps(on_disk), encoding="utf-8")  # the peer rotates after this pool loaded
 
         outcome = pool.refresh_failed_entry(old, "cx", key_wins=True, may_post=lambda _row: False)
 

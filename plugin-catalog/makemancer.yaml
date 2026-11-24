@@ -1,6 +1,6 @@
 name: makemancer
 repo: https://github.com/makemancer/makemancer-marketplace
-sha: 3657c1c60776350be0f9b7fa834196d3b2e2f1bc
+sha: 8e2ca16ce8e8e5c2cd7ec36a917f4767e1d8aa6d
 subdir: plugins/makemancer
 description: >-
   Generate and edit images, video clips, voiceovers, music and sound effects from chat

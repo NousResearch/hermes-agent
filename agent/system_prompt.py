@@ -323,8 +323,9 @@ def _cron_guidance(agent: Any) -> Optional[str]:
     them runs dynamic schema hooks that load plugins, which a safe-mode worker must never read."""
     from agent.oneshot_footprint import agent_is_oneshot
     from tools.approval import schedule_card_skip_reason
-    if agent_is_oneshot(agent) or schedule_card_skip_reason(platform=getattr(agent, "platform", None),
-                                                            session_key=""):
+    # A side agent (a /background task) runs outside the turn wiring that binds an approval notifier.
+    if agent_is_oneshot(agent) or getattr(agent, "side_agent", False) or schedule_card_skip_reason(
+            platform=getattr(agent, "platform", None), session_key=""):
         return None
     names = agent.valid_tool_names
     if "cronjob_manage" not in names:

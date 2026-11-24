@@ -681,7 +681,7 @@ gateway:
     schedule_text_choice_always: "`{prefix}approve always` az új feladatok mindenkori engedélyezéséhez"
     schedule_truncated_full_above: "Rövidített előnézet: a teljes feladat ({total} karakter) a fenti üzenetben van."
     schedule_truncated_deny_only: "Rövidített előnézet ({total} karakter), és a teljes feladat itt nem jeleníthető meg, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
-    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_timed_out_card_body: "{notice}\n```\n{command}\n```"
     schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
 
   notify:

@@ -203,3 +203,14 @@ def test_a_text_prompt_keeps_a_fenced_example_inside_one_fence(monkeypatch):
         _notify(approval, _Failing())
         assert f"````\n{plan}\n````" in sent[0], sent[0]
 
+
+
+def test_a_timed_out_schedule_card_keeps_the_job_inside_a_fence():
+    """The card rewritten after nobody answered is the only record of the request: the model-written job
+    stays literal text there too, as on the live card (GottZ r2 2.7)."""
+    from gateway.platforms.base_exec_approval import approval_kind_scope
+    from gateway.run_turn_runner_approval_settle import _timed_out_card_body
+    plan = 'Schedule "x" (daily): ||hidden|| [ok](https://e.example)'
+    with approval_kind_scope("schedule"):
+        body = _timed_out_card_body(_Plain(), "c1", "timed out", plan)
+    assert f"```\n{plan}\n```" in body, body

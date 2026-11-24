@@ -672,7 +672,7 @@ gateway:
     schedule_text_choice_always: "`{prefix}approve always` para sempre permitir novas tarefas"
     schedule_truncated_full_above: "Prévia encurtada: a tarefa completa ({total} caracteres) está na mensagem acima."
     schedule_truncated_deny_only: "Prévia encurtada ({total} caracteres) e a tarefa completa não pôde ser exibida aqui, então só Negar é oferecido. Revise-a na CLI ou no app desktop."
-    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_timed_out_card_body: "{notice}\n```\n{command}\n```"
     schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:

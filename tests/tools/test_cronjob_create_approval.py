@@ -125,7 +125,8 @@ def test_the_card_says_who_sees_the_result(cron_store, monkeypatch):
         shown.append(asked[0][1])
     assert "results go to " in shown[0]
     assert "results go to telegram:-100123" in shown[1]
-    assert "failure notices go to telegram (home channel)" in shown[2]
+    # No telegram home channel is configured: the card names where the scheduler really sends (GottZ r2 2.4).
+    assert "failure notices go to nowhere (telegram has no destination configured" in shown[2]
     assert len(set(shown)) == 3
 
 
@@ -387,3 +388,85 @@ def test_a_one_shot_due_now_saves_where_no_card_is_shown(cron_store, monkeypatch
         "action": "create", "name": "Now", "prompt": "Ping the user.",
         "schedule": (now - timedelta(seconds=30)).isoformat()}))
     assert result["success"] is True, result
+
+
+# --- Review round 2 (GottZ) and the independent review on the rebased head ------------------------
+
+def test_resending_the_schedule_a_job_has_neither_asks_nor_moves_its_next_run(cron_store, monkeypatch):
+    """"every 1d" for an "every 24h" job due in 2h: nothing changes, so no card and no silent re-anchor."""
+    job = cron_store.create_job(prompt="Report", schedule="every 24h", name="Daily")
+    due = (cron_store._hermes_now() + timedelta(hours=2)).isoformat()
+    cron_store.update_job(job["id"], {"next_run_at": due})
+    asked = _asking(monkeypatch, "deny")
+    for schedule in ("every 24h", "every 1d"):
+        result = json.loads(registry.dispatch("cronjob_manage", {
+            "action": "update", "job_id": job["id"], "schedule": schedule}))
+        assert result["success"] is True, result
+    assert asked == [] and cron_store.get_job(job["id"])["next_run_at"] == due
+
+
+def test_moving_a_one_shot_by_seconds_asks(cron_store, monkeypatch):
+    run_at = (cron_store._hermes_now() + timedelta(days=2)).replace(second=10, microsecond=0)
+    job = cron_store.create_job(prompt="Call the dentist.", schedule=run_at.isoformat(), name="Dentist")
+    asked = _asking(monkeypatch, "deny")
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "schedule": run_at.replace(second=50).isoformat()}))
+    assert result.get("declined") is True, result
+    assert len(asked) == 1 and cron_store.get_job(job["id"])["next_run_at"] == run_at.isoformat()
+
+
+def test_an_ask_context_with_no_notifier_saves_as_before_and_gets_no_line(cron_store, monkeypatch):
+    """A gateway /background task: ask mode and a chat platform, but no notifier bound, so no card can be
+    answered. The job the user asked for saves as on main, and the side agent is not urged to create."""
+    from agent.system_prompt import _cron_guidance
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    result = json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))
+    assert result["success"] is True, result
+    assert len(cron_store.load_jobs()) == 1
+    agent = SimpleNamespace(platform="telegram", valid_tool_names={"cronjob_manage"}, _oneshot_session=False,
+                            side_agent=True)
+    assert _cron_guidance(agent) is None
+
+
+def test_the_users_deny_reason_reaches_the_model(cron_store, monkeypatch):
+    from tools import approval
+    from tools.approval_context import get_current_session_key
+    key = get_current_session_key()
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+
+    def notify(data):
+        approval.ack_gateway_approval(key, data["request_id"])
+        approval.resolve_gateway_approval(key, "deny", request_id=data["request_id"], reason="Already handled it")
+    approval.register_gateway_notify(key, notify)
+    try:
+        result = json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))
+    finally:
+        approval.unregister_gateway_notify(key)
+    assert result["declined"] is True and "Already handled it" in result["error"]
+    assert cron_store.load_jobs() == []
+
+
+def test_an_edit_card_says_who_a_new_target_reaches(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    asked = _asking(monkeypatch, "deny")
+    registry.dispatch("cronjob_manage", {"action": "update", "job_id": job["id"], "deliver": "telegram"})
+    assert "delivers to: " in asked[0][1]
+    assert "telegram (nowhere (telegram has no destination configured" in asked[0][1]
+
+
+def test_an_edit_answered_after_its_new_one_shot_time_saves_nothing(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    asked = _asking(monkeypatch, "once", late=True)
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "schedule": "in 1m"}))
+    assert len(asked) == 1 and result.get("declined") is True, result
+    assert cron_store.get_job(job["id"])["schedule_display"] == "every day at 8am"
+
+
+def test_a_batch_run_is_never_urged_to_create_jobs(cron_store, monkeypatch):
+    from agent.system_prompt import _cron_guidance
+    _asking(monkeypatch, "deny")
+    agent = SimpleNamespace(platform="batch", valid_tool_names={"cronjob_manage"}, _oneshot_session=False)
+    assert _cron_guidance(agent) is None

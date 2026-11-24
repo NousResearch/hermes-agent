@@ -1216,6 +1216,8 @@ def _presence(approval_callback=None) -> tuple:
 
 SCHEDULE_PATTERN_KEY = "cron_create"
 _NO_SCHEDULE_CARD_SOURCES = frozenset({"kanban", "oneshot"})
+# Platforms whose turns no one watches: cron runs and the batch runner's prompts.
+_NO_SCHEDULE_CARD_PLATFORMS = frozenset({"cron", "batch"})
 
 
 def schedule_card_skip_reason(*, platform: str | None = None, session_key: str | None = None,
@@ -1232,14 +1234,25 @@ def schedule_card_skip_reason(*, platform: str | None = None, session_key: str |
     if _yolo_active() or approval_context._get_approval_mode() == "off":
         return "approvals are off (yolo or approvals.mode: off)"
     platform = platform or _get_session_platform()
-    if platform == "cron" or platform in approval_context._UNATTENDED_APPROVAL_PLATFORMS \
+    if platform in _NO_SCHEDULE_CARD_PLATFORMS or platform in approval_context._UNATTENDED_APPROVAL_PLATFORMS \
             or approval_context._no_user_can_answer() or _launch_source() in _NO_SCHEDULE_CARD_SOURCES:
         return "nobody can answer an approval here"
     if session_key is not None and is_approved(session_key, pattern_key):
         return "the user already allowed new jobs"
-    if live and not any(_presence()[1:]):
+    if live and not _card_answerable():
         return "nobody can answer an approval here"
     return None
+
+
+def _card_answerable() -> bool:
+    """Whether the gate would put a card in front of someone now, by the branch ``_human_decision`` takes:
+    a gateway/ask context needs a bound notifier (or the CLI panel it falls through to); without one the
+    gate parks a pending approval nobody sees (a gateway ``/background`` task), so no card is shown."""
+    approval_callback, is_cli, is_gateway, is_ask = _presence()
+    if is_gateway or is_ask:
+        return _gateway_notify_cb(get_current_session_key()) is not None or _should_fall_through_to_cli_approval(
+            is_cli=is_cli, approval_callback=approval_callback, notify_cb=None)
+    return is_cli
 
 
 def _launch_source() -> str:

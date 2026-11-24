@@ -620,10 +620,13 @@ _UNKNOWN = "\0"
 # NAME=value arguments set shell variables, or after a reserved word that starts a command. As anything
 # else's argument (env PATH=..., echo export PATH=...) it changes nothing.
 _COMMAND_SEPARATOR = re.compile(r"[;&|(){}`]")
+# A command substitution, $(...) or `...`, is part of the word it sits in, not a command boundary.
+_SUBSTITUTION = re.compile(r"\$\([^()]*\)|`[^`]*`")
 # A comment starts at an unquoted # that begins a word, not at one inside a word (bin#backup, ${#x}).
 _COMMENT_START = re.compile(r"(?:^|(?<=[\s;&|()]))#")
-_RESERVED_WORDS = frozenset({"!", "{", "if", "elif", "then", "else", "do", "while", "until", "time",
-                             "and", "or", "not", "begin"})
+# Words that lead into a command without being it: reserved words and fish's and/or/not/begin.
+_COMMAND_LEADERS = frozenset({"!", "{", "if", "elif", "then", "else", "do", "while", "until", "time",
+                              "and", "or", "not", "begin"})
 _DECLARATIONS = frozenset({"export", "declare", "typeset", "readonly"})
 _ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
 _DECLARATION_ARGUMENT = re.compile(r"-\S*|[A-Za-z_]\w*(?:\+?=.*)?")  # an option, a name, or NAME=value
@@ -753,9 +756,12 @@ def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]
 
 def _words_before(code: str, pos: int, variables: dict[str, str]) -> list[str]:
     """The words of the setter's own command that come before ``code[pos]``, reserved words dropped."""
-    starts = [m.end() for m in _COMMAND_SEPARATOR.finditer(code, 0, pos) if not _open_quote(code, m.start())]
-    words = _setter_words(code[starts[-1] if starts else 0 : pos], "", variables)
-    while words and words[0] in _RESERVED_WORDS:
+    masked = code[:pos]
+    while (blanked := _SUBSTITUTION.sub(lambda m: "_" * len(m[0]), masked)) != masked:
+        masked = blanked  # innermost first, so $(dirname $(pwd)) goes too
+    starts = [m.end() for m in _COMMAND_SEPARATOR.finditer(masked) if not _open_quote(code, m.start())]
+    words = _setter_words(masked[starts[-1] if starts else 0 :], "", variables)
+    while words and words[0] in _COMMAND_LEADERS:
         words.pop(0)
     return words
 

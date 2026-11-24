@@ -116,11 +116,12 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
         from agent.secret_scope import build_profile_secret_scope
         from tui_gateway.launch_profile_policy import launch_secret_scope
         # The launch profile's scope with its files read through *home*, the name that leads there now; any other
-        # profile's from its own files, by ``own`` rather than by where the process's own name leads now.
+        # profile's from its own files, by ``own`` rather than by where the process's own name leads now (its
+        # ``.env`` templates included).
         if lent is not None:
             secrets = lent
         else:
-            secrets = launch_secret_scope(home) if own else build_profile_secret_scope(Path(home))
+            secrets = launch_secret_scope(home) if own else build_profile_secret_scope(Path(home), process_home=False)
         with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
             return host_launcher(home=home)
 

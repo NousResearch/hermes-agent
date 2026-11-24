@@ -55,6 +55,32 @@ def os_keychain():
         kc.delete_key(ref)
 
 
+class _RefusingBackend:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    def set_password(self, service: str, account: str, password: str) -> None:
+        raise self.error
+
+
+class _CredWriteError(OSError):
+    def __init__(self, winerror: int):
+        super().__init__("CredWrite failed")
+        self.winerror = winerror
+
+
+@pytest.mark.parametrize("error", [_CredWriteError(5), OSError("CredWrite failed")],
+                         ids=["access-denied", "plain-os-error"])
+def test_only_no_logon_session_skips_a_refused_probe_write(error):
+    """The skip is for WinError 1312 alone: any other write refusal still fails the native tests."""
+    with pytest.raises(pytest.skip.Exception):
+        _skip_without_logon_session(_RefusingBackend(_CredWriteError(_NO_SUCH_LOGON_SESSION)))
+    # Catch the skip outcome too, so a widened skip fails here instead of skipping this test.
+    with pytest.raises((OSError, pytest.skip.Exception)) as raised:
+        _skip_without_logon_session(_RefusingBackend(error))
+    assert raised.value is error
+
+
 @pytest.mark.platforms("macos", "windows")
 def test_real_keychain_stores_reads_and_deletes_a_dummy_entry(os_keychain):
     ref = {"storage": "keychain", "service": kc.SERVICE, "account": f"hermes-ci-smoke-{uuid.uuid4().hex}"}

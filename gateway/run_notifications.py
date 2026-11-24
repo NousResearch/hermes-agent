@@ -27,6 +27,7 @@ from gateway.run_profile_home import completion_event_scope_or_refuse
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
+from gateway.run_notifications_midturn import GatewayMidturnNotificationMixin
 from gateway.run_notifications_restart import GatewayRestartNoticeMixin
 
 # Log-record parity with the origin module.
@@ -173,7 +174,7 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     return metadata
 
 
-class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin, GatewayRestartNoticeMixin):
+class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin, GatewayMidturnNotificationMixin, GatewayRestartNoticeMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -887,69 +888,6 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         except AuthorityRefusal:
             return None
         return self._adapter_for_source(restored.source)
-
-    def _midturn_notice_agent(self, source):
-        """The live agent of the turn currently running for ``source``'s session, or None.
-
-        Covers both ownership models: the session-authority claim (its adopted agent while that
-        generation still executes) and the classic running-agent slot. None when the session is
-        idle, still setting up, or its agent has no mid-turn notification seam.
-        """
-        from gateway.session_authorities import active_authority
-        try:
-            session_key = self._session_key_for_source(source)
-        except Exception:
-            return None
-        authority = active_authority(self)
-        if authority is not None:
-            try:
-                entry = self.session_store.lookup_by_session_key(session_key)
-            except Exception:
-                entry = None
-            if entry is None:
-                return None
-            generation = authority.executing.get(entry.session_id)
-            if generation is None:
-                return None
-            from gateway.session_queued_controls import _receiving_agent
-            try:
-                return _receiving_agent(authority, entry.session_id, generation)
-            except Exception:
-                return None
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        state = self._peek_session_state(session_key)
-        agent = state.turn.agent if state is not None else None
-        if agent is None or agent is _AGENT_PENDING_SENTINEL:
-            return None
-        return agent
-
-    def _deliver_notice_mid_turn(self, evt: dict, synth_text: str, source) -> bool:
-        """Hand a process notice to the running turn's next tool boundary; True when accepted.
-
-        Deliberately scoped to process-registry notices. An ``async_delegation`` result carries a
-        durable delivery claim and a full task wall, so it keeps its admit-as-a-turn path; and a
-        notice queued into a turn that then ends without another tool batch is handed back by the
-        agent's finalizer (``pending_notifications``) and runs as its own turn, as before.
-        """
-        if evt.get("type") not in {"completion", "watch_match"}:
-            return False
-        agent = self._midturn_notice_agent(source)
-        if agent is None:
-            return False
-        queue_notice = getattr(agent, "notify_between_tool_calls", None)
-        if not callable(queue_notice):
-            return False
-        try:
-            accepted = bool(queue_notice(synth_text))
-        except Exception:
-            logger.debug("Mid-turn notification queue failed for %s", evt.get("session_id", "?"), exc_info=True)
-            return False
-        if accepted:
-            logger.info(
-                "Background %s delivered mid-turn for chat=%s process=%s (next tool boundary)",
-                evt.get("type", "completion"), source.chat_id, evt.get("session_id", "unknown"),
-            )
-        return accepted
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,

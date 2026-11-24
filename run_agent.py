@@ -888,7 +888,7 @@ class AIAgent(
     _build_memory_write_metadata = _forward("agent.background_review", "build_memory_write_metadata")
     _apply_pending_steer_to_tool_results = _forward("agent.agent_runtime_helpers", "apply_pending_steer_to_tool_results")
     _apply_pending_notifications_to_tool_results = _forward(
-        "agent.agent_runtime_helpers", "apply_pending_notifications_to_tool_results")
+        "agent.midturn_notifications", "apply_pending_notifications_to_tool_results")
 
     def get_activity_summary(self) -> dict:
         """Diagnostic snapshot: ``last_activity_*`` plus the short aliases gateway and delegate readers use."""

@@ -413,15 +413,44 @@ class InterruptControlMixin:
         The background-completion counterpart of ``steer()``: a process that finishes while this
         turn is still running lands in the running turn at its next break instead of waiting for
         the next user turn. Delivered as its own ``[INTERNAL NOTIFICATION ...]`` row (never the
-        steer marker — a process notice carries no user authority). Returns False for empty text.
+        steer marker — a process notice carries no user authority). Returns False for empty text,
+        and False once this turn's queue is closed (see ``_close_notification_queue``) so the
+        caller falls back to admitting the notice as its own turn rather than parking it on an
+        agent whose finalizer has already drained and gone.
         """
         if not text or not text.strip():
             return False
         with _ic_lock(self, "_pending_notifications_lock"):
+            if getattr(self, "_notifications_queue_closed", False):
+                return False
             pending: list = list(_ic_slot(self, "_pending_notifications_lock", "_pending_notifications") or ())
             pending.append(text.strip())
             self._pending_notifications = pending
         return True
+
+    def _close_notification_queue(self) -> list:
+        """Drain the queue and close it, atomically: the finalizer's handoff.
+
+        A notice accepted between the drain and the turn's teardown would otherwise sit on an
+        agent nothing is scheduled to drain again — silently lost, since a background completion
+        has no user left to retry it. Closing under the same lock as ``notify_between_tool_calls``
+        makes the queue empty-or-refused from this point, and the caller's ``False`` sends the
+        notice down the admit-as-its-own-turn path instead.
+        """
+        with _ic_lock(self, "_pending_notifications_lock"):
+            pending: list = list(_ic_slot(self, "_pending_notifications_lock", "_pending_notifications") or ())
+            self._pending_notifications = []
+            self._notifications_queue_closed = True
+        return pending
+
+    def _open_notification_queue(self) -> None:
+        """Re-open the queue at turn start, discarding nothing.
+
+        Anything still queued here was refused a boundary by a previous turn that never reached
+        the finalizer (an exception or cancellation path); it is kept, not dropped.
+        """
+        with _ic_lock(self, "_pending_notifications_lock"):
+            self._notifications_queue_closed = False
 
     def _drain_pending_notifications(self) -> list:
         """Return and clear queued notification texts, in arrival order."""

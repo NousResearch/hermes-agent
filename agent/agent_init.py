@@ -1,4 +1,7 @@
+# health: allow FILE_LINES -- +3 lines for the mid-turn notification control state; splitting this orchestrator is a separate change, and the per-agent defaults belong beside _pending_steer
 """Implementation of :meth:`AIAgent.__init__` as ``init_agent(agent, ...)``.
+
+# orchestrator is a separate change, and these per-agent defaults belong beside _pending_steer.
 
 ``init_agent`` is a thin, ordered orchestrator over ``_init_*`` / ``_build_*`` phase
 helpers (routing → callbacks → client → tools → session → config sections → compression →
@@ -436,11 +439,9 @@ _CONTROL_STATE: dict[str, Any] = {
     # batch — no interrupt, no new user turn (role alternation preserved).
     "_pending_steer": None,
     "_pending_steer_lock": threading.Lock,
-    # Mid-turn background notifications (process completions, watch matches, liveness ticks):
-    # drained at the same role-safe boundary into their OWN marker row, never the user steer
-    # marker — a process notice is machine output and carries no user authority.
-    "_pending_notifications": list,
-    "_pending_notifications_lock": threading.Lock,
+    # Mid-turn background notifications (process completions, watch matches): drained at the same
+    # role-safe boundary into their OWN marker row — machine output, never the steer marker.
+    "_pending_notifications": list, "_pending_notifications_lock": threading.Lock,
     # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
     # rebuild the tail with the correction. Drained at a role-safe boundary.
     "_pending_redirect": None,

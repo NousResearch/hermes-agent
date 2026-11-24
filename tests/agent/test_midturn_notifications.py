@@ -7,7 +7,7 @@ borrow the user-authority steer marker.
 """
 import threading
 
-from agent.agent_runtime_helpers import apply_pending_notifications_to_tool_results
+from agent.midturn_notifications import apply_pending_notifications_to_tool_results
 from agent.interrupt_control import InterruptControlMixin
 from agent.prompt_builder import (
     CONTROL_FRAME_OPENERS,

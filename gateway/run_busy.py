@@ -252,15 +252,18 @@ class GatewayBusySessionMixin:
             head, rest = None, events
         for event in rest:
             # The busy-queue cap drops USER follow-ups on purpose; a notice the turn already
-            # failed to deliver must not be lost a second time, so at the cap it parks on the
-            # unbounded overflow list and the promotion path drains it in arrival order.
+            # failed to deliver must not be lost a second time. At the cap it parks on the
+            # unbounded overflow list directly — routing through ``_queue_or_replace_pending_event``
+            # would let the queue fill between the depth check and that function's own cap check,
+            # and its cap branch DROPS the event (the exact loss this path exists to prevent).
             resolver = getattr(self, "_delivery_adapter_for", None)
             target = (resolver(event.source) if callable(resolver) else None) or adapter
             cap = getattr(self, "_BUSY_QUEUE_MAX_PENDING", 32)
             at_cap = False
             with contextlib.suppress(Exception):
                 at_cap = self._queue_depth(session_key, adapter=target) >= cap
-            if at_cap and target is not None and getattr(target, "_pending_messages", None) is not None:
+            has_slot = target is not None and getattr(target, "_pending_messages", None) is not None
+            if at_cap and has_slot:
                 logger.debug(
                     "Busy queue at cap (%d) for session %s — parking the background notice on the overflow list",
                     cap, session_key,

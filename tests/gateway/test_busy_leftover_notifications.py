@@ -61,7 +61,7 @@ def test_nothing_pending_two_notices_first_runs_rest_queue():
     requeue = _runner(fifo)
     second = "[IMPORTANT: Background process proc_2 exited (exit code 7).]"
 
-    event, pending = requeue(_result(NOTICE, second), None, _source(), "agent:main:telegram:dm:c1")
+    event, _pending = requeue(_result(NOTICE, second), None, _source(), "agent:main:telegram:dm:c1")
 
     assert event is not None and NOTICE in event.text
     assert [e.text for e in fifo] == [

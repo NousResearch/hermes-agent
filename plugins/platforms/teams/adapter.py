@@ -59,7 +59,8 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
-from gateway.platforms.base import approval_expired_text, approval_kind, approval_kind_scope, ea_header_text, is_schedule_kind
+from gateway.platforms.base import (
+    approval_expired_text, approval_kind, approval_kind_scope, code_fence, ea_header_text, is_schedule_kind)
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
@@ -340,10 +341,12 @@ _APPROVAL_LABEL_KEYS = {
 def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
-    schedule = is_schedule_kind()  # the job description is the body: unfenced, nothing "flagged"
+    schedule = is_schedule_kind()  # the job description is the body: nothing "flagged", no reason line
     if cmd or always:
+        # The model-written job sits in a fence it cannot close, so its markup shows as text, as on every surface.
+        fence = code_fence(cmd) if schedule else "```"
         body.append(TextBlock(text=f"⚠️ {ea_header_text()}", wrap=True, weight="Bolder"))
-        body.append(TextBlock(text=cmd if schedule else f"```\n{cmd}\n```", wrap=True))
+        body.append(TextBlock(text=f"{fence}\n{cmd}\n{fence}", wrap=True))
     if (desc or always) and not schedule:
         body.append(TextBlock(text=f"{t('gateway.exec_approval.reason_label')}: {desc}", wrap=True, isSubtle=True))
     return body

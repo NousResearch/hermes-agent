@@ -440,10 +440,10 @@ from gateway.platforms.helpers import fence_state_after, reply_file_off, try_rep
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
-from gateway.platforms.base_exec_approval import (  # approval_kind(_scope) / is_schedule_kind / ea_key / ea_t: published to adapters
+from gateway.platforms.base_exec_approval import (  # approval_kind(_scope) / is_schedule_kind / ea_key / ea_t / code_fence: published to adapters
     approval_expired_text, approval_kind, is_schedule_kind, approval_timeout_seconds, approval_kind_scope, ea_action_labels, ea_default_reason_text, ea_header_text, ea_key, ea_t,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
-    card_shows_whole_command, render_exec_approval, ExecApprovalPrompt)
+    card_shows_whole_command, code_fence, render_exec_approval, ExecApprovalPrompt)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome

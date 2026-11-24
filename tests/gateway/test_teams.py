@@ -1218,6 +1218,22 @@ async def test_a_clicked_schedule_card_keeps_its_schedule_wording(waiting):
 
 
 @pytest.mark.anyio
+async def test_a_schedule_card_shows_the_job_as_literal_text():
+    """A model-written job holding Markdown (a link, its own fence) is fenced so the card shows it as written."""
+    from gateway.platforms.base_exec_approval import with_approval_kind
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._send_card = object(), AsyncMock()
+    plan = 'Schedule "x" (daily): [read this](https://evil.example) ``` **ok**'
+    texts = []
+    module = sys.modules[TeamsAdapter.__module__]
+    with patch.object(module, "ExecuteAction", lambda **kw: kw), \
+            patch.object(module, "TextBlock", lambda text="", **kw: texts.append(text)):
+        await with_approval_kind("schedule", adapter.send_exec_approval(
+            chat_id="c1", command=plan, session_key="s1", description=plan, request_id="req-job"))
+    assert f"````\n{plan}\n````" in texts, texts
+
+
+@pytest.mark.anyio
 async def test_long_non_ascii_command_keeps_button_data_small():
     """Button data carries an id, not a copy of the preview per button, so a long CJK command
     cannot push the card past Teams' ~28 KB limit."""

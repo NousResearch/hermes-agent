@@ -214,6 +214,7 @@ def publish_local_session(authority, sid, prepared, *, route_proof=None):
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise AuthorityRefusal('runtime_draining')
     live = authority.sessions.get(sid)
+    lineage = receipt.get('lineage', [sid])
     from gateway.session_history_mount import is_history_mount
     if live is None or is_history_mount(live):
         source = adapter.kept_source(source)
@@ -221,15 +222,14 @@ def publish_local_session(authority, sid, prepared, *, route_proof=None):
             if route_proof is None:
                 store._ensure_loaded_locked()
             current = store._entries.get(route)
-            if current is not None and current.session_id != target:
+            if current is not None and current.session_id not in lineage:
                 if not (_stray_route_target(authority, receipt, current.session_id)
                         if route_proof is None else route_proof[1]):
                     raise AuthorityRefusal('admission_conflict')
                 current = None
-            # The receipt is the creation copy; a persisted entry for the same target keeps the
-            # route's explicit ``/yolo`` toggle (an OFF over a ``--yolo`` launch must survive a
-            # cold restore). An untoggled entry stays None and keeps following the launch policy.
-            if current is not None:
+            # The receipt names the validated tip, even if the cached route still names an
+            # ancestor. Only a cache of that same tip can supply a newer /yolo toggle.
+            if current is not None and current.session_id == target:
                 entry.yolo = current.yolo
             entry.origin = source
             store._entries[route] = entry

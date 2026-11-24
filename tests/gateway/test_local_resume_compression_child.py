@@ -91,6 +91,51 @@ async def test_resume_by_a_compression_segment_opens_the_logical_owner(tmp_path,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('startup', [False, True], ids=['resume', 'startup'])
+@pytest.mark.parametrize('cached_target', ['child-1', 'unrelated'])
+async def test_cold_restore_only_recovers_a_stale_route_on_its_lineage(tmp_path, monkeypatch, startup, cached_target):
+    from gateway.session import SessionEntry
+    from gateway.session_local_startup import _prepare, _publish_sessions
+    from tests.fixtures.storage_seed import seed_messages
+
+    compressed = await _compressed(tmp_path, monkeypatch)
+    authority = await _cold(compressed)
+    authority.sessions.pop(compressed.owner, None)
+    store = authority.runner.session_store
+    binding = authority.persistence.bindings.receipt(compressed.owner)
+    assert binding.current_target == 'child-2'
+    if cached_target == 'unrelated':
+        tip = session_row(authority.persistence, 'child-2')
+        assert tip is not None
+        seed_session(authority.persistence, cached_target, 'local', chat_id=tip['chat_id'],
+                     user_id=tip['user_id'], session_key=tip['session_key'])
+        seed_messages(authority.persistence, cached_target, {'role': 'user', 'content': 'unrelated history'})
+    store._ensure_loaded()
+    stale = SessionEntry.from_dict(binding.entry)
+    stale.session_id = cached_target
+    stale.yolo = True
+    with store._lock:
+        store._entries[binding.route] = stale
+
+    if startup:
+        prepared, *_ = _prepare(authority, schedule=False)
+        with store._lock:
+            published = _publish_sessions(authority, prepared, {})
+        assert (compressed.owner in published) == (cached_target == 'child-1')
+
+    reply = await _resume(authority, 'owner', compressed.owner)
+    if cached_target == 'unrelated':
+        assert reply['error']['message'] == 'admission_conflict', reply
+        assert store._entries[binding.route].session_id == cached_target
+    else:
+        assert 'result' in reply, reply
+        assert reply['result']['session_id'] == compressed.owner
+        assert [row['content'] for row in reply['result']['messages']] == ['retained', 'history']
+        assert store._entries[binding.route].session_id == 'child-2'
+        assert store._entries[binding.route].yolo is None  # never inherit stale approval bypass
+
+
+@pytest.mark.asyncio
 async def test_a_segment_of_another_owner_stays_refused(tmp_path, monkeypatch):
     compressed = await _compressed(tmp_path, monkeypatch)
     authority = await _cold(compressed)

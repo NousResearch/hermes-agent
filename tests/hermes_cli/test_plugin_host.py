@@ -414,7 +414,7 @@ def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_t
             (root / "profiles" / "ops").unlink()
             assert manager.owner_home == manager.home_path
             (root / "profiles" / "ops").symlink_to(target, target_is_directory=True)
-        elif beside is not None:
+        elif beside in ("_backup", "default", "deleted"):
             other = root / "profiles" / ("aaa" if beside == "deleted" else beside)
             other.symlink_to(target, target_is_directory=True)
             if beside == "deleted":

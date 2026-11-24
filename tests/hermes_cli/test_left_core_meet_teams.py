@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import hermes_cli.left_core_migration as lcm
+from hermes_cli import plugin_catalog
 
 
 @pytest.fixture(autouse=True)
@@ -68,13 +70,17 @@ def test_old_keys_stay_aliases_of_the_catalog_plugins():
 def test_the_old_bundled_name_finds_the_catalog_entry_but_saved_names_stay_exact(monkeypatch):
     """`hermes plugins install|info google_meet` accept the old name; a saved install record's name
     (update / repin) never drifts to another entry."""
-    from types import SimpleNamespace
-
-    from hermes_cli import plugin_catalog
-
     entries = [SimpleNamespace(name="google-meet"), SimpleNamespace(name="teams-pipeline")]
     monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: entries)
     assert plugin_catalog.find_catalog_entry_for_user("google_meet") is entries[0]
     assert plugin_catalog.find_catalog_entry_for_user("teams_pipeline") is entries[1]
     assert plugin_catalog.find_catalog_entry_for_user("google-meet") is entries[0]
     assert plugin_catalog.get_live_catalog_entry("google_meet") is None
+
+
+@pytest.mark.parametrize(("legacy", "canonical"), [("google_meet", "google-meet"), ("teams_pipeline", "teams-pipeline")])
+def test_catalog_lookup_prefers_an_exact_entry_to_its_legacy_alias(monkeypatch, legacy, canonical):
+    alias_entry = SimpleNamespace(name=canonical)
+    exact_entry = SimpleNamespace(name=legacy)
+    monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: [alias_entry, exact_entry])
+    assert plugin_catalog.find_catalog_entry_for_user(legacy) is exact_entry

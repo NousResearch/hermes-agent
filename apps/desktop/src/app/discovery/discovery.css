@@ -37,15 +37,15 @@
   background-blend-mode: normal, normal, var(--artwork-blend);
 }
 
-/* The 640 conversation column, 85px under the stage's top (State content 18695:17157), 24 between
+/* The 640 column (the landing's, tokens/space.css), 85px under the stage's top (State content 18695:17157), 24 between
    its groups. */
 :root[data-shell='portal'] .discovery-welcome {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
   /* How far the stage reaches past the column on each side: the artwork row runs into it. */
-  --discovery-bleed: calc((100cqi - min(var(--portal-column-conversation), 100cqi)) / 2);
-  inline-size: min(var(--portal-column-conversation), 100%);
+  --discovery-bleed: calc((100cqi - min(var(--portal-column-landing), 100cqi)) / 2);
+  inline-size: min(var(--portal-column-landing), 100%);
   margin-inline: auto;
   /* token-exempt: Figma's 85px from the stage's top */
   padding-block: 5.3125rem 2.5rem;
@@ -963,7 +963,7 @@
   z-index: var(--portal-layer-stage-overlay);
   inset-block-end: calc(var(--composer-measured-height) + 1rem);
   inset-inline-start: 50%;
-  inline-size: min(var(--portal-column-conversation), 100% - 2rem);
+  inline-size: min(var(--portal-column-landing), 100% - 2rem);
   padding-block: 1.5rem;
   border-radius: var(--portal-radius-frame);
   background-color: var(--portal-surface-stage);
@@ -1039,7 +1039,7 @@
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
-  inline-size: min(var(--portal-column-conversation), 100% - 2rem);
+  inline-size: min(var(--portal-column-landing), 100% - 2rem);
   margin-inline: auto;
 }
 
@@ -1291,9 +1291,9 @@
 
 /* ── Desktop update, in the redesign (E2 18677:29477, E3 18677:29591) ─────────────────────────── */
 
-/* The updates dialog takes the conversation column while it pitches or installs an update. */
+/* The updates dialog takes the 640 column while it pitches or installs an update. */
 :root[data-shell='portal'] [data-slot='dialog-content'].updates-portal-dialog {
-  inline-size: min(var(--portal-column-conversation), 100vw - 2rem);
+  inline-size: min(var(--portal-column-landing), 100vw - 2rem);
   max-inline-size: none;
 }
 

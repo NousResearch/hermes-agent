@@ -95,12 +95,16 @@
      stage contract (portal-pages.css), which is its only reader outside this folder
      (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the
      owner keeps one width so no heading moves between pages. Then the conversation shared by the
-     transcript and the docked composer: both 640 wide, the transcript flush with the composer's
-     edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. */
+     transcript and the docked composer, the transcript flush with the composer's edges: as wide as
+     its stage allows, up to 960. Figma draws 440 (chat 16292:16175) and the column was 640; at
+     either, a wide window left most of the stage empty beside a narrow column, and dragging the
+     sidebar narrower gave the chat nothing. It now takes the room there is, as classic's does, with
+     a cap so a line never runs the width of a wide monitor. */
   --portal-column-page: 61.25rem;
-  --portal-column-conversation: 40rem;
+  --portal-column-conversation: 60rem;
   --portal-column-conversation-inset: 0px;
-  /* The landing's composer before the first message, as wide as a conversation's (16292:14822). */
+  /* The 640 column: the landing's composer before the first message (16292:14822), and what stands
+     on the stage in its place (the splashes, the held exchange, the offers over the composer). */
   --portal-column-landing: 40rem;
   /* The developer tool panel's default width (Files, Terminal, Review and Browser share one width,
      redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. */

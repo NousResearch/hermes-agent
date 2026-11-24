@@ -111,6 +111,19 @@
   opacity: 1;
 }
 
+/* A prompt hugs its text at the far edge (491:40653): Figma's 380 in its 640 column, and the same
+   share of a wider one, so a long prompt does not stand as a narrow tower beside a 960 reply. */
+:root[data-shell='portal'] [data-slot='aui_user-bubble-actions'] {
+  width: fit-content;
+  max-width: min(100%, max(23.75rem, 60%));
+  align-self: flex-end;
+}
+
+:root[data-shell='portal'] [data-slot='aui_edit-composer-root'] .composer-human-message-container {
+  max-width: 100%;
+  align-self: flex-end;
+}
+
 /* While the wheel scrolls the transcript, its turns sit the gesture out (use-wheel-scroll-hover-rest):
    the pointer stands still as they pass under it, and re-targeting hover on every frame was most of
    the script and restyle of a scroll. */

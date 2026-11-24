@@ -351,6 +351,9 @@ export type BotsMessages = {
     portalWatching: string
     portalYouControl: string
     portalOtherControls: string
+    holderAgent: string
+    holderYou: string
+    holderViewer: string
     portalStopped: string
     portalNotInstalled: string
     portalUnsupported: string

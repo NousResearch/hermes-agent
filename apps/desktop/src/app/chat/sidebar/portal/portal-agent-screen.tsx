@@ -8,11 +8,13 @@ import {
   type PortalTone,
   profileScreenCommand,
   screenBotForRoute,
+  screenTonePhrase,
   servesProfile,
   useScreenPortalState
 } from '@/plugins/hermes-bots/screen-portal'
 import type { RosterRow } from '@/plugins/hermes-bots/types'
 import { notifyError } from '@/store/notifications'
+import { $gatewayState } from '@/store/session'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
@@ -20,6 +22,8 @@ interface AgentScreen {
   tone: PortalTone
   /** Where the screen stands, in the plugin's own words; none where it cannot exist. */
   says?: string
+  /** For a running screen, the short word for who holds it. */
+  holder?: string
   /** Opens the Screen; resolves to whether it did (a failure is reported, not thrown). */
   open: () => Promise<boolean>
 }
@@ -40,18 +44,22 @@ export async function openAgentScreen(connectionId: null | string, profile: stri
 }
 
 /** The roster row that owns an agent's Screen: the one the plugin's Open Screen action resolves
- *  (its own matcher), so what a surface says about the Screen is about the one it opens. The row
- *  object holds while it stands for the same bot: the plugin's status hook reads again whenever the
- *  object it is given changes, and the roster is republished often. */
+ *  (its own matcher), so what a surface says about the Screen is about the one it opens.
+ *
+ *  The plugin's status hook reads once for the row object it is given and again whenever that
+ *  object changes. The roster is republished often, so the object holds while it stands for the
+ *  same bot; it is renewed when the gateway's state changes, because a read made before the
+ *  gateway was open fails and nothing else would ask again. */
 export function useScreenBot(connectionId: null | string, profile: string): RosterRow {
   const resolved = screenBotForRoute({ connectionId, profile }, useStore($lastRoster), servesProfile)
-  const [bot, setBot] = useState(resolved)
+  const gateway = useStore($gatewayState)
+  const [held, setHeld] = useState({ bot: resolved, gateway })
 
-  if (botSelectionKey(bot) !== botSelectionKey(resolved)) {
-    setBot(resolved)
+  if (botSelectionKey(held.bot) !== botSelectionKey(resolved) || held.gateway !== gateway) {
+    setHeld({ bot: resolved, gateway })
   }
 
-  return bot
+  return held.bot
 }
 
 /** One agent's Screen (Bot Mode: its own desktop), from the plugin's state for it. Mounting this
@@ -61,16 +69,9 @@ export function useAgentScreen(connectionId: null | string, profile: string): Ag
   const b = useBots()
   const { tone } = useScreenPortalState(useScreenBot(connectionId, profile))
 
-  const says: Partial<Record<PortalTone, string>> = {
-    live: b.screen.portalWatching,
-    human: b.screen.portalYouControl,
-    other: b.screen.portalOtherControls,
-    off: b.screen.portalStopped,
-    missing: b.screen.portalNotInstalled,
-    unknown: b.screen.heroConnecting
-  }
+  const { phrase, holder } = screenTonePhrase(b, tone)
 
-  return { tone, says: says[tone], open: () => openAgentScreen(connectionId, profile) }
+  return { tone, says: phrase, holder, open: () => openAgentScreen(connectionId, profile) }
 }
 
 /** The row's mark, in a chat row's own states: the agent at work on its screen, or someone holding it. */
@@ -85,7 +86,7 @@ const MARK: Partial<Record<PortalTone, 'needs-input' | 'working'>> = {
  *  installed. */
 export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
   const b = useBots()
-  const { tone, says, open } = useAgentScreen(agent.connectionId, agent.profile)
+  const { tone, says, holder, open } = useAgentScreen(agent.connectionId, agent.profile)
   const mark = MARK[tone]
 
   if (!mark) {
@@ -101,10 +102,13 @@ export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
               <span />
             </span>
           </span>
-          {/* One line that gives way at its end: who holds the screen is a phrase, not a chat's age. */}
-          <RowButton className="portal-session-open" onClick={() => void open()}>
-            <span className="portal-session-title">{`${b.screen.portalTitle} · ${says}`}</span>
+          {/* The mark says agent or person; the meta names which, in a word. The phrase is the name. */}
+          <RowButton aria-label={`${b.screen.portalTitle}: ${says}`} className="portal-session-open" onClick={() => void open()}>
+            <span className="portal-session-title">{b.screen.portalTitle}</span>
           </RowButton>
+          <span aria-hidden className="portal-session-meta">
+            {holder}
+          </span>
         </div>
       </div>
     </div>

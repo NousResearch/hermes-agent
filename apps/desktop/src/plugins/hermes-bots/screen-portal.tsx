@@ -15,7 +15,7 @@ import type { PaletteContribution, ProfileGroupRoute } from '@hermes/plugin-sdk'
 import { useEffect, useMemo } from 'react'
 
 import { $lastRoster } from './data'
-import { botsText, useBots } from './i18n'
+import { type BotsText, botsText, useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
 import {
   type DisplayLease,
@@ -94,6 +94,21 @@ const TONE_DOT: Record<PortalTone, string> = {
   unsupported: 'bg-(--ui-text-quaternary)',
   unavailable: 'bg-(--ui-text-quaternary)',
   unknown: 'bg-(--ui-text-quaternary)'
+}
+
+/** Where a screen stands, in words: the long phrase a surface with room says, and for a running
+ *  screen the short word for who holds it. None where the state is not one a surface names. */
+export function screenTonePhrase(t: BotsText, tone: PortalTone): { phrase?: string; holder?: string } {
+  const phrases: Partial<Record<PortalTone, { phrase: string; holder?: string }>> = {
+    live: { phrase: t.screen.portalWatching, holder: t.screen.holderAgent },
+    human: { phrase: t.screen.portalYouControl, holder: t.screen.holderYou },
+    other: { phrase: t.screen.portalOtherControls, holder: t.screen.holderViewer },
+    off: { phrase: t.screen.portalStopped },
+    missing: { phrase: t.screen.portalNotInstalled },
+    unknown: { phrase: t.screen.heroConnecting }
+  }
+
+  return phrases[tone] ?? {}
 }
 
 export function useScreenPortalState(bot: RosterRow) {

@@ -5,6 +5,7 @@ import { $lastRoster } from '@/plugins/hermes-bots/data'
 import { botsText } from '@/plugins/hermes-bots/i18n'
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import type * as ScreenPortal from '@/plugins/hermes-bots/screen-portal'
+import { $gatewayState } from '@/store/session'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
@@ -44,17 +45,21 @@ beforeEach(() => plugin.open.mockReset())
 afterEach(() => {
   cleanup()
   $lastRoster.set([])
+  $gatewayState.set('idle')
 })
 
 it.each([
-  ['live', copy.portalWatching],
-  ['human', copy.portalYouControl],
-  ['other', copy.portalOtherControls]
-] as const)('shows a running screen (%s) and says who holds it', (tone, holder) => {
+  ['live', copy.portalWatching, copy.holderAgent, 'working'],
+  ['human', copy.portalYouControl, copy.holderYou, 'needs-input'],
+  ['other', copy.portalOtherControls, copy.holderViewer, 'needs-input']
+] as const)('shows a running screen (%s): who holds it in a word, and the mark for agent or person', (tone, phrase, holder, mark) => {
   plugin.tone = tone
-  render(<AgentScreenRow agent={OPS} />)
+  const { container } = render(<AgentScreenRow agent={OPS} />)
 
-  expect(row()?.textContent).toBe(`${copy.portalTitle} · ${holder}`)
+  expect(row()?.getAttribute('aria-label')).toBe(`${copy.portalTitle}: ${phrase}`)
+  expect(row()?.textContent).toBe(copy.portalTitle)
+  expect(container.querySelector('.portal-session-meta')?.textContent).toBe(holder)
+  expect(container.querySelector<HTMLElement>('.portal-row-mark')?.dataset.state).toBe(mark)
 })
 
 it.each(['off', 'missing', 'unknown', 'unsupported', 'unavailable'] as const)('adds no row for a screen that is %s', tone => {
@@ -84,4 +89,16 @@ it('keeps reading one row for its agent when the roster is published again', () 
 
   // The plugin's hook re-reads an unsettled status whenever the row object it is given changes.
   expect(new Set(plugin.bots.slice(-2)).size).toBe(1)
+})
+
+it('asks again when the gateway’s state changes: a read made before it opened has failed', () => {
+  plugin.tone = 'unknown'
+  $gatewayState.set('connecting')
+  plugin.bots.length = 0
+  render(<AgentScreenRow agent={OPS} />)
+  const before = plugin.bots.at(-1)
+
+  act(() => $gatewayState.set('open'))
+
+  expect(plugin.bots.at(-1)).not.toBe(before)
 })

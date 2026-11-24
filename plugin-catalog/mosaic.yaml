@@ -1,19 +1,19 @@
 name: mosaic
 repo: https://github.com/LangerSword/mosaic
-sha: 271bb94329dc70a244784b05d030631d8036e013
+sha: caab2fab646a3394c8834151e115543c4d1de07b
 title: Mosaic
 description: "A design reference engine for Hermes Agent. Mosaic turns a studied reference or a product brief into an original interface direction: a base field, one accent, a type pairing, two signature moves, a composition order, motion rules and an audit checklist. It ships 12 skills and 6 local tools: mosaic_index, mosaic_components, mosaic_stacks, mosaic_forge, mosaic_recipe and mosaic_audit. mosaic_forge emits an original component starter for HTML, React, Next, Svelte, Vue or Astro, with CSS or GSAP motion. It does not clone a reference, copy paid code or call a network. Disclosure: local only; no network, no telemetry, no credentials; mosaic_audit reads a caller-selected local text file; the recipe and component index are bundled data; no hooks or middleware."
 maintainer: LangerSword
 tier: community
 category: tools
 version: "0.4.0"
-image: "https://raw.githubusercontent.com/LangerSword/mosaic/271bb94329dc70a244784b05d030631d8036e013/docs/banner.png"
+image: "https://raw.githubusercontent.com/LangerSword/mosaic/caab2fab646a3394c8834151e115543c4d1de07b/docs/banner.png"
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/LangerSword/mosaic
 platforms: [linux, macos, windows]
 screenshots:
-  - https://raw.githubusercontent.com/LangerSword/mosaic/271bb94329dc70a244784b05d030631d8036e013/docs/site-1440.png
-  - https://raw.githubusercontent.com/LangerSword/mosaic/271bb94329dc70a244784b05d030631d8036e013/docs/site-390.png
+  - https://raw.githubusercontent.com/LangerSword/mosaic/caab2fab646a3394c8834151e115543c4d1de07b/docs/site-1440.png
+  - https://raw.githubusercontent.com/LangerSword/mosaic/caab2fab646a3394c8834151e115543c4d1de07b/docs/site-390.png
 readme: true
 capabilities:
   provides_tools:

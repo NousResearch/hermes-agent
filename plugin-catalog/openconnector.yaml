@@ -1,10 +1,10 @@
 name: openconnector
 title: OpenConnector
 repo: https://github.com/ericnunes30/hermes-openconnector
-sha: 15b467da4a44eb1621e975984fa3542ca664905f
+sha: 249fc987f9ac7e5fbf8b19dcae87f2c49998d950
 description: >-
   Turns a self-hosted OpenConnector runtime into Hermes connector tools: typed
-  tools named connectors__<service>__<action> built from the runtime's own input
+  tools named openconnector__<service>__<action> built from the runtime's own input
   schemas, plus oc_* discovery tools (list providers, list connected accounts,
   search actions, read an action's guide, run any action by id, refresh the
   cache). Credentials stay on the user's server. Disclosure: every tool call goes

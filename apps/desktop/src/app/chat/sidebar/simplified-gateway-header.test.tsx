@@ -78,7 +78,7 @@ describe('a machine row status', () => {
   it('starts a new agent on its own machine, without folding it', () => {
     mount()
 
-    fireEvent.click(screen.getByRole('button', { name: en.profiles.newProfile }))
+    fireEvent.click(screen.getByRole('button', { name: `${en.profiles.newProfile}: Hermes host` }))
 
     expect(onNewAgent).toHaveBeenCalledTimes(1)
     expect(onToggle).not.toHaveBeenCalled()
@@ -88,7 +88,7 @@ describe('a machine row status', () => {
     $gatewayState.set('closed')
     mount()
 
-    const button = screen.getByRole('button', { name: `${en.profiles.newProfile} · ${copy.offline}` })
+    const button = screen.getByRole('button', { name: `${en.profiles.newProfile} · ${copy.offline}: Hermes host` })
     fireEvent.click(button)
 
     expect(button.getAttribute('aria-disabled')).toBe('true')

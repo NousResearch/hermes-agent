@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -54,7 +54,7 @@ function mount(agents: SimplifiedAgent[]) {
 }
 
 const newAgentOn = (machine: string) =>
-  within(screen.getByRole('group', { name: machine })).getByRole('button', { name: new RegExp(`^${en.profiles.newProfile}`) })
+  screen.getByRole('button', { name: new RegExp(`^${en.profiles.newProfile}.*: ${machine}$`) })
 
 beforeEach(() => {
   stubMenuDomApis()

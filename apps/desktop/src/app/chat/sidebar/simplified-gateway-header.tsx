@@ -74,7 +74,9 @@ export function SimplifiedGatewayHeader({
   const canAdd = state === 'open' && onNewAgent !== undefined
   // What it waits for: the machine itself, or its agents still being read.
   const waiting = state === 'open' ? t.common.loading : status
-  const newAgentLabel = canAdd ? t.profiles.newProfile : `${t.profiles.newProfile} · ${waiting}`
+  // The tip says what the row does not; the name also says which machine, as the row's other controls do.
+  const newAgentTip = canAdd ? t.profiles.newProfile : `${t.profiles.newProfile} · ${waiting}`
+  const newAgentLabel = `${newAgentTip}: ${label}`
 
   return (
     <div
@@ -113,7 +115,7 @@ export function SimplifiedGatewayHeader({
         <span id={statusId}>{status}</span>
       </MachineStatusPopover>
       {/* Only a connected machine whose agents are known can take one; else the button says why. */}
-      <Tip label={newAgentLabel}>
+      <Tip label={newAgentTip}>
         <Button
           aria-disabled={canAdd ? undefined : true}
           aria-label={newAgentLabel}

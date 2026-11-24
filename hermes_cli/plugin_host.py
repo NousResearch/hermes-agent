@@ -79,7 +79,7 @@ def _is_launch_home(home: Path) -> bool:
     return hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
 
 
-def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
+def _launcher_for(home: Path, host_launcher: Callable[..., list], own: bool) -> list:
     """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home*: a start can come from a
     caller bound to another profile, or from a crash restart's thread, which has no binding at all.
 
@@ -94,8 +94,8 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     multiplexing uses the process env, so a restart reads what the process loaded; under multiplexing it uses the
     launch scope too. The process env holds the launch profile's values, so any other profile's launcher expands
     through its own files (``build_profile_secret_scope``), multiplexing or not: a desktop backend's cron ticker
-    serves a sibling under task-local multiplexing, which a fresh context does not carry. Which home is the
-    launch profile's is ``_is_launch_home``'s answer, the one the host child's env takes too (where
+    serves a sibling under task-local multiplexing, which a fresh context does not carry. *own* is whether *home*
+    is the launch profile's: ``_is_launch_home``'s answer, made once per start for the host child's env too (where
     ``owner_secret_scope``, asking where the process's own name leads now, would take a renamed launch profile
     for another and hand a profile its link was repointed at the launch env). No terminal policy: the launcher
     is only read here."""
@@ -103,7 +103,6 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
                                     set_multiplex_context)
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     launch_key = hermes_home_key(get_routing_process_hermes_home())
-    own = _is_launch_home(home)
     stamp = current_secret_scope_home()
     launch_body = current_secret_scope() is not None and (stamp is None or hermes_home_key(stamp) == launch_key)
     multiplexed = is_multiplex_active()
@@ -185,18 +184,17 @@ class PluginHost:
         context.run(bind)
         return context
 
-    def _argv(self) -> list:
+    def _argv(self, own: bool) -> list:
         from hermes_cli.plugin_isolation import host_launcher
         # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
         # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
         # For the home this start took (``_home``), not ``owner_home`` read again nor the caller's binding, either
         # of which can name a link renamed since. Not in the host's context either: its secret scope holds only
         # the profile's files, without the launch profile's env-only keys.
-        return [*_launcher_for(self._home, host_launcher), sys.executable, "-P", "-m", _HOST_MODULE]
+        return [*_launcher_for(self._home, host_launcher, own), sys.executable, "-P", "-m", _HOST_MODULE]
 
-    def _env(self) -> dict[str, str]:
+    def _env(self, own: bool) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
-        own = _is_launch_home(self._home)  # as the launcher decided it: a renamed link's old name leads nowhere
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True,
                                      own_profile=own)
         env.update(self._base_context.run(_hosted_ambient_credentials, self._home, own))
@@ -224,9 +222,10 @@ class PluginHost:
                 except BaseException:
                     self._home = previous  # so the next start builds the context for the new home again
                     raise
-            argv = self._argv()
+            own = _is_launch_home(self._home)  # one answer for the launcher and the child's env
+            argv = self._argv(own)
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=self._env(), cwd=str(self._home),
+                                    stderr=subprocess.PIPE, env=self._env(own), cwd=str(self._home),
                                     bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()

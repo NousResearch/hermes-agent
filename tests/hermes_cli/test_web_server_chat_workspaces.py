@@ -78,3 +78,27 @@ def test_resolve_chat_cwd_fails_closed_and_reaches_the_tui_env(monkeypatch, tmp_
 
     _argv, _cwd, env = web_server_chat._resolve_chat_argv()
     assert "HERMES_TUI_CWD" not in env
+
+
+def test_default_pick_never_hands_the_child_the_launch_dir(monkeypatch, tmp_path):
+    """No workspace picked ("Default") -> no cwd on the child at all.
+
+    ``_apply_tui_python_env`` fills ``HERMES_CWD`` from the dashboard process's own launch
+    directory when nothing set one, and the TUI sends it as ``session.create``'s ``cwd``
+    (canonical transport). A directory that exists then beats the profile's ``terminal.cwd``,
+    so a fresh chat started in the dashboard's dir while the picker's Default row displayed
+    ``~/workspace``. Leaving it unset makes the gateway resolve that same configured default.
+    """
+    import hermes_cli.main_tui_launch as tui_launch
+
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    monkeypatch.chdir(launch)
+    monkeypatch.delenv("HERMES_CWD", raising=False)
+    monkeypatch.setattr(
+        tui_launch, "_make_tui_argv", lambda *_a, **_k: (["node", "fake-tui.js"], tmp_path))
+
+    _argv, _cwd, env = web_server_chat._resolve_chat_argv()
+
+    assert "HERMES_CWD" not in (env or {})
+    assert "HERMES_TUI_CWD" not in (env or {})

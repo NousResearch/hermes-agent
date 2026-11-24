@@ -10,15 +10,15 @@ import {
 } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderMatches } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
 import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
+import { useModelOptionsQuery } from '@/lib/use-model-options-query'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -92,10 +92,13 @@ export function ModelPickerDialog({
   const [slugEntry, setSlugEntry] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
-  const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
-    enabled: open
+  const modelOptions = useModelOptionsQuery({
+    enabled: open,
+    gateway: gw,
+    ownerConnectionId,
+    profile,
+    request,
+    sessionId
   })
 
   // Live load state for the managed local server: which model is loading

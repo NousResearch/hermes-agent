@@ -909,6 +909,99 @@ describe('the catalog renders per-model pricing', () => {
     expect(screen.queryByText(/\/Mtok/)).toBeNull()
     expect(screen.queryByText('free')).toBeNull()
   })
+
+  it('keeps polling pricing_pending after 6+ prior menu opens and stops polling on repeated RPC errors', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const pendingReply = {
+        providers: [
+          {
+            models: ['anthropic/claude-sonnet-5'],
+            name: 'Nous Portal',
+            pricing_pending: true,
+            slug: 'nous'
+          }
+        ]
+      }
+
+      const warmReply = {
+        providers: [
+          {
+            models: ['anthropic/claude-sonnet-5'],
+            name: 'Nous Portal',
+            pricing: {
+              'anthropic/claude-sonnet-5': { cache: null, free: false, input: '$1.60', output: '$8.00' }
+            },
+            slug: 'nous'
+          }
+        ]
+      }
+
+      // Simulate 7 prior query updates earlier in the session (cumulative dataUpdateCount = 7 >= 6).
+      for (let i = 0; i < 7; i += 1) {
+        queryClient.setQueryData(['model-options', 'default', 'global'], {
+          providers: [
+            {
+              models: ['anthropic/claude-sonnet-5'],
+              name: 'Nous Portal',
+              slug: 'nous'
+            }
+          ]
+        })
+      }
+
+      getGlobalModelOptions.mockResolvedValueOnce(pendingReply).mockResolvedValueOnce(warmReply)
+
+      renderMenu()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
+      expect(screen.getByText('$1.60/$8.00')).not.toBeNull()
+
+      // Now verify free_tier_pending also polls and RPC errors stay bounded instead of infinite-looping.
+      cleanup()
+      getGlobalModelOptions.mockReset()
+      getGlobalModelOptions
+        .mockResolvedValueOnce({
+          providers: [
+            {
+              free_tier_pending: true,
+              models: ['anthropic/claude-sonnet-5'],
+              name: 'Nous Portal',
+              slug: 'nous',
+              unavailable_models: ['anthropic/claude-sonnet-5']
+            }
+          ]
+        })
+        .mockRejectedValue(new Error('gateway offline'))
+
+      renderMenu()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000)
+        await vi.advanceTimersByTimeAsync(1)
+      })
+
+      // 1 initial open fetch + at most 5 bounded interval retries = 6 total (never unbounded).
+      expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1)
+      expect(getGlobalModelOptions.mock.calls.length).toBeLessThanOrEqual(6)
+    } finally {
+      getGlobalModelOptions.mockReset()
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('row speed chip gating', () => {

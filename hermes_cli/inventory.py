@@ -892,6 +892,49 @@ def _plan_usage_window(g) -> dict:
     }
 
 
+def _finalize_nous_pricing_row(
+    row: dict,
+    models: list,
+    raw_pricing: dict,
+    plan_usage: Any,
+    *,
+    cached_only: bool,
+    cached_nous_tier: Optional[bool],
+    nous_free_tier: Optional[bool],
+    force_fresh_nous_tier: bool,
+) -> Optional[bool]:
+    """Attach Nous tier gating and usage-window fields (stripping ``pricing`` when window-plan data
+    applies or is still warming while ``raw_pricing`` already carries window-plan markers)."""
+    from hermes_cli.models import check_nous_free_tier, partition_nous_models_by_tier
+    from hermes_cli.model_picker_usage import catalog_marks_window_plan, usage_levels
+
+    try:
+        if nous_free_tier is None:
+            nous_free_tier = (cached_nous_tier if cached_only
+                              else check_nous_free_tier(force_fresh=force_fresh_nous_tier))
+        row["free_tier"] = bool(nous_free_tier)
+        row["unavailable_models"] = (
+            partition_nous_models_by_tier(list(models), raw_pricing, free_tier=True)[1]
+            if nous_free_tier else [])
+    except Exception:  # tier detection failed — fail open (no gating)
+        logging.getLogger(__name__).debug("Nous tier detection failed", exc_info=True)
+        row["free_tier"] = False
+        row["unavailable_models"] = []
+    if plan_usage is not None:
+        # The gateway's per-plan word per model (free / low / medium / top_tier).
+        row["usage_levels"] = usage_levels(list(models), raw_pricing)
+        # Top-tier marks from the gateway (it decides, not the client).
+        row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
+        # Window plans: the picker shows the usage word, not per-token prices.
+        row.pop("pricing", None)
+    elif cached_only and catalog_marks_window_plan(raw_pricing):
+        # Catalog already proves a window plan, but the account snapshot is not cached yet: withhold
+        # per-token prices and mark pending so the desktop keeps prior warm chrome and polls prewarm.
+        row.pop("pricing", None)
+        row["pricing_pending"] = True
+    return nous_free_tier
+
+
 # health: allow CC -- usage-window plans: one branch attaches plan usage to the Nous row (built in _attach_nous_plan_usage); over target on main
 def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cached_only: bool = False) -> None:
     """Set ``row["pricing"] = {model_id: {input, output, cache | None, free}}``; for Nous also
@@ -903,11 +946,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         compute_sale_discount,
         get_pricing_for_provider,
     )
-    from hermes_cli.models import (
-        check_nous_free_tier,
-        get_cached_nous_free_tier,
-        partition_nous_models_by_tier,
-    )
+    from hermes_cli.models import get_cached_nous_free_tier
 
     nous_free_tier: Optional[bool] = None  # resolved once (cached in models.py for the TTL window)
 
@@ -977,25 +1016,11 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             row["pricing"] = formatted
 
         if slug == "nous":
-            try:
-                if nous_free_tier is None:
-                    nous_free_tier = (cached_nous_tier if cached_only
-                                      else check_nous_free_tier(force_fresh=force_fresh_nous_tier))
-                row["free_tier"] = bool(nous_free_tier)
-                row["unavailable_models"] = (
-                    partition_nous_models_by_tier(list(models), raw_pricing, free_tier=True)[1]
-                    if nous_free_tier else [])
-            except Exception:  # tier detection failed — fail open (no gating)
-                row["free_tier"] = False
-                row["unavailable_models"] = []
-            if plan_usage is not None:
-                from hermes_cli.model_picker_usage import usage_levels
-                # The gateway's per-plan word per model (free / low / medium / top_tier).
-                row["usage_levels"] = usage_levels(list(models), raw_pricing)
-                # Top-tier marks from the gateway (it decides, not the client).
-                row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
-                # Window plans: the picker shows the usage word, not per-token prices.
-                row.pop("pricing", None)
+            nous_free_tier = _finalize_nous_pricing_row(
+                row, models, raw_pricing, plan_usage,
+                cached_only=cached_only, cached_nous_tier=cached_nous_tier,
+                nous_free_tier=nous_free_tier, force_fresh_nous_tier=force_fresh_nous_tier,
+            )
 
 
 def inject_local_runtime_row(rows: list[dict], ctx: ConfigContext) -> tuple[list[dict], dict | None]:

@@ -653,3 +653,172 @@ def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     assert in_profile(tmp_path / "b", endpoint_b, cached_only=False) == expected_b
     assert in_profile(tmp_path / "a", endpoint_b, cached_only=True) == expected_a
     assert in_profile(tmp_path / "b", endpoint_a, cached_only=True) == expected_b
+
+
+def test_cached_only_nous_window_catalog_with_uncached_plan_marks_pending_instead_of_emitting_prices(monkeypatch):
+    """When /v1/models is warm with window-plan marks but account_info is uncached, do not leak $ prices."""
+    from hermes_cli import models as models_mod
+
+    monkeypatch.setattr(
+        models_pricing,
+        "get_pricing_for_provider",
+        lambda slug, **_kw: {
+            "anthropic/claude-opus-5": {
+                "prompt": "0.000005",
+                "completion": "0.000025",
+                "usage_level": "top_tier",
+            }
+        }
+        if slug == "nous"
+        else {},
+    )
+    monkeypatch.setattr(models_mod, "get_cached_nous_free_tier", lambda: False)
+    monkeypatch.setattr("hermes_cli.model_picker_usage.nous_picker_usage", lambda **_kw: None)
+
+    rows = [{"slug": "nous", "models": ["anthropic/claude-opus-5"]}]
+    inv._apply_pricing(rows, cached_only=True)
+
+    assert "pricing" not in rows[0]
+    assert rows[0].get("pricing_pending") is True
+
+
+def test_cold_prewarm_detects_window_plan_from_jwt_and_drops_prices(tmp_path, monkeypatch):
+    """E2E: cold build_model_options_payload prewarm detects Hermes Plus from JWT and strips $ prices."""
+    import base64
+    import json
+    import time
+    from pathlib import Path
+
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import models as models_mod
+    from hermes_cli import nous_account as na
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "hermes-home"
+    shared_auth = tmp_path / "shared-auth"
+    home.mkdir()
+    shared_auth.mkdir()
+
+    def _jwt(claims: dict) -> str:
+        def _part(obj: dict) -> str:
+            return base64.urlsafe_b64encode(json.dumps(obj, separators=(",", ":")).encode()).decode().rstrip("=")
+        return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
+
+    tok = _jwt({
+        "sub": "user_plus",
+        "org_id": "org_plus",
+        "exp": int(time.time()) + 3600,
+        "jti": "jti_plus_1",
+        "paid_access": True,
+        "usage_window": True,
+    })
+    auth_state = {
+        "access_token": tok,
+        "portal_base_url": "https://portal.example.test",
+        "inference_base_url": "https://inference.example.test/v1",
+        "client_id": "hermes-cli",
+    }
+    account_payload = {
+        "user": {"email": "plus@example.test", "privy_did": "did:privy:plus"},
+        "organisation": {"id": "org_plus"},
+        "subscription": {"plan": "Hermes Plus", "tier": 110, "monthly_charge": 20.0},
+        "paid_service_access": {
+            "allowed": True,
+            "paid_access": True,
+            "organisation_id": "org_plus",
+            "has_active_subscription": True,
+            "active_subscription_is_paid": True,
+            "purchased_credits_remaining": 4.7,
+            "total_usable_credits": 4.7,
+        },
+        "usage_window": {
+            "gauges": [
+                {"id": "day", "scope": "all", "label": "Today", "used_bp": 1000, "resets_at_ms": 1795559894483},
+            ],
+            "featured_model_ids": ["anthropic/claude-opus-5"],
+            "keep_going_on_credits": False,
+        },
+    }
+    catalog_payload = {
+        "data": [
+            {
+                "id": "anthropic/claude-opus-5",
+                "pricing": {"prompt": "0.000005", "completion": "0.000025"},
+                "usage_level": "top_tier",
+            }
+        ]
+    }
+
+    for env_var in ("NOUS_API_KEY", "HERMES_PORTAL_BASE_URL", "NOUS_INFERENCE_BASE_URL"):
+        monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_auth))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(inv, "_pricing_prewarm_threads", {})
+    monkeypatch.setattr(models_pricing, "_pricing_cache", {})
+    monkeypatch.setattr(models_pricing, "_pricing_cache_retry_after", {})
+    monkeypatch.setattr(models_pricing, "_pricing_provider_cache_keys", {})
+    monkeypatch.setattr(models_mod, "_free_tier_cache", {})
+    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
+    na.reset_nous_portal_account_info_cache()
+
+    monkeypatch.setattr(auth_mod, "get_provider_auth_state", lambda slug: auth_state if slug == "nous" else None)
+    monkeypatch.setattr(auth_mod, "resolve_nous_access_token", lambda: tok)
+    monkeypatch.setattr(na, "_fetch_nous_account_info", lambda *_a, **_kw: account_payload)
+    monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials", lambda: (tok, "https://inference.example.test"))
+    monkeypatch.setattr(models_pricing, "_get_json", lambda *_a, **_kw: catalog_payload)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr(models_mod, "fetch_nous_recommended_models", lambda *_a, **_kw: {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        lambda **_kw: [{
+            "slug": "nous",
+            "name": "Nous Portal",
+            "models": ["anthropic/claude-opus-5"],
+            "total_models": 1,
+            "is_current": True,
+            "authenticated": True,
+            "source": "hermes",
+        }],
+    )
+    monkeypatch.setattr(inv, "inject_local_runtime_row", lambda rows, _ctx: (rows, None))
+    monkeypatch.setattr(inv, "_apply_model_capabilities", lambda *_a, **_kw: None, raising=False)
+
+    spawned_threads = []
+    real_prewarm = inv._prewarm_pricing_async
+
+    def capture_prewarm(*args, **kwargs):
+        t = real_prewarm(*args, **kwargs)
+        if t is not None:
+            spawned_threads.append(t)
+        return t
+
+    monkeypatch.setattr(inv, "_prewarm_pricing_async", capture_prewarm)
+
+    ctx = inv.ConfigContext(
+        current_provider="nous",
+        current_model="anthropic/claude-opus-5",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_providers=[],
+    )
+
+    home_token = set_hermes_home_override(str(home))
+    try:
+        cold = inv.build_model_options_payload(ctx, explicit_only=True, refresh=False)
+        cold_nous = next(r for r in cold["providers"] if r["slug"] == "nous")
+        assert cold_nous.get("pricing_pending") is True or cold_nous.get("free_tier_pending") is True
+        assert "pricing" not in cold_nous
+
+        assert spawned_threads, "cold open must kick off background prewarm"
+        for t in spawned_threads:
+            t.join(timeout=5)
+
+        warm = inv.build_model_options_payload(ctx, explicit_only=True, refresh=False)
+        warm_nous = next(r for r in warm["providers"] if r["slug"] == "nous")
+        assert warm_nous.get("plan_usage", {}).get("kind") == "usage_window"
+        assert warm_nous.get("usage_levels") == {"anthropic/claude-opus-5": "top_tier"}
+        assert "pricing" not in warm_nous
+    finally:
+        reset_hermes_home_override(home_token)
+        na.reset_nous_portal_account_info_cache()

@@ -1,7 +1,7 @@
 import type { ModelOptionsResult } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -493,5 +493,101 @@ describe('ModelPickerDialog search ranking', () => {
 
       expect(rows).toContain(expected)
     })
+  })
+})
+
+describe('ModelPickerDialog Nous pending polling', () => {
+  it('polls a pending Nous row while mounted and resets poll budget across closed -> open cycles', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const pendingReply: ModelOptionsResult = {
+        providers: [
+          {
+            authenticated: true,
+            models: ['anthropic/claude-sonnet-5'],
+            name: 'Nous',
+            pricing_pending: true,
+            slug: 'nous'
+          }
+        ]
+      }
+
+      const warmReply: ModelOptionsResult = {
+        providers: [
+          {
+            authenticated: true,
+            models: ['anthropic/claude-sonnet-5'],
+            name: 'Nous',
+            pricing: {
+              'anthropic/claude-sonnet-5': { free: false, input: '$1.60', output: '$8.00' }
+            },
+            slug: 'nous'
+          }
+        ]
+      }
+
+      vi.mocked(requestModelOptions).mockResolvedValueOnce(pendingReply).mockResolvedValueOnce(warmReply)
+
+      const { rerender } = renderPicker({
+        currentModel: 'anthropic/claude-sonnet-5',
+        currentProvider: 'nous',
+        open: true
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(vi.mocked(requestModelOptions)).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(vi.mocked(requestModelOptions)).toHaveBeenCalledTimes(2)
+      expect(screen.getByText('$1.60 / $8.00')).toBeTruthy()
+
+      // Close and reopen the mounted dialog (same lifecycle as ModelPickerOverlay) after cache warms/expires.
+      vi.mocked(requestModelOptions).mockResolvedValueOnce(pendingReply).mockResolvedValueOnce(warmReply)
+      rerender(
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <ModelPickerDialog
+              currentModel="anthropic/claude-sonnet-5"
+              currentProvider="nous"
+              onOpenChange={() => undefined}
+              onSelect={() => undefined}
+              open={false}
+            />
+          </I18nProvider>
+        </QueryClientProvider>
+      )
+      rerender(
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <ModelPickerDialog
+              currentModel="anthropic/claude-sonnet-5"
+              currentProvider="nous"
+              onOpenChange={() => undefined}
+              onSelect={() => undefined}
+              open
+            />
+          </I18nProvider>
+        </QueryClientProvider>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(vi.mocked(requestModelOptions)).toHaveBeenCalledTimes(3)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(vi.mocked(requestModelOptions)).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

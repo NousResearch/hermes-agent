@@ -132,4 +132,97 @@ describe('keepWarmNousRow', () => {
     // The gauges are the pending row's own (fresh), not the warm row's.
     expect(row?.plan_usage?.gauges).toEqual(fresh)
   })
+
+  it('keeps warm per-model pricing for PAYG/credit Nous rows across repeated pending replies', () => {
+    const warmPayg: ModelOptionsResult = {
+      providers: [
+        {
+          free_tier: false,
+          models: ['anthropic/claude-sonnet-5'],
+          name: 'Nous Portal',
+          pricing: {
+            'anthropic/claude-sonnet-5': { cache: '$0.16', free: false, input: '$1.60', output: '$8.00' }
+          },
+          slug: 'nous',
+          unavailable_models: []
+        }
+      ]
+    }
+
+    const pendingPayg: ModelOptionsResult = {
+      providers: [
+        {
+          free_tier: false,
+          models: ['anthropic/claude-sonnet-5'],
+          name: 'Nous Portal',
+          pricing_pending: true,
+          slug: 'nous',
+          unavailable_models: []
+        }
+      ]
+    }
+
+    const once = keepWarmNousRow(warmPayg, pendingPayg) as ModelOptionsResult
+    const twice = keepWarmNousRow(once, structuredClone(pendingPayg)) as ModelOptionsResult
+
+    expect(once.providers?.[0].pricing).toEqual(warmPayg.providers?.[0].pricing)
+    expect(once.providers?.[0].pricing_pending).toBe(true)
+    expect(twice.providers?.[0].pricing).toEqual(warmPayg.providers?.[0].pricing)
+    expect(twice.providers?.[0].pricing_pending).toBe(true)
+  })
+
+  it('does not overlay a warm PAYG pricing row onto a pending usage-window plan row', () => {
+    const warmPayg: ModelOptionsResult = {
+      providers: [
+        {
+          free_tier: false,
+          models: ['example/model-a'],
+          name: 'Nous Portal',
+          pricing: {
+            'example/model-a': { cache: null, free: false, input: '$1.60', output: '$8.00' }
+          },
+          slug: 'nous',
+          unavailable_models: []
+        }
+      ]
+    }
+
+    const pendingWindow: ModelOptionsResult = {
+      providers: [
+        {
+          models: ['example/model-a'],
+          name: 'Nous Portal',
+          plan_usage: { gauges: [{ label: 'day', left_fraction: 0.9, style: 'green' }], kind: 'usage_window' },
+          pricing_pending: true,
+          slug: 'nous'
+        }
+      ]
+    }
+
+    const merged = keepWarmNousRow(warmPayg, pendingWindow) as ModelOptionsResult
+    const row = merged.providers?.[0]
+
+    expect(row?.pricing).toBeUndefined()
+    expect(row?.plan_usage?.kind).toBe('usage_window')
+  })
+
+  it('ignores non-object previous data and free_tier_row guests safely', () => {
+    expect(keepWarmNousRow('unexpected-primitive', pending)).toEqual(pending)
+
+    const guestWarm: ModelOptionsResult = {
+      providers: [
+        {
+          free_tier_row: true,
+          models: ['nous/welcome'],
+          name: 'Nous · free tier',
+          pricing: { 'nous/welcome': { cache: null, free: true, input: 'free', output: 'free' } },
+          slug: 'nous'
+        }
+      ]
+    }
+
+    const merged = keepWarmNousRow(guestWarm, pending) as ModelOptionsResult
+
+    expect(merged.providers?.[0].pricing).toBeUndefined()
+  })
 })

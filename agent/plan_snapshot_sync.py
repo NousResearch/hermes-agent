@@ -83,8 +83,8 @@ def sync_plan_snapshot(state: Any) -> bool:
             # Non-window reply: only a cached window snapshot (a downgrade / cancel) can be stale. Peek the
             # raw cache first so every other account pays no auth-state read per reply.
             from hermes_cli import nous_account
-            cached = nous_account._account_info_cache
-            if cached is None or _snapshot_full_ids(cached[2]) is None:
+            cached = nous_account._peek_cached_account_info()
+            if cached is None or _snapshot_full_ids(cached) is None:
                 _last_attempt.pop(key, None)
                 return False
         from hermes_cli.nous_account import cached_nous_portal_account_info

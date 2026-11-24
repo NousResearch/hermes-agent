@@ -410,19 +410,58 @@ def _credits_pay(info: Any, window: Any) -> Optional[bool]:
     return purchased > 0
 
 
+def catalog_marks_window_plan(rows: Any) -> bool:
+    """True when any Nous ``/v1/models`` entry carries a gateway window-plan marker (``usage_level``
+    or ``top_tier``). The gateway stamps those only on usage-window callers' catalogs, never on
+    ``billing_mode: subscription`` alone."""
+    if not isinstance(rows, dict):
+        return False
+    return any(
+        isinstance(row, dict) and (row.get("usage_level") in USAGE_LEVELS or row.get("top_tier") is True)
+        for row in rows.values()
+    )
+
+
+def _indicates_window_plan(info: Any) -> bool:
+    """True when a local JWT snapshot or this profile's cached catalog proves a usage-window plan."""
+    if _get(info, "is_anonymous_tier") is True or _get(info, "account_tier") == "anonymous":
+        return False
+    raw_claims = _get(info, "raw_claims")
+    if isinstance(raw_claims, dict) and raw_claims.get("usage_window") is True:
+        return True
+    if _get(info, "source") == "jwt":
+        return catalog_marks_window_plan(_nous_catalog(fetch=False))
+    return False
+
+
 def nous_picker_usage(*, warm: bool = False, any_age: bool = False) -> Optional[PickerUsage]:
     """PickerUsage from the portal account snapshot. Cache-only by default so a picker never adds a
     round trip; ``warm=True`` fetches once (fills the 60s cache) so a window plan is known
     on a cold start. ``any_age`` reads the last snapshot past the 60s TTL (plan-shape callers only:
     its percents may be stale). Never raises."""
     try:
-        from hermes_cli.nous_account import cached_nous_portal_account_info, get_nous_portal_account_info
-        if warm and cached_nous_portal_account_info() is None:
+        from hermes_cli import nous_account as na
+        if warm and na.cached_nous_portal_account_info() is None:
             # A known window plan needs a real fetch: the JWT snapshot carries no gauges and never fills the cache.
             from agent.credits_tracker import _window_seed_fields
-            on_window = _window_seed_fields(_get(cached_nous_portal_account_info(any_age=True), "usage_window")) is not None
-            get_nous_portal_account_info(force_fresh=on_window)
-        return picker_usage_from_account(cached_nous_portal_account_info(any_age=any_age))
+            stale = na.cached_nous_portal_account_info(any_age=True)
+            on_window = _window_seed_fields(_get(stale, "usage_window")) is not None
+            info = na.get_nous_portal_account_info(force_fresh=on_window)
+            matches_settled = (
+                stale is not None
+                and _get(stale, "source") == "account_api"
+                and getattr(na, "cached_nous_account_matches_jwt", lambda _i: False)(info)
+            )
+            if (
+                not on_window
+                and na.cached_nous_portal_account_info() is None
+                and not matches_settled
+                and _indicates_window_plan(info)
+            ):
+                info = na.get_nous_portal_account_info(force_fresh=True)
+            if na.cached_nous_portal_account_info(any_age=any_age) is None and _get(info, "source") == "account_api":
+                return picker_usage_from_account(info)
+        return picker_usage_from_account(na.cached_nous_portal_account_info(any_age=any_age))
     except Exception:
         logging.getLogger(__name__).debug("Nous plan usage unavailable", exc_info=True)
         return None

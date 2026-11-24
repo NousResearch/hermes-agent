@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
+import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import {
   DEFAULT_REASONING_EFFORT,
   planBlocks,
@@ -8,7 +8,6 @@ import {
   usageTag
 } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
 import {
   createContext,
   Fragment,
@@ -44,11 +43,12 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderMatches } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
+import { useModelOptionsQuery } from '@/lib/use-model-options-query'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
@@ -278,15 +278,7 @@ export function ModelCatalogMenu({
   // the kanban override all show the same Favorites section.
   const favoriteKeys = useStore($favoriteModels)
 
-  const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    // Gateway-first even with no session: a connected (possibly remote)
-    // gateway owns the model catalog, including virtual providers the local
-    // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId }),
-    refetchOnMount: query => nousRefetchOnMount(query.state.data),
-    refetchInterval: query => nousPricingPoll(query.state.data, query.state.dataUpdateCount)
-  })
+  const modelOptions = useModelOptionsQuery({ gateway, ownerConnectionId, profile, request, sessionId })
 
   const loading = modelOptions.isPending && !modelOptions.data
 
@@ -1452,28 +1444,6 @@ function groupModels(
   groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
 
   return groups
-}
-
-// The Nous row: the only one the menu re-reads on open or while its pricing warms (window-plan labels).
-function isNous(provider: ModelOptionProvider): boolean {
-  return provider.slug === 'nous'
-}
-
-// Nous only: re-read on every open (cached list shows instantly, the re-read swaps in when it
-// lands). The plan (usage-window labels, used-up notes) loads with the first turn, after the
-// list was first fetched at boot, so the 60s cache would hide it until "Refresh models".
-// A cheap local cache-only read (the plan may not be known yet, so any Nous row); every other
-// provider keeps the 60s cache.
-function nousRefetchOnMount(data: ModelOptionsResult | undefined): 'always' | true {
-  return data?.providers?.some(isNous) ? 'always' : true
-}
-
-// A cache-only open on a fresh backend ships rows marked pending while pricing warms in the
-// background; re-read a few times so window-plan labels appear without "Refresh models".
-// Bounded (~10s): a failed pricing fetch can leave rows pending, and an open menu must not
-// poll forever. Only runs while the menu is mounted and a row is pending.
-function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number): false | number {
-  return updates < 6 && data?.providers?.some(p => isNous(p) && p.pricing_pending) ? 2_000 : false
 }
 
 // Window plans: the plan's featured picks lead (the backend lists them first). Re-applied after the

@@ -18,6 +18,7 @@ import json
 import os
 import random
 import re
+import socket
 import sys
 import time
 import uuid
@@ -29,6 +30,7 @@ from urllib.parse import urlparse
 # Optional: prefer `requests` if installed (better redirects, streaming, header handling)
 try:
     import requests  # type: ignore[import-not-found]
+    import urllib3  # type: ignore[import-not-found]
     HAS_REQUESTS = True
 except ImportError:  # pragma: no cover - exercised via stdlib fallback
     HAS_REQUESTS = False
@@ -50,6 +52,11 @@ DEFAULT_RETRIES = 3                # total attempts including the first
 RETRY_BASE_DELAY = 1.0             # seconds — exponential backoff base
 RETRY_MAX_DELAY = 30.0             # seconds — cap on backoff
 RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504, 522, 524}
+# Answers that say the request was not processed, so even a workflow
+# submission may be sent again. 5xx gateway/origin errors (500, 502, 504, 524)
+# can follow a request the server already queued, so submissions never replay them.
+NOT_PROCESSED_STATUS_CODES = {408, 429, 503, 522}
+_REPLAYABLE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 # Streaming download chunk size (bytes)
 DOWNLOAD_CHUNK_SIZE = 1 << 16  # 64 KiB
@@ -415,6 +422,10 @@ class HTTPResponse:
         return json.loads(self.body.decode("utf-8", errors="replace"))
 
 
+class RequestNotSent(ConnectionError):
+    """The connection failed before any request bytes left (refused, DNS, connect timeout)."""
+
+
 def _sleep_backoff(attempt: int, base: float = RETRY_BASE_DELAY, cap: float = RETRY_MAX_DELAY) -> None:
     """Sleep with full-jitter exponential backoff."""
     delay = min(cap, base * (2 ** attempt))
@@ -440,10 +451,14 @@ def http_request(
     """Single entry point for all HTTP traffic.
 
     Behavior:
-      - Retries only bodyless GET/HEAD/OPTIONS on connection errors and HTTP
-        statuses in RETRY_STATUS_CODES, with exponential backoff + jitter.
-        Other requests get one attempt: losing a response does not prove the
-        server rejected a submission, and upload streams may already be consumed.
+      - Bodyless GET/HEAD/OPTIONS retry on connection errors and HTTP statuses
+        in RETRY_STATUS_CODES, with exponential backoff + jitter.
+      - Other requests (workflow submissions) retry only when the request
+        provably was not processed: RequestNotSent or a status in
+        NOT_PROCESSED_STATUS_CODES. A timeout or dropped connection after
+        sending is an unknown outcome — the job may be queued — so it is
+        raised, never replayed. Multipart uploads never retry: their file
+        stream is consumed by the first attempt.
       - For cross-host redirects, drops Authorization-style headers (so signed
         URLs don't leak the API key to S3/CloudFront).
       - When `stream=True` and `sink` is a Path, streams the response body to
@@ -466,9 +481,10 @@ def http_request(
             )
 
     # client_id routes events, but does not deduplicate workflow submissions.
-    if method.upper() not in {"GET", "HEAD", "OPTIONS"} or any(
-        body is not None for body in (json_body, data, files, form)
-    ):
+    replayable = method.upper() in _REPLAYABLE_METHODS and all(
+        body is None for body in (json_body, data, files, form)
+    )
+    if files is not None or form is not None:
         retries = min(retries, 1)
 
     last_exc: Exception | None = None
@@ -480,13 +496,14 @@ def http_request(
                 timeout=timeout, follow_redirects=follow_redirects,
                 stream=stream, sink=sink,
             )
-            if resp.status in RETRY_STATUS_CODES and attempt + 1 < retries:
+            retry_codes = RETRY_STATUS_CODES if replayable else NOT_PROCESSED_STATUS_CODES
+            if resp.status in retry_codes and attempt + 1 < retries:
                 _sleep_backoff(attempt)
                 continue
             return resp
         except (TimeoutError, ConnectionError, OSError) as e:
             last_exc = e
-            if attempt + 1 < retries:
+            if attempt + 1 < retries and (replayable or isinstance(e, RequestNotSent)):
                 _sleep_backoff(attempt)
                 continue
             raise
@@ -572,6 +589,12 @@ def _http_once(
             except requests.exceptions.RequestException as e:
                 # Convert to TimeoutError / ConnectionError so the retry loop
                 # picks them up uniformly with the stdlib path.
+                if isinstance(e, requests.exceptions.ConnectTimeout) or (
+                    isinstance(e, requests.exceptions.ConnectionError)
+                    and e.args and isinstance(getattr(e.args[0], "reason", None),
+                                              urllib3.exceptions.NewConnectionError)
+                ):
+                    raise RequestNotSent(str(e)) from e
                 if isinstance(e, requests.exceptions.Timeout):
                     raise TimeoutError(str(e)) from e
                 raise ConnectionError(str(e)) from e
@@ -618,6 +641,12 @@ def _http_once(
             body=e.read() or b"",
             url=getattr(e, "url", url),
         )
+    except urllib.error.URLError as e:
+        # Refused or unresolvable: no byte was sent. A timeout here is ambiguous
+        # (connect or read), so it stays a plain unknown-outcome error.
+        if isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
+            raise RequestNotSent(str(e)) from e
+        raise
 
     final_url = resp.geturl()
     final_status = resp.status

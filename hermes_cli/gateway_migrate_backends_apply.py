@@ -61,9 +61,13 @@ MANIFEST_NAME = "backend_migration.json"
 BACKUP_DIR = "backend_migration"
 #: Upper bound for the new gateway to answer on every address. A good run passes as soon as it answers
 #: (the whole outage was 3.4 to 8.5 s on the Linux and macOS test guests); only a failing run waits the
-#: whole budget, with the old address dark, before it rolls back. It stays at 90 s so a slow first start
-#: (a small ARM board, a cold disk) is not rolled back as a failure.
-VERIFY_SECONDS = 90.0
+#: whole budget, with the old address dark, before it rolls back. It is generous because this is the
+#: floor for the whole boot: a busy multi-profile home prints its startup banner 56-92 s before it
+#: finishes, and a first start on a small ARM board or a cold disk is slower still.
+VERIFY_SECONDS = 300.0
+#: Upper bound for ``start_gateway`` to hand over to a replacement process (see :func:`_await_replacement`).
+#: Advisory: past it the verify step still decides, so a slow hand-off costs time, never correctness.
+RESTART_HANDOFF_SECONDS = 240.0
 ROLLBACK_VERIFY_SECONDS = 60.0
 FINAL_STATES = frozenset({"done", "rolled_back", "restored"})
 RESTORE_STEPS = ("stop_gateway", "restore_files", "restore_gateway_service", "start_old_backend",
@@ -272,7 +276,7 @@ def gateway_serving(host, manifest: dict) -> Optional[str]:
         status = host.gateway_status(dial, port)  # the gateway's /api/status: the plan's probe has no state
         if status is None:
             return f"no HTTP 200 on {format_address(dial, port)}/api/status"
-        if status.get("gateway_state") != "running":
+        if status.get("gateway_state") not in ("running", "degraded"):
             return f"{format_address(dial, port)}/api/status says gateway_state={status.get('gateway_state')!r}"
         statuses.append(status)
     status = statuses[0]
@@ -298,6 +302,26 @@ def _wait_port_free(host, manifest: dict) -> None:
     dial, port = _old_host(manifest), manifest["dial"]["old_port"]
     if not _wait(host, 30, lambda: not host.port_in_use(dial, port)):
         raise StepFailed(f"port {port} is still held after the old backend stopped")
+
+
+def _replaced(host, before_pid: Optional[int]) -> bool:
+    pid = host.gateway_pid()
+    return pid is not None and pid != before_pid
+
+
+def _await_replacement(host, before_pid: Optional[int]) -> None:
+    """Wait for ``start_gateway``'s restart to reach a REPLACEMENT process before the verify clock runs.
+
+    ``gateway_verb("restart")`` only *requests* the restart: a supervised gateway drains in-band and its
+    API keeps answering ``503 gateway_draining`` until it exits, so verification used to spend its whole
+    budget watching the very process it is replacing (376 s once, held open by the caller's own turn).
+    Advisory — verify stays the arbiter, so a hand-off that never lands only costs time.
+    """
+    if _replaced(host, before_pid):
+        return
+    if not _wait(host, RESTART_HANDOFF_SECONDS, lambda: _replaced(host, before_pid)):
+        print(f"⚠ gateway PID {before_pid} did not hand over within {RESTART_HANDOFF_SECONDS:.0f}s "
+              "— verifying anyway")
 
 
 def _ensure_gateway_service(host, gw_before: dict) -> None:
@@ -383,7 +407,11 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
         _stop_stray_gateway(run)
     run.step("stop_old_backend", "done")
     run.step("start_gateway")
-    host.gateway_verb("restart" if m["gateway"]["active"] else "start")
+    was_active = m["gateway"]["active"]
+    before_pid = host.gateway_pid() if was_active else None
+    host.gateway_verb("restart" if was_active else "start")
+    if was_active:
+        _await_replacement(host, before_pid)
     run.step("start_gateway", "done")
     run.step("verify")
     why: list[Optional[str]] = [None]

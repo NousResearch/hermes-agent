@@ -1,6 +1,6 @@
 name: google-meet
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 04d928e367e05c166cf3a28f8916ef0199320532
+sha: 52bb918cac89ffb8d9454aba8edd21d1062003e5
 subdir: google-meet
 description: 'Google Meet for Hermes: the agent joins a meet.google.com call you give it (meet_join),
   scrapes live captions into a transcript (meet_status, meet_transcript), can speak in the call in
@@ -10,8 +10,9 @@ description: 'Google Meet for Hermes: the agent joins a meet.google.com call you
   migrated automatically. Disclosure: Python dependencies playwright and websockets; `hermes meet
   install` downloads Chromium through Hermes and, with --realtime, asks before running apt-get or brew
   for audio tools. The bot opens Google Meet in headless Chromium (optionally signed in with a Google
-  session you save via `hermes meet auth`, stored in your profile). Captions stay in your profile''s
-  meetings folder and reach your model only as tool output. Realtime mode streams call audio and the
+  session you save via `hermes meet auth`, stored in your profile). The bot stores captions in its
+  profile''s meetings folder: on your machine in local mode, on the remote node in remote mode, where a
+  requested transcript comes back over the node''s WebSocket. Captions reach your model as tool output. Realtime mode streams call audio and the
   agent''s replies to the OpenAI Realtime API with HERMES_MEET_REALTIME_KEY or OPENAI_API_KEY. A remote
   node is reached over a WebSocket you approve with a shared token.'
 maintainer: NousResearch
@@ -19,7 +20,7 @@ tier: official
 category: general
 requires_hermes: ">=0.21.7"
 version: "0.3.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/04d928e367e05c166cf3a28f8916ef0199320532/assets/google-meet.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/52bb918cac89ffb8d9454aba8edd21d1062003e5/assets/google-meet.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet
 platforms:
   - linux

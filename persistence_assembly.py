@@ -149,17 +149,18 @@ def _provider_for_home(home: Path) -> str:
         section = load_config_readonly().get("persistence")
     else:
         config_path = home / "config.yaml"
-        if config_path.exists():
-            from utils import load_yaml_file_readonly
+        # No ``exists()`` pre-check: the read already raises ``FileNotFoundError`` into the ``except`` below,
+        # which means the default provider — one stat instead of two per call on a ~590/min path.
+        from utils import load_yaml_file_readonly
 
-            try:
-                # mtime-cached: the change watcher calls this several times a second across every
-                # served home, and an unchanged profile must not re-parse its YAML each time (#159451).
-                loaded = load_yaml_file_readonly(config_path)
-            except Exception:  # health: allow BLE001 -- an unreadable foreign config means the default provider
-                loaded = None
-            if isinstance(loaded, dict):
-                section = loaded.get("persistence")
+        try:
+            # mtime-cached: the change watcher calls this several times a second across every served home,
+            # and an unchanged profile must not re-parse its YAML each time (#159451).
+            loaded = load_yaml_file_readonly(config_path)
+        except Exception:  # health: allow BLE001 -- an unreadable or missing foreign config means the default
+            loaded = None
+        if isinstance(loaded, dict):
+            section = loaded.get("persistence")
     provider = "sqlite"
     if isinstance(section, dict) and section.get("provider"):
         provider = str(section["provider"])

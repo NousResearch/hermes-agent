@@ -153,7 +153,10 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
                 "rotating to another entry, or allowing fallback to activate.",
                 _MAX_AUTH_REFRESH_ATTEMPTS, entry_id or credential_id)
         label = "auth persists after refresh" if capped else "auth refresh failed"
-        return (True, False) if rotate_and_swap(401, label) else (False, has_retried_429)
+        # The capped row's grant just minted tokens: a terminal-looking 401 reason (Codex
+        # ``token_invalidated``) names the access token, so the bench must not mark the row DEAD.
+        context = {k: v for k, v in (error_context or {}).items() if k != "reason"} if capped else None
+        return (True, False) if rotate_and_swap(401, label, context) else (False, has_retried_429)
     refreshed_id = getattr(refreshed, "id", None)
     if nous:
         episode = _episode(agent, provider, refreshed_id or entry_id)

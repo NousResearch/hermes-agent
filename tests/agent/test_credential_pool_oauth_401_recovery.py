@@ -227,6 +227,20 @@ class TestRefreshCap:
         assert _two_refreshes_then_401(child) == (False, False)
         assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1"]
 
+    def test_a_token_invalidated_401_at_the_cap_benches_the_row_without_killing_its_grant(
+        self, endpoint, fake_pool_store,
+    ):
+        pool = CredentialPool("anthropic", [_row("claude-3"), _row("claude-4", priority=1)])
+        child = _DelegatedChild(pool, "claude-3")
+        invalidated = {"reason": "token_invalidated", "message": "Your authentication token has been invalidated."}
+
+        for _ in range(3):
+            assert recover_with_credential_pool(
+                child, status_code=401, has_retried_429=False, error_context=invalidated) == (True, False)
+
+        assert child._credential_pool_entry_id == "claude-4"
+        assert _status(pool, "claude-3") == STATUS_EXHAUSTED
+
     def test_issue_timeline_401s_ten_minutes_apart_keep_refreshing(self, endpoint, fake_pool_store, monkeypatch):
         import types
         import agent.credential_auth_recovery as rec
@@ -294,3 +308,20 @@ def test_a_truncated_reply_ends_the_episode_before_its_continuation(endpoint, fa
     assert verdict.action == "continue"
     assert _on_401(child) == (True, False)
     assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]
+
+
+@pytest.mark.parametrize("provider,source", [
+    ("anthropic", "manual:hermes_pkce"), ("anthropic", "claude_code"), ("openai-codex", "device_code"), ("nous", "device_code"),
+])
+def test_a_capped_refresh_never_reaches_the_post_on_any_provider_branch(
+    provider, source, fake_pool_store, monkeypatch, tmp_path,
+):
+    from dataclasses import replace
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    posted = []
+    monkeypatch.setattr(CredentialPool, "_refresh_entry_impl", lambda self, entry, **_: posted.append(entry.id))
+    row = replace(_row("claude-3"), provider=provider, source=source)
+    pool = CredentialPool(provider, [row])
+
+    assert pool.try_refresh_matching(api_key_hint=row.runtime_api_key, credential_id=row.id, allow_post=False) is None
+    assert posted == []

@@ -592,12 +592,12 @@ def recover_with_credential_pool(
     if effective_reason is None:
         effective_reason = _STATUS_TO_FAILOVER_REASON.get(status_code)
 
-    def _rotate_and_swap(default_status: int, label: str) -> bool:
+    def _rotate_and_swap(default_status: int, label: str, context: Optional[dict[str, Any]] = None) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
             "status_code": rotate_status,
-            "error_context": error_context,
+            "error_context": error_context if context is None else context,
             "api_key_hint": api_key_hint,
         }
         if credential_id:

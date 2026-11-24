@@ -171,12 +171,18 @@ def test_the_plugin_guides_lineage_read_gives_the_root_first_on_a_read_only_hand
     store.sessions.end("mid", "compression")
     seed_session(store, "tip", "telegram", parent_session_id="mid")
     seed_messages(store, "tip", {"role": "user", "content": "c"})
+    seed_session(store, "tool-root", "tool")
+    seed_messages(store, "tool-root", {"role": "user", "content": "d"})
+    store.sessions.end("tool-root", "compression")
+    seed_session(store, "tool-tip", "tool", parent_session_id="tool-root")
+    seed_messages(store, "tool-tip", {"role": "user", "content": "e"})
 
     with open_persistence_reader(profile_scope().profile_dir) as reader:
         assert reader.lineage.lineage("tip") == ("root", "mid", "tip")
         assert reader.lineage.lineage("mid")[0] == "root"
         assert reader.lineage.lineage("s1") == ("s1",)
         assert reader.lineage.lineage("no-such-session") == ()
+        assert reader.lineage.lineage("tool-tip") == ("tool-tip",)  # a tool run is read as a fork
     with pytest.raises(AttributeError, match="hermes_state-deprecated-use-the-storage-interface"):
         legacy.get_compression_lineage("tip")
 

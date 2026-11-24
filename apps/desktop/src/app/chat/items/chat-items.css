@@ -11,6 +11,22 @@
   color: var(--portal-text-primary);
 }
 
+/* The pane is narrow in any window, so its tabs are one sideways-scrolling row at their own widths,
+   as a page's are on a phone (portal-page-header.css). */
+.chat-items-pane .portal-page-tabs-list {
+  display: flex;
+  width: auto;
+  overflow: auto hidden;
+  scrollbar-width: none;
+  /* Room inside the scroller for the tabs' 1px overlap of the rule under them. */
+  margin-bottom: -1px;
+  padding-bottom: 1px;
+}
+
+.chat-items-pane .portal-page-tabs-list > [role='tab'] {
+  flex: none;
+}
+
 .chat-items-head {
   display: flex;
   align-items: center;

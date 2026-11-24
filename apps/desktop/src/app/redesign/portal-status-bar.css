@@ -89,7 +89,7 @@
   padding: 0 0.375rem;
   border-radius: var(--portal-radius-surface);
   background: var(--portal-status-chip-fill);
-  color: var(--portal-text-tertiary);
+  color: var(--portal-text-secondary);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-micro-size);
 }
@@ -104,7 +104,8 @@
   color: var(--ui-text-primary);
 }
 
-/* The toggle (Footer toggle / pixel 1265:8520): a bare 13px glyph at the open bar's end. */
+/* The toggle (Footer toggle / pixel 1265:8520): a 13px glyph at the open bar's end, on a chip like
+   the readouts beside it. Figma draws it bare, in chrome ink: over the artwork nobody found it. */
 :root[data-shell='portal'] [data-slot='portal-status-bar-toggle'] {
   display: grid;
   flex: none;
@@ -112,7 +113,8 @@
   height: var(--portal-status-bar-height);
   place-items: center;
   border-radius: var(--portal-radius-surface);
-  color: var(--portal-text-chrome);
+  background: var(--portal-status-chip-fill);
+  color: var(--portal-text-secondary);
   cursor: pointer;
 }
 
@@ -130,7 +132,6 @@
 /* Collapsed, it is a chip of its own floating over the frame (1264:40699). */
 :root[data-shell='portal'] [data-slot='portal-status-bar']:not([data-open]) [data-slot='portal-status-bar-toggle'] {
   border: 1px solid var(--ui-stroke-secondary);
-  background: var(--portal-status-chip-fill);
   box-shadow: var(--portal-shadow-settings-link);
   backdrop-filter: blur(8px);
 }

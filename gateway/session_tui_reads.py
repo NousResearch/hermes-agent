@@ -12,6 +12,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections import Counter
+from pathlib import Path
+
+from gateway.session_persistence import authority_persistence
+from persistence.conversation.messages import ConversationRequest
 
 # The TUI surfaces whose /status and /context read as main's TUI sidecar did.
 _TUI_SOURCES = frozenset({'tui'})
@@ -30,9 +34,20 @@ def tui_read(policy, name: str, arg: str):
 
 def _stored_id(authority, ref) -> str:
     with contextlib.suppress(Exception):
-        from hermes_state_local import local_receipt
-        return local_receipt(authority.db, ref.session_id)['entry']['session_id'] or ref.session_id
+        return authority_persistence(authority).bindings.receipt(ref.session_id).entry['session_id'] or ref.session_id
     return ref.session_id
+
+
+def _context_id(authority, ref) -> str:
+    """The compression tip the session's model context lives in; the runtime id may still name a parent."""
+    return authority_persistence(authority).lineage.tip(_stored_id(authority, ref))
+
+
+def _model_history(store, tip) -> list:
+    """The tip's working context: its active rows as live replay loads them, minus the ``session_meta``
+    bookkeeping the gateway strips before the model sees history. Superseded segments are not read."""
+    return [m.as_openai_message() for m in store.messages.read_conversation(
+        tip, ConversationRequest(repair_alternation=True, include_row_ids=True)) if m.role != 'session_meta']
 
 
 def _status(authority, ref, live, policy, agent, arg) -> str:
@@ -42,13 +57,20 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
     stored = _stored_id(authority, ref)
     row = {}
     with contextlib.suppress(Exception):
-        row = authority.db.get_session(stored) or {}
+        if (record := authority_persistence(authority).sessions.get(stored)) is not None:
+            row = {'started_at': record.started_at, 'last_activity_at': record.last_activity_at, 'title': record.title}
     running = authority._handle(ref).execution_state != 'idle'
     fields = build_status_fields(
         stored, agent, row, model=policy.current_model(authority) if agent is None else None,
         provider=policy.provider if agent is None else None,
         tokens=getattr(agent, 'session_total_tokens', 0) if agent is not None else None,
         agent_running=running, home=authority.profile_id)
+    if fields['provider'] == 'custom':  # the adapter's billing class: show the entry the session runs on
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.runtime_provider_custom import session_provider_identity
+        with _profile_runtime_scope(Path(authority.profile_id)):
+            fields['provider'] = session_provider_identity('custom', getattr(agent, 'requested_provider', None),
+                getattr(agent, 'base_url', None) or policy.base_url, fields['model'])
     project = server._project_info_for_cwd(policy.cwd)
     return '\n'.join([
         'Hermes TUI Status', '', *status_lines(fields, 'session_id', 'path'),
@@ -59,10 +81,11 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
 def _context(authority, ref, live, policy, agent, arg) -> str:
     """Main's ``_format_live_context_output``: counts by role, model/provider, then the category
     table off the live agent (``render_context_breakdown_lines(grid=False)``), else the stored usage."""
-    stored = _stored_id(authority, ref)
+    stored = _context_id(authority, ref)
     rows = []
     with contextlib.suppress(Exception):
-        rows = authority.db.get_messages_as_conversation(stored, include_ancestors=True, include_row_ids=True)
+        rows = [m.as_openai_message() for m in authority_persistence(authority).messages.read_conversation(
+            stored, ConversationRequest(include_lineage=True, include_row_ids=True))]
     from gateway.session_controls import display_projection
     messages = display_projection(rows, authority.profile_id) if rows else []
     breakdown: list[str] = []
@@ -70,8 +93,7 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
         with contextlib.suppress(Exception):
             from agent.context_breakdown import (
                 compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines)
-            conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
-            payload = compute_session_context_breakdown(agent, conversation)
+            payload = compute_session_context_breakdown(agent, _model_history(authority_persistence(authority), stored))
             details = None
             if arg.strip().lower() in {'all', 'full', 'details'}:
                 with contextlib.suppress(Exception):
@@ -112,50 +134,83 @@ async def run_tui_read(authority, ref, live, policy, render, arg) -> dict:
 
 async def context_breakdown(connection, ref, params) -> dict:
     """``session.context_breakdown`` on the owner: the category estimate (``compute_session_context_
-    breakdown``) and context-file manifest of this session's resident agent over its stored
-    transcript, built in the session's workspace. Before the agent exists: empty categories plus the
-    session's stored usage (the contract's pre-build shape)."""
+    breakdown``) and context-file manifest of this session's resident agent over its compression tip's
+    model history, built in the session's workspace. With no resident agent (not run since the gateway
+    started, or reaped): the same categories from what the session froze (``_stored_breakdown``) beside
+    its stored usage."""
     from gateway.session_busy_controls import authorize
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     authorize(connection, ref, params, 'session:read')
     authority = connection.authority
     live = authority.sessions.get(ref.session_id)
     if live is None:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     agent = authority.agent(ref)
+    usage = None
     if agent is None:
         from gateway.session_usage import stats
         usage = await stats(connection, ref, {'session_id': ref.session_id})
         usage = usage.get('usage') if isinstance(usage.get('usage'), dict) else usage
-        return {'categories': [], 'context_max': int(usage.get('context_max') or 0),
-                'context_percent': int(usage.get('context_percent') or 0),
-                'context_used': int(usage.get('context_used') or 0), 'estimated_total': 0,
-                'context_estimated': bool(usage.get('context_estimated', False)),
-                'context_source': str(usage.get('context_source') or 'provider_usage'),
-                'model': str(usage.get('model') or '')}
     from gateway.session_authorities import owner_scope
     from gateway.session_commands import _session_workspace
-    stored = _stored_id(authority, ref)
 
     def build():
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
+        store = authority_persistence(authority)
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
+            tip = _context_id(authority, ref)
+            # Agentless, the categories come from the frozen prompt and tools pin, which a compute worker
+            # can rewrite (session.prompt / session.tools) without moving the transcript.
+            row = None if agent is not None else store.sessions.get(tip)
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
-            key = (id(agent), _agent_context_marks(agent),
-                   authority.db.conversation_revision(stored, include_ancestors=True))
+            key = (id(agent), _agent_context_marks(agent), store.messages.conversation_revision(tip),
+                   *((row.system_prompt, row.tool_pin, row.prompt_cache_clock, row.model, row.model_config)
+                     if row is not None else (None,) * 5))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
-            conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
-            payload = compute_session_context_breakdown(agent, conversation)
-            payload['context_files'] = context_file_sources_for_agent(agent)
+            conversation = _model_history(store, tip)
+            if agent is None:
+                payload = _stored_breakdown(row, conversation, usage, tip=tip, store=store)
+            else:
+                payload = compute_session_context_breakdown(agent, conversation)
+                payload['context_files'] = context_file_sources_for_agent(agent)
             live.context_breakdown = (key, payload)
             return dict(payload)
     return await asyncio.to_thread(build)
+
+
+def _stored_breakdown(row, conversation, usage, *, tip, store) -> dict:
+    """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin (*row*, a
+    ``SessionRecord`` or None), beside its stored usage and saved prompt-cache clock. Tools are measured as
+    the next agent restores them (``pinned_tool_defs``); a pin hash whose row was swept reads as no pin."""
+    from agent.context_breakdown import stored_context_breakdown
+    from agent.prompt_cache_clock import current_generation, stored_cache_window
+    from tools.mcp_tool_agent import pinned_tool_defs
+    breakdown = {'categories': [], 'estimated_total': 0}
+    # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.
+    if prompt := (row.system_prompt if row is not None else None):
+        breakdown = stored_context_breakdown(prompt, pinned_tool_defs(row.tool_pin), conversation)
+    return {**breakdown, 'context_max': int(usage.get('context_max') or 0),
+            'context_percent': int(usage.get('context_percent') or 0), 'context_used': int(usage.get('context_used') or 0),
+            'context_estimated': bool(usage.get('context_estimated', False)),
+            'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or ''),
+            'prompt_cache': stored_cache_window(row.prompt_cache_clock if row is not None else None, session_id=tip,
+                                                generation=current_generation(store.usage, tip),
+                                                saved_route=_saved_route(row))}
+
+
+def _saved_route(row) -> tuple:
+    """``(provider, base_url, model)`` as the row persists them (``session.mutate`` writes the model and
+    ``model_config.provider``; ``update_session_model`` also the base_url)."""
+    if row is None:
+        return None, None, None
+    config = row.model_config
+    return config.get('provider'), config.get('base_url'), row.model
 
 
 def _agent_context_marks(agent) -> tuple:

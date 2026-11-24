@@ -24,7 +24,8 @@ import agent.conversation_compression as cc
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor import SUMMARY_PREFIX, pin_summary_route
 from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 CHAIN_ENTRY = {
     "provider": "custom", "model": "backup-summarizer", "base_url": "https://fallback.invalid/v1",
@@ -33,15 +34,15 @@ CHAIN_ENTRY = {
 
 
 def _make_agent(tmp_path, tag):
-    db = SessionDB(db_path=Path(tmp_path) / f"state-{tag}.db")
+    db = storage_handle(Path(tmp_path) / f"home-{tag}")
     session_id = f"STALL_DETERMINISTIC_{tag}"
-    db.create_session(session_id, source="cli")
+    seed_session(db, session_id, "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=db, session_id=session_id, skip_context_files=True, skip_memory=True,
+            persistence=db, session_id=session_id, skip_context_files=True, skip_memory=True,
         )
     agent._compression_feasibility_checked = True
     agent.compression_in_place = True
@@ -121,7 +122,7 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
         # that makes escalation harder (e.g. a threshold of 3) from satisfying itself.
         compressor._consecutive_timeout_failures = 1
         compressor._summary_failure_cooldown_until = 0.0
-        compressor._session_db.clear_compression_failure_cooldown(compressor._session_id)
+        compressor._session_db.messages.clear_compression_cooldown(compressor._session_id)
         calls.clear()
         second, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
 

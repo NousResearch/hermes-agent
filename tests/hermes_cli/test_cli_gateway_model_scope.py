@@ -392,6 +392,55 @@ def test_a_once_pick_refused_as_session_busy_rides_the_resend(monkeypatch):
     assert (stub.model, stub.agent.model) == ("old/model", "old/model")
 
 
+class LostTurnConnection(RecordingConnection):
+    """The owner restarted mid-turn and fenced ``adm-lost`` unknown; ``/discard`` resolves it."""
+
+    def __init__(self, info):
+        super().__init__(info)
+        self.pending = [{"admission_id": "adm-lost", "status": "unknown", "execution_generation": 4}]
+        self._state.pending = list(self.pending)
+
+    def reattach(self, session_id, abandon=None):
+        snapshot = self.call("session.resume", session_id=session_id)
+        self._state.adopt_snapshot(snapshot)
+        return snapshot
+
+    def call(self, method, *, timeout=None, **params):
+        if method == "session.resume":
+            return {**super().call(method, timeout=timeout, **params), "pending": list(self.pending)}
+        if method == "prompt.resolve_unknown":
+            self.calls.append((method, params))
+            self.pending = []
+            return {}
+        return super().call(method, timeout=timeout, **params)
+
+
+def test_a_prompt_refused_behind_a_lost_turn_leaves_its_turn_for_the_resend(monkeypatch):
+    """Review of #143595: the refusal admitted nothing, so after /discard the resend carries the
+    /model --once pick and its note, and the CLI's history holds the prompt once, as the owner's does."""
+    conn = LostTurnConnection({"model": "old/model", "provider": "openrouter"})
+    cli_mod, stub, _printed = _chat_cli(monkeypatch, conn)
+    stub._chat_stage_user_message = cli_mod.HermesCLI._chat_stage_user_message.__get__(stub)
+    stub._chat_settle_turn = cli_mod.HermesCLI._chat_settle_turn.__get__(stub)
+    stub._flush_stream = lambda: None
+    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    cli_mod.HermesCLI._handle_model_switch(stub, "/model claude-sonnet-4.6 --provider anthropic --once")
+    note = stub._pending_model_switch_note
+
+    stub.chat("second ask")  # refused with the /discard banner
+    assert not _submits(conn)
+    cli_mod.HermesCLI._handle_discard_command(stub, "/discard adm-lost")
+    assert stub.chat("second ask") == "ok"
+    assert stub.chat("the turn after") == "ok"
+
+    resend, after = _submits(conn)
+    assert resend.get("model_override") == {"model": "claude-sonnet-4.6", "provider": "anthropic"}, resend
+    assert note and note in resend.get("api_text", ""), resend
+    assert "model_override" not in after, after
+    users = [m["content"] for m in stub.conversation_history if m["role"] == "user"]
+    assert users == ["second ask", "the turn after"], users
+
+
 def test_the_once_pick_is_taken_when_the_admission_is_built(monkeypatch):
     """dokterdok on #140969: consume the pick when the params are built, not in the call's ``finally``, so
     a second ``run_conversation`` submitting while the first ``prompt.submit`` is still blocked cannot carry

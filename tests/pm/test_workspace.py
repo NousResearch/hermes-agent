@@ -91,11 +91,248 @@ def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(lay
     assert "member-dep" in locked
 
 
+def test_plugin_workspace_solves_only_for_the_installing_interpreter(layout):
+    """A platform the install never runs on must not fail its solve.
+
+    uv fails the whole lock when one fork lacks wheels (onnxruntime and torch ship none for
+    Android), so a desktop update evicted mnemosyne over Android (#143254, #143305, #144003).
+    Core's own environment bounds still apply on top.
+    """
+    import tomllib
+
+    from packaging.markers import Marker, default_environment
+
+    tmp, core, plug_a, _ = layout
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", "[tool.uv]\nenvironments=[\"python_version >= '3.11'\"]\n", 1))
+    root = tmp / "workspace"
+    ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+
+    [solved] = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["environments"]
+    host = default_environment()
+    platforms = [p for p in ("android", "win32", "linux") if p != host["sys_platform"]]
+    machine = next(m for m in ("riscv64", "s390x") if m != host["platform_machine"])
+    for environment, expected in ((host, True), *(({**host, "sys_platform": p}, False) for p in platforms),
+                                  ({**host, "platform_machine": machine}, False),
+                                  ({**host, "python_version": "3.10"}, False)):
+        assert Marker(solved).evaluate(environment) is expected, environment
+
+
 
 
 
 
 # --- classified failures + staging surface (FINAL-RUNTIME-CONTRACT) ---
+
+
+def test_plugin_local_groups_do_not_constrain_runtime_workspace(layout):
+    """Local developer tools must not participate in the host's runtime lock."""
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\nfeature=["chosen-dep==1.0"]\n'
+        '[dependency-groups]\ndev=["base-dep==2.0"]\nlint=[{include-group="dev"}]\n'
+        '[tool.uv.dependency-groups]\ndev={requires-python=">=3.11"}\n')
+    metadata.write_text(metadata.read_text().replace('[tool.uv]\n',
+        '[tool.uv]\ndefault-groups=["dev"]\ndev-dependencies=["other-dep==2.0"]\n'
+        'conflicts=[[{group="dev"},{extra="feature"}]]\n', 1))
+    original = metadata.read_bytes()
+    root = tmp / "runtime-workspace"
+    environment = managed_environment(tmp / "runtime-env")
+    ws.lock_and_sync([plugin], ["feature"], root=root, source=core, seed_lock=None,
+                     environment=environment)
+    snapshot = next((root / "plugin-sources").iterdir())
+    projected = tomllib.loads((snapshot / "pyproject.toml").read_text())
+    assert "dependency-groups" not in projected
+    assert projected["project"]["dependencies"] == ["member-dep==1.0"]
+    assert projected["project"]["optional-dependencies"] == {"feature": ["chosen-dep==1.0"]}
+    assert not {"default-groups", "dev-dependencies", "dependency-groups", "conflicts"} & projected["tool"]["uv"].keys()
+    assert metadata.read_bytes() == original
+    locked = tomllib.loads((root / "uv.lock").read_text())["package"]
+    assert any(p["name"] == "base-dep" and p["version"] == "1.0" for p in locked)
+    assert any(p["name"] == "member-dep" for p in locked)
+
+    # A buildable member keeps its original package identity and runtime metadata too.
+    metadata.write_text(metadata.read_text() +
+        '\n[build-system]\nrequires=[]\nbuild-backend="local_backend"\n')
+    buildable_original = metadata.read_bytes()
+    buildable = ws._workspace_member(plugin, tmp / "buildable", identity=plugin)
+    built = tomllib.loads((buildable / "pyproject.toml").read_text())
+    assert built["project"]["name"] == "plugin-member"
+    assert "dependency-groups" not in built
+    assert built["project"]["dependencies"] == ["member-dep==1.0"]
+    assert metadata.read_bytes() == buildable_original
+
+    # Genuine published runtime conflicts still fail loudly; this is not a resolver bypass.
+    metadata.write_text(metadata.read_text().replace('dependencies=["member-dep==1.0"]',
+                                                     'dependencies=["base-dep==2.0"]'))
+    with pytest.raises(ws.ResolutionConflict):
+        ws.lock_and_sync([plugin], [], root=tmp / "conflicting-runtime", source=core,
+                         seed_lock=None, environment=managed_environment(tmp / "conflicting-env"))
+
+
+def test_unselected_plugin_extras_do_not_constrain_runtime_workspace(layout):
+    """A plugin's test extra conflicting with a core pin must not fail the lock (and so evict
+    the plugin on update): sync installs only the extras it names, so only those may reach it."""
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\ndev=["base-dep==2.0"]\nfeature=["chosen-dep==1.0"]\n')
+
+    def solve(name, extras):
+        root = tmp / name
+        ws.lock_and_sync([plugin], extras, root=root, source=core, seed_lock=None,
+                         environment=managed_environment(tmp / f"{name}-env"))
+        snapshot = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())
+        locked = {p["name"]: p["version"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+        return snapshot["project"].get("optional-dependencies"), locked
+
+    optional, locked = solve("unselected", [])
+    assert optional is None
+    assert locked["base-dep"] == "1.0" and "member-dep" in locked
+
+    optional, locked = solve("selected", ["feature"])
+    assert optional == {"feature": ["chosen-dep==1.0"]}
+    assert locked["base-dep"] == "1.0"
+
+
+def test_plugin_extras_its_own_requirements_name_stay_in_the_snapshot(layout):
+    """``plugin[runtime]`` in the plugin's own dependencies installs that extra on every sync."""
+    import tomllib
+
+    tmp, _, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text().replace(
+        'dependencies=["member-dep==1.0"]', 'dependencies=["member-dep==1.0", "Plugin_Member[Runtime]"]') +
+        '\n[project.optional-dependencies]\nruntime=["plugin-member[extra-io]"]\nextra_io=["other-dep==1.0"]\n'
+        'dev=["base-dep==2.0"]\n[build-system]\nrequires=[]\nbuild-backend="local_backend"\n')
+    member = ws._workspace_member(plugin, tmp / "buildable", identity=plugin)
+    optional = tomllib.loads((member / "pyproject.toml").read_text())["project"]["optional-dependencies"]
+    assert optional == {"runtime": ["plugin-member[extra-io]"], "extra_io": ["other-dep==1.0"]}
+
+
+def test_plugin_extras_named_only_for_another_platform_do_not_constrain_the_lock(layout):
+    """``plugin[windows]; sys_platform == 'win32'`` installs nothing on Linux, so a Windows-only
+    pin inside that extra must not fail the Linux lock (and evict the plugin on update)."""
+    import tomllib
+
+    from packaging.markers import default_environment
+
+    tmp, core, plugin, _ = layout
+    other = next(p for p in ("win32", "linux") if p != default_environment()["sys_platform"])
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\n'
+        f'runtime=["plugin-member[other]; sys_platform == {other!r}", "chosen-dep==1.0"]\n'
+        'other=["base-dep==2.0"]\n')
+    root = tmp / "workspace"
+    ws.lock_and_sync([plugin], ["runtime"], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+    snapshot = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())
+    # Still declared, so a build backend validating the reference accepts it, but empty.
+    assert snapshot["project"]["optional-dependencies"]["other"] == []
+    locked = {p["name"]: p["version"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+    assert locked["base-dep"] == "1.0" and "chosen-dep" in locked
+
+
+def test_sources_of_pruned_plugin_extras_and_groups_leave_with_them(layout):
+    """A source qualified by a dropped extra or group would name something the snapshot no
+    longer declares, and uv refuses the whole workspace for it; runtime sources survive."""
+    import json
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    wheel = json.dumps((tmp / "wheels" / "other_dep-1.0-py3-none-any.whl").as_posix())
+    chosen = json.dumps((tmp / "wheels" / "chosen_dep-1.0-py3-none-any.whl").as_posix())
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\nfeature=["other-dep==1.0"]\ndev=["other-dep==1.0"]\n'
+        'lint=["chosen-dep==1.0"]\n[dependency-groups]\ntest=["chosen-dep==1.0"]\n'
+        f'[tool.uv.sources]\nother-dep=[{{path={wheel},extra="feature"}},{{path={wheel},extra="dev"}}]\n'
+        f'chosen-dep=[{{path={chosen},extra="lint"}},{{path={chosen},group="test"}}]\n'
+        f'member-dep={{path={json.dumps((tmp / "wheels" / "member_dep-1.0-py3-none-any.whl").as_posix())}}}\n')
+    root = tmp / "workspace"
+    ws.lock_and_sync([plugin], ["feature"], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+    snapshot = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())
+    sources = snapshot["tool"]["uv"]["sources"]
+    assert sources["other-dep"] == [{"path": json.loads(wheel), "extra": "feature"}]
+    assert "chosen-dep" not in sources and "path" in sources["member-dep"]
+    locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+    assert {"other-dep", "member-dep"} <= locked
+
+
+def test_base_self_reference_gated_on_a_selected_extra_keeps_its_extra(layout):
+    """``plugin[feature]; extra == 'runtime'`` in the base dependencies installs ``feature``
+    whenever ``runtime`` is installed, so its pins must stay in the snapshot."""
+    import tomllib
+
+    from packaging.markers import default_environment
+
+    tmp, _, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text().replace(
+        'dependencies=["member-dep==1.0"]',
+        'dependencies=["member-dep==1.0", "plugin-member[feature]; extra == \'runtime\'", '
+        '"plugin-member[deep]; extra == \'feature\'"]') +
+        '\n[project.optional-dependencies]\nruntime=[]\n'
+        'feature=["chosen-dep==1.0"]\ndeep=["other-dep==1.0"]\ndev=["base-dep==2.0"]\n'
+        '[build-system]\nrequires=[]\nbuild-backend="local_backend"\n')
+    member = ws._workspace_member(plugin, tmp / "buildable", identity=plugin, extras=["runtime"],
+                                  target=dict(default_environment()))
+    optional = tomllib.loads((member / "pyproject.toml").read_text())["project"]["optional-dependencies"]
+    # ``deep`` is gated on ``feature``, which only the first reference brings in.
+    assert optional == {"runtime": [], "feature": ["chosen-dep==1.0"], "deep": ["other-dep==1.0"]}
+
+
+def test_virtual_plugin_self_reference_installs_its_own_extra_after_the_rename(layout):
+    """A virtual member is renamed ``hermes-plugin-<key>``; its ``own-name[extra]`` reference
+    must follow, or uv resolves the declared name as some other package from the index and
+    the extra the plugin asked for is never installed."""
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    # Declared under a name the index also serves, so the stale reference resolves silently.
+    metadata.write_text(metadata.read_text().replace('name="plugin-member"', 'name="other-dep"').replace(
+        'dependencies=["member-dep==1.0"]', 'dependencies=["member-dep==1.0", "Other_Dep[Runtime]>=0"]') +
+        '\n[project.optional-dependencies]\nruntime=["chosen-dep==1.0"]\n')
+    root = tmp / "workspace"
+    environment = managed_environment(tmp / "env")
+    ws.lock_and_sync([plugin], [], root=root, source=core, seed_lock=None, environment=environment)
+    from pm.environments import site_packages
+
+    installed = {p.name.split("-")[0] for p in site_packages(environment.destination).glob("*.dist-info")}
+    assert "chosen_dep" in installed and "other_dep" not in installed
+    project = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())["project"]
+    assert project["dependencies"] == ["member-dep==1.0", f"{project['name']}[Runtime]>=0"]
+
+
+def test_virtual_plugin_self_references_follow_the_rename_everywhere(layout):
+    """Extras, specifiers, markers and conflict entries keep their shape; only the name moves,
+    and the extras closure still sees the renamed references (marker-false extras stay empty)."""
+    import tomllib
+
+    tmp, _, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text().replace(
+        'dependencies=["member-dep==1.0"]', 'dependencies=["member-dep==1.0", "plugin_member[a]"]').replace(
+        '[tool.uv]\n', '[tool.uv]\nconflicts=[[{package="Plugin-Member",extra="a"},{extra="b"}]]\n', 1) +
+        '\n[project.optional-dependencies]\na=["plugin-member[b] ; python_version >= \'3\'"]\n'
+        'b=["chosen-dep==1.0"]\nunused=["base-dep==2.0"]\n')
+    member = ws._workspace_member(plugin, tmp / "virtual", identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text())
+    name = document["project"]["name"]
+    assert name.startswith("hermes-plugin-member-")
+    assert document["project"]["dependencies"] == ["member-dep==1.0", f"{name}[a]"]
+    assert document["project"]["optional-dependencies"] == {
+        "a": [f"{name}[b] ; python_version >= '3'"], "b": ["chosen-dep==1.0"]}
+    assert document["tool"]["uv"]["conflicts"] == [[{"package": name, "extra": "a"}, {"extra": "b"}]]
 
 
 def test_classify_network_failure_stays_generic():
@@ -112,7 +349,7 @@ def test_core_only_generation_carries_no_release_age_cutoff(layout):
     manifest = core / "pyproject.toml"
     manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer = "3 days"\n', 1))
     root = tmp / "workspace"
-    ws._generate_pyproject([], root, source=core)
+    ws._generate_pyproject([], root, source=core, python=Path(sys.executable))
     generated = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "exclude-newer" not in generated and "[tool.uv]" in generated
 
@@ -175,3 +412,27 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_selected_plugin_extra_naming_core_installs_the_workspace_core(layout):
+    """A plugin extra pinning core (``hermes-agent[x] @ git+…``) resolves to this checkout.
+
+    The generated root IS core, so uv refuses any member requirement naming it without a
+    ``{ workspace = true }`` source ("is included as a workspace member, but is missing an
+    entry in tool.uv.sources") and the whole lock fails. Any spelling of the name binds,
+    and the requested core extra installs from the workspace instead of the URL.
+    """
+    from pm.environments import site_packages
+
+    tmp, core, plugin, _ = layout
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="core-pinning-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["member-dep==1.0"]\n[project.optional-dependencies]\n'
+        'chosen=["Construction_Root[other] @ git+https://example.invalid/hermes-agent'
+        '@0000000000000000000000000000000000000000"]\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    environment = managed_environment(tmp / "env")
+    ws.lock_and_sync([plugin], ["chosen"], root=tmp / "workspace", source=core, seed_lock=None,
+                     environment=environment)
+    installed = {p.name.split("-")[0] for p in site_packages(environment.destination).glob("*.dist-info")}
+    assert {"member_dep", "other_dep"} <= installed
+

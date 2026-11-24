@@ -31,8 +31,7 @@ def test_no_verbatim_spelling_leaves_through_records_environment_or_uv(tmp_path,
     store = Store(ROOT)
     facts = Facts(tmp_path / "facts.json")
     facts.record("git", "1", "git-1", {"PATH": [str(store.entry("git-1") / "cmd")]}, store.root)
-    facts.record("chromium", "1", "chromium-1",
-                 {"AGENT_BROWSER_EXECUTABLE_PATH": str(store.entry("chromium-1") / "chrome.exe")}, store.root)
+    facts.record("chromium", "1", "chromium-1", {"PLAYWRIGHT_BROWSERS_PATH": str(store.root)}, store.root)
     record = (tmp_path / "facts.json").read_text(encoding="utf-8")
 
     env = compose_env([facts.env_for("git", store.root), facts.env_for("chromium", store.root)], base={})
@@ -51,4 +50,4 @@ def test_no_verbatim_spelling_leaves_through_records_environment_or_uv(tmp_path,
 
     leaving = [record, *env.values(), *command, kwargs["cwd"], *kwargs["env"].values()]
     assert [text for text in leaving if VERBATIM in text] == []
-    assert env["AGENT_BROWSER_EXECUTABLE_PATH"].endswith("chrome.exe")
+    assert env["PLAYWRIGHT_BROWSERS_PATH"].endswith("tools")

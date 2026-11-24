@@ -73,6 +73,33 @@ jobs:
         with:
           github-token: ${{ github.token }}
 
+  pnpm-deps-hash:
+    name: pnpm deps hash
+    needs: [detect]
+    if: needs.detect.outputs.nix == 'true' || inputs.release == true
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # fetchPnpmDeps is a fixed-output derivation: a pnpm-lock.yaml change needs a
+      # new nix/pnpm-deps-hash. flake-check fails too, with the hash buried in its
+      # log; this job fails fast and names the hash Nix computed.
+      - name: Check nix/pnpm-deps-hash
+        run: |
+          set -o pipefail
+          if nix build .#pnpm-deps --no-link --print-build-logs 2>&1 | tee "$RUNNER_TEMP/pnpm-deps.log"; then exit 0; fi
+          got=$(sed -n 's/^ *got: *\(sha256-[A-Za-z0-9+/=]*\)$/\1/p' "$RUNNER_TEMP/pnpm-deps.log")
+          [ -n "$got" ] && echo "::error file=nix/pnpm-deps-hash::pnpm-lock.yaml changed the pnpm store. Set nix/pnpm-deps-hash to $got (or run: nix run .#update-pnpm-lockfile)"
+          exit 1
+
   flake-check:
     name: nix flake check
     needs: [detect]

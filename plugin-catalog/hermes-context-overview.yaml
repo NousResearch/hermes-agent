@@ -1,9 +1,9 @@
 name: hermes-context-overview
-version: "1.2.4"
+version: "1.2.5"
 repo: https://github.com/AsoTora/hermes-context-overview
-sha: a18ed068571819e7c211e8f7e4ea3e4e814abd49
+sha: 286c9dab17576ea641bc7448dd4835882e34e107
 title: Context Overview
-description: "A Context button in the bottom status bar that shows how full the focused conversation's context window is: token budget, estimated allocation by category and context-file metadata, also during a running turn. Read-only, no backend."
+description: "Context window usage at a glance: a Context button in the status bar shows tokens used vs. budget, percent full, free space and an estimated breakdown by category, plus context-file sources. Works during a running turn. Read-only token/usage monitor, no backend."
 maintainer: AsoTora
 tier: community
 category: desktop
@@ -12,12 +12,13 @@ docs_url: https://github.com/AsoTora/hermes-context-overview#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/a18ed068571819e7c211e8f7e4ea3e4e814abd49/docs/screenshots/overview-dark.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/a18ed068571819e7c211e8f7e4ea3e4e814abd49/docs/screenshots/overview-light.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/a18ed068571819e7c211e8f7e4ea3e4e814abd49/docs/screenshots/themes-dark.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/a18ed068571819e7c211e8f7e4ea3e4e814abd49/docs/screenshots/themes-light.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/overview-dark.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/overview-light.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/themes-dark.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/themes-light.png
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+image: "https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/banner.png"

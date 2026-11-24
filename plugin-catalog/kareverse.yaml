@@ -1,0 +1,18 @@
+name: kareverse
+title: Kareverse
+repo: https://github.com/digitalmanager-commits/kareverse-mcp
+sha: 60fd05d9fc6a5230bfd353f28846187382d96add
+version: "1.0.0"
+description: "Elder care at home in Bangalore, India, from Hermes through Kareverse's public MCP server (Streamable HTTP at https://www.kareverse.com/mcp, no sign-in): search services and prices, read a service's details, the monthly Care Plan, service areas and care guides, and send a callback request to the Kareverse team. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to www.kareverse.com, operated by Kareverse; submit_enquiry sends the name, phone number and details the user provides to Kareverse so the team can call back, requires consent: true, and the package marks the server trust: untrusted so Hermes asks before it runs. The other six tools are read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Kareverse
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://www.kareverse.com/agents
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

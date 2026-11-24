@@ -24,8 +24,8 @@ session, you carry its headers/cookies forward, you don't forge them.
 The scripts are stdlib-plus-Playwright: capture needs Playwright, derivation
 is pure stdlib, replay needs only `requests`/`httpx` (or `curl`).
 
-Covers **every Hermes browser pathway**: the default local `browser_navigate`
-backend, plus the cloud/remote backends (Browserbase, Browser-Use, Firecrawl)
+Covers **every Hermes browser pathway**: the default local Chromium that
+`browser_exec` drives, plus the cloud/remote backends (Browserbase, Browser-Use, Firecrawl)
 and any `/browser connect` CDP endpoint. There are two capture scripts — one
 for a browser you launch, one for a browser you attach to over CDP — because
 HAR recording works differently in each case (see How to Run).
@@ -34,7 +34,7 @@ HAR recording works differently in each case (see How to Run).
 
 - "Build a CLI/client for <website>" — derive its API instead of scripting clicks.
 - "This site has no public API but the page clearly fetches JSON."
-- You're about to loop `browser_navigate` for the same query repeatedly — stop and derive the endpoint once.
+- You're about to loop `browser_exec` navigations for the same query repeatedly — stop and derive the endpoint once.
 - Reverse-engineering an autocomplete, search, feed, or checkout XHR.
 - You captured a session on a cloud backend (Browserbase / Browser-Use / Firecrawl) or via `/browser connect` and want the API without re-renting the browser.
 
@@ -56,8 +56,7 @@ Scripts under this skill's `scripts/`, invoked through the `terminal` tool.
 
 | Browser pathway | How Hermes reaches it | Capturer |
 |---|---|---|
-| Local `browser_navigate` (default, agent-browser/Playwright) | launched locally | `har_capture.py` |
-| Camofox (`CAMOFOX_URL` set) | local REST/CDP | `har_capture_cdp.py` if it exposes CDP, else drive it yourself |
+| Local Chromium (default `browser_exec` browser) | launched locally | `har_capture.py` |
 | Browserbase / Browser-Use / Firecrawl (cloud) | **CDP** (`cdpUrl`) | `har_capture_cdp.py` |
 | `/browser connect <url>` / `BROWSER_CDP_URL` | **CDP** | `har_capture_cdp.py` |
 
@@ -97,7 +96,7 @@ python3 scripts/har_to_client.py out.har --host SITE --max-body 400
 har_capture.py <url> <out.har> [--wait S] [--headed] [--action SPEC ...]
   action SPEC:  fill:SELECTOR:TEXT | press:SELECTOR:KEY | click:SELECTOR
                 goto:URL | sleep:SECONDS      (run in order after page load)
-  use when Hermes LAUNCHED the browser (local browser_navigate default)
+  use when Hermes LAUNCHED the browser (local browser_exec default)
 
 har_capture_cdp.py <cdp_url> <out.har> [--goto URL] [--wait S] [--action SPEC ...]
   same action SPEC; attaches to an existing CDP browser and does NOT close it
@@ -113,7 +112,7 @@ har_to_client.py <in.har> [--host SUBSTR] [--include-static] [--max-body N]
 ## Procedure
 
 0. **Pick the capturer by pathway** (see How to Run table). Launched-locally → `har_capture.py`; reached over CDP → `har_capture_cdp.py`. On Hermes, `/browser connect` tells you the CDP endpoint when a cloud/remote backend is active.
-1. **Find the interaction.** Open the site with `browser_navigate` (or `--headed` capture) to see which selector to type into / click, and confirm a JSON XHR fires in devtools/network.
+1. **Find the interaction.** Open the site with `browser_exec` (`new_tab(url)` + `wait_for_load()`, or a `--headed` capture) to see which selector to type into / click via `js()`, and confirm a JSON XHR fires: `js("performance.getEntriesByType('resource').filter(e => ['xmlhttprequest','fetch'].includes(e.initiatorType)).map(e => e.name)")`.
 2. **Capture the HAR** via the `terminal` tool. Order `--action` to reach the request: `fill` the box, then `sleep` long enough for the debounced XHR, and always leave `--wait` at the end so late responses flush. Both capturers embed response bodies, so the derived client sees real payload shapes.
 3. **Derive** with `har_to_client.py --host <domain>`. Read off: the method, the URL/path template (numeric/UUID segments collapse to `{id}`), query params, request-body JSON, and the `### Replay hints` block.
 4. **Write the client.** Recreate the request exactly — same method, path, query params, body. Send the headers the site actually needs: at minimum copy the **User-Agent** from the replay hints. If hints report cookies or an auth/token header, resend those too.
@@ -145,7 +144,7 @@ for p in r.json()["pages"]:
 - **`record_har_content="embed"` makes big HARs.** Use `--max-body` to cap what's printed; the file itself can be large for media-heavy pages.
 - **Endpoints shift.** Sites change private APIs without notice. Re-run the capture→derive loop when a client breaks rather than patching URLs by hand.
 - **Wrong capturer = empty/no HAR.** `har_capture.py` on a cloud/CDP backend records nothing (it launches its own local browser instead of the one you meant). `har_capture_cdp.py` needs the endpoint; on Hermes get it from `/browser connect` or `BROWSER_CDP_URL`. Match the capturer to the pathway (How to Run table).
-- **Headless-Chrome UA is a weak tell.** Local/agent-browser capture yields a `HeadlessChrome/...` User-Agent; some sites sniff the "Headless" token. Cloud backends (Browserbase/Browser-Use) send a real desktop-Chrome UA, so a client derived from a cloud capture replays more reliably. If a headless-derived client 403s where the browser didn't, swap the "Headless" UA for a normal Chrome UA string before assuming the endpoint changed.
+- **Headless-Chrome UA is a weak tell.** Local headless capture yields a `HeadlessChrome/...` User-Agent; some sites sniff the "Headless" token. Cloud backends (Browserbase/Browser-Use) send a real desktop-Chrome UA, so a client derived from a cloud capture replays more reliably. If a headless-derived client 403s where the browser didn't, swap the "Headless" UA for a normal Chrome UA string before assuming the endpoint changed.
 - **CDP capture doesn't close the browser.** `har_capture_cdp.py` attaches to a browser it doesn't own and leaves it running — correct for cloud/remote sessions Hermes manages. Don't add a close; let the owning backend tear it down.
 
 ## Verification

@@ -75,7 +75,7 @@ describe('durable group holds', () => {
     expect(status.textContent).toContain('Paused:')
     expect(status.textContent).toContain('Builder')
     expect(status.textContent).toContain('research')
-    expect(status.textContent).not.toContain('All 1 bots are paused')
+    expect(status.textContent).not.toContain('The bot is paused')
   })
 
   it('names a partial hold and disappears after the production resume directive clears it', async () => {

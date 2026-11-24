@@ -16,6 +16,8 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from agent.codex_responses_adapter import extract_developer_prompt
+
 logger = logging.getLogger(__name__)
 
 PRE_AUXILIARY_CALL = "pre_auxiliary_call"
@@ -45,6 +47,9 @@ def _parent_turn_identity() -> dict[str, str]:
 def _system_prompt(messages: Any, kwargs: dict[str, Any]) -> str:
     if isinstance(kwargs.get("system"), str):  # Anthropic
         return kwargs["system"]
+    dev_prompt = extract_developer_prompt(messages)
+    if dev_prompt is not None:
+        return dev_prompt
     if isinstance(kwargs.get("instructions"), str):  # Responses
         return kwargs["instructions"]
     if isinstance(messages, list) and messages and isinstance(messages[0], dict):
@@ -113,6 +118,8 @@ class _AuxCallHooks:
             started_at=self.started_at,
             message_count=len(kwargs.get("messages") or kwargs.get("input") or []),
         )
+        if metadata.get("plugin_id"):  # a call a plugin asked for (ctx.side_question)
+            self.base["plugin_id"] = str(metadata["plugin_id"])
 
     def pre(self) -> None:
         if not _has_hook(PRE_AUXILIARY_CALL):
@@ -138,7 +145,12 @@ class _AuxCallHooks:
             request=_Sanitize._sanitize_hook_payload({"method": "POST", "body": body}),
         )
 
-    def post(self, response: Any = None, error: Optional[BaseException] = None) -> None:
+    def post(
+        self, response: Any = None, error: Optional[BaseException] = None, *,
+        normalized: Optional[tuple[Any, Any, Optional[dict[str, Any]]]] = None,
+    ) -> None:
+        """``normalized`` = ``(assistant_message, finish_reason, usage_summary)`` for a response
+        that is not chat.completions-shaped (an agent transport's native reply)."""
         if not _has_hook(POST_AUXILIARY_CALL):
             return
         from agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize
@@ -155,13 +167,13 @@ class _AuxCallHooks:
             payload.update(finish_reason=None, response_model=None, usage=None, response=None,
                            assistant_content_chars=0, assistant_tool_call_count=0)
         else:
-            message, finish_reason = _first_choice_message(response)
+            message, finish_reason, usage = normalized or (*_first_choice_message(response), _usage_summary(response))
             content = _field(message, "content") if message is not None else None
             tool_calls = (_field(message, "tool_calls") if message is not None else None) or []
             payload.update(
                 finish_reason=finish_reason,
                 response_model=_field(response, "model"),
-                usage=_usage_summary(response),
+                usage=usage,
                 response=_Sanitize._sanitize_hook_payload({
                     "model": _field(response, "model"),
                     "finish_reason": finish_reason,
@@ -199,7 +211,9 @@ def _fire(name: str, **payload: Any) -> None:
                        name, payload.get("aux_task"), exc_info=True)
 
 
-def _hooks_or_none(**kw: Any) -> Optional[_AuxCallHooks]:
+def start_aux_call_hooks(**kw: Any) -> Optional[_AuxCallHooks]:
+    """Fire ``pre_auxiliary_call`` for one attempt; the handle for :func:`finish_aux_call_hooks`,
+    or None when nothing subscribes. For callers that drive the provider call themselves."""
     if not (_has_hook(PRE_AUXILIARY_CALL) or _has_hook(POST_AUXILIARY_CALL)):
         return None
     try:
@@ -211,11 +225,15 @@ def _hooks_or_none(**kw: Any) -> Optional[_AuxCallHooks]:
     return hooks
 
 
-def _post_safely(hooks: Optional[_AuxCallHooks], response: Any = None, error: Any = None) -> None:
+def finish_aux_call_hooks(
+    hooks: Optional[_AuxCallHooks], response: Any = None, error: Any = None, *,
+    normalized: Optional[tuple[Any, Any, Optional[dict[str, Any]]]] = None,
+) -> None:
+    """Fire the ``post_auxiliary_call`` paired with :func:`start_aux_call_hooks`."""
     if hooks is None:
         return
     try:
-        hooks.post(response, error)
+        hooks.post(response, error, normalized=normalized)
     except Exception:
         logger.warning("post_auxiliary_call payload build failed; continuing", exc_info=True)
 
@@ -223,17 +241,22 @@ def _post_safely(hooks: Optional[_AuxCallHooks], response: Any = None, error: An
 def run_with_aux_hooks(
     call: Callable[[], Any], *, aux_task: str, metadata: dict[str, Any], client: Any,
     kwargs: dict[str, Any], provider: str, model: str, api_mode: str, streaming: bool = False,
+    normalized: Optional[Callable[[Any], Any]] = None,
 ) -> Any:
     """Run one synchronous provider attempt between ``pre_auxiliary_call`` and
-    ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised."""
-    hooks = _hooks_or_none(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
+    ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised.
+    ``normalized(response)``, when given, builds the hooks' normalized view only when a hook listens."""
+    hooks = start_aux_call_hooks(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=streaming)
     try:
         response = call()
     except BaseException as exc:
-        _post_safely(hooks, error=exc)
+        finish_aux_call_hooks(hooks, error=exc)
         raise
-    _post_safely(hooks, response=response)
+    if hooks is not None and normalized is not None:
+        finish_aux_call_hooks(hooks, response, normalized=normalized(response))
+    else:
+        finish_aux_call_hooks(hooks, response=response)
     return response
 
 
@@ -242,12 +265,45 @@ async def arun_with_aux_hooks(
     kwargs: dict[str, Any], provider: str, model: str, api_mode: str,
 ) -> Any:
     """Async twin of :func:`run_with_aux_hooks`."""
-    hooks = _hooks_or_none(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
+    hooks = start_aux_call_hooks(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=False)
     try:
         response = await call()
     except BaseException as exc:
-        _post_safely(hooks, error=exc)
+        finish_aux_call_hooks(hooks, error=exc)
         raise
-    _post_safely(hooks, response=response)
+    finish_aux_call_hooks(hooks, response=response)
     return response
+
+
+# An agent whose whole turn loop is auxiliary work (a plugin session fork) sets
+# ``_loop_aux_task = (aux_task, metadata)``: each loop request then reports through
+# pre/post_auxiliary_call instead of the turn-scoped pre/post_api_request.
+
+def begin_loop_aux_attempt(agent: Any, api_kwargs: dict[str, Any], api_request_id: str) -> bool:
+    """Fire ``pre_auxiliary_call`` for the loop request about to go out; False (nothing done) for a
+    normal agent. An attempt still open here failed without a response (provider error, retry):
+    its pair is closed first."""
+    identity = getattr(agent, "_loop_aux_task", None)
+    if not identity:
+        return False
+    end_loop_aux_attempt(agent, error=ConnectionError("attempt ended without a response"))
+    aux_task, metadata = identity
+    agent._loop_aux_hooks = start_aux_call_hooks(
+        aux_task=aux_task, metadata={**metadata, "api_request_id": api_request_id}, client=agent.client,
+        kwargs=api_kwargs, provider=str(agent.provider or ""), model=str(agent.model or ""),
+        api_mode=str(agent.api_mode or ""), streaming=False,
+    )
+    return True
+
+
+def end_loop_aux_attempt(
+    agent: Any, response: Any = None, error: Optional[BaseException] = None, *,
+    normalized: Optional[tuple[Any, Any, Optional[dict[str, Any]]]] = None,
+) -> None:
+    """Close the open :func:`begin_loop_aux_attempt` pair, if any (idempotent)."""
+    hooks = getattr(agent, "_loop_aux_hooks", None)
+    if hooks is None:
+        return
+    agent._loop_aux_hooks = None
+    finish_aux_call_hooks(hooks, response, error, normalized=normalized)

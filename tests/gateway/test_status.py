@@ -742,6 +742,27 @@ class TestPidExistsZombieProbe:
         assert status._pid_exists(os.getpid()) is True
         assert calls == []
 
+    @pytest.mark.platforms("windows")
+    def test_windows_never_touches_psutil_at_all(self, monkeypatch):
+        """#142085: the Windows branch goes straight to the ctypes probe and never calls psutil, so
+        the liveness check carries no psutil dependency on this hot path. (The measured GIL stall is
+        ``Process.status()``, covered in test_process_identity; ``pid_exists`` itself is ~4 us.)"""
+        psutil = pytest.importorskip("psutil")
+        calls = []
+        real_pid_exists = psutil.pid_exists
+
+        def spy(pid):
+            calls.append(pid)
+            return real_pid_exists(pid)
+
+        monkeypatch.setattr(psutil, "pid_exists", spy)
+        # Also assert Process.status was never reached (the zombie probe is POSIX-only anyway).
+        self._spy_status(monkeypatch)
+
+        assert status._pid_exists(os.getpid()) is True
+        assert status._pid_exists(999999) is False
+        assert calls == []
+
     @pytest.mark.platforms("linux")
     def test_posix_still_probes_zombie_status(self, monkeypatch):
         # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.

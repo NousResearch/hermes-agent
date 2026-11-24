@@ -25,7 +25,7 @@ from hermes_cli.plugins_cmd import (
 from hermes_cli.plugins_cmd_install import _refuse_unavailable_portable_plugin
 
 
-def _write_portable_app_plugin(root: Path, app: Path) -> None:
+def _write_portable_app_plugin(root: Path, app: Path, os_key: str | None = None) -> None:
     from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
     from hermes_platform.host.facts import os_family
 
@@ -33,7 +33,7 @@ def _write_portable_app_plugin(root: Path, app: Path) -> None:
         "$schema": PLUGIN_SCHEMA_V1,
         "name": "example-plugin",
         "extensions": {"com.nousresearch.hermes": {"servers": {"worker": {
-            "app": {os_family(): {"presence": "executable", "location": str(app)}},
+            "app": {os_key or os_family(): {"presence": "executable", "location": str(app)}},
             "requires": {"app": True},
         }}}},
     }), encoding="utf-8")
@@ -50,8 +50,18 @@ def test_portable_install_gate_accepts_present_app_and_refuses_missing(tmp_path:
 
     _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
     app.unlink()
-    with pytest.raises(PluginOperationError, match="example-plugin.*worker.*missing_app"):
+    with pytest.raises(PluginOperationError, match="example-plugin.*worker is not installed. Install worker"):
         _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
+
+
+def test_portable_install_gate_on_undeclared_os_does_not_say_install(tmp_path: Path) -> None:
+    from hermes_platform.host.facts import os_family
+
+    other = next(o for o in ("linux", "darwin", "win32") if o != os_family())
+    _write_portable_app_plugin(tmp_path, tmp_path / "example-app", os_key=other)
+    with pytest.raises(PluginOperationError, match="Example App is not supported on this operating system") as exc:
+        _refuse_unavailable_portable_plugin("example-plugin", tmp_path, "Example App")
+    assert "Install" not in str(exc.value)
 
 
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────
@@ -967,3 +977,15 @@ def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
     monkeypatch.setattr('hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
     assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
     assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_plugins_dir_refuses_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    from hermes_cli.plugins_cmd import _plugins_dir
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        _plugins_dir()
+    assert not home.exists()

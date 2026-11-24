@@ -193,3 +193,132 @@ describe('setGroupMembership (per-Bot Manage groups)', () => {
     expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
   })
 })
+
+describe('a room that spans machines', () => {
+  const remote: RosterRow = {
+    connectionId: 'remote-1',
+    connectionKind: 'remote',
+    name: 'scout',
+    remoteSource: true,
+    route: { connectionId: 'remote-1', mode: 'remote', profile: 'scout', targetProfile: 'scout' },
+    sourceScoped: true
+  }
+
+  it('stays Desktop-driven after its last remote member is removed; a local-only edit never marks one', async () => {
+    const room = await loadRoom()
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, remote]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+
+    await room.members.setGroupChatMembers('Core', [programmer, reviewer])
+
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer'])
+    expect(room.chat.$groupChats.get().Core.engine).toBe('desktop')
+
+    const local = await loadRoom()
+    seedCore(local)
+    await local.members.setGroupMembership(reviewer, 'Core', false)
+
+    expect(local.chat.$groupChats.get().Core.engine).toBeUndefined()
+  })
+
+  it('a remote member removed in Manage members gets no seat and no turn on the next @all send', async () => {
+    const room = await loadRoom()
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, remote]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+    // Creation writes groups[] for every seated bot, the remote one included.
+    room.data.$botMeta.set({
+      ...room.data.$botMeta.get(),
+      [room.data.botMetaKey(remote)]: { groups: ['Core'] }
+    })
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+
+    await room.members.setGroupChatMembers('Core', [programmer, reviewer])
+
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
+
+    room.rounds.sendToGroupChat('Core', seatedNames(room).map(name => ({ name })), '@all go')
+    await drain(() => Boolean(room.chat.$groupChats.get().Core.running))
+
+    expect(room.gateway.calls.map(call => call.profile)).not.toContain('scout')
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer'])
+  })
+
+  it('removing a member whose machine does not answer fails and keeps all three seats, through reconnect too', async () => {
+    const room = await loadRoom()
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, remote]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+    room.data.$botMeta.set({ ...room.data.$botMeta.get(), [room.data.botMetaKey(remote)]: { groups: ['Core'] } })
+
+    // The machine went away after the roster painted it reachable.
+    host.requestProfile = async () => {
+      throw new Error('connection refused')
+    }
+
+    await expect(room.members.setGroupChatMembers('Core', [programmer, reviewer])).rejects.toThrow(/Scout/)
+
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer', 'scout'])
+
+    // Reconnect: that machine's ui_meta still names the room, and now agrees with this Desktop.
+    const { mergeServerMeta } = await import('./profile-ops')
+    mergeServerMeta([{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: ['Core'] } } }], Date.now() + 120_000)
+
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+  })
+
+  it('refuses before writing anything when the removed member is already shown offline', async () => {
+    const room = await loadRoom()
+    const offline = { ...remote, connectionLabel: 'Homelab', sourceReachable: false }
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, offline]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, offline])
+    room.data.$botMeta.set({ ...room.data.$botMeta.get(), [room.data.botMetaKey(offline)]: { groups: ['Core'] } })
+    const before = room.data.$botMeta.get()
+
+    await expect(room.members.setGroupChatMembers('Core', [programmer, planner])).rejects.toThrow(/Homelab/)
+
+    expect(room.data.$botMeta.get()).toEqual(before)
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+  })
+
+  it('Manage groups: adding or removing a bot whose machine does not answer fails, and reconnect agrees', async () => {
+    const room = await loadRoom()
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, remote]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+    room.data.$botMeta.set({ ...room.data.$botMeta.get(), [room.data.botMetaKey(remote)]: { groups: ['Core'] } })
+    const { mergeServerMeta } = await import('./profile-ops')
+
+    host.requestProfile = async () => {
+      throw new Error('connection refused')
+    }
+
+    await expect(room.members.setGroupMembership(remote, 'Core', false)).rejects.toThrow(/Scout/)
+    expect(room.data.$botMeta.get()[room.data.botMetaKey(remote)].groups).toEqual(['Core'])
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer', 'scout'])
+    mergeServerMeta([{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: ['Core'] } } }], Date.now() + 120_000)
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+
+    // Its machine has no rooms; joining one while it does not answer is refused too.
+    room.data.$botMeta.set({ ...room.data.$botMeta.get(), [room.data.botMetaKey(remote)]: { groups: [] } })
+    seedCore(room)
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+
+    await expect(room.members.setGroupMembership(remote, 'Core', true)).rejects.toThrow(/Scout/)
+    expect(room.data.$botMeta.get()[room.data.botMetaKey(remote)].groups).toEqual([])
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer'])
+    mergeServerMeta([{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: [] } } }], Date.now() + 240_000)
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
+  })
+
+  it('Manage groups refuses before writing when the bot is already shown offline', async () => {
+    const room = await loadRoom()
+    const offline = { ...remote, connectionLabel: 'Homelab', sourceReachable: false }
+    seedCore(room)
+    room.data.$lastRoster.set([programmer, planner, reviewer, offline])
+    const before = room.data.$botMeta.get()
+
+    await expect(room.members.setGroupMembership(offline, 'Core', true)).rejects.toThrow(/Homelab/)
+
+    expect(room.data.$botMeta.get()).toEqual(before)
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
+  })
+})

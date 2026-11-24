@@ -8,13 +8,14 @@ import pytest
 
 
 def _seed(home, sid, tokens=(300, 60)):
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=home / 'state.db')
-    db.create_session(sid, source='tui')
-    db.append_message(sid, 'user', 'q')
-    db.append_message(sid, 'assistant', 'a')
-    db.update_token_counts(sid, input_tokens=tokens[0], output_tokens=tokens[1])
-    db.close()
+    from persistence.conversation.usage import TokenCounts, UsageDelta
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, sid, 'tui')
+        seed_messages(store, sid, {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': 'a'})
+        store.usage.queue_usage(sid, UsageDelta(tokens=TokenCounts(input_tokens=tokens[0], output_tokens=tokens[1])))
+        store.usage.flush_usage()
 
 
 @pytest.fixture
@@ -67,16 +68,15 @@ def test_branch_child_epilogue_counts_the_branched_conversation(home, capsys):
     """Main's epilogue after /branch reported the conversation's tokens (it still named the parent);
     the canonical child is named, and its total includes the branch it was cut from."""
     import json
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from hermes_cli.main_tui_launch import _print_tui_exit_summary
     parent = 'local-' + '1' * 64
     child = 'local-' + '2' * 64
     _seed(home, parent, tokens=(300, 60))
-    db = SessionDB(db_path=home / 'state.db')
-    db.create_session(child, source='tui', model_config={'_branched_from': parent}, parent_session_id=parent)
-    db.append_message(child, 'user', 'q')
-    db.append_message(child, 'assistant', 'a')
-    db.close()
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, child, 'tui', model_config={'_branched_from': parent}, parent_session_id=parent)
+        seed_messages(store, child, {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': 'a'})
     _print_tui_exit_summary(child)
     out = capsys.readouterr().out
     assert f'--resume {child[:22]}' in out

@@ -1,6 +1,7 @@
 import type { TranslationOverride } from '@hermes/shared/i18n'
 
 import { frAuxTasks } from './fr_aux_tasks'
+import { frDelegationRouting } from './fr_delegation_routing'
 import type { ModelSettingsTranslations } from './types_model_settings'
 
 export const frModelSettings: TranslationOverride<ModelSettingsTranslations> = {
@@ -83,6 +84,7 @@ export const frModelSettings: TranslationOverride<ModelSettingsTranslations> = {
       'Appliquer cette route efface le point de terminaison direct et sa clé enregistrée. Les autres réglages de requête sont conservés.',
     catalogFailed:
       'Catalogue de modèles indisponible. Saisissez un fournisseur et un modèle manuellement, ou réessayez.',
-    draftHint: "Les modifications restent locales jusqu'à leur application."
+    draftHint: "Les modifications restent locales jusqu'à leur application.",
+    routing: frDelegationRouting
   }
 }

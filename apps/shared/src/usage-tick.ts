@@ -1,4 +1,4 @@
-import type { SessionStats, SessionUsagePayload, Usage } from './gateway-contract.generated.js'
+import type { PlanGauge, SessionStats, SessionUsagePayload, Usage } from './gateway-contract.generated.js'
 
 /** The owner's `session.usage` tick (`SessionUsagePayload`, canonical counters at the top level or the classic sidecar ticker's nested `usage`) or its `session.stats` reply (`SessionStats`). */
 export type UsageTickPayload = SessionStats | SessionUsagePayload
@@ -20,6 +20,7 @@ export interface TickUsage {
   input: number
   model?: string
   output: number
+  plan_gauge?: PlanGauge
   prompt: number
   reasoning: number
   total: number
@@ -126,11 +127,29 @@ export function usageFromTick<Nested = Usage>(
     }
   }
 
-  const derived = { ...usage, ...contextFields(payload), ...rateFields(payload) }
+  const derived: Partial<TickUsage> = { ...usage, ...contextFields(payload), ...rateFields(payload) }
+
+  if (payload.plan_gauge) {
+    derived.plan_gauge = payload.plan_gauge
+  }
 
   if (Object.keys(derived).length === 0) {
     return undefined
   }
 
   return payload.model ? { ...derived, model: payload.model } : derived
+}
+
+/** Merge a usage payload into the stored one: a partial tick keeps the fields it omits, but the plan gauge follows the latest complete payload. Both builders (`gateway/session_usage.py::tui_usage`, `tui_gateway/server.py::_get_usage`) always send `calls` and send `plan_gauge` only on a window plan, so a complete payload without it means the session is off the plan (or the allowance reset) and the old gauge goes. */
+export function mergeUsage<P extends object, N extends { calls?: number; plan_gauge?: unknown }>(
+  previous: P,
+  next: N | null | undefined
+): P & Partial<N> {
+  const merged = { ...previous, ...next }
+
+  if (next?.calls !== undefined && next.plan_gauge == null) {
+    delete (merged as { plan_gauge?: unknown }).plan_gauge
+  }
+
+  return merged
 }

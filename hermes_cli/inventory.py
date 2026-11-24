@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextvars import copy_context
 from dataclasses import dataclass, replace
 from threading import Lock, Thread, current_thread
@@ -101,23 +102,7 @@ def build_models_payload(
         non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
     )
 
-    # Managed local runtime: staged GGUFs are selectable like any provider's models, but
-    # list_authenticated_providers can't know about them (no credential — reachability is the
-    # credential), so inject the row here where every picker surface inherits it.
-    local_row = _local_runtime_row(ctx)
-    if local_row is not None:
-        rows = _without_slug(rows, "llamacpp") + [local_row]
-        # A live session on the managed server reports provider "custom" (raw base_url label), which
-        # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
-        # checkmark. The Local row owns the managed server's identity — drop such custom rows.
-        if local_row.get("is_current"):
-            staged = set(local_row["models"])
-
-            def _is_managed_custom(row: dict) -> bool:
-                models = {str(m) for m in (row.get("models") or [])}
-                return _slug(row) == "custom" and bool(models) and models <= staged
-
-            rows = [r for r in rows if not _is_managed_custom(r)]
+    rows, local_row = inject_local_runtime_row(rows, ctx)
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -271,7 +256,9 @@ def _apply_limits(rows: list[dict]) -> None:
     pooled = {slug for slug, entries in read_credential_pool().items() if entries}
     for row in rows:
         slug = str(row.get("slug") or "")
-        if slug not in pooled or row.get("is_user_defined"):
+        # Window plans say their limits in plan_usage (gauges + limit line); a credential cooldown chip
+        # beside them would show a second, unrelated reset time.
+        if slug not in pooled or row.get("is_user_defined") or row.get("plan_usage"):
             continue
         try:
             state = load_pool(slug).limit_state(row.get("models") or [])
@@ -541,13 +528,18 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from agent.codex_service_tiers import ultrafast_offered
+    from agent.codex_service_tiers import daybreak_offered, ultrafast_offered
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
+
+    # Daybreak rides the Responses request; the opt-in codex app-server runtime never sends it.
+    _model_cfg = (metadata_config or {}).get("model")
+    _app_server = isinstance(_model_cfg, dict) and str(
+        _model_cfg.get("openai_runtime") or "").strip().lower() == "codex_app_server"
 
     for row in rows:
         slug = row.get("slug") or ""
@@ -569,6 +561,8 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             if fast and model_supports_ultrafast(model) and ultrafast_offered(
                     model, provider=slug, base_url=row.get("api_url")):
                 entry["ultrafast"] = True
+            if not _app_server and daybreak_offered(model, provider=slug, base_url=row.get("api_url")):
+                entry["daybreak"] = True
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -769,7 +763,7 @@ def _anthropic_oauth_credentials_present() -> bool:
 
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Keep only rows backed by explicit user configuration — ``list_authenticated_providers`` also
-    discovers ambient credentials (e.g. GitHub CLI -> Copilot) Desktop chat pickers must not show."""
+    discovers ambient credentials (e.g. another CLI's login token) Desktop chat pickers must not show."""
     from hermes_cli.auth import is_provider_explicitly_configured
 
     current_slug = str(ctx.current_provider or "").strip().lower()
@@ -786,7 +780,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
         return (
-            # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
+            # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (ACP agents) are
             # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
             (slug == "anthropic" and _anthropic_oauth_credentials_present())
             or _external_process_signed_in(slug)
@@ -862,6 +856,43 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
+def _attach_nous_plan_usage(row: dict, *, warm: bool):
+    """Stamp ``plan_usage`` from the portal snapshot (window plans only) and return the PickerUsage (or
+    None). A cache-only open reads the last snapshot at any age: the 60s account cache has usually lapsed
+    by the time someone opens the composer menu. Accounts without a window plan get nothing."""
+    try:
+        from hermes_cli.model_picker_usage import nous_picker_usage
+        usage = nous_picker_usage(warm=warm, any_age=not warm)
+    except Exception:
+        logging.getLogger(__name__).debug("Nous plan usage unavailable", exc_info=True)
+        return None
+    if usage is not None:
+        row["plan_usage"] = usage.to_payload()
+        # Main's subscription-usage chip (`usage.windows`): the same gauge for a window
+        # plan, so it warns near a limit in the existing slot. Once an allowance is full the picker's limit
+        # line says it (with what happens next), so the chip would only repeat it; paused plans say so in
+        # the plan line.
+        if not usage.paused_reason and not row.get("usage") and not any(g.left_fraction <= 0.0 for g in usage.gauges):
+            windows = [_plan_usage_window(g) for g in usage.gauges if g.resets_at_ms]
+            if windows:
+                row["usage"] = {"windows": windows}
+    return usage
+
+
+def _plan_usage_window(g) -> dict:
+    """One window-plan allowance in main's ``ProviderUsageWindow`` shape. The label is Hermes's row title
+    (``Today``), like the other providers' English window labels."""
+    from datetime import datetime
+    from agent.usage_gauges import WindowGauge, gauge_title
+    return {
+        "label": gauge_title(WindowGauge(g.label, g.scope, g.title or g.label, 0)),
+        "used_percent": round(g.used_fraction * 100.0, 2),
+        "resets_at": datetime.fromtimestamp(g.resets_at_ms / 1000, UTC).isoformat(),
+        "scope": "account" if g.scope == "all" else "model",
+    }
+
+
+# health: allow CC -- usage-window plans: one branch attaches plan usage to the Nous row (built in _attach_nous_plan_usage); over target on main
 def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cached_only: bool = False) -> None:
     """Set ``row["pricing"] = {model_id: {input, output, cache | None, free}}``; for Nous also
     ``free_tier`` (account is free-tier) and ``unavailable_models`` (paid models a free user can't pick).
@@ -897,6 +928,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         except Exception:
             raw_pricing = {}
         cached_nous_tier: Optional[bool] = None
+        plan_usage = _attach_nous_plan_usage(row, warm=not cached_only) if slug == "nous" else None
         if slug == "nous" and cached_only:
             cached_nous_tier = get_cached_nous_free_tier()
             if cached_nous_tier is None:
@@ -956,6 +988,61 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             except Exception:  # tier detection failed — fail open (no gating)
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+            if plan_usage is not None:
+                from hermes_cli.model_picker_usage import usage_levels
+                # The gateway's per-plan word per model (free / low / medium / top_tier).
+                row["usage_levels"] = usage_levels(list(models), raw_pricing)
+                # Top-tier marks from the gateway (it decides, not the client).
+                row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
+                # Window plans: the picker shows the usage word, not per-token prices.
+                row.pop("pricing", None)
+
+
+def inject_local_runtime_row(rows: list[dict], ctx: ConfigContext) -> tuple[list[dict], dict | None]:
+    """Add the managed local runtime's ``llamacpp`` row to authenticated-provider ``rows`` — every
+    picker (desktop/CLI payload and the chat-platform ``/model`` picker) goes through here.
+    ``list_authenticated_providers`` can't know about staged GGUFs (no credential — reachability is
+    the credential). Returns ``(rows, local_row)``; ``local_row`` is ``None`` when nothing is staged."""
+    if _local_runtime_excluded(ctx):
+        return rows, None  # ``model_catalog.excluded_providers`` hides it like any provider row
+    local_row = _local_runtime_row(ctx)
+    if local_row is None:
+        return rows, None
+    rows = _without_slug(rows, "llamacpp") + [local_row]
+    # A live session on the managed server reports provider "custom" (raw base_url label), which
+    # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
+    # checkmark. The Local row owns the managed server's identity — drop such custom rows, but only
+    # one pointing AT the managed server: a saved endpoint elsewhere that shares model names is a
+    # different provider the user must still be able to switch back to.
+    managed_url = _managed_runtime_url() if local_row.get("is_current") else ""
+    if managed_url:
+        staged = set(local_row["models"])
+
+        def _is_managed_custom(row: dict) -> bool:
+            models = {str(m) for m in (row.get("models") or [])}
+            return (_slug(row) == "custom" and bool(models) and models <= staged
+                    and str(row.get("api_url") or "").strip().rstrip("/") == managed_url)
+
+        rows = [r for r in rows if not _is_managed_custom(r)]
+    return rows, local_row
+
+
+def _local_runtime_excluded(ctx: ConfigContext) -> bool:
+    from hermes_cli.providers import LLAMACPP_ALIASES
+
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    return bool(excluded & set(LLAMACPP_ALIASES))
+
+
+def _managed_runtime_url() -> str:
+    """The running managed server's base URL (normalized), ``""`` when none is recorded."""
+    try:
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+
+        managed = _state_endpoint()
+    except Exception:  # health: allow BLE001 -- a torn/legacy runtime state file must degrade to "no managed server" (as _local_runtime_row does), never break the picker
+        return ""
+    return str((managed or {}).get("base_url") or "").strip().rstrip("/")
 
 
 def _local_runtime_row(ctx: ConfigContext) -> dict | None:

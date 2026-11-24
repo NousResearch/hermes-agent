@@ -9,15 +9,16 @@ import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
  * new string, so the stock splitter pays that O(full-text) cost ~30×/s on
  * long replies. Two caches remove it:
  *
- * 1. Exact-string cache — the same text always yields the SAME ARRAY. This is
+ * 1. Exact-string cache — a cache hit returns the same block array. This is
  *    identity, not just cost: `parseMarkdownIntoBlocks` builds a fresh array
- *    every call, and Streamdown mirrors the block list into `useState`, so a
+ *    every call, and Streamdown keys its per-block memos on the array, so a
  *    new array identity for unchanged text makes every Streamdown re-render
  *    itself and re-render every Block under it. Short messages used to skip
  *    the cache on the theory that re-lexing them was cheap — the lex is, but
  *    the churn it caused was not (measured: ~105 self-renders of Streamdown
  *    across five idle tiles in six seconds, cascading into 800 Block renders
- *    with nothing streaming). Every length is cached now.
+ *    with nothing streaming). Every length is cached now; a streaming-only
+ *    prefix leaves it once its lineage grows past it (see rememberAppend).
  * 2. Streaming-append cache — when the new text starts with a recently parsed
  *    text (the token-append case), the previous parse's blocks are reused up
  *    to a settled boundary and only the suffix is lexed. The boundary drops
@@ -36,7 +37,7 @@ import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
  */
 
 const EXACT_CACHE_MAX = 256
-const exactCache = new Map<string, string[]>()
+const exactCache = new Map<string, { blocks: string[]; settled: boolean }>()
 
 // Streaming messages grow monotonically, and only a handful stream at once
 // (main reply + reasoning part, maybe a tile). A tiny ring is enough; each
@@ -54,6 +55,15 @@ function rememberAppend(text: string, blocks: string[]): void {
   const index = appendCache.findIndex(entry => text.startsWith(entry.text))
 
   if (index !== -1) {
+    // Another message can still render this prefix. Retain entries seen by a
+    // settled surface in the bounded LRU, but drop superseded streaming-only
+    // prefixes rather than retaining up to 256 full-length strings per stream.
+    const prefix = appendCache[index].text
+
+    if (!exactCache.get(prefix)?.settled) {
+      exactCache.delete(prefix)
+    }
+
     appendCache.splice(index, 1)
   }
 
@@ -114,9 +124,9 @@ function lexIncrementally(text: string): null | string[] {
   return [...settled, ...parseMarkdownIntoBlocks(text.slice(settledLength))]
 }
 
-export function parseMarkdownIntoBlocksCached(markdown: string): string[] {
+export function parseMarkdownIntoBlocksCached(markdown: string, streaming = true): string[] {
   try {
-    return parseMarkdownIntoBlocksCachedUnsafe(markdown)
+    return parseMarkdownIntoBlocksCachedUnsafe(markdown, streaming)
   } catch {
     // A message that the markdown lexer cannot parse must never take the whole
     // thread down: MessageRenderBoundary re-throws non-transient errors to the
@@ -130,21 +140,22 @@ export function parseMarkdownIntoBlocksCached(markdown: string): string[] {
   }
 }
 
-function parseMarkdownIntoBlocksCachedUnsafe(markdown: string): string[] {
+function parseMarkdownIntoBlocksCachedUnsafe(markdown: string, streaming: boolean): string[] {
   const hit = exactCache.get(markdown)
 
   if (hit) {
     // Refresh recency (Map iteration order is insertion order).
+    hit.settled ||= !streaming
     exactCache.delete(markdown)
     exactCache.set(markdown, hit)
 
-    return hit
+    return hit.blocks
   }
 
   const blocks = lexIncrementally(markdown) ?? parseMarkdownIntoBlocks(markdown)
 
   rememberAppend(markdown, blocks)
-  exactCache.set(markdown, blocks)
+  exactCache.set(markdown, { blocks, settled: !streaming })
 
   if (exactCache.size > EXACT_CACHE_MAX) {
     exactCache.delete(exactCache.keys().next().value as string)

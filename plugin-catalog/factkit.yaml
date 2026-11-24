@@ -1,0 +1,19 @@
+name: factkit
+repo: https://github.com/MohamedElsiddig/hermes-plugin-factkit
+sha: ffe3e255755e5b2b92bd5a06dfb89a0d549544d9
+description: "Semantic recall for the built-in holographic memory provider. It reads the provider's store read-only and keeps its own embedding vectors in a separate plugin database (never writing into holographic's tables), adding an embedding-based recall block before each model call, history-aware dedupe so a fact already shown in the conversation is not injected twice, and embedding re-ranking of fact_store search results. Writes are never automatic: conflict, duplicate and TTL actions stay explicit review/apply operations. No core files are patched and the plugin never self-updates. Disclosure - the current user message and the stored fact text are sent to the OpenAI-compatible embeddings endpoint configured in the plugin's config (default http://127.0.0.1:1234/v1); point it at a remote host only if you accept that. The endpoint key is read through Hermes' secret scope, never written to the process environment. Disclosure — the current user message and stored fact text are sent to the OpenAI-compatible embeddings endpoint set in the plugin's config (default http://127.0.0.1:1234/v1); point it at a remote host only if you accept that. The endpoint key is read through Hermes' secret scope and is never written to the process environment."
+maintainer: MohamedElsiddig
+tier: community
+category: memory
+requires_hermes: ">=0.22.7"
+version: "0.3.2"
+docs_url: https://github.com/MohamedElsiddig/hermes-plugin-factkit#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - transform_tool_result
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

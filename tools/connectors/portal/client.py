@@ -124,6 +124,12 @@ class PortalConnectorClient:
         response, status, route = self._request("GET", "/api/v1/connectors/catalog")
         return self._parse(ConnectorCatalogResponse, response, status, route, PortalConnectorUnavailable, "portal catalog unavailable")
 
+    def public_catalog(self) -> ConnectorCatalogResponse:
+        """The catalog a new guest would get, for a caller with no token yet. Sent without a bearer so
+        every caller gets the one cached answer."""
+        response, status, route = self._request("GET", "/api/v1/connectors/catalog/public", public=True)
+        return self._parse(ConnectorCatalogResponse, response, status, route, PortalConnectorUnavailable, "portal catalog unavailable")
+
     def list_accounts(self) -> list[dict[str, Any]]:
         response, status, route = self._request("GET", "/api/v1/connectors/accounts")
         inventory = self._parse(ConnectorAccountsResponse, response, status, route, PortalConnectorUnavailable, "portal accounts unavailable")
@@ -156,11 +162,15 @@ class PortalConnectorClient:
         body: dict[str, Any] | None = None,
         *,
         headers: dict[str, str] | None = None,
+        public: bool = False,
     ) -> tuple[Any, int, str]:
         """The answer, its status and route key. A failed status is logged and raised here; a 2xx is
-        logged by ``_parse`` once its body is checked."""
+        logged by ``_parse`` once its body is checked. ``public`` routes get no Authorization."""
         url = f"{self.origin()}{path}"
-        headers = self._authorized_headers(url, headers)
+        if public:
+            headers = {"Accept": "application/json", **(headers or {}), **connector_headers()}
+        else:
+            headers = self._authorized_headers(url, headers)
         try:
             response = self._transport.request(method, url, headers=headers, json=body, timeout=DEFAULT_TIMEOUT_SECONDS)
         except Exception as exc:
@@ -199,7 +209,7 @@ def _route_key(path: str) -> str:
     return ".".join(["portal", *named]) or "portal"
 
 
-_PORTAL_ROUTE_WORDS = frozenset({"connectors", "tools", "catalog", "accounts", "policy"})
+_PORTAL_ROUTE_WORDS = frozenset({"connectors", "tools", "catalog", "public", "accounts", "policy"})
 
 
 def _safe_json(response: Any) -> Any:

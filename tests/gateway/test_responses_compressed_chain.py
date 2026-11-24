@@ -4,6 +4,9 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _compressing_app(api, owner, calls):
@@ -17,9 +20,8 @@ def _compressing_app(api, owner, calls):
         result = {'final_response': 'answer ' + event.text, 'messages': []}
         if len(calls) == 1:
             child = root + '-child'
-            owner.db.publish_compression_child(parent_session_id=root, child_session_id=child,
-                source='api_server', messages=[{'role': 'assistant', 'content': 'summary'}],
-                require_compression_lease=False)
+            owner.persistence.lineage.publish_compression_child(root, CompressionChild(session_id=child, source='api_server'),
+                [NewMessage.from_live({'role': 'assistant', 'content': 'summary'})], require_compression_lease=False)
             route = owner.sessions[root].route
             assert owner.runner.session_store.advance_compression_session(route, root, child) is not None
             result['session_id'] = child
@@ -56,7 +58,7 @@ async def test_previous_response_id_after_compression_child_admits_on_the_logica
         third = await client.post('/v1/responses', json={'input': 'three', 'previous_response_id': second['id']})
         assert third.status == 200, await third.text()
     assert calls == ['one', 'two', 'three']
-    roots = {row['target_session_id'] for row in owner.db._read_all(
+    roots = {row['target_session_id'] for row in raw_holder(owner.persistence)._read_all(
         "SELECT target_session_id FROM session_admissions WHERE principal_id='api'", ())}
     # Both turns queued on one FIFO: the root of the compression lineage, never its child.
     assert len(roots) == 1 and not next(iter(roots)).endswith('-child')

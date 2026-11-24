@@ -39,6 +39,9 @@ class BitwardenLoginBackend(LoginBackend):
         self.cfg = cfg or {}
 
     def _bw(self) -> Path:
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if (refused := run_elsewhere_refusal()) is not None:  # that backend writes the binary_path named here
+            raise RuntimeError(refused)
         explicit = str(self.cfg.get("binary_path") or "")
         found = explicit or shutil.which("bw")
         if not found:

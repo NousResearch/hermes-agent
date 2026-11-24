@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -155,6 +156,25 @@ _SEND_COLUMNS = (
 
 logger = logging.getLogger(__name__)
 
+# Every store in this process that ever deferred a write, the per-profile runtimes' stores and the
+# ones no runtime owns alike (the root profile's host-level active-profiles accumulator, the Desktop
+# store). ``os._exit`` skips each store's atexit drain, so a hard exit drains this set instead.
+_DEFERRING_STORES: list[SharedMetricsStore] = []
+_DEFERRING_STORES_LOCK = threading.Lock()
+
+
+def drain_deferring_stores(deadline: float) -> None:
+    """Write every store's deferred rows before an ``os._exit``, waiting on a busy store no later
+    than ``deadline`` (``time.monotonic``). Each deferred write runs against the store that deferred
+    it, so one profile's rows never land in another's database."""
+    with _DEFERRING_STORES_LOCK:
+        stores = list(_DEFERRING_STORES)
+    for store in stores:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return
+        store.drain_deferred(busy_timeout_ms=remaining_ms)
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -276,10 +296,10 @@ class SharedMetricsStore:
 
     def update_rollup_state(
         self, state_key: str,
-        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]],
+        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str] | tuple[str, dict, dict, str, int]]]],
     ) -> None:
         """Read-modify-write one JSON rollup state and record the ``(metric, dimensions, resource,
-        period_start)`` rows ``update`` closes, in one write transaction: every process of the profile
+        period_start[, amount])`` rows (an amount only for ``SUM_METRICS``) ``update`` closes, in one write transaction: every process of the profile
         serializes here, so a closed period is emitted exactly once. Rows the contract rejects are
         dropped (never retried) so one bad row cannot wedge the rollup. A busy store defers the update
         to the next write (it then runs with that write's clock)."""
@@ -287,7 +307,7 @@ class SharedMetricsStore:
 
     def _update_rollup_state(
         self, connection: sqlite3.Connection, state_key: str,
-        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]],
+        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str] | tuple[str, dict, dict, str, int]]]],
     ) -> None:
         row = connection.execute(
             "SELECT value FROM telemetry_state WHERE key = ?", (state_key,)
@@ -300,11 +320,12 @@ class SharedMetricsStore:
         valid = [
             r for r in rows
             if counter_dimensions_are_valid(r[0], r[1]) and client_resource_is_valid(r[2])
+            and (len(r) == 4 or r[4] == 1 or (r[0] in SUM_METRICS and type(r[4]) is int and r[4] > 1))
         ]
         if valid:
             self._install_id(connection)
-        for metric_name, dimensions, resource, period_start in valid:
-            self._record_counter_in_transaction(connection, metric_name, dimensions, resource, period_start)
+        for metric_name, dimensions, resource, period_start, *amount in valid:
+            self._record_counter_in_transaction(connection, metric_name, dimensions, resource, period_start, *amount)
         connection.execute(
             "INSERT INTO telemetry_state(key, value) VALUES (?, ?)"
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -429,6 +450,8 @@ class SharedMetricsStore:
                 register, self._drain_at_exit = not self._drain_at_exit, True
             if register:
                 atexit.register(self.drain_deferred)
+                with _DEFERRING_STORES_LOCK:
+                    _DEFERRING_STORES.append(self)
             if not busy:
                 raise
 
@@ -442,7 +465,11 @@ class SharedMetricsStore:
             with self._write(busy_timeout_ms=busy_timeout_ms) as connection:
                 for item in pending:
                     item(connection)
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, sqlite3.OperationalError) and ("locked" in str(exc) or "busy" in str(exc)):
+                with self._deferred_lock:  # still contended: keep them for the next write or exit drain
+                    self._deferred = [*pending, *self._deferred][-_DEFERRED_WRITES_MAX:]
+                return
             logger.warning("Unable to write %d deferred shared-metrics updates", len(pending), exc_info=True)
 
     def create_and_export_package_if_due(self) -> list[Path]:

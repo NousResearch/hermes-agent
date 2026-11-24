@@ -69,14 +69,26 @@ class TestResolveProviderClientMainAlias:
         assert client is not None
         assert "beans.local" in str(client.base_url)
 
-    def test_main_resolves_github_copilot_alias(self, tmp_path):
+    def test_main_resolves_plugin_provider_alias(self, tmp_path, request):
+        import hermes_cli.auth
+        import providers
+        from providers.base import ProviderProfile
+
+        providers.register_provider(ProviderProfile(
+            name="acme-hub", aliases=("acme-hub-alias",), env_vars=("ACME_HUB_API_KEY",),
+            base_url="https://api.acme-hub.test/v1"))
+        request.addfinalizer(lambda: (
+            providers._REGISTRY.pop("acme-hub", None),
+            providers._ALIASES.pop("acme-hub-alias", None),
+            hermes_cli.auth.PROVIDER_REGISTRY.pop("acme-hub", None),
+            hermes_cli.auth.PROVIDER_REGISTRY.pop("acme-hub-alias", None)))
         _write_config(tmp_path, {
-            "model": {"default": "gpt-5.4", "provider": "github-copilot"},
+            "model": {"default": "gpt-5.4", "provider": "acme-hub-alias"},
         })
         with (
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
-                "api_key": "ghu_test_token",
-                "base_url": "https://api.githubcopilot.com",
+                "api_key": "acme_test_token",
+                "base_url": "https://api.acme-hub.test/v1",
             }),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):

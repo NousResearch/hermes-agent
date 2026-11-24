@@ -227,8 +227,8 @@ def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeyp
     db, _ = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
     assert db.get_session("x") is None and db._reader is None
-    from hermes_state import SessionDB
-    SessionDB(db_path=tmp_path / "state.db").close()
+    from persistence_assembly import open_persistence, profile_scope
+    open_persistence(profile_scope(home=tmp_path), eager=True).close()
     assert db.get_session("x") is None and db._reader is not None
 
 
@@ -241,27 +241,21 @@ def test_banner_session_label_is_mains_eight_characters_for_a_canonical_id():
 
 
 def test_cli_startup_notices_render_from_the_snapshot(store, monkeypatch):
-    """Main's tool-availability warning and browser notice print from the gateway snapshot (the
-    gateway resolved the session's tools); the CLI process enumerates nothing."""
+    """Main's tool-availability warning prints from the gateway snapshot (the gateway resolved the
+    session's tools); the CLI process enumerates nothing."""
     from types import SimpleNamespace
 
     from hermes_cli.cli_info_mixin import CLIInfoMixin
-    from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
     db, _ = store
     db.open_session(cli("local-old", resumed=True))
-    db.current["info"].update(tool_availability_warnings=["[yellow]⚠ terminal off[/]"],
-                              browser_backend_notice="browser-harness is missing")
+    db.current["info"].update(tool_availability_warnings=["[yellow]⚠ terminal off[/]"])
     printed = []
-    host = SimpleNamespace(_session_db=db, _console_print=lambda *a: printed.append(a[0] if a else ""),
-                           _show_browser_backend_notice=lambda: printed.append("LOCAL"))
-    CLITuiRuntimeMixin._show_startup_browser_notice(host)
-    assert printed == ["[yellow]⚠ browser-harness is missing[/yellow]"]
+    host = SimpleNamespace(_session_db=db, _console_print=lambda *a: printed.append(a[0] if a else ""))
     monkeypatch.setattr("cli._build_compact_banner", lambda: "compact", raising=False)
     banner = SimpleNamespace(**vars(host), console=SimpleNamespace(clear=lambda: None), compact=True,
                              session_id="local-old", _show_status=lambda: None, agent=None,
                              _show_tool_availability_warnings=lambda: printed.append("LOCAL-WARN"))
     banner._print_gateway_tool_warnings = lambda lines: CLIInfoMixin._print_gateway_tool_warnings(banner, lines)
-    printed.clear()
     CLIInfoMixin.show_banner(banner)
     assert "[yellow]⚠ terminal off[/]" in printed and "LOCAL-WARN" not in printed
 
@@ -271,12 +265,11 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     main prints comes from the read-only reader."""
     db, client = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
-    from hermes_state import SessionDB
-    writer = SessionDB(db_path=tmp_path / "state.db")
-    writer.create_session("local-other", source="local")
-    writer.set_session_title("local-other", "Alpha Title")
-    writer.create_session("local-old", source="local")
-    writer.close()
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        seed_session(writer, "local-other", "local", title="Alpha Title")
+        seed_session(writer, "local-old", "local")
     db.open_session(cli("local-old", resumed=True))
 
     async def refuse(method, *, _timeout=None, **params):
@@ -291,6 +284,39 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     with pytest.raises(ValueError) as err:
         db.set_session_title("local-old", "Free Title")
     assert str(err.value) == "request_failed"
+
+
+def test_renaming_a_later_compression_segment_sends_that_rows_revision(store, tmp_path, monkeypatch):
+    """`/title` after a compression renames the live segment, but the owner answers its resume with the
+    conversation's root snapshot. The rename is fenced on the row it names, so the root's revision
+    was a revision_conflict on every try."""
+    db, client = store
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        seed_session(writer, "local-old", "local")
+        seed_messages(writer, "local-old", {"role": "user", "content": "hi"})
+        writer.lineage.publish_compression_child(
+            "local-old", CompressionChild(session_id="local-tip", source="local"),
+            [NewMessage.from_live({"role": "user", "content": "hi"})], require_compression_lease=False)
+        raw_holder(writer)._execute_write(
+            lambda conn: conn.execute("UPDATE sessions SET runtime_revision=7 WHERE id='local-tip'"))
+    base = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.resume" and params["session_id"] == "local-tip":
+            client.calls.append((method, params))
+            return {**snapshot("local-tip"), "stored_session_id": "local-old"}
+        return await base(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    for title in ("First", "Second"):
+        db.set_session_title("local-tip", title)
+        method, params = client.calls[-1]
+        assert (method, params["session_id"], params["expected_revision"]) == ("session.mutate", "local-tip", 7)
 
 
 HISTORY = [{"role": "user", "content": "one", "row_id": 11}, {"role": "assistant", "content": "a1", "row_id": 12},
@@ -391,21 +417,19 @@ def test_new_session_id_off_the_gateway_is_mains_mint():
 def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, monkeypatch):
     """The gateway labels an interactive local row ``local`` (``created_source`` keeps the surface), so
     main's ``source='cli'`` listings (/resume picker, /sessions, /history, bare -c) read both labels."""
-    import sqlite3
     db, _ = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
-    from hermes_state import SessionDB
-    writer = SessionDB(db_path=tmp_path / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     rows = (("local-cli", "local", "cli"), ("local-tui", "local", "tui"), ("legacy", "cli", "cli"),
             ("one", "oneshot", "oneshot"))
-    for sid, source, _created in rows:
-        writer.create_session(sid, source=source)
-        writer.append_message(sid, "user", "hi " + sid)
-    writer.close()
-    conn = sqlite3.connect(tmp_path / "state.db")
-    conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [(c, sid) for sid, _s, c in rows])
-    conn.commit()
-    conn.close()
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        for sid, source, _created in rows:
+            seed_session(writer, sid, source)
+            seed_messages(writer, sid, {"role": "user", "content": "hi " + sid})
+        raw_holder(writer)._execute_write(lambda conn: conn.executemany(
+            "UPDATE sessions SET created_source=? WHERE id=?", [(c, sid) for sid, _s, c in rows]))
     from hermes_cli.session_listing import query_session_listing
     listed = query_session_listing(db, source="cli", include_unnamed=True, limit=10)
     assert sorted(r["id"] for r in listed) == ["legacy", "local-cli"]
@@ -413,6 +437,22 @@ def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, m
     assert sorted(r["id"] for r in found) == ["legacy", "local-cli", "one"]
     assert [r["id"] for r in db.search_sessions(source="tui", limit=10)] == ["local-tui"]
     assert len(db.list_sessions_rich(limit=10)) == 4
+
+
+def test_a_negative_limit_lists_every_session(store, tmp_path, monkeypatch):
+    """``hermes sessions list/browse --limit -1`` lists every session: a negative limit is no limit, as in SQL."""
+    db, _ = store
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        for sid in ("a", "b", "c"):
+            seed_session(writer, sid, "cli")
+            seed_messages(writer, sid, {"role": "user", "content": "hi " + sid})
+    for source in (None, "cli"):
+        assert len(db.list_sessions_rich(source=source, limit=-1)) == 3
+        assert len(db.search_sessions(source=source, limit=-1)) == 3
+        assert len(db.list_sessions_rich(source=source, limit=2)) == 2
 
 
 def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
@@ -429,19 +469,17 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
     """Bare ``-c`` (main.py ``_resolve_last_session``) reads main's labels too: a gateway row labelled
     ``local`` that the CLI created is CLI history."""
-    import sqlite3
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
-    writer = SessionDB(db_path=tmp_path / "state.db")
-    writer.create_session("local-cli", source="local")
-    writer.append_message("local-cli", "user", "hi")
-    writer.create_session("local-tui", source="local")
-    writer.append_message("local-tui", "user", "later")
-    writer.close()
-    conn = sqlite3.connect(tmp_path / "state.db")
-    conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [("cli", "local-cli"), ("tui", "local-tui")])
-    conn.commit()
-    conn.close()
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        seed_session(writer, "local-cli", "local")
+        seed_messages(writer, "local-cli", {"role": "user", "content": "hi"})
+        seed_session(writer, "local-tui", "local")
+        seed_messages(writer, "local-tui", {"role": "user", "content": "later"})
+        raw_holder(writer)._execute_write(lambda conn: conn.executemany(
+            "UPDATE sessions SET created_source=? WHERE id=?", [("cli", "local-cli"), ("tui", "local-tui")]))
     monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
     from hermes_cli.main import _resolve_last_session
     assert _resolve_last_session("cli") == "local-cli"
@@ -517,6 +555,91 @@ def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monke
     monkeypatch.setenv("TERMINAL_ENV", "docker")  # main stamps no host cwd for a remote backend
     db.create({"toolsets": ["file"]})
     assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
+
+
+@pytest.mark.parametrize("backend", ["docker", "ssh"])
+def test_a_sandbox_backend_sends_the_host_launch_dir_not_its_terminal_cwd(store, monkeypatch, tmp_path, backend):
+    """A docker/ssh ``terminal.cwd`` (bridged to TERMINAL_CWD) names a path inside the sandbox. The
+    owner checks ``cwd`` on its own host, so sending it refused every launch with ``invalid_params``;
+    like the thin client and the TUI, the classic CLI sends its host launch dir."""
+    from hermes_cli import gateway_session_store as gss
+    db, client = store
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TERMINAL_CWD", "/project/not-on-this-host")
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tmp_path.resolve())
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Remote Named")
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tmp_path.resolve())
+
+
+def test_a_mounting_docker_backend_sends_the_w_worktree_not_the_launch_dir(store, monkeypatch, tmp_path):
+    """``-w`` puts its host worktree in TERMINAL_CWD without a chdir. A docker backend mounting the
+    session cwd at ``/workspace`` would otherwise mount the original checkout, so the tools edit it
+    instead of the isolated tree."""
+    db, client = store
+    repo, tree = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "wt"
+    tree.mkdir(parents=True)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+
+
+@pytest.mark.parametrize("entry", ["cli", "__main__"])
+@pytest.mark.parametrize("backend,mount", [("local", None), ("docker", "true")])
+def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypatch, tmp_path, backend, mount, entry):
+    """-w publishes its tree in TERMINAL_CWD without a chdir; once the tree is gone, creating from the
+    original checkout would put the agent's edits there. Main sent the path and the gateway refused it.
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
+    import sys
+    from hermes_cli import gateway_session_store as gss
+    db, client = store
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tree = repo / ".worktrees" / "wt"  # never created: removed while the CLI was open
+    monkeypatch.chdir(repo)
+    if entry == "cli":
+        monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    else:
+        monkeypatch.setattr(sys.modules["__main__"], "_active_worktree", {"path": str(tree)}, raising=False)
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    if mount:
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", mount)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Named")
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+
+
+@pytest.mark.parametrize("backend,mount", [("local", None), ("docker", "true")])
+def test_a_project_resumed_after_w_is_sent_not_the_w_worktree(store, monkeypatch, tmp_path, backend, mount):
+    """``hermes -w`` in A, ``/resume`` of a session from B, then ``/new``: the resume moves cwd and
+    TERMINAL_CWD to B but A stays recorded (its quit cleanup is still due), so A must not win."""
+    import sys
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+    db, client = store
+    tree, project_b = tmp_path / "a" / ".worktrees" / "wt", tmp_path / "b"
+    tree.mkdir(parents=True)
+    project_b.mkdir()
+    monkeypatch.chdir(tmp_path / "a")
+    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    if mount:
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", mount)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    CLISessionMixin._restore_session_cwd(types.SimpleNamespace(), {"cwd": str(project_b)}, quiet=True)
+    db.create({"toolsets": ["file"]}, record_cwd=False)
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(project_b.resolve())
 
 
 def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store, monkeypatch):

@@ -1,6 +1,8 @@
 import { DEFAULT_REASONING_EFFORT, isReasoningEffort } from '@hermes/shared'
 
+import { translateNow } from '@/i18n/runtime'
 import { normalize } from '@/lib/text'
+import { notify } from '@/store/notifications'
 
 /** The level ladder a shortcut steps through: thinking off, then the normal
  *  levels in ascending order. `max`/`ultra` are deliberately absent — they are
@@ -63,11 +65,20 @@ export async function writeSessionReasoningEffort(
   sessionId: string,
   effort: ReasoningStepLevel | 'max' | 'ultra'
 ): Promise<ReasoningStepLevel> {
-  const result = await request<{ value?: unknown }>('config.set', {
+  const result = await request<{ status?: unknown; value?: unknown }>('config.set', {
     key: 'reasoning',
     session_id: sessionId,
     value: effort
   })
+
+  // A level picked while a reply streams is the owner's for the next turn, like a model menu pick.
+  if (result?.status === 'deferred') {
+    notify({
+      id: `model-pick-deferred-${sessionId}`,
+      kind: 'info',
+      message: translateNow('shell.modelMenu.pickDeferred', effort)
+    })
+  }
 
   return normalizeReasoningStepLevel(typeof result?.value === 'string' ? result.value : effort)
 }

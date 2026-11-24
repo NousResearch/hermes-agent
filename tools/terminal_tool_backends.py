@@ -19,6 +19,7 @@ from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from tools.terminal_tool_config import _get_plugin_env_provider
 from tools.tool_backend_helpers import (has_direct_modal_credentials, managed_nous_tools_enabled,
                                         nous_tool_gateway_unavailable_message, resolve_modal_backend_state)
+from utils import is_truthy_value
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
@@ -54,7 +55,8 @@ _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
 _SSH_KEYS = (("host", "ssh_host", ""), ("user", "ssh_user", ""), ("port", "ssh_port", 22),
-             ("key", "ssh_key", ""), ("persistent", "ssh_persistent", True))
+             ("key", "ssh_key", ""), ("persistent", "ssh_persistent", True),
+             ("sync_files", "ssh_sync_files", True))
 _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 5120),
                   ("disk", "container_disk", 51200), ("persistent_filesystem", "container_persistent", True))
 _CONTAINER_KEYS = (
@@ -211,7 +213,8 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
         raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
     return _SSHEnvironment(host=ssh_config["host"], user=ssh_config["user"], port=ssh_config.get("port", 22),
                            key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only,
-                           persistent=ssh_config.get("persistent", True))
+                           persistent=ssh_config.get("persistent", True),
+                           sync_files=is_truthy_value(ssh_config.get("sync_files", True), default=True))
 
 
 def _stamp_sandbox_home(env_obj, provider, cwd) -> None:

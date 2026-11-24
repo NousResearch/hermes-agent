@@ -936,6 +936,8 @@ def _get_env_config() -> dict[str, Any]:
             "TERMINAL_SSH_PERSISTENT", _tenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ),
         "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "true"),
+        # False: never upload ~/.hermes to the remote or copy remote changes back to the host.
+        "ssh_sync_files": _tenv_bool("TERMINAL_SSH_SYNC_FILES", "true"),
         # Container resources (MB); ignored for local/ssh.
         "container_cpu": container_cpu,
         "container_memory": container_memory,

@@ -8,6 +8,7 @@ Service is never touched), use uniquely named dummy entries, and delete them in 
 
 from __future__ import annotations
 
+import sys
 import uuid
 
 import pytest
@@ -20,6 +21,21 @@ _LOGIN = {"identifier_type": "email", "identifier": "ci@example.com", "password"
 _NO_SUCH_LOGON_SESSION = 1312
 
 
+def _skip_without_logon_session(backend) -> None:
+    """Skip when Credential Manager refuses a bare write with ERROR_NO_SUCH_LOGON_SESSION; any other
+    outcome is left to the tests, which check store and read-back themselves. A probe that was written
+    is removed again, and one that cannot be removed fails setup."""
+    account = f"hermes-ci-probe-{uuid.uuid4().hex}"
+    try:
+        backend.set_password(kc.SERVICE, account, "probe")
+    except Exception as exc:  # health: allow BLE001 -- keyring backends raise their own types
+        if getattr(exc, "winerror", None) == _NO_SUCH_LOGON_SESSION:
+            pytest.skip(f"this runner's session has no logon session for Credential Manager: {exc}")
+        return
+    assert kc.delete_key({"storage": "keychain", "service": kc.SERVICE, "account": account}), \
+        f"the keychain probe entry {account} could not be removed"
+
+
 @pytest.fixture
 def os_keychain():
     """The real backend keyring resolves to; skip where the host has none (not a failure).
@@ -28,17 +44,11 @@ def os_keychain():
     Credential Manager backend that refuses every write: a property of that runner's session, not of
     Hermes, so it skips too. Any other refusal still fails."""
     try:
-        kc.os_keyring()
+        backend = kc.os_keyring()
     except kc.KeychainUnavailable as exc:
         pytest.skip(f"no OS keychain on this host: {exc}")
-    probe = {"storage": "keychain", "service": kc.SERVICE, "account": f"hermes-ci-probe-{uuid.uuid4().hex}"}
-    try:
-        kc.store_key(probe, Fernet.generate_key())
-    except kc.KeychainUnavailable as exc:
-        if getattr(exc.__cause__, "winerror", None) == _NO_SUCH_LOGON_SESSION:
-            pytest.skip(f"this runner's session has no logon session for Credential Manager: {exc.__cause__}")
-        raise
-    kc.delete_key(probe)
+    if sys.platform == "win32":
+        _skip_without_logon_session(backend)
     made: list[dict] = []
     yield made
     for ref in made:

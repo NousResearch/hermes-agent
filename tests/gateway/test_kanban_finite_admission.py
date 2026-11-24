@@ -1,5 +1,7 @@
 """Regression for #138992: dispatched cards retain headless approval semantics."""
 import asyncio
+import json
+import time
 from contextlib import closing
 from types import SimpleNamespace
 
@@ -298,6 +300,94 @@ def test_a_client_cannot_mint_the_kanban_card_marker(kanban_owner):
                 owner.connection.subscriptions[sid] = object()
                 owner.connection.submission(ref, {'session_id': sid, 'submission_id': 'f2', **forged})
             assert refused.value.reason == 'invalid_params'
+        finally:
+            await owner.close()
+
+    asyncio.run(scenario())
+
+
+def test_respawn_of_dead_card_attempt_settles_unknown_admission_before_resume(kanban_owner):
+    """t_8dd5bf2a: the 4 s death loop. A card attempt whose managed interpreter died is fenced
+    ``unknown`` while the (long-lived) owner settles nothing until boot/drain. The dispatcher
+    respawns the SAME attempt; the idempotent re-admission used to return the committed
+    ``unknown`` receipt, the client exited rc=1 on it, and every reclaim path deferred to the
+    owner — forever. run_task must settle the stale unknown row (terminal interrupted, never
+    replayed) and admit the respawn instead."""
+    from gateway.session_kanban import run_task
+
+    owner = kanban_owner(_CONFIG)
+
+    async def scenario():
+        try:
+            sid = (await run_task(owner.connection, owner.params))['session_id']
+            # The managed interpreter died without settling: claim, then fence 'unknown' exactly
+            # as lose_admission_worker/boot recovery leave it — WITHOUT restarting the owner.
+            store = owner.authority.persistence
+            claimed = store.admissions.claim(epoch=owner.authority.epoch, session_id=sid)
+            assert claimed and claimed.status == 'started'
+            import sqlite3
+            with sqlite3.connect(store.scope.profile_dir / 'state.db') as lc:
+                lc.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?",
+                           (claimed.admission_id,))
+                lc.commit()
+            # The respawn: same board params, same request identity, owner never restarted.
+            again = await run_task(owner.connection, owner.params)
+            assert again['session_id'] == sid
+            rows = store.admissions.list(session_id=sid, pending_only=False)
+            statuses = sorted(r.status.value if hasattr(r.status, 'value') else str(r.status) for r in rows)
+            assert 'unknown' not in statuses, f'respawn left the poison: {statuses}'
+            # The stale row settled terminal/interrupted (the heal), and the respawn's own
+            # submission was admitted (it settles as the test's stub turn runs).
+            settled = [r for r in rows
+                       if (r.status.value if hasattr(r.status, 'value') else str(r.status)) == 'terminal']
+            assert settled and all(
+                (r.outcome.value if hasattr(r.outcome, 'value') else str(r.outcome)) == 'interrupted'
+                for r in settled), [(r.status, r.outcome) for r in rows]
+            assert len(rows) >= 1, statuses
+            # The stale row settled terminal/interrupted by the heal. If the respawn's own
+            # submission landed (this fixture drains no FIFO), it must not be 'unknown'.
+            assert len(rows) == 1 or all(
+                (r.status.value if hasattr(r.status, 'value') else str(r.status)) != 'unknown'
+                for r in rows), [(r.status, r.outcome) for r in rows]
+        finally:
+            await owner.close()
+
+    asyncio.run(scenario())
+
+
+def test_respawn_never_settles_a_live_bound_interpreter(kanban_owner, monkeypatch):
+    """The heal must not touch a run whose bound interpreter is still alive: the previous
+    attempt's execution is real, and settling its admission would let a duplicate run race it."""
+    from gateway.session_kanban import run_task
+    import os
+
+    owner = kanban_owner(_CONFIG)
+
+    async def scenario():
+        try:
+            sid = (await run_task(owner.connection, owner.params))['session_id']
+            store = owner.authority.persistence
+            claimed = store.admissions.claim(epoch=owner.authority.epoch, session_id=sid)
+            assert claimed and claimed.status == 'started'
+            import sqlite3
+            with sqlite3.connect(store.scope.profile_dir / 'state.db') as lc:
+                lc.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?",
+                           (claimed.admission_id,))
+                lc.commit()
+            # A worker_bound event naming THIS process: a live bound interpreter.
+            from hermes_cli.kanban_db_connect import connect
+            with connect(board='owned') as conn:
+                conn.execute(
+                    "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                    "VALUES (?, ?, 'worker_bound', ?, ?)",
+                    (owner.params['task_id'], owner.params['run_id'],
+                     json.dumps({'pid': os.getpid(), 'claim_lock': owner.params['claim_lock'],
+                                 'started_at': None}), int(time.time())))
+                conn.commit()
+            await run_task(owner.connection, owner.params)
+            rows = store.admissions.list(session_id=sid, pending_only=False)
+            st = [r.status.value if hasattr(r.status, 'value') else str(r.status) for r in rows]
+            assert 'unknown' in st, f'heal settled a LIVE bound attempt: {st}'
         finally:
             await owner.close()
 

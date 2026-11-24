@@ -122,6 +122,59 @@ async def run_task(connection, params):
     from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
 
+    async def _heal_stale_unknown_admission():
+        """Admission-time self-heal for a re-spawned card attempt (#134889 follow-up).
+
+        A card attempt whose managed interpreter died is fenced ``unknown`` by
+        ``lose_admission_worker``. While that row is unsettled the card is poisoned:
+        ``_claim_next`` refuses ``unknown_execution`` for its session, the board reclaim
+        paths defer to the owner (``owner_reclaim_paused``), and the owner — a long-lived
+        gateway by design — settles an unattended unknown only at boot or drain. Meanwhile
+        every respawn of the attempt re-submits the idempotent ``kanban.run``, gets the
+        committed ``unknown`` receipt back, and ``kanban_worker_client._exit_code`` raises
+        rc=1 within seconds — the 4 s death loop.
+
+        A re-admission of THIS run (``saved is not None``: the session's receipt survived)
+        where the board still pins the card to this run is exactly the situation the boot
+        settler heals, and waiting for a restart to do it is what makes the loop permanent:
+        the dispatcher never respawns over a live worker, and a live worker's client keeps
+        polling its receipt instead of re-submitting — so a respawn re-admission proves no
+        execution of this attempt is running. Settle every ``unknown`` row on the session
+        through the same fenced resolution a person's Discard uses (terminal ``interrupted``,
+        never requeued or replayed, transcript notice in the same txn) before resuming. A run
+        that bound an interpreter only settles once that process is gone (the same evidence
+        ``bound_interpreter_gone`` reads).
+        """
+        from persistence.core.errors import AuthorityRefusal
+        from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+        from hermes_cli import kanban_db as _kb
+        with connect_closing(Path(context['db'])) as conn:
+            trow = _kb.get_task(conn, params['task_id'])
+            bound = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' "
+                "ORDER BY id DESC LIMIT 1", (params['task_id'], params['run_id'])).fetchone()
+        if not (bool(trow) and trow.current_run_id == params['run_id']):
+            return
+        if bound:
+            from hermes_cli.kanban_db_dispatch import _worker_alive
+            payload = json.loads(bound[0])
+            if _worker_alive(payload.get('pid'), payload.get('started_at')):
+                return  # the bound interpreter is genuinely live — not ours to settle
+        # The exact durable key (principal, target, request) — the same lookup the retry's
+        # receipt replay uses; the retry path must never list the session's admissions.
+        row = await asyncio.to_thread(
+            store.admissions.find, principal_id=connection.actor.subject,
+            session_id=ref.session_id, request_id=request_id)
+        rows = [row] if row is not None and getattr(row, 'status', None) == 'unknown' else []
+        for row in rows:
+            try:
+                await asyncio.to_thread(
+                    store.admissions.resolve_unknown, epoch=authority.epoch,
+                    admission_id=row.admission_id, generation=row.generation,
+                    notice=AUTOMATION_INTERRUPTED_NOTICE)
+            except AuthorityRefusal:
+                continue  # settled underneath us or fenced by a newer epoch — not ours
+
     def admit_claim():
         # The Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s): the claim
         # check and its marker share one write transaction, off the owner loop.
@@ -144,6 +197,8 @@ async def run_task(connection, params):
                     run_id=task.current_run_id)
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
+    if saved is not None:
+        await _heal_stale_unknown_admission()
     await connection.resume(ref, {})
     # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
     # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.

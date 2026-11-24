@@ -1294,6 +1294,29 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+@pytest.mark.parametrize("cfg,expected", [
+    ("", "notify+wake"),
+    ("kanban:\n  auto_subscribe_delivery_mode: wake\n", "wake"),
+    ("kanban:\n  auto_subscribe_delivery_mode: notify\n", "notify"),
+    ("kanban:\n  auto_subscribe_delivery_mode: bogus\n", "notify+wake"),
+])
+def test_auto_subscribe_delivery_mode_config(monkeypatch, worker_env, tmp_path, cfg, expected):
+    """kanban.auto_subscribe_delivery_mode picks the delivery mode of the automatic
+    non-TUI subscription; unset or invalid keeps notify+wake."""
+    home = tmp_path / "mode-home" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(cfg)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_create({"title": "mode", "assignee": "peer"}))
+    assert d["subscribed"] is True, d
+    (sub,) = _list_subs_for_task(d["task_id"])
+    assert sub["delivery_mode"] == expected
+
+
 def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
     """If add_notify_sub itself raises (e.g. DB locked, schema drift),
     _maybe_auto_subscribe must NOT bubble that up and fail the parent

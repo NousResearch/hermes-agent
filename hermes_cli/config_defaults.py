@@ -1832,6 +1832,10 @@ DEFAULT_CONFIG = {
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
+        # Delivery mode of those automatic subscriptions in gateway chats: "notify+wake"
+        # (raw event message + agent wake), "wake" (agent summary only, no duplicate raw
+        # message) or "notify" (raw message only). TUI sessions are unaffected.
+        "auto_subscribe_delivery_mode": "notify+wake",
         # Poll and deliver Kanban subscriptions from this gateway. Disable on profiles that do
         # not own notification subscriptions to avoid an idle five-second board probe.
         "notify_in_gateway": True,

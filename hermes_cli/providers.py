@@ -535,7 +535,11 @@ def custom_provider_aliases(display_name: str, provider_key: str = "") -> frozen
         if not raw:
             continue
         normalized = raw.replace(" ", "-")
-        aliases.update({raw, normalized, custom_provider_slug(normalized)})
+        # switch_model() (PATH B) mints ``custom:<raw name>`` for a config.yaml
+        # custom_providers entry; the name may contain spaces or parentheses.
+        # Accept that exact id too, otherwise the gateway rejects a token
+        # Hermes itself produced (GH #159470).
+        aliases.update({raw, normalized, f"custom:{raw}", custom_provider_slug(normalized)})
         if normalized.startswith("custom:"):
             suffix = normalized.split(":", 1)[1]
             if suffix:

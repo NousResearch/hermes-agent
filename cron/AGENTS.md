@@ -104,6 +104,10 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   payload, and only then drops the marker: a source-update relaunch (`-I`, no `PYTHONPATH`) or a
   post-restore re-exec must replay the whole worker, never land after the ack with the payload
   gone and no dependency boot.
+- **Per-fire prompt context crosses the worker handoff.** `run_one_job(..., extra_prompt=...)`
+  carries transient event input such as a webhook's rendered prompt. The managed gateway serializes
+  it beside the job snapshot, and `_run_external_worker_payload` passes it back into `run_one_job`;
+  do not rely on `manual_run_prompt`, which only `trigger_job` stamps.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

@@ -2763,7 +2763,10 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            handed_off = _launch_external_cron_worker(job)
+            if extra_prompt is None:
+                handed_off = _launch_external_cron_worker(job)
+            else:
+                handed_off = _launch_external_cron_worker(job, extra_prompt=extra_prompt)
         except Exception as handoff_error:
             # Arbitrary waiter errors must not claim dispatch failure or resend
             # a worker's notice. A recovered unknown execution is different:
@@ -3549,7 +3552,9 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
+def _launch_external_cron_worker(
+    job: dict, *, extra_prompt: Optional[str] = None,
+) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` outside a managed systemd gateway (in-process path).  In
@@ -3557,6 +3562,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ownership handoff: in a transient user scope, or — when no user D-Bus
     session exists and ``cron.require_restart_safe_scope`` is false — as a
     direct subprocess (process separation kept, cgroup isolation lost).
+
+    Per-fire prompt context is transient input to this execution, not job state;
+    serialize it with the snapshot so the external worker sees the same input.
 
     A fire routed to a profile other than the process's own is multiplexed at THIS boundary too.
     ``run_one_job`` switches the context on in ``_install_fire_secret_scope``, which runs AFTER
@@ -3622,14 +3630,14 @@ def _launch_external_cron_worker(job: dict) -> bool:
     fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as payload_file:
-            json.dump(
-                {
-                    "job": job,
-                    "profile_home": str(_get_hermes_home().resolve()),
-                    "multiplex_active": multiplex_active,
-                },
-                payload_file,
-            )
+            payload = {
+                "job": job,
+                "profile_home": str(_get_hermes_home().resolve()),
+                "multiplex_active": multiplex_active,
+            }
+            if extra_prompt is not None:
+                payload["extra_prompt"] = extra_prompt
+            json.dump(payload, payload_file)
             payload_file.flush()
             os.fsync(payload_file.fileno())
     except BaseException:
@@ -3802,6 +3810,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         payload = json.loads(payload_path.read_text(encoding="utf-8-sig"))
         job = payload["job"]
         profile_home = Path(payload["profile_home"]).resolve()
+        extra_prompt = payload.get("extra_prompt")
         execution_id = str(job["execution_id"])
     except Exception:
         logger.exception("Cron external worker could not load payload %s", payload_path)
@@ -3885,7 +3894,13 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                completed = run_one_job(job, adapters=None, loop=None, verbose=False)
+                if extra_prompt is None:
+                    completed = run_one_job(job, adapters=None, loop=None, verbose=False)
+                else:
+                    completed = run_one_job(
+                        job, adapters=None, loop=None, verbose=False,
+                        extra_prompt=extra_prompt,
+                    )
                 # Successful return: the worker recorded its outcome. If it raises,
                 # retain fd 2's pathname until the waiter consumes the traceback.
                 with contextlib.suppress(OSError):

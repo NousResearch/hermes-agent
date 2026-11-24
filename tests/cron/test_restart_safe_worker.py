@@ -144,6 +144,7 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
         json.dumps({
             "job": {"id": "job-1", "execution_id": "exec-1"},
             "profile_home": str(tmp_path / "profile"),
+            "extra_prompt": "Webhook event context",
         }),
         encoding="utf-8",
     )
@@ -167,8 +168,13 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert scheduler._run_external_worker_payload(payload, ack) is True
 
     adopted.assert_called_once_with("exec-1")
-    run.assert_called_once()
-    assert run.call_args.args[0]["id"] == "job-1"
+    run.assert_called_once_with(
+        {"id": "job-1", "execution_id": "exec-1"},
+        adapters=None,
+        loop=None,
+        verbose=False,
+        extra_prompt="Webhook event context",
+    )
     expected_home = (tmp_path / "profile").resolve()
     assert observed_homes == [expected_home, expected_home]
     assert ack.exists()
@@ -352,11 +358,14 @@ def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, mo
     home_token = set_hermes_home_override(str(routed))
     try:
         assert scheduler._launch_external_cron_worker(
-            {"id": "job-r", "execution_id": "exec-1", "prompt": "work"}) is True
+            {"id": "job-r", "execution_id": "exec-1", "prompt": "work"},
+            extra_prompt="Webhook event context",
+        ) is True
     finally:
         reset_hermes_home_override(home_token)
 
     assert payloads[0]["multiplex_active"] is True
+    assert payloads[0]["extra_prompt"] == "Webhook event context"
     assert "LAUNCH_ONLY_SECRET" not in spawned[0][1]["env"]
     assert not secret_scope.is_multiplex_active()  # enabled for the handoff span only
     assert os.environ["LAUNCH_ONLY_SECRET"] == "launch-secret"  # parent untouched
@@ -937,9 +946,13 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     monkeypatch.setattr(scheduler, "run_job", run)
     job = {"id": "job-1", "execution_id": "exec-1"}
 
-    assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
+    assert scheduler.run_one_job(
+        job,
+        adapters={"discord": object()},
+        extra_prompt="Webhook event context",
+    ) is True
 
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, extra_prompt="Webhook event context")
     run.assert_not_called()
 
 

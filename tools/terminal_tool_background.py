@@ -93,13 +93,16 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty, persist_on_release: bool = False, allow_cwd_fallback: bool = False):
+           session_key, effective_pty, persist_on_release: bool = False, allow_cwd_fallback: bool = False,
+           transient_env=None, secure_output_deadline=None):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key,
                   persist_on_release=persist_on_release)
     if env_type == "local":
         return process_registry.spawn_local(
-            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
+            env_vars=getattr(env, 'env', None) or {}, use_pty=effective_pty,
+            **({"secret_env": transient_env} if transient_env else {}),
+            **({"secure_output_deadline": secure_output_deadline} if secure_output_deadline is not None else {}),
             restore_login_path=True, **common)
     return process_registry.spawn_via_env(env=env, allow_cwd_fallback=allow_cwd_fallback, **common)
 
@@ -160,6 +163,7 @@ def spawn_background_process(
     persist_on_release: bool = False,
     mounted_host: Optional[str] = None,
     auto_backgrounded: bool = False,
+    env_secret_refs=None,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -180,11 +184,14 @@ def spawn_background_process(
         env=env,
     )
     try:
+        from tools.terminal_tool_secure_input import consume_secret_refs
+        secret_kwargs = consume_secret_refs(None, env_secret_refs)
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
             allow_cwd_fallback=not workdir,  # a named workdir is refused, never swapped for a parent
+            **secret_kwargs,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}

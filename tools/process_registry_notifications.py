@@ -544,6 +544,8 @@ def _completion_status(evt: dict) -> str:
 
 def format_process_notification(evt: dict) -> str | None:
     """Format a completion_queue event into an ``[IMPORTANT: ...]`` message."""
+    from tools.terminal_tool_secure_input import redact_notification
+    evt = redact_notification(evt)
     evt_type = evt.get("type", "completion")
     # watch_disabled and overflow events carry their own human-readable `message`;
     # otherwise overflow events would fall through to the completion formatter as a

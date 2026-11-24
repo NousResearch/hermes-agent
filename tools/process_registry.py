@@ -32,6 +32,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
+from agent.secure_input_broker import redact_known_secrets
+from agent.secure_input_output import SecureOutputFilter, EXPIRED
+from tools.process_registry_secure_output import SecureProcessOutputMixin
 
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
@@ -522,7 +525,9 @@ def _output_tail(session: "ProcessSession", n: int) -> str:
     """Last *n* chars of the session output with ANSI sequences stripped."""
     from tools.ansi_strip import strip_ansi
 
-    return strip_ansi(session.output_buffer[-n:])
+    if session._output_filter and session._output_filter.expired:
+        return EXPIRED[-n:]
+    return redact_known_secrets(strip_ansi(session.output_buffer))[-n:]
 
 
 def _completion_output(session: "ProcessSession") -> dict:
@@ -537,7 +542,7 @@ def _completion_output(session: "ProcessSession") -> dict:
 
 
 @dataclass
-class ProcessSession:
+class ProcessSession(SecureProcessOutputMixin):
     """A tracked background process with output buffering."""
     id: str                                     # "proc_xxxxxxxxxxxx"
     command: str
@@ -560,6 +565,8 @@ class ProcessSession:
     completion_reason: str = "exited"           # exited|killed|lost
     termination_source: str = ""                # process.kill|kill_all|backend_lost|env_closed
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
+    secure_output_deadline: float | None = None
+    _output_filter: Any = field(default=None, repr=False)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
@@ -616,33 +623,17 @@ class ProcessSession:
         # ``owner_task_id`` alone instead of repeating an ``or task_id`` fallback at every call site.
         if not self.owner_task_id:
             self.owner_task_id = self.task_id
+        if self.secure_output_deadline is not None and self._output_filter is None:
+            self._output_filter = SecureOutputFilter(self.secure_output_deadline)
 
-    def append_output(self, text: str) -> None:
-        """Append to the rolling output buffer under the session lock, keeping the tail."""
-        with self._lock:
-            self._append_locked(text)
-
-    def append_output_if_running(self, text: str) -> bool:
-        """Append unless the session has exited. Decided under the lock a kill holds while it
-        snapshots the output and sets ``exited``, so a chunk is either in the kill's receipt or
-        dropped, never added after it."""
-        with self._lock:
-            if self.exited:
-                return False
-            self._append_locked(text)
-        return True
-
-    def _append_locked(self, text: str) -> None:
-        self.output_buffer += text
-        self.total_output_chars += len(text)
-        if len(self.output_buffer) > self.max_output_chars:
-            self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
     def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> bool:
         """Record an exit unless one is already recorded: the first observer's result (a raced kill,
         an env-close settlement, a reconcile) stands. Returns whether it recorded. Hold ``self._lock``."""
         if self.exited:
             return False
+        if self._output_filter:  # flush the secure-output filter's held tail before the exit is recorded
+            self._append_locked(self._output_filter.feed('', final=True))
         self.exited, self.exit_code, self.completion_reason = True, exit_code, reason
         self.termination_source = source or self.termination_source
         return True
@@ -657,7 +648,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log")
+    "heartbeat_seconds", "persist_on_release", "output_log", "secure_output_deadline")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -766,7 +757,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             session._heartbeat_total_at_last = session.total_output_chars
         if not output:
             return
-        output, omitted = heartbeat_output_tail(output)
+        output, omitted = heartbeat_output_tail(redact_known_secrets(output))
         session._heartbeat_seq += 1
         notification = {
             **self._watch_event_base(session),
@@ -852,7 +843,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if lifetime_exhausted:
                 session._watch_disabled = True
                 session.notify_on_complete = True
-        output = "\n".join(matched_lines[:20])
+        output = redact_known_secrets("\n".join(matched_lines[:20]))
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
         if self._global_watch_admit(now):
@@ -1129,11 +1120,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return argv
 
     @staticmethod
-    def _spawn_env(env_vars: dict) -> dict:
+    def _spawn_env(env_vars: dict | None, *, secret_env: dict | None = None) -> dict:
         """Sanitized child env from the served profile's base, as foreground commands; PYTHONUNBUFFERED."""
         from agent.session_client_env import toolchain_environ
         env = _terminal_env(_sanitize_subprocess_env(toolchain_environ(routed_terminal_base()), env_vars))
         env["PYTHONUNBUFFERED"] = "1"
+        env.update(secret_env or {})  # captured secrets are authorized: applied after the credential filter
         return env
 
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
@@ -1152,7 +1144,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._running[session.id] = session
         self._write_checkpoint()
 
-    def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
+    def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict | None,
+                         *, secret_env: dict | None = None) -> ProcessSession:
         """PTY spawn for interactive CLI tools (Codex, Claude Code, REPLs).
         Raises ImportError when no PTY backend is installed and re-raises any spawn
         failure; ``spawn_local`` falls back to pipe mode in both cases."""
@@ -1161,7 +1154,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         else:
             from ptyprocess import PtyProcess as _PtyProcessCls
         pty_argv = self._scope_argv(session, safe_command, session.id, "PTY")
-        pty_env = self._spawn_env(env_vars)
+        pty_env = self._spawn_env(env_vars, **({"secret_env": secret_env} if secret_env else {}))
         if session.systemd_unit:
             pty_env = systemd_user_bus_env(pty_env)
         # A PTY is a real TTY, so pager-happy tools (git log/diff, man) WILL page and
@@ -1179,7 +1172,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def spawn_local(
         self, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
-        persist_on_release: bool = False, restore_login_path: bool = False) -> ProcessSession:
+        persist_on_release: bool = False, restore_login_path: bool = False, *,
+        secret_env: dict | None = None, secure_output_deadline: float | None = None) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends: spawn_via_env()).
         ``use_pty`` asks ptyprocess/pywinpty for a pseudo-terminal; on failure: pipe + ``pty_fallback``.
         ``persist_on_release``: no agent kill sweeps (#41225); ``restore_login_path``: re-add reset PATH dirs (#56634)."""
@@ -1187,15 +1181,19 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # the rewriter makes it ``A && { B & }`` (#68915). Lazy: terminal_tool imports this module.
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
+        if secret_env:
+            from tools.terminal_tool_secure_input import validate_background_secret_output
+            validate_background_secret_output()
         safe_command = _append_dropped_path_entries(_rewrite_bg(command), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
-                                    persist_on_release=persist_on_release)
+                                    persist_on_release=persist_on_release, secure_output_deadline=secure_output_deadline)
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
         log = worker_output_log(session.id)
         if use_pty and log is None:
             try:
-                return self._spawn_local_pty(session, safe_command, env_vars)
+                return self._spawn_local_pty(session, safe_command, env_vars,
+                                             **({"secret_env": secret_env} if secret_env else {}))
             except ImportError:
                 session.pty_fallback = "the PTY library (ptyprocess/pywinpty) is not installed"
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
@@ -1215,7 +1213,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
         spawn_argv = self._scope_argv(session, record_exit_command(log, safe_command) if log else safe_command,
                                       unit_suffix, "Local")
-        spawn_env = self._spawn_env(env_vars)
+        spawn_env = self._spawn_env(env_vars, **({"secret_env": secret_env} if secret_env else {}))
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
         # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
@@ -1251,7 +1249,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         The caller has stopped its own drain thread; the registry's reader continues from
         the pipe's current position and ``output_so_far`` seeds the buffer so nothing
         already captured is lost."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd,
+                                    secure_output_deadline=getattr(proc, '_hermes_secure_output_deadline', None),
+                                    _output_filter=getattr(proc, '_hermes_secure_output_filter', None))
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -1259,7 +1259,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         handed_pgid = getattr(proc, "_hermes_owned_pgid", None)
         self._take_handoff_group(session, proc)
         if output_so_far:
-            session.append_output(output_so_far)
+            with session._lock:
+                session._append_locked(output_so_far)
         try:
             self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
         except Exception:
@@ -1519,12 +1520,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
         """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
         ``unless_exited`` drops the chunk once the session has exited (atomically with a kill)."""
-        if not unless_exited:
-            session.append_output(text)
-        elif not session.append_output_if_running(text):
+        safe = session._capture_output(text, unless_exited=unless_exited)  # secure-input filtered
+        if not safe:
             return
-        self._check_watch_patterns(session, text)
-        self._emit_output(session, text)
+        self._check_watch_patterns(session, safe)
+        self._emit_output(session, safe)
 
     def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "") -> bool:
         """Mark an observed exit and finish; returns whether this call recorded the result. Under the
@@ -2631,11 +2631,9 @@ def transform_process_output(output: str, *, command: str, returncode: Optional[
 
 def _redact_process_result(result: dict) -> dict:
     """Transform, then redact secrets from background-process output before it reaches the
-    model, session.db and CLI, mirroring the foreground ``terminal`` pipeline (hook first,
-    redaction after) so the two surfaces can't diverge. Respects ``security.redact_secrets``;
-    ``redact_terminal_output`` picks ``code_file`` from the recorded command.
-
-    The command string itself is also redacted in case it carried an inline credential. See #43025.
+    model, session.db and CLI (hook first, then redaction). The generic pass respects
+    ``security.redact_secrets``; exact secure-input values are always masked.
+    Commands are also redacted in case of inline credentials (#43025).
     """
     if not isinstance(result, dict):
         return result
@@ -2649,9 +2647,9 @@ def _redact_process_result(result: dict) -> dict:
     for key in ("output", "output_preview"):
         if isinstance(value := result.get(key), str) and value:
             value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
-            result[key] = redact_terminal_output(value, command)
+            result[key] = redact_known_secrets(redact_terminal_output(value, command))
     if isinstance(command, str) and command:
-        result["command"] = redact_sensitive_text(command, code_file=True)
+        result["command"] = redact_known_secrets(redact_sensitive_text(command, code_file=True))
     return result
 
 

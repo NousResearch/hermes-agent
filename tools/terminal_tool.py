@@ -1458,11 +1458,8 @@ def _run_foreground(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
                 allow_cwd_fallback=not workdir,
                 **secret_kwargs,
-                # A command holding a secure-input value stays in the foreground: yielding hands
-                # its pipe to the background registry, which has no secure-output path.
-                **({} if secret_kwargs else _yield_kwargs(
-                    command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                    task_id=task_id, session_key=session_key)),
+                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                                task_id=task_id, session_key=session_key),
             )
             break
         except Exception as e:
@@ -1704,6 +1701,7 @@ def terminal_tool(
                     heartbeat_seconds=heartbeat,
                     persist_on_release=persist_on_release,
                     auto_backgrounded=auto_bg is not None and plan.promoted_from_foreground_timeout is None,
+                    env_secret_refs=env_secret_refs,
                 )
                 if plan.promoted_from_foreground_timeout is not None:
                     result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1783,7 +1781,7 @@ TERMINAL_SCHEMA = {
                 "description": "With background=true: survive session end, /new, compression and other cleanup (not host exit). Only for jobs the user explicitly wants to outlive the conversation."
             },
             "stdin_secret_ref": {"type": "string", "description": "Ephemeral secure-input reference piped to foreground stdin; never put raw secrets in command."},
-            "env_secret_refs": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment names to ephemeral secure-input references; local/Docker foreground commands only."},
+            "env_secret_refs": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment names to ephemeral secure-input references; local/Docker foreground or local background only."},
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
             # them in the dispatch wrapper; explicit notify wins on conflict.

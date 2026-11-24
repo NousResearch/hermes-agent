@@ -90,6 +90,19 @@ def test_env_transport_gate_keeps_ref_without_backend_allocation(backend, monkey
     assert broker.consume_secret(ref, consumer="terminal") == "synthetic-blocked-value"
 
 
+@pytest.mark.parametrize("kind", ["completion", "watch_match", "heartbeat", "watch_disabled"])
+def test_notification_egress_covers_metadata_and_new_heartbeat(kind):
+    from tools.process_registry import format_process_notification
+    value = "synthetic-notification-value"
+    broker.register_secret(value, purpose="test")
+    event = {"type": kind, "session_id": "synthetic-process", "command": "echo " + value,
+             "output": value, "pattern": value, "message": value, "exit_code": 0}
+    rendered = format_process_notification(event)
+    assert value not in rendered
+    assert "[REDACTED SECURE INPUT]" in rendered
+    assert event["output"] == value  # no mutation of the producer's event
+
+
 def test_closed_tui_owner_cannot_create_a_prompt(monkeypatch):
     from tests.tui_gateway.test_secret_capture_session import _gateway
     server, _, _ = _gateway(monkeypatch)

@@ -3830,6 +3830,11 @@ def _fallback_request_kwargs(
             leak_guard_config=task_config, max_tokens=max_tokens, extra_body=effective_extra_body,
         )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(messages, tools, destination=destination)
+    # An anthropic-messages fallback (claude-direct, minimax, any /anthropic endpoint) rejects OpenAI
+    # image_url/video_url blocks. The primary path and the same-provider retry both convert; an auto vision
+    # request only became able to reach a fallback here, so this path needs it too (#159354).
+    if _is_anthropic_compat_endpoint(destination.provider, destination.base_url or ""):
+        fallback_messages = _convert_openai_images_to_anthropic(fallback_messages)
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,

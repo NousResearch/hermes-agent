@@ -120,6 +120,9 @@ class MattermostAdapter(BasePlatformAdapter):
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
+        # Opt-in: treat a top-level DM post as its own thread root, so each DM topic gets its own session.
+        self._dm_thread_sessions: bool = str(
+            config.extra.get("dm_thread_sessions", False)).lower() in ("1", "true", "yes", "on")
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
@@ -599,9 +602,10 @@ class MattermostAdapter(BasePlatformAdapter):
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
                 return
-        # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
+        # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid
+        # root. DMs keep one long session unless dm_thread_sessions opts them into the same behaviour.
         thread_id = post.get("root_id") or None
-        if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:
+        if not thread_id and self._reply_mode == "thread" and post_id and (not is_dm or self._dm_thread_sessions):
             thread_id = post_id
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
             message_text = message_text.lstrip()

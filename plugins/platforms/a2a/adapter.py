@@ -880,16 +880,15 @@ class A2AAdapter(BasePlatformAdapter):
 
     def _rpc_tasks_subscribe(self, handler, req_id: Any, params: dict, agent: Optional[dict] = None) -> None:
         """Reconnect to an existing task's stream (v1.0 SubscribeToTask)."""
-        task_id, rec, error = self._find_task(req_id, params, agent)
-        if error:
-            return handler._json(200, error)
-        self._sse_headers(handler)
-        fut = None
+        task_id = str(params.get("taskId") or params.get("id") or "")
+        observation = self.tasks.watch_snapshot(task_id, *self._scope_for_agent(agent))
+        if observation is None:
+            return handler._json(200, _err(req_id, protocol.ERR_TASK_NOT_FOUND, f"task not found: {task_id}"))
+        rec, fut = observation
+        if rec["state"] in protocol.TERMINAL_STATES:
+            return handler._json(200, _err(req_id, protocol.ERR_UNSUPPORTED_OPERATION, "task is already terminal"))
         try:
-            observation = self.tasks.watch_snapshot(task_id, *self._scope_for_agent(agent))
-            if observation is None:
-                return self._sse_write(handler, protocol.sse_done())
-            rec, fut = observation
+            self._sse_headers(handler)
             snapshot = protocol.TaskStore.to_task(rec)
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(snapshot), req_id))
             state, reply = self._await_reply({"future": fut}, self._keepalive(handler))
@@ -897,8 +896,7 @@ class A2AAdapter(BasePlatformAdapter):
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: subscribe client disconnected")
         finally:
-            if fut is not None:
-                self.tasks.unwatch(task_id, fut)
+            self.tasks.unwatch(task_id, fut)
 
     def _find_task(self, req_id: Any, params: dict, agent: Optional[dict]) -> tuple[str, Optional[dict], Optional[dict]]:
         """(task_id, record, None) for a visible task, else (task_id, None, jsonrpc_error)."""

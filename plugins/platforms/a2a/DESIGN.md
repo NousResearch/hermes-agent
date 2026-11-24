@@ -128,8 +128,9 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - **Observation:** blocking sends and healthy SSE streams wait for terminal or
   interrupted outcomes without the old HTTP reply timer. Explicit
   `returnImmediately` returns a live task. Subscribers receive a current Task
-  snapshot and unregister on disconnect. Terminal subscription replay remains a
-  legacy compatibility behavior, rather than a claim of full v1.0 conformance.
+  snapshot and unregister on disconnect. Subscription admission checks the state
+  in that same snapshot; terminal tasks reject new subscriptions, but their
+  results remain available through `GetTask` until retention expires.
 
 ## Forwarded-owner link failure limitation
 

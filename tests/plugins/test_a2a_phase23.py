@@ -201,28 +201,29 @@ class TestStreamingEndToEnd:
 
         asyncio.run(run())
 
-    def test_tasks_subscribe_replays_terminal_state(self, monkeypatch):
+    def test_subscribe_to_terminal_task_returns_error_and_get_task_returns_result(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
-        adapter, base = _make_live_adapter(monkeypatch)
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda _: "finished reply")
 
         async def run():
             assert await adapter.connect() is True
             resp = await asyncio.to_thread(_post_json, base + "/", _send_body("hello"))
             task = resp["result"]
 
-            payloads, events = await asyncio.to_thread(_post_sse, base + "/", {
-                "jsonrpc": "2.0", "id": "2", "method": "tasks/subscribe",
-                "params": {"taskId": task["id"]},
-            })
-            states = [p["statusUpdate"]["status"]["state"]
-                      for p in payloads if "statusUpdate" in p]
-            assert "TASK_STATE_COMPLETED" in states
-            artifacts = [p for p in payloads if "artifactUpdate" in p]
-            assert artifacts and "ECHO:" in protocol.extract_text(
-                artifacts[0]["artifactUpdate"]["artifact"])
-            assert events == []  # v1.0: stream closure is the terminal signal, no event frame
-            await adapter.disconnect()
+            try:
+                params = {"id": task["id"]}
+                resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "2", "method": "SubscribeToTask", "params": params,
+                })
+                assert resp["error"]["code"] == protocol.ERR_UNSUPPORTED_OPERATION
+                resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "3", "method": "GetTask", "params": params,
+                })
+                assert resp["result"]["status"]["state"] == protocol.STATE_COMPLETED
+                assert protocol.extract_text(resp["result"]["artifacts"][0]) == "finished reply"
+            finally:
+                await adapter.disconnect()
 
         asyncio.run(run())
 

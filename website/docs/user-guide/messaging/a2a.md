@@ -85,8 +85,8 @@ ID with `GetTask`. A healthy `SendStreamingMessage` connection receives an initi
 Task (`id` and `contextId`), updates and keepalives until the outcome is available.
 Closing that connection does not cancel accepted work or discard its result.
 `SubscribeToTask` begins with a current Task snapshot; losing one subscriber does
-not affect the task or other subscribers. Terminal subscription replay is retained
-as a compatibility behavior, although v1.0 specifies rejecting those subscriptions.
+not affect the task or other subscribers. Use `GetTask` for terminal results:
+`SubscribeToTask` rejects subscriptions to terminal tasks with UnsupportedOperation.
 
 `TASK_STATE_INPUT_REQUIRED` ends the current wait with the clarification question.
 Continue the same logical task by sending an answer with `message.taskId` and a

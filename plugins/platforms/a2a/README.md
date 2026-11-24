@@ -94,8 +94,8 @@ curl http://localhost:9900/ -H 'Content-Type: application/json' -d '{
 
 - Without `returnImmediately`, `SendMessage` waits for a result or request for input.
 - Use `SendStreamingMessage` for live updates; save the IDs from its first Task event.
-  A disconnected client does not cancel accepted work. Reconnect with
-  `SubscribeToTask` or retrieve the result with `GetTask`.
+  A disconnected client does not cancel accepted work. Use `SubscribeToTask` for
+  a nonterminal task and `GetTask` to retrieve a terminal result.
 - A `taskId` continues that interrupted task; `contextId` alone starts a new task
   in the conversation. If both are sent, they must match. Finished tasks cannot restart.
 - Use `CancelTask` with `params.id` to cancel a task; this does not guarantee that

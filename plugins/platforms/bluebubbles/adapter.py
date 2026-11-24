@@ -30,6 +30,8 @@ from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_c
 from gateway.platforms.helpers import voice_mention_gate_enabled
 from utils import TRUTHY_STRINGS
 
+from .rich_text import IMESSAGE_EFFECTS, extract_effect, mark_emphasis, strip_sentinels, styled_chunk
+
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
 # gateway.platforms.media_cache. Both maps are CLOSED: unlisted mimes fall back to .jpg / .mp3.
 _BLUEBUBBLES_IMAGE_EXT_OVERRIDES = {
@@ -66,6 +68,10 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_TEXT_STYLES_MIN_MACOS = 15  # bold/italic/strikethrough runs arrived with macOS 15 / iOS 18
+_UNSEND_MIN_MACOS = 13  # Undo Send arrived with macOS 13 / iOS 16
+_INVISIBLE_INK = IMESSAGE_EFFECTS["invisibleink"]
+_INK_REFUSED = "Invisible ink could not be sent, so the hidden text was not sent as plain text"
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
 
 
@@ -107,6 +113,19 @@ def _closed_ext(mime: str, overrides: dict[str, str], fallback: str) -> str:
 
 def _temp_guid() -> str:
     return f"temp-{datetime.utcnow().timestamp()}"
+
+
+def _sent(res: dict[str, Any]) -> SendResult:
+    """A successful message POST as a SendResult carrying the new message's GUID."""
+    data = res.get("data") or {}
+    return SendResult(success=True, message_id=str(data.get("guid") or data.get("messageGuid") or "ok"),
+                      raw_response=res)
+
+
+def _macos_major(raw: Any) -> int:
+    """Major macOS version from the server's ``os_version`` ("15.6.1" -> 15); 0 when unknown."""
+    match = re.match(r"\s*(\d+)", str(raw or ""))
+    return int(match.group(1)) if match else 0
 
 
 def _ok():
@@ -152,6 +171,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
+        self._macos_major: int = 0
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
 
     # --- API helpers ---
@@ -194,12 +214,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _post_message(self, path: str, payload: dict[str, Any]) -> SendResult:
         """POST a message payload and wrap the outcome as a SendResult."""
         try:
-            res = await self._api_post(path, payload)
-            data = res.get("data") or {}
-            msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
-            return SendResult(success=True, message_id=msg_id, raw_response=res)
+            return _sent(await self._api_post(path, payload))
         except Exception as exc:
             return SendResult(success=False, error=_safe_error(exc, self.server_url))
+
+    @property
+    def _private_api_live(self) -> bool:
+        return bool(self._private_api_enabled and self._helper_connected)
+
+    @property
+    def _text_styles_live(self) -> bool:
+        return self._private_api_live and self._macos_major >= _TEXT_STYLES_MIN_MACOS
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
@@ -229,8 +254,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             server_data = (info or {}).get("data", {})
             self._private_api_enabled = bool(server_data.get("private_api"))
             self._helper_connected = bool(server_data.get("helper_connected"))
-            logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
-                        self.server_url, self._private_api_enabled, self._helper_connected)
+            self._macos_major = _macos_major(server_data.get("os_version"))
+            logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s, macOS=%s)",
+                        self.server_url, self._private_api_enabled, self._helper_connected,
+                        self._macos_major or "unknown")
         except Exception as exc:
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, _safe_error(exc, self.server_url))
             await self._close_client()
@@ -383,26 +410,87 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        text = self.format_message(content)
-        if not text:
+        content, effect_id = extract_effect(content)
+        if effect_id == _INVISIBLE_INK and not self._private_api_live:
+            return SendResult(success=False, error=_INK_REFUSED)
+        if effect_id and not self._private_api_live:
+            logger.debug("[bluebubbles] send effect dropped: needs the Private API helper")
+            effect_id = None
+        bubbles = self._bubbles(content)
+        if not bubbles:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        # Each paragraph becomes its own iMessage bubble; truncate any still too long.
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
-        chunks = [c for para in paragraphs for c in (
-            [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
         last = SendResult(success=True)
-        for chunk in chunks:
+        for index, (chunk, runs) in enumerate(bubbles):
             guid = await self._resolve_chat_guid(chat_id)
             if not guid:
                 if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
                     return await self._create_chat_for_handle(chat_id, chunk)
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
-            if reply_to and self._private_api_enabled and self._helper_connected:
+            if reply_to and self._private_api_live:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
-            if not (last := await self._post_message("/api/v1/message/text", payload)).success:
+            if not (last := await self._send_bubble(payload, runs, effect_id if index == 0 else None)).success:
                 return last
         return last
+
+    def _bubbles(self, content: str) -> list[tuple[str, list[dict[str, Any]]]]:
+        """Reply -> ``(text, textFormatting runs)`` per iMessage bubble: one bubble per paragraph,
+        each truncated to MAX_MESSAGE_LENGTH. Runs are only computed when text styles can render."""
+        styled = self._text_styles_live
+        text = mark_emphasis(content) if styled else self.format_message(content)
+        if not strip_sentinels(text).strip():
+            return []
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if strip_sentinels(p).strip()] or [text]
+        chunks = [c for para in paragraphs for c in (
+            [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
+        if not styled:
+            return [(chunk, []) for chunk in chunks]
+        bubbles, active = [], ()
+        for chunk in chunks:
+            plain, runs, active = styled_chunk(chunk, active)
+            if plain:
+                bubbles.append((plain, runs))
+        return bubbles
+
+    async def _send_bubble(self, payload: dict[str, Any], runs: list[dict[str, Any]],
+                           effect_id: Optional[str]) -> SendResult:
+        """Send one bubble with its text styles and effect; if the server rejects the request (4xx),
+        send it again without them so the words still arrive (never for invisible ink)."""
+        rich: dict[str, Any] = {}
+        if runs:
+            rich["textFormatting"] = runs
+        if effect_id:
+            rich["effectId"] = effect_id
+        if not rich or not self.client:
+            return await self._post_message("/api/v1/message/text", payload)
+        try:
+            res = await self._api_post("/api/v1/message/text", {**payload, "method": "private-api", **rich})
+        except httpx.HTTPStatusError as exc:
+            if not 400 <= exc.response.status_code < 500:  # a 5xx or timeout may have sent it: never resend
+                return SendResult(success=False, error=_safe_error(exc, self.server_url))
+            if effect_id == _INVISIBLE_INK:  # plain text would show the hidden words to anyone looking
+                return SendResult(success=False, error=_INK_REFUSED)
+            logger.warning("[bluebubbles] server refused text styles/effect (HTTP %s); sending plain text",
+                           exc.response.status_code)
+            return await self._post_message("/api/v1/message/text", {**payload, "tempGuid": _temp_guid()})
+        except (httpx.HTTPError, ValueError) as exc:  # transport failure or a non-JSON body
+            return SendResult(success=False, error=_safe_error(exc, self.server_url))
+        return _sent(res)
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Unsend one of our messages (Apple's Undo Send). Needs the Private API helper on macOS 13+
+        and works only within Apple's two-minute window; the recipient sees an "unsent a message"
+        line where the bubble was."""
+        if not (self._private_api_live and self._macos_major >= _UNSEND_MIN_MACOS and self.client):
+            return False
+        if not message_id or message_id == "ok":
+            return False
+        try:
+            await self._api_post(f"/api/v1/message/{quote(message_id, safe='')}/unsend", {"partIndex": 0})
+            return True
+        except (httpx.HTTPError, ValueError) as exc:  # refused (outside the window) or unreachable
+            logger.debug("[bluebubbles] unsend failed for %s: %s", message_id, _safe_error(exc, self.server_url))
+            return False
 
     # --- Media sending (outbound) ---
 
@@ -737,14 +825,30 @@ def interactive_setup() -> None:
           "   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
-# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable. It must stay
+# true whether or not the Private API helper is live: styles and effects degrade to plain text without it.
 _PLATFORM_HINT = (
-    # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
-    "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
-    "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
-    "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
-    "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
-    "can be copied. Write links as bare URLs (iMessage auto-links them). "
+    "You are texting via iMessage (BlueBubbles). Write like a person texting: short and conversational, "
+    "answer first, no preamble or recap. Each paragraph becomes its own bubble, so a blank line starts a new "
+    "one. Markup for headers, tables, code fences and backticks is removed (the text inside stays), so write "
+    "a few items as short lines or a sentence. Give each command or snippet its own bubble, unnumbered, with "
+    "the order in the sentence before it, so each can be copied alone. Write links as bare URLs.\n"
+    "**bold**, *italic* and ~~strikethrough~~ render as real iMessage styling where the server supports it "
+    "and as plain words elsewhere. Use at most two styled spans in a message, each a word or two that must "
+    "not be missed (a time, an amount, what changed), never whole sentences.\n"
+    "To send a reply with an iMessage effect, put one marker such as [[effect:confetti]] in it; the marker "
+    "is removed and the effect plays on the first bubble only. Celebrations: confetti or balloons "
+    "(birthdays, congratulations), fireworks (a big personal win such as a job offer), heart (love, thanks), "
+    "slam (emphatic news), loud (excitement), gentle (a goodnight, an affectionate note), and rarely lasers, "
+    "sparkles, spotlight, echo, shootingstar. Use at most one celebration effect in a stretch of "
+    "conversation and never on routine answers, errors, bad news, grief or condolences. invisibleink hides "
+    "a spoiler or private detail until tapped: put only the hidden words in that reply, in one bubble. If "
+    "the effect cannot be sent, nothing is sent and you get an error; then offer to send it later instead.\n"
+    "For a choice between three to six options, use the clarify tool with choices (it arrives as a numbered "
+    "list); for yes or no, just ask. Leave harmless typos alone; if you got a fact wrong, send the "
+    "correction as a sentence. You cannot unsend from here: if something went to the wrong place, say so in "
+    "one line. To message someone at a later time, schedule a job with the cronjob_manage tool if you have "
+    "it; do not promise to remember. "
     "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
     "Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
 )

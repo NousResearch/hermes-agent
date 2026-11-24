@@ -166,7 +166,28 @@ Auto-marking messages as read is controlled by the `send_read_receipts` key unde
 ## Features
 
 ### Text Messaging
-Send and receive iMessages. Markdown is automatically stripped for clean plain-text delivery.
+Send and receive iMessages. Each paragraph of a reply goes out as its own bubble. Markdown headers, tables and code fences are stripped for clean plain-text delivery.
+
+### Text Styles
+With the Private API helper on macOS 15 or later, `**bold**`, `*italic*` and `~~strikethrough~~` in a reply are sent as real iMessage text styles (the ones you get from the Format menu in Messages), so the recipient sees styled words instead of asterisks. The markers are removed either way; without the helper, or on older macOS, the words arrive plain, exactly as before.
+
+The styles travel to BlueBubbles as `textFormatting` ranges. A server release that forwards `textFormatting` to the helper is needed for the styling to show; current releases accept the ranges and still deliver the plain text, so nothing breaks while you wait for one. If the server rejects the ranges outright, Hermes sends the bubble again without them.
+
+### Message Effects
+The agent can send a reply with an iMessage effect by putting a marker such as `[[effect:confetti]]` anywhere in it. The marker is removed before sending and the effect rides on the first bubble.
+
+| Marker | Effect |
+|---|---|
+| `slam`, `loud`, `gentle`, `invisibleink` | Bubble effects |
+| `confetti`, `balloons`, `fireworks`, `heart`, `lasers`, `sparkles`, `spotlight`, `echo`, `shootingstar` | Screen effects |
+
+The platform hint tells the agent to keep effects for moments that call for one (a birthday, good news, a spoiler behind invisible ink). Effects need the Private API helper; without it, or for an unknown name, the marker is dropped and the text is sent plain. Invisible ink is the exception: it hides a spoiler or a private detail, so when it cannot be sent the message is not sent at all, rather than showing the hidden words in plain text.
+
+### Unsend
+With the Private API helper on macOS 13 or later, Hermes can unsend its own messages (Apple's Undo Send), which lets features that clean up after themselves, such as `display.cleanup_progress`, work on iMessage. Apple allows this only within two minutes of sending, and the recipient sees a "unsent a message" line where the bubble was rather than nothing at all.
+
+### Choices and Later Messages
+When the agent asks you to pick between options with the clarify tool, the options arrive as a numbered list; reply with the number or the words. The platform hint also points the agent at the `cronjob_manage` tool when you ask it to message you at a later time.
 
 ### Rich Media
 - **Images:** Photos appear natively in the iMessage conversation
@@ -193,6 +214,8 @@ Some features require the BlueBubbles [Private API helper](https://docs.bluebubb
 - Typing indicators
 - Read receipts
 - Creating new chats by address
+- Text styles (macOS 15+) and message effects
+- Unsend (macOS 13+)
 
 Without the Private API, basic text messaging and media still work.
 

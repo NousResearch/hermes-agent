@@ -966,9 +966,22 @@ GOAL_ALREADY_SEEN_KICK = "[Goal set] Continue with the goal you were just given;
 _GOAL_REPASTE_MIN_CHARS = 400
 _GOAL_REPASTE_MIN_SHARE = 0.8
 
+# The kickoff is framed like a continuation instead of being the raw goal text. Two reasons:
+# a goal is arbitrary user text, and one that starts with "/" (``/goal /work fix it``) used to
+# be handed to the next surface as a message beginning with a slash — every surface then parses
+# it as a slash command, so the kickoff turn never starts and the goal sits active at 0 turns.
+# The frame also tells the model this is the goal, not a fresh aside.
+GOAL_KICK_TEMPLATE = (
+    "[Standing goal]\n"
+    "Goal: {goal}\n\n"
+    "Start working toward this goal now. Take the first concrete step. "
+    "If you believe the goal is complete, state so explicitly and stop. "
+    "If you are blocked and need input from the user, say so clearly and stop."
+)
+
 
 def goal_kick_prompt(goal: str, last_user_message: Any) -> str:
-    """The goal text, or ``GOAL_ALREADY_SEEN_KICK`` when ``last_user_message`` is essentially that text."""
+    """The framed goal, or ``GOAL_ALREADY_SEEN_KICK`` when ``last_user_message`` is essentially that text."""
     content = last_user_message
     if isinstance(content, list):
         content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
@@ -979,7 +992,7 @@ def goal_kick_prompt(goal: str, last_user_message: Any) -> str:
         and len(goal_norm) >= _GOAL_REPASTE_MIN_SHARE * len(last_norm)
     ):
         return GOAL_ALREADY_SEEN_KICK
-    return goal
+    return GOAL_KICK_TEMPLATE.format(goal=goal)
 
 
 def last_user_message_content(history: Any) -> Any:

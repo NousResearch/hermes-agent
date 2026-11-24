@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import shutil
 import tarfile
 import tempfile
 import uuid
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Optional
 
 
 def _fsync_parent(path: str) -> None:
@@ -47,19 +49,32 @@ def normalize_archive_parts(member_name: str) -> list[str]:
     return parts
 
 
-def make_targz(base: str, root_dir: str, base_dir: str) -> str:
+def make_targz(base: str, root_dir: str, base_dir: str, *, link_source: Optional[Path] = None) -> str:
     """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` in GNU tar format.
 
     Writes to a sibling temp file and renames onto the archive path only after it is fully written
     and fsynced, so a crash after the rename cannot leave a zero-tailed archive in its place.
+    ``root_dir/base_dir`` may be a symlink-preserving copy of ``link_source``: an absolute link into
+    ``link_source`` (installers link ``lsp/bin/<server>`` that way) is then archived as the matching
+    relative link, since :func:`safe_extract_targz` refuses absolute links.
     """
     archive_path = f"{base}.tar.gz"
     dest_dir = os.path.dirname(archive_path) or "."
+    source = os.path.realpath(link_source) if link_source is not None else None
+
+    def _relative_links(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        if source is not None and info.issym() and os.path.isabs(info.linkname):
+            real = os.path.realpath(info.linkname)
+            if real == source or real.startswith(source + os.sep):
+                inside = posixpath.join(base_dir, *Path(os.path.relpath(real, source)).parts)
+                info.linkname = posixpath.relpath(inside, posixpath.dirname(info.name))
+        return info
+
     fd, tmp_path = tempfile.mkstemp(dir=dest_dir, prefix=".archive_", suffix=".tar.gz.tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             with tarfile.open(fileobj=f, mode="w:gz", format=tarfile.GNU_FORMAT) as tf:
-                tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+                tf.add(str(Path(root_dir) / base_dir), arcname=base_dir, filter=_relative_links)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, archive_path)
@@ -69,23 +84,6 @@ def make_targz(base: str, root_dir: str, base_dir: str) -> str:
             os.unlink(tmp_path)
         raise
     return archive_path
-
-
-def relativize_internal_links(staged: Path, source: Path) -> None:
-    """Rewrite each absolute symlink in ``staged`` (a copy of ``source``) that points inside
-    ``source`` as a relative link, so the archive imports anywhere.
-
-    Installers link by absolute path (``lsp/bin/<server>`` -> ``<profile>/lsp/node_modules/...``)
-    and :func:`safe_extract_targz` refuses absolute links. Links leaving ``source`` are left as-is.
-    """
-    root = os.path.realpath(source)
-    for link in [p for p in staged.rglob("*") if p.is_symlink()]:
-        target = os.readlink(link)
-        real = os.path.realpath(target)
-        if os.path.isabs(target) and real.startswith(root + os.sep):
-            inside = staged / os.path.relpath(real, root)
-            link.unlink()
-            os.symlink(os.path.relpath(inside, link.parent), link, target_is_directory=os.path.isdir(real))
 
 
 def _create_archive_symlinks(links: list[tuple[tarfile.TarInfo, Path, Path]]) -> None:
@@ -105,9 +103,12 @@ def _create_archive_symlinks(links: list[tuple[tarfile.TarInfo, Path, Path]]) ->
 
     made: dict[Path, bool] = {}
     for member, target, root in links:
-        # The parent check stops a link (or its parent dirs) being created through an earlier link.
+        # Every parent must be a real directory, so no link is created through another link
+        # (in either archive order: a later link over an implied parent collides below).
+        parents = target.relative_to(root).parents
         if PurePosixPath(member.linkname.replace("\\", "/")).is_absolute() \
-                or PureWindowsPath(member.linkname).drive or not _inside(root, target.parent):
+                or PureWindowsPath(member.linkname).drive \
+                or any((root / parent).is_symlink() for parent in parents):
             raise ValueError(f"Archive symlink escapes the destination: {member.name}")
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists() or target.is_symlink():  # must not replace a member already extracted

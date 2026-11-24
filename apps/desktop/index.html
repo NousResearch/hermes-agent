@@ -8,6 +8,14 @@
     <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="shortcut icon" href="/apple-touch-icon.png" />
+    <!-- The Webapp's PWA manifest. Copied verbatim from public/ into the built bundle,
+         where the gateway serves it; Chrome needs it to install the browser surface as
+         a standalone app instead of an address-bar shortcut. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Hermes" />
     <title>Hermes</title>
     <script>
       // Pre-paint the themed background before the app bundle loads. Without

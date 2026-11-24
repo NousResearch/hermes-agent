@@ -161,6 +161,26 @@ def test_plugin_assets_pass_gate_while_api_stays_gated(gated_app):
     )
 
 
+def test_pwa_install_artwork_passes_gate_while_pages_stay_gated(gated_app):
+    """Chrome fetches the Webapp's manifest and the icons it names while building the
+    home-screen app, before any session exists. Gating them makes the install fall back
+    to a browser shortcut with an address bar, so each must reach the SPA's file handler
+    instead of the sign-in redirect, while ordinary pages stay gated.
+    """
+    for path in ("/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"):
+        r = gated_app.get(path, follow_redirects=False)
+        assert r.status_code != 401, f"{path} returned 401 under the OAuth gate"
+        if r.status_code == 302:
+            location = r.headers.get("location", "")
+            assert "/login" not in location, (
+                f"{path} redirected to {location}, so PWA install artwork must be public"
+            )
+    r2 = gated_app.get("/sessions", follow_redirects=False)
+    assert "/login" in r2.headers.get("location", ""), (
+        "an ordinary page route must still redirect to sign-in"
+    )
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from persistence.sqlite.conversation._store import portability as store_portabil
 from persistence.sqlite.conversation._store import session_list as store_session_list
 from persistence.sqlite.conversation._store.compression import (
     _is_compression_child_row,
+    _publish_child_session_row,
     publish_compression_child,
     get_compression_lineage,
     get_compression_tip,
@@ -70,6 +71,23 @@ class TestChainStepSkipsSubagentRows:
         seed_session(store, "adopted", "subagent", parent_session_id="chat", model_config={"_chat_adopted": True})
         store.sessions.end("chat", "compression")
         assert store.lineage.tip("chat") == "adopted"
+
+    def test_a_newer_worker_row_does_not_outrank_an_adopted_chats_continuation(self, store, db):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        seed_session(store, "adopted", "subagent", parent_session_id="chat", model_config={"_chat_adopted": True})
+        _compress(db, "adopted", "adopted-c1", "telegram")
+        _worker_row(store, "adopted", "worker")
+        assert store.lineage.tip("adopted") == "adopted-c1"
+
+    def test_a_local_reset_of_a_subagent_row_still_continues(self, store, db):
+        # A local /new copies the parent's created_source onto the reset row, which then carries only _reset_from.
+        seed_session(store, "worker", "subagent")
+        db._execute_write(lambda conn: _publish_child_session_row(
+            db, conn, conn.execute("SELECT * FROM sessions WHERE id = 'worker'").fetchone(), parent_session_id="worker",
+            child_session_id="reset", source="cli", model="m", model_config={"_reset_from": "worker"},
+            system_prompt=None, cwd=None, profile_name=None))
+        _compress(db, "reset", "reset-c1", "cli")
+        assert store.lineage.tip("reset") == "reset-c1"
 
     def test_a_workers_own_compression_chain_still_resolves(self, store, db):
         seed_session(store, "worker", "subagent")

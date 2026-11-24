@@ -27,9 +27,11 @@ _COOLDOWN_ROW_SQL = (
 
 
 # A worker run's own segment, however an older row records it: ``created_source`` is unset on a row from
-# before schema history 29 (nothing backfills it), and the peer stamp may have relabelled ``source``.
-_WORKER_PARENT_SQL = ("(COALESCE(parent.created_source, '') = 'subagent' OR COALESCE(parent.source, '') = 'subagent'"
-    f" OR COALESCE({_sql_json_extract('parent.model_config', '$._delegate_from')}, '') <> '')")
+# before schema history 29 (nothing backfills it), and the peer stamp may have relabelled ``source``. A row a chat
+# adopted is the chat's conversation: its continuation carries ``_chat_adopted``, its new workers do not.
+_WORKER_PARENT_SQL = ("((COALESCE(parent.created_source, '') = 'subagent' OR COALESCE(parent.source, '') = 'subagent'"
+    f" OR COALESCE({_sql_json_extract('parent.model_config', '$._delegate_from')}, '') <> '')"
+    f" AND {_sql_json_extract('parent.model_config', '$._chat_adopted')} IS NULL)")
 # A chat's continuation is never a row its subagent created; a worker's own segments continue each other
 # (compression copies ``created_source`` from the parent, so a subagent parent's continuation is one too).
 _SUBAGENT_CHILD_CLAUSE = f"AND NOT (NOT {_WORKER_PARENT_SQL} AND {_DELEGATE_CHILD_SQL.format(a='child')})"

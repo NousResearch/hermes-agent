@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import errno
 import logging
+import os
 from pathlib import Path
 import threading
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -583,6 +586,58 @@ async def recover_bot_mailbox(authority):
                        store_location(store.scope) if store is not None else authority.profile_id, exc)
 
 
+# A specific ``webapp.host`` (a LAN or tailnet address) may not be assigned to an interface yet when this
+# gateway starts: Tailscale, Headscale or WireGuard hand the address to the interface a moment after their
+# daemon reports ready, and a DHCP lease lands the same way. The bind then fails with EADDRNOTAVAIL, and
+# the gateway keeps running with the Webapp off (see below) — nothing crashes, so no Restart= policy
+# retries it and the address stays dark until someone restarts the gateway by hand. Wait, bounded, for the
+# address to appear, then bind again. ``HERMES_WEBAPP_ADDRESS_WAIT`` overrides the wait in seconds (0
+# disables it); only EADDRNOTAVAIL is waited out, so a busy port or a refused bind still reports at once.
+WEBAPP_ADDRESS_WAIT_SECONDS = 20.0
+_WEBAPP_ADDRESS_POLL_SECONDS = 0.5
+
+
+def _webapp_address_wait_seconds() -> float:
+    """How long to wait for ``webapp.host`` to be assigned to an interface (see above)."""
+    raw = os.environ.get("HERMES_WEBAPP_ADDRESS_WAIT")
+    if raw is None or not raw.strip():
+        return WEBAPP_ADDRESS_WAIT_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning("HERMES_WEBAPP_ADDRESS_WAIT=%r is not a number of seconds; using %.0fs",
+                       raw, WEBAPP_ADDRESS_WAIT_SECONDS)
+        return WEBAPP_ADDRESS_WAIT_SECONDS
+
+
+async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port, webapp):
+    """Start the gateway's listener, waiting out an address an interface has not been given yet.
+
+    A failed start leaves nothing behind (``start_gateway_api`` closes its listener and clears its
+    runner), so retrying is safe. Only EADDRNOTAVAIL is retried: a busy port, a refused bind and the
+    loopback companion's own failure (``ListenerAddressError``) are reported at once, as before.
+    """
+    deadline = time.monotonic() + _webapp_address_wait_seconds()
+
+    async def _start():
+        # Without the Webapp the listener is main's: the same call, a private ephemeral port.
+        return await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
+                      if webapp is not None else run_api.start_gateway_api(runner))
+
+    while True:
+        try:
+            return await _start()
+        except run_api.ListenerAddressError:
+            raise  # the loopback socket beside a specific address: its address does not appear later
+        except OSError as exc:
+            remaining = deadline - time.monotonic()
+            if exc.errno != errno.EADDRNOTAVAIL or remaining <= 0:
+                raise
+            logger.warning("Webapp: %s is not assigned to any interface yet; retrying for up to %.0fs",
+                           host, remaining)
+            await asyncio.sleep(min(_WEBAPP_ADDRESS_POLL_SECONDS, remaining))
+
+
 async def start_gateway_runtime_api(runner):
     from gateway import run_api
     from gateway.webapp_listener import (
@@ -601,8 +656,8 @@ async def start_gateway_runtime_api(runner):
                             else dict(STARTING))
     try:
         # Without the Webapp the listener is main's: the same call, a private ephemeral port.
-        runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
-                                    if webapp is not None else run_api.start_gateway_api(runner))
+        runner.session_api = await _start_gateway_api_waiting_for_address(
+            run_api, runner, host=host, port=port, webapp=webapp)
     except (Exception, SystemExit) as exc:
         if webapp is None:
             raise

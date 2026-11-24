@@ -138,3 +138,17 @@ def test_no_env_credentials_keeps_client_unavailable(monkeypatch):
     monkeypatch.delenv("LARK_APP_SECRET", raising=False)
 
     assert feishu_doc_tool.get_client() is None
+
+
+def test_unavailable_error_says_what_to_configure(monkeypatch):
+    _clear_client()
+    for name in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "LARK_APP_ID", "LARK_APP_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+
+    doc_result = feishu_doc_tool._handle_feishu_doc_read({"doc_token": "doc-token"})
+    drive_result = feishu_drive_tool._handle_list_comments({})
+
+    for result in (doc_result, drive_result):
+        assert "FEISHU_APP_ID/FEISHU_APP_SECRET" in result
+        assert "LARK_APP_ID/LARK_APP_SECRET" in result
+        assert "comment context" in result

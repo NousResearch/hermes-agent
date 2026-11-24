@@ -81,6 +81,16 @@ class TestFallbackMarker:
                                        lambda *a, **k: DEFAULT_FALLBACK_CONTEXT)
         assert _resolve_and_mark("mystery-model", **route) == (DEFAULT_FALLBACK_CONTEXT, "")  # reported: detected
 
+    def test_version_prefix_sibling_is_marked_fallback(self, _quiet_custom_endpoint):
+        route = dict(provider="zai", base_url="https://api.z.ai/api/coding/paas/v4")
+        ctx, marker = _resolve_and_mark("glm-5.4", **route)
+        assert ctx == 204_800
+        assert marker == "fallback"
+
+        ctx_known, marker_known = _resolve_and_mark("glm-5.3", **route)
+        assert ctx_known == 1_048_576
+        assert marker_known == ""
+
     @pytest.mark.parametrize("defaulted_first", [True, False])
     def test_profiles_keep_their_own_label(self, tmp_path, defaulted_first):
         """Greptile: a multiplexed gateway resolves for several profiles; one profile's answer is not another's."""

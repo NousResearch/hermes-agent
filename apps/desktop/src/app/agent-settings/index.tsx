@@ -7,7 +7,7 @@ import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
-import { useAgentScreen } from '@/app/chat/sidebar/portal/portal-agent-screen'
+import { AgentScreenThumbnail, useAgentScreen } from '@/app/chat/sidebar/portal/portal-agent-screen'
 import { useBotModeLoaded } from '@/app/chat/sidebar/simplified-bot-chat-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -239,11 +239,15 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
   }
 
   return (
-    <SettingRow
-      detail={says}
-      onClick={() => void open().then(opened)}
-      title={b.screen.portalTitle}
-    />
+    <>
+      <SettingRow detail={says} onClick={() => void open().then(opened)} title={b.screen.portalTitle} />
+      {/* The thumbnail opens the row it is given at once: there is no lookup to wait on. */}
+      <AgentScreenThumbnail
+        connectionId={owner.connectionId}
+        onOpened={() => opened(true)}
+        profile={owner.profile}
+      />
+    </>
   )
 }
 

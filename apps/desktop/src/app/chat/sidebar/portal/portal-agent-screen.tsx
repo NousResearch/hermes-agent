@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { RowButton } from '@/components/ui/row-button'
 import { $lastRoster } from '@/plugins/hermes-bots/data'
 import { botsText, useBots } from '@/plugins/hermes-bots/i18n'
+import { ScreenHero } from '@/plugins/hermes-bots/screen-hero'
 import {
   type PortalTone,
   profileScreenCommand,
@@ -110,6 +111,34 @@ export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
           </span>
         </div>
       </div>
+    </div>
+  )
+}
+
+/** The agent's screen itself, while it is running: the plugin's live thumbnail (a frame every few
+ *  seconds while it is on screen, none once it is gone). Nothing for a screen that is stopped, not
+ *  installed or not known: the Screen row says that. The thumbnail opens the Screen as a tab beside
+ *  the chat, so whatever page holds it steps aside. */
+export function AgentScreenThumbnail({
+  connectionId,
+  profile,
+  onOpened
+}: {
+  connectionId: null | string
+  profile: string
+  onOpened: () => void
+}) {
+  const bot = useScreenBot(connectionId, profile)
+  const { tone } = useScreenPortalState(bot)
+
+  if (tone !== 'live' && tone !== 'human' && tone !== 'other') {
+    return null
+  }
+
+  return (
+    // The thumbnail is the control; this only hears its click on the way up.
+    <div className="portal-agent-screen-thumbnail" onClick={onOpened} role="presentation">
+      <ScreenHero bot={bot} />
     </div>
   )
 }

@@ -237,6 +237,18 @@
   border-top: 1px solid var(--portal-stroke-divider);
 }
 
+/* The agent's screen under its Screen row: the plugin's own tile (its colours and caption are
+   classic's), on the rows' inset, clipped to the card's radius, never wider than a comfortable
+   preview. */
+.portal-agent-screen-thumbnail {
+  max-width: 30rem;
+  padding: 0 12px 12px 16px;
+}
+
+.portal-agent-screen-thumbnail > button {
+  border-radius: var(--portal-radius-card);
+}
+
 .agent-overview-row:hover {
   background: var(--portal-surface-row-hover);
 }

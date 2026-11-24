@@ -524,8 +524,10 @@ it.each([
   screenPlugin.tone = tone
   mount('/settings?agentProfile=default')
 
-  const row = await screen.findByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) })
+  // The row comes first; a running screen also shows its thumbnail under it, a second "Screen" control.
+  const [row, thumbnail] = await screen.findAllByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) })
   expect(row.textContent).toContain(says)
+  expect(Boolean(thumbnail)).toBe(tone === 'live')
 
   fireEvent.click(row)
   expect(screenPlugin.open).toHaveBeenCalled()

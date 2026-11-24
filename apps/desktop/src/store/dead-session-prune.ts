@@ -148,8 +148,10 @@ function collectCandidates(): string[] {
     }
   }
 
+  // A new chat's queue is keyed by its fresh draft scope, never a session id (its first message
+  // waits there while the profile's backend restarts).
   for (const key of Object.keys($queuedPromptsBySession.get())) {
-    if (!covered.has(key)) {
+    if (!covered.has(key) && !isFreshDraftScope(key)) {
       candidates.add(key)
     }
   }

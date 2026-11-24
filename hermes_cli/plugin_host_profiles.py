@@ -107,8 +107,7 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
 
 def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     """Import the plugin in a throwaway host process with no credentials and read its profiles."""
-    from hermes_cli.plugin_host import extraction_launcher
-    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV
+    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, extraction_launcher
     from hermes_constants import get_hermes_home
     repo_root = project_root_str()
     # Absolute: the child starts in the home, so a relative HERMES_HOME or plugin dir would resolve twice.

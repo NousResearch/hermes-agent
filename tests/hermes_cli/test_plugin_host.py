@@ -1276,7 +1276,7 @@ def test_a_secondarys_provider_extraction_runs_under_the_launcher_its_host_start
     child's env. That extraction child runs under the launcher the start chose for the profile, its ``${VAR}``s
     read through the profile's own files, even when only the starting task is multiplexed and the host's own
     context holds no secret scope. An extraction there once the start is over chooses again."""
-    from hermes_cli.plugin_host import extraction_launcher
+    from hermes_cli.plugin_isolation import extraction_launcher
     from agent import secret_scope as ss
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -1332,7 +1332,7 @@ def test_a_profile_marked_after_its_start_chose_does_not_lend_that_launcher_to_i
     """A host start lends the launcher it chose to the provider extraction it runs. When the profile is marked to
     run elsewhere between that choice and the extraction, the extraction takes the launcher a marked profile takes
     (the managed overlay's, here none), not the profile's own."""
-    from hermes_cli import plugin_host as ph
+    from hermes_cli import plugin_isolation as iso
     from hermes_cli import profiles_run_elsewhere as pre
     import tools.environments.local  # loaded, as in a running process: its import lists the providers
 
@@ -1343,7 +1343,7 @@ def test_a_profile_marked_after_its_start_chose_does_not_lend_that_launcher_to_i
     (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {
         "launcher": [str(runner)]}}}), encoding="utf-8")
     _hosted_model_provider(home)
-    choose = ph._launcher_for
+    choose = iso.launcher_for
 
     def chosen_then_marked(*args, **kwargs):
         choice = choose(*args, **kwargs)
@@ -1351,7 +1351,7 @@ def test_a_profile_marked_after_its_start_chose_does_not_lend_that_launcher_to_i
             pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
         return choice
 
-    monkeypatch.setattr(ph, "_launcher_for", chosen_then_marked)
+    monkeypatch.setattr(iso, "launcher_for", chosen_then_marked)
     plugins_mod._reset_plugin_managers_for_tests()
     host = plugins_mod.get_plugin_manager()._plugin_host()
     try:

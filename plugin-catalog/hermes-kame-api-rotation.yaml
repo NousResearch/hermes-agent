@@ -1,6 +1,6 @@
 name: hermes-kame-api-rotation
 repo: https://github.com/Kame696/kame-api-rotation-for-hermes
-sha: 7583a11c21c985f72b3b421312fbca56e45bc835
+sha: d51fcad699cd7b5fffcd6c7b002aa5894165c111
 subdir: hermes-kame-api-rotation
 description: "Rotates many API keys per provider so rate limits and quota errors never stop your agent: the healthiest key for every call, the next model when one is busy, and a live line in the chat showing what it did."
 title: "KAME API Rotation"
@@ -8,13 +8,13 @@ maintainer: Kame696
 tier: community
 category: models
 requires_hermes: ">=0.21.6"
-version: "1.9.0.5"
-docs_url: "https://github.com/Kame696/kame-api-rotation-for-hermes/blob/7583a11c21c985f72b3b421312fbca56e45bc835/hermes-kame-api-rotation/README.md"
-image: https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/kame-banner.png
+version: "1.9.0.6"
+docs_url: "https://github.com/Kame696/kame-api-rotation-for-hermes/blob/d51fcad699cd7b5fffcd6c7b002aa5894165c111/hermes-kame-api-rotation/README.md"
+image: https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/d51fcad699cd7b5fffcd6c7b002aa5894165c111/assets/kame-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/panel-overview.png
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/panel-events.png
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/7583a11c21c985f72b3b421312fbca56e45bc835/assets/panel-settings.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/d51fcad699cd7b5fffcd6c7b002aa5894165c111/assets/panel-overview.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/d51fcad699cd7b5fffcd6c7b002aa5894165c111/assets/panel-events.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/d51fcad699cd7b5fffcd6c7b002aa5894165c111/assets/panel-settings.png
 readme: true
 capabilities:
   provides_tools: []
@@ -22,5 +22,6 @@ capabilities:
     - transform_api_error_classification
     - post_api_request
     - on_session_reset
+    - pre_llm_call
   provides_middleware: []
   requires_env: []

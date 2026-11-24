@@ -1465,8 +1465,8 @@ def interruptible_backoff_sleep(
 
 
 _ZAI_POLICY_NOTES = {
-    "zai_coding_overload_long": " (Z.AI Coding overload adaptive long backoff)",
-    "zai_coding_overload_short": " (Z.AI Coding overload short retry)",
+    "zai_coding_overload_long": " (Z.AI Coding throttle adaptive long backoff)",
+    "zai_coding_overload_short": " (Z.AI Coding throttle short retry)",
 }
 
 

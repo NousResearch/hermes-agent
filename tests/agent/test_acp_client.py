@@ -197,12 +197,11 @@ def _transcript(prompt: str) -> str:
 
 
 def _tool_call_payloads(prompt: str) -> list[dict]:
-    transcript, payloads, pos = _transcript(prompt), [], 0
-    while (start := transcript.find("<tool_call>", pos)) != -1:
-        end = transcript.index("</tool_call>", start)
-        payloads.append(json.loads(transcript[start + len("<tool_call>"):end]))
-        pos = end
-    return payloads
+    """The transcript's calls as the bridge parser reads them: a replayed call must stay a well-formed call."""
+    from agent.acp_openai_bridge import extract_tool_calls_from_text
+
+    calls, _ = extract_tool_calls_from_text(_transcript(prompt))
+    return [{"id": c.id, "function": {"name": c.function.name, "arguments": c.function.arguments}} for c in calls]
 
 
 def _call(call_id: str, name: str, arguments) -> dict:
@@ -268,3 +267,50 @@ def test_flat_and_object_tool_call_shapes_are_normalized(tool_call):
         _format_messages_as_prompt([{"role": "assistant", "content": None, "tool_calls": [tool_call]}]))
     assert payload["id"] == "flat1" and payload["function"]["name"] == "read_file"
     assert json.loads(payload["function"]["arguments"]) == {"path": "z"}
+
+
+def test_replayed_calls_round_trip_through_the_bridge_parser():
+    """Rendering then parsing a call is lossless (id, name, decoded arguments), escapes and Unicode included."""
+    from agent.acp_client import _format_messages_as_prompt
+
+    args = [{"path": 'a "quoted"\\path\n'}, {"query": "naïve 搜索 ✓"}]
+    prompt = _format_messages_as_prompt([{"role": "assistant", "content": None, "tool_calls": [
+        _call("c1", "read_file", json.dumps(args[0])), _call("c2", "search_files", args[1])]}])
+    assert [(p["id"], p["function"]["name"], json.loads(p["function"]["arguments"])) for p in _tool_call_payloads(prompt)] == [
+        ("c1", "read_file", args[0]), ("c2", "search_files", args[1])]
+
+
+def test_each_tool_result_names_the_call_it_answers():
+    """Two same-name parallel calls whose results come back in reverse order stay pairable by id."""
+    from agent.acp_client import _format_messages_as_prompt
+
+    transcript = _transcript(_format_messages_as_prompt([
+        {"role": "assistant", "content": None, "tool_calls": [
+            _call("c1", "read_file", '{"path":"a"}'), _call("c2", "read_file", '{"path":"b"}')]},
+        {"role": "tool", "tool_call_id": "c2", "content": "contents of b"},
+        {"role": "tool", "tool_call_id": "c1", "content": "contents of a"},
+        {"role": "tool", "content": "legacy result without an id"},
+    ]))
+    assert "Tool (tool_call_id=c2):\ncontents of b" in transcript
+    assert "Tool (tool_call_id=c1):\ncontents of a" in transcript
+    assert "Tool:\nlegacy result without an id" in transcript
+
+
+@pytest.mark.parametrize("content", ["", None, [], "   "])
+def test_an_empty_tool_result_still_answers_its_call(content):
+    from agent.acp_client import _format_messages_as_prompt
+
+    transcript = _transcript(_format_messages_as_prompt([
+        {"role": "assistant", "content": None, "tool_calls": [_call("c1", "write_file", '{"path":"x"}')]},
+        {"role": "tool", "tool_call_id": "c1", "content": content},
+    ]))
+    assert transcript.index("<tool_call>") < transcript.index("Tool (tool_call_id=c1):\n(empty result)")
+
+
+def test_history_note_accompanies_replayed_calls_only():
+    from agent.acp_client import _TRANSCRIPT_TOOL_CALL_NOTE, _format_messages_as_prompt
+
+    with_calls = _format_messages_as_prompt([{"role": "user", "content": "go"}, {
+        "role": "assistant", "content": None, "tool_calls": [_call("c1", "read_file", "{}")]}])
+    assert with_calls.index(_TRANSCRIPT_TOOL_CALL_NOTE) < with_calls.index("Conversation transcript:")
+    assert _TRANSCRIPT_TOOL_CALL_NOTE not in _format_messages_as_prompt([{"role": "user", "content": "hi"}])

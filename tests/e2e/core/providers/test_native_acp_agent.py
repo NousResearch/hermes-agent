@@ -27,6 +27,7 @@ Contract under test (documented in ``agent/acp_client.py`` and the ACP spec):
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 from concurrent.futures import ThreadPoolExecutor
@@ -36,6 +37,7 @@ from typing import Any, Callable
 
 import pytest
 
+from agent.acp_openai_bridge import extract_tool_calls_from_text
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
@@ -218,6 +220,19 @@ def test_hermes_tool_call_round_trips_through_acp_and_persists(outcomes):
         "the read_file result must follow the user turn in the next call's prompt")
 
     rows = messages(sc.nh, latest_session(sc.nh))
+    persisted = [(tc["id"], tc["function"]["name"], json.loads(tc["function"]["arguments"]))
+                 for r in rows if r["role"] == "assistant" for tc in tool_calls_of(r)]
+    # Each call is a fresh agent session: the prompt is its only record of what it already ran. The
+    # tool-call-only assistant turn must reach it as the call that actually executed, between the ask
+    # and its id-labelled result, on both paths (in-process history, and state.db history on --resume).
+    for label, record in (("next call", prompts[1]), ("resumed call", prompts[2])):
+        text = _transcript(record)
+        replayed, _ = extract_tool_calls_from_text(text)
+        assert [(c.id, c.function.name, json.loads(c.function.arguments)) for c in replayed] == persisted, (
+            f"{label}: the assistant's read_file call is missing or altered in the prompt (orphan tool result)")
+        result = text.find("Tool (tool_call_id=call_rf_1):")
+        assert text.index(Q1) < text.index("<tool_call>") < result < text.index(CANARY), (
+            f"{label}: expected ask -> call -> its labelled result, in order")
     calls = [(r, tc) for r in rows if r["role"] == "assistant" for tc in tool_calls_of(r)]
     assert [(tc["id"], tc["function"]["name"]) for _, tc in calls] == [("call_rf_1", "read_file")], calls
     results = [r for r in rows if r["role"] == "tool"]
@@ -309,6 +324,9 @@ def test_compaction_in_an_acp_session_keeps_the_next_prompt_valid_and_grounded(o
     assert SUMMARY in final and COMPACT_ASK in final, "post-compaction prompt lost the summary or the user's ask"
     assert f"file {COMPACT_FILES} lorem" in final, "post-compaction prompt lost the latest tool result"
     assert "file 2 lorem" not in final, "summarized tool output is still resent after compaction"
+    tail_calls, _ = extract_tool_calls_from_text(final)
+    assert f"call_f{COMPACT_FILES}" in [c.id for c in tail_calls], "protected tail kept the result but lost its call"
+    assert f"Tool (tool_call_id=call_f{COMPACT_FILES}):" in final, "protected-tail result is not paired with its call"
     rows = messages(sc.nh, latest_session(sc.nh))
     assert_no_duplicate_assistant_text(rows, FINAL_COMPACT)
     assert any(FINAL_COMPACT in (r["content"] or "") for r in rows if r["role"] == "assistant"), rows

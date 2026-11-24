@@ -6,7 +6,10 @@ window is the terminating one (single-line JSON / single-line results), the
 snap dropped every content byte and announced "showing last 0 chars".
 """
 
+import json
 from types import SimpleNamespace
+
+import pytest
 
 from gateway.run_notifications import GatewayNotificationsMixin
 
@@ -78,3 +81,34 @@ def test_short_output_passes_through_without_marker():
     """Guard: output under the limit is never wrapped in a truncation marker."""
     output = _completion_event("hello\nworld\n")["output"]
     assert output == "hello\nworld\n"
+
+
+@pytest.mark.parametrize("ending", ["\n", "\n\n", "\n \n", "\r\n", "\n \t\n"],
+                         ids=["lf", "blank-line", "space-line", "crlf", "ws-line"])
+def test_long_line_with_trailing_blank_lines_keeps_its_tail(ending):
+    """A long last line followed by blank lines keeps the window instead of whitespace only."""
+    raw = '{"reply":"' + "x" * 2500 + '","status":"ok"}' + ending
+    marker, body = _marker_and_body(_completion_event(raw)["output"])
+    assert body == raw[-2000:]
+    assert marker == "[… output truncated — showing last 2000 chars]"
+
+
+def test_completion_tail_is_sized_by_the_process_completion_budget():
+    """A bot DM runner asks for a reply-sized budget; its whole one-line reply survives."""
+    reply = json.dumps({"outcome": "@peer answered.", "reply": "r" * 9000}) + "\n"
+    session = _session(reply)
+    session.completion_output_chars = 18000
+    event = GatewayNotificationsMixin._build_process_completion_event({}, session, "proc_tail")
+    assert event["output"] == reply
+
+
+@pytest.mark.parametrize("redaction_enabled", [True, False], ids=["redaction-on", "redaction-off"])
+def test_window_starting_inside_a_credential_still_masks_it(monkeypatch, redaction_enabled):
+    """The cut can land inside a key and hide its prefix, so masking runs on the uncut output."""
+    from agent import redact
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", redaction_enabled)
+    body = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklm"
+    raw = "x" * 2100 + " sk-" + body + " " * (2000 - len(body))
+    assert raw[-2000:].startswith(body)
+    assert body not in _completion_event(raw)["output"]

@@ -534,6 +534,7 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("fish", ".config/fish/config.fish", 'fish_add_path "~/.local/bin"'),
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin backup:$PATH"'),  # a quoted space is part of the entry
     ("zsh", ".zprofile", 'export PATH="\\$HOME/.local/bin:$PATH"'),  # an escaped $ stays literal
+    ("bash", ".bashrc", 'export PATH="$HOME/.local/bi\\n:$PATH"'),  # in double quotes, \n keeps its backslash
     ("zsh", ".zprofile", 'export PATH="/usr/bin:/bin"; export BACKUP_BIN="$HOME/.local/bin"'),  # not PATH's value
     ("zsh", ".zprofile", "export PATH=/usr/local/bin:$PATH; ls ~/.local/bin"),
     ("fish", ".config/fish/config.fish", "set -l saved_path $PATH; contains ~/.local/bin $PATH"),

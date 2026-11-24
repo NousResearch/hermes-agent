@@ -714,7 +714,8 @@ def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]
             word, started, i = "", False, i + 1
             continue
         started, i = True, i + 1
-        if ch == "\\" and quote != "'" and i < len(text):
+        # A backslash escapes any character unquoted, only $ ` " \ inside double quotes, nothing in single quotes.
+        if ch == "\\" and i < len(text) and (not quote or quote == '"' and text[i] in '$`"\\'):
             word, i = word + text[i], i + 1
         elif ch == quote:
             quote = ""

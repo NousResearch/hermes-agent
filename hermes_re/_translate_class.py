@@ -1,0 +1,187 @@
+r"""Bracket classes and shorthand classes with stdlib `re` meaning, as RE2 source .
+Stdlib-only; no regex engine.
+
+``shorthand(letter, ascii_only, icase)`` translates a bare ``\d \D \w \W \s \S``;
+``bracket(body, ascii_only, icase)`` translates a whole ``[...]``.
+
+Unicode `\w` is RE2's ``[\p{L}\p{N}_]`` corrected by a static delta table for the running Python's
+Unicode version and every known RE2 Unicode generation (``_tables``), likewise `\d` over
+``\p{Nd}``; `\s` is enumerated.
+Under IGNORECASE the class is folded here, from Python's own case tables, and emitted inside
+``(?-i:...)`` so RE2 neither folds it again nor folds the ``\p{..}`` properties.
+"""
+from __future__ import annotations
+
+import functools
+import unicodedata
+
+from . import _translate_fold as _fold
+from . import _translate_ranges as _r
+from ._tables import TABLES as _TABLES
+
+_ASCII = {"d": ((48, 57),), "w": ((48, 57), (65, 90), (95, 95), (97, 122)), "s": ((9, 13), (32, 32))}
+SHORTHANDS = frozenset("dDwWsS")
+_CONTROL = {"n": 10, "t": 9, "r": 13, "f": 12, "v": 11, "a": 7, "b": 8}
+_OCTAL = frozenset("01234567")
+_HEXDIGITS = frozenset("0123456789abcdefABCDEF")
+_unicode = None
+
+
+class Unsupported(ValueError):
+    """Class syntax this translator does not handle; the message says what."""
+
+
+def _care(w_add: tuple, w_sub: tuple, d_add: tuple, d_sub: tuple) -> tuple:
+    """What each cell can contain under ONE RE2 generation: ASCII membership is fixed, W_ADD lies
+    in cell O by definition, W_SUB in L/N, D_SUB in Nd, D_ADD outside Nd."""
+    upper = _r.intersect(((128, _r.MAX),), _r.complement(_r.union(w_add, d_sub)))
+    return (_r.union(upper, ((65, 90), (97, 122))),
+            _r.union(_r.intersect(((128, _r.MAX),), _r.complement(_r.union(w_add, d_add))), ((48, 57),)),
+            upper,
+            _r.complement(_r.union(_r.union(w_sub, d_sub), ((48, 57), (65, 90), (97, 122)))))
+
+
+def _unicode_cells() -> dict:
+    """Positive `d w s` cell sets for the running interpreter's Unicode version, exact under EVERY
+    RE2 generation the table knows for it (the deltas are united, the cells' possible contents
+    too): the engine's generation is unknown here, ``compile()`` translates without the engine.
+    An ADD is a Python member, a SUB is not, so neither union can be wrong for another build."""
+    global _unicode
+    table = _TABLES.get(unicodedata.unidata_version)
+    if table is None:  # unknown Unicode version: uncorrected RE2 tables (gen_tables.py --check flags it)
+        table = {"SPACE": _TABLES["16.0.0"]["SPACE"], "RE2": {"": {"W_ADD": (), "W_SUB": (), "D_ADD": (), "D_SUB": ()}}}
+    deltas = [[tuple(entry[key]) for key in ("W_ADD", "W_SUB", "D_ADD", "D_SUB")] for entry in table["RE2"].values()]
+    w_add, w_sub, d_add, d_sub = (functools.reduce(_r.union, column) for column in zip(*deltas))
+    care = functools.reduce(_r.cells_union, (_care(*delta) for delta in deltas))
+    keep_w = _r.complement(w_sub)
+    _unicode = {
+        "w": (keep_w, keep_w, keep_w, _r.union(w_add, ((95, 95),))),
+        "d": (d_add, _r.complement(d_sub), d_add, d_add),
+        "s": _r.literal(tuple(table["SPACE"])),
+        "care": care,
+    }
+    return _unicode
+
+
+def _category(letter: str, ascii_only: bool) -> tuple:
+    low = letter.lower()
+    cells = _r.literal(_ASCII[low]) if ascii_only else (_unicode or _unicode_cells())[low]
+    return cells if letter == low else _r.cells_complement(cells)
+
+
+def _emit(cells: tuple, latin1: bool = False) -> str:
+    if latin1:  # bytes patterns are always ASCII-mode, so the four masks are one range set
+        return _r.emit_bytes(cells[0])
+    return _r.emit(cells, (_unicode or _unicode_cells())["care"])
+
+
+def _wrap(source: str, icase: bool) -> str:
+    return "(?-i:" + source + ")" if icase else source
+
+
+@functools.lru_cache(maxsize=64)
+def shorthand(letter: str, ascii_only: bool, icase: bool, latin1: bool = False) -> str:
+    return _wrap(_emit(_category(letter, ascii_only), latin1), icase)
+
+
+def _escape(body: str, i: int, latin1: bool = False):
+    """``(code point or None, shorthand letter or None, next index)`` for the escape at ``i``."""
+    ch = body[i + 1]
+    if ch in "dDwWsS":
+        return None, ch, i + 2
+    width = {"x": 2, "u": 4, "U": 8}.get(ch)
+    if latin1 and ch in "uUN":  # as stdlib: a bytes pattern has no \u, \U or \N escape
+        raise Unsupported(f"bad escape \\{ch}")
+    if width:
+        digits = body[i + 2:i + 2 + width]
+        if len(digits) != width or not _HEXDIGITS.issuperset(digits):  # int() would take a sign or "_"
+            raise Unsupported(f"incomplete escape \\{ch}{digits}")
+        code = int(digits, 16)
+        if code > _r.MAX:  # as stdlib: refused, not left for RE2 to refuse at the first match
+            raise Unsupported(f"bad escape \\{ch}{body[i + 2:i + 2 + width]}")
+        return code, None, i + 2 + width
+    if ch in _OCTAL:
+        j = i + 1
+        while j < min(i + 4, len(body)) and body[j] in _OCTAL:
+            j += 1
+        code = int(body[i + 1:j], 8)
+        if code > 0o377:
+            raise Unsupported(f"octal escape value \\{body[i + 1:j]} outside of range 0-0o377")
+        return code, None, j
+    if ch in _CONTROL:
+        return _CONTROL[ch], None, i + 2
+    if ch.isascii() and ch.isalnum():
+        raise Unsupported(f"escape \\{ch} inside a bracket class")
+    return ord(ch), None, i + 2
+
+
+def _parse(body: str, latin1: bool = False):
+    """``(negated, literal ranges, shorthand letters)`` of ``[...]``."""
+    i, end = 1, len(body) - 1
+    negated = body[1] == "^"
+    if negated:
+        i = 2
+    ranges, letters = [], []
+    while i < end:
+        if body[i] == "\\":
+            low, letter, i = _escape(body, i, latin1)
+            if letter:
+                if i + 1 < end and body[i] == "-":  # as stdlib: `[\d-a]` is an error, `[\d-]` is not
+                    raise Unsupported(f"bad character range \\{letter}-{body[i + 1]}")
+                letters.append(letter)
+                continue
+        else:
+            low, i = ord(body[i]), i + 1
+        if i + 1 < end and body[i] == "-":
+            if body[i + 1] == "\\":
+                high, letter, i = _escape(body, i + 1, latin1)
+                if letter:
+                    raise Unsupported("a shorthand class as a range end")
+            else:
+                high, i = ord(body[i + 1]), i + 2
+            if high < low:
+                raise Unsupported("bad character range")
+            ranges.append((low, high))
+        else:
+            ranges.append((low, low))
+    return negated, ranges, letters
+
+
+def members(body: str, ascii_only: bool, icase: bool, latin1: bool = False):
+    """``(negated, literal ranges as a range set, shorthand letters)`` of ``[...]``, the literal
+    ranges with stdlib's IGNORECASE folding applied."""
+    negated, ranges, letters = _parse(body, latin1)
+    if icase and ranges and any(_fold.any_cased(lo, hi, ascii_only) for lo, hi in ranges):
+        extra = set()
+        for lo, hi in ranges:
+            extra |= _fold.range_orbit(lo, hi, ascii_only)
+            if hi > 0xFFFF and not ascii_only:
+                extra |= _fold.upper_hits(lo, hi)
+        ranges += [(cp, cp) for cp in extra]
+    return negated, _r.normalize(ranges), letters
+
+
+@functools.lru_cache(maxsize=2048)
+def bracket(body: str, ascii_only: bool, icase: bool, latin1: bool = False) -> str:
+    negated, ranges, letters = members(body, ascii_only, icase, latin1)
+    cells = _r.literal(ranges)
+    for letter in letters:
+        cells = _r.cells_union(cells, _category(letter, ascii_only))
+    if negated:
+        cells = _r.cells_complement(cells)
+    return _wrap(_emit(cells, latin1), icase)
+
+
+@functools.lru_cache(maxsize=1024)
+def folded_literal(cp: int, ascii_only: bool, latin1: bool = False) -> str:
+    """RE2 source for the literal ``cp`` under IGNORECASE with stdlib's folding; ``""`` when RE2's
+    own folding of that character is already the same (the caller then emits it unchanged)."""
+    if cp < 128:
+        if chr(cp) not in ("kKsS" if ascii_only else "iI"):
+            return ""  # RE2 folds the other ASCII letters exactly as stdlib does (t3_pairs.py)
+    elif not _fold.orbit(cp, False):
+        return ""  # uncased for Python: RE2 has no fold for it either (t3_re2_only.py)
+    if latin1:
+        return ""  # bytes: RE2's Latin-1 folding is ASCII-only, like stdlib's (t3_misc.py)
+    members = [(cp, cp)] + [(other, other) for other in _fold.orbit(cp, ascii_only)]
+    return "(?-i:" + _emit(_r.literal(_r.normalize(members))) + ")"

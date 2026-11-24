@@ -16,6 +16,10 @@
  * bubble came up pointing at a place where something else was showing. So the anchor must not sit
  * in a region taken out of use (`inert`, `aria-hidden`), and the point at its middle must hit the
  * anchor itself, not whatever covers it.
+ *
+ * Covered is not gone. A menu, a dialog or a toast passes over an anchor for a moment; a pane that
+ * closes takes it away. A tip that is already up waits out the first and ends on the second
+ * (`hasTipAnchor`), so opening a menu does not spend a tip the user was about to read.
  */
 
 /** The first target that resolves to a visible, on-screen element. */
@@ -31,17 +35,32 @@ export function resolveTipAnchor(doc: Document, targets: readonly string[]): HTM
   return null
 }
 
-function isTipAnchorVisible(element: HTMLElement): boolean {
-  if (element.closest('[data-pane-hidden], [inert], [aria-hidden="true"]')) {
+/** Whether a tip's subject is still there: one of its targets laid out in a pane that is shown,
+ *  whatever stands over it for now. */
+export function hasTipAnchor(doc: Document, targets: readonly string[]): boolean {
+  return targets.some(selector => {
+    const element = doc.querySelector<HTMLElement>(selector)
+
+    return element !== null && isTipAnchorPresent(element)
+  })
+}
+
+function isTipAnchorPresent(element: HTMLElement): boolean {
+  if (element.closest('[data-pane-hidden]')) {
     return false
   }
 
   const rect = element.getBoundingClientRect()
 
-  if (rect.width < 8 || rect.height < 8) {
+  return rect.width >= 8 && rect.height >= 8
+}
+
+function isTipAnchorVisible(element: HTMLElement): boolean {
+  if (!isTipAnchorPresent(element) || element.closest('[inert], [aria-hidden="true"]')) {
     return false
   }
 
+  const rect = element.getBoundingClientRect()
   const view = element.ownerDocument.defaultView
 
   if (!view) {

@@ -15,7 +15,7 @@
   /* The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the
      stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts
      it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white
-     (16292:27185). Its resting prompt is the card's heading line at full ink (16292:15681). */
+     (16292:27185). Its resting prompt is the card's heading line (16292:15681), a step back from typed text. */
   --portal-composer-fill: color-mix(
     in srgb,
     var(--portal-raw-pure-white) 8%,

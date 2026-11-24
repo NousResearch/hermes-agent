@@ -256,7 +256,6 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
-    QQBOT = "qqbot"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
 
     @classmethod

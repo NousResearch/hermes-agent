@@ -22,8 +22,8 @@ logger = logging.getLogger("cron.scheduler")
 
 # Live-lane rejections an adapter returns BEFORE sending anything (no client while it rebuilds): the
 # only ones whose ``retryable`` proves the chat has nothing yet. ``SendResult.retryable`` alone means
-# "can try again" and is also set after a failed POST that may have landed (QQBot ``_send_chunk``,
-# Teams, Slack), so it never licenses a full replay by itself.
+# "can try again" and is also set after a failed POST that may have landed (Teams,
+# Slack), so it never licenses a full replay by itself.
 _PRE_SEND_LIVE_REJECTIONS = frozenset({"Not connected"})
 
 

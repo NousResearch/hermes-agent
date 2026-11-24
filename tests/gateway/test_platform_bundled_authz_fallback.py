@@ -25,7 +25,7 @@ def test_registered_entries_carry_exactly_the_file_declaration():
 
     discover_plugins()
     names = _bundled_with_authz()
-    assert {"telegram", "weixin", "wecom_callback", "qqbot"} <= set(names)
+    assert {"telegram", "weixin", "wecom_callback"} <= set(names)
     for name in names:
         entry = platform_registry.get(name)
         declared = bundled_authz(name)

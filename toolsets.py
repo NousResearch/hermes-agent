@@ -214,7 +214,6 @@ TOOLSETS = {
     "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
     "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),
-    "hermes-qqbot": _bundle("QQBot toolset - QQ messaging via Official Bot API v2 (full access)"),
     "hermes-wecom": _bundle("WeCom bot toolset - enterprise WeChat messaging (full access)"),
     "hermes-wecom-callback": _bundle("WeCom callback toolset - enterprise self-built app messaging (full access)"),
     "hermes-sms": _bundle("SMS bot toolset - interact with Hermes via SMS (Twilio)"),
@@ -227,7 +226,7 @@ TOOLSETS = {
             "hermes-signal", "hermes-bluebubbles", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
             "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
-            "hermes-qqbot", "hermes-webhook",
+            "hermes-webhook",
         ],
     ),
 }

@@ -204,10 +204,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD", "BLUEBUBBLES_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL_NAME",
-    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME",
-    "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
-    "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
-    "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS", "IRC_SERVER_PASSWORD",
     "IRC_NICKSERV_PASSWORD", "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     # Deprecated (replaced by display.tool_progress) but STILL READ by the gateway as a
@@ -2795,7 +2791,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # Platform configs — PlatformConfig dataclass + dynamic extras
     "discord", "telegram", "slack", "whatsapp", "signal", "mattermost",
-    "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot",
+    "matrix", "feishu", "wecom", "weixin", "bluebubbles",
     "email", "sms", "dingtalk",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",

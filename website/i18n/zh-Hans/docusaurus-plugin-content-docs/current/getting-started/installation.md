@@ -33,13 +33,12 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 它不替换系统 Git，也不再使用 MinGit 或 `hermes\node` 的旧布局。
 安装完成后，打开新终端以读取用户 PATH。
 
-**桌面软件包：** MSIX/App Installer 是自包含的软件包，与源码脚本不同。
-它要求 Windows 11 22H2 或更新版本，首次启动无需克隆源码或编译基础运行时。
-打开 `.appinstaller` 文件安装并登记更新源。Microsoft Store 版本由商店更新。
-`Hermes-Setup.exe` 则是下载并配置源码的引导安装程序。
+**桌面软件包：** 自包含桌面软件包与源码脚本不同，首次启动无需克隆源码或编译基础运行时：
 
-macOS 的 DMG 包含应用；将它复制到 Applications 后启动。
-其自动更新使用包含已签名应用的 ZIP。详情见 [桌面指南](../user-guide/desktop.md)。
+- **Windows（Windows 11 22H2 / `10.0.22621.0` 及以上，x64 或 ARM64）：** 可从 Microsoft Store 安装，或打开 `.appinstaller` 文件通过 Windows App Installer 安装签名 MSIX 包并登记更新源。Microsoft Store 版本由商店更新。Windows 10 和低于 22H2 的 Windows 11 不支持 MSIX / 商店包，请使用上方的源码安装脚本（`install.ps1`）或 [WSL2](../user-guide/windows-wsl-quickstart.md)。`Hermes-Setup.exe` 则是下载并配置源码的引导安装程序。
+- **macOS（macOS 13 Ventura 及以上，仅支持 Apple Silicon M1–M4）：** 打开 DMG（约 948 MB），将 `Hermes Agent.app` 复制到 Applications 后启动。自动更新使用包含已签名应用的 ZIP（约 983 MB）。Intel Mac 和 macOS 12 及更早版本不支持桌面软件包，请使用上方的 CLI / 源码安装脚本（`install.sh`）。
+
+关于软件包下载体积及本地校验替换耗时，请参阅 [更新与卸载](./updating.md)。详情见 [桌面指南](../user-guide/desktop.md)。
 
 ### Android / Termux
 

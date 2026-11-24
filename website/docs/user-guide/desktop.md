@@ -8,7 +8,7 @@ description: "The native Hermes desktop app — a polished experience for chatti
 
 The Hermes desktop app is a native app built around the **same** agent you get from the CLI and the gateway — same config, same API keys, same sessions, same skills, same memory. It is not a separate product or a lightweight clone; it uses the same Hermes Agent core and settings, and drives it through a modern & thoughtfully designed UI. If you have used `hermes` in a terminal, everything you set up there is already here, and anything you do here shows up there.
 
-It runs on **macOS (Apple Silicon), Windows, and Linux** — see [Platform Support](../getting-started/platform-support.md) for the full matrix.
+Packaged desktop bundles support **macOS 13 Ventura or later on Apple Silicon (M1–M4)** and **Windows 11 22H2 or later (`10.0.22621.0`, x64 or ARM64)**. On Linux, Intel Macs, macOS 12 or earlier, and Windows 10 or Windows 11 earlier than 22H2, use the CLI / source installer (`install.sh` or `install.ps1`) or WSL2 — see [Platform Support](../getting-started/platform-support.md) for the full matrix.
 
 :::tip Which interface is which?
 Hermes has several front ends that all talk to the same agent:
@@ -22,9 +22,13 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
+Download the desktop package from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md):
 
-If you already have Hermes installed, simply run
+- **macOS Desktop Bundle (`Hermes Agent.app`):** requires **macOS 13 Ventura or later on Apple Silicon (M1–M4)**. Download the DMG (~948 MB) and copy `Hermes Agent.app` to Applications. Intel Macs and macOS 12 or earlier should use the CLI / source installer (`install.sh`).
+- **Windows Desktop Bundle (Microsoft Store or `.appinstaller` MSIX):** requires **Windows 11 22H2 or later (`10.0.22621.0`)**, x64 or ARM64. Windows 10 and Windows 11 earlier than 22H2 should use the Windows source installer (`install.ps1`) or [WSL2](./windows-wsl-quickstart.md).
+- **Linux:** install via `install.sh` (native Linux AppImage bundles are not yet published to stable).
+
+If you already have a source install of Hermes, simply run
 
 ```bash
 hermes desktop
@@ -564,7 +568,9 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
-The background check asks the GitHub API for the branch tip. Anonymous GitHub requests are limited to 60 per hour **per network address**, so on a shared connection (office NAT, VPN, proxy) the check can report `GitHub API rate limit reached` even though this machine made almost none of them. To spend a 5,000/hour budget instead, the check uses the first credential it finds, in this order:
+For **bundled desktop installs** (signed macOS `Hermes Agent.app`, Windows `.appinstaller` MSIX, and Microsoft Store), updates replace the packaged app and its bundled runtime together. Update time splits into download duration (connection-dependent: ~983 MB macOS update ZIP; ~1.89–2.86 GB per-architecture Windows MSIX with differential App Installer/Store block updates) and local verification/swap time (~50 seconds post-download on Apple Silicon M4). See [Bundled desktop updates](../getting-started/updating.md#bundled-desktop-updates).
+
+For **source-built desktop installs**, the background check asks the GitHub API for the branch tip. Anonymous GitHub requests are limited to 60 per hour **per network address**, so on a shared connection (office NAT, VPN, proxy) the check can report `GitHub API rate limit reached` even though this machine made almost none of them. To spend a 5,000/hour budget instead, the check uses the first credential it finds, in this order:
 
 1. `GITHUB_TOKEN`, then `GH_TOKEN`, from the environment the app was launched from — read on each request, never stored.
 2. The [GitHub CLI](https://cli.github.com/)'s own login (`gh auth token`). This is the rung that helps an app started from the Dock, Finder, or a desktop launcher, which inherits a minimal environment without your shell's variables. `gh` is looked up on `PATH` and in the usual install locations (Homebrew, `/usr/local/bin`, `~/.local/bin`, the Windows GitHub CLI installer); the answer is cached until the app restarts, so `gh` runs at most once per session.
@@ -1037,7 +1043,7 @@ with Hermes' stable signing identities it survives every update:
 
 1. System Settings → **Privacy & Security → Full Disk Access** (or run
    `open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`)
-2. Enable your terminal app — and **Hermes.app** if you use Desktop.
+2. Enable your terminal app — and **Hermes Agent.app** (or **Hermes.app** for source-built Desktop) if you use Desktop.
 3. Fully quit and relaunch them once.
 
 `hermes doctor` reports whether the current terminal context already has the

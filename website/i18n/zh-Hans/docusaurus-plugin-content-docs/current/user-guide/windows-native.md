@@ -47,9 +47,9 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 ### MSIX / App Installer 和 Microsoft Store
 
-自包含 MSIX 要求 Windows 11 22H2 或更新版本。
-Windows 10 源码安装支持不代表 MSIX 支持 Windows 10。
-打开 `.appinstaller` 文件，Windows 会安装签名包并记录更新源。
+自包含桌面软件包（包括 Microsoft Store 版本和侧载 `.appinstaller` MSIX，支持 x64 和 ARM64）要求 **Windows 11 22H2 或更新版本（`10.0.22621.0`）**。
+Windows 10 源码安装支持不代表 MSIX 支持 Windows 10：在 Windows 10 或低于 22H2 的 Windows 11 上，请使用上方的源码安装脚本（`install.ps1`）或 [WSL2](./windows-wsl-quickstart.md)。
+可从 Microsoft Store 安装，或打开 `.appinstaller` 文件，Windows 会安装签名包并记录更新源。
 软件包包含 Python、Node 和基础依赖，首次启动无需克隆或编译源码。
 
 执行别名提供 `hermes`、`hermes-agent` 和 `hermes-acp`。
@@ -59,6 +59,7 @@ Windows 10 源码安装支持不代表 MSIX 支持 Windows 10。
 侧载版通过桌面 Update 控件交给 App Installer 更新。
 Hermes 先下载本地描述文件，再停止自己的后端、退出并等待包替换。
 它不依赖 `ms-appinstaller:` URL 协议。商店版本由 Microsoft Store 更新。
+分架构完整 MSIX 包约为 1.89 GB（ARM64）至 2.86 GB（x64）；App Installer 与 Microsoft Store 仅下载当前主机架构并应用差分块更新，整体更新耗时取决于下载速度以及本地包部署与重启时间。
 
 `Hermes-Setup.exe` 是另一种引导安装程序，会下载并配置源码安装。
 不要把它与自包含 MSIX 混为一谈。

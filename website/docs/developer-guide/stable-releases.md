@@ -72,11 +72,12 @@ the R2 public origin, alongside `releases/darwin/stable/stable-mac.yml` and
 `releases/canary/index.html`, and a commit build owns only its claim archive's
 page, `releases/tag/commit.<stamp>-v<version>/index.html`. Pages list only
 staged, receipt-backed objects; an older run cannot regress a protected channel.
-Only the publication controller promotes stable: the standalone
+Only the publication controller promotes stable. The standalone
 `python -m scripts.bundles.release_artifacts promote` refuses a stable candidate
-and `python -m scripts.releases.channel_releases` refuses the `stable` role,
-because they would skip the published-release check and run outside the
-serialized `stable-release` group. Repair a partial stable publication by
+because it skips the published-release check, and
+`python -m scripts.releases.channel_releases` refuses the `stable` role because
+it skips the check of the candidate digest against the final release receipt.
+Both would also run outside the serialized `stable-release` group. Repair a partial stable publication by
 running Stable Release Publication again. A rerun repeats only an unfinished
 advance (a head, candidate pointer or Docker alias still behind); it never
 re-promotes a release that finished, so it never backfills the unversioned DMG

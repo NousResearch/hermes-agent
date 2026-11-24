@@ -11,6 +11,7 @@ import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
 import { exitProjectScope } from '@/store/project-scope'
 import { clearLiveReactionOverlays } from '@/store/reactions-local'
+import { $seenGroupRooms } from '@/store/seen-group-rooms'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -239,6 +240,8 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // The star map is a scan of the outgoing backend's skills and memory; an open view reloads it
   // when the switch ends (endGatewaySwitch), not here: the outgoing source is still active.
   resetStarmapGraph()
+  // Group chats remembered from the outgoing backend's agents are not the next one's.
+  $seenGroupRooms.set([])
   setCronJobs([])
   setMessagingSessions([])
   setMessagingListServer(null)

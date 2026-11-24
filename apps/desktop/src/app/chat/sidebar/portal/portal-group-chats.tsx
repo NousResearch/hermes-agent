@@ -51,11 +51,9 @@ function useSeenGatewayRooms(): GatewayGroupRoom[] {
   // This machine's agents. None means its roster has not been read yet: a machine has at least one.
   const agents = new Set(roster.filter(row => botOnConnection(row, connectionId)).map(row => row.name))
 
-  // Read as the section renders, not subscribed to: this hook is its only writer.
-  const seen = $seenGroupRooms.get()
-  const elsewhere = seen.filter(room => room.binding.connectionId !== connectionId)
-
-  const earlier = seen.filter(
+  // Read as the section renders and never subscribed to, here or anywhere: the write below runs on
+  // every render, and a subscriber would turn it into a loop.
+  const earlier = $seenGroupRooms.get().filter(
     room =>
       room.binding.connectionId === connectionId &&
       room.binding.profile !== profile &&
@@ -67,7 +65,7 @@ function useSeenGatewayRooms(): GatewayGroupRoom[] {
   // Newest first, whichever agent is active: opening another agent does not reorder the rows.
   const rooms = [...earlier, ...current].sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key))
 
-  useEffect(() => $seenGroupRooms.set([...elsewhere, ...rooms]))
+  useEffect(() => $seenGroupRooms.set(rooms))
 
   return rooms
 }

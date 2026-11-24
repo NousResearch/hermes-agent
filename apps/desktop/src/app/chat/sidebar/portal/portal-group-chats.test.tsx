@@ -8,6 +8,7 @@ import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
 import { $groupChats } from '@/plugins/hermes-bots/group-chat'
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
+import { wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $seenGroupRooms } from '@/store/seen-group-rooms'
 import { $connection } from '@/store/session'
@@ -143,6 +144,15 @@ describe('rooms seen under an agent that was active earlier', () => {
 
     show('ops', [])
     expect(listed()).toBe('Launch crew@default')
+  })
+
+  it('are dropped when the window is re-homed to another backend', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    const view = show('default', [roomOf('default', 'r1', 'Launch crew')])
+
+    act(() => wipeSessionListsForGatewaySwitch())
+    show('ops', [], view)
+    expect(listed()).toBe('none')
   })
 
   it('leave when their own agent no longer lists them', () => {

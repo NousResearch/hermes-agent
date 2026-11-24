@@ -1960,6 +1960,49 @@ class TestCloneAllExcludesRuntimeTrees:
         assert (clone / "config.yaml").is_file()
 
 
+class TestCloneAllSkipsSharedKanban:
+    """Kanban boards are shared across profiles by design and resolved only from the default root
+    (``kanban_home()``), so a ``--clone-all`` copy of them is a stale, never-read snapshot."""
+
+    KANBAN_ROOT_FILES = (
+        "kanban.db", "kanban.db-wal", "kanban.db-shm",
+        "kanban.db.dispatch.lock", "kanban.db.init.lock",
+    )
+
+    def _seed_kanban(self, home):
+        for name in self.KANBAN_ROOT_FILES:
+            (home / name).write_text("board\n")
+        board = home / "kanban" / "boards" / "ops"
+        board.mkdir(parents=True)
+        (board / "board.json").write_text("{}\n")
+        (home / "config.yaml").write_text("model: x\n")
+
+    def test_clone_all_from_default_leaves_the_shared_board_behind(self, profile_env):
+        default_home = profile_env / ".hermes"
+        default_home.mkdir(parents=True, exist_ok=True)
+        self._seed_kanban(default_home)
+
+        clone = create_profile("clone", clone_all=True, no_alias=True)
+
+        for name in (*self.KANBAN_ROOT_FILES, "kanban"):
+            assert not (clone / name).exists(), name
+        assert (clone / "config.yaml").is_file()
+        # The shared board itself is untouched.
+        assert (default_home / "kanban.db").is_file()
+        assert (default_home / "kanban" / "boards" / "ops" / "board.json").is_file()
+
+    def test_clone_all_from_a_named_profile_still_copies_files_it_owns(self, profile_env):
+        """The exclusion is gated on the default profile: a named source never holds the shared board
+        at its root, so anything with these names there is its own data and must survive."""
+        source = create_profile("source", no_alias=True)
+        self._seed_kanban(source)
+
+        clone = create_profile("clone", clone_from="source", clone_all=True, no_alias=True)
+
+        assert (clone / "kanban.db").is_file()
+        assert (clone / "kanban" / "boards" / "ops" / "board.json").is_file()
+
+
 def test_count_skills_publishes_timestamp_after_the_walk(tmp_path, monkeypatch):
     """A scan longer than the TTL must not publish an already-expired cache entry (#107151):
     the cached timestamp is taken after _walk_skill_count returns, not before it starts."""

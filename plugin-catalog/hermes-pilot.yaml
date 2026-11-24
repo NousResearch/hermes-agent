@@ -1,0 +1,17 @@
+name: hermes-pilot
+title: Hermes Pilot
+repo: https://github.com/hajimemanila/hermes-pilot
+sha: "5c82ba628ae715e5ae4d390940d5fd4c20612cac"
+description: "Drive an autonomous Hermes Agent from a phone or tablet. Hermes Pilot turns the decisions an agent needs into one-tap review sheets and annotated screenshots, carries a one-line idea through a Quick Review interview into a spec the batch runner can execute, then files and monitors the kanban batches — with kanban, chat, terminal and usage in one installable PWA. Ships three bundled skills (quick-review, annotation, spec-architect), a Hermes dashboard tab (pairing QR, bridge status, scan directories, service control) and the PWA bridge it talks to. Disclosure — the plugin runs a local HTTP/WebSocket bridge bound to 127.0.0.1 (default port 4097), authenticated with a 256-bit token generated on first run and stored 0600 under the plugin data folder; a paired phone or tablet gets an interactive login shell on this computer through the bridge's terminal, outside Hermes' approval prompts and sandbox, plus chat, kanban and session actions through the local `hermes` CLI; it reads the kanban SQLite databases read-only; `node bin/hermes-pilot.mjs init` (run by you after `npm ci`, which installs the native node-pty module) copies three bundled skills into your Hermes skills folder and the dashboard files into your plugins folder; legacy akapen/mobile-pwa migration runs only when you confirm it, and removes old crons through `hermes cron remove`; remote access is opt-in and left to you (documented Tailscale `serve`, never started by the plugin); `hermes-pilot service install` writes a launchd (macOS) or systemd --user (Linux) unit only on explicit command; the bundled Interactive Demo is a static mock that talks to no backend; no telemetry and no third-party upload."
+maintainer: hajimemanila
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/hajimemanila/hermes-pilot#readme
+version: "0.2.0"
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

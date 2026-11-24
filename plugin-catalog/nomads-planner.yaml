@@ -1,0 +1,36 @@
+name: nomads-planner
+repo: https://github.com/lawmight/hermes-nomads-planner
+sha: 33a86ddd01db069c028c367dcbf3ed777ad093fd
+description: >-
+  Nomads.com for Hermes: read your own trips and favorite cities, look up curated city and
+  country facts (monthly costs, rent, internet speed, weather, safety and other 0-5 scores),
+  list upcoming in-person meetups, and build a next-stay brief in one call that joins your
+  current and upcoming stays, unplanned gaps, city facts, meetups inside each stay's dates and
+  your past visits, with deterministic comparisons (cheapest, fastest internet, safest). Native
+  plugin: 7 read-only tools, a /nomads slash command and a bundled planning skill. City,
+  country and meetup tools work without an account; trips and favorites need a free personal
+  key from https://nomads.com/settings, read through Hermes' secret scope. Disclosure — makes
+  HTTPS GET requests to https://nomads.com/api only (sending your username and personal key in
+  the Authorization header for trips and favorites); no writes, no other hosts, no files read,
+  no background processes, no telemetry; public city data is cached in memory for 10 minutes.
+  Not affiliated with Nomads.com.
+maintainer: lawmight
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/lawmight/hermes-nomads-planner#readme
+version: "0.1.0"
+title: "Nomads Planner"
+platforms: []
+capabilities:
+  provides_tools:
+    - nomads_search_cities
+    - nomads_get_city
+    - nomads_get_country
+    - nomads_list_meetups
+    - nomads_get_trips
+    - nomads_get_favorites
+    - nomads_next_stay_brief
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

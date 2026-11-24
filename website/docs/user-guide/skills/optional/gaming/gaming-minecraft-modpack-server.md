@@ -80,9 +80,7 @@ ATM10_INSTALL_ONLY=true bash startserver.sh
 This downloads libraries, patches the server jar, etc.
 
 ### 4. Accept EULA
-```bash
-echo "eula=true" > ~/minecraft-server/server/eula.txt
-```
+`write_file` `~/minecraft-server/server/eula.txt` with the single line `eula=true`.
 
 ### 5. Configure server.properties
 Key settings for modded/LAN:
@@ -149,20 +147,18 @@ sudo ufw allow 25565/tcp comment "Minecraft Server"
 Check with: `sudo ufw status | grep 25565`
 
 ### 8. Create Launch Script
+`write_file` `~/start-minecraft.sh`:
 ```bash
-cat > ~/start-minecraft.sh << 'EOF'
 #!/usr/bin/env bash
 cd ~/minecraft-server/server
 java @user_jvm_args.txt @libraries/net/neoforged/neoforge/<VERSION>/unix_args.txt nogui
-EOF
-chmod +x ~/start-minecraft.sh
 ```
+Then `chmod +x ~/start-minecraft.sh`.
 Note: For Forge (not NeoForge), the args file path differs. Check `startserver.sh` for the exact path.
 
 ### 9. Set Up Automated Backups
-Create backup script:
+Create the backup script with `write_file` `~/minecraft-server/backup.sh`:
 ```bash
-cat > ~/minecraft-server/backup.sh << 'SCRIPT'
 #!/usr/bin/env bash
 SERVER_DIR="$HOME/minecraft-server/server"
 BACKUP_DIR="$HOME/minecraft-server/backups"
@@ -183,9 +179,8 @@ if [ "$BACKUP_COUNT" -gt "$MAX_BACKUPS" ]; then
     echo "[BACKUP] Pruned $REMOVE old backup(s)"
 fi
 echo "[BACKUP] Done at $(date)"
-SCRIPT
-chmod +x ~/minecraft-server/backup.sh
 ```
+Then `chmod +x ~/minecraft-server/backup.sh`.
 
 Add hourly cron:
 ```bash

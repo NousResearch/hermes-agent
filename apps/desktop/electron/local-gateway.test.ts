@@ -21,6 +21,51 @@ test('the ensure client inherits the caller-scrubbed parent env, not the raw Des
   expect(JSON.parse(result.stdout)).toEqual({ leak: null, home: '/home/x/.hermes', own: '1' })
 })
 
+test('the ensure client never hands a dev renderer origin to the long-lived local gateway', async () => {
+  // A dev Desktop's own env names its renderer (HERMES_DESKTOP_DEV_SERVER). The gateway `ensure`
+  // starts outlives that session, and Desktop reaches it through main-process HTTP and Origin-less
+  // socket dials, so it needs no renderer origin; inherited, it would keep trusting that port.
+  const printEnv = ['-e', 'process.stdout.write(JSON.stringify(process.env.HERMES_DESKTOP_DEV_SERVER ?? null))']
+
+  const result = await runGatewayEnsure(
+    { command: process.execPath, args: printEnv, env: { HERMES_DESKTOP_DEV_SERVER: 'http://127.0.0.1:5174' }, shell: false },
+    process.cwd(),
+    '/home/x/.hermes',
+    { PATH: process.env.PATH ?? '', HERMES_DESKTOP_DEV_SERVER: 'http://127.0.0.1:5174' }
+  )
+
+  expect(JSON.parse(result.stdout)).toBeNull()
+})
+
+test('a gateway started from the AppImage payload copy gets no paths into the app mount', async () => {
+  const mount = '/tmp/.mount_HermesAb12'
+  const keys = ['PATH', 'LD_LIBRARY_PATH', 'XDG_DATA_DIRS', 'GSETTINGS_SCHEMA_DIR', 'APPDIR', 'APPIMAGE']
+  const printEnv = ['-e', `process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(keys)}.map(k => [k, process.env[k] ?? null]))))`]
+
+  const result = await runGatewayEnsure(
+    { command: process.execPath, args: printEnv, env: { PATH: `${mount}:${mount}/usr/sbin:/usr/bin` }, shell: false },
+    process.cwd(),
+    '/home/x/.hermes',
+    {
+      APPIMAGE: '/home/x/Hermes.AppImage',
+      APPDIR: mount,
+      LD_LIBRARY_PATH: `${mount}/usr/lib`,
+      XDG_DATA_DIRS: `${mount}/usr/share/:/usr/share/`,
+      GSETTINGS_SCHEMA_DIR: `${mount}/usr/share/glib-2.0/schemas`
+    },
+    { execPath: `${mount}/hermes` }
+  )
+
+  expect(JSON.parse(result.stdout)).toEqual({
+    PATH: '/usr/bin',
+    LD_LIBRARY_PATH: null,
+    XDG_DATA_DIRS: '/usr/share/',
+    GSETTINGS_SCHEMA_DIR: null,
+    APPDIR: null,
+    APPIMAGE: '/home/x/Hermes.AppImage'
+  })
+})
+
 test('a shell-delegated ensure quotes a spaced Windows install path (#74064)', async () => {
   // cmd.exe cuts an unquoted `C:\Users\John Doe\...\hermes.cmd` at the first space.
   const spawned: string[] = []
@@ -224,6 +269,20 @@ test('private dial credential is one-use and bound to the requesting native wind
   expect(headers).not.toHaveProperty('Origin')
   expect(headers['Sec-WebSocket-Protocol']).toBe('hermes-gateway-v1, hermes-gateway-ticket.private-ticket')
   expect(dials.headers({ ...details, webContentsId: 7 })).toBeNull()
+})
+
+test('a voice socket dialed on its own /api/ws reservation drops Origin; other paths do not', () => {
+  const dial = (path: string, dials = createLocalGatewayDials()) => {
+    const url = new URL(dials.prepare('http://127.0.0.1:1234', 'voice-ticket', 7))
+    url.searchParams.delete('ticket')
+    url.pathname = path
+
+    return dials.headers({ url: url.toString(), webContentsId: 7, resourceType: 'webSocket', requestHeaders: { Origin: 'http://renderer' } })
+  }
+
+  expect(dial('/api/audio/speak-stream')).toEqual({})
+  expect(dial('/api/audio/transcribe-stream')).toEqual({})
+  expect(dial('/api/pty')).toBeNull()
 })
 
 test('a dial against a replaced local gateway forgets the cached endpoint once and re-ensures', async () => {

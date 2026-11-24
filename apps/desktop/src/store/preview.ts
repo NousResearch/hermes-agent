@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
@@ -316,8 +317,11 @@ function applyPreviewScope(next: string) {
 }
 
 /** Drop one profile's rail. Delete counterpart of the tiles store's
- *  `dropTilesForProfile`, which profile deletion calls. */
-export function dropPreviewTabsForProfile(profile: string) {
+ *  `dropTilesForProfile`, which profile deletion calls. `local` (default true)
+ *  is false for a REMOTE profile deletion: the tab list is memory/renderer
+ *  state, but the cookie jar lives in LOCAL userData, so only a local delete
+ *  may clear it (F4). */
+export function dropPreviewTabsForProfile(profile: string, local = true) {
   const key = normalizeProfileKey(profile)
 
   delete tabsByProfile[key]
@@ -327,6 +331,16 @@ export function dropPreviewTabsForProfile(profile: string) {
     $previewTabs.set([])
   } else {
     forgetGonePendingTabs()
+  }
+
+  // P2-7 (#150283): the imported real-profile sign-ins record + per-profile cookie jar live in
+  // Electron main (userData); signal main to drop them so a later same-named profile does not
+  // inherit the cookies. Called from a profile-delete handler, never at module load.
+  //
+  // F4: a REMOTE profile's jar lives on another machine — deleting it must never clear the
+  // same-named LOCAL profile's jar. Only a local deletion touches local userData.
+  if (local) {
+    void window.hermesDesktop?.dropPreviewSigninsForProfile?.({ profile: key })?.catch(() => undefined)
   }
 }
 
@@ -362,6 +376,10 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   if (wasInView) {
     $previewTabs.set(tabsByProfile[to] ?? [])
   }
+
+  // P2-7 (#150283): move the imported sign-ins record + per-profile cookie jar (Electron main,
+  // userData) old→new so the rename does not strand or orphan the cookies.
+  void window.hermesDesktop?.migratePreviewSigninsForProfile?.({ oldProfile: from, newProfile: to })?.catch(() => undefined)
 }
 
 if (typeof window !== 'undefined') {
@@ -483,6 +501,27 @@ export function rekeyPreviewTabsSession(previousId: string, nextId: string): voi
   if (remembered) {
     activeTabBySession.set(to, remembered)
   }
+}
+
+/** The owning profile of a tab for partition resolution (#150283 F2): the
+ *  workspace the tab is being rendered in — the `viewKey` bucket the caller
+ *  (the preview pane) already shows — never a global first-match-by-id search.
+ *  A session-less draft tab in a named profile's workspace must ride that
+ *  profile's jar, never default the shared `persist:hermes-preview` jar and
+ *  expose the default profile's sign-ins to that workspace.
+ *
+ *  G1 (#150283, security): a draft FILE tab derives its id from the file URL
+ *  alone (no profile, no session), so the SAME html file opened as a draft under
+ *  two profiles collides on one id. A global first-match search returned whichever
+ *  bucket happened to iterate first, so a `default` draft of a file also open in
+ *  `work` resolved to `work`'s cookie jar — regressing the per-profile isolation.
+ *  The preview pane renders the tab it holds for the view on screen, so the tab's
+ *  owner is that view (`viewKey`): resolve from the viewed bucket, not a scan of
+ *  every profile's. (A popped-out renderer force-re-homes `viewKey` onto the
+ *  bucket the persisted tab lives in via `adoptPersistedBrowserTab` before this
+ *  is read, so `viewKey` is the authoritative owner there too.) */
+export function previewTabOwnerProfile(tabId: string | null | undefined): string {
+  return viewKey
 }
 
 $rightRailActiveTabId.listen(tabId => {
@@ -853,8 +892,7 @@ const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
  *  handed out twice, so per-tab state keyed by it (`$browserPages`, the console
  *  buffer) cannot resurface under a later tab if a close ever fails to wipe it. */
 function mintBrowserTabId(): RightRailTabId {
-  const unique =
-    globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  const unique = randomUuid()
 
   return `url:browser-${unique}`
 }

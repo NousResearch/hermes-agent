@@ -92,7 +92,7 @@ export function PreviewAnnotateCard({
       <input
         aria-label={placeholder}
         autoComplete="off"
-        className="min-w-0 flex-1 bg-transparent text-[0.8125rem] leading-5 outline-none placeholder:text-white/45"
+        className="min-w-0 flex-1 bg-transparent text-[0.8125rem] leading-5 placeholder:text-white/45"
         onChange={event => onChange(event.target.value)}
         onKeyDown={event => {
           if (event.key === 'Escape') {

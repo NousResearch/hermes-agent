@@ -59,6 +59,9 @@ export function SidebarUnreadBadge({ count }: { count: number }) {
 // where callers already look for row chrome.
 export { SIDEBAR_LEAD_ICON_SIZE, SIDEBAR_ROW_CARD_MIN_H, SIDEBAR_TRUNCATED_LEADING } from './row-geometry'
 
+export const SIDEBAR_FOCUS_VISIBLE =
+  'focus-visible:bg-(--ui-control-hover-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-inset'
+
 // The section header's "+" button, hover-revealed (group/section lives on
 // SidebarSectionHeader), mirroring the artifacts/file browser header
 // affordances. focus-visible keeps them keyboard-reachable.
@@ -101,7 +104,7 @@ export function SidebarSectionAddButton({
     <Tip label={ariaLabel}>
       <Button
         aria-label={ariaLabel}
-        className={HEADER_ACTION_BTN}
+        className={cn(HEADER_ACTION_BTN, SIDEBAR_FOCUS_VISIBLE)}
         onClick={event => {
           event.stopPropagation()
           onPlainClick()
@@ -172,13 +175,13 @@ export function SidebarDateDivider({
         <button
           aria-expanded={toggle.open}
           aria-label={toggle.ariaLabel}
-          className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
+          className={cn('flex min-w-0 flex-1 items-center gap-2 rounded-sm bg-transparent text-left', SIDEBAR_FOCUS_VISIBLE)}
           onClick={toggle.onToggle}
           type="button"
         >
           {caption}
           <DisclosureCaret
-            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100"
             open={toggle.open}
           />
           {rule}
@@ -233,7 +236,7 @@ export function SidebarRowCluster({ className, ...props }: React.ComponentProps<
 
 /** Session row main tap target. */
 export function SidebarRowBody({ className, ...props }: React.ComponentProps<'button'>) {
-  return <RowButton className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-left', className)} {...props} />
+  return <RowButton className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-left', SIDEBAR_FOCUS_VISIBLE, className)} {...props} />
 }
 
 /** Tappable label — underline/truncate live on the inner span, not the button. */
@@ -244,7 +247,7 @@ export function SidebarRowLink({
   ...props
 }: React.ComponentProps<'button'> & { labelClassName?: string }) {
   return (
-    <RowButton className={cn('min-w-0 shrink bg-transparent p-0 text-left', className)} {...props}>
+    <RowButton className={cn('min-w-0 shrink rounded-sm bg-transparent p-0 text-left', SIDEBAR_FOCUS_VISIBLE, className)} {...props}>
       <span className={cn(SIDEBAR_ROW_LABEL, labelClassName)}>{children}</span>
     </RowButton>
   )
@@ -306,8 +309,8 @@ export function SidebarGroupRow({
         // makes with its kebab and age — you read the number or you act on the
         // group, never both at once.
         facts.length ? (
-          <div className="relative flex items-center">
-            <span className="min-w-9 whitespace-nowrap text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-opacity group-hover/workspace:opacity-0">
+          <div className="group/group-actions relative flex items-center">
+            <span className="min-w-9 whitespace-nowrap text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-opacity group-hover/workspace:opacity-0 group-has-[:focus-visible]/group-actions:opacity-0 group-has-[[data-state=open]]/group-actions:opacity-0">
               {facts.join(' · ')}
             </span>
             {actions ? <div className="absolute right-0 flex items-center">{actions}</div> : null}
@@ -325,14 +328,15 @@ export function SidebarGroupRow({
         {toggle ? (
           <Tip label={toggle.ariaLabel}>
             <button
+              aria-expanded={toggle.open}
               aria-label={toggle.ariaLabel}
-              className="flex flex-1 items-center self-stretch bg-transparent p-0"
+              className={cn('flex flex-1 items-center self-stretch rounded-sm bg-transparent p-0', SIDEBAR_FOCUS_VISIBLE)}
               data-row-actions
               onClick={toggle.onToggle}
               type="button"
             >
               <DisclosureCaret
-                className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+                className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100"
                 open={toggle.open}
               />
             </button>
@@ -367,6 +371,7 @@ export function SidebarRowGrab({
       aria-label={ariaLabel}
       className={cn(
         'group/handle relative cursor-grab touch-none overflow-hidden active:cursor-grabbing',
+        SIDEBAR_FOCUS_VISIBLE,
         leadClassName,
         className
       )}

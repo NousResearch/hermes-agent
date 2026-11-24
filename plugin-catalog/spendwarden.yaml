@@ -1,0 +1,24 @@
+name: spendwarden
+title: SpendWarden
+repo: https://github.com/matrixneoaiagent/spendwarden
+sha: fe23b59ab2eca7d1b183bfbde3f47841b0603788
+version: "0.1.0"
+description: "A spend policy firewall and local ledger for Hermes agents that can move money. A pre_tool_call hook checks payment-shaped tool calls against daily, monthly and per-call USD caps, recipient/asset/network allowlists and an approval threshold; in enforce mode it blocks hard violations and escalates uncertain ones to Hermes's own approval gate. Four tools add spend_check, idempotent spend_record receipts, spend_report totals, and x402_inspect (decodes PAYMENT-REQUIRED / X-PAYMENT without signing). State is a local SQLite ledger under the plugin data directory; no network calls, no credentials, no key handling, no transaction signing. Observe mode logs only; enforce mode is opt-in. Terminal recognition covers cast send, solana transfer, bitcoin-cli sendtoaddress, near call --deposit and curl with X-PAYMENT. Disclosure — detection is best-effort: it recognises payment-shaped calls by tool-name patterns, common amount/recipient argument names and five terminal command shapes (cast send, solana transfer, bitcoin-cli sendtoaddress, near call --deposit, curl with X-PAYMENT), so payments made any other way pass unchecked; the default observe mode only logs, nothing is blocked or sent for approval until you set mode: enforce, and a policy-check error lets the call through unless fail_closed is on; it does not replace wallet-side spending limits."
+maintainer: matrixneoaiagent
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/matrixneoaiagent/spendwarden#readme
+image: https://raw.githubusercontent.com/matrixneoaiagent/spendwarden/fe23b59ab2eca7d1b183bfbde3f47841b0603788/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/matrixneoaiagent/spendwarden/fe23b59ab2eca7d1b183bfbde3f47841b0603788/docs/demo.png
+capabilities:
+  provides_tools:
+    - spend_check
+    - spend_record
+    - spend_report
+    - x402_inspect
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

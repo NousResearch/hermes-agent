@@ -1,0 +1,24 @@
+name: chrome-tab-watchdog
+title: Chrome Tab Watchdog
+repo: https://github.com/web3blind/hermes-chrome-tab-watchdog
+sha: 15b873f13df8275c59a18cbe4a9a2ec71266af50
+description: "Conservative Chrome tab cleanup with in-process observation and browser-call leases. Disclosure — runs a background thread inside Hermes that proxies your local Chrome DevTools port (127.0.0.1:9222 → 127.0.0.1:9223, loopback only, you must point browser.cdp_url at it), injects a focus/activity listener into every Chrome page, rewrites browser_exec session names to a per-profile namespace, and a cron script you schedule auto-closes idle, duplicate and blank tabs (including tabs with unsaved text)."
+maintainer: web3blind
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+version: "2.1.1"
+docs_url: https://github.com/web3blind/hermes-chrome-tab-watchdog/blob/15b873f13df8275c59a18cbe4a9a2ec71266af50/README.md
+platforms: [linux]
+readme: true
+known_issues:
+  - Requires an existing loopback Chrome CDP endpoint, browser routing through the plugin, and a script-only cleanup cron. Configure these before enabling.
+  - Idle editors can contain unsaved text and are still subject to expiry. The last exact blank and last admitted page are retained.
+  - Restore the original direct CDP endpoint before disabling or uninstalling; the plugin-owned forwarding route is unavailable while unloaded.
+  - Runs inside the Hermes host, not a sandbox, with a background observer thread, loopback CDP listener and profile-local Unix socket/SQLite/HMAC state. No runtime Chrome launcher or external API service.
+  - Uses read-only internal tools.browser_tool_cdp or tools.browser_session_cdp routing resolvers; future core changes may fence cleanup. Linux fd-relative socket addressing triggers a scanner CAUTION.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: [tool_execution]
+  requires_env: []

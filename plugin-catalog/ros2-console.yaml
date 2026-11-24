@@ -1,0 +1,25 @@
+name: ros2-console
+repo: https://github.com/vgenev/ros2-console
+sha: 6075de670b65985dc1f966c2f3ceebad97cc66ef
+description: "Read a live ROS 2 graph over SSH: topic health, measured rate, one message, camera frame, doc answers with commit provenance, and one gated publish that proves delivery. Disclosure — runs fixed ros2 CLI scripts on the robot over SSH using your own SSH config and agent (or locally with bash when no host is set); the agent may choose any SSH host per call, and new host keys are accepted on first connect (StrictHostKeyChecking=accept-new); publishing is off until you set publish_allow topic globs, and actuation-style topics are always refused."
+maintainer: vgenev
+title: ROS 2 Console
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - ros2_host_status
+    - ros2_graph
+    - ros2_topic_rate
+    - ros2_topic_sample
+    - ros2_camera_snapshot
+    - ros2_docs
+    - ros2_publish
+image: https://raw.githubusercontent.com/vgenev/ros2-console/6075de670b65985dc1f966c2f3ceebad97cc66ef/docs/assets/hermes-plate.jpg
+screenshots:
+  - https://raw.githubusercontent.com/vgenev/ros2-console/6075de670b65985dc1f966c2f3ceebad97cc66ef/docs/assets/pane-topology.png
+  - https://raw.githubusercontent.com/vgenev/ros2-console/6075de670b65985dc1f966c2f3ceebad97cc66ef/docs/assets/pane-table.png
+  - https://raw.githubusercontent.com/vgenev/ros2-console/6075de670b65985dc1f966c2f3ceebad97cc66ef/docs/assets/pane-publish.png
+known_issues: "Needs a reachable ROS 2 host over SSH. Publishing is deny-by-default: it stays off until you put a topic glob in publish_allow."

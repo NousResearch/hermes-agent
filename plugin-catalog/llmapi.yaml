@@ -1,0 +1,19 @@
+name: llmapi
+title: LLM API
+repo: https://github.com/llmapi-ai/hermes-provider-llmapi
+sha: "cc5ff07af24c1f2218a62ea5bbc1e69d3a61b8e7"
+subdir: llmapi
+description: "LLM API (llmapi.ai) as a Hermes model provider (`--provider llmapi`, alias `llm-api`, or LLM API in `hermes model`): Claude, GPT, Gemini, Kimi, DeepSeek, GLM, Qwen and more on one key, each on the API it works best on. Claude runs over the Anthropic Messages API (so Hermes' prompt caching applies), GPT-5 and later over the Responses API, everything else over Chat Completions. The picker lists LLM API's tool-capable chat models with 64K+ context from its public catalog, which also supplies context windows, image input, per-model reasoning levels and list prices; catalog aliases resolve in /model. Gateway errors (out of credits, spend caps, model not allowed for the key) map onto Hermes' fallback instead of a key rotation; /usage shows the credit balance and monthly cap; per-request cost is the billed amount when the gateway reports it, else a list-price estimate. Maintained by LLM API. Disclosure — none"
+maintainer: llmapi-ai
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/llmapi-ai/hermes-provider-llmapi#readme
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - LLMAPI_API_KEY

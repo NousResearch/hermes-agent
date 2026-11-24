@@ -33,12 +33,15 @@ export function ProfileI18nProvider({ children }: { children: ReactNode }) {
 /**
  * Mirror the active backend's language packs into the app-locale registry:
  * `i18n.languages` for the switcher, `i18n.catalog {surface:'desktop'}` for the
- * language `display.language` asks for. Re-syncs when the socket comes up,
- * when the requested language changes, and on a profile/connection switch
- * (whose first act is dropping the previous backend's layer — a soft
- * re-home must not leak one profile's strings into the next).
+ * language `display.language` asks for. Re-syncs when the socket comes up or
+ * its client is published (boot reports `open` before `$gateway` is set, so
+ * the client is a dependency, not a one-off read), when the requested
+ * language changes, and on a profile/connection switch (whose first act is
+ * dropping the previous backend's layer — a soft re-home must not leak one
+ * profile's strings into the next).
  */
 function useBackendLocalePacks(scopeKey: string): void {
+  const gateway = useStore($gateway)
   const gatewayState = useStore($gatewayState)
   const requested = useStore($requestedLocale)
   const open = gatewayState === 'open'
@@ -48,8 +51,6 @@ function useBackendLocalePacks(scopeKey: string): void {
   }, [scopeKey])
 
   useEffect(() => {
-    const gateway = $gateway.get()
-
     if (!open || !gateway) {
       return
     }
@@ -65,5 +66,5 @@ function useBackendLocalePacks(scopeKey: string): void {
     return () => {
       current = false
     }
-  }, [open, requested, scopeKey])
+  }, [gateway, open, requested, scopeKey])
 }

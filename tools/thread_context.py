@@ -30,7 +30,44 @@ def _callback_api():
             (tt._get_sudo_password_callback, tt.set_sudo_password_callback),
             (vault_unlock.get_unlock_prompt_callback, vault_unlock.set_unlock_prompt_callback),
             (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback),
-            (vault_unlock.get_code_prompt_callback, vault_unlock.set_code_prompt_callback))
+            (vault_unlock.get_code_prompt_callback, vault_unlock.set_code_prompt_callback),
+            # The unlock owner: a manager unlocked on a worker must still be released with its session.
+            (vault_unlock.get_current_session_id, vault_unlock.set_current_session_id),
+            # A background fork's dispatch-side tool whitelist: without it a parallel batch escapes it.
+            (_get_tool_whitelist, _set_tool_whitelist))
+
+
+def _get_tool_whitelist():
+    """The thread's ``pre_tool_call`` tool whitelist as ``(allowed, deny_fmt)``, or None."""
+    from hermes_cli.plugins import _thread_tool_whitelist
+
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    return None if allowed is None else (allowed, getattr(_thread_tool_whitelist, "fmt", None))
+
+
+def _set_tool_whitelist(state) -> None:
+    from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
+
+    if state is None:
+        clear_thread_tool_whitelist()
+    elif state[1] is None:
+        set_thread_tool_whitelist(state[0])
+    else:
+        set_thread_tool_whitelist(*state)
+
+
+def capture_thread_callbacks() -> tuple:
+    """``(setter, callback)`` pairs for the *current thread's* prompt callbacks, to replay on
+    another thread (empty when none are installed or the API is unavailable). The elicitation
+    consent hop uses this: ``asyncio.to_thread`` carries neither contextvars nor ``threading.local``,
+    so the tool wrapper snapshots both at the call site."""
+    try:
+        return tuple((setter, cb) for getter, setter in _callback_api()
+                     for cb in (getter(),) if cb is not None)
+    except Exception:
+        logger.debug("Could not capture prompt callbacks for cross-thread replay",
+                     exc_info=True)
+        return ()
 
 
 def propagate_context_to_thread(target: Callable) -> Callable:

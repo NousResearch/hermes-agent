@@ -1,0 +1,18 @@
+name: call-me
+title: /call-me
+repo: https://github.com/radres/hermes-plugin-call-me
+sha: 970952e72d633ebdbed20d8c60c327cc45475140
+description: "/call-me gateway: text your Hermes agent from the /call-me iPhone app, and the callme_call tool rings your phone, speaks the agent's text and returns your spoken answer as a transcript. Disclosure — talks only to the /call-me service at https://callmemcp.com/aiphone (run by the plugin author): creates one agent session, sends texts and call requests, and long-polls for replies while the gateway runs (at most one request every 3 seconds); sends message text, the text to be spoken and the destination numbers, and call audio is transcribed by the service so only the transcript comes back; the agent session token and event cursor are stored at $HERMES_HOME/plugin-data/call-me/session.json (mode 600); only numbers in CALLME_ALLOWED_USERS can message the agent or be called, and inbound messages must come from that number's verified /call-me device; callme_call blocks until the call ends (300 seconds at most) and returns missed if nobody answers; no shell commands, telemetry or self-update. The /call-me iPhone app that receives the messages and calls needs a paid subscription; the plugin itself is free and MIT-licensed."
+maintainer: radres
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+docs_url: https://github.com/radres/hermes-plugin-call-me#readme
+capabilities:
+  provides_tools:
+  - callme_call
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - CALLME_ALLOWED_USERS

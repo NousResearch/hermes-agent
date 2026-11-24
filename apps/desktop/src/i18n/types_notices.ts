@@ -15,6 +15,8 @@ export interface NoticeTranslations {
   promptNotices: {
     /** An explicit retry of a send whose identityless (legacy) acknowledgement was lost. */
     legacySendUnconfirmed: string
+    /** An interrupted send restored as a draft: its attachments did not outlive the page. */
+    restoredDraftAttachmentsDropped: string
     /** reload.mcp left the chat's servers as they were: a turn was running or waiting. */
     mcpReloadDeferred: string
     /** A reloaded MCP server the chat does not run (no_mcp, an explicit pick, a platform allowlist). */
@@ -32,6 +34,8 @@ export interface NoticeTranslations {
 
   /** Once per computer, after a timed sleep interrupted a turn with keep-awake off. */
   keepAwakeOffer: { title: string; message: string; action: string }
+  /** The sign-in offer after apps connect on the free tier without the welcome trial. */
+  connectorOffer: { heading: string; body: string }
 }
 
 export interface SessionCommandNotices {

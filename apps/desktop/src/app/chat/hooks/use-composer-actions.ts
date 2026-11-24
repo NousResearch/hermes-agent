@@ -2,13 +2,14 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
-import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
+import { LARGE_PASTE_MAX_BYTES, LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
+import { isMessagingSource } from '@/lib/session-source'
 import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
@@ -20,9 +21,12 @@ import {
   setComposerTerminalSelection,
   updateComposerAttachment
 } from '@/store/composer'
-import { notify, notifyError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
+import { $messagingSessions, $selectedStoredSessionId, sessionMatchesStoredId } from '@/store/session'
 
 import type { ImageDetachResponse } from '../../types'
+
+import { type DropFailure, dropWarning } from './drop-warning'
 
 const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico)$/i
 
@@ -45,6 +49,11 @@ function blobExtension(blob: Blob): string {
 
 export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
+}
+
+/** A dropped File the composer sends as an image; never a folder, which has no bytes. */
+function isDroppedImage(file: File, filePath: string, isDirectory?: boolean): boolean {
+  return !isDirectory && (file.type.startsWith('image/') || isImagePath(file.name) || isImagePath(filePath))
 }
 
 /**
@@ -107,6 +116,40 @@ export interface DroppedFile {
   lineEnd?: number
   /** A link dragged out of a browser (`text/uri-list`). Path-less; becomes an `@url:` chip. */
   url?: string
+}
+
+/** Resolve a native drop to a host-visible path, staging browser File bytes
+ * when the shell cannot expose a native filesystem path. Shared by both the
+ * main composer and message-edit composer so neither silently drops files.
+ * Empty when there is nothing to stage; a rejected stage keeps the server's
+ * or a proxy's reason (an nginx 413) for the caller to report. */
+export async function stageDroppedFilePath(candidate: DroppedFile): Promise<string> {
+  if (candidate.path) {
+    return candidate.path
+  }
+
+  // A folder without a host path has no bytes to stage.
+  if (candidate.isDirectory) {
+    throw new Error("Folders can't be attached by dropping them. Use Attach → Folder… instead.")
+  }
+
+  if (!candidate.file || !window.hermesDesktop?.stageFileForAttach) {
+    return ''
+  }
+
+  return window.hermesDesktop.stageFileForAttach(candidate.file)
+}
+
+/** Stage a drop for the main composer's chips. A rejected stage keeps its
+ * reason in the failure the drop warning shows, not a bare "Could not attach". */
+async function stageDropForChip(candidate: DroppedFile, name: string): Promise<{ failure: DropFailure; path: string }> {
+  try {
+    return { failure: { name }, path: await stageDroppedFilePath(candidate) }
+  } catch (error) {
+    const reason = readableError(error, '').message
+
+    return { failure: reason ? { name, reason } : { name }, path: '' }
+  }
 }
 
 /** MIME emitted by in-app drag sources (project tree, gutter line numbers).
@@ -209,10 +252,10 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
       seenPaths.add(path)
     }
 
+    // A folder with no host path (the browser Webapp) keeps its File, so the
+    // drop reaches the attach pipeline and is reported there, not dropped.
     if (isDirectory) {
-      if (path) {
-        result.push({ isDirectory: true, path })
-      }
+      result.push(path ? { isDirectory: true, path } : { file, isDirectory: true, path })
 
       return
     }
@@ -399,13 +442,16 @@ interface ComposerActionsOptions {
   currentCwd: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   scope?: ComposerActionsScope
+  /** The stored chat this composer sends to. Left out by the main composer, which sends to the selected chat. */
+  storedSessionId?: null | string
 }
 
 export function useComposerActions({
   activeSessionId,
   currentCwd,
   requestGateway,
-  scope = MAIN_ACTIONS_SCOPE
+  scope = MAIN_ACTIONS_SCOPE,
+  storedSessionId
 }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
@@ -414,7 +460,21 @@ export function useComposerActions({
    *  attach paths funnel through here. */
   const attachToMain = useCallback(
     (attachment: ComposerAttachment) => {
-      scope.add(attachment)
+      const stagedUpload =
+        attachment.kind === 'file' && attachment.path
+          ? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path)
+          : undefined
+
+      const displayName =
+        attachment.kind === 'file' && attachment.path && attachment.label === pathLabel(attachment.path)
+          ? window.hermesDesktop?.getStagedFileDisplayName?.(attachment.path)
+          : undefined
+
+      scope.add({
+        ...attachment,
+        ...(stagedUpload ? { stagedUpload } : {}),
+        ...(displayName ? { label: displayName } : {})
+      })
       requestComposerFocus(scope.target)
     },
     [scope]
@@ -458,11 +518,21 @@ export function useComposerActions({
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
-      const paths = await selectDesktopPaths({
-        title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
-        defaultPath: currentCwd || undefined,
-        directories: kind === 'folder'
-      })
+      let paths: string[]
+
+      try {
+        paths = await selectDesktopPaths({
+          title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
+          defaultPath: currentCwd || undefined,
+          directories: kind === 'folder'
+        })
+      } catch (err) {
+        // As in pickImages: the browser stages a pick before returning its path, and a refused
+        // stage (a file over the upload limit) is reported here, not left as an unhandled rejection.
+        notifyError(err, copy.attachFailed)
+
+        return
+      }
 
       if (!paths?.length) {
         return
@@ -481,7 +551,7 @@ export function useComposerActions({
         })
       }
     },
-    [attachToMain, currentCwd]
+    [attachToMain, copy.attachFailed, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(
@@ -620,16 +690,26 @@ export function useComposerActions({
   )
 
   const pickImages = useCallback(async () => {
-    const paths = await selectDesktopPaths({
-      title: copy.attachImages,
-      defaultPath: currentCwd || undefined,
-      filters: [
-        {
-          name: t.composer.images,
-          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
-        }
-      ]
-    })
+    let paths: string[]
+
+    try {
+      paths = await selectDesktopPaths({
+        title: copy.attachImages,
+        defaultPath: currentCwd || undefined,
+        filters: [
+          {
+            name: t.composer.images,
+            extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
+          }
+        ]
+      })
+    } catch (err) {
+      // The browser stages a pick before returning its path; a refused stage (an image over the
+      // upload limit) is reported here, not left as an unhandled rejection.
+      notifyError(err, copy.imageAttachFailed)
+
+      return
+    }
 
     if (!paths?.length) {
       return
@@ -638,7 +718,7 @@ export function useComposerActions({
     for (const path of paths) {
       await attachImagePath(path)
     }
-  }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
+  }, [attachImagePath, copy.attachImages, copy.imageAttachFailed, currentCwd, t.composer.images])
 
   const pasteClipboardImage = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -677,7 +757,11 @@ export function useComposerActions({
    * Hermes-managed composer-pastes file via the main process, then attached
    * through the same `@file:` pipeline as a manually attached text file.
    * Returns false (paste stays inline) when the desktop bridge is missing
-   * or the write fails.
+   * or the write fails. A paste rejected for its size returns true after the
+   * error toast: inlining it would put that oversized text in the editor.
+   * A messaging-platform chat also keeps the paste inline: the gateway
+   * refuses `file.attach` for a session that is not local, so the chip
+   * could never be sent, while the same text sends as a message.
    */
   const attachPastedText = useCallback(
     async (text: string) => {
@@ -685,6 +769,21 @@ export function useComposerActions({
 
       if (!text || !save) {
         return false
+      }
+
+      // Read at paste time: the list can load after this composer mounts.
+      const storedId = storedSessionId === undefined ? $selectedStoredSessionId.get() : storedSessionId
+      const messagingRow = storedId && $messagingSessions.get().find(row => sessionMatchesStoredId(row, storedId))
+
+      if (messagingRow && isMessagingSource(messagingRow.source)) {
+        if (new TextEncoder().encode(text).length <= LARGE_PASTE_MAX_BYTES) {
+          return false
+        }
+
+        // Over savePastedText's cap: drop it after the toast, as an attachable chat does.
+        notifyError(new Error(`Pasted text is too large (${pasteSizeLabel(text)})`), copy.pasteAttachFailed)
+
+        return true
       }
 
       try {
@@ -708,10 +807,12 @@ export function useComposerActions({
       } catch (err) {
         notifyError(err, copy.pasteAttachFailed)
 
-        return false
+        // IPC rejections lose `code`, so match the main-process cap's message. The browser bridge's
+        // 16 MiB refusal says "larger than" and still falls back to inline insertion, as on main.
+        return /too large/i.test(err instanceof Error ? err.message : String(err))
       }
     },
-    [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd]
+    [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd, storedSessionId]
   )
 
   const attachContextFolderPath = useCallback(
@@ -743,7 +844,8 @@ export function useComposerActions({
       }
 
       let attached = false
-      let lastFailure: string | null = null
+      // Every item that failed, so a drop that attached some files still names the rest.
+      const failures: DropFailure[] = []
 
       for (const candidate of candidates) {
         const { file, isDirectory, path: knownPath } = candidate
@@ -757,7 +859,7 @@ export function useComposerActions({
               continue
             }
 
-            lastFailure = `Could not attach folder ${knownPath || ''}`
+            failures.push({ name: `folder ${knownPath || ''}` })
 
             continue
           }
@@ -769,7 +871,7 @@ export function useComposerActions({
               continue
             }
 
-            lastFailure = `Could not attach ${knownPath}`
+            failures.push({ name: knownPath })
 
             continue
           }
@@ -780,7 +882,7 @@ export function useComposerActions({
             continue
           }
 
-          lastFailure = `Could not attach ${knownPath || 'file'}`
+          failures.push({ name: knownPath || 'file' })
 
           continue
         }
@@ -789,7 +891,7 @@ export function useComposerActions({
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
         const filePath = knownPath || fallbackPath || ''
-        const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
+        const isImage = isDroppedImage(file, filePath, isDirectory)
 
         if (isImage) {
           // Persist the File bytes into Desktop's durable composer-image cache
@@ -806,27 +908,30 @@ export function useComposerActions({
             continue
           }
 
-          lastFailure = `Could not attach ${file.name || 'image'}`
+          failures.push({ name: file.name || 'image' })
 
           continue
         }
 
-        if (filePath && attachContextFilePath(filePath)) {
+        // The resolved native path wins; with none, the File bytes are staged.
+        const staged = await stageDropForChip({ ...candidate, path: filePath }, file.name || 'file')
+
+        if (staged.path && attachContextFilePath(staged.path)) {
           attached = true
 
           continue
         }
 
-        lastFailure = `Could not attach ${file.name || 'file'}`
+        failures.push(staged.failure)
       }
 
-      if (!attached && lastFailure) {
-        notify({ kind: 'warning', title: copy.dropFiles, message: lastFailure })
+      if (failures.length) {
+        notify({ kind: 'warning', title: copy.dropFiles, ...dropWarning(failures, copy.dropFilesMore) })
       }
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
+    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles, copy.dropFilesMore]
   )
 
   const removeAttachment = useCallback(

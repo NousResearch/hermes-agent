@@ -119,9 +119,12 @@ def _late_lsp_verdicts(agent) -> Optional[str]:
 
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
-    only the nudge is flagged synthetic (#65919)."""
+    only the nudge is flagged synthetic (#65919). A held turn's answer (typed hidden) is not shown
+    and flushes with the turn instead, so a budget fallback can still publish it as the rewrite."""
     agent._emit_interim_assistant_message(final_msg)
     append_message(messages, final_msg)
+    if final_msg.get("display_kind") == "hidden":
+        return
     try:
         agent._flush_messages_to_session_db(messages, conversation_history)
     except Exception:

@@ -1,0 +1,322 @@
+"""plugins.isolation: host — the memory-provider seams cross the plugin host: a refused panel save
+(``json.JSONDecodeError`` raised in the host) is a 400 with no secret saved, a profile hook runs in
+the host with the new profile's home, and a host started only for that hook does not outlive it."""
+
+import contextlib
+import json
+import os
+
+import hermes_yaml as yaml
+import pytest
+
+from hermes_cli import plugins as plugins_mod
+
+_INIT = """
+import json
+import os
+from pathlib import Path
+
+from agent.memory_provider import MemoryProvider
+
+
+class HostedProv(MemoryProvider):
+    name = "hostedprov"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+    def on_profile_created(self, profile_name, hermes_home):
+        (Path(hermes_home) / "hook.json").write_text(json.dumps({"name": profile_name, "pid": os.getpid()}))
+
+    def read_config_fields(self, hermes_home):
+        return {"values": json.loads((Path(hermes_home) / "hostedprov.json").read_text())}
+
+    def write_config_fields(self, values, hermes_home):
+        path = Path(hermes_home) / "hostedprov.json"
+        cfg = json.loads(path.read_text()) if path.exists() else {}  # JSONDecodeError on a corrupt file
+        cfg.update(values)
+        path.write_text(json.dumps(cfg))
+
+
+def _on_session_start(**kwargs):
+    return None
+
+
+def _hosted_tool(args, **kwargs):
+    return "ok"
+
+
+def _passthrough(payload, **kwargs):
+    return None
+
+
+def _session_env(session_id):
+    return {"HOSTEDPROV_SESSION": session_id}
+
+
+def register(ctx):
+    ctx.register_memory_provider(HostedProv())
+    ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_tool(name="hostedprov_probe", toolset="hostedprov", handler=_hosted_tool,
+                      schema={"name": "hostedprov_probe", "description": "probe", "parameters": {"type": "object", "properties": {}}})
+    ctx.register_middleware("tool_request", _passthrough)
+    ctx.register_session_env("HOSTEDPROV_SESSION", _session_env)
+    ctx.register_rpc("probe", _passthrough)
+    (Path(os.environ["HERMES_HOME"]) / "registered.json").write_text("{}")  # register() ran to the end
+"""
+
+_SCHEMA = """
+from plugins.memory.config_schema import KIND_SECRET, KIND_TEXT, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField
+
+CONFIG_SCHEMA = ProviderConfigSchema(
+    name="hostedprov", label="Hosted", storage=STORAGE_PROVIDER,
+    fields=(ProviderField(key="apiKey", label="Key", kind=KIND_SECRET, description="", env_key="HOSTEDPROV_API_KEY"),
+            ProviderField(key="workspace", label="Workspace", kind=KIND_TEXT, description="")),
+)
+"""
+
+
+@pytest.fixture(params=["hostedprov", "hostedprov_pkg"])
+def hosted_home(request, tmp_path, monkeypatch):
+    """``hostedprov_pkg``: a pip provider whose package dir is named differently from the provider,
+    found through its entry point (the loader registers under the dir's name)."""
+    home = tmp_path / ".hermes"
+    plugin_dir = home / "plugins" / request.param
+    plugin_dir.mkdir(parents=True)
+    if request.param != "hostedprov":
+        import plugins.memory as memory_plugins
+        real = memory_plugins.find_provider_dir
+        monkeypatch.setattr(memory_plugins, "find_provider_dir",
+                            lambda name: plugin_dir if name == "hostedprov" else real(name))
+    (plugin_dir / "__init__.py").write_text(_INIT, encoding="utf-8")
+    (plugin_dir / "config_schema.py").write_text(_SCHEMA, encoding="utf-8")
+    (home / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"isolation": "host"}, "memory": {"provider": "hostedprov"}}), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    yield home
+    for manager in plugins_mod._known_plugin_managers():
+        host = getattr(manager, "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+    plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.fixture
+def hook_managers(monkeypatch):
+    """Every throwaway manager a profile hook ran in (``transient_plugin_host``)."""
+    from hermes_cli import plugin_isolation
+    real, seen = plugin_isolation.transient_plugin_host, []
+
+    @contextlib.contextmanager
+    def recording():
+        with real() as manager:
+            seen.append(manager)
+            yield manager
+
+    monkeypatch.setattr(plugin_isolation, "transient_plugin_host", recording)
+    return seen
+
+
+@pytest.mark.platforms("any")  # the host is a child process
+def test_a_refused_save_crosses_the_host_as_a_400_with_no_secret_saved(hosted_home):
+    from starlette.testclient import TestClient
+    from hermes_cli.config import load_env
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+    (hosted_home / "hostedprov.json").write_text("{not json", encoding="utf-8")
+    client = TestClient(app, headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
+
+    resp = client.put("/api/memory/providers/hostedprov/config?surface=declared",
+                      json={"values": {"workspace": "w", "apiKey": "hp-key"}})
+
+    assert resp.status_code == 400
+    assert "HOSTEDPROV_API_KEY" not in load_env()
+    assert (hosted_home / "hostedprov.json").read_text(encoding="utf-8") == "{not json"
+
+
+@pytest.mark.platforms("any")
+def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home, hook_managers):
+    from hermes_cli.profiles import create_profile
+
+    work = create_profile("work", clone_config=True, no_alias=True)
+
+    seen = json.loads((work / "hook.json").read_text())
+    assert seen["name"] == "work" and seen["pid"] != os.getpid()
+    (hook_manager,) = hook_managers  # the hook's own host stopped and its registrations disposed
+    assert hook_manager._running_plugin_host() is None
+    assert not any(hook_manager._ownership_ledger.values())
+    hosts = [getattr(m, "_plugin_host_instance", None) for m in plugins_mod._known_plugin_managers()]
+    assert not any(h is not None and h.alive for h in hosts)
+    # Everything the hook-only load registered proxied into the stopped host: hook, tool,
+    # middleware, session env and RPC method are all gone from the new profile's manager.
+    from hermes_cli.plugins_session_env import _REGISTRATIONS
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.registry import registry
+    assert (work / "registered.json").exists()
+    token = set_hermes_home_override(str(work))
+    try:
+        manager = plugins_mod.get_plugin_manager()
+        scopes = (manager.scope_key, hook_manager.scope_key)  # the hook's own scope too
+        assert not any(manager._ownership_ledger.values())
+        assert not manager._hooks.get("on_session_start")
+        for scope in scopes:
+            assert registry.get_entry("hostedprov_probe", scope=scope) is None
+        assert not manager._middleware.get("tool_request")
+        assert not manager._plugin_rpc_methods
+        assert not [r for r in _REGISTRATIONS.values() if r[0] in scopes]
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms("any")
+def test_a_host_already_running_for_that_profile_is_left_alone(hosted_home):
+    """Rename fires the hook too: a host the dashboard already runs for that profile keeps running."""
+    from unittest.mock import patch
+
+    from hermes_cli.profiles import create_profile, rename_profile
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    create_profile("work", clone_config=True, no_alias=True)
+
+    from hermes_cli import profile_memory_config as pmc  # rename late-imports notify from here
+    calls = []
+    original = pmc.notify_memory_provider
+
+    def notify_with_host_up(profile_dir, call):
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            manager = plugins_mod.get_plugin_manager()
+            manager._plugin_host().ensure_started()
+            calls.append((manager, manager._running_plugin_host().pid))
+        finally:
+            reset_hermes_home_override(token)
+        original(profile_dir, call)
+
+    with patch.object(pmc, "notify_memory_provider", notify_with_host_up), \
+            patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+        play = rename_profile("work", "play")
+
+    (manager, pid), = calls
+    host = manager._running_plugin_host()
+    assert host is not None and host.pid == pid
+    assert json.loads((play / "hook.json").read_text())["name"] == "work"  # created hook, cloned along
+
+
+@pytest.mark.platforms("any")
+def test_a_profile_hook_teardown_leaves_a_concurrent_load_on_the_shared_host(hosted_home):
+    """The hook runs in its own throwaway host: a real load of the same profile's provider while the
+    hook runs keeps the shared host, its registrations and its next call (#155595 F10)."""
+    from hermes_cli import profile_memory_config as pmc
+    from hermes_cli.profiles import create_profile
+    from plugins.memory import load_memory_provider
+    from tools.registry import registry
+
+    work = create_profile("work", clone_config=True, no_alias=True)
+    (work / "hostedprov.json").write_text(json.dumps({"workspace": "w"}), encoding="utf-8")
+    shared = []
+
+    def hook(provider):  # notify binds work's home: this load goes through work's shared manager
+        manager = plugins_mod.get_plugin_manager()
+        during = registry.get_entry("hostedprov_probe", scope=manager.scope_key)
+        shared.append((manager, during, load_memory_provider("hostedprov")))
+
+    pmc.notify_memory_provider(work, hook)
+
+    (manager, during, provider), = shared
+    assert during is None  # the hook-only load's tool never showed in the profile's own scope
+    assert manager._running_plugin_host() is not None
+    assert any(manager._ownership_ledger.values())
+    assert registry.get_entry("hostedprov_probe", scope=manager.scope_key) is not None
+    assert provider.read_config_fields(str(work)) == {"values": {"workspace": "w"}}
+
+
+_REF = """
+from agent.context_references import ContextCompletionItem, ContextReferenceProvider
+
+
+class _Ref(ContextReferenceProvider):
+    prefix = "hostedprov"
+
+    async def autocomplete(self, query, *, limit=10):
+        return [ContextCompletionItem(text=query)]
+
+    async def expand(self, target):
+        return str(os.getpid())
+
+
+_register = register
+
+
+def register(ctx):
+    _register(ctx)
+    ctx.register_context_reference(_Ref())
+"""
+
+
+@pytest.mark.platforms("any")
+def test_a_profile_hook_leaves_the_at_prefix_to_the_profiles_own_load(hosted_home, monkeypatch):
+    """The @-prefix table is process-wide: a hook-only load that claimed a prefix would hold it past its
+    stopped host and refuse the profile's own load of the same plugin."""
+    import asyncio
+
+    from agent import context_references as refs
+    from hermes_cli.profiles import create_profile
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from plugins.memory import load_memory_provider
+
+    monkeypatch.setattr(refs, "_context_reference_providers", {})
+    monkeypatch.setattr(refs, "_context_reference_owners", {})
+    for plugin_dir in (hosted_home / "plugins").iterdir():
+        (plugin_dir / "__init__.py").write_text(_INIT + _REF, encoding="utf-8")
+    work = create_profile("work", clone_config=True, no_alias=True)
+    assert "hostedprov" not in refs.get_context_reference_providers()
+
+    token = set_hermes_home_override(str(work))
+    try:
+        load_memory_provider("hostedprov")
+        host = plugins_mod.get_plugin_manager()._running_plugin_host()
+        expanded = asyncio.run(refs.get_context_reference_providers()["hostedprov"].expand("x"))
+    finally:
+        reset_hermes_home_override(token)
+    # The host child reports its own os.getpid() in the hello handshake. On Windows, Popen.pid is the
+    # venv launcher's pid, not the interpreter's, so it can't be compared with a pid the plugin returns.
+    assert expanded == str(host.info["pid"])
+
+
+@pytest.mark.platforms("any")
+def test_overlapping_transient_hosts_get_their_own_scopes(hosted_home):
+    """Two hook loads of one profile at once must not share registry slots: each throwaway manager has
+    its own scope, and neither is the profile's shared scope."""
+    from hermes_cli.plugin_isolation import transient_plugin_host
+
+    shared = plugins_mod.get_plugin_manager().scope_key
+    with transient_plugin_host() as first, transient_plugin_host() as second:
+        assert len({first.scope_key, second.scope_key, shared}) == 3
+        assert first.home_path == second.home_path == plugins_mod.get_plugin_manager().home_path
+
+
+@pytest.mark.platforms("any")
+def test_a_transient_host_whose_channel_closed_is_still_stopped(hosted_home, monkeypatch):
+    """A host whose channel closed (its child may still run) is not ``alive``: teardown must stop it anyway."""
+    from hermes_cli import plugin_host
+    from hermes_cli.plugin_isolation import transient_plugin_host
+
+    monkeypatch.setattr(plugin_host, "_SHUTDOWN_GRACE_SECS", 0.2)  # the child ignores its closed channel
+
+    with transient_plugin_host() as manager:
+        host = manager._plugin_host()
+        host.ensure_started()
+        proc = host._proc
+        # Closed the way a read error closes it, pipes left open: close() would also close the child's
+        # stdin, and the child then exits on its own a few ms later, with or without the teardown.
+        host._channel._close("test: channel lost")
+        assert not host.alive and proc.poll() is None
+    assert proc.poll() is not None

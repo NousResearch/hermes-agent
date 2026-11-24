@@ -1,0 +1,25 @@
+name: keepvoice-hermes
+title: KeepVoice for Hermes
+repo: https://github.com/yablokolabs/keepvoice-hermes
+sha: f75d546aeb42d84c3a2c5cfc95e2e013bf724c47
+version: "0.1.0"
+description: "Start a KeepVoice voice-cleanup job from an authorized upload, track creator review and approval, and release the final video only for the approved revision. Requires a KeepVoice agent token; media processing and human review stay in KeepVoice. Disclosure — sends your KeepVoice agent token, the upload ID, a rights confirmation and the clip-provenance text you give to https://keepvoice.yablokolabs.com (the author's hosted service; media processing and human review happen there, no media leaves through the plugin). The rights confirmation is passed by the model, so confirm it yourself before asking the agent to submit. On CLI, TUI, Desktop and ACP the time-limited signed download link is returned into the session and stays in its history; on messaging platforms it is withheld. No telemetry, no background processes."
+maintainer: yablokolabs
+tier: community
+category: voice
+docs_url: https://github.com/yablokolabs/keepvoice-hermes
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+known_issues:
+  - "The signed artifact link is withheld on public surfaces (CLI, TUI, Desktop, ACP); open the review page in KeepVoice instead."
+  - "Live use needs a KeepVoice agent token for the active Hermes profile and an upload the creator is authorized to process."
+capabilities:
+  provides_tools:
+    - keepvoice_submit
+    - keepvoice_status
+    - keepvoice_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - KEEPVOICE_AGENT_TOKEN

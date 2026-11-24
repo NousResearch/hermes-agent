@@ -1,0 +1,73 @@
+name: Canary E2E
+
+# Manual on-demand runner for a stable claim's E2E calls (stable-release.yml's
+# ci, install-e2e and windows-live, same inputs) against any commit without
+# cutting a canary tag. Daily canaries run these suites directly inside
+# Stable Release (stable-release.yml), where `track-canary-red` updates the
+# `install-e2e-red` tracker issue.
+
+run-name: Canary E2E on ${{ inputs.commit || github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Full 40-hex SHA to test. Empty tests the dispatched ref.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary-e2e-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve the commit under test
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 2
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - id: commit
+        env:
+          COMMIT: ${{ inputs.commit || github.sha }}
+        run: |
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full 40-hex SHA, got: $COMMIT"; exit 1; }
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: Full CI pipeline
+    needs: resolve
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/ci.yaml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+      release: true
+
+  install-e2e:
+    name: Install and update E2E
+    needs: resolve
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/install-e2e.yml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+      release: true
+      route: all
+      tag-count: '3'
+
+  windows-live:
+    needs: resolve
+    uses: ./.github/workflows/windows-venv-e2e.yml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+      release: true

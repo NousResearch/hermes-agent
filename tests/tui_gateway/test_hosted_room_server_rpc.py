@@ -7,11 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.hosted_room_driver import TaskIdentity
 from tui_gateway.hosted_room_server_rpc import (
     HostedRoomServerRPC,
     HostedRoomSessionError,
 )
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
 def _server():
@@ -50,7 +50,7 @@ def _server():
 def test_routes_exact_hidden_session_and_internal_task_proof():
     server, calls = _server()
     rpc = HostedRoomServerRPC(server)
-    task = TaskIdentity("room", "task", "thread", "turn")
+    task = HostedTaskIdentity("room", "task", "thread", "turn")
     callback = lambda _receipt: None
 
     assert rpc.resolve_exact(profile="ops", title="Group: room", source="bot_room")["session_id"] == "tip"
@@ -170,7 +170,7 @@ def test_prompt_rejection_is_proven_not_admitted():
             session_id="runtime",
             prompt="Do the work",
             source="bot_room",
-            task=TaskIdentity("room", "task", "thread", "turn"),
+            task=HostedTaskIdentity("room", "task", "thread", "turn"),
             execution_generation=1,
             on_terminal=lambda _receipt: None,
             member_id="ops",

@@ -155,12 +155,15 @@ describe('rooms seen under an agent that was active earlier', () => {
 
   it('leave with an agent that is no longer in the roster', () => {
     $connection.set({ connectionId: 'local' } as never)
-    $lastRoster.set([{ name: 'default' }, { name: 'ops' }] as never)
+    $lastRoster.set([{ connectionId: 'local', name: 'default' }, { connectionId: 'local', name: 'ops' }] as never)
     const view = show('default', [roomOf('default', 'r1', 'Launch crew')])
     show('ops', [], view)
     expect(listed()).toBe('Launch crew@default')
 
-    act(() => $lastRoster.set([{ name: 'ops' }] as never))
+    // An agent of the same name on another machine is not this room's agent.
+    act(() =>
+      $lastRoster.set([{ connectionId: 'local', name: 'ops' }, { connectionId: 'elsewhere', name: 'default' }] as never)
+    )
     expect(listed()).toBe('none')
   })
 

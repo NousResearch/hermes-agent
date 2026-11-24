@@ -8,6 +8,7 @@ import { FadeScroll } from '@/components/ui/fade-scroll'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { Plus } from '@/lib/icons'
+import { botOnConnection } from '@/plugins/hermes-bots/canonical-group-capabilities'
 import {
   $disbandedGatewayRooms,
   bindGatewayGroupRoom,
@@ -47,8 +48,8 @@ function useSeenGatewayRooms(): GatewayGroupRoom[] {
   const seen = useRef<GatewayGroupRoom[]>([])
   // One row a room: a backend with a single store lists the same rooms under every agent.
   const ids = new Set(current.map(room => room.room.room_id))
-  // An empty roster has not been read yet: every machine has at least one agent.
-  const agents = new Set(roster.map(row => row.name))
+  // This machine's agents. None means its roster has not been read yet: a machine has at least one.
+  const agents = new Set(roster.filter(row => botOnConnection(row, connectionId)).map(row => row.name))
 
   const earlier = seen.current.filter(
     room =>
@@ -59,7 +60,7 @@ function useSeenGatewayRooms(): GatewayGroupRoom[] {
       !disbanded.has(room.key)
   )
 
-  // Newest first, whichever agent is active: a row never moves because another agent was opened.
+  // Newest first, whichever agent is active: opening another agent does not reorder the rows.
   seen.current = [...earlier, ...current].sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key))
 
   return seen.current

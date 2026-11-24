@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
@@ -503,18 +504,25 @@ def resolve_project_dotenv(project_env: Path, home: Path, *, removed: frozenset[
             if value is not None and (override or name not in lookup_env)}
 
 
-def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
+def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
+                        live_names: Callable[[str], bool] | None = None) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
-    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
+    With it, *live_names* marks the names that keep what the process's own environment gives them (what
+    a load published), and a later line naming one sees that value."""
     from hermes_cli import managed_scope
 
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
+    live_env = None
     if lookup_env is not None:
         lookup_env = dict(lookup_env)
+        if live_names is not None:
+            with _DOTENV_LOCK:
+                live_env = _dotenv_lookup_env(None)
     else:
         with _DOTENV_LOCK:
             lookup_env = _dotenv_lookup_env(None)
@@ -524,10 +532,33 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
             assignments = _parse_dotenv_file(path)
         except OSError:
             continue
-        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+        resolved = (_resolve_dotenv_assignments(assignments, lookup_env, override=True) if live_env is None
+                    else _resolve_pinned_assignments(assignments, lookup_env, live_env, live_names))
+        for name, value in resolved.items():
             if value is not None:
                 lookup_env[name] = out[name] = value
     return out
+
+
+def _resolve_pinned_assignments(
+    assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], live_env: dict[str, str],
+    live_names: Callable[[str], bool],
+) -> dict[str, str | None]:
+    """``_resolve_dotenv_assignments`` with override against *lookup_env*, except that a name *live_names*
+    marks takes the value the same lines give it against *live_env*, and later lines see that value.
+    *live_env* takes this layer's live values, as the caller does with *lookup_env*."""
+    from dotenv.variables import parse_variables
+
+    def expand(value: str | None, lookup: dict[str, str | None]) -> str | None:
+        return value if value is None else "".join(atom.resolve(lookup) for atom in parse_variables(value))
+
+    resolved: dict[str, str | None] = {}
+    live: dict[str, str | None] = {}
+    for name, value in assignments:
+        live[name] = expand(value, {**live_env, **live})
+        resolved[name] = live[name] if live_names(name) else expand(value, {**lookup_env, **resolved})
+    live_env.update((k, v) for k, v in live.items() if v is not None)
+    return resolved
 
 
 def _release_bridge_claim(name: str) -> None:

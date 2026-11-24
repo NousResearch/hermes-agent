@@ -442,8 +442,8 @@ def build_profile_secret_scope(hermes_home: Path, *, process_home: Optional[bool
     it by another rule (the plugin host's launcher, by the key remembered for the process's own path);
     by default it is ``_is_process_home``, where that path leads now. *template_env* is what the process's
     own profile's ``.env`` templates resolve against in place of the live process env, its dotenv output
-    already peeled back (``env_loader.dotenv_lookup_from``); a process-global key's still resolve against the
-    live env, as ``get_secret`` reads that key from ``os.environ``."""
+    already peeled back (``env_loader.dotenv_lookup_from``); a process-global key keeps the live env's value,
+    as ``get_secret`` reads that key from ``os.environ``, and a line naming one sees that value."""
     secrets = load_env_file(Path(hermes_home) / ".env")
     # Launch-only keys are never profile secrets (#135200): get_secret consults
     # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
@@ -507,13 +507,11 @@ def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: di
         lookup = template_env  # None: the live env, peeled as it is read
     else:
         lookup = {k: v for k, v in os.environ.items() if _is_global_env(k)}
-    resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup)
-    if owned and template_env is not None and any(_is_global_env(k) for k in templated):
-        # A process-global key is read from os.environ, where the dotenv load expanded it against the live
-        # env: expand it that way too, not against the frozen env (a value config.yaml bridged over it still
-        # differs, as on main).
-        live = resolve_home_dotenv(Path(hermes_home), lookup_env=None)
-        resolved.update((k, live[k]) for k in templated if _is_global_env(k) and k in live)
+    # A process-global key is read from os.environ, where the dotenv load expanded it against the live env: with
+    # a template env it keeps that expansion, and a later line naming it sees it (a value config.yaml bridged over
+    # it still differs, as on main).
+    pinned = _is_global_env if owned and template_env is not None else None
+    resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup, live_names=pinned)
     secrets.update((k, resolved[k]) for k in templated if k in resolved)
 
 

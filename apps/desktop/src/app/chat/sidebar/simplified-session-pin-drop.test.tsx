@@ -189,7 +189,14 @@ it('calls the whole drag off with Esc: the release then neither pins nor rearran
 
   render(<Sidebar onReorder={onReorder} onUpdate={onUpdate} />)
   await carry(agentRow('Chat 2'), 150, 50)
-  fireEvent.keyDown(doc.body, { code: 'Escape', key: 'Escape' })
+  const lifted = () => agentRow('Chat 2').closest('.portal-session-item')!.hasAttribute('data-dragging')
+  expect(lifted()).toBe(true)
+  await act(async () => {
+    fireEvent.keyDown(doc.body, { code: 'Escape', key: 'Escape' })
+    await frame()
+  })
+  // Set down at once, not left following the pointer until the button comes up.
+  expect(lifted()).toBe(false)
   await letGo(150, 50)
 
   expect(onUpdate).not.toHaveBeenCalled()

@@ -61,6 +61,18 @@ export function ReorderableList({
   )
 }
 
+/**
+ * Call a pointer reorder off mid-drag, as its own Esc does: the row goes back to its place at once.
+ *
+ * For a second drag riding the same press (session-pin-drag.ts). Its session takes Esc at the
+ * window and stops it, so dnd-kit, which ends a pointer drag on an Escape keydown at the document,
+ * never hears the key. The key is handed to the document alone: it does not bubble on to the
+ * window, where the app's own Escape handlers listen.
+ */
+export function cancelReorderDrag(): void {
+  document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape' }))
+}
+
 export function useSortableBindings(id: string) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
   // The FULL handle (role/tabIndex + dnd-kit's keyboard and pointer

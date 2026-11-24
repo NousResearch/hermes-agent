@@ -30,7 +30,7 @@ import { SessionStatusDot } from '../session-status-dot'
 
 import { mergeVisibleReorder } from './order'
 import { capAgentChats } from './portal/agent-chat-cap'
-import { ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
+import { cancelReorderDrag, ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { startSessionPinDrag } from './session-pin-drag'
 import { SessionRowSlot } from './session-row-slots'
@@ -209,7 +209,10 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, onDragSett
         if (pinnable) {
           startSessionPinDrag(event, {
             label: title,
-            onAbort: onDragSettled,
+            onAbort: () => {
+              onDragSettled()
+              cancelReorderDrag()
+            },
             onPin: () => {
               onDragSettled()
               props.onUpdate(row, 'pinned', true)

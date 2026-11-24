@@ -647,12 +647,6 @@
   margin-inline-end: var(--portal-band-trail-inset);
 }
 
-/* Over the developer rail the cluster ends on the rail's own column of buttons, not inside a frame
-   that no longer reaches the window's end. */
-:root[data-shell='portal'][data-developer-rail] {
-  --portal-band-trail-inset: 0rem;
-}
-
 /* Too narrow for a readable title: the pill steps aside and "+" stays. */
 @container portal-session-tab (max-width: 6rem) {
   :root[data-shell='portal'] .portal-session-tab-title {

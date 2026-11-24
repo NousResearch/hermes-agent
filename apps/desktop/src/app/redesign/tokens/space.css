@@ -182,6 +182,12 @@
 }
 
 /* Medium (breakpoints.ts: max-width 1023.98px). */
+/* Over the developer rail the band's trailing cluster ends on the rail's own column of buttons, not
+   inside a frame that no longer reaches the window's end. */
+:root[data-shell='portal'][data-developer-rail] {
+  --portal-band-trail-inset: 0rem;
+}
+
 @media (max-width: 1023.98px) {
   :root[data-shell='portal'] {
     --portal-settings-top: var(--portal-page-top);

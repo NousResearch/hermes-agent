@@ -143,6 +143,24 @@ describe('the first-time splash in the shell', () => {
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(2)
   })
 
+  // A click leaves focus on the row. Only the keyboard's focus keeps the rest stepped back: a pointer
+  // that has left would otherwise find "Make it yours" still greyed.
+  it('steps the rest back under the pointer, and not for focus a click left behind', () => {
+    renderShell()
+    settle([])
+    const agents = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.agents.line}`) })
+    const list = agents.closest('ul')!
+    const dimmed = () => window.document.querySelector<HTMLElement>('[data-slot="nav-spotlight"]')!.dataset.dim
+
+    fireEvent.pointerEnter(list)
+    expect(dimmed()).toBe('true')
+
+    fireEvent.click(agents)
+    fireEvent.focus(agents)
+    fireEvent.pointerLeave(list)
+    expect(dimmed()).toBeUndefined()
+  })
+
   it('points at the speaking place from the start, until the splash closes', () => {
     renderShell()
     settle([])

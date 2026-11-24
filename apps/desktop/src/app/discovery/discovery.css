@@ -80,11 +80,12 @@
 }
 
 /* While a row speaks, everything else steps back (18695:17294): the heading, the other rows, the
-   way on. Hover paints at once (DESIGN.md, quiet motion). */
+   way on. Under the pointer, or for the keyboard's focus: a click leaves focus on its row, and that
+   alone holds nothing back. Hover paints at once (DESIGN.md, quiet motion). */
 :root[data-shell='portal']
-  .discovery-welcome:has(.discovery-welcome-places:is(:hover, :focus-within))
+  .discovery-welcome:has(.discovery-welcome-places:is(:hover, :has(:focus-visible)))
   > :not(.discovery-welcome-places),
-:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li:not([data-active]) {
+:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :has(:focus-visible)) > li:not([data-active]) {
   opacity: var(--portal-backdrop-opacity);
 }
 

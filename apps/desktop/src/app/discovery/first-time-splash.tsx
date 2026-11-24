@@ -105,7 +105,8 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
         aria-label={copy.listLabel}
         className="discovery-welcome-card discovery-welcome-places"
         onBlur={event => setFocusWithin(event.currentTarget.contains(event.relatedTarget))}
-        onFocus={() => setFocusWithin(true)}
+        // The keyboard's focus only: a click leaves focus behind on its row, with the pointer gone.
+        onFocus={event => setFocusWithin(event.target.matches(':focus-visible'))}
         onPointerEnter={() => setPointerOver(true)}
         onPointerLeave={() => setPointerOver(false)}
       >

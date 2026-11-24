@@ -30,7 +30,11 @@ from .shared_metrics_subscriber import SharedMetricsSubscriber
 
 logger = logging.getLogger(__name__)
 
-_RUNTIME_FAILED = object()
+_RUNTIME_FAILED = object()  # transient: a later caller may retry
+# No Relay binding at all (no ``nemo_relay`` wheel on this platform): permanent for the process, so
+# ``retry_failed`` must not re-probe it — one ModuleNotFoundError traceback per agent turn was 55 MB
+# of gateway log and a pinned core in 5.5 hours (#159118).
+_RUNTIME_ABSENT = object()
 _RUNTIMES: dict[str, _Runtime | object] = {}
 _RUNTIME_LOCK = threading.RLock()
 
@@ -1649,10 +1653,18 @@ def _get_runtime(
             if host is None or runtime.host is host:
                 return runtime
             runtime.deactivate()
-        elif runtime is _RUNTIME_FAILED and not retry_failed:
+        elif runtime is _RUNTIME_ABSENT or (runtime is _RUNTIME_FAILED and not retry_failed):
             return None
         try:
-            _RUNTIMES[profile_key] = runtime = _Runtime(host=host)
+            resolved_host = host or relay_runtime.get_runtime()
+            if resolved_host is None or isinstance(resolved_host, relay_runtime.NoopRelayRuntime):
+                # No Relay binding: either the registry failed open to its cached NoopRelayRuntime, or a
+                # caller passed that Noop straight in. A retry cannot succeed either way, so record it
+                # terminally and log one line instead of a traceback.
+                logger.info("Hermes shared metrics inactive: %s", relay_runtime.unavailable_reason())
+                _RUNTIMES[profile_key] = _RUNTIME_ABSENT
+                return None
+            _RUNTIMES[profile_key] = runtime = _Runtime(host=resolved_host)
         except Exception:
             logger.warning("Hermes shared metrics initialization failed", exc_info=True)
             _RUNTIMES[profile_key] = _RUNTIME_FAILED

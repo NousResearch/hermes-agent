@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone, UTC
@@ -3038,3 +3039,69 @@ def test_finite_cli_runs_report_their_own_entrypoint(direct_runtime, tmp_path, m
         ("background", "cli", "1"), ("interactive", "cli", "1"), ("interactive", "desktop", "1"),
         ("one_shot", "cli", "1"),
     ]
+
+
+# ---- host unavailable: fail open once, not once per turn (#159118) ------------------------------
+
+def test_a_platform_without_the_binding_probes_it_once_per_process(tmp_path, monkeypatch, caplog):
+    """No ``nemo_relay`` wheel is the normal state on Intel macOS: one INFO, no traceback per turn.
+
+    The registry fails open to a cached ``NoopRelayRuntime``, so a retry cannot change the answer —
+    ``retry_failed=True`` used to re-run the whole construction anyway and log ``exc_info=True`` on
+    every agent turn (55 MB of gateway log and one pinned core in 5.5 hours).
+    """
+    attempts: list[int] = []
+
+    def load_relay():
+        attempts.append(1)
+        raise ModuleNotFoundError("No module named 'nemo_relay'")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", load_relay)
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+    assert relay_shared_metrics._get_runtime(retry_failed=True) is None
+    first = len(attempts)
+    assert first >= 1
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            assert relay_shared_metrics._get_runtime(retry_failed=True) is None
+    assert len(attempts) == first
+    warnings = [r for r in caplog.records if r.name == relay_shared_metrics.__name__]
+    assert not warnings, [r.getMessage() for r in warnings]
+    key = relay_runtime.current_profile_key()
+    assert relay_shared_metrics._RUNTIMES[key] is relay_shared_metrics._RUNTIME_ABSENT
+
+
+def test_a_transient_construction_failure_still_retries(tmp_path, monkeypatch):
+    """``retry_failed=True`` keeps its meaning for a host that was momentarily unbuildable."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_: object())
+    attempts: list[int] = []
+
+    class _Failing:
+        def __init__(self, host=None) -> None:
+            attempts.append(1)
+            raise RuntimeError("relay host is starting")
+
+    monkeypatch.setattr(relay_shared_metrics, "_Runtime", _Failing)
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+    for _ in range(3):
+        assert relay_shared_metrics._get_runtime(retry_failed=True) is None
+    assert len(attempts) == 3
+    assert relay_shared_metrics._get_runtime() is None  # the cached failure, no new attempt
+    assert len(attempts) == 3
+
+
+def test_an_explicit_noop_host_is_absent_too(tmp_path, monkeypatch):
+    """A session initializer may hand over the registry's Noop directly; it is not a runtime either."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_: None)
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+    noop = relay_runtime.NoopRelayRuntime(profile_key="k", reason="no wheel")
+    assert relay_shared_metrics._get_runtime(retry_failed=True, host=noop) is None
+    assert relay_shared_metrics._RUNTIMES[relay_runtime.current_profile_key()] is relay_shared_metrics._RUNTIME_ABSENT

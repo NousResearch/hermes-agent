@@ -1322,6 +1322,16 @@ def get_runtime(*, create: bool = True, profile_key: str | None = None) -> Relay
     return host if isinstance(host, RelayRuntime) else None
 
 
+def unavailable_reason() -> str:
+    """Why Relay is unavailable for the active profile, for a one-line log.
+
+    ``for_profile`` fails open to a cached :class:`NoopRelayRuntime` holding the construction error,
+    so a caller that finds no runtime should not re-raise that error just to explain itself.
+    """
+    host = HOST_REGISTRY.for_profile(None, create=False)
+    return getattr(host, "reason", "") or "no Relay runtime on this platform"
+
+
 def current_profile_key() -> str:
     """Return the canonical profile identity used for runtime isolation."""
     home = get_hermes_home().expanduser()

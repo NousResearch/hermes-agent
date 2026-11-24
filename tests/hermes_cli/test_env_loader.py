@@ -832,3 +832,28 @@ def test_lowercase_managed_dir_line_cannot_repoint_launch_value_on_windows(tmp_p
     load_hermes_dotenv(load_external_secrets=False)
 
     assert os.environ["HERMES_MANAGED_DIR"] == str(tmp_path / "admin")
+
+
+def test_a_name_kept_live_takes_the_live_expansion_and_later_lines_see_it(tmp_path, monkeypatch):
+    """``resolve_home_dotenv`` with a lookup env and *live_names*: every marked name gets the value the plain live
+    resolution gives it, through earlier lines of its layer and the layer before (the managed ``.env`` after the
+    home's), and an unmarked line naming one sees that value while its own references read the lookup env."""
+    from hermes_cli import env_loader, managed_scope
+
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    monkeypatch.setenv("PIN_BASE", "/live")
+    home, managed = tmp_path / "home", tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (home / ".env").write_text("PIN_G1=${PIN_BASE}/g1\nPIN_G2=${PIN_G1}/g2\nPIN_REF=${PIN_G2}|${PIN_BASE}\n",
+                               encoding="utf-8")
+    (managed / ".env").write_text("PIN_G3=${PIN_G2}/g3\nPIN_MREF=${PIN_G3}|${PIN_BASE}\n", encoding="utf-8")
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed)
+
+    live = env_loader.resolve_home_dotenv(home)
+    kept = env_loader.resolve_home_dotenv(home, lookup_env={"PIN_BASE": "/frozen"},
+                                          live_names=lambda name: name.startswith("PIN_G"))
+
+    assert {k: kept[k] for k in ("PIN_G1", "PIN_G2", "PIN_G3")} == {k: live[k] for k in ("PIN_G1", "PIN_G2", "PIN_G3")}
+    assert live["PIN_G3"] == "/live/g1/g2/g3"
+    assert (kept["PIN_REF"], kept["PIN_MREF"]) == ("/live/g1/g2|/frozen", "/live/g1/g2/g3|/frozen")

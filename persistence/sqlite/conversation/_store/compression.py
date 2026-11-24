@@ -698,7 +698,7 @@ def get_compression_chain(holder: StoreHolder, session_id: str) -> list[str]:
     branch/delegate/tool children and prefer children that continue the chain or are still live over
     stale closed siblings such as ``ws_orphan_reap``."""
     sql = _CHAIN_STEP_SQL
-    if holder.read_only and not any(row[1] == "created_source" for row in holder._read_all("PRAGMA table_info(sessions)")):
+    if not any(row[1] == "created_source" for row in holder._read_all("PRAGMA table_info(sessions)")):
         sql = _CHAIN_STEP_SQL_WITHOUT_CREATED
 
     def step(current: str):

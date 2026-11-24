@@ -306,10 +306,18 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
+        # The walk follows directory symlinks, so a symlinked skill resolves outside the root:
+        # match the categorized form on the path as walked too, not only on the resolved one.
+        walked_root = None
+        if local_root is not None:
+            with suppress(OSError, RuntimeError):
+                walked_root = skills_dir if skills_dir.resolve() == local_root else None
         for skill_dir in _iter_skill_dirs(skills_dir):
             if skill_dir.name == name:
                 return {"path": skill_dir}
             if local_root is not None:
+                if walked_root is not None and skill_dir.relative_to(walked_root).as_posix() == name:
+                    return {"path": skill_dir}
                 resolved = skill_dir.resolve()
                 if (resolved.is_relative_to(local_root)
                         and resolved.relative_to(local_root).as_posix() == name):  # POSIX form

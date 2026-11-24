@@ -29,9 +29,7 @@ def isolated_home(tmp_path, monkeypatch):
     su._external_dirs_cache_clear()
 
     from tools import skills_tool
-    import tools.skill_manager_tool as smt
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", home / "skills")
-    monkeypatch.setattr(smt, "SKILLS_DIR", home / "skills")
     yield home
     su._external_dirs_cache_clear()
 
@@ -96,3 +94,27 @@ def test_create_refuses_target_inside_an_existing_skill_dir(isolated_home, tmp_p
     res = json.loads(skill_manage("create", "nested", category="heal", content=_skill_md("nested")))
     assert not res.get("success"), res
     assert not (real / "nested").exists()
+
+
+@pytest.mark.parametrize("linked", ["skill", "category"])
+def test_categorized_name_finds_a_symlinked_nested_skill(isolated_home, tmp_path, linked):
+    """``<category>/<name>`` resolves when the skill dir, or its category dir, is a symlink."""
+    import tools.skill_manager_tool as smt
+
+    checkout = tmp_path / "checkout"
+    if linked == "skill":
+        (isolated_home / "skills" / "devops").mkdir()
+        real = checkout / "heal"
+        link = isolated_home / "skills" / "devops" / "heal"
+    else:
+        real = checkout / "devops" / "heal"
+        link = isolated_home / "skills" / "devops"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text(_skill_md("heal"), encoding="utf-8")
+    target = real if linked == "skill" else real.parent
+    link.symlink_to(target, target_is_directory=True)
+
+    found = smt._find_skill("devops/heal")
+    assert found is not None, "a categorized name misses a skill reached through a symlink"
+    assert Path(found["path"]) == isolated_home / "skills" / "devops" / "heal"
+    assert smt._find_skill("other/heal") is None

@@ -8,6 +8,21 @@ from agent.turn_api_call import _should_stream
 from providers.base import ProviderProfile
 
 
+# ProviderProfile's positional constructor slots as released (main before the provider seams).
+# Frozen here on purpose: a field added later must be keyword-only, or a plugin subclass's own
+# positional option silently lands in the new field.
+RELEASED_POSITIONAL_FIELDS = (
+    "name", "api_mode", "aliases", "display_name", "description", "signup_url", "hidden",
+    "env_vars", "base_url", "models_url", "auth_type", "supports_health_check",
+    "supports_model_listing", "auth_handler", "refresh_credential", "classify_api_error",
+    "supports_vision", "supports_vision_tool_messages", "supports_prompt_cache_key",
+    "native_reasoning_details_type", "process_command", "process_args",
+    "process_command_env_vars", "process_args_env_var", "fallback_models", "model_aliases",
+    "hostname", "default_headers", "fixed_temperature", "default_max_tokens",
+    "unsupported_response_formats", "default_aux_model", "model_capabilities",
+)
+
+
 def test_streaming_capability_preserves_positional_plugin_construction():
     from dataclasses import dataclass, fields
     from typing import Any
@@ -16,12 +31,14 @@ def test_streaming_capability_preserves_positional_plugin_construction():
     class PluginProfile(ProviderProfile):
         plugin_option: str = "default"
 
-    # All pre-existing base and subclass fields retain their positional slots.
-    legacy_fields = [f for f in fields(PluginProfile) if f.name != "supports_streaming"]
-    values: list[Any] = [object() for _ in legacy_fields]
+    # Every released base field and the subclass's own option keep their positional slots;
+    # fields added since (supports_streaming and the provider seams) are keyword-only.
+    slots = RELEASED_POSITIONAL_FIELDS + ("plugin_option",)
+    assert tuple(f.name for f in fields(PluginProfile) if not f.kw_only) == slots
+    values: list[Any] = [object() for _ in slots]
     profile = PluginProfile(*values, supports_streaming=True)
-    for field, value in zip(legacy_fields, values):
-        assert getattr(profile, field.name) is value
+    for name, value in zip(slots, values):
+        assert getattr(profile, name) is value
     assert profile.supports_streaming is True
 
 

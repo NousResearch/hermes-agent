@@ -12,22 +12,29 @@ viewer's response frame.
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 import uuid
 
 from tools.clarify_batch import settle_batch
+
+logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_S = 120  # main: ``_ask("sudo", ..., timeout=120)``
 _POLL_S = 0.25
 
 
 class _Pending:
-    __slots__ = ("event", "events", "locked", "method", "qids", "result", "session_id", "value")
+    __slots__ = ("event", "events", "locked", "method", "params", "qids", "replay", "result", "session_id", "value")
 
-    def __init__(self, session_id, qids=None, events=None, method=None):
+    def __init__(self, session_id, qids=None, events=None, method=None, params=None, replay=True):
         self.event = threading.Event()
         self.session_id = session_id
         self.method = method
+        # The frame's params as sent, so a viewer that reconnects gets the request again; ``replay`` False
+        # for an automatic window request (a preview click), which a second delivery would run twice.
+        self.params = params or {}
+        self.replay = replay
         # The live session's own event stream the request went out on: one per authority (profile) and
         # session mount, so a viewer of another profile's same-named session can never settle it.
         self.events = events
@@ -54,12 +61,12 @@ def may_settle(authority, actor, session_id, events) -> bool:
     profiles and ``_open`` is process-wide), *actor* holds ``session:respond`` there, and *actor* is
     attached to that session, the same set of connections the request frame was written to."""
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     if not owned_by(authority, session_id, events):
         return False
     try:
         authority.authorize(actor, SessionRef(authority.profile_id, session_id), "session:respond")
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         return False
     live = authority.sessions.get(session_id)
     return live is not None and actor in live.subscribers.values()
@@ -71,11 +78,15 @@ def is_response_frame(frame) -> bool:
             and frame["id"].startswith("srq-") and ("result" in frame or "error" in frame))
 
 
-def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
+def resolve(frame, *, session_ok=lambda session_id, events: True, answered=None) -> bool:
     """Settle the open request *frame* answers; False when nothing (here) waits for that id.
     ``session_ok(session_id, events)`` lets the caller refuse an answer from a connection not entitled
     to that session: the caller's own authority must own ``events``, the stream the request was sent on
-    (session ids are only unique per profile, and ``_open`` is process-wide)."""
+    (session ids are only unique per profile, and ``_open`` is process-wide). ``answered(session_id)``
+    runs, before the waiter wakes, when the frame is a result (not an error, so no decline; a skip or
+    cancel result counts) to a request a reconnecting viewer is handed again (not an automatic window
+    request: reads, a preview click, the tour, a theme apply). A failure in it is logged and changes
+    nothing about the settlement."""
     with _lock:
         pending = _open.get(frame["id"])
         if pending is None or not session_ok(pending.session_id, pending.events):
@@ -89,14 +100,21 @@ def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
     value = result.get("value") if isinstance(result, dict) else ""
     pending.value = value if isinstance(value, str) else ""
     pending.result = result if isinstance(result, dict) else None
+    if answered is not None and pending.replay and "error" not in frame:
+        try:
+            answered(pending.session_id)
+        except Exception:  # health: allow BLE001 -- observing an answer never changes its settlement
+            logger.debug("answered() failed for %s", frame["id"], exc_info=True)
     pending.event.set()
     return True
 
 
-def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=REQUEST_TIMEOUT_S) -> str:
+def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=REQUEST_TIMEOUT_S,
+               replay=True) -> str:
     """Send one one-string server→client request (``sudo``, ``secret``: ``ValueResult``) to the
-    session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer."""
-    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout)
+    session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer.
+    ``replay=False``: a reconnecting viewer is not handed it again (``open_requests``)."""
+    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout, replay=replay)
     return pending.value if pending is not None else ""
 
 
@@ -114,6 +132,18 @@ def waiting(events, session_id, method) -> bool:
     """Whether a *method* request is open on this live session's stream (the card still waits)."""
     with _lock:
         return any(p.session_id == session_id and p.events is events and p.method == method for p in _open.values())
+
+
+def open_requests(events, session_id) -> list[dict]:
+    """The requests still waiting on this live session's stream, oldest first, as their frames
+    carried them (plus a batch's answers locked so far): what ``session.resume`` and
+    ``session.events.since`` hand a reconnecting viewer to re-render (``OpenRequestEntry``)."""
+    with _lock:
+        waiting_now = [(rid, p) for rid, p in _open.items()
+                       if p.session_id == session_id and p.events is events and p.replay]
+        return [{"id": rid, "method": p.method,
+                 "params": {**p.params, "answers": dict(p.locked)} if p.locked else dict(p.params)}
+                for rid, p in waiting_now]
 
 
 def withdraw(events, session_id, method) -> int:
@@ -150,15 +180,16 @@ def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id
     return remaining
 
 
-def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
+def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, replay=True):
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id, qids, events, method)
+    pending = _Pending(session_id, qids, events, method, {"session_id": session_id, **params}, replay)
     with _lock:
         _open[request_id] = pending
-    events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,
-                         "params": {"session_id": session_id, **params}})
+    events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": pending.params})
+    from gateway import session_prompt_hooks
+    hooked = session_prompt_hooks.request_opened(events, session_id, request_id, method, pending.params, replay)
     waited = 0.0
     reason = "timeout"
     while not pending.event.wait(_POLL_S):
@@ -181,6 +212,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
         with contextlib.suppress(Exception):
             events.publish(session_id, {"id": request_id, "method": method, "reason": reason},
                            event_type="request.cancel")
+        session_prompt_hooks.request_settled(hooked, reason)
         return pending if pending.qids is not None else None
     # Settled by a viewer (a response frame or the last ``clarify.lock``): every OTHER viewer still
     # shows the card, and a classic CLI is parked inside its modal callback. Withdraw it everywhere
@@ -189,4 +221,5 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
     with contextlib.suppress(Exception):
         events.publish(session_id, {"id": request_id, "method": method, "reason": "resolved"},
                        event_type="request.cancel")
+    session_prompt_hooks.request_settled(hooked, "resolved")
     return pending

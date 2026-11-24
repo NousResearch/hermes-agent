@@ -7,7 +7,7 @@ import { HermesGateway } from './client'
 // 3-5 must replay that window to the SAME owner profile on reconnect. The shared client keeps the
 // cursor and its replay epoch across the transport replacement; the epoch's owner must outlive the
 // socket with it, or the replay is refused locally with no request and no gap.
-test('a canonical reconnect replays the retained window to the epoch owner\'s profile', async () => {
+test.each(['native', 'public'] as const)('%s canonical reconnect replays the retained window to the epoch owner\'s profile', async mode => {
   const wsPackage = 'ws'
   const { WebSocketServer } = await import(wsPackage)
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
@@ -30,6 +30,11 @@ test('a canonical reconnect replays the retained window to the epoch owner\'s pr
 
   server.on('connection', (peer: any) => {
     peers.push(peer)
+
+    if (mode === 'public') {
+      setTimeout(() => push(peer, { type: 'gateway.ready', payload: { session_authority: true } }), 20)
+    }
+
     peer.on('message', (bytes: Buffer) => {
       const request = JSON.parse(bytes.toString())
       calls.push(request)
@@ -49,7 +54,8 @@ test('a canonical reconnect replays the retained window to the epoch owner\'s pr
   const client = new HermesGateway()
   const seen: Array<{ seq?: number; type: string; profile?: string }> = []
   client.onAny(event => { if (event.session_id === sid) { seen.push({ seq: event.seq, type: event.type, profile: event.profile }) } })
-  const url = `ws://127.0.0.1:${(server.address() as { port: number }).port}/api/ws?native_dial=fixture&ticket=one-use`
+  const query = mode === 'native' ? 'native_dial=fixture&ticket=one-use' : 'ticket=public-fixture'
+  const url = `ws://127.0.0.1:${(server.address() as { port: number }).port}/api/ws?${query}`
 
   try {
     await client.connect(url)

@@ -27,9 +27,13 @@
  * these into the IPC layer and owns file I/O + secret encryption.
  */
 
+// Relative, not `@hermes/shared`: esbuild bundles electron/ without tsconfig paths.
+import { HERMES_CLOUD_MANAGED, isHermesCloudUrl } from '../../shared/src/hermes-cloud'
+
 import {
   hostLabelFromBaseUrl,
   modeIsRemoteLike,
+  normalizeProfileLauncher,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
   normalizeSshConfig,
@@ -641,9 +645,54 @@ export interface RosterAgent {
 
 export interface RosterProfileMetadata {
   display_name?: string
+  description?: string
   title?: string
   ui_meta?: Record<string, unknown>
   has_avatar?: boolean
+}
+
+/** Project credential-free `/api/profiles` fields into the metadata carried by
+ * the cross-connection roster. Empty strings are meaningful: they clear stale
+ * renderer values from a prior enumeration. */
+export function profileMetadataFromApiProfiles(profiles: unknown[]): Record<string, RosterProfileMetadata> {
+  return Object.fromEntries(
+    profiles
+      .map(profile => {
+        const record = profile && typeof profile === 'object' ? (profile as Record<string, unknown>) : {}
+        const name = String(record.name || '').trim()
+
+        if (!name) {
+          return null
+        }
+
+        const metadata: RosterProfileMetadata = {}
+
+        if (typeof record.display_name === 'string' && record.display_name.trim()) {
+          metadata.display_name = record.display_name.trim()
+        }
+
+        // `/api/profiles` names the Bot Mode title `bot_title`. Carry it even
+        // when empty so a refreshed remote row can clear stale renderer state.
+        if (typeof record.bot_title === 'string') {
+          metadata.title = record.bot_title.trim()
+        }
+
+        if (typeof record.description === 'string') {
+          metadata.description = record.description.trim()
+        }
+
+        if (record.ui_meta && typeof record.ui_meta === 'object') {
+          metadata.ui_meta = record.ui_meta as Record<string, unknown>
+        }
+
+        if (typeof record.has_avatar === 'boolean') {
+          metadata.has_avatar = record.has_avatar
+        }
+
+        return [name, metadata] as const
+      })
+      .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
+  )
 }
 
 /**
@@ -849,18 +898,18 @@ function pickCanonicalConnection<T extends { connection: RegistryConnection; ord
 export interface UpdateEligibility {
   eligible: boolean
   /** Present when not eligible: 'cloud-managed' (platform updates it). */
-  reason?: 'cloud-managed'
+  reason?: typeof HERMES_CLOUD_MANAGED
 }
 
 /**
  * Whether "Update all instances" may drive this connection. Hermes Cloud
- * instances are platform-managed — we never run `hermes update` against them.
- * Local, remote, and ssh sources are all eligible (reachability and busy
- * checks happen at dispatch time, not here).
+ * instances are platform-managed — we never run `hermes update` against them,
+ * including one saved as a plain URL remote. Local, remote, and ssh sources
+ * are all eligible (reachability and busy checks happen at dispatch time).
  */
 export function updateEligibility(connection: RegistryConnection): UpdateEligibility {
-  if (connection.kind === 'cloud') {
-    return { eligible: false, reason: 'cloud-managed' }
+  if (connection.kind === 'cloud' || isHermesCloudUrl(connection.url)) {
+    return { eligible: false, reason: HERMES_CLOUD_MANAGED }
   }
 
   return { eligible: true }
@@ -1383,7 +1432,9 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
  *
  * Per-profile override entries become registry connections too (deduped by
  * URL/host against the global block), so a user who had `research` pinned to
- * a second gateway sees both sources registered on first launch.
+ * a second gateway sees both sources registered on first launch. An entry a
+ * desktop plugin's launcher serves is a per-profile route only, never a
+ * gateway the user registered.
  */
 export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
   const config = v1 && typeof v1 === 'object' ? (v1 as Record<string, any>) : {}
@@ -1506,7 +1557,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
   // Per-profile overrides → additional registered sources (deduped).
   const profiles = config.profiles && typeof config.profiles === 'object' ? config.profiles : {}
 
-  for (const block of Object.values(profiles) as Record<string, any>[]) {
+  for (const block of (Object.values(profiles) as Record<string, any>[]).filter(entry => !isLauncherEntry(entry))) {
     if (!block || typeof block !== 'object') {
       continue
     }
@@ -1521,6 +1572,10 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
   }
 
   return { version: REGISTRY_VERSION, primary, launchMode: 'primary', lastUsed: primary, connections }
+}
+
+function isLauncherEntry(entry: Record<string, any>): boolean {
+  return entry?.mode === 'remote' && Boolean(normalizeProfileLauncher(entry.launcher))
 }
 
 /** Insert or replace by id. Input must already be normalized/validated. */

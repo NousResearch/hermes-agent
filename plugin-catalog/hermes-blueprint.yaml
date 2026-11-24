@@ -1,0 +1,23 @@
+name: hermes-blueprint
+repo: https://github.com/winchxyz/hermes-blueprint
+sha: ee0a8d5bf19cf3341832b36b178b813f40be8d12
+description: "Turn a raw idea into a plan you can build, with the quality rules enforced in code: every verified claim quotes a page the plugin fetched, a fresh-context verifier re-checks them, the critic commits its verdict from base rates before you can push back, and estimates split agent hours, your hours and outside waits. Then /idea handoff writes a project folder and kanban cards, and a weekly re-check scores the predictions."
+maintainer: winchxyz
+tier: community
+category: tools
+version: "0.2.1"
+docs_url: https://github.com/winchxyz/hermes-blueprint#readme
+image: https://raw.githubusercontent.com/winchxyz/hermes-blueprint/ee0a8d5bf19cf3341832b36b178b813f40be8d12/docs/banner.png
+capabilities:
+  provides_tools:
+    - idea_phase
+    - idea_profile
+    - idea_research
+    - idea_verdict
+    - idea_plan
+    - idea_recheck
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.23.0"

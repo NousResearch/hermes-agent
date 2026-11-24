@@ -101,19 +101,16 @@ Good for users who prefer SSH or already have keys set up.
 
 **Step 1: Check for existing SSH keys**
 
-```bash
-ls -la ~/.ssh/id_*.pub 2>/dev/null || echo "No SSH keys found"
-```
+`search_files` with `target="files"`, `pattern="id_*.pub"`, `path="~/.ssh"`; no match means no SSH keys.
 
 **Step 2: Generate a key if needed**
 
 ```bash
 # Generate an ed25519 key (modern, secure, fast)
 ssh-keygen -t ed25519 -C "their-email@example.com" -f ~/.ssh/id_ed25519 -N ""
-
-# Display the public key for them to add to GitHub
-cat ~/.ssh/id_ed25519.pub
 ```
+
+`read_file` `~/.ssh/id_ed25519.pub` and show them the public key to add to GitHub.
 
 Tell the user to add the public key at: **https://github.com/settings/keys**
 - Click "New SSH key"

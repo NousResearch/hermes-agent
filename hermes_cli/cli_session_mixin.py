@@ -14,7 +14,7 @@ import sys
 
 from agent.i18n import t
 from hermes_constants import get_hermes_home
-from hermes_state_ids import new_session_id
+from session_rules.session_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
@@ -24,8 +24,7 @@ from typing import Any, Dict, List, Optional
 def _user_turn_indices(history: list) -> list[int]:
     """Indices of *real* user turns: excludes ephemeral scaffolding, display_kind timeline
     rows and compaction handoffs — the same predicate as resume turn counting."""
-    from agent.context_compressor import user_originated_turn_view
-    from agent.session_persistence import _is_ephemeral_scaffolding
+    from session_rules.turns import user_originated_turn_view, _is_ephemeral_scaffolding
 
     return [
         i for i, m in enumerate(history)
@@ -114,9 +113,9 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
 def _apply_new_session_title(cli, title: str) -> Optional[str]:
     """Sanitize + persist a /new title; returns the stored title or None (untitled)."""
     from cli import _cprint
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import sanitize_title
     try:
-        sanitized = SessionDB.sanitize_title(title)
+        sanitized = sanitize_title(title)
     except ValueError as e:
         _cprint(f"  {t('cli.session.title_rejected', error=e)}")
         return None
@@ -152,7 +151,7 @@ def _export_on_gateway(connection, session_id, fmt, filename, redact):
         content = (connection.call("session.export", session_id=session_id, format=fmt,
                                    redact=redact) or {}).get("content")
     except GatewayClientError as e:
-        if not (isinstance(e, GatewayRPCError) and (e.code == -32601 or str(e) == "unknown_method")):
+        if not (isinstance(e, GatewayRPCError) and e.unknown_method):
             _print_save_refusal(e)
             return None
         _save_on_older_gateway(connection, session_id, fmt, filename, redact)
@@ -245,9 +244,9 @@ class CLISessionMixin:
 
     def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:
         """Re-arm the session row's persisted /yolo on every resume path (``tools.approval_yolo``)."""
-        from hermes_state import SessionDB
+        from persistence.conversation.sessions import session_yolo_enabled
         from tools.approval_yolo import restore_session_yolo
-        if restore_session_yolo(self.session_id or "default", SessionDB.session_yolo_enabled(session_meta)):
+        if restore_session_yolo(self.session_id or "default", session_yolo_enabled((session_meta or {}).get("model_config"))):
             _dim_notice(self, t("cli.session.yolo_restored"), quiet)
 
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
@@ -264,15 +263,13 @@ class CLISessionMixin:
         return buf.getvalue().rstrip("\n").splitlines()
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
-        """Resolve a 1-indexed checkpoint number (or pass through a git hash)."""
+        """A 1-indexed checkpoint number or a hash (``agent/checkpoints/refs.py``, every surface's rule)."""
+        from agent.checkpoints.refs import resolve_checkpoint_ref
         try:
-            idx = int(ref) - 1
+            return resolve_checkpoint_ref(checkpoints, ref)
         except ValueError:
-            return ref
-        if 0 <= idx < len(checkpoints):
-            return checkpoints[idx]["hash"]
-        print(f"  {t('cli.session.invalid_checkpoint', count=len(checkpoints))}")
-        return None
+            print(f"  {t('cli.session.invalid_checkpoint', count=len(checkpoints))}")
+            return None
 
     def _show_status(self):
         """Show compact startup status line."""
@@ -381,7 +378,7 @@ class CLISessionMixin:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
-            from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+            from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
@@ -735,10 +732,10 @@ class CLISessionMixin:
         _db = getattr(self, "_session_db", None)
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
-            from hermes_state import SessionExportTooLargeError
+            from persistence.core.errors import ExportTooLarge
             try:
-                session_data = load_save_snapshot(_db, _sid, fmt)
-            except SessionExportTooLargeError as e:
+                session_data = load_save_snapshot(_db, _sid, fmt, persistence=getattr(_db, "persistence", None))
+            except ExportTooLarge as e:
                 print(f"(._.) {e}")
                 return
             except Exception:
@@ -781,9 +778,9 @@ class CLISessionMixin:
             print(t("cli.session.retry_no_messages"))
             return None
 
-        from agent.context_compressor import (
-            history_before_user_originated_turn, retryable_user_text)
-        from agent.memory_context import sanitize_context
+        from session_rules.turns import (
+            history_before_user_originated_turn, retryable_user_text, sanitize_context,
+        )
 
         warm_history = list(self.conversation_history)
         user_indices = _user_turn_indices(warm_history)
@@ -830,58 +827,67 @@ class CLISessionMixin:
         that must not touch the input buffer. Returns the number of user turns undone (None when
         nothing changed).
         """
-        from cli import logger
         if not self.conversation_history:
             print(t("cli.session.undo_no_messages"))
             return
         n = max(n, 1)
-
-        from agent.context_compressor import history_before_user_originated_turn
-
-        warm_history = list(self.conversation_history)
-        user_indices = _user_turn_indices(warm_history)
+        user_indices = _user_turn_indices(self.conversation_history)
         if not user_indices:
             print(t("cli.session.undo_no_user_message"))
             return
 
         turns_undone = min(n, len(user_indices))
-        target_ordinal = len(user_indices) - turns_undone
-        cut_idx = user_indices[target_ordinal]
-        removed_count = len(warm_history) - cut_idx
-        truncated, live_view = history_before_user_originated_turn(warm_history, cut_idx)
-        removed_text = self._undo_content_to_text(live_view.get("content"))
-
-        rewound_rows = 0
-        if self._session_db is not None and self.session_id:
-            try:
-                outcome = self._session_db.rewind_user_turn(
-                    self.session_id, target_ordinal, warm_history=warm_history)
-                truncated = outcome.prefix
-                # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
-                removed_text = outcome.live_text or removed_text
-                rewound_rows = outcome.rewound_count
-            except Exception as e:
-                logger.debug("undo: durable rewind failed: %s", e)
-                print(t("cli.session.undo_failed", error=e))
-                return
-
-        # Publish only after the durable rewind succeeds (or no store exists).
-        self._publish_truncated_history(truncated, invalidate_prompt=True)
-        # Same hook /branch fires; rewound=True invalidates per-turn document caches.
-        _mm = getattr(self.agent, "_memory_manager", None)
-        # See #21910, #6672.
-        if _mm is not None and self.session_id:
-            with contextlib.suppress(Exception):
-                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
-
+        rewound = self._rewind_to_user_ordinal(len(user_indices) - turns_undone)
+        if rewound is None:
+            return
+        removed_text, removed_count = rewound
         key = "cli.session.undo_ok_one" if turns_undone == 1 else "cli.session.undo_ok_other"
-        print(t(key, count=turns_undone, messages=rewound_rows or removed_count,
+        print(t(key, count=turns_undone, messages=removed_count,
                 backup=f"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}"))
         print(f"  {t('cli.session.undo_remaining', count=len(self.conversation_history))}")
         # Editable, not auto-sent (Claude-Code-style).
         if prefill and removed_text:
             self._prefill_input_buffer(removed_text)
         return turns_undone
+
+    def _rewind_to_user_ordinal(self, target_ordinal: int, *, failure_key: str = "cli.session.undo_failed"):
+        """Cut the session back to just before real user turn ``target_ordinal`` (0 = oldest).
+
+        The shared /undo and /rewind primitive: soft-deletes the rows on disk (``active=0``) via
+        ``SessionDB.rewind_user_turn`` before publishing the shorter history, patches the agent,
+        and fires the memory providers' ``rewound`` hook. Returns ``(live_text, archived_count)``,
+        or None after printing ``failure_key`` when the durable rewind refused (history untouched).
+        """
+        from cli import logger
+        from session_rules.turns import history_before_user_originated_turn
+
+        warm_history = list(self.conversation_history)
+        cut_idx = _user_turn_indices(warm_history)[target_ordinal]
+        removed_count = len(warm_history) - cut_idx
+        truncated, live_view = history_before_user_originated_turn(warm_history, cut_idx)
+        removed_text = self._undo_content_to_text(live_view.get("content"))
+
+        if self._session_db is not None and self.session_id:
+            try:
+                outcome = self._session_db.rewind_user_turn(
+                    self.session_id, target_ordinal, warm_history=warm_history)
+            except Exception as e:  # health: allow BLE001 -- moved from undo_last: any refusal (local SessionDB or the gateway store) must leave history untouched and be shown
+                logger.debug("rewind: durable rewind failed: %s", e, exc_info=True)
+                print(t(failure_key, error=e))
+                return None
+            truncated = outcome.prefix
+            # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
+            removed_text = outcome.live_text or removed_text
+            removed_count = outcome.rewound_count or removed_count
+
+        # Publish only after the durable rewind succeeds (or no store exists).
+        self._publish_truncated_history(truncated, invalidate_prompt=True)
+        # Same hook /branch fires; rewound=True invalidates per-turn document caches (#21910, #6672).
+        _mm = getattr(self.agent, "_memory_manager", None)
+        if _mm is not None and self.session_id:
+            with contextlib.suppress(Exception):
+                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
+        return removed_text, removed_count
 
     @staticmethod
     def _undo_content_to_text(content) -> str:
@@ -903,6 +909,16 @@ class CLISessionMixin:
             from hermes_cli.terminal_breadcrumbs import write_breadcrumb
 
             write_breadcrumb(self.session_id)
+
+    def _title_session_id(self) -> str:
+        """The row holding this conversation's title: its compression tip. A gateway-backed CLI keeps
+        the conversation's creation id while each compression moves the live segment, and the title
+        with it, to a new row (the in-process CLI already follows the tip)."""
+        session_id = str(getattr(self, "session_id", "") or "")
+        db = getattr(self, "_session_db", None)
+        if not session_id or db is None:
+            return session_id
+        return db.get_compression_tip(session_id) or session_id
 
     def _is_session_yolo_active(self) -> bool:
         """Whether YOLO bypass is on for this session: reads ``tools.approval._session_yolo``
@@ -1021,7 +1037,8 @@ class CLISessionMixin:
                     print(f"     {summary['note']}")
             except Exception as e:
                 finalize_context_engine_compression_notification(self.agent, committed=False)
-                print(f"  {t('cli.session.compress_failed', error=e)}")
+                from hermes_cli.cli_chat_error_copy import refusal_text
+                print(f"  {t('cli.session.compress_failed', error=refusal_text(e))}")
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify
@@ -1196,7 +1213,7 @@ class CLISessionMixin:
         session_title = None
         if self._session_db:
             with contextlib.suppress(Exception):
-                session_title = self._session_db.get_session_title(self.session_id)
+                session_title = self._session_db.get_session_title(self._title_session_id())
 
         print(t("cli.session.exit_resume_hint"))
         # Session IDs are profile-constrained: non-default profiles need `-p <profile>` in

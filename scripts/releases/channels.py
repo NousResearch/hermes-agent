@@ -395,7 +395,7 @@ class ChannelPublisher:
             if policy is not None and record["head"] is not None:
                 from scripts.releases.semver import compare
                 from scripts.releases.stable import windows_version
-                from hermes_cli.update_channel import canary_timestamp
+                from hermes_cli.update_channel import published_canary_timestamp as canary_timestamp
                 previous_head = record["head"]
                 previous = self.store.get(previous_head["manifestKey"])
                 if previous is None or hashlib.sha256(previous[0]).hexdigest() != previous_head["sha256"]:
@@ -444,7 +444,7 @@ class ChannelPublisher:
         target_raw = self.reader.read_bytes(target["head"]["manifestKey"], target["head"]["sha256"])
         manifest = validate_manifest(decode_json(target_raw), target, self.public_base)
         # Clients pin destinationHead and need their own package in it, so a
-        # stable head that left a target out (macOS Intel is opt-in) cannot
+        # stable head that left a target out (no macOS Intel package since it stopped shipping) cannot
         # receive a preview that shipped that target.
         if record["head"] is not None:
             source_raw = self.reader.read_bytes(record["head"]["manifestKey"], record["head"]["sha256"])

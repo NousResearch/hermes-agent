@@ -24,6 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection
 
+from hermes_cli.config_backend import ConfigBackendUnavailable
 from tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
 
 
@@ -107,6 +108,9 @@ class ComputeHost:
         with contextlib.suppress(Exception):
             from tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes()
+        # ...and the opt-in shared-metrics rows that atexit hook would have written (bounded).
+        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        flush_before_hard_exit()
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
         """Drain in-flight turns, then finalize every session.
@@ -183,7 +187,7 @@ class ComputeHost:
         try:
             from tui_gateway import server
             body(server, sid, request_id)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the frame's one reply (the outage is a SystemExit)
             if on_error is not None:
                 on_error(sid)
             self._reply(error_kind, sid, request_id, **error_extra, message=str(exc))
@@ -252,6 +256,7 @@ class ComputeHost:
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
+                session.pop("_notif_turn_claim", None)
                 server._start_inflight_turn(session, inflight)
                 turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
@@ -288,7 +293,7 @@ class ComputeHost:
             self._reply(
                 "turn.end", sid, request_id, **meta, interrupted=interrupted, ended_ns=now_ns(),
                 session_info=session_info, session_info_emitted=True)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the turn's one reply (the outage is a SystemExit)
             with contextlib.suppress(Exception):
                 from tui_gateway import server
                 session = server._sessions.get(sid)
@@ -343,14 +348,14 @@ class ComputeHost:
         key = str(frame.get("session_key") or sid)
         history = frame.get("history") if isinstance(frame.get("history"), list) else []
         profile_home = str(frame.get("profile_home") or "")
-        session_db = home_token = secret_token = None
+        session_db = persistence = home_token = secret_token = None
         owns_db = False
         try:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
                 from hermes_cli.env_loader import hydrate_profile_secret_sources
-                from hermes_state_registry import acquire
+                from persistence_assembly import open_persistence, profile_scope
                 home_token = set_hermes_home_override(profile_home)
                 # External sources first (1Password / Bitwarden / secrets.command): this isolated
                 # turn process never ran the launch dotenv path for the routed profile, so without
@@ -362,8 +367,9 @@ class ComputeHost:
                     build_profile_secret_scope(Path(profile_home)), profile_home=profile_home)
                 # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
-                session_db = acquire(Path(profile_home) / "state.db")
+                session_db = open_persistence(profile_scope(home=Path(profile_home)), eager=True)
                 owns_db = True
+                persistence = server._persistence_beside(session_db)
             agent = server._make_agent(
                 sid, key, session_id=key, model_override=frame.get("model_override"),
                 reasoning_config_override=frame.get("reasoning_config_override"),
@@ -372,14 +378,14 @@ class ComputeHost:
                 cwd_override=str(frame.get("cwd") or "") or None,
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
-                session_db=session_db, auth_user_id=frame.get("auth_user_id"))
+                session_db=session_db, persistence=persistence, auth_user_id=frame.get("auth_user_id"))
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False
         finally:
             if owns_db and session_db is not None:
                 with contextlib.suppress(Exception):
-                    from hermes_state_registry import release_or_close
-                    release_or_close(session_db)
+                    session_db.close()
+                server._release_persistence(persistence)
             if home_token is not None:
                 with contextlib.suppress(Exception):
                     from hermes_constants import reset_hermes_home_override

@@ -32,7 +32,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 ### 前置要求
 
 项目要求 Python 3.14（`>=3.14,<3.15`）。PM 提供固定版本的解释器和工具。
-准备 Git 和 git-lfs。JS 构建使用 PM 的 Node/npm，或满足相应 `package.json` engines 的版本。
+准备 Git 和 git-lfs。JS 构建使用 PM 的 Node 和 pnpm（pnpm 版本须与 `pm/lock.json` 的固定版本完全一致），或满足相应 `package.json` engines 的 Node 版本。
 
 ### PM 开发环境
 
@@ -83,12 +83,16 @@ Windows 上通过 Bash 运行 `scripts/run_tests.sh`，并预先准备本机 C++
 运行开发实例前，选择临时的 `HERMES_HOME`，再使用 `hermes setup` 配置它。
 不要把生产凭据复制到 checkout。
 
-从仓库根目录运行 `npm ci` 安装 JS workspaces。网站单独使用：
+从仓库根目录运行 `pnpm install --frozen-lockfile` 安装 JS workspaces。网站是独立的 npm 项目：
 
 ```bash
 npm ci --prefix website
 npm run build:fast --prefix website
 ```
+
+在仓库根目录和各 JS workspace 目录中，npm 会拒绝所有安装或解析依赖的命令（`npm install`，无论是否带 `--ignore-scripts`、`--package-lock-only` 或 `--force`，以及 `npm ci`、`update`、`dedupe`、`uninstall`、`link`）：这些目录各有一个设置了 `engine-strict=true` 的 `.npmrc`，其 `package.json` 声明了任何 npm 都无法满足的 `engines.npm`。`npm rebuild` 和 `npm pkg set` 不会被拒绝。显式传入 `--engine-strict=false` 可绕过该拒绝。
+
+`npx`、`npm exec` 和 `npm run` 仍可使用，因此 MCP 服务器和工具照常启动。但 `engine-strict` 作用于整个检出目录：这些目录本身，以及通过根目录 `.npmrc` 作用于所有没有自己 `package.json` 的位置（`agent/`、`tools/`、Docker 镜像的 `/opt/hermes`）。在这些位置，如果 `npx` 要安装的包或它带入的任一非可选依赖声明的 `engines` 与当前 Node 或 npm 不符，`npx` 会拒绝安装，而在检出目录之外只会警告。
 
 图标从 `assets/nous-girl-*.svg` 和 `assets/backgrounds/` 生成。
 `node scripts/generate-icons.mjs` 使用 Hermes 运行时 Python（`HERMES_PYTHON`，否则为 PATH 上的 `python`）渲染图标：Pillow 和 resvg-py 是核心依赖。不要提交生成的 PNG/ICO/ICNS 文件。

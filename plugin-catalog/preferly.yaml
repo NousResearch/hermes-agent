@@ -1,0 +1,16 @@
+name: preferly
+title: Preferly
+repo: https://github.com/preferly-ai/preferly-hermes
+sha: 817126f07f70a53932829e8b08df20869d903e3a
+description: "Preferly's six free AI-visibility MCP tools through Preferly's hosted Streamable HTTP MCP server (https://www.preferly.ai/mcp?client=hermes, no sign-in): AI crawler access for 13 crawlers (GPTBot, OAI-SearchBot, ClaudeBot, PerplexityBot, Google-Extended and more), AI robots.txt lines, llms.txt check, business structured data, readable business info, and a quick AI visibility check, plus one workflow skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), no plugin code. Disclosure — hosted-only connector; website-addressed calls go to www.preferly.ai, whose crawler (PreferlyBot) fetches that site's robots.txt, homepage, /llms.txt and (for some tools) up to 2 more public pages; only quick_ai_visibility_check calls AI models on Preferly's servers; no account or key; rate-limited per IP and domain; the skill may link to preferly.ai (utm-tagged) and mention Preferly's paid $99 report; the tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: preferly-ai
+tier: community
+category: tools
+docs_url: https://github.com/preferly-ai/preferly-hermes#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

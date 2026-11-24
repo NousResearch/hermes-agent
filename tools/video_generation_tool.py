@@ -166,6 +166,22 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
         image_url, reference_image_urls, task_id)
     if confine_error is not None:
         return confine_error
+    # No video API reads our disk, so local paths become data: URLs (guarded read) for every
+    # backend; only a provider declaring an inline body budget gets its sources downscaled.
+    sources = ([image_url] if image_url else []) + (reference_image_urls or [])
+    provider = _resolve_active_provider()
+    if sources:
+        from tools.image_generation_tool import _fit_inline_budget, _inline_local_sources
+        try:
+            inlined = _inline_local_sources(sources)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        budget = _provider_call(provider, "capabilities", {}).get("max_inline_image_chars")
+        if budget:
+            inlined = _fit_inline_budget(inlined, int(budget))
+        if image_url:
+            image_url, inlined = inlined[0], inlined[1:]
+        reference_image_urls = inlined or None
     # Coerced BEFORE validation (ordering parity: a bad value raises before a missing prompt).
     optional = {
         "duration": _coerce_int(args.get("duration")),
@@ -184,7 +200,6 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
             "video_generate only supports text-to-video, image-to-video, and "
             "reference-to-video; use a provider-specific tool for video edit/extend")
     configured = _read_configured_video_provider()
-    provider = _resolve_active_provider()
     if provider is None:
         return _missing_provider_error(configured)
 
@@ -244,8 +259,7 @@ _CAPABILITY_PARAMS = (
 )
 
 _GENERIC_DESCRIPTION = (
-    "Generate a video from a text prompt (text-to-video), animate a "
-    "still image (image-to-video), or guide generation with reference images. "
+    "Generate video from text, a still image or reference images (configured model). "
     "Pass `image_url` to animate an image or `reference_image_urls` for "
     "reference-to-video. Video edit/extend workflows are not part of this "
     "unified surface; use a dedicated provider-specific tool when one is "
@@ -253,10 +267,8 @@ _GENERIC_DESCRIPTION = (
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "
     "the call blocks until the video is ready. Returns the result in the "
-    "`video` field — either an HTTP URL or an absolute file path. To show "
-    "it to the user, reference that path/URL in your response using the "
-    "file-delivery convention for the current platform (your platform "
-    "guidance describes how files are delivered here)."
+    "`video` field — either an HTTP URL or an absolute file path; reference "
+    "it in your response using the current platform's file-delivery convention."
 )
 
 
@@ -328,8 +340,8 @@ def _build_dynamic_video_schema() -> dict[str, Any]:
         properties["image_url"] = {
             "type": "string",
             "description": (
-                "Public HTTPS URL of a still image to animate "
-                "(image-to-video). Omit for text-to-video.")}
+                "Still image to animate (image-to-video): a public HTTPS URL "
+                "or a local file path. Omit for text-to-video.")}
         max_refs = int(caps.get("max_reference_images") or 0)
         if max_refs > 0:
             properties["reference_image_urls"] = {
@@ -337,8 +349,8 @@ def _build_dynamic_video_schema() -> dict[str, Any]:
                 "items": {"type": "string"},
                 "maxItems": max_refs,
                 "description": (
-                    f"Up to {max_refs} public HTTPS reference image URLs "
-                    "(style or character refs).")}
+                    f"Up to {max_refs} reference images, as public HTTPS URLs "
+                    "or local file paths (style or character refs).")}
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))
     duration_param = dict(static_props["duration"])
@@ -376,4 +388,8 @@ registry.register(
     requires_env=[],
     is_async=False,
     emoji="🎬",
-    dynamic_schema_overrides=_build_dynamic_video_schema)
+    dynamic_schema_overrides=_build_dynamic_video_schema,
+    # ``operation``/``video_url`` are refused by the handler (edit/extend unsupported); the
+    # rest are advertised only for backends that support them.
+    compat_args=("operation", "video_url", "image_url", "reference_image_urls", "negative_prompt",
+                 "audio", "seed", "upscale"))

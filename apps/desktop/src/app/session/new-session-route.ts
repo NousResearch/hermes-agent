@@ -8,6 +8,7 @@ import {
   captureNewChatSource,
   ensureGatewayAgent,
   ensureGatewayProfile,
+  invalidateNewChatIntent,
   pinLegacyNewChatProfile
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
@@ -46,6 +47,7 @@ export function defaultNewSessionTarget(): { profile: string; route: AgentProfil
 }
 
 export function prepareDefaultNewSession(): void {
+  invalidateNewChatIntent()
   const target = defaultNewSessionTarget()
 
   if (!target) {

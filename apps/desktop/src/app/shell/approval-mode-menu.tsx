@@ -21,7 +21,10 @@ import {
 export function useApprovalModeStatusbarItem(
   profile: string,
   requestGateway: ApprovalModeRequester,
-  gatewayState: string
+  gatewayState: string,
+  // Identity of the route the profile is served on (the active socket): a
+  // move between gateways that serve the same profile name re-reads the mode.
+  routeIdentity?: unknown
 ): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.approvalMode
@@ -54,7 +57,7 @@ export function useApprovalModeStatusbarItem(
     }
 
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
-  }, [gatewayState, profile, requestGateway])
+  }, [gatewayState, profile, requestGateway, routeIdentity])
 
   return {
     className: mode === 'off' ? 'bg-(--chrome-action-hover) text-foreground' : undefined,

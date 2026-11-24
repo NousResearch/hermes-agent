@@ -30,6 +30,14 @@ function executionStamp(event?: ExecutionStampedEvent): { epoch: string; generat
   return versioned ? { epoch, generation } : null
 }
 
+/** The admission a claimed execution's frame runs (`SessionEvents.publish` spreads the claim's stamp onto every
+ *  frame), or null. An admission-only frame (a queued row's cancellation) names no execution, so it names none. */
+export function executionAdmission(event?: ExecutionStampedEvent): null | string {
+  const admission = event?.admission_id
+
+  return typeof admission === 'string' && admission && executionStamp(event) ? admission : null
+}
+
 /** Whether a versioned lifecycle frame is fenced off by the previous owner (retiring its epoch on a valid takeover). */
 function fencedByPrevious(previous: ExecutionAuthority, type: string, epoch: string, generation: number, payload: Record<string, unknown> | undefined): boolean {
   if (previous.retiredEpochs.has(epoch)) {return true}

@@ -169,6 +169,46 @@ class TestFalRouting:
         assert capture["endpoint"] == image_tool.FAL_MODELS["fal-ai/flux-2-pro"]["edit_endpoint"]
         assert upscale_called["hit"] is False
 
+    def test_local_paths_reach_fal_as_data_urls(self, cfg_home, monkeypatch, tmp_path):
+        """FAL only fetches URLs: on the local backend a host path is inlined through the guarded
+        resolver (a raw path failed with file_download_error), and secret files are refused."""
+        import base64
+
+        from PIL import Image
+
+        import tools.image_generation_tool as image_tool
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/flux-2-pro"}})
+        capture: dict = {}
+        self._patch_submit(monkeypatch, image_tool, capture)
+        Image.new("RGB", (8, 8), "red").save(tmp_path / "src.png")
+        out = json.loads(image_tool.image_generate_tool(prompt="tweak", image_url=str(tmp_path / "src.png")))
+        assert out["success"] is True
+        url = capture["arguments"]["image_urls"][0]
+        assert url.startswith("data:image/png;base64,")
+        assert base64.b64decode(url.split(",", 1)[1]) == (tmp_path / "src.png").read_bytes()
+
+        capture.clear()
+        (cfg_home / ".env").write_text("FAL_KEY=HOST-PRIVATE-KEY\n")
+        raw = image_tool.image_generate_tool(prompt="tweak", image_url=str(cfg_home / ".env"))
+        assert json.loads(raw)["success"] is False and not capture
+        assert "HOST-PRIVATE-KEY" not in raw
+
+    def test_oversized_sources_shrink_under_gateway_budget(self, monkeypatch, tmp_path):
+        """The managed gateway 413s bodies over ~4.5 MB, so inlined sources are downscaled to fit."""
+        import os
+
+        from PIL import Image
+
+        import tools.image_generation_tool as image_tool
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        Image.frombytes("RGB", (1600, 1600), os.urandom(1600 * 1600 * 3)).save(tmp_path / "big.png")
+        urls = image_tool._inline_fal_sources([str(tmp_path / "big.png"), "https://x/ref.png"])
+        assert urls[1] == "https://x/ref.png"
+        assert urls[0].startswith("data:image/jpeg;base64,") and len(urls[0]) <= image_tool._FAL_INLINE_BUDGET
+
 
 # ---------------------------------------------------------------------------
 # Plugin dispatch forwarding

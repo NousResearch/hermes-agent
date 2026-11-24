@@ -1,0 +1,17 @@
+name: microbiz-desk
+repo: https://github.com/Danzilla0/microbiz-desk
+sha: "c737d9e4d73a5eeb6995408a0e10fb50a60ce7aa"
+version: "1.0.0"
+title: MicroBiz Desk
+description: Customers, sales, debts and weekly reports for small businesses. Works offline, no API key needed.
+maintainer: Danzilla0
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Danzilla0/microbiz-desk/blob/c737d9e4d73a5eeb6995408a0e10fb50a60ce7aa/README.md
+readme: true
+capabilities:
+  provides_tools: [microbiz_add_sale, microbiz_record_payment, microbiz_who_owes_me, microbiz_customer_statement, microbiz_report]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

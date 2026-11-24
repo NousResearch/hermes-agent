@@ -9,7 +9,7 @@ Neither assignment secrets nor launch credentials appear in argv or logs.
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise
 
 import contextlib
@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 import sys
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
                  'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
                  'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
-                 'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier')
+                 'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier', 'usage_window_message',
+                 'refused_turn_boundary_row_id')
 # The structured fields and their allowed keys: ``billing_block`` (``agent/billing_links.BillingBlock``
 # plus ``unverified``) and ``free_tier`` (``agent/turn_recovery._stamp_free_tier``). With
 # ``failure_reason``, ``failure_retryable`` and ``failure_resets_at`` they are what
@@ -155,10 +157,75 @@ class WorkerChannel:
             self.stream.flush()
 
 
+# While a turn runs, the worker tells the owner its agent is still active: a quiet tool sends no
+# other frame, and the owner's restart wait reads frame silence past agent.gateway_timeout as a
+# wedged turn. The owner picks the interval from that timeout (``activity_interval``).
+ACTIVITY_FRAME_SECONDS = 30
+ACTIVITY_FRAME = {'type': 'activity'}
+
+
+def activity_interval(wedge_timeout):
+    """Several frames inside one wedge window, so no gap between two of them reads as silence."""
+    if wedge_timeout <= 0:
+        return ACTIVITY_FRAME_SECONDS  # wedge detection off: the frames only keep the clock fresh
+    return max(0.05, min(ACTIVITY_FRAME_SECONDS, wedge_timeout / 4))
+
+
+def forward_activity(agent, channel, done, interval=ACTIVITY_FRAME_SECONDS):
+    """Send ``ACTIVITY_FRAME`` each ``interval`` in which the agent itself recorded activity
+    (``_touch_activity``: tool-loop and provider-wait heartbeats), until ``done`` is set. A wedged
+    agent stops touching, so its frames stop too; nothing here is user-visible."""
+    while not done.wait(interval):
+        idle = agent.get_activity_summary().get('seconds_since_activity')
+        if idle is not None and idle < interval:
+            try:
+                channel.send(ACTIVITY_FRAME['type'])
+            except (OSError, ValueError):
+                return  # the channel closed under a finishing turn
+
+
+def activity_frame_interval(frame):
+    """Seconds between ``ACTIVITY_FRAME``s the owner asked for in the hydrated request, or None: an
+    older owner rejects unknown frames, so it never asks and never receives one."""
+    asked = json.loads(frame['policy'].get('request_json') or '{}').get('activity_frames_v1')
+    if isinstance(asked, dict) and isinstance(asked.get('interval'), (int, float)) and asked['interval'] > 0:
+        return float(asked['interval'])
+    return None
+
+
 _INTERRUPTED = object()
 # The owner's control pipe closing under a live worker means the owner died (a closing owner
 # signals the worker itself). The agent is interrupted at once; cooperative tools get this long.
 ORPHAN_GRACE_SECONDS = 10
+# When the owner dies, in-flight background subagents (daemon threads in this process) are about to be
+# SIGKILLed with the process group. Give them a bounded drain to finish + persist a real terminal result
+# first; a killed one is otherwise recovered next boot only as "outcome unknown" (recover_abandoned_delegations).
+DELEGATION_DRAIN_SECONDS = 30
+
+
+def _drain_background_delegations(budget):
+    """Wait (bounded) for in-flight background subagents to finish + persist so an owner-death SIGKILL does
+    not amputate a near-done one mid-write. Best-effort and read-only; on timeout the caller's hard-exit
+    guarantee still fires (those get recovered next boot as outcome unknown). Returns units still in flight."""
+    try:
+        from tools.async_delegation import active_count
+    except Exception:  # health: allow BLE001 -- best-effort on the owner-death exit path
+        return 0
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            remaining = active_count()
+        except Exception:  # health: allow BLE001 -- best-effort on the owner-death exit path
+            return 0
+        if remaining <= 0:
+            return 0
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "managed worker: %d background delegation(s) still in flight after %.0fs drain; "
+                "hard-exit will end them (recovered next boot as outcome unknown)", remaining, budget,
+            )
+            return remaining
+        time.sleep(0.2)
 
 
 def _die_with_owner():
@@ -222,6 +289,10 @@ class WorkerControls:
                             state['event'].set()
         except (EOFError, OSError, ValueError) as exc:
             self.stop()
+            # The owner is gone (EOF/OSError) — before the hard-exit SIGKILLs this process group, give
+            # in-flight background subagents a bounded chance to finish + persist a real result.
+            if not isinstance(exc, ValueError):
+                _drain_background_delegations(DELEGATION_DRAIN_SECONDS)
             self.finish.set()
             if not isinstance(exc, ValueError):
                 _die_with_owner()
@@ -333,6 +404,11 @@ def execute(frame, channel):
     bind_worker_policy(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
+    # This process serves exactly one turn of one profile: bind it as the runtime scope. The
+    # profile state is this process's own (its environment names the home), so only the slot.
+    from hermes_scope import LOCAL_OWNER, LOCAL_TENANT, Fence, Scope, push_state
+    push_state(scope=Scope(LOCAL_TENANT, frame['home'], LOCAL_OWNER).for_turn(
+        scope['session_id'], scope['execution_id'], Fence(scope['epoch'], scope['generation'])))
     rpc = WorkerRPC(frame['home'])
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:
@@ -359,8 +435,9 @@ def execute(frame, channel):
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
+    turn_done = threading.Event()  # ends forward_activity
     try:
-        with policy_scope(policy):
+        with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 # delegate_task stays offered: each child is reserved by the owner under this
@@ -381,6 +458,11 @@ def execute(frame, channel):
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
+            interval = activity_frame_interval(frame)
+            if interval is not None:
+                from agent.memory_provider import spawn_context_thread
+                spawn_context_thread(forward_activity, name='managed-activity',
+                                     args=(agent, channel, turn_done, interval)).start()
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
@@ -400,6 +482,7 @@ def execute(frame, channel):
             # Most failed results name no provider or model; the owner's error card needs the agent's.
             result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
                       **run_worker_turns(agent, frame, history)}
+            turn_done.set()
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)
@@ -417,6 +500,7 @@ def execute(frame, channel):
             store.finish()
             channel.send('finished')
     finally:
+        turn_done.set()
         unregister_gateway_notify(frame['route'])
         if agent is not None:
             retire_agent(agent)
@@ -431,10 +515,8 @@ def _construct_agent(frame, factory, policy, **kwargs):
     """Agent construction resolves the provider credentials; a Kanban attempt that fails here
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
-        if kwargs['api_key'] is None:
-            from gateway.session_worker_construct import worker_api_key
-            kwargs['api_key'] = worker_api_key(policy, kwargs)
-        return factory(**kwargs)
+        from gateway.session_worker_construct import worker_route
+        return factory(**{**kwargs, **worker_route(policy, kwargs)})
     except Exception as exc:
         from gateway.session_kanban import record_start_failure
         record_start_failure(frame, exc)
@@ -446,9 +528,9 @@ def hello():
     the ancestor chain it observes. Launchers (uv's venv python.exe) put the owner's Popen
     handle one or two hops above; the owner, never this process, decides whether they match."""
     import psutil
-    from hermes_cli.process_identity import process_birth
+    from hermes_cli.process_identity import worker_birth
     me = psutil.Process()
-    return {'pid': me.pid, 'birth': process_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
+    return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
 def main():

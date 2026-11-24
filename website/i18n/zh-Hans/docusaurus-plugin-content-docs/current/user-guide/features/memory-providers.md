@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、Supermemory"
+description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、Supermemory、ByteRover、RetainDB"
 ---
 
 # Memory Providers
@@ -22,7 +22,7 @@ hermes memory off        # 禁用外部提供者
 
 ```yaml
 memory:
-  provider: openviking   # 或 honcho, mem0, hindsight, holographic, supermemory
+  provider: openviking   # 或 honcho, mem0, hindsight, holographic, supermemory, byterover, retaindb
 ```
 
 ## 工作原理
@@ -417,6 +417,30 @@ hermes config set memory.provider holographic
 
 ---
 
+### ByteRover 与 RetainDB（Hermes Labs）
+
+:::caution Hermes Labs 插件：不提供支持
+ByteRover 和 RetainDB 曾内置于 Hermes，现在作为 [Hermes Labs](https://github.com/NousResearch/hermes-labs-plugins) 插件从插件目录安装：由 Nous Research 构建，**不提供支持**，今后很可能不再维护，欢迎社区修复。已配置 `memory.provider: byterover` 或 `retaindb` 的 profile 会自动安装该插件，并收到一次性提示。
+:::
+
+**ByteRover**：通过外部 `brv` CLI 实现持久化记忆（分层知识树 + 分层检索），本地优先，可选云端同步（`BRV_API_KEY`）。工具：`brv_query`、`brv_curate`、`brv_status`。
+
+```bash
+npm install -g byterover-cli          # brv CLI（需单独安装）
+hermes plugins install byterover
+hermes config set memory.provider byterover
+```
+
+**RetainDB**：云端记忆 API（付费 RetainDB 账号，`RETAINDB_API_KEY`；自托管实例用 `RETAINDB_BASE_URL`），混合搜索覆盖 7 种记忆类型。
+
+```bash
+hermes plugins install retaindb
+hermes config set memory.provider retaindb
+echo "RETAINDB_API_KEY=your-key" >> ~/.hermes/.env
+```
+
+---
+
 ### Supermemory
 
 语义长期记忆，具备 profile 召回、语义搜索、显式记忆工具，以及逐轮对话捕获（每个会话每 4 小时一个文档）。
@@ -510,16 +534,19 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 | **Hindsight** | 云端/本地 | 免费/付费 | 3 | `hindsight-client` | 知识图谱 + reflect 合成 |
 | **Holographic** | 本地 | 免费 | 2 | 无 | HRR 代数 + 信任评分 |
 | **Supermemory** | 云端/自托管 | 免费/付费 | 4 | `supermemory` | 上下文隔离 + 会话图谱导入 + 多容器 |
+| **ByteRover**（Hermes Labs，不提供支持） | 本地/云端 | 免费/付费 | 3 | `hermes plugins install byterover` + `brv` CLI | 预压缩提取 |
+| **RetainDB**（Hermes Labs，不提供支持） | 云端 | 付费 | 10 | `hermes plugins install retaindb` | 增量压缩 |
 
 ## Profile 隔离
 
 每个提供者的数据按 [profile](../profiles.md) 隔离：
 
-- **本地存储提供者**（Holographic）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
+- **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
 - **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
+- **云端提供者**（RetainDB）自动派生 profile 范围的项目名称
 - **环境变量提供者**（OpenViking）通过每个 profile 的 `.env` 文件配置
 
-RetainDB 和 ByteRover 已从 Hermes 移除：截至 2026 年 10 月 15 日无人接手维护其插件仓库。仍配置它们的 profile 会改用内置记忆并给出提示；运行 `hermes memory setup` 选择其他提供者。你的配置不会被修改。
+ByteRover 和 RetainDB 没有找到维护者，因此移入 [Hermes Labs](https://github.com/NousResearch/hermes-labs-plugins) 仓库（由 Nous Research 构建，不提供支持）。`hermes update` 或下一次 Agent 启动会为配置了它们的 profile 安装插件目录中的插件，并提示一次它现在是不受支持的 Hermes Labs 插件。你的配置、数据目录和密钥保持不变。
 
 ## 构建记忆提供者
 

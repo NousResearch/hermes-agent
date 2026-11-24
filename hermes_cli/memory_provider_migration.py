@@ -33,11 +33,15 @@ _attempted: set[tuple[str, str]] = set()
 # Providers that shipped bundled in core. Unattended consent covers only these: their users already
 # accepted the deps when they picked the built-in. Any other catalog plugin named in memory.provider
 # (a synced config, a cloned profile) still needs an explicit install.
-_LEFT_CORE = frozenset({"hindsight", "honcho", "mem0", "supermemory", "openviking", "holographic"})
+_LEFT_CORE = frozenset({"hindsight", "honcho", "mem0", "supermemory", "openviking", "retaindb", "byterover", "holographic"})
 
-# Bundled providers deleted outright: nobody took over their plugin repos, so the catalog has nothing
-# to install. A home still configured for one is told so by name, never sent to the catalog.
-_REMOVED = {"byterover": "ByteRover", "retaindb": "RetainDB"}
+# Providers that left core for the Hermes Labs repo rather than a maintained home: the one install
+# that moves a home onto the plugin also says, once, that nobody supports it any more.
+_LABS_NOTICES = {
+    name: (f" {label} is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
+           f"maintained going forward. Fixes from the community are welcome.")
+    for name, label in (("byterover", "ByteRover"), ("retaindb", "RetainDB"))
+}
 
 # The startup retry window doubles with each consecutive failure, up to a week: a flat window had a
 # home whose install can never succeed (a version gate, a root-owned plugins dir, no route to GitHub)
@@ -111,15 +115,6 @@ def catalog_source(name: str) -> Optional[str]:
     return entry.name if entry is not None else None
 
 
-def removed_provider_notice(name: Optional[str]) -> Optional[str]:
-    """What a home configured for a provider Hermes deleted is told, or None for any other name."""
-    label = _REMOVED.get(str(name or "").strip().lower())
-    if label is None:
-        return None
-    return (f"⚠ {label} was removed from Hermes because no one took over maintaining it. External memory "
-            f"is off; run `hermes memory setup` to choose another provider.")
-
-
 def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Optional[str]:
     """``hermes [-p <profile>] plugins install <name>`` when this checkout's catalog ships plugin
     *name* (of *category*, when given), else None.
@@ -128,8 +123,6 @@ def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Option
     failed migration): doctor, ``memory status``, ``memory setup <name>`` and the CLI's unknown-command
     error point at the one command that fixes it. In-tree catalog only, never the network — these run
     offline and on error paths."""
-    if removed_provider_notice(name):
-        return None  # deleted, not moved: no catalog entry to point at
     try:
         from hermes_cli.plugin_catalog import get_catalog_entry
         entry = get_catalog_entry(name) if name else None
@@ -147,10 +140,6 @@ def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str
     name = configured_provider(home)
     from agent.memory_provider import is_core_memory_provider
     if is_core_memory_provider(name) or provider_present(name, home):
-        return None
-    removed = removed_provider_notice(name)
-    if removed:
-        say(f"  {removed}")
         return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "
@@ -191,7 +180,7 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
     if result.get("ok"):
         say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the catalog "
             f"(memory.provider and your stored memories are unchanged; check its settings with "
-            f"`hermes memory status`).")
+            f"`hermes memory status`)." + _LABS_NOTICES.get(name, ""))
         return True
     error = str(result.get("error") or "unknown error").rstrip(". ")
     say(f"  ⚠ Memory provider '{name}' moved out of core and could not be installed automatically: "
@@ -329,10 +318,6 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
             except Exception:
                 logger.debug("Memory migration notification failed", exc_info=True)
 
-    removed = removed_provider_notice(name)
-    if removed:
-        report(removed)
-        return False
     from pm.install import lazy_installs_allowed
     if not lazy_installs_allowed():
         report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "

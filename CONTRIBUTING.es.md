@@ -51,7 +51,7 @@ Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es me
 
 ## Proveedores de Memoria: Publicar como Plugin Independiente
 
-**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** `plugins/memory/` ya no contiene proveedores (byterover y retaindb se eliminaron en noviembre de 2026), y los antiguos proveedores integrados hindsight, honcho, supermemory, mem0, openviking y holographic ahora se distribuyen desde el catálogo de plugins. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
+**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** `plugins/memory/` ya no contiene proveedores (byterover y retaindb pasaron a los plugins de Hermes Labs en noviembre de 2026), y los antiguos proveedores integrados hindsight, honcho, supermemory, mem0, openviking y holographic ahora se distribuyen desde el catálogo de plugins. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
 
 Los plugins de memoria independientes:
 

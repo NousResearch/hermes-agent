@@ -1625,7 +1625,7 @@ class TestSanePathIncludesHomebrew:
 @pytest.mark.usefixtures("child_env")
 @pytest.mark.parametrize("builder", ["foreground", "nonterminal"])
 def test_deleted_memory_provider_keys_stay_out_of_children(monkeypatch, builder):
-    """ByteRover/RetainDB lost their OPTIONAL_ENV_VARS rows when they were deleted, but an old
+    """ByteRover/RetainDB lost their OPTIONAL_ENV_VARS rows when they left core for Hermes Labs, but a
     profile's .env still loads their keys: children must not inherit them."""
     names = ["BRV_API_KEY", "RETAINDB_API_KEY", "RETAINDB_BASE_URL"]
     for name in names:

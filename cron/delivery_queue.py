@@ -143,7 +143,7 @@ def _connect() -> sqlite3.Connection:
     from hermes_cli.sqlite_util import open_db
 
     path = _path()
-    conn = open_db(path, db_label="cron/deliveries.db", synchronous_full=True, initialize=_initialize_schema)
+    conn = open_db(path, db_label="cron/deliveries.db", synchronous_full=True, busy_timeout_ms=60_000, initialize=_initialize_schema)
     try:
         path.chmod(0o600)
     except OSError:

@@ -56,7 +56,7 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True, busy_timeout_ms=60_000, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:

@@ -588,6 +588,21 @@ describe('the redesign’s right sidebar button', () => {
     expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
   })
 
+  it('brings the panel back after hiding it beside a plugin pane stacked into it', () => {
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { id: 'main' }),
+        group(['files', 'review', 'terminal', 'plugin:notes'], { active: 'terminal', id: 'tools' })
+      ])
+    )
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+    expect(isPaneVisible('files')).toBe(true)
+  })
+
   it('shows Files in the panel when nothing is open', () => {
     $hiddenTreePanes.set(new Set(['files', 'review', 'terminal', 'chat-items']))
     renderControls('/')

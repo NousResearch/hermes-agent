@@ -206,7 +206,9 @@ const shownTools = (): string[] => {
 
   const panel = toolPanel(tree)
 
-  return allPaneIds(tree).filter(id => (BUILT_IN_TOOLS.includes(id) || panel?.panes.includes(id)) && isPaneVisible(id))
+  return allPaneIds(tree)
+    .filter(isTool)
+    .filter(id => (BUILT_IN_TOOLS.includes(id) || panel?.panes.includes(id)) && isPaneVisible(id))
 }
 
 /** Whether a tool is on screen beside the chat: what the band's right sidebar button says and flips

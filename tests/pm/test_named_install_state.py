@@ -240,6 +240,51 @@ def test_a_worker_for_another_profile_keeps_the_folder_an_env_file_also_names(tm
     assert worker_client_env(dict(os.environ), other).get("HERMES_INSTALL_STATE_DIR") == str(named)
 
 
+@pytest.mark.parametrize("request_", [{"extras": ["voice"], "explicit": True}, {"repair": True}])
+def test_a_dependency_change_is_refused_before_anything_is_built(tmp_path, monkeypatch, request_):
+    """`hermes pm install --extra` in such a process would build an environment in the named folder, report it
+    installed, and no process would ever select it. The command says so instead, before it builds."""
+    import pm.client
+    import pm.install
+    from pm.package import InstallError
+
+    started = []
+    monkeypatch.setattr(pm.client, "_request", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(pm.client, "is_runtime", lambda: False)
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    for entry in (pm.client.sync_venv, pm.install.sync_venv):
+        with pytest.raises(InstallError, match="HERMES_INSTALL_STATE_DIR"):
+            entry(request_.get("extras"), explicit=request_.get("explicit", False), repair=request_.get("repair", False))
+    assert started == []
+    assert _entries(named) == [] and not (tmp_path / "home" / "installs").exists()
+
+
+def test_a_repair_command_is_refused_and_leaves_the_installs_markers_alone(tmp_path, monkeypatch):
+    """`hermes pm repair` counts a failed attempt in the marker an update left; three of them stop the install's
+    own repair at start. A process with a named state folder refuses the command without touching the marker."""
+    from hermes_cli import _early_recovery
+    from pm.package import InstallError
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    with pytest.raises(InstallError, match="HERMES_INSTALL_STATE_DIR"):
+        _early_recovery.recover_if_needed(root, ["pm", "repair"], explicit=True)
+    assert marker.read_text(encoding="utf-8") == '{"attempts": 0}'
+    assert _entries(named) == []
+
+
 def test_a_kanban_worker_keeps_the_named_state_folder(tmp_path):
     """The worker client is started from an allowlisted environment, inside the same sandbox as its parent."""
     from hermes_cli.kanban_worker_env import worker_client_env

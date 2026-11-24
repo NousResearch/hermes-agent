@@ -220,8 +220,9 @@ def ensure(name, *, base_env=None, explicit=False, verify=True, progress=None, p
 def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None, repair=False,
               project_root: Path | None = None, evict_incompatible_plugins: bool = False,
               automatic: list[str] | None = None, carried: list[str] | None = None) -> None:
-    from pm.environments import running_from_selected_environment
+    from pm.environments import refuse_dependency_change, running_from_selected_environment
 
+    refuse_dependency_change()
     if extras and not explicit and not repair and not running_from_selected_environment(
             paths.repo_root() if project_root is None else Path(project_root)):
         # A lazy extra may only extend the environment this process runs from. From any other

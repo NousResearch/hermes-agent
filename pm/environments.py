@@ -42,9 +42,9 @@ def named_install_state_dir() -> Path | None:
     ``installs/<key>`` still sees that folder, cannot read or lock it, and would end at start on it.
     Such a process and its children keep their locks and markers in the named folder. Start-up reads
     nothing from it: the process is not restarted (``prepare_launch``), repairs nothing
-    (``recover_if_needed``) and selects no recorded environment (``activate_dependencies``). A value
-    that is not an absolute path names nothing; no ``.env`` or secret source can set it
-    (``LAUNCH_ONLY_ENV_KEYS``).
+    (``recover_if_needed``) and selects no recorded environment (``activate_dependencies``), and a
+    command that would build one is refused (``refuse_dependency_change``). A value that is not an
+    absolute path names nothing; no ``.env`` or secret source can set it (``LAUNCH_ONLY_ENV_KEYS``).
     """
     # health: allow HX002 -- a launcher's fact about one process tree, read at start before any config loads
     value = os.environ.get("HERMES_INSTALL_STATE_DIR", "").strip()
@@ -53,6 +53,24 @@ def named_install_state_dir() -> Path | None:
 
 def install_state_dir(project_root: Path) -> Path:
     return named_install_state_dir() or installs_root() / install_key(project_root)
+
+
+def refuse_dependency_change() -> None:
+    """Refuse to build a dependency environment from a process whose launcher named its state folder.
+
+    The environment would be recorded in that folder, where no process ever selects one, and the
+    command would report it installed.
+    """
+    if named_install_state_dir() is None:
+        return
+    from pm.package import InstallError
+
+    raise InstallError(
+        "venv",
+        "this Hermes runs on the Python environment its launcher chose (HERMES_INSTALL_STATE_DIR is set), "
+        "and an environment built from here would never be used",
+        "run the command from Hermes started outside that launcher",
+    )
 
 
 def owning_home_root(project_root: Path) -> Path | None:

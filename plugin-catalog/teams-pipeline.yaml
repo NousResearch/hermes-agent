@@ -1,6 +1,6 @@
 name: teams-pipeline
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 52bb918cac89ffb8d9454aba8edd21d1062003e5
+sha: 2be34cf20ce4f950d8e716362d8cd5f94c4ae9e0
 subdir: teams-pipeline
 description: 'Microsoft Teams meeting pipeline: turns Microsoft Graph change notifications from the
   msgraph_webhook gateway platform into durable jobs that fetch the meeting transcript (or the recording,
@@ -18,7 +18,7 @@ tier: official
 category: general
 requires_hermes: ">=0.21.7"
 version: "0.2.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/52bb918cac89ffb8d9454aba8edd21d1062003e5/assets/teams-pipeline.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/2be34cf20ce4f950d8e716362d8cd5f94c4ae9e0/assets/teams-pipeline.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline
 platforms: []
 capabilities:

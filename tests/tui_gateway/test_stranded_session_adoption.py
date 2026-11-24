@@ -56,6 +56,26 @@ def test_adoption_moves_session_and_messages(stores):
     assert msgs[-1]["content"] == "answer 3"
 
 
+def test_adoption_checks_the_adopting_profiles_import_limits(stores):
+    """``sessions.import_max_*`` of the adopting profile bounds the adoption, not the process's own config."""
+    from hermes_constants import get_hermes_home
+
+    default_db, profile_db = stores
+    _seed_stranded(default_db)
+    (get_hermes_home() / "config.yaml").write_text("sessions:\n  import_max_messages_per_session: 1\n")
+    profile_home = profile_db.scope.profile_dir
+    (profile_home / "config.yaml").write_text("sessions:\n  import_max_messages_per_session: 5\n")
+
+    refused = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
+    assert (refused["ok"], refused["adopted"], refused["donor_retired"]) == (False, False, False)
+    assert refused["errors"][0]["error"] == "messages exceeds the per-session import limit"
+    assert session_row(profile_db, STRANDED_ID) is None
+
+    # A different size: the config cache may key on mtime + size, and both writes can share a tick.
+    (profile_home / "config.yaml").write_text("sessions:\n  import_max_messages_per_session: 6  # all six rows\n")
+    assert adopt_session_lineage(profile_db, default_db, STRANDED_ID)["adopted"] is True
+
+
 def test_donor_is_archived_not_deleted(stores):
     default_db, profile_db = stores
     _seed_stranded(default_db)

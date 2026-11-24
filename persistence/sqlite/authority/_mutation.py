@@ -10,8 +10,11 @@ import json
 import time
 from functools import partial
 
-from persistence.authority.runtime import COMPACTED_TARGET_DETAIL, ClaimHistory, SessionGone, mutation_receipt_key, parse_mutation
+from persistence.authority.runtime import (
+    COMPACTED_TARGET_DETAIL, ClaimHistory, ImportControl, SessionGone, mutation_receipt_key, parse_mutation,
+)
 from persistence.core.errors import AuthorityRefusal
+from persistence.housekeeping.maintenance import ImportLimits
 from session_rules.legacy_local import bindings_agree
 from session_rules.turns import typed_prompt_content
 
@@ -86,8 +89,9 @@ def mutate_runtime_session(holder, *, epoch: int, principal_id: str, session_id:
                 from ._runtime_guards import require_idle
                 require_idle(holder, conn, list({session_id, snapshot['target']}))
             return {'snapshot': snapshot}, None, False
-        affected, projection = apply_action(holder, conn, session_id, operation, payload, prepared=prepared,
-                                            media_root=media_root, owner=owner)
+        affected, projection = apply_action(
+            holder, conn, session_id, operation, payload, prepared=prepared, media_root=media_root, owner=owner,
+            import_limits=history.limits if isinstance(history, ImportControl) else ImportLimits())
         gone = None
         if operation == 'delete':
             gone = SessionGone(tuple(projection.get('deleted_ids') or (session_id,)), 'delete')
@@ -105,7 +109,8 @@ def mutate_runtime_session(holder, *, epoch: int, principal_id: str, session_id:
     return holder._execute_write(write)
 
 
-def apply_action(holder, conn, session_id, operation, payload, *, prepared=None, media_root=None, owner=None):
+def apply_action(holder, conn, session_id, operation, payload, *, prepared=None, media_root=None, owner=None,
+                 import_limits=ImportLimits()):
     if operation == 'compress':
         from ._mutation_publish import compress_in_transaction
         return compress_in_transaction(holder, conn, session_id, payload, prepared)
@@ -116,7 +121,7 @@ def apply_action(holder, conn, session_id, operation, payload, *, prepared=None,
         from ._mutation_publish import branch_in_transaction
         return branch_in_transaction(holder, conn, session_id, payload, prepared)
     from ._mutation_publish import reset_in_transaction
-    handlers = {'delete': partial(_delete, media_root=media_root, owner=owner), 'import': partial(_import, owner=owner), 'rewind': _rewind,
+    handlers = {'delete': partial(_delete, media_root=media_root, owner=owner), 'import': partial(_import, owner=owner, limits=import_limits), 'rewind': _rewind,
                 'reset': reset_in_transaction}
     if operation in handlers:
         return handlers[operation](holder, conn, session_id, payload)
@@ -233,13 +238,12 @@ def _carrier_live_view(holder, conn, session_id, message_id):
     return live if handoff is not None else None
 
 
-def _import(holder, conn, session_id, payload, *, owner):
-    from ..conversation._store.core import _IMPORT_MAX_SESSIONS
+def _import(holder, conn, session_id, payload, *, owner, limits):
     from ..housekeeping._portability import _attach_import_parents, _import_session_row, _validate_import_payload
     rows = payload['sessions']
-    if len(rows) > _IMPORT_MAX_SESSIONS:
+    if limits.exceeded(limits.max_sessions, len(rows)):
         raise AuthorityRefusal('invalid_params')
-    normalized, errors = _validate_import_payload(rows)
+    normalized, errors = _validate_import_payload(rows, limits)
     if errors or not normalized or session_id != normalized[0]['session']['id']:
         raise AuthorityRefusal('invalid_params')
     imported, skipped, parents = [], [], []

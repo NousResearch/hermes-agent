@@ -10,12 +10,7 @@ import math
 from typing import Any, Optional
 
 from persistence.core.conventions import stored_instant
-from persistence.housekeeping.maintenance import (
-    IMPORT_MAX_MESSAGES_PER_SESSION,
-    IMPORT_MAX_SESSION_BYTES,
-    IMPORT_MAX_TOTAL_BYTES,
-    IMPORT_MAX_TOTAL_MESSAGES,
-)
+from persistence.housekeeping.maintenance import ImportLimits
 
 __all__ = [
     "IMPORT_FLOAT_FIELDS",
@@ -190,9 +185,9 @@ def _normalize_import_session(raw: dict[str, Any], session_id: str, messages: li
     return {"session": clean_session, "messages": clean_messages}
 
 
-def validate_import_payload(sessions: list[dict[str, Any]]) -> tuple:
-    """Size/shape/type validation of the whole payload; returns ``(normalized_items,
-    errors)``. Every rejected entry is reported."""
+def validate_import_payload(sessions: list[dict[str, Any]], limits: ImportLimits = ImportLimits()) -> tuple:
+    """Size/shape/type validation of the whole payload under ``limits`` (not the session count, which
+    the importer checks first); returns ``(normalized_items, errors)``. Every rejected entry is reported."""
     normalized: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -200,7 +195,7 @@ def validate_import_payload(sessions: list[dict[str, Any]]) -> tuple:
     for index, raw in enumerate(sessions):
         session_id = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
         try:
-            item = _validate_import_session(raw, session_id, seen_ids, totals)
+            item = _validate_import_session(raw, session_id, seen_ids, totals, limits)
         except ValueError as exc:
             item = {"index": index, "error": str(exc)}
             if session_id:
@@ -212,7 +207,8 @@ def validate_import_payload(sessions: list[dict[str, Any]]) -> tuple:
     return normalized, errors
 
 
-def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: dict[str, int]) -> dict[str, Any]:
+def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: dict[str, int],
+                             limits: ImportLimits) -> dict[str, Any]:
     """One payload session -> normalized item; ValueError(message) on rejection. *totals*
     accumulate before their limit check (a rejected oversize entry still counts)."""
     if not isinstance(raw, dict):
@@ -224,7 +220,7 @@ def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: d
     messages = raw.get("messages") or []
     if not isinstance(messages, list):
         raise ValueError("messages must be a list")
-    if len(messages) > IMPORT_MAX_MESSAGES_PER_SESSION:
+    if limits.exceeded(limits.max_messages_per_session, len(messages)):
         raise ValueError("messages exceeds the per-session import limit")
     if any(not isinstance(msg, dict) for msg in messages):
         raise ValueError("messages must contain only objects")
@@ -235,13 +231,13 @@ def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: d
         session_bytes = len(json.dumps(measured, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     except (TypeError, ValueError):
         raise ValueError("session must be JSON serializable") from None
-    if session_bytes > IMPORT_MAX_SESSION_BYTES:
+    if limits.exceeded(limits.max_session_bytes, session_bytes):
         raise ValueError("session exceeds the import size limit")
     totals["bytes"] += session_bytes
-    if totals["bytes"] > IMPORT_MAX_TOTAL_BYTES:
+    if limits.exceeded(limits.max_total_bytes, totals["bytes"]):
         raise ValueError("import exceeds the total size limit")
     item = _normalize_import_session(raw, session_id, messages)
     totals["messages"] += len(item["messages"])
-    if totals["messages"] > IMPORT_MAX_TOTAL_MESSAGES:
+    if limits.exceeded(limits.max_total_messages, totals["messages"]):
         raise ValueError("messages exceeds the total import limit")
     return item

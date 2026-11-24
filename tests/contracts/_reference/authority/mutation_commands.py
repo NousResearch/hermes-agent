@@ -17,7 +17,7 @@ from persistence.core.canonical import canonical_json
 from persistence.core.conventions import RowVisibility
 from persistence.core.errors import AuthorityRefusal, CapabilityUnsupported
 from persistence.core.identity import SessionId
-from persistence.housekeeping.maintenance import IMPORT_MAX_SESSIONS
+from persistence.housekeeping.maintenance import ImportLimits
 from session_rules.imports import validate_import_payload
 from session_rules.legacy_local import bindings_agree
 from session_rules.turns import typed_prompt_content
@@ -148,15 +148,15 @@ def _rewind(repo: Any, session_id: str, payload: Mapping[str, Any]) -> tuple[set
                                     "replacement_message_id": scaffold.id if scaffold is not None else None}
 
 
-def _import(repo: Any, session_id: str, payload: Mapping[str, Any], owner: Any) -> tuple[set[str], dict[str, Any]]:
+def _import(repo: Any, session_id: str, payload: Mapping[str, Any], owner: Any, limits: ImportLimits) -> tuple[set[str], dict[str, Any]]:
     """The import handler over the maintenance reference's import steps; a parent outside the payload links when its binding names the child's owner under ``owner``."""
     from .mutation import _history_key
 
     store, authority, tables = _ctx(repo)
     items = payload["sessions"]
-    if len(items) > IMPORT_MAX_SESSIONS:
+    if limits.exceeded(limits.max_sessions, len(items)):
         raise AuthorityRefusal("invalid_params")
-    normalized, errors = validate_import_payload(items)
+    normalized, errors = validate_import_payload(items, limits)
     if errors or not normalized or session_id != normalized[0]["session"]["id"]:
         raise AuthorityRefusal("invalid_params")
     imported: list[str] = []
@@ -310,15 +310,16 @@ _PREPARED = {"model": _model, "reasoning": _reasoning, "workspace": _workspace, 
              "reset": _reset, "branch": _branch, "compress": _compress}
 
 
-def apply_command(repo: Any, session_id: str, command: MutationCommand, prepared: PreparedMutation | None, media_root: str | None, owner: Any = None) -> tuple[set[str], dict[str, Any]]:
-    """The handler of ``command``'s operation; only a delete reads ``media_root``, a delete and an import ``owner``."""
+def apply_command(repo: Any, session_id: str, command: MutationCommand, prepared: PreparedMutation | None, media_root: str | None, owner: Any = None,
+                  import_limits: ImportLimits = ImportLimits()) -> tuple[set[str], dict[str, Any]]:
+    """The handler of ``command``'s operation; only a delete reads ``media_root``, a delete and an import ``owner``, an import ``import_limits``."""
     payload = rows.encode(command.payload())
     if command.operation in _PREPARED:
         return _PREPARED[command.operation](repo, session_id, payload, prepared)
     if command.operation == "delete":
         return _delete(repo, session_id, media_root, owner)
     if command.operation == "import":
-        return _import(repo, session_id, payload, owner)
+        return _import(repo, session_id, payload, owner, import_limits)
     if command.operation == "rewind":
         return _rewind(repo, session_id, payload)
     return _metadata(repo, session_id, payload)

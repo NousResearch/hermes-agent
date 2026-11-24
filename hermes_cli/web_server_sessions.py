@@ -141,13 +141,15 @@ def _mutate_offline_store(profile, actor, params):
         try:
             history = None
             if params['operation'] == 'import':
-                normalized, errors = validate_import_payload(params['payload']['sessions'])
+                from storage_limits import resolved_import_limits
+                limits = resolved_import_limits(store.scope.profile_dir)
+                normalized, errors = validate_import_payload(params['payload']['sessions'], limits)
                 if errors:
                     raise HTTPException(status_code=400, detail={'errors': errors})
                 history = ImportControl(
                     HistoryActor(actor.profile_id, actor.subject, login_label(actor.subject),
                                  'session:create' in actor.capabilities),
-                    tuple(item['session']['id'] for item in normalized))
+                    tuple(item['session']['id'] for item in normalized), limits)
             epoch = store.runtime.current_epoch()
             if epoch is None:
                 # The reservation held here is the ownership lock begin_epoch requires.
@@ -263,7 +265,10 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
 
     authority, actor = _session_mutation_context(request, profile)
     if operation == 'import' and authority is not None:
-        _, errors = validate_import_payload(payload['sessions'])
+        from gateway.session_persistence import authority_persistence
+        from storage_limits import resolved_import_limits
+        limits = resolved_import_limits(authority_persistence(authority).scope.profile_dir)
+        _, errors = validate_import_payload(payload['sessions'], limits)
         if errors:
             raise HTTPException(status_code=400, detail={'errors': errors})
     if request_id is None and expected_revision is None and expected_generation is None:

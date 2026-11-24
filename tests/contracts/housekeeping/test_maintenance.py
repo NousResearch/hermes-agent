@@ -22,6 +22,7 @@ from persistence.housekeeping.maintenance import (
     ForeignImportResult,
     ForeignOrigin,
     ForeignTurn,
+    ImportLimits,
     PruneCriteria,
 )
 from tests.contracts._concurrency import run_concurrently
@@ -382,6 +383,20 @@ def test_foreign_import_mints_session_with_provenance(backend, scope_a):
     # CONTRACT: the id is 28 characters and the origin now resolves to it.
     assert len(str(result.session_id)) == 28
     assert store_a.maintenance.find_foreign_import(_ORIGIN) == result.session_id
+
+
+def test_foreign_import_checks_the_callers_limits(backend, scope_a):
+    store_a = backend.open(scope_a)
+    # CONTRACT: ``limits`` bound the foreign payload as they bound ``import_sessions``: over one, a ValueError and nothing written; 0 disables it.
+    with pytest.raises(ValueError, match="per-session import limit"):
+        store_a.maintenance.import_foreign_history(_ORIGIN, _TURNS, title="Imported chat", cwd=None, profile="work", limits=ImportLimits(max_messages_per_session=1))
+    assert store_a.maintenance.find_foreign_import(_ORIGIN) is None
+    long_turns = tuple(ForeignTurn("user" if i % 2 == 0 else "assistant", f"turn {i}") for i in range(IMPORT_MAX_MESSAGES_PER_SESSION + 1))
+    with pytest.raises(ValueError, match="per-session import limit"):
+        store_a.maintenance.import_foreign_history(_ORIGIN, long_turns, title="Imported chat", cwd=None, profile="work")
+    result = store_a.maintenance.import_foreign_history(_ORIGIN, long_turns, title="Imported chat", cwd=None, profile="work",
+                                                        limits=ImportLimits(max_messages_per_session=0))
+    assert store_a.sessions.get(result.session_id).message_count == IMPORT_MAX_MESSAGES_PER_SESSION + 1
 
 
 def test_foreign_import_is_idempotent_per_origin_and_identity_rules(backend, scope_a):

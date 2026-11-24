@@ -1298,6 +1298,28 @@ and the scope it was measured against (`across its lineage` or
 `hermes sessions export` still works for such sessions; its JSON/JSONL
 backup needs each session to stay under `max_export_messages`.
 
+### Import Limits
+
+Restoring a session export (the dashboard import), a profile adopting a
+stranded session's lineage, and the Claude Code / Codex importer refuse a
+payload over these limits before anything is written. Raise one to import a
+legitimately long session; `0` disables that guard, and a negative or
+non-numeric value keeps the default:
+
+```yaml
+sessions:
+  import_max_sessions: 500                # sessions in one import
+  import_max_messages_per_session: 10000
+  import_max_total_messages: 50000
+  import_max_session_bytes: 5242880       # 5 MiB of JSON per session
+  import_max_total_bytes: 26214400        # 25 MiB of JSON per import
+```
+
+Each import reads the limits from the config of the profile whose session
+store it writes to. The dashboard's import endpoint also caps the request body
+at 25 MiB before parsing, so raising the byte limits does not let a single
+dashboard upload grow past that.
+
 ### Manual Cleanup
 
 ```bash

@@ -2,7 +2,7 @@ import type { useSensors } from '@dnd-kit/core'
 import { closestCenter, DndContext, type DragEndEvent, type DragMoveEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import type * as React from 'react'
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { PROJECT_ROW_DROP_ATTR } from '../session-drag'
 
@@ -49,13 +49,17 @@ export function ReorderableList({
     }
   }
 
+  // A list that goes away mid-drag (a search starts, the route changes) takes its mark with it.
+  useEffect(() => () => over.current?.removeAttribute(PROJECT_ROW_DROP_ATTR), [])
+
   const handleDragMove = ({ active }: DragMoveEvent) => {
     const item = active.rect.current.translated
     const target = item && outside?.accepts(String(active.id)) ? outside.target() : null
-    const box = target?.getBoundingClientRect()
-    const y = item ? item.top + item.height / 2 : 0
 
-    mark(box && y >= box.top && y <= box.bottom ? target : null)
+    // Hit-tested, so a target scrolled out of its clip is not under the item where its box would be.
+    const under = item && document.elementsFromPoint(item.left + item.width / 2, item.top + item.height / 2)
+
+    mark(target && under?.includes(target) ? target : null)
   }
 
   const handleDragEnd = ({ activatorEvent, active, over: overItem }: DragEndEvent) => {

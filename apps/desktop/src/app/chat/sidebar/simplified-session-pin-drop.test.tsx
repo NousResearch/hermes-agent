@@ -31,7 +31,14 @@ const ROW_HEIGHT = 30
 const rect = (box: { left: number; top: number; right: number; bottom: number }) =>
   ({ ...box, width: box.right - box.left, height: box.bottom - box.top, x: box.left, y: box.top }) as DOMRect
 
+// jsdom has no hit testing either: a point inside Pinned's box hits Pinned.
+const inside = (box: typeof PINNED, x: number, y: number) =>
+  x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
+
 function layOut() {
+  window.document.elementsFromPoint = (x, y) =>
+    inside(PINNED, x, y) ? [...window.document.querySelectorAll('[data-slot="pinned-section"]')] : []
+
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
     if (this.matches('[data-slot="pinned-section"]')) {
       return rect(PINNED)

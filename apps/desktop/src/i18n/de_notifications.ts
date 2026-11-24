@@ -4,6 +4,9 @@ export const deNotifications = {
   intro: 'OS-Benachrichtigungen (keine In-App-Toasts). Pro Gerät.',
   enableAll: 'Benachrichtigungen aktivieren',
   enableAllDesc: 'Aus schaltet jede Benachrichtigung unten stumm.',
+  dockBounce: 'Dock-Symbol hüpfen lassen',
+  dockBounceDesc:
+    'Lässt das Dock-Symbol hüpfen (Windows/Linux: Taskleiste blinken), wenn eine Benachrichtigung eintrifft, während Hermes im Hintergrund ist. Standardmäßig aus – Benachrichtigungen und Dock-Badge erscheinen weiterhin.',
   focusedHint: 'Abschluss-Alerts feuern nur, während Hermes im Hintergrund ist.',
   kinds: {
     approval: {

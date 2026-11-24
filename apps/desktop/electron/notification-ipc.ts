@@ -128,8 +128,14 @@ export function registerNativeNotifications({
     })
     notifications.retain(notification)
 
-    // The toast is transient; flash the taskbar/dock entry until the window is focused.
-    requestAttention(targetWindow())
+    // The toast is transient; flash the taskbar/dock entry until the window is
+    // focused — but only when the renderer's Dock-bounce preference opted in.
+    // On macOS `flashFrame` bounces the Dock icon, and macOS has no
+    // system-level mute for that, so an unconditional call is an attention tax
+    // the user can't turn off anywhere else.
+    if (payload?.bounce) {
+      requestAttention(targetWindow())
+    }
 
     // Peers share the actual outcome, including pending/failed Linux delivery.
     const delivery = Promise.resolve(notification.show()).then(result => result !== false)

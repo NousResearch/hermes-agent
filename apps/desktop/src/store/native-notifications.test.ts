@@ -13,6 +13,7 @@ import {
   NATIVE_NOTIFICATION_KINDS,
   respondToApprovalAction,
   sendTestNativeNotification,
+  setNativeDockBounce,
   setNativeNotifyEnabled,
   setNativeNotifyKind
 } from './native-notifications'
@@ -46,6 +47,7 @@ beforeEach(() => {
   notify.mockClear()
   desktopWindow.hermesDesktop = { notify } as unknown as Window['hermesDesktop']
   setNativeNotifyEnabled(true)
+  setNativeDockBounce(false)
 
   for (const kind of NATIVE_NOTIFICATION_KINDS) {
     setNativeNotifyKind(kind, true)
@@ -81,6 +83,24 @@ it('captures durable navigation identity while keeping the runtime id for approv
   } finally {
     dropSessionState(runtimeId)
   }
+})
+
+// The Dock bounce is opt-in and the decision lives in the renderer (the main
+// process can't read localStorage), so the pref has to ride the IPC payload —
+// `bounce` is what electron/notification-ipc.ts gates requestAttention on.
+describe('Dock bounce preference', () => {
+  it('crosses the bridge as `bounce` only when the user opted in', () => {
+    const first = freshSession()
+    setActiveSessionId(first)
+    dispatchNativeNotification({ kind: 'turnDone', sessionId: first, title: 'done' })
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ bounce: false }))
+
+    setNativeDockBounce(true)
+    const second = freshSession()
+    setActiveSessionId(second)
+    dispatchNativeNotification({ kind: 'turnDone', sessionId: second, title: 'done' })
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ bounce: true }))
+  })
 })
 
 describe('dispatchNativeNotification focus gating', () => {

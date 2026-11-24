@@ -4,6 +4,8 @@ export interface NotificationSettingsTranslations {
   intro: string
   enableAll: string
   enableAllDesc: string
+  dockBounce: string
+  dockBounceDesc: string
   focusedHint: string
   kinds: Record<
     'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',

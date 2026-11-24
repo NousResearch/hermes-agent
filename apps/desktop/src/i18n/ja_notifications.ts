@@ -4,6 +4,9 @@ export const jaNotifications = {
   intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
   enableAll: '通知を有効にする',
   enableAllDesc: 'オフで以下の通知をすべて無効にします。',
+  dockBounce: 'Dock アイコンを跳ねさせる',
+  dockBounceDesc:
+    'Hermes がバックグラウンドのときに通知が届くと Dock アイコンを跳ねさせます（Windows/Linux ではタスクバーが点滅）。既定はオフ — 通知と Dock のバッジはそのまま表示されます。',
   focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
   kinds: {
     approval: {

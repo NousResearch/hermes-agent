@@ -215,6 +215,9 @@ export const zhHantSettings = {
       intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
       enableAll: '啟用通知',
       enableAllDesc: '關閉後靜音下方所有通知。',
+      dockBounce: 'Dock 圖示跳動',
+      dockBounceDesc:
+        'Hermes 在背景時收到通知，讓 Dock 圖示跳動（Windows/Linux 為工作列閃爍），直到視窗重新取得焦點。預設關閉 —— 系統通知與 Dock 標記照常顯示。',
       focusedHint: '完成提醒僅在 Hermes 位於背景時觸發。',
       kinds: {
         approval: {

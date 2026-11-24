@@ -23,6 +23,7 @@ import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
   sendTestNativeNotification,
+  setNativeDockBounce,
   setNativeNotifyEnabled,
   setNativeNotifyKind
 } from '@/store/native-notifications'
@@ -192,6 +193,15 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
               onChange={on => setNativeNotifyKind(kind, on)}
             />
           ))}
+
+          <ToggleRow
+            checked={prefs.dockBounce}
+            description={copy.dockBounceDesc}
+            disabled={!prefs.enabled}
+            id={settingElementId(SETTING_IDS.notifications.dockBounce)}
+            label={copy.dockBounce}
+            onChange={setNativeDockBounce}
+          />
 
           <PhonePresenceRow />
         </>

@@ -4,6 +4,9 @@ export const zhNotifications = {
   intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
   enableAll: '启用通知',
   enableAllDesc: '关闭后静音下方所有通知。',
+  dockBounce: 'Dock 图标跳动',
+  dockBounceDesc:
+    'Hermes 在后台时收到通知，让 Dock 图标跳动（Windows/Linux 为任务栏闪烁），直到窗口重新获得焦点。默认关闭 —— 系统通知和 Dock 角标照常显示。',
   focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
   kinds: {
     approval: {

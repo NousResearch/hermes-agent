@@ -70,6 +70,12 @@ optional_env:
     help: "Example: sticker,emoji. Also accepts image, video, audio, file, location. Mixed text + emoji is not emoji."
     placeholder: "Ex: sticker,emoji"
     password: false
+  - name: LINE_OBSERVED_UNMENTIONED_MESSAGES
+    description: "Number of recent messages retained as background in each allowlisted mention-required group or room. Default 50, maximum 500."
+    prompt: "Unmentioned messages to remember per chat"
+    help: "Set 0 to disable. The next @mention or media-triggered reply includes unread messages for that session. Ignored types and media are kept as text only."
+    placeholder: "Ex: 50"
+    password: false
   - name: LINE_ALLOW_ALL_USERS
     description: "Allow any LINE user to talk to the bot (dev only — disables allowlist)"
     prompt: "Allow all users? (true/false)"
@@ -95,3 +101,4 @@ dashboard_env_vars:
   - LINE_REQUIRE_MENTION_CHATS
   - LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES
   - LINE_IGNORE_GROUP_MESSAGE_TYPES
+  - LINE_OBSERVED_UNMENTIONED_MESSAGES

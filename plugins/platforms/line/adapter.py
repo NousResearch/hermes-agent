@@ -10,6 +10,10 @@
 * Group/room filters (DMs exempt): ``LINE_REQUIRE_MENTION_CHATS`` replies only on
   ``@bot`` (known slash commands and ``LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES``
   bypass); ``LINE_IGNORE_GROUP_MESSAGE_TYPES`` drops those types first.
+* ``LINE_OBSERVED_UNMENTIONED_MESSAGES`` retains up to 50 messages by default in
+  each allowlisted mention-required chat (0 disables, maximum 500). Ignored types
+  and media contribute text only. Each session receives its unread background on
+  the next mention or media bypass. /new and /reset discard that session's backlog.
 * Media via public HTTPS only: local files served under ``/line/media/<token>/<name>``
   (allowed-roots guard); ``LINE_PUBLIC_URL`` overrides host:port behind tunnels/wildcards.
 * ≤5 message objects per call; text chunked at 4500 chars (bubble hard limit 5000).
@@ -33,6 +37,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -61,6 +66,7 @@ LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
 LINE_PER_BUBBLE_CHARS = 5000  # LINE hard limit
 LINE_SAFE_BUBBLE_CHARS = 4500  # conservative chunking limit
 LINE_MAX_MESSAGES_PER_CALL = 5
+_OBSERVED_CONTEXT_CHARS = 8000
 LINE_REPLY_TOKEN_TTL_SECONDS = 50  # below LINE's ~60s
 WEBHOOK_BODY_MAX_BYTES = 1_048_576  # 1 MiB — webhooks are tiny JSON
 DEFAULT_WEBHOOK_PORT = 8646
@@ -304,6 +310,13 @@ class _LineClient:
         """Fetch this channel's own userId so we can filter self-messages."""
         return (await self.get_bot_info()).get("userId") or None
 
+    async def get_member_name(self, chat_type: str, chat_id: str, user_id: str) -> str:
+        url = f"https://api.line.me/v2/bot/{chat_type}/{_urlquote(chat_id, safe='')}/member/{_urlquote(user_id, safe='')}"
+        async with self._session(5.0) as session:
+            async with session.get(url, headers=self._headers) as resp:
+                resp.raise_for_status()
+                return (await resp.json()).get("displayName") or user_id
+
 
 def _text_message(text: str) -> dict[str, Any]:
     """Build a LINE text message object, capped to per-bubble max."""
@@ -454,21 +467,93 @@ def _message_text_without_bot_mentions(message: dict[str, Any], bot_user_id: Opt
     return re.sub(r"[ \t]{2,}", " ", "".join(parts)).strip()
 
 
-def _is_gateway_slash_command_text(text: str) -> bool:
-    """True when ``text`` starts with a gateway-recognized slash command."""
+def _gateway_slash_command(text: str) -> Optional[str]:
+    """Return the recognized command name, including for a /command@bot invocation."""
     stripped = (text or "").lstrip()
     if not stripped.startswith("/"):
-        return False
-    command = stripped[1:].split(None, 1)[0].split("@", 1)[0]
+        return None
+    command = stripped.split(None, 1)[0][1:].split("@", 1)[0].lower()
     if not command:
-        return False
+        return None
     try:
         from hermes_cli.commands import is_gateway_known_command
-        return is_gateway_known_command(command.lower())
+        return command if is_gateway_known_command(command) else None
     except Exception:
         # A missing command registry must not silence /help in a mention-gated chat.
         logger.debug("LINE: slash-command lookup failed", exc_info=True)
-        return True
+        return command
+
+
+def _parse_observed_unmentioned_limit(value: Optional[str]) -> int:
+    if value is None or not value.strip():
+        return 50
+    try:
+        limit = int(value)
+        if limit < 0:
+            raise ValueError
+    except ValueError:
+        logger.warning("Invalid LINE_OBSERVED_UNMENTIONED_MESSAGES, using 50")
+        return 50
+    if limit > 500:
+        logger.warning("Clamping LINE_OBSERVED_UNMENTIONED_MESSAGES to 500")
+        return 500
+    return limit
+
+
+def _inbound_message_text(msg: dict[str, Any], bot_user_id: Optional[str]) -> str:
+    kind = msg.get("type", "")
+    if kind == "text":
+        return _message_text_without_bot_mentions(msg, bot_user_id)
+    if kind == "sticker":
+        return f"[sticker: {', '.join(msg['keywords'])}]" if msg.get("keywords") else "[sticker]"
+    if kind == "location":
+        return f"[location: {msg.get('title', '')} {msg.get('address', '')}]".strip()
+    if kind in _INBOUND_MEDIA_EXT:
+        return f"[{kind}]"
+    return f"[unsupported message type: {kind}]"
+
+
+@dataclass(frozen=True)
+class _ObservedMessage:
+    seq: int
+    sender: str
+    text: str
+
+
+class _ObservedChat:
+    def __init__(self, limit: int):
+        self.messages: deque[_ObservedMessage] = deque(maxlen=limit)
+        self.latest_seq = 0
+        self.last_seen: dict[str, int] = {}
+
+    def record(self, sender: str, text: str) -> None:
+        self.latest_seq += 1
+        # Keep each observation on one attributed line and bound even a single large paste.
+        compact = " ".join(text[:_OBSERVED_CONTEXT_CHARS].split())
+        self.messages.append(_ObservedMessage(self.latest_seq, sender, compact))
+
+    def unread_context(self, session_key: str, command: Optional[str]) -> str:
+        if command and command not in {"new", "reset"}:
+            return ""
+        seen = self.last_seen.get(session_key, 0)
+        self.last_seen[session_key] = self.latest_seq
+        if command or seen == self.latest_seq:
+            return ""
+        header = "[Recent unmentioned group messages]\n"
+        footer = "[End of group messages]\n\n"
+        remaining = _OBSERVED_CONTEXT_CHARS - len(header) - len(footer)
+        lines = []
+        for entry in reversed(self.messages):
+            if entry.seq <= seen:
+                break
+            line = f"- {entry.sender}: {entry.text}"
+            if len(line) + 1 > remaining:
+                if not lines:
+                    lines.append(line[:remaining - 2] + "…\n")
+                break
+            lines.append(line + "\n")
+            remaining -= len(line) + 1
+        return header + "".join(reversed(lines)) + footer
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
@@ -550,6 +635,11 @@ class LineAdapter(BasePlatformAdapter):
         self.ignore_group_message_types = _normalize_line_type_set(
             _get_scoped_secret("LINE_IGNORE_GROUP_MESSAGE_TYPES", ""),
             _LINE_IGNORABLE_GROUP_TYPES)
+        self.observed_unmentioned_limit = _parse_observed_unmentioned_limit(
+            _get_scoped_secret("LINE_OBSERVED_UNMENTIONED_MESSAGES"))
+        self._observed_chats: dict[str, _ObservedChat] = {}
+        self._member_names: dict[tuple[str, str], str] = {}
+        self._member_lookups: dict[tuple[str, str], asyncio.Task] = {}
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
         self.slow_response_threshold = _coerce(float, threshold, DEFAULT_SLOW_RESPONSE_THRESHOLD)
@@ -635,6 +725,9 @@ class LineAdapter(BasePlatformAdapter):
                     await getattr(obj, method)()
                 setattr(self, attr, None)
         self._app = None
+        for task in list(self._member_lookups.values()):
+            await cancel_task(task)
+        self._member_lookups.clear()
         for path in list(self._media_temp_paths):
             _unlink_quietly(path)
         self._media_temp_paths.clear()
@@ -702,26 +795,9 @@ class LineAdapter(BasePlatformAdapter):
         chat_id, chat_type = _resolve_chat(source)
         return chat_type in {"group", "room"} and bool(chat_id) and chat_id in self.require_mention_chats
 
-    def _message_bypasses_group_mention_gate(self, message: dict[str, Any]) -> bool:
-        """True when an unmentioned group/room message may still dispatch."""
-        if _message_mentions_bot(message, self._bot_user_id):
-            return True
-        if (message or {}).get("type") == "text":
-            return _is_gateway_slash_command_text(
-                _message_text_without_bot_mentions(message, self._bot_user_id))
-        return (message or {}).get("type") in self.reply_without_mention_media_types
-
-    def _mention_gated(self, event: dict[str, Any]) -> bool:
-        """Silently drop a group/room message that failed the @mention gate."""
-        if event.get("type") != "message":
-            return False
-        source = event.get("source") or {}
-        if not self._requires_mention_for_source(source):
-            return False
-        if self._message_bypasses_group_mention_gate(event.get("message") or {}):
-            return False
-        logger.debug("LINE: ignoring group/room message (chat requires @mention, bot not mentioned)")
-        return True
+    def _message_bypasses_group_mention_gate(self, message: dict[str, Any], command: Optional[str]) -> bool:
+        return (command is not None or _message_mentions_bot(message, self._bot_user_id)
+                or message.get("type") in self.reply_without_mention_media_types)
 
     async def _dispatch_event(self, event: dict[str, Any]) -> None:
         event_type = event.get("type")
@@ -736,12 +812,6 @@ class LineAdapter(BasePlatformAdapter):
                                    group_ids=self.allowed_groups, room_ids=self.allowed_rooms):
             logger.info("LINE: rejecting unauthorized source %s", source)
             return
-        # Ignore runs before the mention gate and before any download/dispatch.
-        # Postbacks and lifecycle events are not messages, so they stay live.
-        if self._ignored_group_message(event):
-            return
-        if self._mention_gated(event):
-            return
         if event_type == "message":
             await self._handle_message_event(event)
         elif event_type == "postback":
@@ -751,36 +821,61 @@ class LineAdapter(BasePlatformAdapter):
         else:
             logger.debug("LINE: ignoring event type %r", event_type)
 
+    def _observe_message(self, chat_type: str, chat_id: str, user_id: str, text: str) -> None:
+        key = (chat_id, user_id)
+        # Coalesce requests per member and cap concurrent HTTP work during bursts.
+        if (self._client and user_id and key not in self._member_names
+                and key not in self._member_lookups and len(self._member_lookups) < 8):
+            self._member_lookups[key] = asyncio.create_task(self._cache_member_name(self._client, chat_type, key))
+        if chat_id not in self._observed_chats:
+            self._observed_chats[chat_id] = _ObservedChat(self.observed_unmentioned_limit)
+        self._observed_chats[chat_id].record(self._member_names.get(key) or user_id or chat_id, text)
+
+    async def _cache_member_name(self, client: _LineClient, chat_type: str, key: tuple[str, str]) -> None:
+        try:
+            name = await client.get_member_name(chat_type, *key)
+            name = " ".join(name.split())[:128]
+        except Exception:
+            logger.debug("LINE: member profile lookup failed", exc_info=True)
+            name = key[1]
+        finally:
+            self._member_lookups.pop(key, None)
+        if len(self._member_names) >= 256:
+            del self._member_names[next(iter(self._member_names))]
+        self._member_names[key] = name
+
     async def _handle_message_event(self, event: dict[str, Any]) -> None:
         msg = event.get("message") or {}
         msg_type, message_id = msg.get("type", ""), msg.get("id", "")
         reply_token = event.get("replyToken", "")
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
-        user_id = source.get("userId", "") or chat_id
+        user_id = source.get("userId") or ""
+        text = _inbound_message_text(msg, self._bot_user_id)
+        gated = self._requires_mention_for_source(source)
+        command = _gateway_slash_command(text) if gated else None
+        if self._ignored_group_message(event) or (gated and not self._message_bypasses_group_mention_gate(msg, command)):
+            if gated and self.observed_unmentioned_limit and not command:
+                self._observe_message(chat_type, chat_id, user_id, text)
+            return
+        user_id = user_id or chat_id
         if chat_id and reply_token:  # stash the reply token for outbound use
             self._reply_tokens[chat_id] = (reply_token, time.time() + LINE_REPLY_TOKEN_TTL_SECONDS)
+        source_obj = self.build_source(
+            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id,
+            message_id=message_id)
+        if gated and (history := self._observed_chats.get(chat_id)):
+            # Take the session's unread slice before a media fetch can yield to later webhooks.
+            text = history.unread_context(self._source_session_key(source_obj), command) + text
         media_urls: list[str] = []
         media_types: list[str] = []
-        if msg_type == "text":
-            text = _message_text_without_bot_mentions(msg, self._bot_user_id)
-        elif msg_type in _INBOUND_MEDIA_EXT:  # fetch, cache, surface a vision-friendly local path
+        if msg_type in _INBOUND_MEDIA_EXT:  # fetch, cache, surface a vision-friendly local path
             local_path, media_type = await self._download_media(
                 message_id, msg_type, filename=msg.get("fileName") or msg.get("file_name"))
             if local_path:
                 media_urls, media_types = [local_path], [media_type]
-            text = f"[{msg_type}]"
-        elif msg_type == "sticker":
-            text = f"[sticker: {', '.join(msg['keywords'])}]" if msg.get("keywords") else "[sticker]"
-        elif msg_type == "location":
-            text = f"[location: {msg.get('title', '')} {msg.get('address', '')}]".strip()
-        else:
-            text = f"[unsupported message type: {msg_type}]"
         if chat_type == "dm" and self._client:  # best-effort typing indicator (DM only)
             asyncio.create_task(self._client.loading(chat_id))
-        source_obj = self.build_source(
-            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id,
-            message_id=message_id)
         await self.handle_message(MessageEvent(
             text=text, message_type=_LINE_MESSAGE_TYPES.get(msg_type, MessageType.TEXT), source=source_obj,
             raw_message=event, message_id=message_id, media_urls=media_urls, media_types=media_types))

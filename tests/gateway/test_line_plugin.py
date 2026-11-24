@@ -584,6 +584,7 @@ _LINE_AUTH_ENVS = (
     "LINE_REQUIRE_MENTION_CHATS",
     "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES",
     "LINE_IGNORE_GROUP_MESSAGE_TYPES",
+    "LINE_OBSERVED_UNMENTIONED_MESSAGES",
     "GATEWAY_ALLOW_ALL_USERS",
     "GATEWAY_ALLOWED_USERS",
 )
@@ -632,13 +633,7 @@ def _emoji(body="(laugh)", spans=None):
     }
 
 
-class TestLineGroupFilters:
-    """``LINE_REQUIRE_MENTION_CHATS``, media bypass, and group/room type ignore.
-
-    DMs are never mention-gated and never type-filtered. Ignore runs before
-    the mention gate. Postbacks stay on the slow-LLM path.
-    """
-
+class _LineGroupHarness:
     def _adapter(self, monkeypatch, **env):
         for key in _LINE_AUTH_ENVS:
             monkeypatch.delenv(key, raising=False)
@@ -682,6 +677,14 @@ class TestLineGroupFilters:
             "webhookEventId": webhook_id,
         }))
         return captured.get("event")
+
+
+class TestLineGroupFilters(_LineGroupHarness):
+    """``LINE_REQUIRE_MENTION_CHATS``, media bypass, and group/room type ignore.
+
+    DMs are never mention-gated and never type-filtered. Ignore runs before
+    the mention gate. Postbacks stay on the slow-LLM path.
+    """
 
     def test_defaults_are_empty_and_do_not_filter(self, monkeypatch):
         adapter = self._adapter(
@@ -777,7 +780,8 @@ class TestLineGroupFilters:
         mentioned = self._dispatch(
             adapter, _group("Cneed"),
             _text("@Hermes hi", [_bot_mention(0, 7)]), "all-hit")
-        assert mentioned is not None and mentioned.text == "hi"
+        assert mentioned is not None and mentioned.text.endswith("hi")
+        assert "Umember: hello" in mentioned.text
 
     def test_help_bypasses_mention_gate_and_strips_the_tag(self, monkeypatch):
         adapter = self._gated(monkeypatch)
@@ -880,7 +884,9 @@ class TestLineGroupFilters:
             adapter, _room(), {"type": "image", "id": "img"}, "r-img-first") is None
         video = self._dispatch(
             adapter, _group(), {"type": "video", "id": "vid"}, "g-vid-ok")
-        assert video is not None and video.text == "[video]"
+        assert video is not None and video.text.endswith("[video]")
+        assert "Umember: [sticker]" in video.text
+        assert "[image]" not in video.text
         adapter._download_media.assert_awaited_once()
 
     def test_photo_alias_ignores_images(self, monkeypatch):
@@ -924,10 +930,182 @@ class TestLineGroupFilters:
         assert adapter._cache.get(rid).state is State.DELIVERED
 
 
-class TestLineFilterDashboardEnv:
-    """The three filters are Dashboard fields beside the group/room allowlists."""
+class TestLineObservation(_LineGroupHarness):
+    def _mention(self, adapter, source, webhook):
+        event = self._dispatch(adapter, source, _text("@Hermes update?", [_bot_mention(0, 7)]), webhook)
+        assert event.text.endswith("update?")
+        return event.text
 
-    def test_plugin_yaml_and_catalog_expose_the_three_vars(self):
+    @pytest.mark.parametrize("value,limit,warn", [
+        (None, 50, False), ("  ", 50, False), ("0", 0, False), ("2", 2, False),
+        ("501", 500, True), ("-1", 50, True), ("2.5", 50, True), ("many", 50, True),
+    ])
+    def test_limit_controls_retained_messages(self, monkeypatch, caplog, value, limit, warn):
+        key = "LINE_OBSERVED_UNMENTIONED_MESSAGES"
+        env = {} if value is None else {key: value}
+        adapter = self._gated(monkeypatch, **env)
+        assert any(key in r.getMessage() and r.levelname == "WARNING" for r in caplog.records) == warn
+        if limit == 0:
+            adapter._client = AsyncMock()
+        source = _group(user_id="U")
+        for i in range(limit + 1):
+            body = f"msg-{i:03}"
+            assert self._dispatch(adapter, source, _text(body), body) is None
+        text = self._mention(adapter, source, "trigger")
+        assert text.count("msg-") == limit
+        assert "msg-000" not in text
+        if limit:
+            assert f"msg-{limit:03}" in text
+        else:
+            assert text == "update?"
+            adapter._client.get_member_name.assert_not_called()
+
+    @pytest.mark.parametrize("per_user", [False, True])
+    def test_cursor_follows_session_across_triggers(self, monkeypatch, per_user):
+        adapter = self._gated(monkeypatch)
+        adapter.config.extra["group_sessions_per_user"] = per_user
+        a, b = _room(user_id="UA"), _room(user_id="UB")
+        assert self._dispatch(adapter, b, _text("early news"), "one") is None
+        assert "UB: early news" in self._mention(adapter, a, "a1")
+        assert self._mention(adapter, a, "a2") == "update?"
+        assert self._dispatch(adapter, a, _text("late news"), "two") is None
+        text = self._mention(adapter, b, "b1")
+        assert text.count("early news") == int(per_user)
+        assert text.count("UA: late news") == 1
+        assert text.count("update?") == 1
+        assert self._mention(adapter, b, "b2") == "update?"
+        assert self._mention(adapter, a, "a3").count("late news") == int(per_user)
+
+    def test_context_budget_preserves_recent_lines_and_the_request(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        source = _group()
+        for i in range(8):
+            self._dispatch(adapter, source, _text(f"paste-{i} " + "x" * 2200), str(i))
+        text = self._mention(adapter, source, "trigger")
+        assert len(text.removesuffix("update?")) <= 8000
+        assert "paste-4" not in text
+        assert text.index("paste-5") < text.index("paste-6") < text.index("paste-7")
+        self._dispatch(adapter, source, _text("longest " + "x" * 10000), "long")
+        text = self._mention(adapter, source, "trigger2")
+        assert "Umember: longest" in text and len(text.removesuffix("update?")) <= 8000
+        assert self._mention(adapter, source, "trigger3") == "update?"
+
+    def test_passive_media_and_ignored_types_never_download(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_IGNORE_GROUP_MESSAGE_TYPES="sticker,emoji",
+                              LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES="sticker")
+        source = _room()
+        for kind in ("image", "video", "audio", "file", "sticker", "location"):
+            assert self._dispatch(adapter, source, {"type": kind, "title": "Pier"}, kind) is None
+        assert self._dispatch(adapter, source, _emoji(), "emoji") is None
+        adapter._download_media.assert_not_awaited()
+        text = self._mention(adapter, source, "trigger")
+        for marker in ("[image]", "[video]", "[audio]", "[file]", "[sticker]", "[location: Pier", "(laugh)"):
+            assert text.count(marker) == 1
+
+    @pytest.mark.asyncio
+    async def test_media_trigger_takes_only_context_received_before_download(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES="image")
+        adapter.handle_message = AsyncMock()
+        downloading, release = asyncio.Event(), asyncio.Event()
+
+        async def download(*_args, **_kwargs):
+            downloading.set()
+            await release.wait()
+            return "/cache/picture", "image/png"
+
+        adapter._download_media.side_effect = download
+
+        async def dispatch(message):
+            await adapter._dispatch_event({"type": "message", "source": _group(), "message": message})
+
+        await dispatch(_text("before photo"))
+        photo = asyncio.create_task(dispatch({"type": "image", "id": "photo"}))
+        await asyncio.wait_for(downloading.wait(), timeout=5)
+        await dispatch(_text("after photo"))
+        release.set()
+        await photo
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == ["/cache/picture"]
+        assert event.text.endswith("[image]") and "before photo" in event.text and "after photo" not in event.text
+        await dispatch(_text("@Hermes hi", [_bot_mention(0, 7)]))
+        text = adapter.handle_message.await_args.args[0].text
+        assert "after photo" in text and "before photo" not in text and "[image]" not in text
+
+    @pytest.mark.parametrize("fails,sender", [(False, "Ada"), (True, "Umember")])
+    @pytest.mark.asyncio
+    async def test_member_lookup_is_best_effort_and_cached(self, monkeypatch, fails, sender):
+        adapter = self._gated(monkeypatch)
+        release, finished = asyncio.Event(), asyncio.Event()
+
+        async def resolve(*_args):
+            await release.wait()
+            finished.set()
+            if fails:
+                raise OSError("profile unavailable")
+            return "Ada"
+
+        adapter._client = AsyncMock()
+        adapter._client.get_member_name.side_effect = resolve
+        adapter.handle_message = AsyncMock()
+
+        async def dispatch(msg):
+            await adapter._dispatch_event({"type": "message", "source": _room(), "message": msg})
+
+        await dispatch(_text("first"))
+        await dispatch(_text("second"))
+        adapter.handle_message.assert_not_awaited()
+        await dispatch(_text("@Hermes hi", [_bot_mention(0, 7)]))
+        assert "Umember: first" in adapter.handle_message.await_args.args[0].text
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+        await dispatch(_text("third"))
+        await dispatch(_text("@Hermes again", [_bot_mention(0, 7)]))
+        assert f"{sender}: third" in adapter.handle_message.await_args.args[0].text
+        adapter._client.get_member_name.assert_awaited_once_with("room", "Rneed", "Umember")
+
+    @pytest.mark.parametrize("command", ["/new", "/reset"])
+    def test_commands_preserve_or_reset_only_the_callers_cursor(self, monkeypatch, command):
+        adapter = self._gated(monkeypatch)
+        a, b = _group(user_id="UA"), _group(user_id="UB")
+        self._dispatch(adapter, a, _text("/not-a-real-command"), "unknown")
+        assert self._dispatch(adapter, a, _text("/help"), "help").text == "/help"
+        text = self._mention(adapter, a, "after-help")
+        assert "/not-a-real-command" in text and "/help" not in text
+        self._dispatch(adapter, b, _text("before reset"), "before")
+        tagged = _text(f"@Hermes {command}", [_bot_mention(0, 7)])
+        assert self._dispatch(adapter, a, tagged, "reset").text == command
+        self._dispatch(adapter, b, _text("after reset"), "after")
+        text = self._mention(adapter, a, "fresh")
+        assert "after reset" in text and "before reset" not in text
+        text = self._mention(adapter, b, "independent")
+        assert "before reset" in text and "after reset" in text and command not in text
+
+    @pytest.mark.parametrize("source", [_group("Cother"), _room("Rother")])
+    def test_authorization_and_mention_gate_precede_recording(self, monkeypatch, source):
+        chat_id, _ = _resolve_chat(source)
+        adapter = self._gated(monkeypatch, LINE_REQUIRE_MENTION_CHATS=chat_id,
+                              LINE_IGNORE_GROUP_MESSAGE_TYPES="sticker")
+        assert self._dispatch(adapter, source, _text("unauthorized"), "denied") is None
+        adapter.allow_all = True
+        adapter.require_mention_chats.clear()
+        assert self._dispatch(adapter, source, {"type": "sticker"}, "free") is None
+        adapter.require_mention_chats.add(chat_id)
+        assert self._mention(adapter, source, "allowed") == "update?"
+
+    def test_dm_postback_and_lifecycle_do_not_enter_observations(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_ALLOW_ALL_USERS="true")
+        # Reuse a chat ID to make accidental recording visible to the group trigger.
+        assert self._dispatch(adapter, _dm("Cneed"), _text("private"), "dm").text == "private"
+        for kind in ("join", "postback"):
+            asyncio.run(adapter._dispatch_event({"type": kind, "source": _group(), "webhookEventId": kind}))
+        assert self._mention(adapter, _group(), "trigger") == "update?"
+
+
+class TestLineFilterDashboardEnv:
+    """The group and room controls are Dashboard fields beside the group/room allowlists."""
+
+    def test_plugin_yaml_and_catalog_expose_the_four_vars(self):
         from pathlib import Path
 
         from hermes_cli.config import OPTIONAL_ENV_VARS
@@ -943,10 +1121,11 @@ class TestLineFilterDashboardEnv:
         names = manifest.dashboard_env_vars
         rooms = names.index("LINE_ALLOWED_ROOMS")
         assert names[rooms - 1] == "LINE_ALLOWED_GROUPS"
-        assert names[rooms + 1:rooms + 4] == (
+        assert names[rooms + 1:rooms + 5] == (
             "LINE_REQUIRE_MENTION_CHATS",
             "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES",
             "LINE_IGNORE_GROUP_MESSAGE_TYPES",
+            "LINE_OBSERVED_UNMENTIONED_MESSAGES",
         )
 
         ignore = OPTIONAL_ENV_VARS["LINE_IGNORE_GROUP_MESSAGE_TYPES"]
@@ -956,7 +1135,10 @@ class TestLineFilterDashboardEnv:
         assert "sticker,emoji" in ignore["help"]
         assert media["placeholder"] == "Ex: image,video"
         assert mention["is_list"] is True and mention["placeholder"] == "Ex: Cxxxx,Rxxxx"
-        for meta in (ignore, media, mention):
+        observed = OPTIONAL_ENV_VARS["LINE_OBSERVED_UNMENTIONED_MESSAGES"]
+        assert observed["password"] is False and observed["placeholder"] == "Ex: 50"
+        assert observed["help"]
+        for meta in (ignore, media, mention, observed):
             assert meta["category"] == "messaging"
             assert meta["description"] and meta["prompt"]
 
@@ -968,12 +1150,12 @@ class TestLineFilterDashboardEnv:
         discover_plugins()
         entry = platform_registry.get("line")
         assert entry is not None
-        assert entry.dashboard_env_vars[rooms + 1:rooms + 4] == names[rooms + 1:rooms + 4]
+        assert entry.dashboard_env_vars[rooms + 1:rooms + 5] == names[rooms + 1:rooms + 5]
         card = next(item for item in _messaging_platform_catalog() if item["id"] == "line")
         env_vars = card["env_vars"]
         card_rooms = env_vars.index("LINE_ALLOWED_ROOMS")
         assert env_vars[card_rooms - 1] == "LINE_ALLOWED_GROUPS"
-        assert env_vars[card_rooms + 1:card_rooms + 4] == names[rooms + 1:rooms + 4]
+        assert env_vars[card_rooms + 1:card_rooms + 5] == names[rooms + 1:rooms + 5]
         assert env_vars.count("LINE_REQUIRE_MENTION_CHATS") == 1
         assert env_vars.count("LINE_IGNORE_GROUP_MESSAGE_TYPES") == 1
 
@@ -995,6 +1177,7 @@ class TestLineFilterDashboardEnv:
             "LINE_REQUIRE_MENTION_CHATS": "Cneed,Rneed",
             "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES": "image,video",
             "LINE_IGNORE_GROUP_MESSAGE_TYPES": "sticker,emoji",
+            "LINE_OBSERVED_UNMENTIONED_MESSAGES": "37",
         }
         payload = _messaging_platform_payload(entry, saved, runtime={}, scoped=True)
         fields = {field["key"]: field for field in payload["env_vars"]}
@@ -1008,6 +1191,7 @@ class TestLineFilterDashboardEnv:
             "LINE_REQUIRE_MENTION_CHATS": "Cneed,Rneed",
             "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES": "image,video",
             "LINE_IGNORE_GROUP_MESSAGE_TYPES": "sticker,emoji",
+            "LINE_OBSERVED_UNMENTIONED_MESSAGES": "37",
         }
         for key, plain in expected.items():
             field = fields[key]
@@ -1017,6 +1201,9 @@ class TestLineFilterDashboardEnv:
             assert "redacted" not in field["value"]
             assert field["value"] != field["redacted_value"]
             assert field["placeholder"].startswith("Ex: ")
+
+        observed = fields["LINE_OBSERVED_UNMENTIONED_MESSAGES"]
+        assert observed["placeholder"] == "Ex: 50" and observed["is_list"] is False
 
         token = fields["LINE_CHANNEL_ACCESS_TOKEN"]
         assert token["is_password"] is True

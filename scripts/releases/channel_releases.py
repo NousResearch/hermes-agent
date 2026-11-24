@@ -470,11 +470,15 @@ def main(argv: list[str] | None = None) -> None:
 
     parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)
+    if args.role == "stable":
+        parser.error("stable publication runs only through the Stable Release Publication sequencer "
+                     "(advance_stable), which checks the final release receipt and serializes every "
+                     "stable writer")
     if args.root:
-        result = publish_release(args.role + "-release", dict(os.environ), args.root)
+        result = publish_release("canary-release", dict(os.environ), args.root)
     else:
         with tempfile.TemporaryDirectory() as directory:
-            result = publish_release(args.role + "-release", dict(os.environ), Path(directory))
+            result = publish_release("canary-release", dict(os.environ), Path(directory))
     print(json.dumps(result, sort_keys=True))
 
 

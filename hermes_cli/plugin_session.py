@@ -93,9 +93,11 @@ def session_viewers() -> list[dict]:
 
 def session_source() -> str:
     """The label the calling session was created with: its launch policy's ``source``. ``cli``,
-    ``tui``, ``gui``, ``acp``, ``tool`` or ``oneshot`` for a chat a person started; any other
-    non-empty value is the label of a session Hermes started itself. ``""`` says only that no launch
-    policy is bound: outside a session, for a person's messaging chat turn and for a cron run
+    ``tui``, ``gui`` or ``acp`` for a chat opened in that client, ``tool`` for a run a third-party
+    integration launched (``hermes chat --source tool``), ``oneshot`` for a finite ``chat -q`` /
+    ``-z`` run; any other non-empty value is a label Hermes gives a session it starts itself. It is a
+    launch label, not proof that a person is waiting. ``""`` says only that no launch policy is
+    bound: outside a session, for a person's messaging chat turn and for a cron run
     (``current_cron_execution`` names that one). A delegated child runs in its parent turn's context
     and reads the parent session's label. Never read from ``os.environ``."""
     policy = _active_policy()
@@ -118,7 +120,8 @@ _REGULAR_WRITE_ORIGINS = frozenset({"foreground", "assistant_tool"})
 def fork_origin() -> str:
     """``""`` for a session's own agent and every other regular agent (CLI, gateway, cron, subagent).
     For a detached fork Hermes runs beside a turn, the fork's label: ``"background_review"``,
-    ``"side_question"``, or ``"plugin_fork:<plugin id>"`` for a plugin's own session fork."""
+    ``"side_question"``, or ``"plugin_fork:<plugin id>"`` for a plugin's own session fork. The skill
+    curator's own agent runs under the ``"background_review"`` label too."""
     from tools.skill_provenance import get_current_write_origin
     origin = get_current_write_origin()
     return "" if origin in _REGULAR_WRITE_ORIGINS else origin

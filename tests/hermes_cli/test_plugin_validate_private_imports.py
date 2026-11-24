@@ -203,7 +203,7 @@ def test_retry_after_parser_is_public_but_the_rest_of_retry_utils_is_not(tmp_pat
     assert "agent.retry_utils.jittered_backoff" in warning
 
 
-def test_silence_helpers_are_public_and_decide_delivery_but_the_rest_of_response_filters_is_not(tmp_path):
+def test_silence_helpers_are_public_text_checks_and_the_rest_of_response_filters_is_not(tmp_path):
     """A platform plugin that reads Hermes's silence rule before sending a finished turn's reply
     gets no private-import warning; another name from the same module still warns. The helpers
     answer what the docs row says."""

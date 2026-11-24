@@ -38,7 +38,7 @@ import { openSession } from '../open-session'
 import { Panel } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
 import { PageHero } from '../redesign/page-hero'
-import { SETTINGS_ROUTE } from '../routes'
+import { CRON_ROUTE, SETTINGS_ROUTE } from '../routes'
 import { useRoutinesPageLinks } from '../routines/agent-routines'
 import { getNested } from '../settings/helpers'
 import { SettingsOwnerContext, settingsScopeLabel } from '../settings/profile-scope'
@@ -560,7 +560,7 @@ function AgentSettingsContent({
                 />
                 <SettingRow
                   detail={pending(jobs.isError, jobs.isPending, counts.nav.schedules)}
-                  onClick={() => document.getElementById('agent-routines')?.scrollIntoView({ block: 'nearest' })}
+                  onClick={() => navigate(CRON_ROUTE)}
                   title={t.cron.title}
                 />
               </Section>
@@ -644,7 +644,7 @@ function AgentRoutines({ jobs, owner }: AgentRoutinesProps) {
   const links = useRoutinesPageLinks(owner)
 
   return (
-    <div id="agent-routines">
+    <div>
       <Section title={t.cron.title}>
         {jobs.data?.map(job => (
           <SettingRow

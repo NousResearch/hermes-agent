@@ -487,6 +487,15 @@ it('opens a link naming this machine as "local" in place, without the Open agent
   expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
 })
 
+it('opens the Routines page from the Overview’s Routines row, as its neighbours open theirs', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  mount('/settings?agentProfile=default')
+
+  fireEvent.click((await screen.findAllByRole('button', { name: new RegExp(`^${en.cron.title}`) }))[0])
+
+  expect(screen.getByTestId('location').textContent).toBe('/cron')
+})
+
 it('lists the agent’s routines read only in Settings › Routines, each opening on the Routines page', async () => {
   // The window's own machine, named by nobody: the links stay on this window's Routines page.
   $apiRequestScope.set({ connectionId: null, profile: 'default' })

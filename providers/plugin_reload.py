@@ -40,7 +40,21 @@ logger = logging.getLogger(__name__)
 
 # Directories inside a plugin tree that never hold code the provider imports.
 _SKIP_DIRS = frozenset({"__pycache__", ".git", "node_modules", "tests", "evals", ".venv"})
-_SNAPSHOT_IGNORE = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".venv")
+
+
+def _skip_dir(name: str) -> bool:
+    """Case-folded: Windows would match `Tests/` through ignore_patterns' normcase, POSIX would not, and the
+    fingerprint walk below already treats the two the same way."""
+    return name.casefold() in _SKIP_DIRS
+
+
+# The frozen copy skips the same non-code directories the fingerprint does: the snapshot prefix is ~220 characters
+# on Windows, so a plugin whose test tree adds long names cannot be staged at all under a 260-character MAX_PATH
+# (#159414). VCS/dep dirs are expensive; test trees are only dead weight in an import.
+def _snapshot_ignore(_directory: str, names: list) -> list:
+    return [name for name in names if _skip_dir(name)]
+
+
 # The directory is Hermes-private, and these names are reserved in it. A sweep reclaims "owned-" roots (made under
 # the setup lock) once their owner.lock exists and nobody holds it, and finishes "_REAPING_PREFIX" claims; entries
 # under any other name are never touched.
@@ -155,7 +169,7 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix=".copy-", dir=target.parent))
     try:
-        shutil.copytree(plugin_dir, private / plugin_dir.name, ignore=_SNAPSHOT_IGNORE)
+        shutil.copytree(plugin_dir, private / plugin_dir.name, ignore=_snapshot_ignore)
         os.rename(private / plugin_dir.name, target)
     except OSError:
         if not target.is_dir():  # another scan publishing the same copy first is fine
@@ -170,7 +184,7 @@ def tree_fingerprint(plugin_dir: Path) -> str:
     rewrites them, however the plugin was installed."""
     entries = []
     for root, dirs, files in os.walk(plugin_dir):
-        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
+        dirs[:] = sorted(d for d in dirs if not _skip_dir(d))
         for name in sorted(files):
             if name.endswith(".py") or name in ("plugin.yaml", "plugin.yml"):
                 path = os.path.join(root, name)

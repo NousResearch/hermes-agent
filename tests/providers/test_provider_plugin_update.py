@@ -133,3 +133,32 @@ def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
     # The fixed release after it loads clean: nothing the broken one half-imported is reused.
     assert "new sessions use this version" in activation_hint(update_to(4))
     assert get_provider_profile("demo-provider").create_client().version == "v4"
+
+
+def test_snapshot_carries_the_plugin_code_but_not_its_test_tree(plugin, monkeypatch):
+    """The snapshot prefix is ~220 characters, so on Windows a plugin whose ``tests/`` adds long names blows the
+    260-character MAX_PATH and cannot be staged at all ("Could not stage provider plugin", #159414). A test tree
+    is never imported, so it must not be copied — the same directories the fingerprint already skips — and the
+    plugin has to still load without it."""
+    import providers.plugin_reload as reload
+    from providers import get_provider_profile
+
+    monkeypatch.setattr(reload, "_snapshot_root", None)
+    _write(plugin, 1)
+    deep_rel = Path("tests") / "directsdk" / ("test_" + "directsdk_streaming_" * 2)
+    deep_rel_file = deep_rel / ("test_a_very_long_descriptive_file_name_" * 2 + ".py")
+    (plugin / deep_rel).mkdir(parents=True)
+    (plugin / deep_rel_file).write_text("x = 1\n")
+    (plugin / "evals" / "cases").mkdir(parents=True)
+    (plugin / "evals" / "cases" / "streaming.yaml").write_text("id: 1\n")
+    assert len(str(deep_rel_file)) > 40  # the headroom 260 minus the ~220-character snapshot prefix
+
+    snapshot = reload._snapshot(plugin, "_hermes_user_provider_demo")
+
+    assert (snapshot / "__init__.py").is_file() and (snapshot / "plugin.yaml").is_file()
+    assert not (snapshot / "tests").exists()
+    assert not (snapshot / "evals").exists()
+    _forced_sweep()  # the plugin still loads, test tree gone
+    assert get_provider_profile("demo-provider").create_client().version == "v1"
+    assert reload._snapshot(plugin, "_hermes_user_provider_demo") == snapshot  # frozen copy is reused
+

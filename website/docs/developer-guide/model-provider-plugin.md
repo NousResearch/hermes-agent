@@ -38,6 +38,8 @@ plugins/model-providers/my-provider/
 
 The only required file is `__init__.py`. `plugin.yaml` is used by `hermes plugins` for introspection and by the general PluginManager to route the plugin to the right loader; without it, the general loader falls back to a source-text heuristic.
 
+What a running process imports is a frozen copy of this directory, and that copy skips the directories no import needs — `tests/`, `evals/`, `__pycache__/`, `node_modules/`, `.venv/` and `.git/`. Keep anything the provider reads at load time or inside `create_client` (a prompt, a fixture, a token table) outside them: an import from a skipped directory fails the whole plugin (`No module named ...`), in both isolation modes — `plugins.isolation: host` reads the install directory, but a profile that cannot cross the host boundary, and every in-process load, is imported from the copy. Skipping them is also what keeps the copy under the Windows 260-character path limit, since its prefix is already ~220 characters.
+
 ## Minimal example — a simple API-key provider
 
 ```python

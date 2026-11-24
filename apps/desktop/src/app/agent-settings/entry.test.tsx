@@ -1,3 +1,4 @@
+import { host } from '@hermes/plugin-sdk'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
@@ -47,7 +48,12 @@ const requestGateway = vi.fn(async (method: string, params?: Record<string, unkn
   return {}
 })
 
-const screenPlugin = vi.hoisted(() => ({ tone: 'unknown' as string, open: vi.fn(), route: null as unknown }))
+const screenPlugin = vi.hoisted(() => ({ tone: 'unknown' as string, open: vi.fn() }))
+
+vi.mock('@/plugins/hermes-bots/screen-open', async original => ({
+  ...(await original<object>()),
+  openBotScreen: screenPlugin.open
+}))
 
 vi.mock('@/app/chat/sidebar/simplified-bot-chat-row', async original => ({
   ...(await original<object>()),
@@ -154,6 +160,7 @@ beforeAll(async () => {
 beforeEach(() => {
   screenPlugin.tone = 'unknown'
   screenPlugin.open.mockReset()
+  vi.spyOn(host, 'profileRoutes').mockResolvedValue([])
   closed.mockReset()
   $notifications.set([])
   queryClient.clear()
@@ -515,35 +522,56 @@ it('opens the Routines page from the Overview’s Routines row, as its neighbour
   expect(screen.getByTestId('location').textContent).toBe('/cron')
 })
 
+const screenControls = () => screen.findAllByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) })
+
 it.each([
   ['missing', botsText().screen.portalNotInstalled],
-  ['off', botsText().screen.portalStopped],
-  ['live', botsText().screen.portalWatching]
-] as const)('says on the Overview where the agent’s Screen stands (%s), and opens it', async (tone, says) => {
+  ['off', botsText().screen.portalStopped]
+] as const)('says on the Overview where a Screen that is not running stands (%s), and opens it', async (tone, says) => {
   $apiRequestScope.set({ connectionId: null, profile: 'default' })
   screenPlugin.tone = tone
   mount('/settings?agentProfile=default')
 
-  // The row comes first; a running screen also shows its thumbnail under it, a second "Screen" control.
-  const [row, thumbnail] = await screen.findAllByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) })
+  const [row, ...others] = await screenControls()
+  expect(others).toHaveLength(0)
   expect(row.textContent).toContain(says)
-  expect(Boolean(thumbnail)).toBe(tone === 'live')
+  expect(row.querySelector('img')).toBeNull()
 
-  fireEvent.click(row)
-  expect(screenPlugin.open).toHaveBeenCalled()
-  expect(screenPlugin.route).toMatchObject({ profile: 'default' })
   // The Screen is a tab beside the chat: the page steps aside once it has opened, and once only
   // however many clicks were waiting on it.
   fireEvent.click(row)
+  fireEvent.click(row)
   await waitFor(() => expect(closed).toHaveBeenCalledTimes(1))
   await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+  expect(closed).toHaveBeenCalledTimes(1)
+  expect(screenPlugin.open.mock.calls[0][0]).toMatchObject({ name: 'default' })
+})
+
+it('shows a running Screen as itself on the Overview, in the row’s place, and it opens the same Screen', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'live'
+  mount('/settings?agentProfile=default')
+
+  // One control, the tile: its caption says who holds the screen, so no row repeats it.
+  const [tile, ...others] = await screenControls()
+  expect(others).toHaveLength(0)
+  expect(tile.getAttribute('aria-label')).toBe(`${botsText().screen.portalTitle}: ${botsText().screen.portalWatching}`)
+
+  // The row around the tile is not a control: a click beside the tile does nothing.
+  fireEvent.click(tile.closest('.agent-overview-row')!)
+  expect(screenPlugin.open).not.toHaveBeenCalled()
+  expect(closed).not.toHaveBeenCalled()
+
+  fireEvent.click(tile)
+  expect(screenPlugin.open).toHaveBeenCalledTimes(1)
+  expect(screenPlugin.open.mock.calls[0][0]).toMatchObject({ name: 'default' })
   expect(closed).toHaveBeenCalledTimes(1)
 })
 
 it('stays on the Overview and says so when the Screen could not be opened', async () => {
   $apiRequestScope.set({ connectionId: null, profile: 'default' })
   screenPlugin.tone = 'off'
-  screenPlugin.open.mockRejectedValue(new Error('no route to that agent'))
+  vi.spyOn(host, 'profileRoutes').mockRejectedValue(new Error('no route to that agent'))
   mount('/settings?agentProfile=default')
 
   fireEvent.click(await screen.findByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) }))

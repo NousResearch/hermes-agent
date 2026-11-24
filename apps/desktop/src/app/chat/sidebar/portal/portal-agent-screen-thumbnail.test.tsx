@@ -1,14 +1,15 @@
+import { host } from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type * as ScreenConnection from '@/plugins/hermes-bots/screen-connection'
+import type { RosterRow } from '@/plugins/hermes-bots/types'
 
 import { AgentScreenThumbnail } from './portal-agent-screen'
 
 const plugin = vi.hoisted(() => ({
   frames: vi.fn(async () => ({ data_url: 'data:image/jpeg;base64,AA==' })),
   open: vi.fn(),
-  route: null as unknown,
   tone: 'live'
 }))
 
@@ -22,12 +23,14 @@ vi.mock('@/plugins/hermes-bots/screen-connection', async original => ({
   displayRequest: plugin.frames
 }))
 
+const OPS = { connectionId: 'lab', name: 'ops', sourceScoped: true } as RosterRow
 const onOpened = vi.fn()
-const mount = () => render(<AgentScreenThumbnail connectionId="local" onOpened={onOpened} profile="default" />)
+const mount = () => render(<AgentScreenThumbnail bot={OPS} onOpened={onOpened} />)
 const flush = () => act(() => vi.advanceTimersByTimeAsync(0))
 
 beforeEach(() => {
   vi.useFakeTimers()
+  plugin.tone = 'live'
   plugin.frames.mockClear()
   plugin.open.mockReset()
   onOpened.mockReset()
@@ -36,27 +39,17 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
-it.each(['live', 'human', 'other'])('shows the agent’s screen while it is running (%s)', async tone => {
-  plugin.tone = tone
+it('shows the agent’s screen', async () => {
   const { container } = mount()
   await flush()
 
   expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/jpeg;base64,AA==')
 })
 
-it.each(['off', 'missing', 'unknown', 'unsupported', 'unavailable'])('shows nothing and asks for no frame while it is %s', async tone => {
-  plugin.tone = tone
-  const { container } = mount()
-  await flush()
-
-  expect(container.firstChild).toBeNull()
-  expect(plugin.frames).not.toHaveBeenCalled()
-})
-
 it('stops asking for frames once it is gone', async () => {
-  plugin.tone = 'live'
   const view = mount()
   await flush()
   await act(() => vi.advanceTimersByTimeAsync(4000))
@@ -69,15 +62,31 @@ it('stops asking for frames once it is gone', async () => {
   expect(plugin.frames).toHaveBeenCalledTimes(asked)
 })
 
-it('opens the Screen and lets the page step aside for it', async () => {
-  plugin.tone = 'live'
-  render(<AgentScreenThumbnail connectionId="lab" onOpened={onOpened} profile="ops" />)
+it('opens the row it was given, and tells the page a Screen opened', async () => {
+  mount()
   await flush()
 
   fireEvent.click(screen.getByRole('button'))
 
-  // The tile opens the row it was given, with no route lookup: it must be this agent on its own machine.
   expect(plugin.open).toHaveBeenCalledTimes(1)
-  expect(plugin.open.mock.calls[0][0]).toMatchObject({ connectionId: 'lab', name: 'ops' })
+  expect(plugin.open.mock.calls[0][0]).toBe(OPS)
   expect(onOpened).toHaveBeenCalledTimes(1)
+})
+
+it('tells the page nothing where this app cannot open a Screen', async () => {
+  // An older Desktop has no workspace tabs: the plugin's open then only says so.
+  const shell = host as { openWorkspace?: unknown }
+  const openWorkspace = shell.openWorkspace
+  shell.openWorkspace = undefined
+
+  try {
+    mount()
+    await flush()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    expect(onOpened).not.toHaveBeenCalled()
+  } finally {
+    shell.openWorkspace = openWorkspace
+  }
 })

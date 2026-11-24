@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { host } from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { RootTooltipProvider } from '@/components/ui/tooltip'
@@ -12,7 +13,7 @@ import type { SimplifiedAgent } from '../use-simplified-agents'
 
 import { PortalAgentMenu } from './portal-agent-menu'
 
-const plugin = vi.hoisted(() => ({ loaded: true, open: vi.fn(), toggle: vi.fn(), route: null as unknown }))
+const plugin = vi.hoisted(() => ({ bots: [] as unknown[], loaded: true, open: vi.fn(), toggle: vi.fn() }))
 
 vi.mock('../simplified-bot-chat-row', () => ({ useBotModeLoaded: () => plugin.loaded }))
 vi.mock('@/plugins/hermes-bots/i18n', async original => (await import('@/test/bots-screen-mocks')).botsI18nMock(original))
@@ -21,8 +22,10 @@ vi.mock('@/plugins/hermes-bots/screen-portal', async original =>
 )
 vi.mock('@/plugins/hermes-bots/screen-open', async original => ({
   ...(await original<typeof ScreenOpen>()),
+  openBotScreen: plugin.open,
   toggleBotScreenAutoOpen: plugin.toggle
 }))
+vi.mock('@/plugins/hermes-bots/screen-hero', () => ({ ScreenHero: () => null }))
 
 const copy = botsText().screen
 const LAB_OPS = { connectionId: 'lab', connectionKind: 'remote', name: 'ops', sourceScoped: true } as RosterRow
@@ -41,6 +44,7 @@ beforeEach(() => {
   stubMenuDomApis()
   plugin.loaded = true
   plugin.open.mockReset()
+  vi.spyOn(host, 'profileRoutes').mockResolvedValue([])
   plugin.toggle.mockReset()
 })
 
@@ -54,8 +58,8 @@ it('opens this agent’s Screen, whichever chat is in front', async () => {
 
   fireEvent.click(await screen.findByRole('menuitem', { name: copy.menu }))
 
-  expect(plugin.route).toEqual({ connectionId: 'lab', profile: 'ops' })
-  expect(plugin.open).toHaveBeenCalledTimes(1)
+  await waitFor(() => expect(plugin.open).toHaveBeenCalledTimes(1))
+  expect(plugin.open.mock.calls[0][0]).toMatchObject({ connectionId: 'lab', name: 'ops' })
 })
 
 it('turns "open Screen when it is used" on and off for this agent, showing what is stored', async () => {

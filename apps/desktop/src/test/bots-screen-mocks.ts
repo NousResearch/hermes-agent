@@ -1,12 +1,10 @@
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import type * as ScreenPortal from '@/plugins/hermes-bots/screen-portal'
 
-/** What a test steers and reads of Bot Mode's Screen: the tone the state hook reports, the rows it
- *  was asked about, and the Open action with the route it was built for. */
+/** What a test steers and reads of Bot Mode's Screen: the tone the state hook reports and the rows
+ *  it was asked about. */
 export interface ScreenPluginSpy {
   bots?: unknown[]
-  open: () => unknown
-  route: unknown
   tone?: string
 }
 
@@ -17,15 +15,10 @@ export async function botsI18nMock(original: () => Promise<unknown>) {
   return { ...module, useBots: () => module.botsText() }
 }
 
-/** `@/plugins/hermes-bots/screen-portal` with its state hook and Open action in the test's hands. */
+/** `@/plugins/hermes-bots/screen-portal` with its state hook in the test's hands. */
 export async function screenPortalMock(original: () => Promise<unknown>, plugin: ScreenPluginSpy) {
   return {
     ...((await original()) as typeof ScreenPortal),
-    profileScreenCommand: (route: unknown) => {
-      plugin.route = route
-
-      return { label: '', run: plugin.open }
-    },
     useScreenPortalState: (bot: unknown) => {
       plugin.bots?.push(bot)
 

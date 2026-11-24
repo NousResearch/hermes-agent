@@ -215,7 +215,7 @@ function SkeletonRows({ count, subtitle = false }: { count: number; subtitle?: b
  *  page steps aside for it. Absent where the agent cannot have one. */
 function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () => void }) {
   const b = useBots()
-  const { tone, says, open } = useAgentScreen(owner.connectionId, owner.profile)
+  const { bot, tone, says, open } = useAgentScreen(owner.connectionId, owner.profile)
   // Opening waits on a route lookup: by then the page may be gone, or a second click be waiting too.
   const page = useRef({ closed: false, shown: true })
 
@@ -238,17 +238,17 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
     }
   }
 
-  return (
-    <>
-      <SettingRow detail={says} onClick={() => void open().then(opened)} title={b.screen.portalTitle} />
-      {/* The thumbnail opens the row it is given at once: there is no lookup to wait on. */}
-      <AgentScreenThumbnail
-        connectionId={owner.connectionId}
-        onOpened={() => opened(true)}
-        profile={owner.profile}
-      />
-    </>
-  )
+  // A running screen shows itself: the tile says who holds it (and when its picture is stale or
+  // withheld), so the row would only repeat it. It sits in a row's place, on the rows' inset.
+  if (tone === 'live' || tone === 'human' || tone === 'other') {
+    return (
+      <div className="agent-overview-row agent-overview-screen">
+        <AgentScreenThumbnail bot={bot} onOpened={() => opened(true)} />
+      </div>
+    )
+  }
+
+  return <SettingRow detail={says} onClick={() => void open().then(opened)} title={b.screen.portalTitle} />
 }
 
 function SettingRow({

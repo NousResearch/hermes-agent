@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { host } from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $lastRoster } from '@/plugins/hermes-bots/data'
@@ -21,11 +22,17 @@ vi.mock('@/plugins/hermes-bots/screen-portal', async original =>
   (await import('@/test/bots-screen-mocks')).screenPortalMock(original, plugin)
 )
 
+vi.mock('@/plugins/hermes-bots/screen-open', () => ({ openBotScreen: plugin.open }))
+vi.mock('@/plugins/hermes-bots/screen-hero', () => ({ ScreenHero: () => null }))
+
 const copy = botsText().screen
 const OPS: SimplifiedAgent = { connectionId: 'lab', gateway: 'Lab box', id: 'lab/ops', label: 'ops', profile: 'ops' }
 const row = () => screen.queryByRole('button', { name: new RegExp(`^${copy.portalTitle}`) })
 
-beforeEach(() => plugin.open.mockReset())
+beforeEach(() => {
+  plugin.open.mockReset()
+  vi.spyOn(host, 'profileRoutes').mockResolvedValue([])
+})
 afterEach(() => {
   cleanup()
   $lastRoster.set([])
@@ -52,14 +59,14 @@ it.each(['off', 'missing', 'unknown', 'unsupported', 'unavailable'] as const)('a
   expect(row()).toBeNull()
 })
 
-it('opens that agent’s Screen', () => {
+it('opens that agent’s Screen', async () => {
   plugin.tone = 'live'
   render(<AgentScreenRow agent={OPS} />)
 
   fireEvent.click(row()!)
 
-  expect(plugin.route).toEqual({ connectionId: 'lab', profile: 'ops' })
-  expect(plugin.open).toHaveBeenCalledTimes(1)
+  await waitFor(() => expect(plugin.open).toHaveBeenCalledTimes(1))
+  expect(plugin.open.mock.calls[0][0]).toMatchObject({ connectionId: 'lab', name: 'ops' })
 })
 
 it('stands on the agent’s own roster row, not on an alias that serves the same profile', () => {

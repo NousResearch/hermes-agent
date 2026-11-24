@@ -511,8 +511,9 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
     *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
-    With it, *live_names* marks the names that keep what the process's own environment gives them (what
-    a load published), and a later line naming one sees that value."""
+    With it, *live_names* marks the names that read the process's own environment instead: a line naming one
+    sees its live value, set or unset, and one a line assigns takes what the live resolution gives it (what a
+    load published), which later lines then see."""
     from hermes_cli import managed_scope
 
     managed_dir = managed_scope.get_managed_dir()
@@ -523,6 +524,8 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
         if live_names is not None:
             with _DOTENV_LOCK:
                 live_env = _dotenv_lookup_env(None)
+            lookup_env = {k: v for k, v in lookup_env.items() if not live_names(k)}
+            lookup_env.update((k, v) for k, v in live_env.items() if live_names(k))
     else:
         with _DOTENV_LOCK:
             lookup_env = _dotenv_lookup_env(None)

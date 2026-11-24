@@ -124,6 +124,13 @@ def test_read_timeout_is_an_hour_unless_the_caller_sets_one(stream):
     assert seen[1].extensions["timeout"]["read"] == 42.0
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_zero_per_call_timeout_is_passed_through_not_replaced_by_the_default(stream):
+    seen, handler = _recorder()
+    _call(_client(handler), stream=stream, timeout=0.0)
+    assert seen[0].extensions["timeout"] == {"connect": 0.0, "read": 0.0, "write": 0.0, "pool": 0.0}
+
+
 @pytest.mark.parametrize("base_url", [
     "https://generativelanguage.googleapis.com/v1alpha",  # rows minted with the old base
     "https://generativelanguage.googleapis.com/v1alpha/",

@@ -600,9 +600,11 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
-# The PATH entry must end at the directory (a trailing slash allowed): not ~/.local/bin-tools or ~/.local/bin/x.
-_POSIX_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*\.local/bin/?(?![\w./-])")
-_FISH_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)[^#\n]*\.local/bin/?(?![\w./-])")
+# What puts an entry on PATH in an rc line; a "#" ends the line for both families.
+_PATH_SETTERS = {"fish": r"(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)", "posix": r"(?:PATH=|path\+?=\()"}
+# A PATH entry ends at an optional trailing slash and then a delimiter, so ~/.local/bin-tools,
+# ~/.local/bin+x and ~/.local/bin/scripts are other directories.
+_PATH_ENTRY_END = r"/?(?=[:\"'\s;&|)}$]|$)"
 
 
 def _expand_user_path(raw: str, home: Path) -> Path:
@@ -661,13 +663,12 @@ def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
 
 def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
     if termux:
-        pattern = re.compile(
-            rf"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*(?:\$PREFIX/bin|\$\{{PREFIX\}}/bin|{re.escape(str(link_dir))})/?(?![\w./-])"
-        )
-    elif shell == "fish":
-        pattern = _FISH_LOCAL_BIN_PATH_RE
+        entry = rf"(?:\$PREFIX/bin|\$\{{PREFIX\}}/bin|{re.escape(str(link_dir))})"
     else:
-        pattern = _POSIX_LOCAL_BIN_PATH_RE
+        # ~/.local/bin by any spelling of home; /opt/team/.local/bin is another directory.
+        entry = rf"(?<![\w./-])(?:\$HOME|\$\{{HOME\}}|~|{re.escape(str(Path.home()))})[\"']?/\.local/bin"
+    setter = _PATH_SETTERS["fish" if shell == "fish" and not termux else "posix"]
+    pattern = re.compile(rf"^\s*[^#\n]*{setter}[^#\n]*{entry}{_PATH_ENTRY_END}")
     for rc_path in candidates:
         if not rc_path.is_file():
             continue

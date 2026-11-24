@@ -524,7 +524,10 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
 @pytest.mark.parametrize("shell, rc_file, line", [
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin-tools:$PATH"'),
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin/scripts:$PATH"'),
+    ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin+tools:$PATH"'),
+    ("zsh", ".zprofile", 'export PATH="/opt/team/.local/bin:$PATH"'),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin-tools"'),
+    ("fish", ".config/fish/config.fish", "fish_add_path /opt/team/.local/bin"),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin/scripts"'),
 ])
 def test_path_check_does_not_take_another_dir_for_local_bin(tmp_path, monkeypatch, capsys, shell, rc_file, line):

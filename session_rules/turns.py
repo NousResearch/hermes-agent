@@ -892,6 +892,13 @@ def tool_result_id_variants(tool_call_id: Any) -> frozenset[str]:
     return _expand_tool_id_variants((tool_call_id,))
 
 
+def is_no_arguments(raw: Any) -> bool:
+    """True for every spelling of "no arguments" models and gateways emit for a parameterless
+    tool: missing, ``""``/whitespace, and JSON ``null`` (#83937, #159689). A missing required
+    param on ``{}`` still surfaces as the tool's own "missing required" hint."""
+    return raw is None or (isinstance(raw, str) and raw.strip() in ("", "null"))
+
+
 def coalesce_tool_call_id(tc: Any) -> str:
     """Effective call id of a tool_call entry (dict or object); ``""`` when none. Codex Responses
     carry ``call_id`` (authoritative pairing key), Chat Completions ``id`` only, and bridge ids

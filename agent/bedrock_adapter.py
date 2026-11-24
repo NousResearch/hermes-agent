@@ -810,9 +810,10 @@ def _replay_ordered_blocks(ordered_blocks: list) -> list[dict]:
 def _parse_tool_args(args) -> Any:
     """JSON-decode a tool-call argument string; {} on failure; non-str passes through."""
     try:
-        return json.loads(args) if isinstance(args, str) else args
+        parsed = json.loads(args) if isinstance(args, str) else args
     except (json.JSONDecodeError, TypeError):
         return {}
+    return {} if parsed is None else parsed  # JSON null = no arguments (#159689)
 
 
 def _redacted_reasoning_block(encoded) -> Optional[dict]:
@@ -1151,8 +1152,9 @@ def normalize_converse_response(response: dict) -> SimpleNamespace:
                 ordered_blocks.append({"reasoningContent": ordered_reasoning})
         elif "toolUse" in block:
             tu = block["toolUse"]
-            ordered_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
-            parts.tool_calls.append(_tool_call_ns(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
+            input_dict = _parse_tool_args(tu.get("input"))
+            ordered_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), input_dict))
+            parts.tool_calls.append(_tool_call_ns(tu.get("toolUseId", ""), tu.get("name", ""), input_dict))
     return parts.build(
         ordered_blocks, response.get("usage", {}), response.get("stopReason", "end_turn"), response.get("modelId", ""),
     )

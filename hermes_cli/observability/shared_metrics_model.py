@@ -14,6 +14,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from session_rules.turns import is_no_arguments
+
 from . import shared_metrics_contract as contract
 from . import shared_metrics_fields as fields_
 
@@ -142,7 +144,7 @@ def tool_call_issue(
     needed = required.get(name, ())
     if isinstance(raw_args, (dict, list)):
         parsed = raw_args
-    elif raw_args is None or not str(raw_args).strip():
+    elif is_no_arguments(raw_args):
         return "empty_arguments" if needed else ("repaired" if repaired else "none")
     else:
         try:

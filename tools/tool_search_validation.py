@@ -8,6 +8,7 @@ import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from session_rules.turns import is_no_arguments
 from tools.registry import tool_error
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 
@@ -136,13 +137,6 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
     except Exception:  # pragma: no cover — never block dispatch on validator bugs
         logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)
         return None
-
-
-def is_no_arguments(raw: Any) -> bool:
-    """True for every spelling of "no arguments" models and gateways emit for a parameterless
-    tool: missing, ``""``/whitespace, and JSON ``null`` (#83937, #159689). A missing required
-    param on ``{}`` still surfaces as the tool's own "missing required" hint."""
-    return raw is None or (isinstance(raw, str) and raw.strip() in ("", "null"))
 
 
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:

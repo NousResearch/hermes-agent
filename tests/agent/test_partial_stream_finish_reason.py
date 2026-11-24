@@ -271,17 +271,18 @@ class TestCleanStreamEndBeforeAnyToolArgs:
     retry (#80498, e.g. ``write_file`` running with no arguments).
     """
 
+    @pytest.mark.parametrize("arguments", [None, "null"])  # "null" is a "no arguments" spelling too (#159689)
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
     def test_empty_tool_args_routes_to_stub_not_silent_empty_object(
-        self, _mock_close, mock_create, monkeypatch,
+        self, _mock_close, mock_create, arguments, monkeypatch,
     ):
         def _clean_ending_stream():
             # Tool name arrives, then the generator simply RETURNS
             # (StopIteration) before any arguments delta chunk — no raise,
             # no finish_reason chunk, no [DONE].
             yield _make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(index=0, tc_id="call_x", name="write_file"),
+                _make_tool_call_delta(index=0, tc_id="call_x", name="write_file", arguments=arguments),
             ])
             # falls off the end — clean close, no terminator, zero args bytes
 

@@ -16,10 +16,9 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, normalize_provider_tool_call_ids
-from session_rules.turns import coalesce_tool_call_id
+from session_rules.turns import coalesce_tool_call_id, is_no_arguments
 from agent.turn_failure_copy import site_copy, stamp_failure
 from hermes_constants import FINISH_REASON_LENGTH
-from tools.tool_search_validation import is_no_arguments
 
 logger = logging.getLogger("agent.conversation_loop")
 

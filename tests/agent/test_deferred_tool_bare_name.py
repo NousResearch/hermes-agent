@@ -87,6 +87,6 @@ def test_unroutable_call_is_still_rejected(arguments, kwargs):
 @pytest.mark.parametrize("arguments", ["", "null", " null "])
 def test_no_arguments_spellings_run_a_loaded_tool_with_empty_object(arguments):
     """A parameterless tool the model calls with ``null`` runs with {} like ``""`` does (#159689)."""
-    verdict, tc, errors, _ = _validate(arguments, name="terminal")
+    verdict, tc, errors, _ = _validate(arguments, name="ping", valid_tool_names=("ping",))
 
     assert (verdict.action, errors, tc.function.arguments) == ("ok", [], "{}")

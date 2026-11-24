@@ -802,6 +802,7 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 
 def _cron_run(_engine: HermesConsoleEngine, args: list[str]) -> str:
+    from cron.constants import NOT_RUNNABLE_ERROR
     from cron.jobs import _jobs_lock, is_job_runnable, is_terminal_job, resolve_job_ref, trigger_job
 
     def trigger_runnable_job(ref: str) -> dict | None:
@@ -809,7 +810,7 @@ def _cron_run(_engine: HermesConsoleEngine, args: list[str]) -> str:
         with _jobs_lock():
             job = resolve_job_ref(ref)
             if job is not None and not is_terminal_job(job) and not is_job_runnable(job):
-                raise ConsoleCommandError("Job is paused/disabled; resume it before running.")
+                raise ConsoleCommandError(NOT_RUNNABLE_ERROR)
             return trigger_job(ref)
 
     return _cron_job_action(args, "cron run <job>", "Triggered", trigger_runnable_job)

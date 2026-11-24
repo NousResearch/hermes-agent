@@ -42,6 +42,7 @@ from cron.jobs import (
     resume_job,
     trigger_job,
     update_job)
+from cron.constants import NOT_RUNNABLE_ERROR
 from cron.prompt_scan import _scan_cron_prompt
 from cron.job_args import (
     _apply_continuity,
@@ -126,8 +127,8 @@ def _forward_relay_fronted_run(job: dict[str, Any], extra_prompt: Optional[str] 
     has no standalone sender — the gateway's live relay adapter is the only path, reached via
     ``POST /api/jobs/{id}/run`` (marks the job due; ``extra_prompt`` rides in the body). Returns a
     JSON result string when forwarding engages, else None (normal in-process run)."""
-    if not _relay_fronted_delivery_platforms(job):
-        return None
+    if not is_job_runnable(job) or not _relay_fronted_delivery_platforms(job):
+        return None  # paused: keep the claim's refusal; the gateway's trigger_job would resume it
     from agent.secret_scope import get_secret
     key = get_secret("API_SERVER_KEY", "") or ""
     try:
@@ -247,7 +248,7 @@ def _claim_for_manual_run(job_id: str, log_label: str):
         if refreshed is None:
             reason = "Job no longer exists; nothing to run."
         elif not is_job_runnable(refreshed):
-            reason = "Job is paused/disabled; resume it before running."
+            reason = NOT_RUNNABLE_ERROR
         else:
             reason = "Job is already being fired by the scheduler; not run again."
         return None, {"claimed": False, "success": False, "error": reason}

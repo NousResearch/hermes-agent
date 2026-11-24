@@ -4,8 +4,12 @@ import { lazy, type ReactNode, Suspense, useLayoutEffect, useRef, useState } fro
 import type { AgentSettingsOwner } from '@/app/agent-settings/data'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { useStableNavigate } from '@/app/stable-navigate'
+import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { Plus } from '@/lib/icons'
 import { $hiddenSidebarAgents, $portalAgentsSectionOpen, $sidebarAgentScroll } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
@@ -16,7 +20,8 @@ import { $activeGatewayProfile, ensureGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import { setSettingsScope } from '@/store/settings-scope'
 
-import { PortalAgentGroups } from './portal/portal-agent-groups'
+import { type NewAgentOffer, useNewAgentOffers } from './portal/new-agent-offers'
+import { agentMatches, PortalAgentGroups } from './portal/portal-agent-groups'
 import { PortalSectionHeader } from './portal/portal-section-header'
 import { useFleetRoster } from './use-fleet-roster'
 import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from './use-simplified-agents'
@@ -172,6 +177,58 @@ function useAgentScroll({ agents, allSessions, revealSession }: SimplifiedAgentL
   return scrollRef
 }
 
+interface NewAgentFallbackProps {
+  offers: NewAgentOffer[]
+  onPick: (owner: AgentSettingsOwner) => void
+}
+
+/** New agent in the Agents header: straight to the only machine, or a pick among several. */
+function NewAgentFallback({ offers, onPick }: NewAgentFallbackProps) {
+  const { t } = useI18n()
+  const [only] = offers
+
+  const button = (onClick?: () => void, waiting?: string) => (
+    <Button
+      aria-disabled={waiting ? true : undefined}
+      aria-label={t.profiles.newProfile}
+      className="portal-section-action"
+      onClick={onClick}
+      size="icon-xs"
+      variant="ghost"
+    >
+      <Plus aria-hidden />
+    </Button>
+  )
+
+  if (offers.length === 1) {
+    return (
+      <Tip label={only.waiting ? `${t.profiles.newProfile} · ${only.waiting}` : t.profiles.newProfile}>
+        {button(only.owner && (() => onPick(only.owner!)), only.waiting)}
+      </Tip>
+    )
+  }
+
+  return (
+    <DropdownMenu>
+      <Tip label={t.profiles.newProfile}>
+        <DropdownMenuTrigger asChild>{button()}</DropdownMenuTrigger>
+      </Tip>
+      <DropdownMenuContent align="end">
+        {offers.map(machine => (
+          <DropdownMenuItem
+            disabled={!machine.owner}
+            key={machine.connectionId ?? ''}
+            onSelect={() => machine.owner && onPick(machine.owner)}
+          >
+            {machine.label}
+            {machine.waiting && <span className="ml-auto pl-4 text-muted-foreground">{machine.waiting}</span>}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 /** Mounted only by the redesigned sidebar; hiding never changes the source roster or session stores. */
 export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
   const { t } = useI18n()
@@ -182,6 +239,11 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
   // The New agent dialog's owner: an agent of the machine whose "+" opened it.
   const [creating, setCreating] = useState<AgentSettingsOwner | null>(null)
   useFleetRoster(true)
+
+  const offers = useNewAgentOffers(props.agents)
+  const query = props.query.trim()
+  // Each machine's row offers New agent; the header stands in while no row is on screen.
+  const rowsShown = open && (!query || props.agents.agents.some(agent => agentMatches(props.agents, agent, query)))
 
   // The badge counts what the section lists: hidden agents live in their own row below it.
   const listed = props.agents.agents.filter(agent => !hidden.includes(agentKey(agent))).length
@@ -194,6 +256,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       data-slot="agent-section"
     >
       <PortalSectionHeader
+        action={!rowsShown && offers.length > 0 && <NewAgentFallback offers={offers} onPick={setCreating} />}
         count={listed}
         label={t.simplifiedAgents.agents}
         onToggle={() => $portalAgentsSectionOpen.set(!open)}
@@ -203,6 +266,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       <div className="portal-section-body" hidden={!open}>
         <PortalAgentGroups
           {...props}
+          newAgent={offers}
           onNewAgent={setCreating}
           onOpenAgent={agent => void openAgent(agent)}
           pending={pending}

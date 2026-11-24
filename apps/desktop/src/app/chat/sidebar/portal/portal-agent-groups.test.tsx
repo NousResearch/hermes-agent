@@ -14,6 +14,7 @@ import { stubMenuDomApis } from '@/test/jsdom'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
+import { useNewAgentOffers } from './new-agent-offers'
 import { PortalAgentGroups } from './portal-agent-groups'
 
 const agent = (connectionId: string, profile: string, gateway: string): SimplifiedAgent => ({
@@ -29,12 +30,16 @@ const installed = (connectionId: string, profile: string) => ({ connectionId, pr
 const onNewAgent = vi.fn()
 
 /** Studio is this window's machine; Lab box is another. */
+function Groups(props: Omit<Parameters<typeof PortalAgentGroups>[0], 'newAgent'>) {
+  return <PortalAgentGroups {...props} newAgent={useNewAgentOffers(props.agents)} />
+}
+
 function mount(agents: SimplifiedAgent[]) {
   return render(
     <MemoryRouter>
       <StableNavigateProvider>
         <RootTooltipProvider>
-          <PortalAgentGroups
+          <Groups
             agents={{ agents, owner: 'studio', sessionsByAgent: new Map() }}
             allSessions={[]}
             expanded={{}}

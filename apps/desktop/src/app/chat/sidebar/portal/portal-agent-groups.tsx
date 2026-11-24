@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode, RefObject } from 'react'
 
 import type { AgentSettingsOwner } from '@/app/agent-settings/data'
-import { agentMachine } from '@/app/agent-settings/landing'
 import { SIDEBAR_PROFILE_GROUP_HEADER_AREA } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { FadeScroll } from '@/components/ui/fade-scroll'
@@ -14,9 +13,8 @@ import { ChevronDown, Plus } from '@/lib/icons'
 import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
-import { $fleetRoster } from '@/store/fleet-roster'
 import { recordIaAction } from '@/store/ia-metrics'
-import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $sessionProfilesTruncated, $sessionProfilesUsage, knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
@@ -30,6 +28,7 @@ import { startSimplifiedAgentSession } from '../simplified-new-session-model'
 import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
 
 import { type AgentChatCount, agentChatCount } from './agent-chat-cap'
+import type { NewAgentOffer } from './new-agent-offers'
 import { PortalAgentMenu } from './portal-agent-menu'
 import { PortalHiddenAgents } from './portal-hidden-agents'
 
@@ -42,7 +41,8 @@ interface PortalAgentGroupsProps {
   query: string
   pending: string | null
   onOpenAgent: (agent: SimplifiedAgent) => void
-  /** Start a new agent on the machine whose header was used, named by one of its installed agents. */
+  /** New agent for each machine listed, and what starts one. */
+  newAgent: NewAgentOffer[]
   onNewAgent: (owner: AgentSettingsOwner) => void
   onResumeSession: (id: string, row?: SessionInfo) => void
   scrollRef: RefObject<HTMLDivElement | null>
@@ -147,6 +147,10 @@ function AgentCard({
   )
 }
 
+/** Whether a search keeps an agent listed: by its name, or by a chat of its that matched. */
+export const agentMatches = (list: PortalAgentGroupsProps['agents'], agent: SimplifiedAgent, query: string) =>
+  (list.sessionsByAgent.get(agentKey(agent))?.length ?? 0) > 0 || agent.label.toLowerCase().includes(query.trim().toLowerCase())
+
 export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const hidden = new Set(useStore($hiddenSidebarAgents))
   const activeConnection = useStore($activeConnectionId)
@@ -155,8 +159,6 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const tiles = useStore($sessionTiles)
   const truncated = useStore($sessionProfilesTruncated)
   const usage = useStore($sessionProfilesUsage)
-  const roster = useStore($fleetRoster)
-  const profiles = useStore($profiles)
   const { agents, sessionsByAgent, owner } = props.agents
   const query = props.query.trim().toLowerCase()
   const chatsOf = (agent: SimplifiedAgent) => sessionsByAgent.get(agentKey(agent)) ?? []
@@ -193,9 +195,8 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
 
   for (const agent of agents) {
     const group = groups.get(agent.connectionId) ?? []
-    const matches = chatsOf(agent).length > 0 || agent.label.toLowerCase().includes(query)
 
-    if (query ? matches : !isHidden(agent)) {
+    if (query ? agentMatches(props.agents, agent, query) : !isHidden(agent)) {
       group.push(agent)
     }
 
@@ -214,22 +215,15 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
           const open = Boolean(query) || (props.expanded[gatewayId] ?? true)
           const selected = connectionId === (activeConnection ?? owner)
           const label = agents.find(agent => agent.connectionId === connectionId)!.gateway
-          // An installed agent the machine serves, from the roster or (this window's machine) its own
-          // profile list: a row listed only for its chats may be of a profile the machine no longer
-          // has, and the dialog reads and creates through this one.
-          const rostered = roster?.agents.find(agent => agent.connectionId === connectionId && agent.reachable !== false)
-          const installed = rostered ? rostered.targetProfile || rostered.profile : connectionId === owner ? profiles[0]?.name : undefined
+          const offer = props.newAgent.find(machine => machine.connectionId === connectionId)
 
           return (
             <div data-open={open && group.length > 0} data-slot="gateway-group" key={gatewayId}>
               <SimplifiedGatewayHeader
                 connectionId={connectionId}
                 label={label}
-                onNewAgent={
-                  installed
-                    ? () => props.onNewAgent({ connectionId: agentMachine(connectionId), profile: installed })
-                    : undefined
-                }
+                newAgentWaiting={offer?.owner ? undefined : offer?.waiting}
+                onNewAgent={() => offer?.owner && props.onNewAgent(offer.owner)}
                 onToggle={query ? undefined : () => props.onToggle(gatewayId, open)}
                 open={open}
                 selected={selected}

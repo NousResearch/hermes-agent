@@ -33,8 +33,35 @@ interface SimplifiedGatewayHeaderProps {
   open: boolean
   /** Absent while a search holds the machine open: the row then stands as a disabled disclosure. */
   onToggle?: () => void
-  /** Start a new agent on this machine; absent while none of its installed agents is known. */
-  onNewAgent?: () => void
+  /** Start a new agent on this machine. */
+  onNewAgent: () => void
+  /** What New agent waits for, while this machine cannot take one. */
+  newAgentWaiting?: string
+}
+
+/** A machine's state as the app knows it: the gateway's own for the window's machine, the roster's
+ *  reach for another. */
+export function machineState(
+  connectionId: null | string,
+  selected: boolean,
+  gatewayState: MachineState,
+  roster: null | { sources: readonly { connectionId: null | string; reachable?: boolean }[] }
+): MachineState {
+  const source = roster?.sources.find(source => source.connectionId === connectionId)
+
+  return selected ? gatewayState : source ? (source.reachable ? 'open' : 'closed') : 'idle'
+}
+
+export function useMachineStatusText(): Record<MachineState, string> {
+  const { t } = useI18n()
+
+  return {
+    open: t.shell.gatewayMenu.connected,
+    connecting: t.shell.gatewayMenu.connecting,
+    idle: t.common.loading,
+    closed: t.shell.gatewayMenu.offline,
+    error: t.shell.gatewayMenu.offline
+  }
 }
 
 /** A machine row (Figma 147:7470): name with its organisation as a quiet inline tag, the status at
@@ -45,14 +72,14 @@ export function SimplifiedGatewayHeader({
   selected,
   open,
   onToggle,
-  onNewAgent
+  onNewAgent,
+  newAgentWaiting
 }: SimplifiedGatewayHeaderProps) {
   const { t } = useI18n()
   const statusId = useId()
   const registry = useStore($connectionsRegistry)
   const roster = useStore($fleetRoster)
   const gatewayState = useStore($gatewayState)
-  const source = roster?.sources.find(source => source.connectionId === connectionId)
   const registered = registry?.connections.find(connection => connection.id === connectionId)
 
   const address =
@@ -61,21 +88,11 @@ export function SimplifiedGatewayHeader({
       : registered?.host || (selected && isBrowserHostedDesktop() ? window.location.host : '')
 
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${label}`
-  const state: MachineState = selected ? gatewayState : source ? (source.reachable ? 'open' : 'closed') : 'idle'
-
-  const status = {
-    open: t.shell.gatewayMenu.connected,
-    connecting: t.shell.gatewayMenu.connecting,
-    idle: t.common.loading,
-    closed: t.shell.gatewayMenu.offline,
-    error: t.shell.gatewayMenu.offline
-  }[state]
-
-  const canAdd = state === 'open' && onNewAgent !== undefined
-  // What it waits for: the machine itself, or its agents still being read.
-  const waiting = state === 'open' ? t.common.loading : status
+  const state = machineState(connectionId, selected, gatewayState, roster)
+  const status = useMachineStatusText()[state]
+  const canAdd = newAgentWaiting === undefined
   // The tip says what the row does not; the name also says which machine, as the row's other controls do.
-  const newAgentTip = canAdd ? t.profiles.newProfile : `${t.profiles.newProfile} · ${waiting}`
+  const newAgentTip = canAdd ? t.profiles.newProfile : `${t.profiles.newProfile} · ${newAgentWaiting}`
   const newAgentLabel = `${newAgentTip}: ${label}`
 
   return (
@@ -114,7 +131,7 @@ export function SimplifiedGatewayHeader({
         <span aria-hidden className="portal-status-dot" />
         <span id={statusId}>{status}</span>
       </MachineStatusPopover>
-      {/* Only a connected machine whose agents are known can take one; else the button says why. */}
+      {/* A machine that cannot take an agent keeps its button, which says what it waits for. */}
       <Tip label={newAgentTip}>
         <Button
           aria-disabled={canAdd ? undefined : true}

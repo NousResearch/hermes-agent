@@ -31,7 +31,7 @@ const onToggle = vi.fn()
 
 const onNewAgent = vi.fn()
 
-function mount(props: { connectionId?: null | string; label?: string; selected?: boolean } = {}) {
+function mount(props: { connectionId?: null | string; label?: string; newAgentWaiting?: string; selected?: boolean } = {}) {
   return render(
     <MemoryRouter>
       <StableNavigateProvider>
@@ -39,6 +39,7 @@ function mount(props: { connectionId?: null | string; label?: string; selected?:
           <SimplifiedGatewayHeader
             connectionId={props.connectionId ?? null}
             label={props.label ?? 'Hermes host'}
+            newAgentWaiting={props.newAgentWaiting}
             onNewAgent={onNewAgent}
             onToggle={onToggle}
             open
@@ -84,9 +85,8 @@ describe('a machine row status', () => {
     expect(onToggle).not.toHaveBeenCalled()
   })
 
-  it('keeps New agent in place on a machine that is not connected, saying why it waits', () => {
-    $gatewayState.set('closed')
-    mount()
+  it('keeps New agent in place on a machine that cannot take one, saying what it waits for', () => {
+    mount({ newAgentWaiting: copy.offline })
 
     const button = screen.getByRole('button', { name: `${en.profiles.newProfile} · ${copy.offline}: Hermes host` })
     fireEvent.click(button)

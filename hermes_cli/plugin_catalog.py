@@ -639,7 +639,9 @@ def find_catalog_entry_for_user(name: str) -> Optional[PluginCatalogEntry]:
     name that left core (``google_meet``) now names (``google-meet``)."""
     from hermes_cli.left_core_migration import legacy_plugin_alias
     alias = legacy_plugin_alias(name)
-    return get_live_catalog_entry(name) or (get_live_catalog_entry(alias) if alias else None)
+    entries = load_catalog_live()
+    return next((e for e in entries if e.name == name), None) or (
+        next((e for e in entries if e.name == alias), None) if alias else None)
 
 
 # ── Human summaries ──────────────────────────────────────────────────────────

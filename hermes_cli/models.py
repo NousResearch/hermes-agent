@@ -582,10 +582,45 @@ def static_catalog_providers() -> list[str]:
     return [*_PROVIDER_MODELS, *dict.fromkeys(plugin_rows)]
 
 
+def _cached_live_model_ids(provider: str) -> list[str]:
+    """The account's last known *live* catalog for *provider*, or ``[]`` when there is none.
+
+    Reads the same disk row :func:`cached_provider_model_ids` serves, without ever fetching. Two
+    rows are rejected because they do not describe this account's catalog: a curated placeholder
+    written during an outage (``fallback: true``, a 60s-TTL stand-in, never a catalog) and a row
+    whose credential fingerprint (``fp``) belongs to a key that has since been rotated. Any read
+    error degrades to ``[]`` — a missing or corrupt cache must not be able to change a default.
+    """
+    try:
+        entry = _load_provider_models_cache().get(_normalized_cache_slug(provider) or provider)
+        if not isinstance(entry, dict) or entry.get("fallback"):
+            return []
+        if entry.get("fp") != _credential_fingerprint(provider):
+            return []
+        return [model_id for model_id in entry.get("models") or [] if isinstance(model_id, str) and model_id]
+    except Exception:
+        logger.debug("cached live catalog unavailable for %s", provider, exc_info=True)
+        return []
+
+
 def get_default_model_for_provider(provider: str) -> str:
     """Cost-safe default model for a provider, or "" — the NON-INTERACTIVE fallback when a provider
-    is configured but no model was ever selected."""
+    is configured but no model was ever selected.
+
+    The curated static row is a cold-start *seed*, not a catalog: it is written by hand, it ages on
+    release timescales, and the ids it names get retired upstream while the row still lists them.
+    Because this resolver is what a non-interactive run sends, a seed naming a retired model turns
+    "the provider is configured" into a guaranteed ``model_not_supported``. When the account's real
+    catalog is already on disk, keep the curated *order* — that ordering carries the cost-safety
+    intent — but intersect it with what the account can actually call; fall back to the account's
+    own ordering only when no curated id survives. With no cache row (first launch, ``hermes auth
+    add``, before any token exists) the seed is still all there is.
+    """
     models = static_catalog(provider)
+    live = _cached_live_model_ids(provider)
+    if live:
+        available = set(live)
+        models = [model_id for model_id in models if model_id in available] or live
     if provider in _SILENT_DEFAULT_PROVIDERS:
         preferred = get_preferred_silent_default_model(provider)
         # Trust the preferred default even without a static catalog (OpenRouter's picker list is

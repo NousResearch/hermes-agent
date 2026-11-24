@@ -481,6 +481,8 @@ def _dispatch_quick(rid, params, session, name, arg):
     if qc is None:
         return None
     if qc.get("type") == "exec":
+        if refused := _tools_mod("hermes_cli.profiles_run_elsewhere").run_elsewhere_refusal():
+            return _err(rid, 4018, refused)  # the backend a plugin runs elsewhere starts this profile's commands
         # Sanitized env: the TUI server process holds every API key in os.environ.
         env = _tools_mod("tools.environments.local").build_subprocess_env()
         r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))

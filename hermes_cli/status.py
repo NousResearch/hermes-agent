@@ -133,6 +133,9 @@ def _render_header(ctx):
     paused = _estop_status_line()
     if paused:
         _banner((paused,), Colors.YELLOW, Colors.BOLD)
+    from hermes_cli.profiles_run_elsewhere import keys_note_for_this_home
+    if note := keys_note_for_this_home():  # a profile a plugin runs elsewhere: why its keys show as not set
+        _banner((f"  {note}",), Colors.YELLOW)
 
 
 def _load_ctx_config(ctx) -> None:

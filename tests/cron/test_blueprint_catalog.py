@@ -30,6 +30,25 @@ class TestCatalog:
         with pytest.raises(ValueError):
             BlueprintSlot(name="x", type="bogus", label="X")
 
+    def test_builtin_blueprints_attach_only_setup_free_skills(self):
+        """Cron preflight refuses a job whose attached skill still needs setup, so a built-in
+        blueprint attaching one fails on its first run for every user who has not done that
+        setup (the morning briefing attached google-workspace and failed without its token)."""
+        from agent.skill_utils import parse_frontmatter
+        from tools.skills_tool_setup import _get_required_environment_variables
+
+        skills_root = Path(__file__).resolve().parents[2] / "skills"
+        needy = {}
+        for blueprint in CATALOG:
+            for name in blueprint.skills:
+                matches = list(skills_root.glob(f"*/{name}/SKILL.md"))
+                assert matches, f"{blueprint.key}: attached skill {name!r} is not bundled"
+                frontmatter, _ = parse_frontmatter(matches[0].read_text(encoding="utf-8"))
+                required_env = [e for e in _get_required_environment_variables(frontmatter) if not e.get("optional")]
+                if frontmatter.get("required_credential_files") or required_env:
+                    needy[blueprint.key] = name
+        assert not needy
+
 
 class TestScheduleResolution:
     def test_time_to_cron(self):

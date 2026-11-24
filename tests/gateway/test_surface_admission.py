@@ -102,6 +102,41 @@ async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monke
     assert 'surface_v1' not in rows['typed'].payload and 'bad' not in rows
     assert seen == [('spoken', True, ''), ('typed', False, '')]
 
+@pytest.mark.parametrize('client, committed', [
+    ({'name': 'hermes-desktop', 'version': '2.1.0', 'kind': 'desktop'},
+     {'name': 'hermes-desktop', 'version': '2.1.0', 'kind': 'desktop'}),
+    ({'name': 'a-watch', 'kind': 'watch'}, {'name': 'a-watch'}),  # a kind this owner does not know
+])
+def test_the_owner_stamped_client_is_committed_restored_and_never_a_note(client, committed):
+    from gateway.session_surface import admit_surface, restore_surface, submit_surface_fields, surface_note
+    assert admit_surface({'client': client}) == {'surface_v1': {'client': committed}}
+    assert admit_surface({'surface': 'hud', 'client': client})['surface_v1'] == {'surface': 'hud', 'client': committed}
+    assert restore_surface({'client': committed}) == {'client': committed}
+    assert surface_note({'client': committed}) == ''
+    # The wire forwarder never carries it: only the owner stamps a turn.
+    assert submit_surface_fields({'text': 'x', 'client': client}) == {}
+
+
+_BAD_CLIENTS = [{'name': 'Not A Name'}, 'hermes-desktop', {'name': 'hermes-desktop', 'extra': 1}]
+
+
+@pytest.mark.parametrize('client', [{'name': 'a-watch', 'kind': 'watch'}, *_BAD_CLIENTS])
+def test_a_client_admission_could_not_have_committed_is_not_restored(client):
+    """The managed-worker frame check: an unknown kind (admission drops it) or a malformed label."""
+    from gateway.session_surface import restore_surface
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal):
+        restore_surface({'client': client})
+
+
+@pytest.mark.parametrize('client', _BAD_CLIENTS)
+def test_a_malformed_stamp_is_refused_at_admission(client):
+    from gateway.session_surface import admit_surface
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal):
+        admit_surface({'client': client})
+
+
 def _admissions(home):
     with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
         return dict(db.execute('SELECT request_id, status FROM session_admissions'))

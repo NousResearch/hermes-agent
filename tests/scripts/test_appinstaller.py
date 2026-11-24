@@ -14,7 +14,7 @@ from tests.scripts.test_release_r2 import r2_server
 def test_canary_publication_verifies_native_identity_and_uploads_bundle_before_pointer(tmp_path, r2_server, variant):
     import zipfile
 
-    tag, version = 'v1.2.4+canary.20260902T000000Z', '1.2.4.1440'
+    tag, version = 'canary.20260902T000000Z-v1.2.4', '1.2.4.1440'
     identity, publisher = f'Fixture.{variant}.Canary', 'CN=Fixture & Team'
     bundle = tmp_path / 'app.msixbundle'
     manifest = ET.Element('Bundle')

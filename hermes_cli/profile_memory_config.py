@@ -100,8 +100,8 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
     ``.env`` and never falls back to the caller's environment for a key it lacks. No
     provider selected or installed: nothing runs. Best-effort: a failing
     provider, or an unreadable config, is logged and never fails the create/rename that called it
-    (the directory is already published). A plugin host the hook started for that profile is
-    stopped afterwards (``plugins.isolation: host``), so a long-lived dashboard keeps none behind."""
+    (the directory is already published). With ``plugins.isolation: host`` the hook runs in its own
+    throwaway plugin host, stopped afterwards; the profile's shared host is never touched."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     name = None
@@ -112,7 +112,7 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
             return  # the common case: no provider, so no secret scope, effective config or load
         from agent.secret_scope import build_profile_secret_scope, set_secret_scope
         from hermes_cli.plugin_isolation import transient_plugin_host
-        from plugins.memory import load_memory_provider, provider_registration_scope
+        from plugins.memory import load_memory_provider
         # Secrets first: the effective config (managed scope, ``${VAR}`` refs) expands through them.
         # Its configured secret sources too (1Password etc.); a brand-new profile was never hydrated.
         from hermes_cli.env_loader import hydrate_profile_secret_sources
@@ -122,8 +122,8 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
         name = active_memory_provider(load_config_readonly())
         if not name:
             return
-        with provider_registration_scope(name) as release, transient_plugin_host(before_stop=release):
-            provider = load_memory_provider(name, register_skills=False)
+        with transient_plugin_host() as manager:
+            provider = load_memory_provider(name, register_skills=False, manager=manager)
             if provider is not None:
                 call(provider)
     except (Exception, SystemExit):  # ConfigBackendUnavailable is a SystemExit; a plugin may sys.exit

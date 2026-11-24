@@ -160,11 +160,12 @@ class CompactionWindowMixin:
     ) -> tuple[list[dict[str, Any]], int, list[str], int]:
         """The tool results the summary replaced, saved after it was generated: each one the prune left whole
         inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the model can still
-        open the exact output. Local backend only. Returns ``(rows, stubbed, written paths, failed writes)``."""
+        open the exact output. Only where ``read_file`` opens archives (local, or a backend that publishes
+        ``cache/pruned``). Returns ``(rows, stubbed, written paths, failed writes)``."""
         from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
-        from tools.tool_result_storage import _backend_reads_host_files, archive_pruned_originals, has_archive_pointer
+        from tools.tool_result_storage import _archive_backend, archive_pruned_originals, has_archive_pointer
 
-        if not _backend_reads_host_files():
+        if _archive_backend() is None:
             return plan, 0, [], 0
         demoted, calls = list(plan), _tool_calls_by_id(plan)
         changed = 0

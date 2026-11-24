@@ -289,6 +289,8 @@ class AIAgent(
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
         from agent.agent_init import init_agent
+        from hermes_cli.profiles_run_elsewhere import require_home_runs_here
+        require_home_runs_here()  # no agent on this host for a profile a plugin runs elsewhere
         init_agent(self, **init_kwargs)
 
     def _get_session_db_for_recall(self):

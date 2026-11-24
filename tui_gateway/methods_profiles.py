@@ -7,6 +7,7 @@ onto server.py, so they must not collide with its globals.
 import contextlib
 import logging
 
+from hermes_cli.profiles_cache import json_safe_value as _json_safe_value
 from hermes_cli.profiles_cache import yaml_scalar_to_json as _yaml_scalar_to_json
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -255,7 +256,8 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
         if isinstance(ui_meta, dict) and ui_meta:
             # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
             # coerce YAML-only scalars to their ISO string at the boundary (#92506).
-            fields["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+            fields["ui_meta"] = json.loads(json.dumps(_json_safe_value(ui_meta), default=_yaml_scalar_to_json,
+                                                     allow_nan=False))
         return fields
 
     # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it

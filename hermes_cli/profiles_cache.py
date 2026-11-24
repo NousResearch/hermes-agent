@@ -1,6 +1,7 @@
 """The per-profile derived-value cache behind ``list_profiles`` (``hermes_cli.profiles``)."""
 
 import json
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -49,10 +50,28 @@ def yaml_scalar_to_json(value):
     return isoformat() if callable(isoformat) else str(value)
 
 
+def json_safe_value(value):
+    """Deep copy of *value* with non-finite floats mapped to ``None``.
+
+    ``json.dumps`` serializes ``inf``/``-inf``/``nan`` as the bare tokens ``Infinity``/``NaN``, which
+    are not JSON: strict clients (Swift, Java, Go) reject the whole frame that carries one. YAML is the
+    usual source — YAML 1.1 resolves an id like ``20260819_045052_92e993`` as a float (underscore digit
+    separators plus an ``e`` exponent) and overflows to ``inf``. See #159335.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe_value(item) for item in value]
+    return value
+
+
 def json_safe_dumps(value) -> str:
     """``value`` as strict JSON (a cacheable, per-caller-copyable derived value), or ``"{}"`` when it
-    cannot be one (NaN/inf, unhashable YAML keys): one hand-edited profile.yaml must not fail a list."""
+    cannot be one (unhashable YAML keys): one hand-edited profile.yaml must not fail a list.
+    Non-finite floats are nulled rather than dropped with the rest of the document (#159335)."""
     try:
-        return json.dumps(value, default=yaml_scalar_to_json, allow_nan=False)
+        return json.dumps(json_safe_value(value), default=yaml_scalar_to_json, allow_nan=False)
     except (TypeError, ValueError):
         return "{}"

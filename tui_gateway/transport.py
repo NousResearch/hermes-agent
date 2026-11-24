@@ -83,9 +83,20 @@ def _raise_unless_peer_gone(exc: Exception, what: str) -> None:
 def serialize_frame(obj: dict, peer: str, log: logging.Logger) -> str:
     """``json.dumps`` the frame; an unserializable payload becomes a JSON-RPC error frame carrying
     the original id. Shared by every transport: without it the TypeError escaped from a pool
-    worker (the executor swallows it), so the client waited forever with no log line (#92506)."""
+    worker (the executor swallows it), so the client waited forever with no log line (#92506).
+
+    ``allow_nan=False`` because ``Infinity``/``NaN`` are not JSON: one non-finite float (a YAML 1.1
+    ``inf`` in a profile's ``ui_meta``) made every strict client reject the whole frame and reconnect
+    in a loop (#159335). Such a value is retried as ``null`` rather than dropped to the error frame.
+    """
     try:
-        return json.dumps(obj, ensure_ascii=False)
+        try:
+            return json.dumps(obj, ensure_ascii=False, allow_nan=False)
+        except ValueError as exc:  # bare NaN/Infinity: not JSON, so retry with them as null
+            if "Out of range float" not in str(exc):
+                raise
+            from hermes_cli.profiles_cache import json_safe_value
+            return json.dumps(json_safe_value(obj), ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         rid = obj.get("id") if isinstance(obj, dict) else None
         log.error("frame serialization failed peer=%s id=%s error_type=%s error=%s",

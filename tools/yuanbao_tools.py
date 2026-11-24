@@ -280,8 +280,7 @@ _TOOLS = (
         {
             "name": "yb_query_group_info",
             "description": (
-                "Query basic info about a group (called '派/Pai' in the app), "
-                "including group name, owner, and member count."
+                "Query a group's name, owner and member count (a group is '派/Pai' in the app)."
             ),
             "parameters": {
                 "type": "object",
@@ -348,11 +347,10 @@ _TOOLS = (
         {
             "name": "yb_send_dm",
             "description": (
-                "Send a private/direct message (DM) to a user in a group, with optional media files. "
-                "This tool automatically looks up the user by name in the group member list "
-                "and sends the message. Use this when someone asks to privately message / 私信 / DM a user. "
-                "Supports text, images, and file attachments. "
-                "You can also provide user_id directly if already known."
+                "Send a private message (DM / 私信) to a group member by name, with optional media. "
+                "It looks the user up in the group member list (or pass user_id if known). "
+                "Use it when someone asks to privately message a user. "
+                "Supports text, images, and file attachments."
             ),
             "parameters": {
                 "type": "object",

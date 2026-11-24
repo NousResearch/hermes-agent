@@ -129,6 +129,61 @@ def _live_gateway_pids_from_fleet(fleet_rows: list) -> dict:
     return live
 
 
+def _gateway_unit_runs_one_of(unit: str, pids: set) -> bool:
+    """Every scope that has ``hermes-gateway*`` *unit* loaded runs it as one of *pids*.
+
+    The restart bookkeeping keeps bare unit names, so it cannot say which scope failed: a loaded twin
+    in the other scope that is not proven keeps the failure. Anything unreadable proves nothing.
+    """
+    from hermes_cli import update_cmd_fleet as fleet
+    if not pids or not (unit == "hermes-gateway" or unit.startswith("hermes-gateway-")):
+        return False
+    loaded = False
+    for _scope, scope_cmd in fleet._SYSTEMD_SCOPES:
+        try:
+            stdout = fleet._systemctl(scope_cmd + ["show", "-p", "LoadState,MainPID", unit], timeout=5).stdout
+            props = dict(line.split("=", 1) for line in (stdout or "").splitlines() if "=" in line)
+            if props.get("LoadState") != "loaded":
+                continue
+            loaded = True
+            if int(props.get("MainPID") or 0) not in pids:
+                return False
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return False
+    return loaded
+
+
+def _settle_units_proven_current(restart, fleet_rows: list) -> bool:
+    """Credit each failed gateway unit whose own MainPID the fleet probe shows serving this checkout.
+
+    A restart call can time out while systemd still finishes the job (a unit whose stop takes
+    minutes), so the restart phase's "failed" can be a gateway that came up on the new code moments
+    later. Proof is the unit's own process: a ``current`` row whose pid is the unit's MainPID and was
+    not running when the restart phase began. Another profile's current row never vouches for it.
+    Returns True when a unit was credited; the phase's own incompleteness is then recomputed. The
+    caller saves the restart result once verification is done: a later check can still owe a restart.
+    """
+    pre = restart.pre_restart_gateway_pids
+    if pre is None or not restart.failed_or_stale_units:
+        return False
+    fresh = {row.get("pid") for row in fleet_rows if row.get("state") == "current"} - set(pre)
+    proven = [unit for unit in dict.fromkeys(restart.failed_or_stale_units) if _gateway_unit_runs_one_of(unit, fresh)]
+    if not proven:
+        return False
+    restart.failed_or_stale_units[:] = [u for u in restart.failed_or_stale_units if u not in proven]
+    restart.unrestarted_units[:] = [u for u in restart.unrestarted_units if u not in proven]
+    restart.restarted_services.extend(u for u in proven if u not in restart.restarted_services)
+    for unit in proven:
+        print(f"  ✓ {unit} finished restarting onto the new code after the restart phase stopped waiting")
+    restart.incomplete = bool(restart.failed_or_stale_units or restart.phase_errors)
+    if not restart.incomplete:
+        # The restart phase withheld this stamp; every other profile's CLI reads it.
+        from hermes_cli import update_cmd_fleet as fleet
+        from hermes_cli.update_host_obligation import mark_host_restart_completed
+        mark_host_restart_completed(fleet._restart_identity_sha())
+    return True
+
+
 def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
     """Name the pre-update gateways on the obligation once their restart is owed.
 
@@ -301,6 +356,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # instead of assuming the restart phase worked.
     # Phase 1 (#91277): post-update fleet version verification.
     _fleet_snapshot: list = []
+    _units_settled = False
     with _best_effort('Fleet version verification failed: %s'):
         from hermes_cli.update_receipt import print_fleet_version_matrix
         # Cross-platform "rows expected" signal: (restarted_services or killed_pids)
@@ -315,6 +371,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
+        _units_settled = _settle_units_proven_current(restart, _fleet_snapshot)
+        if _units_settled:
+            _gateway_owed = _restart_phase_owes_gateway(restart)
+            restart.incomplete = restart.incomplete or bool(_dashboards_down)
         if print_fleet_version_matrix(_fleet_snapshot):
             restart.incomplete = _gateway_owed = True
             # A proven-stale survivor must not keep running (its ticker yields every tick and
@@ -335,6 +395,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 " gateway runtimes were expected — verification incomplete."
             )
             restart.incomplete = _gateway_owed = True
+    # Printed after the probe, not by the restart phase: only units it did not prove current.
+    fleet._warn_incomplete_gateway_fleet_restart(getattr(restart, "unrestarted_units", None) or [])
 
     # Every runtime the PLAN saw must appear in restart bookkeeping; an
     # unaccounted one is a silent miss and escalates like a STALE/DOWN row.
@@ -412,6 +474,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             down_serves=set(_dashboards_down or ())))
         with _best_effort('Fleet restart inventory not recorded: %s'):
             _record_owed_gateway_inventory(_pre_update_plan, stopped)
+    if _units_settled:
+        # Credited units changed the restart result; save it with the final verdict so it agrees with
+        # the follow-up above.
+        restart.record_receipt()
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         # A False ``update_complete`` (unsafe SQLite runtime, owed tail work) never fails the

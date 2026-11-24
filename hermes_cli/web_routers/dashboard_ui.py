@@ -21,7 +21,8 @@ from hermes_cli.web_server_dashboard import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginAutoUpdateBody, _PluginProvidersPutBody,
+    _PluginVisibilityBody,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -230,6 +231,41 @@ async def _named_plugin_action(request: Request, name: str, action: Callable[[st
     _require_token(request)
     return await _plugin_mutation(lambda: _plugin_action(
         action(_validate_plugin_name(name)), fallback_error, rescan=rescan, client_decides=client_decides))
+
+
+@router.post("/api/dashboard/agent-plugins/update-all")
+async def post_agent_plugins_update_all(request: Request):
+    """Update every plugin with an update, unattended: a widened pin or a git update's caution scan comes back
+    ``needs_review`` (nothing changed) for the plugin's own Update action to walk."""
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import update_all_unattended
+
+    def _run() -> dict:
+        outcome = update_all_unattended()
+        if any(r["status"] == "updated" for r in outcome["results"]):
+            _get_dashboard_plugins(force_rescan=True)
+        _invalidate_plugins_hub_cache()
+        return outcome
+
+    return await _plugin_mutation(_run)
+
+
+@router.get("/api/dashboard/plugins/auto-update")
+async def get_plugins_auto_update(request: Request):
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import auto_update_state
+    return await _plugin_mutation(auto_update_state)
+
+
+@router.put("/api/dashboard/plugins/auto-update")
+async def put_plugins_auto_update(request: Request, body: _PluginAutoUpdateBody):
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import set_auto_update
+    from hermes_cli.plugins_cmd import PluginOperationError
+    try:
+        return await _plugin_mutation(lambda: set_auto_update(body.enabled))
+    except PluginOperationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")

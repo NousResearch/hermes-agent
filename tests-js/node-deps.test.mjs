@@ -118,6 +118,20 @@ test('one locked preparation retains the requested union without provisioning de
   expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
 }, 30000)
 
+test('electron: false installs Desktop without preparing its Electron binary', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const env = { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') }
+  json(join(source, 'vendor/electron/package.json'), { name: 'electron', version: '1.0.0' })
+  json(join(source, 'apps/desktop/package.json'), { name: 'desktop', version: '1.0.0', devDependencies: { electron: 'file:../../vendor/electron' } })
+  const [node, npm] = npmCommand()
+  execFileSync(node, [npm, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--offline'], { cwd: source, env, stdio: 'pipe' })
+  // Electron preparation runs after the install: this fake is not the version Desktop pins.
+  expect(() => prepareNodeDependencies({ source, workspaces: ['apps/desktop'], env })).toThrow(/lock-pinned/)
+  prepareNodeDependencies({ source, workspaces: ['apps/desktop'], env, electron: false })
+  expect(existsSync(join(source, 'node_modules/electron/package.json'))).toBe(true)
+}, 30000)
+
 test('web-only selection excludes siblings and rejects stale locks without rewriting them', async () => {
   const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
   const source = fixture()

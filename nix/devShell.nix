@@ -8,7 +8,7 @@
 { ... }:
 {
   perSystem =
-    { pkgs, self', ... }:
+    { pkgs, lib, self', ... }:
     let
       packages = builtins.attrValues self'.packages;
       hermesNpmLib = self'.packages.default.passthru.hermesNpmLib;
@@ -28,6 +28,10 @@
             install -Dm755 ${../hermes} $out/bin/hermes
           '')
           self'.packages.sandbox
+        ]
+        # Wayland-only: cage and ghostty pull alsa-lib, which does not
+        # evaluate on darwin.
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           # Headless Wayland compositor for E2E tests (test:e2e:visual).
           # cage renders a single client with no window management, so
           # the Electron window opens at a fixed size without tiling.
@@ -42,7 +46,7 @@
         ]
         ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          # for the devshell to pick up the src (the pm hook reads it)
+          # The editable venv's .pth resolves the checkout through this.
           export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
 
           ${hermesAgentDevShellHook}
@@ -50,11 +54,6 @@
 
           # Force Node to use Nix's playwright-test binary instead of node_modules/.bin
           export PATH="${pkgs.playwright-test}/bin:$PATH"
-
-          # Let `uv run --active --no-sync` reuse the Nix-built venv instead of
-          # creating an empty project .venv. Named explicitly: `python` on PATH
-          # is the lock's interpreter, which is not inside a venv.
-          export VIRTUAL_ENV="${self'.packages.default.passthru.devPython}"
 
           # The lock's interpreter is python-build-standalone, whose OpenSSL has
           # no compiled-in NixOS trust store; point it at the CA bundle so

@@ -1,6 +1,6 @@
 name: langfuse
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: c2a95963c442f3f23e4bc6fe0da898e1dd1fb63d
+sha: e1f16143f164c4db10ea8fc0fc47ff8ac611e9fc
 subdir: langfuse
 description: 'Langfuse observability for Hermes: one trace per turn, one generation per LLM call (usage
   and cost from Hermes'' own pricing, cache and reasoning tokens included), one observation per tool
@@ -12,7 +12,7 @@ tier: official
 category: general
 requires_hermes: ">=0.21.7"
 version: "2.0.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/c2a95963c442f3f23e4bc6fe0da898e1dd1fb63d/assets/langfuse.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/e1f16143f164c4db10ea8fc0fc47ff8ac611e9fc/assets/langfuse.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse
 platforms: []
 capabilities:

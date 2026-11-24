@@ -452,13 +452,10 @@ export function enumOptionsFor(
 
 // Built-in memory (MEMORY.md/USER.md) is controlled by memory_enabled, not
 // memory.provider — only a real external plugin name gets provider-shaped
-// affordances (config panel, OAuth connect). See #49513.
+// affordances (config panel, OAuth connect). See #49513. Mirrors
+// CORE_MEMORY_PROVIDER_SENTINELS in agent/memory_provider.py.
+const CORE_MEMORY_PROVIDER_SENTINELS = new Set(['', 'default', 'builtin', 'built-in', 'none'])
+
 export function isExternalMemoryProvider(value: unknown): value is string {
-  if (typeof value !== 'string') {
-    return false
-  }
-
-  const normalized = value.trim().toLowerCase()
-
-  return normalized !== '' && normalized !== 'builtin' && normalized !== 'built-in' && normalized !== 'none'
+  return typeof value === 'string' && !CORE_MEMORY_PROVIDER_SENTINELS.has(value.trim().toLowerCase())
 }

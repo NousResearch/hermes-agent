@@ -92,6 +92,14 @@ export const af: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktiewe geheueverskaffer",
+    noProvider: "geen — slegs ingebou",
+    builtinLayer: "Ingeboude laag",
+    builtinNote: "MEMORY.md en USER.md is Hermes se eie geheue, apart van enige eksterne verskaffer. Albei word by verstek in sessies gelaai; die konfigurasieskakelaars (memory.memory_enabled / memory.user_profile_enabled) skakel elkeen af. 'n Verskaffer voeg daarby; dit vervang hulle nooit.",
+  },
+
   status: {
     actionFailed: "Aksie het misluk",
     actionFinished: "Voltooi",
@@ -362,6 +370,13 @@ export const af: Translations = {
     authRequired: "Verifikasie vereis",
     authRequiredHint: "Voer hierdie opdrag uit om te verifieer:",
     updateGit: "Git pull",
+    updateAll: "Werk alles by",
+    updatingAll: "Inproppe word bygewerk…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Bygewerk ${updated}, moet hersien word ${needsReview}, misluk ${failed}`,
+    autoUpdate: "Outo-bywerk",
+    autoUpdateDesc: (hours: number) =>
+      `Pas inpropbywerkings outomaties toe wanneer die gateway kyk (elke ${hours} h). Bygewerkte kode laai in nuwe sessies.`,
     versionBadge: "Weergawe",
     showInSidebar: "Wys in sybalk",
     hideFromSidebar: "Versteek van sybalk",

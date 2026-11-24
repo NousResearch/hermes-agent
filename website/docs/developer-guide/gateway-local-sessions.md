@@ -47,7 +47,21 @@ The server issues `session:operator` only at these existing trusted boundaries:
 - Native interactive bootstrap ticket redemption (not worker-adoption tickets).
 - The dashboard WebSocket upgrade gate, including authenticated dashboard login tickets,
   the process-lifetime internal credential for server-spawned PTY clients, and the verified
-  legacy session token when that authentication path is enabled.
+  legacy session token when that authentication path is enabled. With `webapp.enabled`, that
+  session token is the browser-hosted Desktop's credential: the gateway keeps it in its home so
+  Webapp tabs survive a restart, hands it out only through a one-use link minted for a same-user
+  control-socket peer, and replaces it on `hermes webapp --sign-out` and whenever the Webapp's
+  listener fails to start, since its port then belongs to someone else. Behind the sign-in gate a
+  Webapp login is bound to that token by the `hermes_webapp_signin_<gateway>` cookie (HMAC-SHA256 of
+  `webapp-sign-in` keyed with the token), so replacing it ends those logins too; sign-out closes
+  every socket the token or a bound login opened, Bot Desktop viewers included. The Webapp's listener
+  names every sign-in cookie it sets that way (`hermes_session_at_<gateway>` and the rest; `<gateway>`
+  comes from a digest of the gateway home), so two gateways' Webapps on one hostname keep their own
+  logins, whatever their sign-in providers, and leave the standalone dashboard's cookies alone. The provider tokens
+  such a login keeps in its cookies never work there on their own: the Webapp's listener accepts a
+  bearer token or a socket's `?token=`, and renews a refresh token, only when it gave that token to a
+  native app's RFC 8252 sign-in (digests kept in `webapp/native-sign-in-tokens.json` in the gateway home until they
+  expire), so native apps stay signed in across a sign-out and a restart.
 - The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
   or permitted legacy session token has been accepted.
 
@@ -60,8 +74,12 @@ restriction rather than treating every accepted dashboard credential as an opera
 
 Cross-subject local submissions carry a private, server-written profile/session/principal
 binding for queued execution and recovery. It is not exposed in model requests or public
-session snapshots. This change does not expose the gateway listener remotely or implement
-OpenAI API-to-local session affinity; those remain separate integration paths.
+session snapshots. This change does not implement OpenAI API-to-local session affinity. The gateway
+listener stays on loopback unless `webapp.host` binds a wildcard address. The Webapp's listener engages
+the dashboard sign-in gate on a wildcard bind or when `webapp.public_url` is set, on any bind, and
+one-use launch links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
+gateway's private listener for native clients reads it as main does, so hosted sign-in on that
+listener keeps working.
 
 ## Deliberately limited compatibility
 

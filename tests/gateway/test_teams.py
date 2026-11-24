@@ -1,5 +1,6 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -1140,3 +1141,51 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+@pytest.mark.anyio
+async def test_expired_approval_click_keeps_the_request():
+    """A click after the approval ended replaces the card; the replacement still shows command and reason."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._card_action_denied = lambda _from: None
+    adapter._invoke_card = lambda body: body
+    ctx = MagicMock()
+    ctx.activity.value.action.data = {"hermes_action": "approve_once", "session_key": "s1",
+                                      "cmd": "rm -rf ./build", "desc": "dangerous deletion"}
+    with patch("tools.approval.has_blocking_approval", return_value=False):
+        body = await adapter._on_card_action(ctx)
+    texts = " ".join(str(block.text) for block in body)
+    assert "rm -rf ./build" in texts and "dangerous deletion" in texts
+
+
+@pytest.mark.anyio
+async def test_resolved_card_shows_the_prompts_full_command_preview():
+    """The button data carries the same command preview as the prompt card, so a command longer than a
+    short stub is not cut short on the resolved card."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._card_action_denied, adapter._invoke_card = object(), (lambda _from: None), (lambda body: body)
+    adapter._send_card = AsyncMock()
+    command = "echo " + "x" * 600 + " END"
+    buttons = []
+    with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
+        await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
+    ctx = MagicMock()
+    ctx.activity.value.action.data = buttons[0]["data"]
+    with patch("tools.approval.has_blocking_approval", return_value=True), \
+            patch("tools.approval.resolve_gateway_approval", return_value=1):
+        body = await adapter._on_card_action(ctx)
+    assert command in " ".join(str(block.text) for block in body)
+
+
+@pytest.mark.anyio
+async def test_long_non_ascii_command_keeps_button_data_small():
+    """Button data carries an id, not a copy of the preview per button, so a long CJK command
+    cannot push the card past Teams' ~28 KB limit."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._send_card = object(), AsyncMock()
+    command = "cat > notes.md <<'EOF'\n" + "这是一个很长的中文文档内容。" * 200 + "\nEOF"
+    buttons = []
+    with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
+        await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
+    assert len(buttons) == 4
+    assert sum(len(json.dumps(b["data"], ensure_ascii=False).encode()) for b in buttons) < 1024

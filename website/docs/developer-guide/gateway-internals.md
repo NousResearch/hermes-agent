@@ -709,6 +709,13 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
+Completions that land while the session is busy fold into ONE queued turn
+(`session_automation.py::_admit_folded_completion`): a completion whose route already has a
+completion waiting at the very end of the FIFO replaces it with a combined admission (both texts,
+every producer identity, a "N background process results" header), cancelling the waiting row in
+the same transaction. Only the tail folds, so a prompt queued after a completion keeps its place
+between them; a waiting row claimed first leaves the new completion to queue alone.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

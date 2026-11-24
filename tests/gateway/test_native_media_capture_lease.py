@@ -24,8 +24,8 @@ async def _authority(tmp_path, monkeypatch):
 
 
 def _submit(authority, request_id, staged, text='look'):
-    from gateway.session_contract import Principal, SessionRef, Submission
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    from gateway.session_contract import SessionActor, SessionRef, Submission
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     return authority.submit(actor, Submission(request_id, SessionRef('p', 's'), {'text': text, 'attachments': [
         {'path': staged, 'mime': 'image/png'}]}, 'queue'))
 

@@ -118,3 +118,15 @@ def test_create_accepts_cli_string_repeat_forms(client, repeat, expected_times):
 
     assert response.status_code == 200
     assert response.json()["repeat"] == {"times": expected_times, "completed": 0}
+
+
+def test_create_stores_the_missed_run_policy_only_when_given(client):
+    """The editor's Missed runs choice must reach the job; omitting it keeps the default (no key)."""
+    chosen = client.post(
+        "/api/cron/jobs",
+        json={"prompt": "nightly", "schedule": "0 3 * * *", "name": "skip missed", "catch_up": False},
+    )
+    plain = client.post("/api/cron/jobs", json={"prompt": "nightly", "schedule": "0 3 * * *", "name": "default"})
+
+    assert chosen.status_code == 200 and chosen.json()["catch_up"] is False
+    assert plain.status_code == 200 and "catch_up" not in plain.json()

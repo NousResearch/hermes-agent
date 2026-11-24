@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession
-from gateway.session_contract import Principal, SessionRef, Submission
+from gateway.session_contract import SessionActor, SessionRef, Submission
 from gateway.session_results import admission_result, finish_result
 from hermes_state_runtime import (
     RuntimeStoreError,
@@ -27,7 +27,7 @@ async def test_discard_closure_failure_keeps_unknown_fence_and_retry_is_exact(ow
     owner.db.create_session('s', source='test')
     owner.sessions['s'] = LiveSession(None, 'route')
     ref = SessionRef(owner.profile_id, 's')
-    actor = Principal('human', owner.profile_id, frozenset({'session:submit', 'session:control'}), 't')
+    actor = SessionActor('human', owner.profile_id, frozenset({'session:submit', 'session:control'}), 't')
     source = Path(owner.db.db_path).parent / 'input.png'
     source.write_bytes(b'image')
     references = capture_native_media([source])
@@ -59,6 +59,9 @@ async def test_discard_closure_failure_keeps_unknown_fence_and_retry_is_exact(ow
         claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
     monkeypatch.setattr(session_results, 'close_discarded_turn', close)
     settled = await owner.resolve_unknown(actor, ref, first['admission_id'], claim['generation'])
+    from gateway.session_runtime_workers import mutation_tasks
+    from tests.waiting import async_wait_until
+    await async_wait_until(lambda: not mutation_tasks(owner), timeout=5, what='off-loop media collection')
     assert not Path(references[0]['path']).exists()
     assert owner.db.latest_conversation_role(target) == 'assistant'
     successor = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
@@ -77,7 +80,7 @@ async def test_discard_closes_turn_lost_while_parked_on_a_tool(owner, monkeypatc
     owner.db.create_session('s', source='test')
     owner.sessions['s'] = LiveSession(None, 'route')
     ref = SessionRef(owner.profile_id, 's')
-    actor = Principal('human', owner.profile_id, frozenset({'session:submit', 'session:control'}), 't')
+    actor = SessionActor('human', owner.profile_id, frozenset({'session:submit', 'session:control'}), 't')
     first = admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='s',
                                 request_id='lost', payload={'text': 'LOST'})
     claim = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')

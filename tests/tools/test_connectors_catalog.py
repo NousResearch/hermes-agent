@@ -6,10 +6,12 @@ Contracts:
 - the model sends catalog ids and an action; every other key is refused before anything runs
 - an id the catalog does not know, or a plugin this OS cannot run, is drawn failed and never installed
 - an approved row installs and reports what went live; the card never witnesses the outcome
+- a ClawHub skill reads as installed through the id its hub source lists, never another source's
 """
 
 import json
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,8 +20,9 @@ import pytest
 
 from tools.connectors import live
 from tools.connectors.catalog_tool import NOT_HERE, manage_catalog
-from tools.connectors.contract import TargetState
+from tools.connectors.contract import SettleReason, TargetState
 from tools.connectors.run import apply_answer
+from tests.waiting import wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +70,7 @@ class FakeInstaller:
     def skill_meta(self, identifier):
         return None
 
-    def install_skill(self, identifier, *, force):
+    def install_skill(self, identifier, *, force, source=None):
         raise AssertionError("no skill in these tests")
 
 
@@ -226,7 +229,9 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
     card = _card(lambda payload: {"targets": [{"name": "blender", "status": "approved", "env": None}]})
 
     def wait_for(state):
-        for _ in range(200):
+        # A deadline, not an iteration count: 200 x 10 ms timed out under a loaded CI shard.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
             operation = live.current("s1")
             if operation is not None and operation.targets[0].state == state:
                 return operation
@@ -239,15 +244,30 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
             {"action": "install", "items": [{"kind": "plugin", "id": "blender"}, {"kind": "plugin", "id": "krita"}]},
             session_id="s1", connection_callback=card, card_surface=True, installer=installer))))
         thread.start()
-        operation = wait_for(TargetState.failed)
-        assert operation.targets[0].detail == "clone failed: network down"
-        assert not operation.settled  # krita still waits on the user
-        installer.install_error = ""
-        apply_answer(operation, json.dumps({"targets": [{"name": "blender", "status": "approved"}]}))
-        wait_for(TargetState.connected)
-        apply_answer(operation, json.dumps({"targets": [{"name": "krita", "status": "skipped"}]}))
-        thread.join(5)
+        try:
+            operation = wait_for(TargetState.failed)
+            assert operation.targets[0].detail == "clone failed: network down"
+            assert not operation.settled  # krita still waits on the user
+            installer.install_error = ""
+            apply_answer(operation, json.dumps({"targets": [{"name": "blender", "status": "approved"}]}))
+            wait_for(TargetState.connected)
+            apply_answer(operation, json.dumps({"targets": [{"name": "krita", "status": "skipped"}]}))
+            # Skipping the last open row must settle the operation by itself; the cleanup below
+            # only rescues a failed run and must not stand in for this.
+            wait_until(lambda: not thread.is_alive(), timeout=10, what="the operation to settle once krita is skipped")
+        finally:
+            # A failed step leaves krita pending (or the operation not yet open), and the tool thread,
+            # not a daemon, would hold the interpreter open until the operation's 600 s deadline.
+            # Continue on whatever operation it has open until the thread returns.
+            def released():
+                if (still_open := live.current("s1")) is not None:
+                    still_open.settle(SettleReason.continue_)
+                    still_open.wake.set()
+                return not thread.is_alive()
+
+            wait_until(released, timeout=10, what="the manage_catalog thread to return")
     assert result["out"]["targets"][0]["state"] == TargetState.connected.value
+    assert result["out"]["targets"][1]["state"] == TargetState.skipped.value
     assert len(installer.installs) == 2
 
     # A failed row does not hold the turn to the deadline: once it is the last open row, the
@@ -257,3 +277,68 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
     (row,) = out["targets"]
     assert out["settled_by"] == "all_resolved"
     assert (row["state"], row["detail"]) == (TargetState.failed.value, "clone failed: network down")
+
+
+class ClawHubSkillInstaller(FakeInstaller):
+    """One skill, resolved the way the hub index resolves a ClawHub hit: its bare slug."""
+
+    def skill_meta(self, identifier):
+        return {"name": "Agent Git Oracle", "description": "Repository analysis.", "source": "clawhub",
+                "identifier": identifier}
+
+    def install_skill(self, identifier, *, force, source=None):
+        self.installs.append({"identifier": identifier, "source": source})
+        return {"name": identifier, "already_installed": False}
+
+
+def test_a_skill_row_installs_with_the_source_that_resolved_it():
+    installer = ClawHubSkillInstaller()
+
+    out = _install([{"kind": "skill", "id": "agent-git-oracle"}], installer, _card(_approve()))
+
+    assert out["targets"][0]["state"] == TargetState.connected.value
+    assert installer.installs == [{"identifier": "agent-git-oracle", "source": "clawhub"}]
+
+
+def test_a_clawhub_install_is_read_back_through_its_card_id(monkeypatch):
+    # The lock records @owner/slug. Matching the bare slug exactly, a finished install raised its
+    # last printed line ("Files: ...") and a second one raised "Use --force to reinstall."
+    from tools.connectors.catalog import HostInstaller
+    from tools.skills_hub import HubLockFile
+
+    installs = []
+
+    def do_install(identifier, **_):
+        installs.append(identifier)
+        HubLockFile().record_install(
+            name="agent-git-oracle", source="clawhub", identifier="@tmstudio667-commits/agent-git-oracle",
+            trust_level="community", scan_verdict="safe", skill_hash="0" * 64,
+            install_path="agent-git-oracle", files=["SKILL.md"])
+        return True
+
+    monkeypatch.setattr("hermes_cli.skills_hub.do_install", do_install)
+    installer = HostInstaller()
+
+    assert installer.install_skill("agent-git-oracle", force=False, source="clawhub") == {
+        "name": "agent-git-oracle", "already_installed": False}
+    assert installer.install_skill("agent-git-oracle", force=False, source="clawhub")["already_installed"]
+    assert installer.install_skill("clawhub/agent-git-oracle", force=False)["already_installed"]
+    assert installs == ["agent-git-oracle"]
+
+
+def test_search_rows_mark_an_installed_clawhub_hit_but_not_another_sources_bare_id(monkeypatch):
+    from tools.connectors.catalog_tool import _skill_rows
+    from tools.skills_hub import HubLockFile
+    from tools.skills_hub_models import SkillMeta
+
+    HubLockFile().save({"version": 1, "installed": {"agent-git-oracle": {
+        "source": "clawhub", "identifier": "@tmstudio667-commits/agent-git-oracle",
+        "install_path": "agent-git-oracle"}}})
+    hits = [SkillMeta(name=name, description="", source=source, identifier="agent-git-oracle",
+                      trust_level="community")
+            for name, source in (("Agent Git Oracle", "clawhub"), ("agent-git-oracle", "skills-sh"))]
+    monkeypatch.setattr("tools.skills_hub_github.GitHubAuth", lambda: None)
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth: [])
+    monkeypatch.setattr("tools.skills_hub_search.unified_search", lambda query, sources, limit: hits)
+
+    assert [row["installed"] for row in _skill_rows("agent git oracle")] == [True, False]

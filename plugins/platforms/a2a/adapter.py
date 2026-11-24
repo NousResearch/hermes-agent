@@ -157,6 +157,20 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def adapter(self) -> A2AAdapter:
         return self.server.adapter  # type: ignore[attr-defined]
 
+    def parse_request(self) -> bool:
+        """Without a token, refuse any request whose ``Host`` is not a loopback name, before a route
+        runs: a page on a hostname re-resolved to 127.0.0.1 (DNS rebinding) is same-origin to this
+        listener and could otherwise read its served-agent list and Agent Card."""
+        if not super().parse_request():
+            return False
+        adapter = self.adapter
+        if adapter._security_context.localhost_only() and not security.is_loopback_host_header(
+                self.headers.get("Host"), adapter._public_url):
+            self._error(403, None, protocol.ERR_UNAUTHORIZED,
+                        "Host must be a loopback name or the A2A_PUBLIC_URL host (no A2A token configured)")
+            return False
+        return True
+
     def log_message(self, format, *args):
         logger.debug("A2A http: " + format, *args)  # silence the default stderr access log
 
@@ -218,6 +232,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
+        if adapter._security_context.localhost_only() and (refusal := security.browser_post_refusal(self.headers)):
+            return self._error(403, None, protocol.ERR_UNAUTHORIZED, refusal)
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:

@@ -50,7 +50,7 @@ def test_start_shows_the_device_code_and_completion_reports_what_moved(portal, f
     assert body["status"] == "approved"
     assert body["account_email"] == EMAIL
     assert body["model"] == FREE_PICK
-    assert body["handoff"] == [f"Your apps moved to {EMAIL}: gmail."]
+    assert body["handoff"] == [f"Your apps moved to {EMAIL}: Gmail."]
     assert not [p for _, p in portal.calls if "promotion" in p]
     state = _load_auth_store()["providers"]["nous"]
     assert "anon_token" not in state and not anon_auth.is_guest_state(state)

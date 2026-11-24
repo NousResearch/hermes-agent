@@ -3,6 +3,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 
 from model_tools import (
     handle_function_call,
@@ -413,7 +415,7 @@ class TestDisabledToolsetsPlatformBundle:
             "is what lets `disabled_toolsets: [browser]` strip it (#64503)"
         )
         # browser still owns its own tools, and web/search still own web_search.
-        assert "browser_navigate" in browser_tools
+        assert "browser_exec" in browser_tools
         assert "web_search" in set(resolve_toolset("web"))
         assert "web_search" in set(resolve_toolset("search"))
 
@@ -527,13 +529,32 @@ class TestBrowserRetrievalHints:
         # Real static schemas + rewriters: the rewritten browser descriptions must not mention absent web tools.
         from model_tools import _apply_dynamic_schemas
         from tools.browser_cdp_tool import BROWSER_CDP_SCHEMA
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+        from tools.browser_use_cli import BROWSER_EXEC_SCHEMA
 
-        navigate = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_navigate")
-        defs = [{"type": "function", "function": navigate}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
+        defs = [{"type": "function", "function": BROWSER_EXEC_SCHEMA}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
         rendered = " ".join(d["function"]["description"] for d in _apply_dynamic_schemas(defs + self._defs("terminal")))
         assert "web_search" not in rendered
         assert "web_extract" not in rendered
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_browser_exec_points_at_vision_analyze_only_when_the_session_has_it(monkeypatch, native):
+    """An auxiliary vision route exists (check_vision_requirements is True) but the session may not
+    expose vision_analyze: the browser_exec description names it only when it is in the tool list,
+    and never under the native header, where screenshots already arrive in the result."""
+    from model_tools import _apply_dynamic_schemas
+    from tools import browser_use_cli as bu_cli
+
+    monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: native)
+    monkeypatch.setattr("tools.vision_tools.check_vision_requirements", lambda: True)
+    monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, ""))
+    exec_def = {"type": "function", "function": {"name": "browser_exec", **bu_cli._dynamic_schema_overrides()}}
+    for names in (("terminal",), ("terminal", "vision_analyze")):
+        others = [{"type": "function", "function": {"name": n, "description": n}} for n in names]
+        rendered = next(d for d in _apply_dynamic_schemas([exec_def, *others])
+                        if d["function"]["name"] == "browser_exec")["function"]["description"]
+        assert ("pass its capture_screenshot() path to vision_analyze" in rendered) is (
+            not native and "vision_analyze" in names)
 
 
 def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path):

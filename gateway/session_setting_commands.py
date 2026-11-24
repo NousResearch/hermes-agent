@@ -50,7 +50,7 @@ def local_live_for_route(runner, session_key):
     from gateway.session_authorities import all_authorities
     for authority in all_authorities(runner):
         for live in list(getattr(authority, 'sessions', {}).values()):
-            if live.route == session_key and live.source.platform == Platform.LOCAL:
+            if live.route == session_key and getattr(live.source, 'platform', None) == Platform.LOCAL:
                 return live
     return None
 

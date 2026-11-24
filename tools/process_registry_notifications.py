@@ -169,7 +169,7 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
         lines.append(f"Context you provided: {evt['context']}")
     if evt.get("toolsets"):
         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
-    lines.append(f"Role: {evt.get('role') or 'leaf'}   Model: {evt.get('model') or '?'}")
+    lines.append(f"Role: {evt.get('role') or 'leaf'}" + (f"   Model: {evt['model']}" if evt.get("model") else ""))
     return lines
 
 
@@ -297,7 +297,8 @@ def _format_async_delegation(evt: dict) -> str:
         "you can act on the result or re-dispatch if things have changed.",
         completed_at, with_goal=True)
     lines += _notice_lines([evt]) + [
-        f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
+        f"Status: {status}" + (f"   API calls: {evt['api_calls']}" if evt.get("api_calls") is not None else "")
+        + f"   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
         "--- RESULT ---"]
     if status in _DONE and summary:

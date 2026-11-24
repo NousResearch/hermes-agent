@@ -9,15 +9,23 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import logging
 import os
 from pathlib import Path
 import stat
 import threading
+import time
 from hermes_dir_acl import make_user_dir
+
+logger = logging.getLogger(__name__)
 
 
 class OwnershipConflict(RuntimeError):
     pass
+
+
+class ReservationCancelled(OwnershipConflict):
+    """The waiting reserve's caller gave up: nothing reserved, nothing left held."""
 
 
 def canonical_home(home: Path) -> Path:
@@ -232,10 +240,78 @@ def lock_record_unpublished(home: Path) -> bool:
     """True when *home*'s ``gateway.lock`` record names no live holder yet: empty, torn, or a dead
     previous holder's. :meth:`ProfileOwnership.reserve` takes the flock BEFORE it writes the record,
     so a contender that loses the flock in that window cannot tell maintenance from a gateway; it
-    must retry (bounded) instead of reporting a runtime owner. Advisory only, never grants the lock."""
+    must retry (bounded) instead of reporting a runtime owner. A record naming the CALLER is the
+    caller's own rolled-back attempt (an all-or-nothing reserve writes each home's record before a
+    later home refuses), so whoever holds the flock now has not published either. Advisory only,
+    never grants the lock."""
     from gateway.status import _live_pid_from_record, _read_gateway_lock_record
     record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
-    return not record or _live_pid_from_record(record) is None
+    return not record or _live_pid_from_record(record) in (None, os.getpid())
+
+
+# A client's discovery probe (gateway.status._probe_lock_file) holds a gateway.lock flock for an
+# instant; the next attempt after this pause normally finds it gone.
+PROBE_RETRY_BACKOFF_S = 0.015
+TRANSIENT_HOLDER_POLL_S = 0.1
+
+
+def _conflicting_homes(homes):
+    """The homes whose gateway.lock another holder has right now: each probed alone with its own open
+    file description and released at once (the all-or-nothing reserve does not say which failed).
+    A home freed meanwhile is simply not listed; the next reserve attempt takes it."""
+    conflicting = []
+    for home in homes:
+        probe = ProfileOwnership()
+        try:
+            probe.reserve([home])
+        except OwnershipConflict:
+            conflicting.append(home)
+        finally:
+            probe.close()
+    return conflicting
+
+
+def reserve_waiting_out_transient_holders(ownership, homes, *, wait_s: float,
+                                          cancel: threading.Event | None = None) -> None:
+    """``ownership.reserve(homes)``, retried until *wait_s* passes while every contender is
+    transient: a client's lock probe (gone by the re-check), a browse reconcile, or a holder that has
+    not published its record yet (flock taken, record unwritten). A positively identified live owner
+    on any home refuses at once. Every grant is a real ``reserve``: the flock is never bypassed.
+    Shared by the gateway boot and the running multiplexer's hot-serve of a new profile.
+
+    *cancel* set (a worker thread's caller gave up) ends the wait at once and releases a grant
+    that landed meanwhile, raising :class:`ReservationCancelled`: the caller may already have run
+    its ownership cleanup, so nobody would ever release a home taken after it."""
+    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    cancel = threading.Event() if cancel is None else cancel
+    deadline = time.monotonic() + wait_s
+    logged = False
+    while not cancel.is_set():
+        before = set(ownership.homes)
+        try:
+            ownership.reserve(homes)
+        except OwnershipConflict:
+            # Only the homes that actually conflict decide: a real owner on any of them refuses at
+            # once, even while another home is mid-browse (multiplexer boot, all-or-nothing).
+            conflicting = _conflicting_homes(homes)
+            holders = [h for h in conflicting
+                       if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE) or lock_record_unpublished(h)]
+            if len(holders) < len(conflicting) or time.monotonic() >= deadline:
+                raise
+            if not conflicting:
+                cancel.wait(PROBE_RETRY_BACKOFF_S)  # the holder already let go: a lock probe, never an owner
+                continue
+            if not logged:
+                logger.info("Profile %s is held by a short session-store schema catch-up; waiting up to %.0fs",
+                            holders[0], wait_s)
+                logged = True
+            cancel.wait(TRANSIENT_HOLDER_POLL_S)
+            continue
+        if not cancel.is_set():
+            return
+        for home in {canonical_home(p) for p in homes} - before:
+            ownership.release(home)
+    raise ReservationCancelled(f'Reservation of {", ".join(map(str, homes))} cancelled')
 
 
 def live_runtime_owner(home: Path) -> int | None:

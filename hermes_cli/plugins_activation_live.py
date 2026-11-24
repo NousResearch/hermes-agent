@@ -86,10 +86,8 @@ def plugin_skills(plugin_key: str) -> list[dict[str, str]]:
 
 def catalog_plugin_skill(written: str) -> Optional[str]:
     """The registered name of a plugin skill written ``<catalog-name>:<skill>`` (``blender:blender``), or
-    None when that catalog plugin is not installed in this profile or registered no such skill. A
-    portable plugin's skills register under a collision-resistant namespace
-    (``agent-plugin-<slug>-<sha8>:<skill>``, ``hermes_cli/plugins_manifest.py``), so the readable form
-    is never itself a name ``skill_view`` resolves."""
+    None when that catalog plugin is not installed in this profile or registered no such skill. Skills
+    register under the plugin's manifest name, which need not match its catalog entry name."""
     from hermes_cli.plugins import get_plugin_manager
     from hermes_cli.plugins_cmd import _catalog_installed_dir
     catalog_name, _, bare = written.partition(":")

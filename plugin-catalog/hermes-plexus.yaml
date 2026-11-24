@@ -1,0 +1,29 @@
+name: hermes-plexus
+repo: https://github.com/mr-september/hermes-plexus
+sha: e31af2f78bcd0c996310adfcd71cf70911ea9d9b
+version: "0.4.1"
+title: Plexus
+description: "Your local markdown vault as a note graph, file tree and tabbed editor in one Hermes Desktop workspace tab, with Obsidian-style wikilinks, nested folder regions in the graph, link rewriting on rename, image and note embeds, and a ::vault chat link. Disclosure — reads and writes markdown files (and images for previews) only inside the one folder you grant, through Hermes Desktop's folder-scoped file API (ctx.files); deletes go to the OS trash. No network calls unless you turn on loading of images that notes link from the web (off by default; the image's host then sees your IP address). No shell commands, background processes, telemetry, agent tools or stored credentials."
+maintainer: mr-september
+tier: community
+category: desktop
+docs_url: https://github.com/mr-september/hermes-plexus#readme
+readme: true
+image: https://raw.githubusercontent.com/mr-september/hermes-plexus/e31af2f78bcd0c996310adfcd71cf70911ea9d9b/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/e31af2f78bcd0c996310adfcd71cf70911ea9d9b/docs/screenshots/overview-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/e31af2f78bcd0c996310adfcd71cf70911ea9d9b/docs/screenshots/nested-folders-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/e31af2f78bcd0c996310adfcd71cf70911ea9d9b/docs/screenshots/editor-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/e31af2f78bcd0c996310adfcd71cf70911ea9d9b/docs/screenshots/preview-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/e31af2f78bcd0c996310adfcd71cf70911ea9d9b/docs/screenshots/search-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/e31af2f78bcd0c996310adfcd71cf70911ea9d9b/docs/screenshots/local-graph-dark.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.6"
+known_issues:
+  - "Desktop only: it needs host.openWorkspace and the folder-scoped file API (ctx.files)."
+  - "No live file watching; the vault rescans when the window regains focus and after saves."
+  - "Notes larger than 4 MiB (the ctx.files read limit) cannot be opened."

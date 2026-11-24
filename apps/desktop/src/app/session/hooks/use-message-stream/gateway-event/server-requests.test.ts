@@ -172,6 +172,25 @@ describe('preview action request routing', () => {
     expect(respond).not.toHaveBeenCalled()
   })
 
+  it('refuses window.read in a browser tab with an error the tool relays', async () => {
+    // A browser tab cannot enumerate OS windows: answer {error, platform} at
+    // once rather than an empty value the tool reports as "did not answer".
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const { respond } = deliver('window.read', {}, null)
+
+      await Promise.resolve()
+
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
+        error: expect.stringContaining('desktop app') as string,
+        platform: 'browser'
+      })
+    } finally {
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
+  })
+
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {
     // The tile session is not the active one, but this window hosts it: its
     // panes are here, so an 'ignore' would stall the tool until its deadline.
@@ -396,6 +415,19 @@ describe('preview pop-out forwarding', () => {
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
     expect(requestPopoutPreviewRead).toHaveBeenCalledWith({}, sessionAOwner)
     expect(respond.mock.calls[0][0].value).toBe('')
+  })
+
+  it('reads locally in a browser tab, which has no pop-out to wait on', async () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const { respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-a')
+
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      expect(requestPopoutPreviewRead).not.toHaveBeenCalled()
+    } finally {
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
   })
 })
 

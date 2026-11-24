@@ -18,7 +18,7 @@ from gateway.session_authority import LiveSession
 
 
 
-from gateway.session_contract import Principal, SessionRef, Submission
+from gateway.session_contract import SessionActor, SessionRef, Submission
 
 
 

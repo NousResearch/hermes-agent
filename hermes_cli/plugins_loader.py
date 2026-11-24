@@ -197,18 +197,105 @@ def _load_error_text(exc: BaseException) -> str:
     return str(exc)
 
 
-def _dist_installed(req: str) -> Optional[bool]:
-    """Best-effort presence probe on a requirement's distribution name; ``None`` when unprobeable."""
-    dist = re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+def _dist_name(req: str) -> str:
+    return re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+
+
+def _dist_installed(req: str, path: Optional[list[str]] = None) -> Optional[bool]:
+    """Best-effort probe: a distribution the requirement accepts is installed (on ``path`` when given,
+    else this process's ``sys.path``); ``None`` when unprobeable. The version counts: a running
+    process holding ``x 1.2`` cannot serve a plugin that now requires ``x>=1.3``."""
+    dist = _dist_name(req)
     if not dist:
         return None
     try:
-        importlib.metadata.version(dist)
-        return True
-    except importlib.metadata.PackageNotFoundError:
-        return False
+        found = next(iter(importlib.metadata.distributions(name=dist, path=path) if path
+                          else importlib.metadata.distributions(name=dist)), None)
     except Exception:
         return None
+    if found is None:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(req).specifier.contains(found.version, prereleases=True)
+    except (ImportError, ValueError):  # no packaging, or an unparseable requirement/version: presence decides
+        return True
+
+
+def missing_python_dependencies(manifest: Any) -> list[str]:
+    """The plugin's effective Python requirements (:func:`_declared_requirements`) this process
+    cannot import.
+
+    A requirement whose environment marker excludes this interpreter is never missing: PM does not
+    install it here, so reporting it would ask for a restart or repair that can never help."""
+    return [req for req in _declared_requirements(manifest)
+            if _applies_here(req) and _dist_installed(req) is False]
+
+
+def _declared_requirements(manifest: Any) -> tuple[str, ...]:
+    """What PM installs into Hermes's environment for this plugin: its declaration read the way
+    admission reads it (``pm.plugin_declarations.read_python_declaration`` — an authored
+    ``pyproject.toml`` first, then ``python_dependencies`` / ``pip_dependencies``; nothing for a
+    ``python_runtime: external`` sidecar). A plugin with no directory (an entry point) has only its
+    manifest list."""
+    path = getattr(manifest, "path", None)
+    if not path or not Path(path).is_dir():
+        return tuple(getattr(manifest, "python_dependencies", None) or ())
+    from pm.plugin_declarations import read_python_declaration
+    try:
+        return read_python_declaration(Path(path)).install_requirements
+    except (OSError, ValueError):  # a declaration PM cannot read is refused at admission, not ours to report
+        return ()
+
+
+def hermes_fit_error(manifest: Any) -> Optional[str]:
+    """Why this Hermes is not one the plugin accepts: ``requires_hermes``, then the plugin's own
+    requirement on ``hermes-agent``. PM's build leaves such a plugin out by the same gate
+    (``pm.workspace.hermes_fit_error``), so it is skipped here rather than imported without its
+    dependencies, and loads again once Hermes fits."""
+    from hermes_cli.plugins_manifest import requires_hermes_error
+
+    reason = requires_hermes_error(manifest)
+    path = getattr(manifest, "path", None)
+    if reason or not path or not Path(path).is_dir():
+        return reason
+    from pm.plugin_declarations import read_python_declaration
+    from pm.workspace import core_requirement_error
+    try:
+        return core_requirement_error(read_python_declaration(Path(path)))
+    except (OSError, ValueError):  # a declaration PM cannot read is refused at admission, not ours to report
+        return None
+
+
+def _applies_here(req: str) -> bool:
+    if ";" not in req:
+        return True
+    try:
+        from packaging.requirements import InvalidRequirement, Requirement
+    except ImportError:
+        return True
+    try:
+        marker = Requirement(req).marker
+        return marker is None or marker.evaluate()
+    except (InvalidRequirement, ValueError, KeyError):  # unparseable: keep reporting it
+        return True
+
+
+def installed_in_selected_environment(requirements: list[str]) -> bool:
+    """Whether every one of *requirements* is in the dependency environment PM currently selects.
+
+    Activation is a boot decision (``pm.environments.activate_dependencies``): a gateway or dashboard
+    that was running when ``hermes plugins enable`` committed a new generation keeps the old one. A
+    requirement it cannot import that the selected generation carries therefore needs a restart, not
+    a repair. False when unknown."""
+    try:
+        from pm.environments import selected_venv, site_packages
+        from pm.paths import repo_root
+
+        site = str(site_packages(selected_venv(repo_root())))
+        return bool(requirements) and all(_dist_installed(req, [site]) for req in requirements)
+    except (OSError, RuntimeError, ValueError):  # unreadable or invalid selection record
+        return False
 
 
 class PluginLoaderMixin:
@@ -284,14 +371,13 @@ class PluginLoaderMixin:
         this a load that raised or overran its deadline at startup stays down until a forced re-discovery
         (#126356). True when a loader was re-armed."""
         from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
-        from hermes_cli.plugins_manifest import requires_hermes_error
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             failed = next((p.manifest for p in self._plugins.values()
                            if p.error and not p.enabled and p.manifest.kind == "platform"
                            and self._platform_name_from_manifest(p.manifest) == platform_name), None)
             # Re-gate: a placeholder (disabled, not enabled, catalog-removed) or a requires_hermes mismatch
             # carries the same error-set shape as a failed load but must never be imported.
-            if failed is None or requires_hermes_error(failed) or gate_manifest(
+            if failed is None or hermes_fit_error(failed) or gate_manifest(
                     failed, _get_disabled_plugins(), _get_enabled_plugins()).action not in ("defer", "load"):
                 return False
             with _ABANDONED_LOADERS_LOCK:  # its hung import is still running: another retry only leaks a thread
@@ -430,20 +516,24 @@ class PluginLoaderMixin:
 
         Plugin admission and PM repair own dependency changes.
         """
-        deps = manifest.python_dependencies
-        if not deps:
+        missing = missing_python_dependencies(manifest)
+        if not missing:
             return
         key = manifest_key(manifest)
-        missing = [req for req in deps if _dist_installed(req) is False]
-        if missing:
+        if installed_in_selected_environment(missing):
+            logger.warning(
+                "Plugin %s's Python dependencies were installed after this process started: %s. "
+                "A running process never switches dependency environments; restart Hermes "
+                "(hermes gateway restart for the gateway) to load them.",
+                key, ", ".join(missing),
+            )
+        else:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "
                 "installed: %s. For an enabled plugin, run hermes pm repair, "
                 "then restart Hermes. Discovery does not install dependencies.",
                 key, ", ".join(missing),
             )
-        else:
-            logger.debug("Plugin %s python_dependencies satisfied: %s", key, ", ".join(deps))
 
     def _validate_plugin_config_schema(self, manifest: PluginManifest) -> None:
         """Warn (never block) on plugins.entries.<id> settings that violate config_schema.
@@ -483,9 +573,8 @@ class PluginLoaderMixin:
         if manifest.portable:
             self._load_portable_plugin(manifest, loaded)
             return
-        # requires_hermes gate: skip cleanly (no import, no traceback) on a version mismatch.
-        from hermes_cli.plugins_manifest import requires_hermes_error
-        reason = requires_hermes_error(manifest)
+        # Version gate: skip cleanly (no import, no traceback) on a version mismatch.
+        reason = hermes_fit_error(manifest)
         if reason:
             loaded.error = reason
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
@@ -650,7 +739,7 @@ class PluginLoaderMixin:
         try:
             from hermes_cli.agent_plugins import load_agent_plugin
             package = load_agent_plugin(
-                Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.skill_namespace)
+                Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.data_namespace)
             ctx = PluginContext(manifest, self)
             for diagnostic in package.diagnostics:
                 logger.warning("Agent Plugin '%s' [%s]: %s", lookup_key, diagnostic.scope, diagnostic.message)

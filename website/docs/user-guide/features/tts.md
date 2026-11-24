@@ -228,6 +228,22 @@ Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are se
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
 
+### ElevenLabs: agent-selected voices
+
+With `tts.provider: elevenlabs` and `ELEVENLABS_API_KEY` set, the agent can pick a different voice for each `text_to_speech` call, for example one voice per character in a script. The ElevenLabs version of `text_to_speech` has two extra fields that other providers never see (they keep the configured voice):
+
+- `voice_id` picks the voice for this call. Leaving it out uses `tts.elevenlabs.voice_id`; the config is never rewritten.
+- `find_voices` searches for voices instead of speaking. It returns 20 voices per page by default (up to 100), with `next_page` for the following page:
+  - `source: library` (default) searches the public Voice Library: thousands of community voices, most-used first. Library voices work directly by `voice_id` without saving them first; ElevenLabs only allows them over the API on paid plans, and a few carry a higher credit rate (shown as `credit_rate`).
+  - `source: account` lists the voices on your account: premade ones plus anything you saved, cloned or designed.
+  - Filters: free-text `query`, `gender`, `age`, `accent`, `language` (ISO code like `en`), and for the library `use_case` (e.g. `characters_animation`) and `sort` (`usage_character_count_1y`, `trending`, `cloned_by_count`, `created_date`).
+
+The library search matches words in voice names and descriptions literally. "orc" finds orc voices, but "dwarf" finds none, so the agent is told to fall back to describing the sound ("gravelly old" with `age: old` and `use_case: characters_animation`).
+
+The ElevenLabs API key needs the **Text to Speech** permission to speak and **Voices: Read** to search.
+
+The agent can't listen to voices. It chooses from each voice's labels and description, and every result carries a `preview_url` you can open to hear the voice before committing to it.
+
 ### xAI Custom Voices (voice cloning)
 
 xAI supports cloning your voice and using it with TTS. Create a custom voice in the [xAI Console](https://console.x.ai/team/default/voice/voice-library), then set the resulting `voice_id` in your config:
@@ -495,20 +511,22 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 # In ~/.hermes/config.yaml
 stt:
   provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
-  language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
+  language: "en"              # Global hint; blank falls back to HERMES_LOCAL_STT_LANGUAGE, then auto-detect
   local:
     model: "base"             # tiny, base, small, medium, large-v3, turbo
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""              # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   groq:
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""              # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   openai:
     model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
   mistral:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
     model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else "en"
+    language: ""              # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
 ```
+
+Blank provider language settings in this example inherit the global `"en"`; they do not select auto-detection. See [STT language resolution](../configuration.md#speech-to-text-stt) for precedence, an auto-detection example, and command-backend limits.
 
 ### Provider Details
 
@@ -531,7 +549,7 @@ HF_HUB_DISABLE_XET=1
 
 `HF_HUB_DISABLE_XET=1` keeps downloads on the mirror's regular HTTP path instead of contacting Xet CAS hosts that do not honor `HF_ENDPOINT`.
 
-**Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option. Set `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip Whisper's auto-detect and reduce latency on known-language audio.
+**Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option. Use `stt.groq.language` for a provider-specific language hint or `stt.language` for a global hint. `HERMES_LOCAL_STT_LANGUAGE` is used only when neither setting supplies a non-empty hint. Groq Whisper auto-detects when no hint remains after resolution.
 
 **OpenAI API** — Accepts `VOICE_TOOLS_OPENAI_KEY` first and falls back to `OPENAI_API_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, and `gpt-transcribe`.
 
@@ -644,7 +662,7 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 |-----------------|---------|------------------------------------------------------------------------------------------------------|
 | `timeout`       | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
 | `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
-| `language`      | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
+| `language`      | `en`    | Forwarded to `{language}`; follows [STT language resolution](../configuration.md#speech-to-text-stt), with a final `en` fallback. |
 | `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
 | `normalize`     | `false` | Transcode the input to 16 kHz mono m4a (ffmpeg) before the command runs; `{input_path}` then points at the normalized file. |
 
@@ -678,7 +696,7 @@ For STT engines that aren't built-in AND can't be expressed as a shell command (
 2. **`stt.provider` matches `stt.providers.<name>` with `command:` set** → command-provider runner (see [STT custom command providers](#stt-custom-command-providers)). Wins over a same-name plugin.
 3. **`stt.provider` matches a plugin-registered `TranscriptionProvider`** → plugin dispatch:
    - if the plugin's `is_available()` returns `False` (missing creds or SDK), the call surfaces an unavailability error envelope identifying the plugin — **not** the generic "No STT provider available" message.
-   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and `language` (from `stt.<provider>.language`).
+   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and the resolved `language` hint (see [STT language resolution](../configuration.md#speech-to-text-stt)).
 4. **No match** → "No STT provider available" error.
 
 #### Per-provider config namespace
@@ -695,7 +713,7 @@ stt:
     # own config.yaml access in __init__/is_available/transcribe
 ```
 
-The dispatcher forwards `model` and `language` from this section; everything else, the plugin can read itself.
+Other plugin-specific keys are read by the plugin itself.
 
 #### Minimal plugin
 

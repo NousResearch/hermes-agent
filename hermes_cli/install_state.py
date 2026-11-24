@@ -266,10 +266,11 @@ def _service_homes() -> Iterable[Path]:
 def _definition_homes(definition: Path, *, machine_wide: bool, follow: bool = True) -> Iterator[Path]:
     """The homes one definition names, and those named by the launchers it starts (the Windows
     Startup-folder fallback names only its launcher). Unreadable: none."""
+    from hermes_cli.gateway_runtime_service_identity import launcher_text
     from hermes_cli.gateway_service_owner import service_definition_homes, service_definition_launchers
 
     try:
-        text = _read_text(definition)
+        text = launcher_text(_read_bytes(definition))
     except (OSError, UnicodeError, ValueError):
         return
     account = _unit_account(text) or ("root" if machine_wide else None)
@@ -463,10 +464,14 @@ CHECKS: tuple[tuple[Evidence, Callable[[_Root], bool]], ...] = (
 # ── small readers ─────────────────────────────────────────────────────────────────────────────
 
 
-def _read_text(path: Path) -> str:
+def _read_bytes(path: Path) -> bytes:
     if path.stat().st_size > _MAX_FILE_BYTES:
         raise ValueError(f"{path} is larger than {_MAX_FILE_BYTES} bytes")
-    return path.read_text(encoding="utf-8-sig")
+    return path.read_bytes()
+
+
+def _read_text(path: Path) -> str:
+    return _read_bytes(path).decode("utf-8-sig")
 
 
 def _read_mapping(path: Path, parse: Callable[[str], Any]) -> dict[str, Any]:

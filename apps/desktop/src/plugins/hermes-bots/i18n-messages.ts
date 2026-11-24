@@ -3,9 +3,12 @@
  */
 
 import { type CanonicalGroupMessages } from './canonical-group-locales'
+import { type CrossGatewayGroupMessages } from './cross-gateway-locales'
 
 export type BotsMessages = {
   canonical: { [K in keyof CanonicalGroupMessages]: string }
+  /** Group chats seating bots from more than one connected machine. */
+  crossGateway: { [K in keyof CrossGatewayGroupMessages]: CrossGatewayGroupMessages[K] }
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string
@@ -145,6 +148,7 @@ export type BotsMessages = {
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string
+    openBotChatInNewTab: string
     /** Screen-reader label for the row spinner while a cold bot chat opens. */
     openingChat: string
     /** Row context menu: pin/hide toggles, their toasts, and the groups entry. */
@@ -385,6 +389,7 @@ export type BotsMessages = {
     otherControls: string
     agentControls: string
     controlTaken: string
+    needsHttps: string
   }
 
   /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,

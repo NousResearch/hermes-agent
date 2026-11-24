@@ -118,6 +118,18 @@ def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int)
         del store[next(iter(store))]
 
 
+def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: Optional[dict]) -> Any:
+    """A turn's typing/status metadata, fixed when the turn starts and reused for every refresh and
+    clear. ``anchor`` is the turn's own message id: an adapter whose status thread depends on the turn
+    (``status_metadata_for_turn``: a top-level Slack DM's status sits on its triggering message) takes
+    it from here, not from per-chat state that a later inbound in the chat overwrites. Looked up on
+    the class, so a test double's auto-attributes never stand in for the hook."""
+    hook = getattr(type(adapter), "status_metadata_for_turn", None)
+    if anchor is None or not callable(hook):
+        return metadata
+    return hook(adapter, str(chat_id), str(anchor), metadata)
+
+
 # Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
 # underscore, code fence markers, inline code, headings. Links and the newline
 # squeeze run after these, in that order (see ``strip_markdown``).

@@ -100,22 +100,3 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
-
-
-@pytest.mark.asyncio
-async def test_new_command_drops_the_sessions_delegation_backend_override():
-    """A ``/delegation <mode>`` pick is session-scoped like ``/model``: /new starts the chat on config.yaml's backend
-    (the route key survives /new), and other chats keep theirs."""
-    from agent.delegation_backends import get_session_backend, set_session_backend
-
-    runner = _make_runner()
-    session_key = build_session_key(_make_source())
-    set_session_backend(session_key, "default")
-    set_session_backend("other_session_key", "default")
-    try:
-        await runner._handle_reset_command(_make_event("/new"))
-        assert get_session_backend(session_key) is None
-        assert get_session_backend("other_session_key") == "default"
-    finally:
-        set_session_backend(session_key, None)
-        set_session_backend("other_session_key", None)

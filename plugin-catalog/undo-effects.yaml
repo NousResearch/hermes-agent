@@ -1,0 +1,19 @@
+name: undo-effects
+title: Undo Effects
+repo: https://github.com/Moodtuner997/hermes-undo-effects
+sha: f02de8ca69104f44b9b3ec78155d7152412b9e97
+version: "0.1.0"
+description: "Puts back files an agent deleted or overwrote: before write_file, patch and destructive terminal commands (rm, mv, cp, redirects, tee, sed -i, find -delete) it saves the affected files to a local store and lets the tool run unchanged; /undo-effects lists the effects and restores them, refusing to overwrite later edits unless forced and keeping a safety copy so a restore can be undone. Disclosure — no network; reads the contents of the files and directories a covered tool call is about to change; writes unencrypted copies of them under HERMES_HOME/plugin-data/undo-effects/ (files named like credentials, files above 50 MB, node_modules, .venv and .git are skipped and reported); runs no shell command and no background process; never blocks, rewrites or approves a tool call, and runs the tool even if a snapshot fails; covers the local terminal backend only; no telemetry."
+maintainer: Moodtuner997
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/Moodtuner997/hermes-undo-effects#readme
+readme: true
+platforms: [linux, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - tool_execution
+  requires_env: []

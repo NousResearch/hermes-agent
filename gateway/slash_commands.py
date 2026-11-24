@@ -53,6 +53,15 @@ _DIFF_MODE_BY_ARG = {**dict.fromkeys(("staged", "--staged", "cached", "--cached"
                      **dict.fromkeys(("all", "--all", "head"), "all"), "session": "session"}
 
 # /voice subcommand -> stored mode (None = auto-TTS disabled), confirmation i18n key.
+def _voice_timeout_duration(seconds: int) -> str:
+    """Readable auto-leave duration: ``5 min`` / ``15 min`` / ``1 h`` (falls back to seconds)."""
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600} h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60} min"
+    return f"{seconds}s"
+
+
 _VOICE_MODE_BY_ARG = {
     **dict.fromkeys(("on", "enable"), ("voice_only", "gateway.voice.enabled_voice_only")),
     **dict.fromkeys(("off", "disable"), ("off", "gateway.voice.disabled_text")),
@@ -139,6 +148,7 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         subprocess.Popen(
             [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
              sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
+            # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
         return
     hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
@@ -154,6 +164,7 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     # calls os.setsid() in the child.
     setsid_bin = shutil.which("setsid")
     argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
+    # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -440,13 +451,16 @@ class GatewaySlashCommandsMixin(
             await self._interrupt_and_clear_session(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
-        agent = self._running_agents.get(session_key)
+        # A turn the app started while the chat was elsewhere still runs on its own key (/resume).
+        from gateway.session_detached import chat_running_key
+        run_key = chat_running_key(self, session_key, session_entry)
+        agent = self._running_agents.get(run_key)
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
-            await _stop(session_key, "stop_command_pending")
-            logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
+            await _stop(run_key, "stop_command_pending")
+            logger.info("STOP (pending) for session %s — sentinel cleared", run_key)
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:  # force-clean the session lock so a truly hung agent doesn't keep it forever
-            await _stop(session_key, "stop_command_handler")
+            await _stop(run_key, "stop_command_handler")
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
@@ -489,6 +503,91 @@ class GatewaySlashCommandsMixin(
         except Exception:
             logger.debug("Failed to clear typing on /stop with no active agent", exc_info=True)
         return t("gateway.stop.no_active")
+
+
+    async def _handle_start_command(self, event: MessageEvent) -> str:
+        """Handle /start - toggle free-response mode for the current channel.
+
+        When enabled, Hermes replies to every message in this channel without
+        requiring a mention or ping. The channel is added to / removed from
+        free_response_channels in the platform config (a comma-separated list
+        of channel IDs), persisted durably so the change survives a restart.
+        """
+        from gateway.run import _load_gateway_config
+        config_path, platform_key = self._display_config_target(event)
+        channel_id = getattr(event.source, "chat_id", None) or getattr(event, "chat_id", None)
+        if not channel_id:
+            return "Could not determine the channel for this command."
+        channel_id = str(channel_id).strip()
+        user_config = _load_gateway_config()
+        # The adapter resolves free-response channels from the effective ``<plat>:``
+        # section first (a top-level legacy block outranks ``platforms.<plat>``), and
+        # falls back to ``<PLAT>_FREE_RESPONSE_CHANNELS``. Writing only the nested
+        # key makes /start work in memory but silently revert on the next gateway
+        # restart, when the stale top-level block or env value wins. Fold every
+        # source into the union, then persist to all authoritative locations.
+        from hermes_cli.config import read_user_config_raw
+        platforms = user_config.get("platforms", {}) if isinstance(user_config, dict) else {}
+        plat = platforms.get(platform_key, {}) if isinstance(platforms, dict) else {}
+        raw_config = read_user_config_raw(config_path)
+        top_block = raw_config.get(platform_key) if isinstance(raw_config, dict) else None
+        top_has_key = isinstance(top_block, dict) and "free_response_channels" in top_block
+        sources = [plat.get("free_response_channels", "") if isinstance(plat, dict) else ""]
+        if top_has_key:
+            sources.append(top_block["free_response_channels"])
+        env_key = f"{platform_key.upper()}_FREE_RESPONSE_CHANNELS"
+        if os.environ.get(env_key):
+            sources.append(os.environ[env_key])
+        current: set[str] = set()
+        for raw in sources:
+            if isinstance(raw, (list, tuple)):
+                current.update(str(c).strip() for c in raw if str(c).strip())
+            elif raw is not None:
+                current.update(c.strip() for c in str(raw).split(",") if c.strip())
+        if channel_id in current:
+            current.discard(channel_id)
+            enabled = False
+        else:
+            current.add(channel_id)
+            enabled = True
+        new_value = ",".join(sorted(current, key=lambda x: int(x) if x.isdigit() else x))
+        try:
+            _write_raw_config_leaf(
+                config_path,
+                ("platforms", platform_key, "free_response_channels"),
+                new_value,
+            )
+            if top_has_key:
+                # platform_section() prefers the top-level block at startup.
+                _write_raw_config_leaf(
+                    config_path,
+                    (platform_key, "free_response_channels"),
+                    new_value,
+                )
+        except Exception as e:  # pragma: no cover - defensive: never block the toggle on a write error
+            logger.warning("Failed to persist free_response_channels for /start: %s", e)
+            return f"Toggled in memory but could not save: {e}"
+        # Keep the running gateway config in sync too. Adapters read free_response_channels from
+        # their PlatformConfig.extra at message time, so persisting only to config.yaml would leave
+        # the toggle inert until the next gateway restart (mirrors /sethome's in-memory update).
+        try:
+            from gateway.config import Platform, PlatformConfig
+            platform = getattr(event.source, "platform", None)
+            if not isinstance(platform, Platform):
+                platform = Platform(str(platform)) if platform else None
+            gateway_config = getattr(self, "config", None)
+            if gateway_config is not None and platform is not None:
+                platform_config = gateway_config.platforms.setdefault(platform, PlatformConfig())
+                platform_config.extra["free_response_channels"] = new_value
+        except Exception:
+            logger.debug("Failed to sync free_response_channels into the running config", exc_info=True)
+        status = "ENABLED" if enabled else "DISABLED"
+        emoji = "ON" if enabled else "OFF"
+        return (
+            f"Free-response {status} ({emoji}) for <#{channel_id}>!\n"
+            f"Hermes will {'now reply to every message here without a ping' if enabled else 'no longer auto-reply here'}."
+        )
+
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — inspect and manually control failed/paused
@@ -675,8 +774,128 @@ class GatewaySlashCommandsMixin(
         platform_config.home_channel = home
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
-    async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+    async def _voice_panel_apply_mode(self, event: MessageEvent, mode: str) -> str:
+        """Persist ``mode`` for this chat and return the confirmation line. Shared by typed
+        ``/voice <arg>`` and the Discord panel's mode buttons so both route identically."""
+        self._apply_voice_mode(self._delivery_adapter_for(event.source),
+                               self._voice_key_for_source(event.source), event.source.chat_id, mode)
+        try:
+            from gateway.session_config import local_voice_transition
+            local_voice_transition(event.source, mode)
+        except Exception:
+            pass
+        reply_key = {"voice_only": "gateway.voice.enabled_voice_only",
+                     "all": "gateway.voice.tts_enabled",
+                     "off": "gateway.voice.disabled_text"}.get(mode)
+        return t(reply_key) if reply_key else t(f"gateway.voice.label_{mode}")
+
+    async def _voice_panel_apply_channel(self, event: MessageEvent, value: str) -> str:
+        """Join/leave the caller's voice channel from a panel click (``value`` = join|leave)."""
+        if value == "join":
+            return await self._handle_voice_channel_join(event)
+        if value == "leave":
+            return await self._handle_voice_channel_leave(event)
+        return t("gateway.voice.channel_unsupported")
+
+    async def _voice_panel_apply_auto_leave(self, event: MessageEvent) -> str:
+        """Cycle the voice-channel inactivity timeout: off \u2192 5 min \u2192 15 min \u2192 1 h \u2192 off."""
+        adapter = self._delivery_adapter_for(event.source)
+        cycler = getattr(adapter, "cycle_voice_auto_leave_seconds", None)
+        if not callable(cycler):
+            return t("gateway.voice.channel_unsupported")
+        seconds = int(cycler() or 0)
+        if seconds <= 0:
+            return "Auto-leave off \u2014 the bot stays in the channel until /voice leave."
+        return (f"Auto-leave set to {_voice_timeout_duration(seconds)} \u2014 the bot leaves after "
+                f"{_voice_timeout_duration(seconds)} of inactivity.")
+
+    async def _voice_panel_auto_join(self, event: MessageEvent) -> str:
+        """Join the caller's voice channel when ``/voice`` or ``/vc`` is run from inside one.
+
+        Returns the line to show on the panel's status line: the join confirmation, or the join
+        error when the attempt failed, or "" when there is nothing to do (caller not in a channel,
+        no voice support, already connected to that same channel). Never raises: the panel must
+        still open when joining is impossible.
+        """
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter is None or not hasattr(adapter, "join_voice_channel"):
+            return ""
+        getter = getattr(adapter, "get_user_voice_channel", None)
+        if not callable(getter):
+            return ""
+        guild_id = self._get_guild_id(event)
+        if not guild_id:
+            return ""
+        try:
+            target = await getter(guild_id, event.source.user_id)
+        except Exception:
+            logger.debug("voice panel: could not resolve the caller's voice channel", exc_info=True)
+            return ""
+        if target is None:
+            return ""
+        connected = getattr(adapter, "connected_voice_channel_id", None)
+        if callable(connected) and connected(guild_id) == getattr(target, "id", None):
+            return ""  # already listening there; don't churn the connection
+        try:
+            text = await self._handle_voice_channel_join(event)
+        except Exception:
+            logger.warning("voice panel: auto-join failed", exc_info=True)
+            return ""
+        # On success keep only "Joined voice channel **x**." — the rest of the join message is
+        # instructions the panel's buttons already offer. Failures keep their full explanation.
+        if callable(connected) and connected(guild_id) == getattr(target, "id", None):
+            return text.split("\n", 1)[0]
+        return text
+
+    async def _try_send_voice_panel(self, event: MessageEvent, mode: str, notice: str = "") -> bool:
+        """Send the Discord ``/voice`` button panel when the adapter supports it; True when sent
+        (the adapter owns the reply, so the handler returns None). Any failure falls back to text."""
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter is None or getattr(type(adapter), "send_voice_panel", None) is None:
+            return False
+        state_getter = getattr(adapter, "_voice_panel_state", None)
+
+        async def _on_action(_chat_id: str, value: str) -> dict:
+                            new_mode = self._voice_mode.get(self._voice_key_for_source(event.source), mode)
+                            if value in ("join", "leave"):
+                                text = await self._voice_panel_apply_channel(event, value)
+                                new_mode = self._voice_mode.get(self._voice_key_for_source(event.source), new_mode)
+                            elif value == "auto_leave":
+                                text = await self._voice_panel_apply_auto_leave(event)
+                            elif value in ("voice_only", "all", "off"):
+                                text = await self._voice_panel_apply_mode(event, value)
+                                new_mode = value
+                            elif value == "shut_up":
+                                guild_id = self._get_guild_id(event)
+                                if guild_id and adapter is not None:
+                                    try:
+                                        adapter.stop_voice_playback(guild_id)
+                                    except Exception:
+                                        pass
+                                # Also stop local TTS playback
+                                from tools.voice_mode import stop_playback
+                                stop_playback()
+                                text = "Playback stopped."
+                            else:
+                                text = t("gateway.voice.channel_unsupported")
+                            return {"status": text, "mode": new_mode,
+                                    "state": state_getter() if callable(state_getter) else {}}
+
+        try:
+            result = await adapter.send_voice_panel(
+                chat_id=event.source.chat_id, mode=mode, on_action=_on_action,
+                metadata=self._reply_metadata(event), notice=notice)
+            return bool(getattr(result, "success", False))
+        except Exception as e:
+            logger.warning("send_voice_panel failed, falling back to text: %s", e)
+            return False
+
+    async def _handle_voice_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /voice [on|off|tts|channel|leave|status] command.
+
+        Bare ``/voice`` and ``/voice status`` send the button panel on adapters that have one
+        (Discord); every other platform, and any panel failure, keeps the original text output.
+        """
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         # Voice state belongs to the (bot, chat) pair: resolve the adapter that received the
@@ -707,7 +926,11 @@ class GatewaySlashCommandsMixin(
         if args == "leave":
             return await self._handle_voice_channel_leave(event)
         if args == "status":
+            # The panel is the richer status view (buttons included), so prefer it where it exists.
+            notice = await self._voice_panel_auto_join(event)
             mode = self._voice_mode.get(voice_key, "off")
+            if await self._try_send_voice_panel(event, mode, notice=notice):
+                return None
             label = t(f"gateway.voice.label_{mode}") if mode in ("off", "voice_only", "all") else mode
             lines = [t("gateway.voice.status_mode", label=label)]
             guild_id = self._get_guild_id(event)  # append voice channel info if connected
@@ -719,6 +942,13 @@ class GatewaySlashCommandsMixin(
                     status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
                     lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
             return "\n".join(lines)
+
+        # Bare /voice and /vc: hop into the caller's voice channel first (this is the "be in VC,
+        # run the command, bot joins" flow), then show the panel with the result on its status line.
+        notice = await self._voice_panel_auto_join(event)
+        current = self._voice_mode.get(voice_key, "off")
+        if await self._try_send_voice_panel(event, current, notice=notice):
+            return None
 
         # Toggle: off → on, on/all → off
         turning_on = self._voice_mode.get(voice_key, "off") == "off"

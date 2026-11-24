@@ -131,7 +131,8 @@ class SessionPruneRewriteMixin:
         return mismatches
 
     def rewrite_pruned_rows(self, session_id: str, changes: list[tuple[dict[str, Any], dict[str, Any]]], *,
-        model_config_patch: Optional[dict[str, Any]] = None) -> int:
+        model_config_patch: Optional[dict[str, Any]] = None, turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0) -> int:
         """Proactive-prune commit that rewrites only the changed rows, in place (#124102).
 
         ``archive_and_compact`` is a generation writer: it archives every active row and re-inserts the whole
@@ -155,6 +156,8 @@ class SessionPruneRewriteMixin:
         when the held dict carries the digest — it covers every owned column including assistant
         ``tool_calls`` arguments — and the representation-safe loader-lens identity compare otherwise
         (raw storage bytes are never compared against a loaded/normalized view; #124102).
+        ``turn_lease_holder`` (a writer inside a turn) refuses with :class:`SessionTurnLeaseLostError`, before
+        writing anything, when another process owns the session's turn lease, as ``append_message`` does.
         Returns the rows rewritten. Each rewritten dict is stamped with its row's new digest, so a second
         prune of the same transcript compares against what this commit wrote, not what it replaced.
         """
@@ -206,6 +209,10 @@ class SessionPruneRewriteMixin:
             return row
 
         def _do(conn):
+            if turn_lease_holder:
+                # A writer inside a turn commits only while it still owns the turn, like its appends.
+                self._check_transcript_write_guards(conn, session_id, None, turn_lease_holder=turn_lease_holder,
+                                                    turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             patch = model_config_patch is not None
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None

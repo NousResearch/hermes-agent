@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
@@ -23,6 +24,16 @@ import { VoiceMenu } from './voice-menu'
 // Re-exported: `context-menu.tsx` and other row neighbours have always reached
 // for these here, and the row is where they read as belonging.
 export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
+
+// iOS fires mousedown after touchend, and its default blurs the editor before
+// submit runs. The browser-hosted Desktop keeps focus where it was so a send
+// leaves the keyboard as it was. Native Desktop keeps the press's blur, which
+// closes an open completion list and clears a composition the IME never ended.
+const keepEditorFocus = (event: { preventDefault: () => void }) => {
+  if (hostHas('keepFocusOnPress')) {
+    event.preventDefault()
+  }
+}
 
 interface ConversationProps {
   active: boolean
@@ -123,8 +134,15 @@ export function ComposerControls({
     />
   )
 
+  // The browser host's touch-size controls can outgrow a minimal row, so there
+  // they pack to the end and wrap. Native Desktop keeps main's single row.
+  const browserHost = hostHas('touchSizedControls')
+
   return (
-    <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+    <div
+      className={cn('flex min-w-0 shrink items-center gap-(--composer-control-gap)', browserHost && 'justify-end')}
+      style={{ flexWrap: browserHost && minimal ? 'wrap' : undefined }}
+    >
       {minimal ? null : (
         <>
           {hideModelPill ? null : (
@@ -144,6 +162,7 @@ export function ComposerControls({
             className={GHOST_ICON_BTN}
             disabled={disabled}
             onClick={onQueue}
+            onMouseDown={keepEditorFocus}
             size="icon"
             type="button"
             variant="ghost"
@@ -170,6 +189,7 @@ export function ComposerControls({
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
+            onMouseDown={keepEditorFocus}
             type="submit"
           >
             {showStop ? (

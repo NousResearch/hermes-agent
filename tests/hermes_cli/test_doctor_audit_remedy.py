@@ -32,7 +32,7 @@ def _run_audit_one(capsys, audit_extra, audit_stdout):
     issues: list[str] = []
     completed = subprocess.CompletedProcess([], 0, stdout=audit_stdout, stderr="")
     with patch.object(doctor_tools.subprocess, "run", return_value=completed):
-        doctor_tools._audit_one("npm", "C:/fake/root", "Browser tools (agent-browser)",
+        doctor_tools._audit_one("npm", "C:/fake/root", "Root npm package",
                                 audit_extra, issues)
     return capsys.readouterr().out, issues
 
@@ -46,7 +46,7 @@ def test_root_remedy_never_prescribes_local_audit_fix(capsys):
     assert "npm audit fix" not in out
     assert "lockfile bump" in out
     assert issues == [
-        "Browser tools (agent-browser) has 2 npm vulnerabilities; wait for an upstream lockfile fix, then update "
+        "Root npm package has 2 npm vulnerabilities; wait for an upstream lockfile fix, then update "
         "your installation (Docker: pull a rebuilt image; recreating the same image restores the same dependencies)"
     ]
 
@@ -71,11 +71,8 @@ def test_clean_tree_reports_no_known_vulnerabilities(capsys):
 
 
 def test_root_audit_row_is_not_mislabeled_as_agent_browser(monkeypatch, tmp_path, capsys):
-    """agent-browser is a pm-managed precompiled binary (pm/packages.py::AgentBrowser,
-    staged via BinaryPackage.stage()) with no node_modules/lockfile of its own left after
-    staging, so there is nothing under it for npm to audit. The root package.json row
-    (js-yaml, semver, eslint tooling) must not claim to be auditing agent-browser (#122223).
-    """
+    """The root package.json row (js-yaml, semver, eslint tooling) names itself, not a browser
+    driver it never audits (#122223)."""
     import hermes_cli.doctor as doctor_mod
     from gateway.platforms import whatsapp_common
 

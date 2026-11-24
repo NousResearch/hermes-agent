@@ -562,6 +562,7 @@ def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
             _link_or_copy(s, dst / name)
 
 
+@pytest.mark.allow_network  # the old updater's requirements export provisions the PM toolchain
 def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     """#114616 / #112522 shape: v2026.9.14's updater purges package prefixes only, keeps root
     modules (``utils``, ``hermes_constants``) cached, then imports new restart-phase code.

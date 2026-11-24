@@ -26,6 +26,29 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+def _reserve_child_transcript(child: Any) -> None:
+    """Make a queued child readable without completing its first-turn persistence."""
+    from agent.runtime_session_store import RuntimeSessionStore
+
+    db = child._session_db
+    if db is None or child._persist_disabled or isinstance(db, RuntimeSessionStore):
+        # Managed workers already have an owner-reserved row. Persistence-disabled
+        # children retain their existing no-transcript behavior.
+        return
+    try:
+        # Leave model_config and the prompt unset. The constructor upsert keeps
+        # existing values, so a partial config here would freeze first-turn state.
+        db.create_session(
+            session_id=child.session_id, source="subagent",
+            parent_session_id=child._parent_session_id,
+        )
+        child._session_db_reserved = True
+    except BaseException:
+        # Ownership has transferred, but the child is not attached or published yet.
+        child.close()
+        raise
+
+
 def _num(value: Any, default: int = 0) -> int:
     """int() for counters that may be mocks/None on test doubles."""
     return int(value) if isinstance(value, (int, float)) else default

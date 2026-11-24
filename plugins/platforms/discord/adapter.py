@@ -33,6 +33,7 @@ from urllib.parse import quote, urljoin
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
 from agent.i18n import get_language, t
+from .discord_command_manifest import build_native_command_manifest, get_command_by_name
 from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
@@ -99,13 +100,6 @@ _REQUIRED = object()
 # Text slots hold ``platform.discord.command.*`` / ``slash.*`` catalog keys; ``_native_slash_commands()``
 # resolves them for the active language (a language change re-syncs: the fingerprint carries it).
 _NATIVE_SLASH_COMMAND_SPECS: tuple = (
-    # /start is the platform handshake ping: the gateway answers it SILENTLY (no agent turn,
-    # no session burn), so the simple-slash path used to delete the deferred "thinking..."
-    # response and leave the invoker with nothing at all. Give it a follow-up so Discord
-    # shows its own ephemeral acknowledgement ("Hermes is ready~") instead — private to the
-    # invoker, never a channel post, and the gateway still burns no turn.
-    ("start", "platform.discord.command.start.description", (), "/start",
-     "platform.discord.command.start.followup"),
     ("new", "platform.discord.command.new.description", (), "/reset", "platform.discord.command.new.followup"),
     ("reset", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
     ("model", "platform.discord.command.model.description",
@@ -127,6 +121,7 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
     ("undo", "platform.discord.command.undo.description", (), "/undo", None),
     ("status", "platform.discord.command.status.description", (), "/status", "platform.discord.command.status.followup"),
     ("sethome", "slash.sethome.description", (), "/sethome", None),
+    ("start", "platform.discord.start.description", (), "/start", "platform.discord.start.followup"),
     ("stop", "platform.discord.command.stop.description", (), "/stop", "platform.discord.command.stop.followup"),
     ("steer", "platform.discord.command.steer.description",
      (("prompt", str, _REQUIRED, "platform.discord.command.steer.arg_prompt", None),),
@@ -151,6 +146,14 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
     ("voice", "platform.discord.command.voice.description",
      (("mode", str, "", "platform.discord.command.voice.arg_mode",
        # `join` and `channel` both hit _handle_voice_channel_join; expose both to match docs.
+       (("platform.discord.command.voice.choice_join", "join"), ("platform.discord.command.voice.choice_channel", "channel"),
+        ("platform.discord.command.voice.choice_leave", "leave"), ("platform.discord.command.voice.choice_mode_on", "on"),
+        ("platform.discord.command.voice.choice_tts", "tts"), ("platform.discord.command.voice.choice_mode_off", "off"),
+        ("platform.discord.command.voice.choice_status", "status"))),),
+     "/voice {mode}", None),
+    # /vc: short alias for /voice. The proxy forwards /voice text, so both commands share one handler.
+    ("vc", "platform.discord.command.voice.description",
+     (("mode", str, "", "platform.discord.command.voice.arg_mode",
        (("platform.discord.command.voice.choice_join", "join"), ("platform.discord.command.voice.choice_channel", "channel"),
         ("platform.discord.command.voice.choice_leave", "leave"), ("platform.discord.command.voice.choice_mode_on", "on"),
         ("platform.discord.command.voice.choice_tts", "tts"), ("platform.discord.command.voice.choice_mode_off", "off"),
@@ -192,23 +195,47 @@ def _t_discord(key: str, limit: int, **kwargs: Any) -> str:
 
 
 def _native_slash_commands() -> tuple:
-    """``_NATIVE_SLASH_COMMAND_SPECS`` with descriptions, parameter descriptions and Choice names
-    resolved for the active language: ``(name, description, args, template, followup_key)``.
-    Follow-ups stay KEYS — ``_run_simple_slash`` resolves them when the command actually runs."""
-    def _text(key: str) -> str:
-        return _t_discord(key, _DISCORD_APP_COMMAND_TEXT_LIMIT)
+    """Build native slash commands from the stable manifest.
 
-    def _choice_label(label: str) -> str:
-        return _text(label) if "." in label else label
-
+    Uses stable English descriptions from the manifest for command identity (fingerprint),
+    but keeps followup keys for runtime resolution via i18n when the command executes.
+    Returns: ``(name, description, args, template, followup_key)`` tuples.
+    """
     out = []
-    for name, description_key, args, template, followup_key in _NATIVE_SLASH_COMMAND_SPECS:
-        localized_args = tuple(
-            (arg_name, arg_type, default, _text(desc_key),
-             tuple((_choice_label(lbl), val) for lbl, val in choices) if choices else None)
-            for arg_name, arg_type, default, desc_key, choices in args)
-        out.append((name, _text(description_key), localized_args, template, followup_key))
+    for cmd in build_native_command_manifest():
+        name = cmd["name"]
+        # Use stable manifest description for command identity (fingerprint stability)
+        description = cmd["description"]
+        template = cmd.get("template")
+        followup_key = cmd.get("followup_key")
+
+        # Build args from manifest options (already stable English)
+        args = []
+        for opt in cmd.get("options", []):
+            arg_name = opt["name"]
+            arg_type = str  # Default to string
+            default = "" if not opt.get("required") else _REQUIRED
+            # Use the stable English description from manifest
+            desc_key = opt["description"]
+            choices = None
+            if "choices" in opt:
+                choices = tuple((c["name"], c["value"]) for c in opt["choices"])
+            args.append((arg_name, arg_type, default, desc_key, choices))
+
+        # Apply Discord text limit to description and args (already in English, but cap for safety)
+        capped_description = _truncate_discord_component_text(description, _DISCORD_APP_COMMAND_TEXT_LIMIT)
+        capped_args = tuple(
+            (arg_name, arg_type, default, _truncate_discord_component_text(desc_key, _DISCORD_APP_COMMAND_TEXT_LIMIT), choices)
+            for arg_name, arg_type, default, desc_key, choices in args
+        )
+
+        out.append((name, capped_description, capped_args, template, followup_key))
     return tuple(out)
+
+
+# Backward compatibility: tests import _NATIVE_SLASH_COMMAND_SPECS from this module.
+# Delegate to the manifest's legacy compatibility layer.
+from .discord_command_manifest import _NATIVE_SLASH_COMMAND_SPECS
 
 
 _DISCORD_SELECT_FIELD_LIMIT = 100
@@ -220,8 +247,9 @@ _DISCORD_SELECT_MAX_ROWS = 5
 # Model-select capacity: keep 2 rows for Back/Cancel, fill the rest with selects.
 _DISCORD_MODEL_SELECT_CAPACITY = (_DISCORD_SELECT_MAX_ROWS - 2) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
-# Embed titles cap at 256 chars.
+# Embed titles cap at 256 chars; field values cap at 1024.
 _DISCORD_EMBED_TITLE_LIMIT = 256
+_DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational", "non_conversational_history",
@@ -442,51 +470,6 @@ def _format_privileged_intents_guidance(*, needs_members: bool) -> str:
         ]
     )
     return "\n".join(lines)
-
-
-def _load_opus_codec() -> None:
-    """Try bundled (Windows) opus, then ``ctypes.util.find_library``, then Homebrew paths
-    (find_library misses Homebrew libs on macOS); warn once if none loads."""
-    import ctypes.util
-    opus_candidates = []
-    bundled_opus = _find_discord_windows_bundled_opus(discord)
-    if bundled_opus:
-        opus_candidates.append(bundled_opus)
-    opus_path = ctypes.util.find_library("opus")
-    if opus_path:
-        opus_candidates.append(opus_path)
-    elif sys.platform == "darwin":
-        for _hp in ("/opt/homebrew/lib/libopus.dylib", "/usr/local/lib/libopus.dylib"):  # Apple Silicon, Intel
-            if os.path.isfile(_hp):
-                opus_candidates.append(_hp)
-                break
-    for opus_path in opus_candidates:
-        try:
-            discord.opus.load_opus(opus_path)
-            if discord.opus.is_loaded():
-                break
-        except Exception:
-            logger.warning("Opus codec found at %s but failed to load", opus_path)
-    if not discord.opus.is_loaded():
-        logger.warning("Opus codec not found — voice channel playback disabled")
-
-
-def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
-    """Return discord.py's bundled Windows opus DLL path when present."""
-    if sys.platform != "win32":
-        return None
-    discord_module = discord if discord_module is None else discord_module
-    if discord_module is None:
-        return None
-    opus_module = getattr(discord_module, "opus", None)
-    opus_file = getattr(opus_module, "__file__", None)
-    if not opus_file:
-        return None
-    target = "x64" if struct.calcsize("P") * 8 > 32 else "x86"
-    bundled = _Path(opus_file).resolve().parent / "bin" / f"libopus-0.{target}.dll"
-    if bundled.is_file():
-        return str(bundled)
-    return None
 
 
 class _DiscordNonConversationalMessageTracker:
@@ -1208,7 +1191,9 @@ class VoiceReceiver:
 
 
 from plugins.platforms.discord.adapter_config_readers import (
-    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild,
+    _resolve_exec_approval_admin_gate)
+from plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1219,6 +1204,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_opus import load_opus_codec
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
@@ -1232,6 +1218,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Safety ceiling on split deliveries: chunks beyond the cap become a notice (degenerate turns).
     # Safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of thousands of
@@ -1277,6 +1264,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._voice_timeout_seconds = self._load_voice_timeout()
         self._playback_timeout_seconds = self._load_playback_timeout()
         self._voice_receivers: dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
+        # Live /voice panels: guild_id -> {message_id: VoicePanelView}, repainted on voice events.
+        self._voice_panels: dict[int, dict[int, Any]] = {}
+        self._voice_panel_refresh: dict[int, asyncio.Task] = {}  # guild_id -> pending repaint
         self._voice_listen_tasks: dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
@@ -1452,7 +1442,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             self._set_fatal_error("missing_dependency", "discord.py not installed", retryable=False)
             return False
         if not discord.opus.is_loaded():
-            _load_opus_codec()
+            await asyncio.to_thread(load_opus_codec)
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
             self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
@@ -1562,13 +1552,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
                 guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
+                # Also keep handling guilds where only a /voice panel is open: the panel's own
+                # connection can drop before the event lands, but the panel still needs repainting.
+                if guild_id not in adapter_self._voice_clients and not adapter_self._voice_panels.get(guild_id):
                     return
                 if member == adapter_self._client.user:
+                    # The bot joining/leaving changes the panel's Voice channel field.
+                    adapter_self.schedule_voice_panel_refresh(guild_id)
                     return
                 joined = before.channel is None and after.channel is not None
                 left = before.channel is not None and after.channel is None
@@ -1592,13 +1583,22 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     # state so it never decodes against a stale session.
                     vc = adapter_self._voice_clients.get(guild_id)
                     receiver = adapter_self._voice_receivers.get(guild_id)
-                    if vc is not None and receiver is not None:
-                        bot_channel = getattr(vc, "channel", None)
-                        if bot_channel is not None and (
-                            before.channel == bot_channel
-                            or after.channel == bot_channel
-                        ):
-                            receiver.refresh_credentials("membership change")
+                    bot_channel = getattr(vc, "channel", None) if vc is not None else None
+                    in_bot_channel = bot_channel is not None and (
+                        before.channel == bot_channel
+                        or after.channel == bot_channel
+                    )
+                    if in_bot_channel and receiver is not None:
+                        receiver.refresh_credentials("membership change")
+                    if in_bot_channel:
+                        # Repaint open panels: participant list and member count changed.
+                        if joined:
+                            notice = f"{member.display_name} joined **#{after.channel.name}**."
+                        elif left:
+                            notice = f"{member.display_name} left **#{before.channel.name}**."
+                        else:
+                            notice = f"{member.display_name} moved to **#{after.channel.name}**."
+                        adapter_self.schedule_voice_panel_refresh(guild_id, notice)
 
             # Register slash commands
             if self._slash_commands:
@@ -3946,6 +3946,29 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return None
         return member.voice.channel
 
+    def stop_voice_playback(self, guild_id: int) -> bool:
+        """Stop any active voice playback in the guild (both mixer and legacy paths)."""
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return False
+        stopped = False
+        # Mixer path
+        mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
+        if mixer is not None:
+            mixer.stop_speech()
+            stopped = True
+        # Legacy path
+        if vc.is_playing():
+            vc.stop()
+            stopped = True
+        return stopped
+
+    def connected_voice_channel_id(self, guild_id: int) -> Optional[int]:
+        """ID of the voice channel the bot is currently connected to, or None."""
+        vc = self._voice_clients.get(guild_id)
+        channel = getattr(vc, "channel", None) if vc and vc.is_connected() else None
+        return getattr(channel, "id", None)
+
     def _cancel_voice_timeout(self, guild_id: int) -> None:
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
@@ -4000,6 +4023,224 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Check if the bot is connected to a voice channel in this guild."""
         vc = self._voice_clients.get(guild_id)
         return vc is not None and vc.is_connected()
+
+    # --- /voice panel ---
+
+    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Voice channel info (name, members, count, who is speaking) or None when not connected."""
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return None
+        channel = vc.channel
+        if not channel:
+            return None
+        members_info = []
+        bot_user = self._client.user if self._client else None
+        for member in channel.members:
+            if bot_user and member.id == bot_user.id:
+                continue  # the bot itself is not a participant
+            members_info.append({"user_id": member.id, "display_name": member.display_name, "is_bot": member.bot})
+        speaking_user_ids: set = set()
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver:
+            now = time.monotonic()
+            with receiver._lock:
+                for ssrc, last_t in receiver._last_packet_time.items():
+                    if now - last_t < 2.0:
+                        uid = receiver._ssrc_to_user.get(ssrc)
+                        if uid:
+                            speaking_user_ids.add(uid)
+        for info in members_info:
+            info["is_speaking"] = info["user_id"] in speaking_user_ids
+        return {
+            "channel_name": channel.name, "member_count": len(members_info),
+            "members": members_info, "speaking_count": len(speaking_user_ids),
+        }
+
+    def _voice_panel_state(self, guild_id: Optional[int] = None) -> Dict[str, Any]:
+        """Snapshot the ``/voice`` panel renders: connection, participants, auto-leave timeout."""
+        if guild_id is None:
+            guild_id = next(iter(self._voice_clients), None)
+        info = self.get_voice_channel_info(guild_id) if guild_id is not None else None
+        return {
+            "in_channel": bool(info),
+            "channel_name": (info or {}).get("channel_name", ""),
+            "member_count": (info or {}).get("member_count", 0),
+            "members": (info or {}).get("members", []),
+            "auto_leave_seconds": self.voice_auto_leave_seconds(),
+        }
+
+    def voice_auto_leave_seconds(self) -> int:
+        """Current voice-channel inactivity timeout in seconds (0 = never auto-leave)."""
+        return self._voice_timeout_limit()
+
+    def cycle_voice_auto_leave_seconds(self) -> int:
+        """Advance to the next auto-leave option (off \u2192 5m \u2192 15m \u2192 1h \u2192 off).
+
+        An unlisted value already in the config moves to the nearest larger option rather than
+        jumping back to off, so a hand-edited timeout still cycles sensibly.
+        """
+        choices = VOICE_AUTO_LEAVE_CHOICES
+        current = self.voice_auto_leave_seconds()
+        following = next((choice for choice in choices if choice > current), choices[0])
+        return self.set_voice_auto_leave_seconds(following)
+
+    def set_voice_auto_leave_seconds(self, seconds: int) -> int:
+        """Apply + persist the inactivity timeout and re-arm any live timers immediately."""
+        try:
+            seconds = max(0, int(seconds))
+        except (TypeError, ValueError):
+            seconds = 0
+        self._voice_timeout_seconds = seconds
+        for guild_id in list(self._voice_clients):
+            if seconds > 0:
+                self._reset_voice_timeout(guild_id)
+            else:
+                self._cancel_voice_timeout(guild_id)
+        try:
+            from hermes_cli.config import read_raw_config, save_config
+            cfg = read_raw_config() or {}
+            section = cfg.get("discord")
+            if not isinstance(section, dict):
+                section = cfg["discord"] = {}
+            section["voice_channel_inactivity_timeout_seconds"] = seconds
+            save_config(cfg)
+        except Exception as e:
+            logger.warning("Could not persist voice inactivity timeout: %s", e)
+        return seconds
+
+    async def send_voice_panel(
+        self, chat_id: str, mode: str, on_action, metadata: Optional[Dict[str, Any]] = None,
+        notice: str = "",
+    ) -> "SendResult":
+        """Send the ``/voice`` button panel.
+
+        ``on_action(chat_id, value)`` runs a click and returns the refreshed card as
+        ``{"status": str, "mode": str, "state": {...}}``; ``value`` is a reply mode
+        (``voice_only``/``all``/``off``), ``join``/``leave``, or ``auto_leave``.
+        ``notice`` is an extra leading status line (e.g. the auto-join result).
+        """
+        supports_channels = hasattr(self, "join_voice_channel")
+        state = self._voice_panel_state()
+        status = "Voice mode disabled." if mode == "off" else "Voice mode enabled."
+        if notice:
+            status = f"{notice}\n{status}"
+
+        sent: Dict[str, Any] = {}
+
+        def _build(_channel):
+            embed = _voice_panel_embed(mode, state, status)
+            view = VoicePanelView(
+                on_action=on_action, mode=mode, state=state, supports_channels=supports_channels,
+                allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
+            )
+            view.status = status
+            # Kept so voice join/leave events can repaint this exact message later.
+            view.guild_id = getattr(getattr(_channel, "guild", None), "id", None)
+            sent["view"] = view
+            return {"content": _voice_panel_content(mode, state, status), "embed": embed, "view": view}, view
+        result = await self._send_prompt(chat_id, metadata, _build, fail_log="send_voice_panel")
+        if getattr(result, "success", False):
+            self._register_voice_panel(sent.get("view"))
+            # Also send to the voice channel (VC chat sidebar) if connected
+            try:
+                view = sent.get("view")
+                guild_id = getattr(view, "guild_id", None)
+                if guild_id:
+                    vc = self._voice_clients.get(guild_id)
+                    if vc and vc.is_connected() and vc.channel:
+                        # Build a fresh view for the VC (can't reuse the same view instance)
+                        vc_embed = _voice_panel_embed(mode, state, status)
+                        vc_view = VoicePanelView(
+                            on_action=on_action, mode=mode, state=state, supports_channels=supports_channels,
+                            allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
+                        )
+                        vc_view.status = status
+                        vc_view.guild_id = guild_id
+                        await vc.channel.send(
+                            content=_voice_panel_content(mode, state, status),
+                            embed=vc_embed,
+                            view=vc_view
+                        )
+            except Exception:
+                logger.debug("Voice panel send to voice channel failed", exc_info=True)
+        return result
+
+    # --- /voice panel live refresh ---
+
+    def _register_voice_panel(self, view: Any) -> None:
+        """Track a sent panel so later voice events can edit it instead of posting again."""
+        message = getattr(view, "_message", None)
+        guild_id = getattr(view, "guild_id", None)
+        if message is None or guild_id is None:
+            return
+        panels = self._voice_panels.setdefault(guild_id, {})
+        # One live panel per text channel: a re-run /voice supersedes the previous one there, so
+        # stale copies are dropped from tracking instead of all being edited on every voice event.
+        channel = getattr(message, "channel", None)
+        if channel is not None:
+            for message_id, older in list(panels.items()):
+                older_channel = getattr(getattr(older, "_message", None), "channel", None)
+                if message_id != message.id and older_channel is not None and older_channel.id == channel.id:
+                    panels.pop(message_id, None)
+        panels[message.id] = view
+
+    def schedule_voice_panel_refresh(self, guild_id: int, notice: str = "") -> None:
+        """Queue a coalesced panel repaint after a voice-membership change.
+
+        Chats routinely see several people join at once and Discord rate-limits message edits
+        per channel, so one debounced repaint per guild replaces a burst of edits.
+        """
+        if not self._voice_panels.get(guild_id):
+            return
+        pending = self._voice_panel_refresh.pop(guild_id, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
+
+        async def _run() -> None:
+            try:
+                await asyncio.sleep(_VOICE_PANEL_REFRESH_DELAY)
+                await self._refresh_voice_panels(guild_id, notice)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("voice panel: refresh failed", exc_info=True)
+            finally:
+                if self._voice_panel_refresh.get(guild_id) is asyncio.current_task():
+                    self._voice_panel_refresh.pop(guild_id, None)
+
+        try:
+            self._voice_panel_refresh[guild_id] = asyncio.create_task(_run())
+        except RuntimeError:  # no running loop (shutdown in progress)
+            logger.debug("voice panel: no event loop for refresh")
+
+    async def _refresh_voice_panels(self, guild_id: int, notice: str = "") -> None:
+        """Repaint every open panel of ``guild_id`` with the current connection state."""
+        panels = self._voice_panels.get(guild_id) or {}
+        if not panels:
+            return
+        state = self._voice_panel_state(guild_id)
+        for message_id, view in list(panels.items()):
+            message = getattr(view, "_message", None)
+            if message is None:
+                panels.pop(message_id, None)
+                continue
+            view.state = dict(state)
+            if notice:
+                view.status = notice
+            status = getattr(view, "status", "") or (
+                "Voice mode disabled." if view.mode == "off" else "Voice mode enabled.")
+            try:
+                view._build()  # Join/Leave label and auto-leave label come from the new state
+                await message.edit(
+                    content=_voice_panel_content(view.mode, dict(state), status),
+                    embed=_voice_panel_embed(view.mode, dict(state), status), view=view)
+            except discord.NotFound:
+                panels.pop(message_id, None)  # panel message was deleted
+            except Exception as e:
+                logger.debug("voice panel: edit failed for message %s: %s", message_id, e)
+        if not panels:
+            self._voice_panels.pop(guild_id, None)
 
     # --- Voice listening (Phase 2) ---
 
@@ -4529,7 +4770,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         try:
             if followup_msg:
                 # Native commands pass a catalog key; plugin callers may still pass literal text.
-                await interaction.edit_original_response(content=t(followup_msg))
+                _chan_id = getattr(interaction.channel, "id", None)
+                await interaction.edit_original_response(
+                    content=t(followup_msg, channel=f"<#{_chan_id}>" if _chan_id else "this channel")
+                )
             else:
                 await interaction.delete_original_response()
         except Exception as e:
@@ -4584,6 +4828,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             tree.command(name=name, description=description)(
                 self._slash_proxy(name, args, template, followup, strip=name != "insights")
             )
+        # /sesh + /nitesesh (embed UI) live in nitesesh_ui.py; failure here must never break startup.
+        try:
+            from plugins.platforms.discord import nitesesh_ui
+            nitesesh_ui.register(self, tree)
+        except Exception as e:
+            logger.warning("nitesesh UI not registered: %s", e)
         # Auto-register COMMAND_REGISTRY + plugin commands not yet on the tree. Native
         # commands above always survive the 100-command cap; reserve one slot for /skill.
         already_registered: set[str] = set()
@@ -5053,11 +5303,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _component_live_auth(self, interaction) -> Optional[bool]:
         """The gateway's live allowlist verdict for a component click (None when no check is wired):
         an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
+        from plugins.platforms.discord.adapter_component_auth import component_chat_context
         user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
-        channel_id = getattr(interaction, "channel_id", None)
-        chat_type = "dm" if getattr(interaction, "guild", None) is None else "group"
-        return self._is_sender_authorized(
-            user_id, chat_type, str(channel_id) if channel_id is not None else None)
+        chat_type, chat_id, thread_id = component_chat_context(interaction, discord.Thread)
+        return self._is_sender_authorized(user_id, chat_type, chat_id, thread_id=thread_id)
 
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
@@ -5703,6 +5952,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
+        require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+        choices = set(prompt.choices)
+        view = ExecApprovalView(
+            session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
+            admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
+            allow_session="session" in choices, smart_denied=prompt.smart_denied,
+            request_id=prompt.request_id,
+        )
+        # Observe BEFORE sending, so a request that settles while the card is in flight still
+        # reports its real reason; ``pending_retire`` holds it until the card exists.
+        if view.request_id and not self._observe_exec_approval_settle(prompt.session_key, view):
+            view.pending_retire = "gone"  # already gone: how it ended is unknown
+
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5712,14 +5975,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
                 color=discord.Color.orange(),
             )
-            require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
-            choices = set(prompt.choices)
-            view = ExecApprovalView(
-                session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
-                allow_session="session" in choices, smart_denied=prompt.smart_denied,
-            )
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
@@ -5728,7 +5983,28 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         users=True, roles=False, everyone=False, replied_user=False,
                     )
             return send_kwargs, view
-        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        if result.success and view.pending_retire:
+            await view.retire(view.pending_retire)
+        return result
+
+    def _observe_exec_approval_settle(self, session_key: str, view) -> bool:
+        """Retire ``view`` when its request settles (before it is sent: via ``view.pending_retire``)."""
+        from tools.approval import observe_gateway_settle
+        loop = asyncio.get_running_loop()
+
+        def retire(reason):
+            def schedule():
+                if view._message is None:  # still in flight (or its send failed)
+                    view.pending_retire = reason
+                    return
+                task = loop.create_task(view.retire(reason))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                task.add_done_callback(_consume_background_task_result)
+            loop.call_soon_threadsafe(schedule)
+
+        return observe_gateway_settle(session_key, view.request_id, retire)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -6333,28 +6609,101 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 # ---------------------------------------------------------------------------
 
 
-def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> tuple[bool, set]:
-    """Resolve the exec-approval admin gate from ``extra``; returns ``(require_admin, admin_user_ids)``.
-    Default OFF (user-scope buttons). When ``require_admin_for_exec_approval`` is true only
-    ``allow_admin_from`` ids may click; on with no admins -> ``(True, set())`` (fail closed, log once).
-    """
-    extra = config_extra if isinstance(config_extra, dict) else {}
-    raw_toggle = extra.get("require_admin_for_exec_approval", False)
-    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
-    if not require_admin:
-        return (False, set())
+# --- /voice panel ---------------------------------------------------------------
+# Wording is fixed English (matching the original panel) rather than localized: the panel is a
+# personal-install surface and every string here is shown verbatim in the user's request.
+_VOICE_PANEL_COLOR = 0x5865F2  # Discord blurple
+_VOICE_PANEL_FOOTER = "Buttons apply instantly \u2014 no restart needed."
+_VOICE_PANEL_MODE_LABELS = {
+    "off": "Off (text only)",
+    "voice_only": "On \u2014 voice replies only",
+    "all": "On \u2014 text + TTS",
+}
+
+
+# Auto-leave button cycles through these inactivity timeouts, in order (0 = never leaves).
+VOICE_AUTO_LEAVE_CHOICES = (0, 300, 900, 3600)
+
+# Debounce for live panel repaints: join/leave bursts arrive together and edits are rate-limited.
+_VOICE_PANEL_REFRESH_DELAY = 0.6
+
+
+def _voice_auto_leave_short(seconds: Any) -> str:
+    """Compact duration for the button label: ``off`` / ``5m`` / ``15m`` / ``1h``."""
     try:
-        from gateway.slash_access import _coerce_id_list
-        admin_ids = set(_coerce_id_list(extra.get("allow_admin_from")))
-    except Exception:
-        admin_ids = set()
-    return (True, admin_ids)
+        value = int(seconds or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        return "off"
+    if value % 3600 == 0:
+        return f"{value // 3600}h"
+    if value % 60 == 0:
+        return f"{value // 60}m"
+    return f"{value}s"
+
+
+def _voice_panel_auto_leave_label(seconds: Any) -> str:
+    try:
+        value = int(seconds or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        return "Off (never leaves)"
+    if value % 3600 == 0:
+        return f"{value // 3600} h idle"
+    if value % 60 == 0:
+        return f"{value // 60} min idle"
+    return f"{value}s idle"
+
+
+def _voice_panel_channel_value(state: dict) -> str:
+    """``**#channel** \u2014 N participant(s)`` plus the member list, or a not-connected line."""
+    if not state.get("in_channel"):
+        return "Not connected"
+    lines = [f"**#{state.get('channel_name') or 'voice'}** \u2014 {int(state.get('member_count') or 0)} participant(s)"]
+    for member in list(state.get("members") or [])[:8]:
+        speaking = " (speaking)" if member.get("is_speaking") else ""
+        lines.append(f"  - {member.get('display_name') or member.get('user_id')}{speaking}")
+    return "\n".join(lines)
+
+
+def _voice_panel_embed(mode: str, state: dict, status: str):
+    embed = discord.Embed(title="\U0001f399\ufe0f /voice \u2014 voice panel", color=_VOICE_PANEL_COLOR)
+    embed.set_thumbnail(url="https://github.com/Chimthuwu/Shut-Up-Hermes/raw/main/embeds_thumbnail.png")
+    embed.add_field(name="Voice mode", value=_VOICE_PANEL_MODE_LABELS.get(mode, str(mode)), inline=True)
+    embed.add_field(
+        name="Voice channel", inline=True,
+        value=_truncate_discord_component_text(_voice_panel_channel_value(state), _DISCORD_EMBED_FIELD_VALUE_LIMIT),
+    )
+    embed.add_field(name="Auto-leave timeout",
+                    value=_voice_panel_auto_leave_label(state.get("auto_leave_seconds")), inline=True)
+    embed.add_field(
+        name="Status", inline=False,
+        value=_truncate_discord_component_text(status or "\u2014", _DISCORD_EMBED_FIELD_VALUE_LIMIT),
+    )
+    embed.set_footer(text=_VOICE_PANEL_FOOTER)
+    return embed
+
+
+def _voice_panel_content(mode: str, state: dict, status: str) -> str:
+    """Plain-text mirror of the panel: embeds can arrive detached on web/mobile clients."""
+    status = status or "\u2014"
+    return "\n".join([
+        "**\U0001f399\ufe0f /voice \u2014 voice panel**",
+        "",
+        f"**Voice mode:** {_VOICE_PANEL_MODE_LABELS.get(mode, str(mode))}",
+        f"**Voice channel:** {_voice_panel_channel_value(state)}",
+        f"**Auto-leave timeout:** {_voice_panel_auto_leave_label(state.get('auto_leave_seconds'))}",
+        f"**Status:** {status}",
+        f"*{_VOICE_PANEL_FOOTER}*",
+    ])
 
 
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView, VoicePanelView
 
     class _HermesView(discord.ui.View):
         """Shared plumbing for Hermes component views: allowlist auth, single-use
@@ -6392,8 +6741,9 @@ def _define_discord_view_classes() -> None:
         def _first_embed(message):
             return message.embeds[0] if message.embeds else None
 
-        async def _expire_embed(self, footer: str) -> None:
-            """Grey out the original message's embed after a timeout (best effort)."""
+        async def _expire_embed(self, footer: str, *, keep_controls: bool = True) -> None:
+            """Grey out the original message's embed and stamp ``footer`` (best effort). The disabled
+            buttons stay unless ``keep_controls`` is False, which removes them."""
             msg = self._message
             if msg:
                 try:
@@ -6401,19 +6751,24 @@ def _define_discord_view_classes() -> None:
                     if embed:
                         embed.color = discord.Color.greyple()
                         embed.set_footer(text=footer)
-                    await msg.edit(embed=embed, view=self)
+                    await msg.edit(embed=embed, view=self if keep_controls else None)
                 except Exception:
-                    pass  # message deleted or too old to edit
+                    logger.debug("[Discord] Could not stamp prompt card", exc_info=True)  # deleted / too old
 
         async def _finalize_embed(self, interaction: discord.Interaction, color, footer: str) -> None:
-            """Mark resolved, stamp the embed (color + footer), disable buttons, edit in place."""
+            """Mark resolved, stamp the embed (color + footer), disable buttons, edit in place, then
+            ``stop()`` the view (also when the edit fails)."""
             self.resolved = True
             embed = self._first_embed(interaction.message)
             if embed:
                 embed.color = color
                 embed.set_footer(text=footer)
             self._disable_all()
-            await interaction.response.edit_message(embed=embed, view=self)
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            finally:
+                # Answered: release the view, or its timeout later stamps "expired" over the answer.
+                self.stop()
 
         def _localize_buttons(self, **keys_by_attr: str) -> None:
             """Relabel decorator-declared buttons from the catalog (decorators run at import, before
@@ -6432,100 +6787,14 @@ def _define_discord_view_classes() -> None:
                     item.label = _t_discord(key, _DISCORD_BUTTON_LABEL_LIMIT)
 
         async def on_timeout(self):
+            # stop() can't cancel an on_timeout discord.py queued in the tick a click landed: keep the answer.
+            if self.resolved:
+                return
             self.resolved = True
             self._disable_all()
             await self._expire_embed(t("platform.discord.prompt.expired_footer"))
 
-    class ExecApprovalView(_HermesView):
-        """Allow Once / Allow Session / Always Allow / Deny buttons for a dangerous command.
-        Clicks call ``resolve_gateway_approval()`` — the same mechanism as the text ``/approve`` flow."""
-
-        def __init__(
-            self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
-            require_admin: bool = False, admin_user_ids: Optional[set] = None,
-            allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
-        ):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
-            self.session_key = session_key
-            self.require_admin = require_admin
-            self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
-            self._localize_buttons(
-                allow_once="gateway.exec_approval.action_once", allow_session="gateway.exec_approval.action_session",
-                allow_always="gateway.exec_approval.action_always", deny="gateway.exec_approval.action_deny")
-            if smart_denied or not allow_session:
-                self.remove_item(self.allow_session)
-                self.remove_item(self.allow_always)
-            elif not allow_permanent:
-                self.remove_item(self.allow_always)
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Base admission always required; with ``require_admin`` the clicker must
-            also be an admin. Fails closed (logged once) when no admins are configured."""
-            if not super()._check_auth(interaction):
-                return False
-            if not self.require_admin:
-                return True
-            user = getattr(interaction, "user", None)
-            try:
-                uid = str(getattr(user, "id", "") or "")
-            except Exception:
-                uid = ""
-            if uid and uid in self.admin_user_ids:
-                return True
-            if not self.admin_user_ids:
-                logger.warning(
-                    "[Discord] require_admin_for_exec_approval is enabled but "
-                    "no admins are configured (allow_admin_from is empty) — "
-                    "exec approval buttons are disabled for everyone. Add "
-                    "admin user IDs under the discord platform's "
-                    "allow_admin_from, or disable the toggle."
-                )
-            return False
-
-        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
-            """Resolve the approval via the gateway approval queue and update the embed."""
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.approval.already_resolved"),
-                unauth_msg=_unauthorized(),
-            ):
-                return
-            label = t(label_key)
-            self.resolved = True
-            # Unblock the waiting agent thread FIRST. A click after the approval
-            # wait timed out (count == 0) must not claim "Approved".
-            try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
-                logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
-                )
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval from button: %s", exc)
-                count = 0
-            if not count:
-                color = discord.Color.dark_grey()
-                label = t("platform.discord.approval.expired")
-            await self._finalize_embed(
-                interaction, color,
-                t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
-
-        # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
-        async def allow_once(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "once", discord.Color.green(), "platform.discord.approval.resolved_once")
-
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
-        async def allow_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "session", discord.Color.blue(), "platform.discord.approval.resolved_session")
-
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
-        async def allow_always(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "always", discord.Color.purple(), "platform.discord.approval.resolved_always")
-
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
-        async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "deny", discord.Color.red(), "platform.discord.approval.resolved_deny")
+    ExecApprovalView = build_exec_approval_view(discord, _HermesView, unauthorized=_unauthorized)
 
     class SlashConfirmView(_HermesView):
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,
@@ -6613,18 +6882,19 @@ def _define_discord_view_classes() -> None:
         editing the original message in place. Times out after 2 minutes."""
 
         def __init__(
-            self, providers: list, current_model: str, current_provider: str, session_key: str,
-            on_model_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
-        ):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=120)
-            self.providers = providers
-            self.current_model = current_model
-            self.current_provider = current_provider
-            self.session_key = session_key
-            self.on_model_selected = on_model_selected
-            self._selected_provider: str = ""
-            self._pending_expensive_model: str = ""
-            self._build_provider_select()
+                    self, providers: list, current_model: str, current_provider: str, session_key: str,
+                    on_model_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
+                ):
+                    super().__init__(allowed_user_ids, allowed_role_ids, timeout=120)
+                    self.providers = providers
+                    self.current_model = current_model
+                    self.current_provider = current_provider
+                    self.session_key = session_key
+                    self.on_model_selected = on_model_selected
+                    self._selected_provider: str = ""
+                    self._pending_expensive_model: str = ""
+                    self._model_page: int = 0  # pagination page index (0-based)
+                    self._build_provider_select()
 
         def _add_button(self, label: str, style, custom_id: str, callback) -> None:
             btn = discord.ui.Button(label=label, style=style, custom_id=custom_id)
@@ -6662,39 +6932,73 @@ def _define_discord_view_classes() -> None:
             self._add_button(_t_discord("platform.discord.picker.cancel", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.red, "model_cancel", self._on_cancel)
 
         def _build_model_select(self, provider_slug: str):
-            """Model dropdown(s) for one provider.
-            Select caps at 25 options and View at 5 rows (2 reserved for Back/Cancel), so models are
-            partitioned across up to 3 selects (75) rather than truncated (tail entries would vanish)."""
-            self.clear_items()
-            provider = next((p for p in self.providers if p["slug"] == provider_slug), None)
-            if not provider:
-                return
-            models = provider.get("models", [])
-            if not models:
-                return
-            chunks = [
-                models[i : i + _DISCORD_SELECT_MAX_OPTIONS]
-                for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
-            ][: _DISCORD_SELECT_MAX_ROWS - 2]
-            placeholder_base = t("platform.discord.picker.model_placeholder", provider=provider.get("name", provider_slug))
-            from hermes_cli.model_picker_usage import picker_row_suffix
-            for idx, chunk in enumerate(chunks):
-                options = [
-                    discord.SelectOption(
-                        label=_truncate_discord_component_text(model_id.split("/")[-1], _DISCORD_SELECT_FIELD_LIMIT),
-                        value=_truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT),
-                        # Usage-window plans: "Large" / "Free" (empty for every other account).
-                        description=(_truncate_discord_component_text(suffix, _DISCORD_SELECT_FIELD_LIMIT)
-                                     if (suffix := picker_row_suffix(provider, model_id)) else None),
-                    )
-                    for model_id in chunk
-                ]
-                suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
-                self._add_select(
-                    _truncate_discord_component_text(f"{placeholder_base}{suffix}...", _DISCORD_SELECT_PLACEHOLDER_LIMIT),
-                    options, f"model_model_select_{idx}", self._on_model_selected)
-            self._add_button(_t_discord("platform.discord.picker.back", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.grey, "model_back", self._on_back)
-            self._add_button(_t_discord("platform.discord.picker.cancel", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.red, "model_cancel2", self._on_cancel)
+                    """Model dropdown(s) for one provider.
+                    Select caps at 25 options and View at 5 rows (2 reserved for Back/Cancel), so models are
+                    partitioned across up to 3 selects (75 per page). Pagination (Next/Prev) cycles through all models.
+                    """
+                    self.clear_items()
+                    provider = next((p for p in self.providers if p["slug"] == provider_slug), None)
+                    if not provider:
+                        return
+                    models = provider.get("models", [])
+                    if not models:
+                        return
+
+                    # Pagination: 75 models per page (3 selects × 25 options)
+                    models_per_page = _DISCORD_MODEL_SELECT_CAPACITY
+                    total_pages = max(1, (len(models) + models_per_page - 1) // models_per_page)
+                    self._model_page = max(0, min(self._model_page, total_pages - 1))
+
+                    start = self._model_page * models_per_page
+                    end = min(start + models_per_page, len(models))
+                    page_models = models[start:end]
+
+                    # Partition into up to 3 selects (25 options each)
+                    chunks = [
+                        page_models[i : i + _DISCORD_SELECT_MAX_OPTIONS]
+                        for i in range(0, len(page_models), _DISCORD_SELECT_MAX_OPTIONS)
+                    ][: _DISCORD_SELECT_MAX_ROWS - 2]
+
+                    placeholder_base = t("platform.discord.picker.model_placeholder", provider=provider.get("name", provider_slug))
+                    from hermes_cli.model_picker_usage import picker_row_suffix
+                    for idx, chunk in enumerate(chunks):
+                        options = [
+                            discord.SelectOption(
+                                label=_truncate_discord_component_text(model_id.split("/")[-1], _DISCORD_SELECT_FIELD_LIMIT),
+                                value=_truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT),
+                                description=(_truncate_discord_component_text(suffix, _DISCORD_SELECT_FIELD_LIMIT)
+                                             if (suffix := picker_row_suffix(provider, model_id)) else None),
+                            )
+                            for model_id in chunk
+                        ]
+                        suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+                        if total_pages > 1:
+                            suffix += f" [Page {self._model_page + 1}/{total_pages}]"
+                        self._add_select(
+                            _truncate_discord_component_text(f"{placeholder_base}{suffix}...", _DISCORD_SELECT_PLACEHOLDER_LIMIT),
+                            options, f"model_model_select_{idx}", self._on_model_selected)
+
+                    # Navigation row: Prev / Page indicator / Next
+                    nav_buttons = []
+                    if self._model_page > 0:
+                        nav_buttons.append(("◀ Prev", "model_prev_page", self._on_prev_page))
+                    if total_pages > 1:
+                        nav_buttons.append((f"Page {self._model_page + 1}/{total_pages}", "model_page_indicator", None))
+                    if self._model_page < total_pages - 1:
+                        nav_buttons.append(("Next ▶", "model_next_page", self._on_next_page))
+
+                    for label, cid, cb in nav_buttons:
+                        if cb is None:
+                            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.grey, custom_id=cid, disabled=True)
+                            self.add_item(btn)
+                        else:
+                            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.blurple, custom_id=cid)
+                            btn.callback = cb
+                            self.add_item(btn)
+
+                    # Bottom row: Back / Cancel
+                    self._add_button(_t_discord("platform.discord.picker.back", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.grey, "model_back", self._on_back)
+                    self._add_button(_t_discord("platform.discord.picker.cancel", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.red, "model_cancel2", self._on_cancel)
 
         def _build_expensive_confirm(self, model_id: str):
             """Build confirmation buttons for unusually expensive models."""
@@ -6712,10 +7016,12 @@ def _define_discord_view_classes() -> None:
                 return None
 
         def _config_embed(self, description: str, *, title: Optional[str] = None, color=None):
-            title = title if title is not None else t("platform.discord.picker.title")
-            return discord.Embed(
-                title=_truncate_discord_component_text(title, _DISCORD_EMBED_TITLE_LIMIT), description=description,
-                color=discord.Color.blue() if color is None else color)
+                    title = title if title is not None else t("platform.discord.picker.title")
+                    embed = discord.Embed(
+                        title=_truncate_discord_component_text(title, _DISCORD_EMBED_TITLE_LIMIT), description=description,
+                        color=discord.Color.blue() if color is None else color)
+                    embed.set_thumbnail(url="https://github.com/Chimthuwu/Shut-Up-Hermes/raw/main/embeds_thumbnail.png")
+                    return embed
 
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
@@ -6733,10 +7039,25 @@ def _define_discord_view_classes() -> None:
             plan_line = f"⚠️ {provider['plan_line']}\n" if provider and provider.get("plan_line") else ""
             await self._edit(interaction, plan_line + t("platform.discord.picker.select_model", provider=pname, extra=extra))
 
+        async def _on_prev_page(self, interaction: discord.Interaction):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
+                return
+            self._model_page -= 1
+            self._build_model_select(self._selected_provider)
+            await self._edit(interaction, t("platform.discord.picker.select_model", provider=self._selected_provider))
+
+        async def _on_next_page(self, interaction: discord.Interaction):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
+                return
+            self._model_page += 1
+            self._build_model_select(self._selected_provider)
+            await self._edit(interaction, t("platform.discord.picker.select_model", provider=self._selected_provider))
+
         async def _switch_selected_model(self, interaction: discord.Interaction, model_id: str):
             if not await self._gate(interaction, resolved_msg=t("platform.discord.picker.already_resolved"), unauth_msg=_unauthorized()):
                 return
             self.resolved = True
+            self.stop()  # answered: release the view and its timeout now, before any await
             self.clear_items()
             await self._edit(
                 interaction, t("platform.discord.picker.switching", model=model_id),
@@ -6788,10 +7109,14 @@ def _define_discord_view_classes() -> None:
             if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
                 return
             self.resolved = True
+            self.stop()  # answered: release the view and its timeout now, before any await
             self.clear_items()
             await self._edit(interaction, t("platform.discord.picker.cancelled"), color=discord.Color.greyple())
 
         async def on_timeout(self):
+            # stop() can't cancel an on_timeout discord.py queued in the tick a click landed: keep the answer.
+            if self.resolved:
+                return
             self.resolved = True
             self.clear_items()
             msg = self._message
@@ -6854,6 +7179,95 @@ def _define_discord_view_classes() -> None:
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass
+
+    class VoicePanelView(_HermesView):
+        """Persistent ``/voice`` panel: reply-mode buttons, Join/Leave, auto-leave toggle, and Shut up."""
+
+        # (reply mode, button label, style)
+        _MODE_BUTTONS = (
+            ("voice_only", "Voice only", discord.ButtonStyle.green),
+            ("all", "Text + TTS", discord.ButtonStyle.blurple),
+            ("off", "Off", discord.ButtonStyle.grey),
+        )
+
+        def __init__(self, on_action, mode: str, state: dict, supports_channels: bool,
+                     allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=None)
+            self.on_action = on_action
+            self.mode = mode or "off"
+            self.state = dict(state or {})
+            self.status = ""
+            self.supports_channels = bool(supports_channels)
+            self._build()
+
+        def _build(self) -> None:
+            """(Re)build the buttons from ``self.mode``/``self.state``."""
+            self.clear_items()
+            for value, label, style in self._MODE_BUTTONS:
+                button = discord.ui.Button(label=label, style=style, custom_id=f"voice_mode_{value}",
+                                           disabled=(self.mode == value))
+                button.callback = self._on_mode
+                self.add_item(button)
+            if not self.supports_channels:
+                return
+            joined = bool(self.state.get("in_channel"))
+            channel_btn = discord.ui.Button(
+                label="Leave" if joined else "Join",
+                style=discord.ButtonStyle.danger if joined else discord.ButtonStyle.secondary,
+                custom_id="voice_channel_toggle")
+            channel_btn.callback = self._on_channel
+            self.add_item(channel_btn)
+            auto_btn = discord.ui.Button(
+                label=f"Auto-leave: {_voice_auto_leave_short(self.state.get('auto_leave_seconds'))}",
+                style=discord.ButtonStyle.secondary, custom_id="voice_auto_leave")
+            auto_btn.callback = self._on_auto_leave
+            self.add_item(auto_btn)
+            # Shut up button - stops TTS/voice playback immediately
+            shutup_btn = discord.ui.Button(
+                label="Shut up", style=discord.ButtonStyle.danger,
+                custom_id="voice_shut_up", emoji="🔇")
+            shutup_btn.callback = self._on_shut_up
+            self.add_item(shutup_btn)
+
+        async def _apply(self, interaction: discord.Interaction, value: str) -> None:
+            """Run one panel action and repaint the card with the returned state/status."""
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
+                return
+            await interaction.response.defer()
+            try:
+                result = await self.on_action(str(interaction.channel_id), value)
+            except Exception as exc:
+                logger.error("Voice panel action %s failed: %s", value, exc)
+                result = {"status": t("platform.discord.picker.choice_error", error=str(exc))}
+            if isinstance(result, dict):
+                self.mode = str(result.get("mode") or self.mode)
+                if isinstance(result.get("state"), dict):
+                    self.state = result["state"]
+                self.status = str(result.get("status") or self.status)
+            else:
+                self.status = str(result or self.status)
+            self._build()
+            try:
+                await interaction.edit_original_response(
+                    content=_voice_panel_content(self.mode, self.state, self.status),
+                    embed=_voice_panel_embed(self.mode, self.state, self.status), view=self)
+            except Exception as exc:
+                logger.warning("Voice panel refresh failed: %s", exc)
+
+        async def _on_mode(self, interaction: discord.Interaction):
+            custom_id = str(interaction.data.get("custom_id", ""))
+            await self._apply(interaction, custom_id[len("voice_mode_"):] if custom_id.startswith("voice_mode_") else "off")
+
+        async def _on_channel(self, interaction: discord.Interaction):
+            await self._apply(interaction, "leave" if self.state.get("in_channel") else "join")
+
+        async def _on_auto_leave(self, interaction: discord.Interaction):
+            await self._apply(interaction, "auto_leave")
+
+        async def _on_shut_up(self, interaction: discord.Interaction):
+            await self._apply(interaction, "shut_up")
+
+        # No on_timeout: this view must not expire.
 
     class ClarifyChoiceView(_HermesView):
         """One button per clarify choice (max 24) plus ``✏️ Other``. A numeric click resolves the
@@ -6922,6 +7336,8 @@ def _define_discord_view_classes() -> None:
                     await interaction.response.defer()
                 except Exception:
                     pass
+            finally:
+                self.stop()  # answered (or handed to typed text): release the view and its timeout
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""

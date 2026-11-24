@@ -1,0 +1,430 @@
+{
+  "version": 1,
+  "source": "discord_command_manifest.py",
+  "commands": [
+    {
+      "name": "new",
+      "description": "Start a new conversation",
+      "template": "/reset",
+      "followup_key": "platform.discord.command.new.followup"
+    },
+    {
+      "name": "reset",
+      "description": "Reset your Hermes session",
+      "template": "/reset",
+      "followup_key": "platform.discord.command.reset.followup"
+    },
+    {
+      "name": "model",
+      "description": "Show or change the model",
+      "options": [
+        {
+          "type": 3,
+          "name": "name",
+          "description": "Model name. Leave empty to see current.",
+          "required": false
+        }
+      ],
+      "template": "/model {name}"
+    },
+    {
+      "name": "reasoning",
+      "description": "Show/change reasoning effort, or toggle showing it",
+      "options": [
+        {
+          "type": 3,
+          "name": "effort",
+          "description": "Level, reset, or show/hide. Leave empty to see current.",
+          "required": false,
+          "choices": [
+            {
+              "name": "none",
+              "value": "none"
+            },
+            {
+              "name": "minimal",
+              "value": "minimal"
+            },
+            {
+              "name": "low",
+              "value": "low"
+            },
+            {
+              "name": "medium",
+              "value": "medium"
+            },
+            {
+              "name": "high",
+              "value": "high"
+            },
+            {
+              "name": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "name": "max",
+              "value": "max"
+            },
+            {
+              "name": "ultra",
+              "value": "ultra"
+            },
+            {
+              "name": "reset",
+              "value": "reset"
+            },
+            {
+              "name": "show",
+              "value": "show"
+            },
+            {
+              "name": "hide",
+              "value": "hide"
+            }
+          ]
+        }
+      ],
+      "template": "/reasoning {effort}"
+    },
+    {
+      "name": "personality",
+      "description": "Set a personality",
+      "options": [
+        {
+          "type": 3,
+          "name": "name",
+          "description": "Personality name. Leave empty to list.",
+          "required": false
+        }
+      ],
+      "template": "/personality {name}"
+    },
+    {
+      "name": "retry",
+      "description": "Retry your last message",
+      "template": "/retry",
+      "followup_key": "platform.discord.command.retry.followup"
+    },
+    {
+      "name": "undo",
+      "description": "Remove the last exchange",
+      "template": "/undo"
+    },
+    {
+      "name": "status",
+      "description": "Show Hermes session status",
+      "template": "/status",
+      "followup_key": "platform.discord.command.status.followup"
+    },
+    {
+      "name": "sethome",
+      "description": "Set this chat as the home channel",
+      "template": "/sethome"
+    },
+    {
+      "name": "start",
+      "description": "Start a Hermes session in this channel",
+      "template": "/start",
+      "followup_key": "platform.discord.start.followup"
+    },
+    {
+      "name": "stop",
+      "description": "Stop the running Hermes agent",
+      "template": "/stop",
+      "followup_key": "platform.discord.command.stop.followup"
+    },
+    {
+      "name": "steer",
+      "description": "Inject a message after the next tool call (no interrupt)",
+      "options": [
+        {
+          "type": 3,
+          "name": "prompt",
+          "description": "What to tell the agent",
+          "required": true
+        }
+      ],
+      "template": "/steer {prompt}"
+    },
+    {
+      "name": "plan",
+      "description": "Plan a task for the agent",
+      "options": [
+        {
+          "type": 3,
+          "name": "task",
+          "description": "The task to plan",
+          "required": false
+        }
+      ],
+      "template": "/plan {task}"
+    },
+    {
+      "name": "compress",
+      "description": "Compress conversation context",
+      "template": "/compress"
+    },
+    {
+      "name": "title",
+      "description": "Set or show the session title",
+      "options": [
+        {
+          "type": 3,
+          "name": "name",
+          "description": "New title. Leave empty to show.",
+          "required": false
+        }
+      ],
+      "template": "/title {name}"
+    },
+    {
+      "name": "resume",
+      "description": "Resume a previously-named session",
+      "options": [
+        {
+          "type": 3,
+          "name": "name",
+          "description": "Session title or id",
+          "required": false
+        }
+      ],
+      "template": "/resume {name}"
+    },
+    {
+      "name": "usage",
+      "description": "Show token usage for this session",
+      "template": "/usage"
+    },
+    {
+      "name": "help",
+      "description": "Show available commands",
+      "template": "/help"
+    },
+    {
+      "name": "insights",
+      "description": "Show usage insights and analytics",
+      "options": [
+        {
+          "type": 4,
+          "name": "days",
+          "description": "Number of days to analyze",
+          "required": false,
+          "min_value": 1,
+          "max_value": 365
+        }
+      ],
+      "template": "/insights {days}"
+    },
+    {
+      "name": "reload-mcp",
+      "description": "Reload MCP servers from config",
+      "template": "/reload-mcp"
+    },
+    {
+      "name": "reload-skills",
+      "description": "Re-scan skills for new or removed entries",
+      "template": "/reload-skills"
+    },
+    {
+      "name": "sesh",
+      "description": "Run the sesh AFK worker across selected projects",
+      "template": "/sesh"
+    },
+    {
+      "name": "voice",
+      "description": "Toggle voice reply mode",
+      "options": [
+        {
+          "type": 3,
+          "name": "mode",
+          "description": "Voice mode: join, channel, leave, on, tts, off, status",
+          "required": false,
+          "choices": [
+            {
+              "name": "join",
+              "value": "join"
+            },
+            {
+              "name": "channel",
+              "value": "channel"
+            },
+            {
+              "name": "leave",
+              "value": "leave"
+            },
+            {
+              "name": "on",
+              "value": "on"
+            },
+            {
+              "name": "tts",
+              "value": "tts"
+            },
+            {
+              "name": "off",
+              "value": "off"
+            },
+            {
+              "name": "status",
+              "value": "status"
+            }
+          ]
+        }
+      ],
+      "template": "/voice {mode}"
+    },
+    {
+      "name": "vc",
+      "description": "Toggle voice reply mode (alias for /voice)",
+      "options": [
+        {
+          "type": 3,
+          "name": "mode",
+          "description": "Voice mode: join, channel, leave, on, tts, off, status",
+          "required": false,
+          "choices": [
+            {
+              "name": "join",
+              "value": "join"
+            },
+            {
+              "name": "channel",
+              "value": "channel"
+            },
+            {
+              "name": "leave",
+              "value": "leave"
+            },
+            {
+              "name": "on",
+              "value": "on"
+            },
+            {
+              "name": "tts",
+              "value": "tts"
+            },
+            {
+              "name": "off",
+              "value": "off"
+            },
+            {
+              "name": "status",
+              "value": "status"
+            }
+          ]
+        }
+      ],
+      "template": "/voice {mode}"
+    },
+    {
+      "name": "update",
+      "description": "Update Hermes Agent to the latest version",
+      "template": "/update",
+      "followup_key": "platform.discord.command.update.followup"
+    },
+    {
+      "name": "restart",
+      "description": "Gracefully restart the Hermes gateway",
+      "template": "/restart",
+      "followup_key": "platform.discord.command.restart.followup"
+    },
+    {
+      "name": "approve",
+      "description": "Approve a pending dangerous command",
+      "options": [
+        {
+          "type": 3,
+          "name": "scope",
+          "description": "Approval scope",
+          "required": false,
+          "choices": [
+            {
+              "name": "once",
+              "value": "once"
+            },
+            {
+              "name": "session",
+              "value": "session"
+            },
+            {
+              "name": "always",
+              "value": "always"
+            },
+            {
+              "name": "all",
+              "value": "all"
+            }
+          ]
+        }
+      ],
+      "template": "/approve {scope}"
+    },
+    {
+      "name": "deny",
+      "description": "Deny a pending dangerous command",
+      "options": [
+        {
+          "type": 3,
+          "name": "scope",
+          "description": "Denial scope",
+          "required": false
+        }
+      ],
+      "template": "/deny {scope}"
+    },
+    {
+      "name": "thread",
+      "description": "Create a new thread and start a Hermes session in it",
+      "options": [
+        {
+          "type": 3,
+          "name": "name",
+          "description": "Thread name",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "queue",
+      "description": "Queue a prompt for the next turn (doesn't interrupt)",
+      "options": [
+        {
+          "type": 3,
+          "name": "prompt",
+          "description": "The prompt to queue",
+          "required": true
+        }
+      ],
+      "template": "/queue {prompt}",
+      "followup_key": "platform.discord.command.queue.followup"
+    },
+    {
+      "name": "bg",
+      "description": "Run a prompt in a separate background session",
+      "options": [
+        {
+          "type": 3,
+          "name": "prompt",
+          "description": "The prompt to run",
+          "required": true
+        }
+      ],
+      "template": "/bg {prompt}",
+      "followup_key": "platform.discord.command.bg.followup"
+    },
+    {
+      "name": "btw",
+      "description": "Ask a side question about the current conversation",
+      "options": [
+        {
+          "type": 3,
+          "name": "question",
+          "description": "The question to answer",
+          "required": true
+        }
+      ],
+      "template": "/btw {question}",
+      "followup_key": "platform.discord.command.btw.followup"
+    }
+  ]
+}

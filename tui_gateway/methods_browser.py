@@ -12,19 +12,11 @@ _CDP_SCHEMES = {"http", "https", "ws", "wss"}
 
 def _resolve_browser_cdp_url() -> str:
     """Configured browser CDP override without network I/O (``/browser status`` must be fast;
-    ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence (this
-    profile's live connect, env, then ``browser.cdp_url``) minus WS resolution; ``browser_navigate``
-    normalizes on the next call."""
-    from tools.browser_tool_cdp import env_cdp_url, live_cdp_override
-    if env_url := live_cdp_override() or env_cdp_url():
-        return env_url
-    with contextlib.suppress(Exception):
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
-        if isinstance(browser_cfg, dict):
-            return str(browser_cfg.get("cdp_url", "") or "").strip()
-    return ""
+    ``tools.browser_session_cdp.get_cdp_override`` HTTP-probes discovery URLs): the browser session's own
+    read (this profile's live connect, env, then the effective ``browser.cdp_url``) minus WS resolution; the
+    next browser session normalizes it."""
+    from tools.browser_session_cdp import get_cdp_override_raw
+    return get_cdp_override_raw()
 
 
 def _is_default_local_cdp(parsed) -> bool:
@@ -51,6 +43,7 @@ def _cdp_http_reachable(parsed, timeout: float = 2.0) -> bool:
 
 def _connect_local_default(port: int, system: str, announce) -> str | None:
     """Discover (or launch) the default local debug browser → CDP URL, or None after announcing."""
+    from agent.deadline import poll_until
     from hermes_cli.browser_connect import (
         discover_local_cdp_url, find_free_debug_port, launch_chrome_debug, local_port_in_use,
         manual_chrome_debug_command)
@@ -73,11 +66,7 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
     launch = launch_chrome_debug(launch_port, system)
     if launch.launched:
         # Bounded wait: the whole connect must finish inside the client RPC timeout.
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            if discovered := discover_local_cdp_url(launch_port, timeout=1.0):
-                break
-            time.sleep(0.5)
+        discovered = poll_until(lambda: discover_local_cdp_url(launch_port, timeout=1.0), 10.0, 0.5)
     if discovered:
         announce(f"Chromium-family browser launched and listening on port {launch_port}")
         return discovered
@@ -99,14 +88,14 @@ def _reap_profile_browsers() -> None:
     """Close the current profile's browsers only: the live connection is per profile, so other
     profiles' sessions on a multiplexed gateway keep theirs."""
     from hermes_constants import hermes_home_key
-    from tools.browser_tool_lifecycle import cleanup_profile_browsers
+    from tools.browser_session_lifecycle import cleanup_profile_browsers
     cleanup_profile_browsers(hermes_home_key())
 
 
 def _browser_connect(rid, params: dict) -> dict:
     import platform
     from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
-    from tools.browser_tool_cdp import set_live_cdp_override
+    from tools.browser_session_cdp import set_live_cdp_override
     from urllib.parse import urlparse
     raw_url = params.get("url")
     if raw_url is not None and not isinstance(raw_url, str):
@@ -135,7 +124,7 @@ def _browser_connect(rid, params: dict) -> dict:
         port = parsed.port or 9222
     try:
         # Hosted ws[s]://.../devtools/browser/<id> endpoints don't serve the HTTP discovery path:
-        # check TCP reachability only and let browser_navigate handshake.
+        # check TCP reachability only and let the browser session handshake.
         if parsed.scheme in {"ws", "wss"} and parsed.path.startswith("/devtools/browser/"):
             import socket
             try:
@@ -169,7 +158,7 @@ def _browser_connect(rid, params: dict) -> dict:
 
 def _browser_disconnect(rid) -> dict:
     # Reap, drop this profile's override, reap again — same swap window as ``_browser_connect``.
-    from tools.browser_tool_cdp import set_live_cdp_override
+    from tools.browser_session_cdp import set_live_cdp_override
 
     def reap() -> None:
         with contextlib.suppress(Exception):

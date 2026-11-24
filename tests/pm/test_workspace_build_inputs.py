@@ -282,3 +282,52 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_tool_store_inside_a_package_stays_out_of_the_snapshot(tmp_path):
+    """The container image keeps PM's tool store in the ``tools`` package directory; each dependency
+    generation copied its interpreters, browser and media binaries (~1.5 GB) into its workspace."""
+    core = tmp_path / "core"
+    tools = core / "tools"
+    (tools / "environments").mkdir(parents=True)
+    (tools / "wakewords").mkdir()
+    for entry in ("python-3.14.7-linux-x64", "chromium-1208", "fetch-abc123"):
+        (tools / entry / "bin").mkdir(parents=True)
+        (tools / entry / "bin" / "payload").write_text("BINARY\n", encoding="utf-8")
+    (tools / "__init__.py").write_text("", encoding="utf-8")
+    (tools / "environments" / "__init__.py").write_text("", encoding="utf-8")
+    (tools / "wakewords" / "hey.onnx").write_text("DATA\n", encoding="utf-8")
+    (tools / "facts.json").write_text(json.dumps({"packages": {
+        "python": {"entry": "python-3.14.7-linux-x64"}, "chromium": {"entry": "chromium-1208"},
+        "venv": {"entry": None}, "escape": {"entry": "../environments"}}}), encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools", "tools.*"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "tools/environments/__init__.py").is_file()
+    assert (destination / "tools/wakewords/hey.onnx").read_text(encoding="utf-8") == "DATA\n"
+    for entry in ("python-3.14.7-linux-x64", "chromium-1208", "fetch-abc123"):
+        assert not (destination / "tools" / entry).exists(), f"store entry {entry} copied into the snapshot"
+
+
+def test_a_facts_file_without_published_entries_hides_nothing(tmp_path):
+    core = tmp_path / "core"
+    data = core / "agent" / "chromium-1208"
+    data.mkdir(parents=True)
+    (data / "kept.txt").write_text("KEPT\n", encoding="utf-8")
+    (core / "agent" / "facts.json").write_text('{"schema": 1}', encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "agent/chromium-1208/kept.txt").read_text(encoding="utf-8") == "KEPT\n"

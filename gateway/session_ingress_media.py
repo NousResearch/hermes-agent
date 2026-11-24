@@ -20,7 +20,7 @@ import tempfile
 import threading
 from hermes_dir_acl import make_user_dir
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
 from utils import fsync_directory
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,7 @@ def admit_attachments(attachments, *, admitted=None):
             raise RuntimeStoreError('invalid_params')
         if any(digest is not None and digest != reference['sha256']
                for digest, reference in zip(hashes, committed['media'])):
-            raise RuntimeStoreError('admission_conflict')
+            raise RuntimeStoreError('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
         retry = True
     else:
         # Retry identity is the committed bytes, not the disposable staging name.

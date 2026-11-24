@@ -9,7 +9,8 @@ from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
-async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch):
+@pytest.mark.parametrize('settles_mid_reset', [False, True])
+async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles_mid_reset):
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.platforms.base import SendResult
     from gateway.platforms.event import MessageEvent
@@ -51,11 +52,37 @@ async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch):
             captured['result'] = {'final_response': 'reply', 'messages': []}
         return 'reply'
     monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
-
     await adapter.handle_message(MessageEvent(text='A', source=source, message_id='A'))
     await asyncio.wait_for(running.wait(), 10)
     old = runner.session_store.peek_session_id(key)
     assert await admit_route_wake(runner, adapter, source, 'WAKE', 'kanban-wake')
+    if settles_mid_reset:
+        # The old turn settles after the rotation, before the wake moves: its drain wakes up there.
+        live = authority.sessions[authority.logical_owner(old)]
+        blocked = []
+
+        class ClaimLock(asyncio.Lock):
+            async def acquire(self):
+                if finish.is_set() and asyncio.current_task() is live.task:
+                    blocked.append(self.locked())  # the old drain's next claim, after the old turn settled
+                return await super().acquire()
+        live.mutation_lock = ClaimLock()
+        reset = runner.async_session_store.reset_session
+
+        def old_statuses(wake):
+            return [r['status'] for r in list_session_admissions(authority.db, session_id=str(old), pending_only=False)
+                    if r['principal_id'].startswith('automation:') == wake]
+
+        async def reset_then_settle(session_key):
+            entry = await reset(session_key)
+            finish.set()
+            # The window the old drain must NOT claim in: it waits behind /new, or (unlocked) has
+            # already taken the wake off the old FIFO.
+            await async_wait_until(lambda: any(blocked) or old_statuses(True) != ['queued'],
+                                   timeout=10, what='the old drain to try its next claim')
+            assert old_statuses(False) == ['terminal']
+            return entry
+        monkeypatch.setattr(runner.async_session_store, 'reset_session', reset_then_settle)
     await adapter.handle_message(MessageEvent(text='/new', source=source, message_id='new'))
     new = runner.session_store.peek_session_id(key)
     assert new != old

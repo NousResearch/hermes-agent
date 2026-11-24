@@ -3,6 +3,7 @@ Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independe
 Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
 in ``tools.memory_tool`` and is read lazily."""
 
+import itertools
 import logging
 import os
 import re
@@ -34,6 +35,7 @@ def _scan_memory_content(content: str) -> Optional[str]:
 # Why the last refusal/failure in this context happened, for the shared metric only (a closed name from
 # shared_metrics_contract.MEMORY_OP_FAILURE_CLASSES); never part of the result the model sees.
 FAILURE_CLASS: ContextVar[str] = ContextVar("memory_failure_class", default="other")
+_BACKUP_FAILED = " (BACKUP FAILED — file unchanged on disk)"
 
 
 def _error(message: str, failure_class: str, **extra) -> dict[str, Any]:
@@ -55,9 +57,9 @@ def _drift_error(path: Path, bak_path: str) -> dict[str, Any]:
         f"either rewrite the file as a clean §-delimited list of entries, or move the extra "
         f"content out — then retry. This guard exists to prevent silent data loss (issue #26045)."
     ), "drift", drift_backup=bak_path, remediation=(
-        "Open the .bak file, integrate the missing entries into the memory tool one at a time via "
-        f"memory(action=add, target='{_store_target(path.name)}', content=...), then remove or rewrite the "
-        "original file to a clean state."))
+        "Open the .bak file, integrate the missing entries into the memory tool with one add op per entry via "
+        f"memory(target='{_store_target(path.name)}', operations=[{{action: 'add', content: ...}}]), then remove or "
+        "rewrite the original file to a clean state."))
 
 
 def _read_failed_error(path: Path) -> dict[str, Any]:
@@ -324,6 +326,16 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, "over_budget", current_entries=self._entries_for(target), usage=self._usage(target)))
 
+    def _add_overflow(self, target: str, content: str, limit: int) -> dict[str, Any]:
+        """A lone add over budget, legacy or one-item batch: the model has not consolidated yet,
+        so the live entries come back (its prompt snapshot may predate other sessions' writes)."""
+        over = len(ENTRY_DELIMITER.join(self._entries_for(target) + [content])) - limit
+        return self._failure_with_entries(target, (
+            f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
+            f"would exceed the limit by {over:,} chars. Retry as ONE 'operations' batch that "
+            f"removes or shortens (patch) stale entries from current_entries below to free at least "
+            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result."))
+
     def _batch_failure(self, target: str, message: str, failure_class: str,
                        closest_entries: Optional[list[str]] = None) -> dict[str, Any]:
         """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
@@ -339,8 +351,8 @@ class MemoryStore:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
-        file) and, unless *skip_drift*, on external drift (flushing would discard
-        un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
+        file) and, unless *skip_drift*, refuses a write that adds or rewrites text while an
+        entry is over the whole-file limit (it may hold free text a flush would discard). Drift check and parse use the SAME raw snapshot —
         a failed second read used to count as "no drift". The closure may return a
         third value, a dict merged into the success payload (``_error``'s ``**extra``
         convention) — e.g. the full text a replace overwrote (#117952). ANY dict the closure
@@ -351,19 +363,35 @@ class MemoryStore:
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 return _read_failed_error(path)
-            bak = None if skip_drift else self._detect_external_drift(target, raw)
-            self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
-            if bak:
-                return _drift_error(path, bak)
+            oversized = not skip_drift and self._has_oversized_entry(target, raw)
+            before = list(dict.fromkeys(self._parse_entries(raw)))
+            self._set_entries(target, before)
+            FAILURE_CLASS.set("other")  # read below: only this closure's refusal counts
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
+                # Over budget beside an oversized entry: that entry is the obstacle, so report
+                # the drift (with its snapshot) rather than a budget the model cannot meet.
+                if oversized and result.get("success") is False and FAILURE_CLASS.get() == "over_budget":
+                    return _drift_error(path, self._drift_backup(target, raw))
                 return result
+            extra_fields = dict(result[2]) if len(result) > 2 else {}
+            # An oversized entry is either free text appended without a delimiter or an entry written before the limit was lowered. Pruning is the way
+            # back under a lowered limit, so a write that only deletes entries proceeds; one that
+            # drops an oversized entry keeps the snapshot first, as it may hold appended text.
+            if oversized:
+                if not set(result[0]) <= set(before):
+                    return _drift_error(path, self._drift_backup(target, raw))
+                limit = self._char_limit(target)
+                if any(len(e) > limit for e in before if e not in result[0]):
+                    bak = self._drift_backup(target, raw)
+                    if bak.endswith(_BACKUP_FAILED):  # no copy, no delete of possibly glued text
+                        return _drift_error(path, bak)
+                    extra_fields["drift_backup"] = bak
             self._set_entries(target, result[0])
             from hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
 
     def add(self, target: str, content: str) -> dict[str, Any]:
@@ -378,12 +406,7 @@ class MemoryStore:
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
-                new_total = len(ENTRY_DELIMITER.join(entries + [content]))
-                return self._failure_with_entries(target, (
-                    f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
-                    f"would exceed the limit by {new_total - limit:,} chars. Retry as ONE 'operations' batch that "
-                    f"removes or shortens (patch) stale entries from current_entries below to free at least "
-                    f"{new_total - limit:,} chars AND adds this entry — the limit is checked only on the batch result."))
+                return self._add_overflow(target, content, limit)
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
@@ -580,18 +603,26 @@ class MemoryStore:
                 matched.append(previous_content)
                 if after is not None:
                     produced[i + 1] = after
-            if entries and not working:
+            if entries and not working and not (len(ops) == 1 and ops[0].get("action") == "remove"):
                 # #103419: a consolidation batch that removes the last entry would
-                # commit an empty file as a normal successful write. Refuse; single
-                # remove() is the deliberate-wipe path.
+                # commit an empty file as a normal successful write. Refuse; a batch of
+                # exactly one remove is the deliberate single delete (operations[] is the
+                # memory tool's only advertised shape), and unattended forks never get
+                # that far: the #105921 delete gate stages their removes.
                 label = self._path_for(target).name
                 return self._batch_failure(target, (
                     f"Refusing to empty {label}: this batch would remove every entry from a "
                     f"previously non-empty store. Keep at least one entry — merge overlapping "
                     f"entries into a shorter one instead of removing the last one. To delete the "
-                    f"final entry deliberately, use single remove() calls."), "would_empty")
+                    f"final entry deliberately, remove it alone in a one-item batch."), "would_empty")
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
-            if new_total > limit:
+            # A remove-only batch or a lone duplicate add never grows the store, so like the
+            # legacy remove/add it is not refused for excess left by a lowered cap.
+            grows = not (all(op.get("action") == "remove" for op in ops)
+                         or (len(ops) == 1 and working == entries))
+            if grows and new_total > limit:
+                if len(ops) == 1 and ops[0].get("action") == "add":  # the advertised single add
+                    return self._add_overflow(target, (ops[0].get("content") or ops[0].get("new_text") or "").strip(), limit)
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
                     f"removes or shortening patches of other stale entries to the same batch, then retry."),
@@ -682,19 +713,28 @@ class MemoryStore:
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
-    def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
-        """``.bak.<ts>`` snapshot path if *raw* shows external drift, else None. The one
-        signal is an entry over the whole-file limit: no tool-written entry can be, so it is
-        free-form text appended without delimiters, and replacing that "entry" would discard
-        it. Layout differences (blank lines around ``§``, empty entries, padding) are NOT
-        drift: parsing only strips whitespace, so the flush loses nothing but whitespace, and
-        refusing there blocked every replace/remove on a hand-formatted file for good (#107270)."""
-        if max(map(len, self._parse_entries(raw)), default=0) <= self._char_limit(target):
-            return None
+    def _has_oversized_entry(self, target: str, raw: str) -> bool:
+        """True when one entry in *raw* is longer than the whole-file limit. A tool write
+        never produces one, so it is free-form text appended without delimiters, or an entry
+        written before the limit was lowered. Layout differences (blank lines around ``§``,
+        empty entries, padding) are NOT drift: parsing only strips whitespace, so the flush
+        loses nothing but whitespace, and refusing there blocked every replace/remove on a
+        hand-formatted file for good (#107270)."""
+        return max(map(len, self._parse_entries(raw)), default=0) > self._char_limit(target)
+
+    def _drift_backup(self, target: str, raw: str) -> str:
+        """``.bak.<ts>[.<n>]`` snapshot of *raw* before a drift refusal or a delete that drops an
+        oversized entry. Created exclusively: two snapshots in the same second never overwrite
+        each other, since a later delete's snapshot no longer holds what an earlier one removed."""
         path = self._path_for(target)
-        bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
-        try:
-            bak_path.write_text(raw, encoding="utf-8")
-        except OSError:
-            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
-        return str(bak_path)
+        stem = path.suffix + f".bak.{int(time.time())}"
+        for n in itertools.count():
+            bak_path = path.with_suffix(stem + (f".{n}" if n else ""))
+            try:
+                with open(bak_path, "x", encoding="utf-8") as fh:
+                    fh.write(raw)
+                return str(bak_path)
+            except FileExistsError:
+                continue
+            except OSError:
+                return str(bak_path) + _BACKUP_FAILED

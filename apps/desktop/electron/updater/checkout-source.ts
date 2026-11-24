@@ -7,6 +7,8 @@ import { buildDesktopBackendEnv } from '../backend-env'
 import { resolveInstallationLauncher } from '../updater-process'
 import { hiddenWindowsChildOptions } from '../windows-child-options'
 
+import { updateProxyEnv } from './system-proxy-env'
+
 import type { UpdaterStatusWire } from './index'
 
 export interface SourceUpdate extends UpdaterStatusWire {}
@@ -52,9 +54,20 @@ function probeFlags(probe: SourceUpdateProbe): string[] {
   ]
 }
 
-export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
+/**
+ * Every update child's env: this process's env plus the system proxy when none
+ * is set (#123387). The proxy env overrides process.env, so its extended
+ * NO_PROXY is the one the children read (buildDesktopBackendEnv, spread after
+ * it, sets only PYTHON* and PATH); it is empty whenever the user set a proxy.
+ */
+export async function sourceUpdateEnvironment(
+  updateRoot: string,
+  hermesHome: string,
+  note?: (message: string) => void
+): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    ...(await updateProxyEnv(process.env, note, updateRoot)),
     ...buildDesktopBackendEnv(),
     HERMES_HOME: hermesHome,
     HERMES_INSTALL_ROOT: updateRoot
@@ -117,7 +130,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
       : args,
     hiddenWindowsChildOptions({
       cwd: probe.updateRoot,
-      env: sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome),
+      env: await sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome),
       encoding: 'utf8',
       timeout: 360000,
       maxBuffer: 1024 * 1024,

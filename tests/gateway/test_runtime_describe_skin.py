@@ -29,3 +29,20 @@ async def test_runtime_describe_carries_the_profiles_resolved_skin(tmp_path, mon
     finally:
         await conn.close()
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_describe_advertises_clarify_batch(tmp_path, monkeypatch):
+    """Ink declares ``clarify_batch`` on its prompts only to an owner advertising ``clarify-batch-v1``:
+    an older owner's closed ``prompt.submit`` params would refuse the key on every prompt."""
+    authority, _store = await _authority(tmp_path, monkeypatch)
+    monkeypatch.setenv('HERMES_HOME', authority.profile_id)
+    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
+    try:
+        described = await conn.dispatch({'id': 0, 'method': 'runtime.describe', 'params': {}})
+        assert 'clarify-batch-v1' in described['result']['capabilities']
+        from tui_gateway.contracts.registry import CANONICAL_METHODS
+        assert 'clarify_batch' in CANONICAL_METHODS['prompt.submit'].params.model_fields
+    finally:
+        await conn.close()
+        authority.db.close()

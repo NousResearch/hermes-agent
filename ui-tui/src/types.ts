@@ -134,10 +134,25 @@ export interface ClarifyReq {
   answers?: Record<string, string>
 }
 
+/** A collapsed paste in a sent user message: the chip shown and the text the model got. */
+export interface PasteSection {
+  label: string
+  text: string
+}
+
 export interface Msg {
   info?: SessionInfo
-  kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'event' | 'image' | 'intro' | 'panel' | 'slash' | 'trail'
+  // Local image paths shown inline under the row: a user turn's attachments,
+  // or (kind 'image') the picture a tool call produced or looked at.
+  images?: string[]
+  // Tells two pictures at one image path apart (a re-screenshot, a re-attached
+  // file overwritten in place): the tool call id that produced a kind 'image'
+  // row, or a per-turn id for a user turn's attachments.
+  imageRevision?: string
   panelData?: PanelData
+  /** Payloads behind this user row's paste chips, expandable in the transcript. */
+  pastes?: PasteSection[]
   role: Role
   text: string
   // Unix seconds the message was authored (persisted transcript timestamp on

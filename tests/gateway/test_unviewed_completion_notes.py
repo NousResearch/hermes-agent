@@ -63,14 +63,17 @@ async def test_busy_session_keeps_the_completion_durably_until_its_turn(tmp_path
         await _deliver(runner, authority, ref, _PROCESS)
         evt = _process_event(authority, ref, target)
         assert await runner._deliver_completion_notification(f'[finished] RESULT_{evt["session_id"]}', evt) is True
-        assert [r['status'] for r in _admissions(authority, ref)] == ['queued', 'queued']
+        # The second completion folds into the one still waiting at the FIFO tail: one turn for both.
+        assert [r['status'] for r in _admissions(authority, ref)] == ['terminal', 'queued']
         assert _notes(authority, target) == []
 
         seen = _turns(runner, authority, target)
         await authority._drain(ref)
         assert seen == [('FIRST', 0)], 'the human input runs first and sees no note yet'
-        assert len(_notes(authority, target)) == 2
-        assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed', 'completed']
+        notes = _notes(authority, target)
+        assert len(notes) == 1 and all(f'RESULT_{name}' in str(notes[0]['content'])
+                                       for name in (_PROCESS[1], evt['session_id']))
+        assert [r['outcome'] for r in _admissions(authority, ref)] == ['cancelled', 'completed']
     finally:
         authority.db.close()
 

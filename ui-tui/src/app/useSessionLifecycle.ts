@@ -25,6 +25,7 @@ import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
+import { noteBackgroundHandoff } from './backgroundSessionNotices.js'
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -149,6 +150,24 @@ export interface UseSessionLifecycleOptions {
   setVoiceProcessing: StateSetter<boolean>
   setVoiceRecording: StateSetter<boolean>
   sys: (text: string) => void
+}
+
+/** The subscription a view hands back when it leaves *sid*. A session left mid-turn while it stays
+ * live (`/new`, the switcher) keeps working in the background and keeps this view's subscription:
+ * the owner asks its questions (clarify, sudo, secret, vault) only while a viewer is attached and
+ * settles them as unanswered otherwise, so they must stay routed here until the user answers. */
+function releasedOnLeave(sid: null | string, held: Map<string, string>, staysLive: boolean): string | undefined {
+  if (!sid) {
+    return undefined
+  }
+
+  if (staysLive && getUiState().busy) {
+    noteBackgroundHandoff(sid)
+
+    return undefined
+  }
+
+  return held.get(sid)
 }
 
 export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
@@ -405,7 +424,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     async (msg?: string, title?: string, keepCurrent = false) => {
       const flight = ++attachmentFlight.current
       const previousSid = getUiState().sid
-      const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
+      const previousSubscription = releasedOnLeave(previousSid, canonicalSubscriptions.current, keepCurrent)
       pendingAttachments.current.add(flight)
 
       try {
@@ -551,7 +570,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const flight = ++attachmentFlight.current
       pendingAttachments.current.add(flight)
       const previousSid = getUiState().sid
-      const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
+      const previousSubscription = releasedOnLeave(previousSid, canonicalSubscriptions.current, previousSid !== id)
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.switchingSession') })
       // The card belongs to the session being left; the activated one answers with its own.

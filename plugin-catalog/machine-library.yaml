@@ -1,12 +1,12 @@
 name: machine-library
 repo: https://github.com/SpaceFrontiers/hermes-machine-library
-sha: 3d31000cd4995ffb452b246d268a5031acdd3744
+sha: 99a1bb70dd4992d4d0274e9af2ed3b6ab2a5922f
 description: Research search for web_search and web_extract — papers, books, patents, standards and Wikipedia, with citable source links (Machine Library API key).
 maintainer: SpaceFrontiers
 tier: community
 category: web
 title: Machine Library
-version: "0.1.0"
+version: "0.1.1"
 docs_url: https://github.com/SpaceFrontiers/hermes-machine-library#readme
 platforms: []
 capabilities:

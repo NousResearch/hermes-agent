@@ -122,6 +122,7 @@ def service_tier_config(connection, ref, params):
     authorize(connection, ref, params, 'session:control')
     live = connection.authority.sessions[ref.session_id]
     connection.authority.runner._set_session_service_tier_override(live.route, tier or None)
+    live.event_stream.publish(ref.session_id, {'service_tier': tier or ''}, event_type='session.info')
     return {'key': 'service_tier', 'value': tier or 'normal', 'scope': 'session'}
 
 

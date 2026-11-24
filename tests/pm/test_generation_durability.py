@@ -27,11 +27,13 @@ def test_install_selection_is_committed_only_after_its_tree_is_flushed(tmp_path,
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
-    venv = install.get_package("venv")
-    monkeypatch.setattr(venv, "expected_stamp", lambda extras, **kwargs: "stamp")
+    # The class, not the registry singleton: restoring an instance patch leaves a bound method
+    # behind that shadows later class-level patches in the same process.
+    venv = type(install.get_package("venv"))
+    monkeypatch.setattr(venv, "expected_stamp", lambda self, extras, **kwargs: "stamp")
     candidate = install_state_dir(repo) / "environments" / "fresh" / "venv"
 
-    def apply(*args, **kwargs):
+    def apply(self, *args, **kwargs):
         candidate.mkdir(parents=True)
         (candidate / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
         return {"environment": candidate}

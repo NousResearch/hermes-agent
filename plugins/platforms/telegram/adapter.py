@@ -177,12 +177,13 @@ def _bold_label_html(line: str) -> str:
 _MEDIA_KIND_KEYS = {
     "attachment": "platform.telegram.media.kind_attachment", "photo": "platform.telegram.media.kind_photo",
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
-    "video file": "platform.telegram.media.kind_video"}
+    "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
+from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -710,6 +711,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._model_picker_state: dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: dict[str, dict] = {}
         self._approval_state: dict[int, str] = {}  # message_id → session_key
+        self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -2591,11 +2593,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Save a newly created thread_id back into config.yaml so it survives restarts."""
         try:
             from hermes_constants import get_hermes_home
+            from hermes_cli.config import atomic_config_write, config_exists, read_user_config_raw
             config_path = get_hermes_home() / "config.yaml"
-            if not config_path.exists():
+            if not config_exists(config_path):
                 logger.warning("[%s] Config file not found at %s, cannot persist thread_id", self.name, config_path)
                 return
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
             config = read_user_config_raw(config_path)
             # platforms.telegram.extra.dm_topics — create the path for topics not predeclared in config.yaml.
             dm_topics = config.setdefault("platforms", {}).setdefault("telegram", {}).setdefault("extra", {}).setdefault("dm_topics", [])
@@ -2685,7 +2687,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     async def _register_command_menu(self) -> None:
         """Register the command menu (from COMMAND_REGISTRY) in every scope — Telegram picks the
         narrowest matching one per chat type; forum topics are handled lazily by _ensure_forum_commands."""
-        from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeDefault
+        from telegram import BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeDefault
         from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
         if not self._bot:
             return
@@ -2903,7 +2905,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         app.add_handler(TelegramMessageHandler(
             filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
         app.add_handler(TelegramMessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
         # Topic-creation service messages carry the new topic id and no text, so no other handler sees
         # them. They are a routing signal only (never an agent turn): see _handle_forum_topic_created.
@@ -4258,8 +4260,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
+            def on_sent(_msg):
+                self._approval_state[approval_id] = prompt.session_key
+                if prompt.request_id:
+                    self._approval_request_ids[approval_id] = prompt.request_id
+            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), on_sent
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
@@ -4758,15 +4763,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             _toast("platform.telegram.approval.toast_already_resolved"))
         if not session_key:
             return
+        request_id = self._approval_request_ids.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
-        # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
-        # (count == 0) must NOT claim "Approved" — the command was already denied.
         try:
             # Rendering happens after so the message reflects what actually occurred: a tap that lands after
             # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
             # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            from tools.approval import resolve_gateway_approval_card
+            count = resolve_gateway_approval_card(session_key, choice, request_id)
             logger.info(
                 "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:
@@ -4781,7 +4785,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             label = t("platform.telegram.approval.expired")
             edit_text = t("platform.telegram.approval.expired_detail", label=label)
         await query.answer(text=label[:_TOAST_LIMIT])
-        await self._edit_md_quiet(query, edit_text)
+        await edit_keeping_prompt(self, query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))
@@ -4803,7 +4807,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         label = t(f"platform.telegram.{label_key}")
         await query.answer(text=label[:_TOAST_LIMIT])
-        await self._edit_md_quiet(query, t("platform.telegram.approval.resolved_by_user", label=label, user=user_display))
+        decided = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
+        await edit_keeping_prompt(self, query, decided)
         # The runner stored a handler keyed by session_key; run it and send any returned text as a follow-up.
         try:
             from tools import slash_confirm as _slash_confirm_mod
@@ -6238,8 +6243,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""
         for attr, mtype in (
             ("sticker", MessageType.STICKER), ("photo", MessageType.PHOTO), ("video", MessageType.VIDEO),
-            ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
-            if getattr(msg, attr):
+            ("video_note", MessageType.VIDEO), ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
+            if getattr(msg, attr, None):
                 return mtype
         return MessageType.DOCUMENT
 
@@ -6310,8 +6315,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""
         if msg.photo:
             return msg.photo[-1], "", "", "image"
-        if msg.video:
-            return msg.video, "", "video/mp4", "video"
+        if video := msg.video or getattr(msg, "video_note", None):
+            return video, "", "video/mp4", "video"
         if msg.voice:
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
@@ -6649,11 +6654,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
-        existing = pending.get(key)
-        if existing is None:
+        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it."""
+        if (existing := pending.get(key)) is None:
             pending[key] = event
             return
+        existing.absorb_reply_expected(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         if event.text:
@@ -6860,8 +6865,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         elif msg.audio:
             if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
                 return
-        elif msg.video:
-            if await self._cache_inbound_av(msg, event, msg.video, "video file", "video", ".mp4", "video/mp4"):
+        elif video := msg.video or getattr(msg, "video_note", None):
+            if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
                 return
         elif msg.document and await self._cache_inbound_document(msg, event):
             return
@@ -7135,14 +7140,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
-        from plugins.platforms.telegram.telegram_context import group_identity_prompt
+        from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
             text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
-            channel_prompt=group_identity_prompt(self, message, channel_prompt),
+            channel_prompt=group_identity_prompt(self, message, channel_prompt), reply_expected=group_reply_expected(self, message, chat_type),
             edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
 
     @staticmethod
@@ -7279,7 +7284,6 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def interactive_setup() -> None:
     """Configure Telegram credentials and allowlist via the CLI setup wizard (lazy import)."""
-    from hermes_cli import setup as _setup_mod
     setup_platforms._setup_telegram()
 
 

@@ -1,0 +1,24 @@
+name: tripwire
+repo: https://github.com/percyhendrux123-prog/hermes-tripwire
+sha: 904a4f559808c57152ebb666cd0ab7d863220b49
+subdir: tripwire
+version: "0.1.1"
+description: "Logs every refused agent action (a tool blocked by a guardrail or plugin, or a dangerous command denied, cancelled or timed out at approval) as one JSON line, so a no-agent cron script can send the owner one short alert. Observer only: it stores no tool arguments, results or message text, and fails open. Disclosure — appends one JSON line per refused action (profile, tool name, block type or approval choice, session id, and the first 120 characters of the block reason or approval rule) to ~/.hermes/tripwire/events.jsonl, shared by all profiles (path overridable with TRIPWIRE_EVENTS); a pre_tool_call hook reads ~/.hermes/tripwire/TEST_BLOCK and, only while that file exists, blocks the single tool it names for the single profile it names (a drill switch to prove the alarm). No network calls, no shell commands, no background processes, no stored credentials, no telemetry."
+maintainer: percyhendrux123-prog
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-tripwire/blob/904a4f559808c57152ebb666cd0ab7d863220b49/README.md
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "A tool call the model makes outside its toolset is rejected by Hermes before any plugin hook runs, so Tripwire does not see it."
+  - "The optional notifier (scripts/tripwire_notify.py) is installed by hand and scheduled with `hermes cron create ... --no-agent`; it is not part of the plugin directory."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - post_approval_response
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

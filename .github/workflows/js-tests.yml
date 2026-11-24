@@ -70,6 +70,15 @@ jobs:
             web/node_modules
           key: node-modules-scripts-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-npm${{ steps.node.outputs.npm-version }}-${{ hashFiles('package-lock.json') }}
 
+      # Vitest records each file's duration and result under
+      # node_modules/.vite/vitest and orders the next run from it, longest first.
+      # The run that misses the cache writes it before the post step saves the
+      # tree, so every hit until the next lockfile change replays that one run's
+      # order: the slowest jsdom suites all start cold together and starve the
+      # rest past their 15s timeout. Drop it so each run orders from scratch.
+      - name: Drop vitest run history from the restored tree
+        run: rm -rf node_modules/.vite/vitest apps/*/node_modules/.vite/vitest ui-tui/node_modules/.vite/vitest ui-tui/packages/*/node_modules/.vite/vitest tests-js/node_modules/.vite/vitest web/node_modules/.vite/vitest
+
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
@@ -77,6 +86,17 @@ jobs:
 
       - name: Prepare locked Electron runtime before parallel checks
         run: node scripts/build/electron-runtime.mjs --source .
+
+      # The WhatsApp bridge is a standalone npm package, outside the root
+      # workspaces, so run-workspace-checks never sees it. Two of its suites
+      # import @whiskeysockets/baileys, so install its own lockfile first;
+      # --ignore-scripts because the tests need no native build.
+      - name: Install WhatsApp bridge dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+      - name: Run WhatsApp bridge node tests
+        run: node --test scripts/whatsapp-bridge/*.test.mjs
 
       # Every check runs at the same time. The step fails only after all of
       # them finish. There are two reasons this is not ``npm run --ws check``.

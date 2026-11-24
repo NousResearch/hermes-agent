@@ -149,6 +149,8 @@ def _rewind(db, conn, session_id, payload):
     target = db._row_to_message_dict(target, warn_context='rewind receipt', summary_flag=True)
     if live is not None:
         target['content'] = live.get('content')
+    from agent.message_metadata import typed_prompt_content  # /retry, /undo: the typed ask, not the placeholder
+    target['content'] = typed_prompt_content(target.get('content'), target)
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,
         'new_head_id': head, 'replacement_message_id': replacement}

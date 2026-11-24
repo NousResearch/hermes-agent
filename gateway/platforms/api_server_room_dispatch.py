@@ -13,6 +13,8 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error
 
+_ROOM_ONLY_FIELDS = frozenset({"hosted_room_dispatch", "_room_execution_policy"})
+
 
 async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
@@ -77,6 +79,12 @@ async def _normalize_room_dispatch(
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
+        # Room fields are server-built from a verified grant; a caller-supplied copy would let an
+        # API key choose its own toolsets, approval mode and turn limit.
+        if isinstance(body, dict) and _ROOM_ONLY_FIELDS & set(body):
+            return body, _json_error(
+                _openai_error, "hosted_room_dispatch and _room_execution_policy require a room grant.",
+                code="room_grant_required", status=403)
         return body, None
     if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
         return body, _json_error(

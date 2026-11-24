@@ -43,6 +43,40 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
         )
 
 
+# (current home, Hermes root) -> profile name; only homes that exist are stored (see home_profile_name).
+_HOME_PROFILE_NAMES: dict[tuple[str, str], str] = {}
+
+
+def home_profile_name() -> str:
+    """Profile name of the current Hermes home (the process home, or a routed turn's bound home);
+    ``"default"`` when it cannot be resolved. One lookup for every reader that must agree: the
+    persistent-Docker container key, the container's profile label, the name the TUI stamps on its
+    sessions (``get_active_profile_name``, so ``custom`` for a home inside the root that is not a
+    ``profiles/<name>`` home), and the file panel's sandbox names.
+
+    Memoized per (home, root) path pair: the lookup resolves three paths and runs on every
+    container-key resolution, several times per tool call."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        home = get_hermes_home()
+        key = (str(home), str(get_default_hermes_root()))
+        if (cached := _HOME_PROFILE_NAMES.get(key)) is not None:
+            return cached
+        name = get_active_profile_name() or "default"
+        if home.exists():  # a home created later may resolve differently
+            _HOME_PROFILE_NAMES[key] = name
+        return name
+    except (ImportError, OSError, RuntimeError, ValueError):  # an unresolvable home keeps the shared default key
+        return "default"
+
+
+def profile_container_key(profile: str) -> str:
+    """Persistent-Docker container key of a profile: the default profile stays literally ``"default"``."""
+    return "default" if profile == "default" else f"profile:{profile}"
+
+
 def _safe_getcwd() -> str:
     """``os.getcwd()`` tolerant of a deleted cwd (FileNotFoundError) or a macOS
     TCC-protected one without Full Disk Access (PermissionError); falls back

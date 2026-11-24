@@ -1,0 +1,18 @@
+name: redreplier
+title: RedReplier
+repo: https://github.com/RedReplier/claude-plugin
+sha: e475c10b0b9b9ed53c91fb756f6c334d829460b1
+version: "1.4.2"
+description: "Find leads in public conversations through RedReplier's hosted MCP server (Streamable HTTP at https://mcp.redreplier.com/mcp, OAuth sign-in, no keys in config): keyword mentions on Reddit, Hacker News, X, Bluesky and Facebook, each scored 0-100 for relevance, with filters by score, keyword, source and date, the reason behind a score, approve and reject triage, monitored websites and keywords, and alert settings. Bundles the redreplier workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to RedReplier's hosted server (mcp.redreplier.com) and acts on the user's RedReplier account with their own workspace role; the tool set is served by that server at runtime and is not covered by the pinned sha. Keywords count against the user's RedReplier plan. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: RedReplier
+tier: community
+category: tools
+docs_url: https://github.com/RedReplier/claude-plugin#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

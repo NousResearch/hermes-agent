@@ -20,6 +20,11 @@ def _chat_completion_capturing_headers(agent, client, api_kwargs: dict):
     captured only when the response itself is the usage-window kind. A capture failure never
     fails the turn.
     """
+    # A token-budgeted free route is metered before the request is sent, so a turn waits for
+    # its allowance instead of earning a 429 that hands the turn to the fallback.
+    from agent.primary_budget_pacer import pace_primary_request
+
+    pace_primary_request(agent, api_kwargs)
     # `is True`: a Mock agent's invented attribute is not a window plan.
     state = getattr(agent, "_credits_state", None)
     if getattr(agent, "provider", "") != "nous" or getattr(state, "is_usage_window", False) is not True:

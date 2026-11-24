@@ -31,6 +31,29 @@ def _make_agent(api_max_retries=None):
 
 
 
+def _make_agent_with(agent_section):
+    """Build an AIAgent whose config tree carries ``agent_section`` verbatim."""
+    cfg = {"agent": dict(agent_section)}
+    with patch("agent.process_bootstrap.OpenAI"), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        return AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+
+def test_max_rate_limit_wait_seconds_honors_config_and_defaults_off():
+    """The rate-limit wait budget is opt-in: absent or negative means old behaviour (off)."""
+    assert _make_agent_with({"max_rate_limit_wait_seconds": 120}).max_rate_limit_wait_seconds == 120.0
+    assert _make_agent_with({}).max_rate_limit_wait_seconds == 0.0
+    assert _make_agent_with({"max_rate_limit_wait_seconds": -5}).max_rate_limit_wait_seconds == 0.0
+
+
 def test_api_max_retries_honors_config_override():
     """Setting agent.api_max_retries in config propagates to the agent."""
     agent = _make_agent(api_max_retries=1)

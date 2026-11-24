@@ -1568,6 +1568,67 @@ def free_tier_cooldown_ends_turn(agent: Any, api_error: Exception, base_url: Any
     return cooldown is not None and cooldown > LIVE_RETRY_WAIT_CAP_S
 
 
+def rate_limit_wait_budget_seconds(agent: Any) -> float:
+    """``agent.max_rate_limit_wait_seconds``, or ``0.0`` (off) for a missing/invalid value."""
+    try:
+        return max(0.0, float(getattr(agent, "max_rate_limit_wait_seconds", 0) or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def rate_limit_window_seconds(api_error: Exception, context: Any) -> Optional[float]:
+    """The provider-declared rate-limit window in seconds, when it declared one.
+
+    An explicit ``Retry-After`` header / ``retry_after`` body field wins (the pool's precedence:
+    a short throttle inside a longer quota window). Otherwise ``reset_at`` comes from the turn's
+    ``extract_api_error_context(api_error)``, which already covers the body reset fields, the
+    headers and the message grammar, so a window that exists only in prose still counts.
+    """
+    from agent.retry_utils import provider_retry_after_seconds
+    declared = provider_retry_after_seconds(api_error)
+    if declared is not None:
+        return declared
+    reset_at = context.get("reset_at") if isinstance(context, dict) else None
+    if reset_at is None:
+        return None
+    from agent.credential_pool import _parse_absolute_timestamp
+    absolute = _parse_absolute_timestamp(reset_at)
+    if absolute is None:
+        return None
+    remaining = absolute - time.time()
+    return remaining if remaining > 0 else None
+
+
+def rate_limit_wait_fits_budget(agent: Any, api_error: Exception, context: Any) -> bool:
+    """True when an explicit primary wait budget covers the declared window.
+
+    An operator-set ``agent.max_rate_limit_wait_seconds`` says a refusal that reopens inside it is
+    worth riding out: the turn waits the window and retries on the primary instead of switching
+    models on the first 429. Without the key the old eager hand-off stands.
+    """
+    budget = rate_limit_wait_budget_seconds(agent)
+    if budget <= 0:
+        return False
+    cooldown = rate_limit_window_seconds(api_error, context)
+    return cooldown is not None and cooldown <= budget
+
+
+def rate_limit_wait_exceeds_budget(agent: Any, api_error: Exception, context: Any) -> bool:
+    """True when honouring the provider's rate-limit window would idle the turn past its budget.
+
+    ``agent.max_rate_limit_wait_seconds`` (config ``agent.max_rate_limit_wait_seconds``; 0 = off)
+    bounds how long a turn sits on a closed primary window. A window that fits is waited out and
+    retried on the primary; a longer one ends the attempt cycle now so the fallback chain takes
+    the turn. Without this, restoring a retry budget turns a 442s free-tier refusal into three
+    consecutive 442s waits before the fallback is even considered.
+    """
+    budget = rate_limit_wait_budget_seconds(agent)
+    if budget <= 0:
+        return False
+    cooldown = rate_limit_window_seconds(api_error, context)
+    return cooldown is not None and cooldown > budget
+
+
 def validate_response_shape(agent: Any, response: Any) -> tuple[bool, list[str]]:
     """Validate the raw provider response via the transport; ``(response_invalid,
     error_details)``. A Codex ``failed``/``cancelled`` status (e.g. quota exhaustion) is
@@ -1937,20 +1998,40 @@ def route_classified_error(
         if classified.reason == FailoverReason.rate_limit else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
+    _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
     # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect
     # directly so the long backoff runs, and raise the ceiling to reach it.
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    # A provider-declared window the configured budget covers is worth one wait on the primary:
+    # switching models on a 55s refusal costs the primary the turn for nothing. Bounded to the
+    # turn's first failure so a widening window cannot idle the lane once per retry; upstream
+    # aggregator 429s and plan usage windows always fall back (the provider decides those).
+    # ``retry_count == 1`` is the first failure: ``handle_api_error`` increments the counter before
+    # routing and is this function's only caller, so 1 is the first 429 and 0 is unreachable. The
+    # second refusal of the same turn is 2 and still hands off.
+    _rate_limit_window_fits_budget = (
+        is_rate_limited
+        and _wrapped_output_cap_budget is None
+        and retry_count == 1
+        and not _is_upstream
+        and rate_limit_wait_fits_budget(agent, api_error, error_context)
+    )
+    if _rate_limit_window_fits_budget:
+        logger.info(
+            "%sRate-limit window %ss fits the %.0fs primary wait budget — retrying on primary",
+            agent.log_prefix, rate_limit_window_seconds(api_error, error_context),
+            rate_limit_wait_budget_seconds(agent),
+        )
     _should_fallback = (
-        (is_rate_limited and _wrapped_output_cap_budget is None)
+        (is_rate_limited and _wrapped_output_cap_budget is None and not _rate_limit_window_fits_budget)
         or (_is_transport_failure and retry_count >= 2)
     ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
-        _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
         pool_may_recover = (
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )

@@ -1276,6 +1276,14 @@ def _apply_agent_section(agent, _agent_cfg):
     except (TypeError, ValueError):
         _api_retries = 3
     agent._api_max_retries = _api_retries
+    # Per-turn budget (seconds) for waiting out a provider-declared rate-limit window on the
+    # primary. 0 = off (honour Retry-After as before). A window longer than the budget ends the
+    # attempt cycle so the fallback chain takes the turn instead of the lane idling for minutes.
+    try:
+        _rate_limit_wait_budget = max(float(_agent_section.get("max_rate_limit_wait_seconds", 0) or 0), 0.0)
+    except (TypeError, ValueError):
+        _rate_limit_wait_budget = 0.0
+    agent.max_rate_limit_wait_seconds = _rate_limit_wait_budget
     # Bounded post-exhaustion auto-recovery cycles once retries AND the fallback chain are spent
     # on a transient outage (agent/turn_recovery_autorecover.py). 0 disables the ladder.
     try:

@@ -26,7 +26,22 @@ DEFAULT_CONFIG = {
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.
-    "fallback": {"min_switch_reset_seconds": 0},
+    # reprobe_seconds: while a fallback route is active, retry the primary after this many
+    # seconds so a long turn returns to it once the rate-limit window reopens (0 = off).
+    # primary_budget: pace requests to a route whose 429s are token-budgeted (the Nous free tier's
+    # model-scoped fair share). Off by default; see agent/primary_budget_pacer.py for the measured
+    # numbers and the shared bucket it meters across lanes.
+    "fallback": {
+        "min_switch_reset_seconds": 0,
+        "reprobe_seconds": 300,
+        "primary_budget": {
+            "enabled": False,
+            "providers": ["nous"],
+            "tokens_per_minute": 33000,
+            "burst_tokens": 64000,
+            "max_wait_seconds": 240,
+        },
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
@@ -119,6 +134,11 @@ DEFAULT_CONFIG = {
         # Hermes-level retries for API errors (connection drops, timeouts, 5xx) around the whole call; the
         # SDK also retries (max_retries=2). Set 1 for fast failover to fallbacks; raise for longer hiccups.
         "api_max_retries": 3,
+        # Per-turn budget (seconds) for waiting out a provider-declared rate-limit window on the
+        # primary. 0 = off (honour Retry-After as before). A window longer than the budget ends
+        # the attempt cycle so the fallback chain takes the turn instead of the lane idling for
+        # minutes on every retry.
+        "max_rate_limit_wait_seconds": 0,
         "codex_request_compression": True,  # zstd to official Codex; a bare-400 frame resends as JSON
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
         # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many
@@ -1874,6 +1894,16 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Model-lane back-pressure: positive int = spawn nothing this tick while the local
+        # scheduler already has that many requests queued (``waiting_requests``). The caps above
+        # bound WORKERS; this bounds the queue they feed, so a serially-served local model isn't
+        # handed another card while N already wait behind a long prefill. Deferred, not dropped.
+        # None = no lane guard (installs without a local serialized lane are unaffected).
+        "lane_queue_limit": None,
+        # Scheduler status URL probed by the lane guard. "" = derive
+        # <model.base_url origin>/api/status (oMLX) for loopback base_urls only; a hosted
+        # base_url is never probed. Any read failure fails open (no restriction).
+        "lane_status_url": "",
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

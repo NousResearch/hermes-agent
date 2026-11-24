@@ -22,7 +22,9 @@ from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
     interruptible_backoff_sleep, log_api_error_attempt,
-    max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
+    max_retries_exhausted_result, nonretryable_client_error_result, rate_limit_wait_exceeds_budget,
+    rate_limit_wait_fits_budget,
+    recover_after_classification,
     recover_before_classification, route_classified_error, settle_delivered_partial,
 )
 
@@ -373,10 +375,26 @@ def settle_unrecovered_error(
 
     # An attended session on the free model does not sit through a long cooldown: end the attempt
     # cycle now (fallback, else the reset time and the ways forward); the copy counts attempts made.
+    # An explicit wait budget that covers this window overrides that heuristic — the operator said
+    # this wait is acceptable, and ``route_classified_error`` deliberately kept the turn on the
+    # primary for it.
     attempts_made = min(retry_count, max_retries)
-    if is_rate_limited and retry_count < max_retries and free_tier_cooldown_ends_turn(agent, api_error, _base):
+    if (
+        is_rate_limited
+        and retry_count < max_retries
+        and not rate_limit_wait_fits_budget(agent, api_error, error_context)
+        and free_tier_cooldown_ends_turn(agent, api_error, _base)
+    ):
         logger.info("%sFree-tier cooldown outlasts the attended wait — ending retries after attempt %s",
                     agent.log_prefix, retry_count)
+        retry_count = max_retries
+    # A window past the configured budget is not waited out: retrying would idle the lane for
+    # minutes only to be refused again, so hand the turn to the fallback chain now.
+    if is_rate_limited and retry_count < max_retries and rate_limit_wait_exceeds_budget(agent, api_error, error_context):
+        logger.info(
+            "%sRate-limit window exceeds the %.0fs primary wait budget — ending retries after attempt %s",
+            agent.log_prefix, float(getattr(agent, "max_rate_limit_wait_seconds", 0) or 0), retry_count,
+        )
         retry_count = max_retries
     if retry_count >= max_retries:
         # Before fallback, rebuild the primary client once per API call block for

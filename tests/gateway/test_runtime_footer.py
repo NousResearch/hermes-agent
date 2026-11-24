@@ -279,3 +279,46 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# FooteredReply survives copy/pickle
+# ---------------------------------------------------------------------------
+
+class TestFooteredReplyCopy:
+    """``gateway/session_events.py`` deepcopies every event payload before publishing.
+
+    ``FooteredReply.__new__`` requires ``footer``, which a str-subclass rebuild does not pass,
+    so a footer-enabled run raised ``TypeError: FooteredReply.__new__() missing 1 required
+    positional argument: 'footer'`` while publishing its completion event: gateway settlement
+    recovery failed for every finished turn and neither CLI nor API clients ever saw it end
+    (#156709).
+    """
+
+    FOOTER = "model-x · 29%"
+
+    def test_deepcopy_keeps_the_footed_text(self):
+        from copy import deepcopy
+
+        from gateway.runtime_footer import FooteredReply
+
+        reply = FooteredReply("done", self.FOOTER)
+        copied = deepcopy(reply)
+        assert copied == "done\n\n" + self.FOOTER
+        assert copied == reply
+
+    def test_pickle_round_trip(self):
+        import pickle
+
+        from gateway.runtime_footer import FooteredReply
+
+        reply = FooteredReply("done", self.FOOTER)
+        assert pickle.loads(pickle.dumps(reply)) == reply
+
+    def test_rebuilt_copy_is_a_plain_str(self):
+        from copy import deepcopy
+
+        from gateway.runtime_footer import FooteredReply
+
+        # The class contract: any rewrite is already the text with the footer in it.
+        assert type(deepcopy(FooteredReply("done", self.FOOTER))) is str

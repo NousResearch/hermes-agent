@@ -1221,3 +1221,49 @@ async def test_shortened_card_preview_says_where_the_full_command_is():
         await adapter.send_exec_approval(chat_id="c1", command="echo " + "C" * 5000, session_key="s1")
     card_text = " ".join(texts)
     assert "Preview shortened" in card_text and "5005" in card_text
+
+
+# ---------------------------------------------------------------------------
+# Hyperlink targets in activity.text (#157194)
+# ---------------------------------------------------------------------------
+
+class TestTeamsHyperlinkTargets:
+    """Teams sends only an anchor's *label* in ``activity.text``; the target lives in the
+    ``text/html`` mirror attachment, which ``_cache_attachment`` skips as a body mirror. A pasted
+    SharePoint link therefore reached the agent as a bare file name, with nothing logged."""
+
+    SPO = "https://acme.sharepoint.com/sites/x/Budget.xlsx"
+
+    @staticmethod
+    def _activity(text, html=None):
+        attachments = []
+        if html is not None:
+            attachments.append(SimpleNamespace(content_type="text/html", content=html, content_url=None))
+        return SimpleNamespace(text=text, attachments=attachments)
+
+    def test_pasted_link_target_is_recovered(self):
+        activity = self._activity(
+            "Budget.xlsx\r\nhere you go",
+            f'<p>here you go</p><p><a href="{self.SPO}">Budget.xlsx</a></p>',
+        )
+        out = _teams_mod.TeamsAdapter._resolve_html_links(activity, "Budget.xlsx\r\nhere you go")
+        assert self.SPO in out
+        assert "Budget.xlsx" in out
+
+    def test_anchor_labelled_with_its_url_is_not_duplicated_verbatim(self):
+        activity = self._activity("here you go", f'<a href="{self.SPO}">{self.SPO}</a>')
+        out = _teams_mod.TeamsAdapter._resolve_html_links(activity, "here you go")
+        assert out == f"here you go\n{self.SPO}"
+
+    def test_target_already_in_text_is_not_repeated(self):
+        activity = self._activity(f"see {self.SPO}", f'<a href="{self.SPO}">look</a>')
+        out = _teams_mod.TeamsAdapter._resolve_html_links(activity, f"see {self.SPO}")
+        assert out == f"see {self.SPO}"
+
+    def test_no_html_attachment_is_a_noop(self):
+        activity = self._activity("plain text")
+        assert _teams_mod.TeamsAdapter._resolve_html_links(activity, "plain text") == "plain text"
+
+    def test_malformed_markup_keeps_the_message(self):
+        activity = self._activity("text", "<a href='")
+        assert _teams_mod.TeamsAdapter._resolve_html_links(activity, "text") == "text"

@@ -261,70 +261,16 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """One-line failure notice for chat delivery (full details stay in the run output).
 
-    Deterministic scheduler/script shapes are matched first (their text can contain "timed out"
-    and would otherwise be blamed on the model service); everything else goes through the shared
-    ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
-    from cron.scheduler_failure_copy import (
-        classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+    The renderer lives in ``cron.scheduler_failure_copy.summarize_cron_failure`` (kept out of this
+    already-oversized module); the scheduler passes its lazily evaluated backup-provider and
+    diagnostic callbacks so that module stays free of scheduler-side imports."""
+    from cron.scheduler_failure_copy import summarize_cron_failure
 
-    job_name = job.get("name") or job.get("id") or "cron job"
-    job_id = job.get("id") or job_name
-    text = (error or "unknown error").strip()
-    lower = text.lower()
-
-    # Script runner contract ("Script timed out after {n}s: {path}") — also for agent jobs with a
-    # context script. Must precede provider classification so it never claims a model failure.
-    # See #78503, #82460.
-    if lower.startswith("script timed out"):
-        return script_timeout_notice(job_name, job_id)
-
-    # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
-    # quiet, no model service involved. Its text may still contain "timed out", so it must be
-    # recognised before the classifier (field-reported: a stuck `terminal` call was blamed on the
-    # provider and the operator debugged the wrong system).
-    if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
-        return inactivity_notice(job_name, job_id)
-
-    # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
-    # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
-    # blame the wrong subsystem.
-    if not job.get("no_agent"):
-        notice = provider_failure_notice(
-            job_name, job_id, classify_cron_failure_reason(text),
-            backup_provider_phrase=_fallback_chain_phrase(job), provider=job.get("provider"))
-        if notice is not None:
-            return notice
-
-    # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
-    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
-    if len(cleaned) > 180:
-        cleaned = cleaned[:177].rstrip() + "..."
-    message = generic_failure_notice(job_name, job_id, cleaned)
-
-    # Import-class failures (#95294 part 3): a long-lived gateway whose checkout was updated
-    # underneath it (interrupted `hermes update`, manual git pull) serves MIXED modules and every
-    # agent cron job dies with `cannot import name X`. The error reads like a code bug, so APPEND
-    # cause + fix — never replace the raw error, which carries the failing symbol. Fail-safe: skew
-    # is None on non-git/no-fingerprint; no_agent jobs excluded (a fresh subprocess resolves
-    # imports against disk, so its ImportError is the script's own problem).
-    if not job.get("no_agent") and re.search(
-        r"cannot import name|modulenotfounderror|importerror", lower
-    ):
-        try:
-            skew = _detect_gateway_code_skew()
-        except Exception:
-            skew = None  # delivery must never die on a diagnostics probe
-        if skew is not None:
-            boot_rev, disk_rev = skew
-            message += (
-                f" Likely cause: the gateway is running stale code (booted "
-                f"on {boot_rev}, disk is at {disk_rev}) — run "
-                "`hermes gateway restart` to fix it."
-            )
-
-    return message
+    return summarize_cron_failure(
+        job, error,
+        fallback_phrase=lambda: _fallback_chain_phrase(job),
+        code_skew_probe=_detect_gateway_code_skew,
+    )
 
 
 DEFAULT_FAILURE_REPEAT_ALERT_HOURS = 6.0
@@ -367,9 +313,14 @@ def _upsert_incident_for_failure(
     as if none existed."""
     try:
         from cron.incidents import get_incident, upsert_incident
+        from cron.scheduler_failure_copy import source_failure_origin
 
+        # A known source/script origin classifies the incident by STAGE (failure_type="script"),
+        # independent of the error text; every other origin lets the text classifier decide.
+        failure_type = "script" if source_failure_origin(job) is not None else None
         incident_id, _is_new = upsert_incident(
-            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
+            job["id"], str(error or ""), job_name=job.get("name"),
+            failure_type=failure_type, output_file=output_file)
         incident = get_incident(incident_id)
         state = incident.get("state") if incident else None
         withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident))
@@ -528,6 +479,8 @@ from cron.jobs import (
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron import store_health
+from cron.scheduler_failure_copy import (
+    FAILURE_ORIGIN_AGENT, FAILURE_ORIGIN_MONITOR, FAILURE_ORIGIN_SCRIPT)
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
     FIRER_FINISHED_STATES, _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
@@ -1497,6 +1450,7 @@ def _run_no_agent_job(
 
     if not ok:
         # Deliver the error: a silently broken watchdog is the worst-case outcome.
+        job["_failure_origin"] = FAILURE_ORIGIN_SCRIPT
         alert = (
             f"⚠ Cron watchdog '{job_name}' script failed\n\n"
             f"{output}\n\n"
@@ -1534,6 +1488,7 @@ def _apply_monitor_gate(
     if not _mon.ok:
         # Source failure is an ERROR, never a change: alert so a broken monitor can't silently
         # stop watching. Stored hash untouched.
+        job["_failure_origin"] = FAILURE_ORIGIN_MONITOR
         logger.error("Job '%s': monitor source failed: %s", job_id, _mon.error)
         _mon_alert = (
             f"⚠ Cron monitor '{job_name}' source failed\n\n"
@@ -2520,6 +2475,8 @@ def run_job(
     to the stored prompt for this fire only — never persisted to the job definition.
     """
     from gateway.session_cron import current_execution
+    # Clear the previous run before both owner execution and the canonical completion path.
+    job.pop("_failure_origin", None)
     owner_execution = current_execution()
     if owner_execution is not None and owner_execution[2:] != (job['id'], execution_id):
         owner_execution = None
@@ -2621,6 +2578,10 @@ def run_job(
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
             + format_run_error(e)
         )
+        # Agent/provider stage failure (setup or execution): stamp the origin unless a source
+        # stage already claimed it, so delivery and the incident ledger classify by stage.
+        if job.get("_failure_origin") is None:
+            job["_failure_origin"] = FAILURE_ORIGIN_AGENT
         return False, output, "", error_msg
 
     finally:

@@ -1,13 +1,14 @@
 """Plain-language copy for the one-line cron failure notice delivered to a job's chat.
 
-The scheduler classifies the failure text through ``agent.error_classifier.classify_api_error``
-(one classifier for the whole app, no cron-local regex ladder) and looks the verdict up here.
+Executor source-stage verdicts bypass provider text classification. Legacy/provider failures
+still use ``agent.error_classifier.classify_api_error`` (no cron-local regex ladder).
 Every notice says WHAT happened and WHAT TO DO, and names the exact ``hermes cron`` command plus
 the real output directory — "cron output" alone sent operators hunting.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Optional
 
@@ -154,3 +155,112 @@ def blocked_config_notice(job_name: str, reason: str) -> str:
         "the next scheduled time and will not repeat this alert; check with "
         "`hermes cron doctor`."
     )
+
+
+# --- Per-run failure origin ---------------------------------------------------------------------
+# The executor stamps WHICH stage failed on the job's WORKING copy; delivery and the incident
+# ledger classify from this origin instead of guessing at error text. ``agent_provider`` means the
+# agent/provider setup or execution failed — NOT that a model necessarily received a request.
+FAILURE_ORIGIN_MONITOR = "monitor_source"
+FAILURE_ORIGIN_SCRIPT = "script_execution"
+FAILURE_ORIGIN_AGENT = "agent_provider"
+# Source stages stop before Hermes's agent; an independent script may call its own model.
+_SOURCE_FAILURE_ORIGINS = frozenset({FAILURE_ORIGIN_MONITOR, FAILURE_ORIGIN_SCRIPT})
+
+
+def source_failure_origin(job: dict) -> Optional[str]:
+    """The bounded source-stage verdict, or None for absent/malformed legacy metadata."""
+    origin = job.get("_failure_origin")
+    return origin if isinstance(origin, str) and origin in _SOURCE_FAILURE_ORIGINS else None
+
+
+def source_failure_notice(job_name: str, job_id: str, *, kind: str) -> str:
+    """Content-free notice for a monitor-source or script failure.
+
+    Names the failing stage and the command to inspect the LOCAL run log; never echoes the source's
+    stdout/stderr, an authenticated URL or arbitrary error text (those stay in the saved run output).
+    """
+    what = "monitored source" if kind == FAILURE_ORIGIN_MONITOR else "script"
+    return (
+        f"⚠️ Cron '{job_name}' failed: its {what} did not run successfully. "
+        f"Hermes did not enter its agent stage. Inspect the full run with "
+        f"`hermes cron runs {job_id}` (output saved under {cron_output_dir_display(job_id)}), "
+        f"then run it again with `hermes cron run {job_id}`."
+    )
+
+
+def summarize_cron_failure(
+    job: dict, error: Optional[str], *, fallback_phrase, code_skew_probe,
+) -> str:
+    """One-line failure notice for chat delivery (full details stay in the run output).
+
+    Deterministic scheduler/script shapes are matched first (their text can contain "timed out"
+    and would otherwise be blamed on the model service); a known SOURCE origin then wins over any
+    error-text reading; everything else goes through the shared ``classify_api_error`` verdict and
+    the copy table above. ``fallback_phrase`` / ``code_skew_probe`` are the scheduler's lazily
+    evaluated backup-provider and diagnostic callbacks, passed in so this renderer stays free
+    of scheduler-side imports.
+    """
+    job_name = job.get("name") or job.get("id") or "cron job"
+    job_id = job.get("id") or job_name
+    text = (error or "unknown error").strip()
+    lower = text.lower()
+
+    # Script runner contract ("Script timed out after {n}s: {path}") — also for agent jobs with a
+    # context script. Must precede origin / provider classification so it never claims a model
+    # failure. See #78503, #82460.
+    if lower.startswith("script timed out"):
+        return script_timeout_notice(job_name, job_id)
+
+    # An executor source verdict outranks source text that resembles a watchdog/provider error.
+    origin = source_failure_origin(job)
+    if origin is not None:
+        return source_failure_notice(job_name, job_id, kind=origin)
+
+    # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
+    # quiet, no model service involved. Its text may still contain "timed out", so it must be
+    # recognised before the classifier (field-reported: a stuck `terminal` call was blamed on the
+    # provider and the operator debugged the wrong system).
+    if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
+        return inactivity_notice(job_name, job_id)
+
+    # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
+    # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
+    # blame the wrong subsystem.
+    if not job.get("no_agent"):
+        notice = provider_failure_notice(
+            job_name, job_id, classify_cron_failure_reason(text),
+            backup_provider_phrase=fallback_phrase(), provider=job.get("provider"))
+        if notice is not None:
+            return notice
+
+    # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
+    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
+    if len(cleaned) > 180:
+        cleaned = cleaned[:177].rstrip() + "..."
+    message = generic_failure_notice(job_name, job_id, cleaned)
+
+    # Import-class failures (#95294 part 3): a long-lived gateway whose checkout was updated
+    # underneath it (interrupted `hermes update`, manual git pull) serves MIXED modules and every
+    # agent cron job dies with `cannot import name X`. The error reads like a code bug, so APPEND
+    # cause + fix — never replace the raw error, which carries the failing symbol. Fail-safe: skew
+    # is None on non-git/no-fingerprint; no_agent jobs excluded (a fresh subprocess resolves
+    # imports against disk, so its ImportError is the script's own problem).
+    if not job.get("no_agent") and re.search(
+        r"cannot import name|modulenotfounderror|importerror", lower
+    ):
+        try:
+            skew = code_skew_probe()
+        except Exception:
+            logging.getLogger(__name__).debug("Cron code-skew diagnostics failed", exc_info=True)
+            skew = None  # delivery must never die on a diagnostics probe
+        if skew is not None:
+            boot_rev, disk_rev = skew
+            message += (
+                f" Likely cause: the gateway is running stale code (booted "
+                f"on {boot_rev}, disk is at {disk_rev}) — run "
+                "`hermes gateway restart` to fix it."
+            )
+
+    return message

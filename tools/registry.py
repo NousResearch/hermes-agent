@@ -1027,21 +1027,31 @@ class ToolRegistry:
                 if not quiet:
                     logger.debug("Tool %s unavailable (check failed)", name)
                 continue
-            schema_with_name = {**entry.schema, "name": entry.name}
-            # Runtime-dynamic overrides (e.g. delegate_task limits); the caller's memo is
-            # keyed on config.yaml mtime+size, so config changes invalidate it automatically.
-            if entry.dynamic_schema_overrides is not None:
-                try:
-                    overrides = entry.dynamic_schema_overrides()
-                except Exception as exc:
-                    overrides = None
-                    logger.warning(
-                        "dynamic_schema_overrides for tool %s raised %s; using static schema",
-                        name, exc)
-                if isinstance(overrides, dict):
-                    schema_with_name.update(overrides)
-            result.append({"type": "function", "function": schema_with_name})
+            result.append(self._definition(entry))
         return result
+
+    def definition_for(self, name: str) -> Optional[dict]:
+        """``name``'s definition as ``get_definitions`` builds it (runtime overrides applied), without the
+        ``check_fn`` gate: for a tool a session already carries whose probe fails in this process."""
+        entry = self.get_entry(name)
+        return self._definition(entry) if entry else None
+
+    @staticmethod
+    def _definition(entry) -> dict:
+        schema_with_name = {**entry.schema, "name": entry.name}
+        # Runtime-dynamic overrides (e.g. delegate_task limits); the caller's memo is
+        # keyed on config.yaml mtime+size, so config changes invalidate it automatically.
+        if entry.dynamic_schema_overrides is not None:
+            try:
+                overrides = entry.dynamic_schema_overrides()
+            except Exception as exc:
+                overrides = None
+                logger.warning(
+                    "dynamic_schema_overrides for tool %s raised %s; using static schema",
+                    entry.name, exc, exc_info=True)
+            if isinstance(overrides, dict):
+                schema_with_name.update(overrides)
+        return {"type": "function", "function": schema_with_name}
 
     # ---- Dispatch ----------------------------------------------------
 
@@ -1092,7 +1102,8 @@ class ToolRegistry:
             # exc_info already renders the exception, so keep the message copy bounded.
             logger.exception("Tool %s dispatch error: %s", name, _bound_error_text(str(e)))
             # Sanitize so framing tokens/CDATA/fences in exception text aren't structural noise.
-            raw = f"Tool execution failed: {type(e).__name__}: {e}"
+            from storage_user_copy import error_type_name
+            raw = f"Tool execution failed: {error_type_name(e)}: {e}"
             try:
                 from model_tools import _sanitize_tool_error
                 sanitized = _sanitize_tool_error(raw)

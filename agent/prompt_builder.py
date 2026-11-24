@@ -22,9 +22,9 @@ from hermes_constants import (
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
+    EXCLUDED_SKILL_DIRS, SKILL_PROMPT_DESC_LIMIT, SKILL_SUPPORT_DIRS,
     TIER_LOCAL, clip_skill_description, extract_skill_conditions, extract_skill_description,
-    get_disabled_skill_names, get_skill_search_roots,
+    get_disabled_skill_names, get_skill_desc_limit, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
@@ -1086,6 +1086,7 @@ _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
 # duplicate-name resolution; v5 stores descriptions clipped at a word boundary. Older snapshots are rebuilt.
+# ``desc_limit`` records the skills.index_desc_limit the rows were clipped at (absent = the 60 default).
 _SKILLS_SNAPSHOT_VERSION = 5
 
 
@@ -1130,6 +1131,7 @@ def _load_skills_snapshot(skills_dir: Path, manifest: Optional[dict] = None) -> 
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
+            and snapshot.get("desc_limit", SKILL_PROMPT_DESC_LIMIT) == get_skill_desc_limit()
             and snapshot.get("manifest") == (manifest if manifest is not None else _build_skills_manifest(skills_dir))):
         return snapshot
     return None
@@ -1393,7 +1395,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(), tuple(plugin_rows),
+        _oneshot_prompt_variant(), tuple(plugin_rows), get_skill_desc_limit(),
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
@@ -1451,7 +1453,8 @@ def _build_skills_system_prompt_inner(
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         try:
             atomic_json_write(_skills_prompt_snapshot_path(), {
-                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": _build_skills_manifest(skills_dir),
+                "version": _SKILLS_SNAPSHOT_VERSION, "desc_limit": get_skill_desc_limit(),
+                "manifest": _build_skills_manifest(skills_dir),
                 "skills": [entry for entry, _ in candidates],
             })
         except Exception as e:
@@ -1689,6 +1692,19 @@ def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, Optiona
             for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
 
 
+def _context_cwd_path(cwd: Optional[str]) -> Optional[Path]:
+    """Resolved discovery root, or None when the launch dir is gone: a Kanban worker's workspace is
+    removed on ``kanban_complete`` while the process still sits in it, and a prompt rebuild then must
+    not raise from ``os.getcwd()`` — project context is skipped, as ``runtime_cwd`` skips a missing
+    TERMINAL_CWD (#138015)."""
+    try:
+        return Path(cwd if cwd is not None else os.getcwd()).resolve()
+    except OSError as exc:
+        logger.warning("skipping project-context discovery: could not resolve the working directory — "
+                       "set terminal.cwd to your project directory: %s", exc)
+        return None
+
+
 def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_install_tree_fallback: bool) -> bool:
     """A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
     default would load this repo's contributor AGENTS.md). An explicitly configured cwd is honored verbatim —
@@ -1766,8 +1782,10 @@ def build_context_files_prompt(
 
     if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return ""  # hosted: the project's files are in the agent's sandbox, this host's are not its
-    cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
-    if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+    cwd_path = _context_cwd_path(cwd)
+    if cwd_path is None:
+        sections = []
+    elif _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
             "install tree (%s) — set terminal.cwd to your project directory", cwd_path,

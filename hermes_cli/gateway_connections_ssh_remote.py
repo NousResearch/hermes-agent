@@ -39,7 +39,6 @@ READY_POLL_INTERVAL_S = 0.75
 REMOTE_NOFILE_SOFT_LIMIT = 65_536
 PROBE_VERDICT_ATTEMPTS = 3
 PROBE_VERDICT_RETRY_S = 0.5
-_PROFILE_ID_ARG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _CREATION_TIME_RE = re.compile(r"^(?:linux:[0-9]+|darwin:[A-Za-z0-9 :+-]+)$")
 
 
@@ -54,12 +53,14 @@ def _err(kind: str, message: str) -> SshReachError:
 
 def backend_profile_arg(profile: object) -> str | None:
     """A profile safe for ``--profile <name>`` (CLI-normalized), else None (profile-id-guard.ts)."""
+    from hermes_constants import PROFILE_ID_RE
+
     if not isinstance(profile, str):
         return None
     name = profile.strip().lower()
     if not name:
         return None
-    return name if name == "default" or _PROFILE_ID_ARG_RE.match(name) else None
+    return name if name == "default" or PROFILE_ID_RE.match(name) else None
 
 
 def mint_token() -> str:

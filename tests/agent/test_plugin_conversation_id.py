@@ -1,7 +1,6 @@
 """Plugin tool handlers and tool hooks get a ``conversation_id`` that compression rotation keeps and a
 delegated child shares with its delegator; ``session_id`` stays the physical segment id."""
 import asyncio
-import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -9,9 +8,9 @@ import pytest
 
 from agent.prompt_cache_scope import conversation_id
 from agent.runtime_session_store import RuntimeSessionStore
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_seed import seed_session
 
 PLUGIN = '''
 import json
@@ -59,7 +58,7 @@ def probe(tmp_path, monkeypatch):
 
 def _agent(db, **kw):
     return AIAgent(api_key="k", base_url="https://example.invalid/v1", model="fixture/model", quiet_mode=True,
-                   session_db=db, enabled_toolsets=["conv_probe"], skip_context_files=True, skip_memory=True, **kw)
+                   session_db=db, persistence=db, enabled_toolsets=["conv_probe"], skip_context_files=True, skip_memory=True, **kw)
 
 
 def _call(agent, path):
@@ -71,11 +70,11 @@ def _call(agent, path):
 # ``tool``: rotation copies a ``--source tool`` run's source, which the lineage walk reads as a fork.
 @pytest.mark.parametrize("path,source", [("sequential", "cli"), ("concurrent", "tool")])
 def test_conversation_id_survives_compression_rotation(path, source, tmp_path, probe):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     agent = _agent(db)
     try:
         root = agent.session_id
-        db.create_session(session_id=root, source=source)
+        seed_session(db, root, source)
         _call(agent, path)
         # Only the summary model is stubbed; the rotation and the child row are the real runtime's.
         compressor = MagicMock(compression_count=1, last_prompt_tokens=0, last_completion_tokens=0,
@@ -91,19 +90,19 @@ def test_conversation_id_survives_compression_rotation(path, source, tmp_path, p
             "handler", "post_tool_call", "pre_tool_call", "tool_execution", "tool_request"]
         assert {cid for kind, _, cid in probe if kind in _GETS_CONVERSATION_ID} == {root}
         # A managed worker reads the same rows through its RuntimeSessionStore and must agree.
-        scope = dict(epoch=begin_runtime_epoch(db, instance_id="fixture"), execution_id="w",
+        scope = dict(epoch=db.runtime.begin_epoch(instance_id="fixture"), execution_id="w",
                      session_id=agent.session_id, generation=0)
-        register_worker_execution(db, **scope, kind="compute", adoption_secret="secret")
-        store = RuntimeSessionStore(lambda method, **p: mutate_worker_execution(db, **p), scope, tmp_path / "outbox")
+        db.worker_executions.register(**scope, kind="compute", adoption_secret="secret")
+        store = RuntimeSessionStore(lambda method, **p: db.worker_executions.persist_operation(**p), scope,
+                                    tmp_path / "outbox")
         try:
             assert conversation_id(SimpleNamespace(session_id=agent.session_id, _session_db=store)) == root
         finally:
             store.close()
         # A tool-source fork of another source's compacted session is its own conversation.
-        db.create_session("cli-parent", source="cli")
-        db.end_session("cli-parent", "compression")
-        db.create_session("tool-fork", source="tool", parent_session_id="cli-parent")
-        assert conversation_id(SimpleNamespace(session_id="tool-fork", _session_db=db)) == "tool-fork"
+        seed_session(db, "cli-parent", "cli", end_reason="compression")
+        seed_session(db, "tool-fork", "tool", parent_session_id="cli-parent")
+        assert conversation_id(SimpleNamespace(session_id="tool-fork", _session_db=db, persistence=db)) == "tool-fork"
     finally:
         agent.close()
         db.close()

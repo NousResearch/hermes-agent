@@ -17,13 +17,14 @@ import cron.scheduler_delivery as sd
 from gateway import delivery_ledger as dl
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import SendResult
+from persistence_assembly import profile_scope
 
 
 @pytest.fixture(autouse=True)
 def _fresh_ledger(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: True)
     monkeypatch.setattr(sd, "_maybe_mirror_cron_delivery", lambda *a, **k: None)
 

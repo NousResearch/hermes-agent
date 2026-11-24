@@ -18,13 +18,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from contextlib import redirect_stdout
 import io, os
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from hermes_cli.sessions_cmd import cmd_sessions
 path = Path(os.environ['HERMES_HOME']) / 'state.db'
 if POPULATED:
-    with SessionDB(db_path=path) as db:
-        db.create_session('observation-fixture', source='cli')
-        db.append_message('observation-fixture', role='user', content='fixture')
+    with open_persistence(profile_scope(home=path.parent)) as db:
+        seed_session(db, 'observation-fixture', 'cli')
+        seed_messages(db, 'observation-fixture', {'role': 'user', 'content': 'fixture'})
 before = path.read_bytes() if path.exists() else None
 for action in ('list', 'stats', 'pinned', 'export'):
     output = io.StringIO()

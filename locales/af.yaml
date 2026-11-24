@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "Prompt-kas: onbekend (hierdie verskaffer publiseer nie sy kasretensie nie)."
     cache_unknown_runtime: "Prompt-kas: onbekend (hierdie looptyd stel sy eie kasopsies wat Hermes nie kan sien nie)."
     cache_unknown_storage: "Prompt-kas: onbekend (die sessiestoor kon nie gelees word nie)."
+    cache_warming_off: "Lewendhouers: af (twee keer gemis)."
+    cache_tier_pending: "Vlak: 5m tot die eerste pouse langer as 5 minute, dan 1h."
+    cache_learned: "Geleer: {rule}."
     cache_confidence:
       proven: "bewys"
       declared: "verklaar"
@@ -4021,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "Groot model: {name} bereik ({resets}), dit sal nie tot dan loop nie."
   large_notice_percent: "Groot model: gebruik meer van jou plan per boodskap. Maandelikse limiet vir groot modelle: {percent} gebruik."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Lêers wat in die ongedane beurte verander is: {files}. Voer /rollback uit om kontrolepunte te lys en een te herstel."
     more: "+{count} meer"

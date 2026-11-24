@@ -20,8 +20,9 @@ import pytest
 
 from agent import side_question_lease
 from agent.side_question_lease import redeem_side_question
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SIDE_PROMPT = "Suggest the user's next prompt in one line."
 # Plugin side questions bill per plugin, apart from ``/btw``'s ``side_question``.
@@ -243,15 +244,15 @@ def test_side_call_never_reaches_the_parents_ui_callbacks(provider, issued):
 # ── 3. no writes besides usage ───────────────────────────────────────────────────────────
 
 
-def _message_rows(db: SessionDB, session_id: str) -> list:
-    with db._lock:
-        return [tuple(r) for r in db._conn.execute(
+def _message_rows(db, session_id: str) -> list:
+    with raw_holder(db)._read_ctx() as conn:
+        return [tuple(r) for r in conn.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()]
 
 
-def _usage_rows(db: SessionDB, session_id: str) -> list[dict]:
-    with db._lock:
-        return [dict(r) for r in db._conn.execute(
+def _usage_rows(db, session_id: str) -> list[dict]:
+    with raw_holder(db)._read_ctx() as conn:
+        return [dict(r) for r in conn.execute(
             "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,)).fetchall()]
 
 
@@ -261,8 +262,8 @@ def test_side_call_writes_only_one_usage_row(provider, issued, tmp_path):
     memories = Path(get_hermes_home()) / "memories"
     memories.mkdir(parents=True, exist_ok=True)
     (memories / "MEMORY.md").write_text("user likes tea\n", encoding="utf-8")
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent = _make_parent(session_db=db, session_id="sess-side")
+    db = storage_handle(tmp_path)
+    parent = _make_parent(persistence=db, session_id="sess-side")
     _run_parent_turn(parent, provider)
     rows_before = _message_rows(db, "sess-side")
     usage_before = [r for r in _usage_rows(db, "sess-side") if r["task"] == PLUGIN_TASK]
@@ -281,8 +282,8 @@ def test_side_call_writes_only_one_usage_row(provider, issued, tmp_path):
 def test_side_call_bills_the_session_the_token_was_issued_for(provider, issued, tmp_path):
     """The parent's session id can rotate between issue and redeem (``/compress``, a session
     reset): the side call's spend belongs to the session whose turn it replays."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent = _make_parent(session_db=db, session_id="sess-issued")
+    db = storage_handle(tmp_path)
+    parent = _make_parent(persistence=db, session_id="sess-issued")
     _run_parent_turn(parent, provider, tool_round=False)
     parent.session_id = "sess-rotated"
 

@@ -1,0 +1,21 @@
+name: ss33
+title: ss33 Skill Store
+repo: https://github.com/afterpartyai/ss33-skill-store-for-agents
+sha: f34b9ea71888f240e42cb8b60de182110a71f888
+subdir: adapters/hermes
+version: "0.4.4"
+description: "Find and install agent skills from the ss33 Skill Store without leaving Hermes. The agent searches the store with the ss33_search tool, ranked for your project's stack; /ss33:add reviews a skill and installs it into .agents/skills with a lockfile, /ss33:update and /ss33:list keep installed skills current, and opt-in prompt matching suggests a skill when a prompt needs one. Disclosure — sends search queries plus a short project summary (language, package manager and framework names with versions from manifests; never source code or file contents) to the ss33 Skill Store at mcp.ss33.ai, and, only if you turn prompt matching on with /ss33:setup, each prompt from a project session (truncated to 600 characters); runs its bundled CLI (lib/ss33.cjs) as a subprocess with Hermes's own Node.js, or with Node.js 22+ on PATH, and otherwise downloads the official Node.js v24.22.2 build from nodejs.org once (about 30 MB, checked against a SHA-256 pinned in scripts/ss33, cached in ~/.cache/ss33/runtime) in a background process started at session start; never replaces its own files; /ss33:add and /ss33:update write skill files into the project's .agents/skills and ss33.lock after showing you the skill; an optional API key from the plugin's settings is copied to ~/.config/ss33/config.json (mode 0600) so the /ss33:* commands can use it; no telemetry."
+maintainer: ReadyAI
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/afterpartyai/ss33-skill-store-for-agents#install-hermes-agent
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - ss33_search
+  provides_hooks:
+    - pre_llm_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

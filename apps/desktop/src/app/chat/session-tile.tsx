@@ -59,6 +59,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
+import { sessionNeedsInput } from '@/store/session-card-wait'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
@@ -789,12 +790,12 @@ function tileDragPayload(storedSessionId: string): SessionDragPayload {
 const $confirmCloseTile = atom<null | string>(null)
 
 /** The tile closer, gated: a quiet session closes immediately; a busy or
- *  input-blocked one asks first. One state read — the tile's runtime slice. */
+ *  input-blocked one asks first, and so does one with a folder or site card open. */
 export function requestCloseSessionTile(storedSessionId: string): void {
   const runtimeId = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)?.runtimeId
   const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
 
-  if (state?.busy || state?.awaitingResponse || state?.needsInput) {
+  if (state?.busy || state?.awaitingResponse || (runtimeId && sessionNeedsInput(state, runtimeId))) {
     $confirmCloseTile.set(storedSessionId)
   } else {
     closeSessionTile(storedSessionId)

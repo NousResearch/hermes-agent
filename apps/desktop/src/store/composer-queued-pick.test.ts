@@ -17,9 +17,9 @@ afterEach(() => {
 })
 
 describe('a queued launch pick follows its profile', () => {
-  it('to its new name on rename', () => {
+  it('to its new name on rename', async () => {
     queueOn('work')
-    migrateTilesForProfile('work', 'home')
+    await migrateTilesForProfile('work', 'home')
     expect([window.localStorage.getItem(key('work')), JSON.parse(window.localStorage.getItem(key('home')) ?? 'null')])
       .toEqual([null, { model: 'm', provider: 'p', sessionId: 's1' }])
   })

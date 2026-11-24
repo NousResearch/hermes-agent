@@ -306,6 +306,12 @@ HOME_CREDENTIAL_FILES = (".netrc", "_netrc", ".pgpass", ".npmrc", ".pypirc", ".g
 HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
 
 
+def hermes_credential_homes() -> list[Path]:
+    """Every resolved Hermes home the credential guards cover (the active home, the root, each profile home),
+    for a caller that anchors a Hermes-only store name to them instead of matching it anywhere."""
+    return _credential_store_dirs()
+
+
 def resolved_home_credential_stores() -> tuple[set[str], list[str]]:
     """``(files, dirs)``: the home credential stores (HOME_CREDENTIAL_FILES / _DIRS) of every guard
     home, realpath'd, so a caller can refuse a path whose resolved form lands in one even when a
@@ -530,9 +536,10 @@ def is_project_env_basename(name: str) -> bool:
     Shared by the read guard (:func:`get_read_block_error`, which blocks reading
     these anywhere on disk) and the media-delivery denylist
     (``gateway/platforms/base.validate_media_delivery_path``) so the delivery /
-    exfil side can't drift from the read side. Case-insensitive basename match.
+    exfil side can't drift from the read side. Case-insensitive basename match, by full Unicode case folding:
+    ``.lower()`` keeps ``ſ``, which APFS folds to ``s``, so ``.env.ſtaging`` opens ``.env.staging``.
     """
-    return name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES
+    return name.casefold() in _BLOCKED_PROJECT_ENV_BASENAMES
 
 
 def get_read_block_error(path: str) -> Optional[str]:
@@ -586,7 +593,7 @@ def get_read_block_error(path: str) -> Optional[str]:
                     break
             if reason:
                 break
-        if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
+        if reason is None and is_project_env_basename(resolved.name):
             reason = (
                 "is a secret-bearing environment file and cannot be read to prevent credential "
                 "leakage. If you need to check the file structure, read .env.example instead." + _DID_SUFFIX

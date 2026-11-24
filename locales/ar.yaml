@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "ذاكرة التخزين المؤقت للموجه: غير معروفة (هذا المزوّد لا ينشر مدة الاحتفاظ)."
     cache_unknown_runtime: "ذاكرة الموجه المؤقتة: غير معروفة (بيئة التشغيل هذه تضبط خيارات التخزين المؤقت بنفسها ولا يستطيع Hermes رصدها)."
     cache_unknown_storage: "ذاكرة التخزين المؤقت للموجه: غير معروفة (تعذّرت قراءة مخزن الجلسة)."
+    cache_warming_off: "إبقاء النشاط: متوقف (فشل مرتين)."
+    cache_tier_pending: "المستوى: 5m حتى أول توقف يتجاوز 5 دقائق، ثم 1h."
+    cache_learned: "مُتعلَّم: {rule}."
     cache_confidence:
       proven: "مُثبَت"
       declared: "مُعلَن"
@@ -4021,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "نموذج كبير: تم بلوغ حدك {name} ({resets})، لذا لن يعمل حتى ذلك الحين."
   large_notice_percent: "نموذج كبير: يستهلك المزيد من استخدام خطتك لكل رسالة. الحد الشهري للنماذج الكبيرة: {percent} مستخدم."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ الملفات التي تغيّرت في الأدوار التي تم التراجع عنها: {files}. شغّل /rollback لعرض نقاط الحفظ واستعادة إحداها."
     more: "+{count} أخرى"

@@ -188,6 +188,21 @@ def test_plugin_guide_file_safety_and_yaml_example_validates_clean(tmp_path):
     assert _private_warnings(validate_plugin_dir(whole)), "a whole-module import of file_safety must still warn"
 
 
+def test_retry_after_parser_is_public_but_the_rest_of_retry_utils_is_not(tmp_path):
+    """A plugin that honours a rate limit's Retry-After header with Hermes's parser gets no
+    private-import warning; another name from the same module still warns."""
+    clean = _plugin(tmp_path / "graph", {"client.py": (
+        "from agent.retry_utils import parse_retry_after_seconds\n"
+        "def wait_for(response):\n"
+        "    return parse_retry_after_seconds(response.headers)\n"
+    )})
+    assert _private_warnings(validate_plugin_dir(clean)) == []
+
+    sibling = _plugin(tmp_path / "backoff", {"client.py": "from agent.retry_utils import jittered_backoff\n"})
+    [warning] = _private_warnings(validate_plugin_dir(sibling))
+    assert "agent.retry_utils.jittered_backoff" in warning
+
+
 def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_path):
     """opencode-sync calls SessionDB / GatewayRunner private methods on the objects it is handed;
     no import names them, so only the attribute pass can see it. The plugin's own ``_helper`` and

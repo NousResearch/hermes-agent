@@ -40,7 +40,7 @@ import {
  */
 export function ProfileProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { pathname } = useLocation();
+  const { pathname, state: locationState } = useLocation();
   const [profiles, setProfiles] = useState<string[]>([]);
   const [currentProfile, setCurrentProfile] = useState("default");
   const bootstrapProfile = dashboardInitialProfile();
@@ -81,7 +81,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         else next.delete("profile");
         return next;
       },
-      { replace: true },
+      { replace: true, state: locationState },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, urlProfile, profile]);

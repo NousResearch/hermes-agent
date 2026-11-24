@@ -36,8 +36,9 @@ async def test_a_bare_custom_desktop_row_resumes_on_the_profiles_route(monkeypat
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
     try:
-        authority.db.create_session('old-desktop', cwd=str(home), source='desktop', model='mock-model',
-                                    model_config=model_config)
+        from tests.fixtures.storage_seed import seed_session
+        seed_session(authority.persistence, 'old-desktop', 'desktop', cwd=str(home), model='mock-model',
+                     model_config=model_config)
         authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
         live = authority.sessions[resolve_local_target(authority, owner.actor, 'old-desktop').session_id]
         assert _route(runner, live) == ('mock-model', URL, 'profile-key')

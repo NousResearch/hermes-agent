@@ -38,7 +38,9 @@ def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive
         container = getattr(env, "_container_id", None)
         if not container:
             return None
-        argv = [env._docker_exe, "exec"]
+        # From "/", not the container's creation-time -w: if that directory was deleted the OCI
+        # runtime refuses the exec outright (the same guard as DockerEnvironment._run_bash).
+        argv = [env._docker_exe, "exec", "-w", "/"]
         if interactive:
             argv.append("-i")
         if user:

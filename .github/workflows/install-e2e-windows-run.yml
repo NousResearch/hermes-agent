@@ -184,7 +184,8 @@ jobs:
         || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
         || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
             && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
-    runs-on: windows-latest-32-core
+    # The standard runner is free for public repos; extra cores save little time on installs and updates.
+    runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:

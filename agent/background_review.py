@@ -862,10 +862,11 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
 
 def _record_review_usage_to_parent(
     parent_agent: Any, usage: dict[str, Any], *, task: str = "background_review",
-    session_id: Optional[str] = None,
+    session_id: Optional[str] = None, store: Any = None,
 ) -> None:
     """Record a fork's usage against the parent session (or ``session_id`` when given) under
-    ``task`` (best-effort, never raises). The fork has ``_session_db = None`` so
+    ``task`` (best-effort, never raises), through ``store`` when given, else the parent's own
+    handle. The fork has ``_session_db = None`` so
     conversation_loop's DB-gated accounting never sees its calls; route them through the
     aux-accounting chokepoint, which writes only ``session_model_usage`` — never the transcript
     or ``sessions`` row."""
@@ -875,6 +876,17 @@ def _record_review_usage_to_parent(
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
+        from agent.agent_init_session import agent_interface
+        if (store := store if store is not None else agent_interface(parent_agent)) is not None:
+            from persistence.conversation.usage import TokenCounts
+            api_calls = counts.pop("api_calls")
+            store.usage.record_auxiliary_usage(
+                session_id, task, model=usage.get("model"),
+                billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
+                tokens=TokenCounts(**counts), estimated_cost_usd=usage.get("estimated_cost_usd"),
+                api_call_count=api_calls,
+            )
+            return
         session_db.record_auxiliary_usage(
             session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
@@ -1074,6 +1086,14 @@ def build_cache_parity_fork(
     if not _routed and write_origin == "background_review":
         _warn_ignored_reasoning_effort(agent, task_cfg)
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
+    # A same-route fork shares the parent's warmed prefix; a routed fork's own prefix is never warmed.
+    review_agent._skip_prompt_cache_warming = True
+    if _routed and getattr(review_agent, "_cache_ttl", None) == "1h":
+        # A routed fork's cache is cold and nobody pauses between its calls: 1h writes buy nothing (#104168).
+        review_agent._cache_ttl = "5m"
+    elif not _routed and getattr(agent, "_cache_ttl_adaptive", False):
+        # The parent's markers as they are now (5m before its first pause, 1h after): same bytes, same cache.
+        review_agent._cache_ttl = agent._cache_ttl
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     # Fork-turn log tag: the fork shares the parent's session_id (and model on the
     # same-model path), so its turn-start/turn-exit log lines are otherwise
@@ -1091,7 +1111,7 @@ def build_cache_parity_fork(
     # emits go via _print_fn/status_callback, which bypass the stdout redirect.
     review_agent._skip_mcp_refresh = review_agent._persist_disabled = review_agent.suppress_status_output = True
     review_agent._end_session_on_close = False
-    review_agent._session_db = None
+    review_agent._session_db = review_agent.persistence = None
     review_agent.session_id = agent.session_id
     # No DB, so the fork can't walk to the root itself: plugin tool hooks get the parent's conversation.
     review_agent._inherited_conversation_id = conversation_id(agent)
@@ -1239,6 +1259,7 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: list[dict] = field(default_factory=list)
     review_usage: dict[str, Any] = field(default_factory=dict)
+    store: Any = None  # the fork's own reference on the parent's store, for its usage write
 
 
 def _release_fork_clients(review_agent: Any) -> None:
@@ -1316,7 +1337,7 @@ def _run_review_fork(
         # still attributed. The recorder never raises.
         if st.review_agent is not None:
             st.review_usage.update(_snapshot_review_usage(st.review_agent))
-            _record_review_usage_to_parent(agent, st.review_usage)
+            _record_review_usage_to_parent(agent, st.review_usage, store=st.store)
         # Publish completion as soon as the provider-capable phase has returned or startup
         # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
         _track_review_fork(agent, st.review_agent, register=False)
@@ -1363,6 +1384,13 @@ def _run_review_in_thread(
         _set_thread_approval_callback(None)
         return
     st = _ReviewForkState()
+    # The gateway's stop may close the parent's handle while the review runs: the fork records its usage through its
+    # own reference on the same store, released when the fork finishes.
+    with suppress(Exception):
+        from agent.agent_init_session import agent_interface
+        if (parent_store := agent_interface(agent)) is not None:
+            from persistence_assembly import open_persistence
+            st.store = open_persistence(parent_store.scope)
     try:
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
         # other thread's console for the whole review.
@@ -1415,6 +1443,9 @@ def _run_review_in_thread(
         if st.review_agent is not None:
             with suppress(Exception), thread_scoped_silence():
                 _release_fork_clients(st.review_agent)
+        if st.store is not None:
+            with suppress(Exception):
+                st.store.close()
         # Clear the approval callback so a recycled thread-id doesn't inherit it.
         _set_thread_approval_callback(None)
 

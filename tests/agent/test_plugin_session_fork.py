@@ -408,11 +408,15 @@ def test_handle_cancel_and_timeout(forks, consented):
     assert _settled(handle).outcome == "cancelled"
 
 
-def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented):
-    """``_loop_aux_task`` marks the fork's requests as auxiliary while it runs, and is cleared on
-    a clean finish and on an error exit alike."""
+def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented, monkeypatch):
+    """The final hook for an open attempt still sees the fork; its auxiliary mark is cleared."""
+    from hermes_cli.plugin_session import fork_origin
+
     parent = _agent()
     during: list = []
+    closing: list = []
+    monkeypatch.setattr('agent.auxiliary_hooks.finish_aux_call_hooks',
+                        lambda *_a, **_kw: closing.append(fork_origin()))
 
     def _ok(fork):
         during.append(fork._loop_aux_task)
@@ -420,6 +424,8 @@ def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented):
 
     def _boom(fork):
         during.append(fork._loop_aux_task)
+        fork._turn_origin = f'plugin_fork:{PLUGIN}'  # normally stamped by the builder
+        fork._loop_aux_hooks = object()  # provider failed before finishing its open hook pair
         raise RuntimeError("provider down")
 
     for script in (_ok, _boom):
@@ -427,6 +433,7 @@ def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented):
         _settled(_ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q"))
     assert during == [("plugin_fork", {"plugin_id": PLUGIN})] * 2
     assert [built["fork"]._loop_aux_task for built in forks.built] == [None, None]
+    assert closing == [f'plugin_fork:{PLUGIN}']
 
 
 def test_budget_exhaustion_and_errors_settle_the_handle(forks, consented):

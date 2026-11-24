@@ -456,20 +456,6 @@ def test_a_child_s_subprocess_marker_counts_only_with_include_subprocesses(monke
     assert in_delegated_child(include_subprocesses=True) is True
 
 
-def test_fork_origin_is_empty_for_a_regular_agent_and_the_label_inside_a_fork():
-    from agent.side_question_request import SIDE_QUESTION_ORIGIN
-    from hermes_cli.plugin_session import fork_origin
-    from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
-    assert fork_origin() == ''  # nothing bound
-    for origin, expected in (('assistant_tool', ''), (BACKGROUND_REVIEW, 'background_review'),
-                             (SIDE_QUESTION_ORIGIN, 'side_question')):
-        token = set_current_write_origin(origin)  # what every agent's tool loop binds
-        try:
-            assert fork_origin() == expected, origin
-        finally:
-            reset_current_write_origin(token)
-
-
 def test_a_plugin_importing_the_session_accessors_gets_no_private_import_warning(tmp_path):
     from hermes_cli.plugin_validate import validate_plugin_dir
     from tests.hermes_cli.test_plugin_validate_private_imports import _plugin, _private_warnings
@@ -488,31 +474,57 @@ def register(ctx):
 
 @pytest.mark.platforms('any')  # the host is a child process
 @pytest.mark.parametrize('isolation', ['host', 'in_process'])
-def test_the_ctx_session_accessors_answer_what_the_functions_answer(tmp_path, monkeypatch, isolation):
-    """In either isolation mode the ``ctx`` forms answer for the calling hook's context."""
+@pytest.mark.parametrize('origin', ['', 'background_review', 'side_question', 'plugin_fork:facts'],
+                         ids=['curator', 'review', 'btw', 'plugin-fork'])
+def test_the_ctx_session_accessors_answer_what_the_functions_answer(tmp_path, monkeypatch, isolation, origin):
+    """Build actual forks, replacing only the conversation loop to observe the turn's hook context."""
+    from agent.background_review import build_cache_parity_fork
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
     from hermes_cli import plugin_session
     from hermes_cli.plugins import PluginManager
+    from run_agent import AIAgent
     from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+
     home = _home_with_plugins(tmp_path, monkeypatch, {'facts': SESSION_FACTS_PLUGIN}, isolation=isolation)
     manager = PluginManager()
     manager.discover_and_load()
+    monkeypatch.setattr('agent.model_metadata.fetch_model_metadata', lambda *a, **kw: {})
 
     def facts():
         return [plugin_session.session_source(), plugin_session.in_delegated_child(),
                 plugin_session.in_delegated_child(include_subprocesses=True), plugin_session.fork_origin()]
-    try:
-        assert manager._plugins['facts'].error is None
-        assert manager.invoke_hook('post_llm_call') == [facts()] == [['', False, False, '']]
-        token = set_current_write_origin('side_question')
+
+    def loop(agent, message, *args, **kwargs):
+        # Vary write provenance independently: it must never control the fork label.
+        token = set_current_write_origin('assistant_tool' if origin else 'background_review')
         try:
-            with _turn_of(home, monkeypatch, source='gui'), delegated_child_context():
-                assert manager.invoke_hook('post_llm_call') == [facts()] == [['gui', True, True, 'side_question']]
+            assert facts() == ['gui', True, True, origin]
+            assert manager.invoke_hook('post_llm_call') == [['gui', True, True, origin]]
+            if message == 'raise':
+                raise RuntimeError('loop error')
+            return {'final_response': 'ok'}
         finally:
             reset_current_write_origin(token)
+
+    monkeypatch.setattr('agent.conversation_loop.run_conversation', loop)
+    with contextlib.ExitStack() as stack:
+        if isolation == 'host':
+            stack.callback(manager._plugin_host().shutdown)
+        stack.callback(manager.unload)
+        assert manager._plugins['facts'].error is None
+        parent = AIAgent(api_key='test-key', base_url='https://openrouter.ai/api/v1',
+                         model='test/model', quiet_mode=True, skip_context_files=True, skip_memory=True)
+        stack.callback(parent.close)
+        agent = parent
+        if origin:
+            agent, _, _ = build_cache_parity_fork(parent, {}, max_iterations=1, write_origin=origin)
+            stack.callback(agent.close)
+        assert manager.invoke_hook('post_llm_call') == [facts()] == [['', False, False, '']]
+        with _turn_of(home, monkeypatch, source='gui'), delegated_child_context():
+            assert agent.run_conversation('ok')['final_response'] == 'ok'
+            assert manager.invoke_hook('post_llm_call') == [facts()] == [['gui', True, True, '']]
+            with pytest.raises(RuntimeError, match='loop error'):
+                agent.run_conversation('raise')
+            assert manager.invoke_hook('post_llm_call') == [facts()] == [['gui', True, True, '']]
         monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, '1')  # a child's subprocess, no child context
         assert manager.invoke_hook('post_llm_call') == [facts()] == [['', False, True, '']]
-    finally:
-        manager.unload()
-        if isolation == 'host':
-            manager._plugin_host().shutdown()

@@ -7,13 +7,29 @@ MRO unchanged.
 """
 import logging
 import uuid
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+_FORK_ORIGIN: ContextVar[str] = ContextVar("hermes_detached_fork_origin", default="")
+
+
+def detached_fork_origin() -> str:
+    return _FORK_ORIGIN.get()
+
+
+@contextmanager
+def bind_detached_fork_origin(agent: Any):
+    """Bind the builder's label, not the separate skill/memory write provenance."""
+    token = _FORK_ORIGIN.set(getattr(agent, "_turn_origin", None) or "")
+    try:
+        yield
+    finally:
+        _FORK_ORIGIN.reset(token)
 
 
 class TurnFacadeMixin:
@@ -147,7 +163,8 @@ class TurnFacadeMixin:
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+            with (bind_detached_fork_origin(self), bind_subagent_parent(self),
+                  scoped_runtime_main({}), track_in_interrupt_scope(self)):
                 try:
                     if lease is not None:
                         lease.start()

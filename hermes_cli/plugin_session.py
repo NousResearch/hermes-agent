@@ -112,19 +112,12 @@ def in_delegated_child(*, include_subprocesses: bool = False) -> bool:
     return is_delegated_child_process_context() if include_subprocesses else is_delegated_child_context()
 
 
-# The write origins a regular agent runs under: the ContextVar's default and the one every agent's
-# tool loop binds unless it is a detached fork.
-_REGULAR_WRITE_ORIGINS = frozenset({"foreground", "assistant_tool"})
-
-
 def fork_origin() -> str:
-    """``""`` for a session's own agent and every other regular agent (CLI, gateway, cron, subagent).
-    For a detached fork Hermes runs beside a turn, the fork's label: ``"background_review"``,
-    ``"side_question"``, or ``"plugin_fork:<plugin id>"`` for a plugin's own session fork. The skill
-    curator's own agent runs under the ``"background_review"`` label too."""
-    from tools.skill_provenance import get_current_write_origin
-    origin = get_current_write_origin()
-    return "" if origin in _REGULAR_WRITE_ORIGINS else origin
+    """The running detached fork's label: ``"background_review"``, ``"side_question"``, or
+    ``"plugin_fork:<plugin id>"``. ``""`` outside a detached fork, regardless of which skill or
+    memory write rules apply. Use ``ctx.fork_origin()`` from a hosted plugin."""
+    from agent.turn_facade import detached_fork_origin
+    return detached_fork_origin()
 
 
 def _in_delegated_child():

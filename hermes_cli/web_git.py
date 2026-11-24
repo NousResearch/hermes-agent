@@ -23,6 +23,7 @@ from hermes_cli._subprocess_compat import (
     noninteractive_git_env,
     noninteractive_repo_git_env,
 )
+from hermes_platform.resolver.git import resolve_usable_git
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -51,6 +52,8 @@ def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.Compl
 
 
 def _git_in(cwd: str, args: list[str], timeout: int, env: dict) -> tuple[int, str, str]:
+    if resolve_usable_git(env) is None:
+        return 1, "", "git is not available"
     proc = _run(["git", *harden_git_argv(args)], cwd, timeout, env)
     if proc is None:
         return 1, "", "git invocation failed"

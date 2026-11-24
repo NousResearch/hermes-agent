@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
@@ -15,6 +16,12 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
+
+from hermes_platform.resolver.git import (
+    is_git_command,
+    is_usable_git_command,
+    resolve_usable_git,
+)
 
 __all__ = [
     "FILTER_DISCOVERY_FAILED",
@@ -352,6 +359,8 @@ def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
     marker, either of which would resurrect a revoked wildcard and widen trust. ``-z`` keeps a
     value containing whitespace or a newline as the single entry git reads it as.
     """
+    if resolve_usable_git(base_env) is None:
+        return []
     cache_key = _safe_directory_cache_key(base_env)
     cached = _safe_directory_cache.get(cache_key)
     if cached is not None:
@@ -532,6 +541,8 @@ def noninteractive_repo_git_env(
     bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
     automatic git operation instead of running with only partial hardening.
     """
+    if resolve_usable_git(base) is None:
+        return None
     env = noninteractive_git_env(base)
     # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
     # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
@@ -868,6 +879,10 @@ def bounded_probe_run(
     ``Get-CimInstance Win32_Process`` gateway scan hit exactly this during ``hermes update`` on slow-WMI
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
+    if argv and is_git_command(argv[0]) and not is_usable_git_command(argv[0], env):
+        if raise_on_spawn_failure:
+            raise FileNotFoundError(errno.ENOENT, "git is unavailable", os.fspath(argv[0]))
+        return None
     # detached-spawn: ok — awaited probe; a timeout or failure tree-kills its group (kill_and_drain)
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     job = None
@@ -958,6 +973,8 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: Mapping[str, 
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
+    if argv and is_git_command(argv[0]) and not is_usable_git_command(argv[0], env):
+        return ""
     result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""

@@ -86,8 +86,10 @@ def _toml_scalar(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
-    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{text}"'
+    # The codex migration's escaper: a newline/control char left literal is invalid TOML.
+    from hermes_cli.codex_runtime_plugin_migration import _escape_toml_string
+
+    return _escape_toml_string(str(value))
 
 
 def _emit_table(lines: list[str], path: str, table: Mapping[str, Any], *, array_item: bool = False) -> None:

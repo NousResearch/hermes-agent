@@ -496,6 +496,20 @@ it('opens the Routines page from the Overview’s Routines row, as its neighbour
   expect(screen.getByTestId('location').textContent).toBe('/cron')
 })
 
+it('says a routine’s schedule in words on the Overview, as the Routines page does', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  api.mockImplementation(async (request: Request) =>
+    request.path.split('?')[0] === '/api/cron/jobs'
+      ? [{ enabled: true, id: 'review', name: 'Review', profile: 'default', schedule: { expr: '0 9 * * *', kind: 'cron' } }]
+      : defaultApi(request)
+  )
+  mount('/settings?agentProfile=default')
+
+  const row = await screen.findByRole('button', { name: /^Review/ })
+  expect(row.textContent).not.toContain('0 9 * * *')
+  expect(row.textContent).toMatch(/9:00/)
+})
+
 it('lists the agent’s routines read only in Settings › Routines, each opening on the Routines page', async () => {
   // The window's own machine, named by nobody: the links stay on this window's Routines page.
   $apiRequestScope.set({ connectionId: null, profile: 'default' })

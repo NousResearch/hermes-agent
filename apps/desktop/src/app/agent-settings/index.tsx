@@ -39,7 +39,7 @@ import { Panel } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
 import { PageHero } from '../redesign/page-hero'
 import { CRON_ROUTE, SETTINGS_ROUTE } from '../routes'
-import { useRoutinesPageLinks } from '../routines/agent-routines'
+import { useRoutinesPageLinks, useScheduleWords } from '../routines/agent-routines'
 import { getNested } from '../settings/helpers'
 import { SettingsOwnerContext, settingsScopeLabel } from '../settings/profile-scope'
 import type { SettingsPageProps } from '../settings/types'
@@ -642,13 +642,14 @@ function AgentRoutines({ jobs, owner }: AgentRoutinesProps) {
   const { t } = useI18n()
   const c = useAgentSettingsCopy()
   const links = useRoutinesPageLinks(owner)
+  const schedule = useScheduleWords()
 
   return (
     <div>
       <Section title={t.cron.title}>
         {jobs.data?.map(job => (
           <SettingRow
-            detail={job.schedule_display || job.schedule?.display || job.schedule?.expr}
+            detail={schedule(job)}
             key={job.id}
             onClick={() => links.open(job)}
             title={job.name || job.id}

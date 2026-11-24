@@ -37,6 +37,15 @@ export function useRoutinesPageLinks(owner: AgentSettingsOwner) {
   }
 }
 
+/** A routine's schedule in words, the way every list of routines says it. */
+export function useScheduleWords(): (job: CronJob) => string {
+  const { locale, t } = useI18n()
+  const copy = useRoutinesCopy()
+  const words = { copy, dayName: (day: string) => t.cron.days[day] ?? day, locale }
+
+  return job => describeSchedule(job.schedule, words, job.next_run_at)
+}
+
 /** One agent's routines, read from its own machine. */
 export function useAgentRoutineList(owner: AgentSettingsOwner) {
   return useQuery(agentOverviewQueries.routines(owner))
@@ -45,11 +54,11 @@ export function useAgentRoutineList(owner: AgentSettingsOwner) {
 /** Agent › Settings › Routines in the redesign: the agent's routines, read only, each opening on the
  *  Routines page, and New routine starting one there for this agent. */
 export function AgentRoutines({ owner }: { owner: AgentSettingsOwner }) {
-  const { locale, t } = useI18n()
+  const { t } = useI18n()
   const copy = useRoutinesCopy()
   const links = useRoutinesPageLinks(owner)
   const routines = useAgentRoutineList(owner)
-  const words = { copy, dayName: (day: string) => t.cron.days[day] ?? day, locale }
+  const schedule = useScheduleWords()
   const jobs = [...(routines.data ?? [])].sort(compareRoutines)
 
   return (
@@ -69,7 +78,7 @@ export function AgentRoutines({ owner }: { owner: AgentSettingsOwner }) {
           {!routines.isError && jobs.length === 0 && <SettingsEmptyRow title={t.cron.emptyTitleNew} />}
           {jobs.map(job => (
             <SettingsLinkRow
-              description={describeSchedule(job.schedule, words, job.next_run_at)}
+              description={schedule(job)}
               key={job.id}
               meta={
                 <span className="routines-chip" data-tone={STATUS_TONE[routineStatus(job, false)]}>

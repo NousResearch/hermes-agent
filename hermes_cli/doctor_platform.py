@@ -723,20 +723,20 @@ def _expand_variable(text: str, i: int, variables: dict[str, str]) -> tuple[str,
     return variables.get(name[0], _UNKNOWN), i + 1 + name.end()
 
 
-def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]:
-    """The words a setter's value expands to, read up to its first unquoted stop character: quotes
-    removed, escaped characters literal, known variables and an unquoted leading ~ replaced."""
-    words: list[str] = []
-    word, started, quote, i = "", False, "", 0
+def _shell_words(text: str, stops: str, variables: dict[str, str]) -> list[tuple[str, str]]:
+    """Each word up to the first unquoted stop character, as written and as the shell expands it:
+    quotes removed, escaped characters literal, known variables and an unquoted leading ~ replaced."""
+    words: list[tuple[str, str]] = []
+    word, begin, quote, i = "", -1, "", 0
     while i < len(text):
         ch = text[i]
         if not quote and ch in stops:
             break
         if not quote and ch in " \t":
-            words.extend([word] if started else [])
-            word, started, i = "", False, i + 1
+            words.extend([(text[begin:i], word)] if begin >= 0 else [])
+            word, begin, i = "", -1, i + 1
             continue
-        started, i = True, i + 1
+        begin, i = (i if begin < 0 else begin), i + 1
         # A backslash escapes any character unquoted, only $ ` " \ inside double quotes, nothing in single quotes.
         if ch == "\\" and i < len(text) and (not quote or quote == '"' and text[i] in '$`"\\'):
             word, i = word + text[i], i + 1
@@ -751,45 +751,50 @@ def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]
             word += variables["HOME"]
         else:
             word += ch
-    return [*words, word] if started else words
+    return [*words, (text[begin:i], word)] if begin >= 0 else words
 
 
-def _words_before(code: str, pos: int, variables: dict[str, str]) -> list[str]:
+def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]:
+    return [value for _written, value in _shell_words(text, stops, variables)]
+
+
+def _words_before(code: str, pos: int, variables: dict[str, str]) -> list[tuple[str, str]]:
     """The words of the setter's own command that come before ``code[pos]``, reserved words dropped."""
     masked = code[:pos]
     while (blanked := _SUBSTITUTION.sub(lambda m: "_" * len(m[0]), masked)) != masked:
         masked = blanked  # innermost first, so $(dirname $(pwd)) goes too
     starts = [m.end() for m in _COMMAND_SEPARATOR.finditer(masked) if not _open_quote(code, m.start())]
-    words = _setter_words(masked[starts[-1] if starts else 0 :], "", variables)
-    while words and words[0] in _COMMAND_LEADERS:
+    words = _shell_words(masked[starts[-1] if starts else 0 :], "", variables)
+    while words and words[0][1] in _COMMAND_LEADERS:
         words.pop(0)
     return words
 
 
+# Whether a word is an assignment or a redirection is decided as written, before quotes are removed:
+# "LC_ALL"=C is a command name, not an assignment.
 def _setter_counts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
     if _open_quote(code, found.start()):
         return False  # inside a string: an alias body or an echo
     before = _words_before(code, found.start(), variables)
-    while before and _ASSIGNMENT_WORD.match(before[0]):
+    while before and _ASSIGNMENT_WORD.match(before[0][0]):
         before.pop(0)  # LC_ALL=C export PATH=...: a prefix assignment, then the builtin
-    declared = bool(before) and before[0] in _DECLARATIONS
-    others = before[1:] if declared else before
-    allowed = _DECLARATION_ARGUMENT.fullmatch if declared else _ASSIGNMENT_WORD.match
-    if not all(allowed(word) for word in others):
-        return False
-    return declared or "append" not in found.groupdict() or _assignment_lasts(code, found, variables)
+    if before and before[0][1] in _DECLARATIONS:
+        return all(_DECLARATION_ARGUMENT.fullmatch(value) for _written, value in before[1:])
+    if before:
+        return False  # an argument of another command: env PATH=..., echo export PATH=...
+    return "append" not in found.groupdict() or _assignment_lasts(code, found, variables)
 
 
 def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
     """False for PATH=x cmd, which sets PATH for that one command only."""
     command = _REDIRECTION_OPERATOR.sub(" ", code[found.end() :])
-    _value, *rest = _setter_words(command, ";&|", variables) or [""]
+    _value, *rest = _shell_words(command, ";&|", variables) or [("", "")]
     words = iter(rest)
-    for word in words:
-        redirection = _REDIRECTION.fullmatch(word)
+    for written, _word in words:
+        redirection = _REDIRECTION.fullmatch(written)
         if redirection and not redirection[1]:
             next(words, None)
-        elif not redirection and not _ASSIGNMENT_WORD.match(word):
+        elif not redirection and not _ASSIGNMENT_WORD.match(written):
             return False
     return True
 

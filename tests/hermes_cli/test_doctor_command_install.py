@@ -546,6 +546,10 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("bash", ".bashrc", 'env ROOT=$(pwd) PATH="$HOME/.local/bin:$PATH"'),  # $(...) is part of a word
     ("bash", ".bashrc", 'env ROOT=`pwd` PATH="$HOME/.local/bin:$PATH"'),
     ("bash", ".bashrc", 'LC_ALL=C env PATH="$HOME/.local/bin:$PATH"'),
+    # A quoted name is no assignment: bash runs LC_ALL=C (or A=1) as the command.
+    ("bash", ".bashrc", '"LC_ALL"=C export PATH="$HOME/.local/bin:$PATH"'),
+    ("bash", ".bashrc", '"A"=1 PATH="$HOME/.local/bin:$PATH"'),
+    ("bash", ".bashrc", 'PATH="$HOME/.local/bin:$PATH" "A"=1'),
     ("zsh", ".zprofile", 'export PATH="$PATH:$HOME/.local/bin#backup"'),  # a # inside a word is no comment
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin:/usr/local/bin"'),  # one directory
     ("zsh", ".zprofile", 'path=("$HOME/.local/bin:/usr/local/bin" $path)'),

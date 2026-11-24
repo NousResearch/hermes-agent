@@ -4,13 +4,8 @@ import { render } from '@testing-library/react'
 import { bindGatewayGroupRoom, type CanonicalGroupOrigin, useGatewayGroupRooms } from './canonical-group-registry'
 import { CanonicalGroupRow } from './canonical-group-row'
 
-interface GatewayRoomsProps {
-  onOpen: (key: string, origin: CanonicalGroupOrigin) => void
-  profiles?: readonly string[]
-}
-
-function GatewayRooms({ onOpen, profiles }: GatewayRoomsProps) {
-  const rooms = useGatewayGroupRooms(profiles)
+function GatewayRooms({ onOpen }: { onOpen: (key: string, origin: CanonicalGroupOrigin) => void }) {
+  const rooms = useGatewayGroupRooms()
 
   return (
     <>
@@ -22,15 +17,12 @@ function GatewayRooms({ onOpen, profiles }: GatewayRoomsProps) {
 }
 
 /** The Bots roster's gateway Group Chat rows, on a fresh query cache. */
-export function renderGatewayRooms(
-  onOpen: (key: string, origin: CanonicalGroupOrigin) => void = () => undefined,
-  profiles?: readonly string[]
-) {
+export function renderGatewayRooms(onOpen: (key: string, origin: CanonicalGroupOrigin) => void = () => undefined) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
     <QueryClientProvider client={client}>
-      <GatewayRooms onOpen={onOpen} profiles={profiles} />
+      <GatewayRooms onOpen={onOpen} />
     </QueryClientProvider>
   )
 }

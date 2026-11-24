@@ -8,6 +8,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { Plus } from '@/lib/icons'
 import {
+  $disbandedGatewayRooms,
   bindGatewayGroupRoom,
   type GatewayGroupRoom,
   useGatewayGroupRooms
@@ -20,6 +21,7 @@ import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import { groupChatMemberBots, groupChatNames } from '@/plugins/hermes-bots/group-membership'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import { $activeConnectionId } from '@/store/connections'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { PortalSectionHeader } from './portal-section-header'
 
@@ -29,18 +31,40 @@ export interface GroupChatMatches {
   names: string[]
 }
 
+/**
+ * The gateway rooms this section lists. `useGatewayGroupRooms` reads the active agent's store, and a
+ * room lives in the store of the agent that made it; this section is not one agent's, so it also
+ * keeps the rooms it saw while another agent of this machine was the active one. A room's own agent
+ * is the authority on it: once that agent's list no longer has it, it goes. Agents never opened in
+ * this window list nothing here until they are.
+ */
+function useSeenGatewayRooms(): GatewayGroupRoom[] {
+  const current = useGatewayGroupRooms()
+  const connectionId = useStore($activeConnectionId)
+  const profile = useStore($activeGatewayProfile)
+  const disbanded = useStore($disbandedGatewayRooms)
+  const seen = useRef<{ connectionId: null | string; rooms: GatewayGroupRoom[] }>({ connectionId, rooms: [] })
+  const earlier = seen.current.connectionId === connectionId ? seen.current.rooms : []
+  // One row a room: a backend with a single store lists the same rooms under every agent.
+  const ids = new Set(current.map(room => room.room.room_id))
+
+  const rooms = [
+    ...earlier.filter(
+      room => room.binding.profile !== profile && !ids.has(room.room.room_id) && !disbanded.has(room.key)
+    ),
+    ...current
+  ]
+
+  seen.current = { connectionId, rooms }
+
+  return rooms
+}
+
 /** Bot Mode's hooks (the gateway room list polls): call only while that plugin is loaded. */
 export function useGroupChatMatches(query: string): GroupChatMatches {
   const meta = useStore($botMeta)
   const rooms = useStore($groupChats)
-  const roster = useStore($lastRoster)
-  const connectionId = useStore($activeConnectionId)
-
-  // Every agent on this machine: the section is not the active agent's alone.
-  const gatewayRooms = useGatewayGroupRooms(
-    roster.filter(row => !row.ghost && row.connectionId === connectionId).map(row => row.name)
-  )
-
+  const gatewayRooms = useSeenGatewayRooms()
   const needle = query.trim().toLocaleLowerCase()
 
   return {

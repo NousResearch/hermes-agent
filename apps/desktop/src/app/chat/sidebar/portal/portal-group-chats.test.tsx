@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import type * as GroupRegistry from '@/plugins/hermes-bots/canonical-group-registry'
@@ -8,6 +8,7 @@ import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
 import { $groupChats } from '@/plugins/hermes-bots/group-chat'
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 
 import { PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
@@ -96,24 +97,70 @@ it('a dismissed group dialog hands focus back to its "+"; a created group chat k
   expect(window.document.activeElement).not.toBe(plus)
 })
 
-it('lists the rooms of every agent on the active machine, not the active agent\'s alone', () => {
-  $connection.set({ connectionId: 'local' } as never)
-  $lastRoster.set([
-    { name: 'default', connectionId: 'local' },
-    { name: 'ops', connectionId: 'local' },
-    { name: 'ops', connectionId: 'local', ghost: true },
-    { name: 'away', connectionId: 'elsewhere' }
-  ] as never)
+// The hook lists the active agent's rooms only (a room lives in the store of the agent that made it);
+// the section is not one agent's, so it keeps the rooms it has seen on this machine.
+describe('rooms seen under an agent that was active earlier', () => {
+  const roomOf = (profile: string, roomId: string, name: string) => ({
+    binding: { connectionId: 'local', profile, roomId, roomName: name },
+    key: `canonical:local:${profile}:${roomId}`, name, members: [], updatedAt: 0,
+    room: { room_id: roomId, name, members: [] }
+  })
 
-  function Probe() {
-    useGroupChatMatches('')
-
-    return null
+  function Names() {
+    return <p>{useGroupChatMatches('').rooms.map(room => `${room.name}@${room.binding.profile}`).join(', ') || 'none'}</p>
   }
 
-  render(<Probe />)
+  const listed = () => screen.getByRole('paragraph').textContent
 
-  expect(vi.mocked(useGatewayGroupRooms)).toHaveBeenLastCalledWith(['default', 'ops'])
-  $connection.set(null)
-  $lastRoster.set([])
+  function show(profile: string, rooms: ReturnType<typeof roomOf>[], view?: ReturnType<typeof render>) {
+    vi.mocked(useGatewayGroupRooms).mockReturnValue(rooms)
+    act(() => $activeGatewayProfile.set(profile))
+
+    return view ? (view.rerender(<Names />), view) : render(<Names />)
+  }
+
+  afterEach(() => {
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
+  })
+
+  it('stay listed when another agent becomes the active one', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    const view = show('default', [roomOf('default', 'r1', 'Launch crew')])
+    expect(listed()).toBe('Launch crew@default')
+
+    show('ops', [], view)
+    expect(listed()).toBe('Launch crew@default')
+
+    show('ops', [roomOf('ops', 'r2', 'Field notes')], view)
+    expect(listed()).toBe('Launch crew@default, Field notes@ops')
+  })
+
+  it('leave when their own agent no longer lists them', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    const view = show('default', [roomOf('default', 'r1', 'Launch crew')])
+    show('ops', [], view)
+
+    show('default', [], view)
+    expect(listed()).toBe('none')
+  })
+
+  it('are one row each on a backend whose agents all list the same rooms', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    const view = show('default', [roomOf('default', 'r1', 'Launch crew')])
+
+    show('ops', [roomOf('ops', 'r1', 'Launch crew')], view)
+    expect(listed()).toBe('Launch crew@ops')
+  })
+
+  it('are forgotten on another machine', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    const view = show('default', [roomOf('default', 'r1', 'Launch crew')])
+
+    // The other machine's own list arrives with the switch; nothing of this one's rides along.
+    vi.mocked(useGatewayGroupRooms).mockReturnValue([])
+    act(() => $connection.set({ connectionId: 'elsewhere' } as never))
+    show('ops', [], view)
+    expect(listed()).toBe('none')
+  })
 })

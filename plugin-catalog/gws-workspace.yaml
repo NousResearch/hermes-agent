@@ -1,7 +1,7 @@
 name: gws-workspace
 repo: https://github.com/anpicasso/hermes-gws-workspace
 sha: 05448155edf3decd892b3b122af8cb7f3cc78a73
-description: Multi-account Gmail, Drive and Calendar tools with native gws; explicit slash commands start change notifications in the current conversation or a new session.
+description: "Multi-account Gmail, Drive and Calendar tools with native gws; explicit slash commands start change notifications in the current conversation or a new session. Disclosure — runs the native `gws` CLI you install, which keeps and refreshes each Google account's credentials in this profile's gws-oauth folder (sign in with `hermes gws login` in a terminal); every send, share, upload, write and local file read or write asks for Hermes approval first; Google API results, and the change metadata a watch matches, go to your model provider; large results are saved to files in the gws-oauth folder; optional watches start only when you send `/gws-watch` in a messaging chat, need a separate worker you run yourself, a public HTTPS callback and Hermes webhook routes whose secrets you put in this plugin's settings, and they post into that chat or start a new agent session with the instructions given when the watch was made."
 maintainer: anpicasso
 tier: community
 category: tools

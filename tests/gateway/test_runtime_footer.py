@@ -4,9 +4,12 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 
+import copy
+
 import pytest
 
 from gateway.runtime_footer import (
+    FooteredReply,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -279,3 +282,24 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# FooteredReply deepcopy (regression: settlement publication crashed on a
+# str subclass whose __new__ requires a footer; the default reconstruct path
+# calls cls.__new__(cls) with no args and raises TypeError).
+# ---------------------------------------------------------------------------
+
+
+def test_footered_reply_survives_deepcopy():
+    reply = FooteredReply("hello", "· model · ctx 12%")
+    clone = copy.deepcopy(reply)
+    assert str(clone) == str(reply)
+    assert clone.runtime_footer == reply.runtime_footer
+    assert isinstance(clone, FooteredReply)
+
+
+def test_footered_reply_deepcopy_does_not_double_append_footer():
+    reply = FooteredReply("hello", "· deepseek-v4-pro")
+    clone = copy.deepcopy(reply)
+    assert str(clone) == "hello\n\n· deepseek-v4-pro"

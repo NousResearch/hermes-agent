@@ -4573,6 +4573,27 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     restart loop). Ownership is decided by the persisted identity record ALONE, bound to the live target
     by exact PID + start-time; live argv can never PROVE ownership (no HERMES_HOME), it is only a
     consistency check. Missing, legacy, conflicting or unprovable identity → refuse (fail closed)."""
+    # Self-heal a provably-dead PID record before the fail-closed ownership probe. A record naming
+    # a process that no longer exists has no cross-profile restart risk (there is nothing to signal),
+    # so rotating it to .stale removes the manual step that blocked the 19 Nov recovery. A LIVE
+    # process — whatever its profile — still refuses below, unchanged.
+    try:
+        from gateway.status import (
+            _get_pid_path, _get_process_start_time, _pid_from_record, _read_pid_record)
+        record = _read_pid_record(_get_pid_path())
+        if isinstance(record, dict):
+            recorded_pid = _pid_from_record(record)
+            if (recorded_pid is not None and recorded_pid >= 1
+                    and _get_process_start_time(recorded_pid) is None):
+                pid_path = _get_pid_path()
+                if pid_path.exists():
+                    pid_path.rename(pid_path.with_name(pid_path.name + ".stale"))
+                    logger.warning(
+                        "Rotated provably-dead gateway.pid (named PID %s) to gateway.pid.stale "
+                        "and continuing; the record's process no longer exists.", recorded_pid)
+                return False
+    except Exception:
+        logger.debug("stale-pid self-heal probe failed for PID %s", existing_pid, exc_info=True)
     # Multiplex-only: the ONE host gateway serving this profile IS this profile's gateway, whatever
     # home launched it — `hermes -p X gateway run --replace` means "replace the process serving X".
     # Argv and HERMES_HOME can never prove that (the host singleton runs one home's argv while

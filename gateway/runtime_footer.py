@@ -139,6 +139,17 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    def __deepcopy__(self, memo):
+        """``event_stream`` deep-copies every ``message.complete`` payload for the replay ring
+        (``gateway/session_events.py`` ``publish``), and the default reconstruct path calls
+        ``cls.__new__(cls)`` with no ``footer`` — ``TypeError``. Rebuild through the normal
+        constructor: strip the footer already baked into ``str(self)`` so it is appended once."""
+        plain = str(self)
+        suffix = f"\n\n{self.runtime_footer}"
+        if suffix and plain.endswith(suffix):
+            plain = plain[: -len(suffix)]
+        return FooteredReply(plain, self.runtime_footer)
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

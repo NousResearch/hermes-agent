@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import itertools
 import time
+from contextlib import nullcontext
+from dataclasses import replace
 
 import pytest
 
 from agent.agent_runtime_helpers import recover_with_credential_pool
 from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential
+from agent.credential_pool_selection import RefreshKind
 
 _API = "https://api.anthropic.com"
 _EIGHT_HOURS_MS = 8 * 3600 * 1000
@@ -309,3 +312,28 @@ def test_a_truncated_reply_ends_the_episode_before_its_continuation(endpoint, fa
     assert verdict.action == "continue"
     assert _on_401(child) == (True, False)
     assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]
+
+
+class TestRefreshFailedEntryOutcome:
+    def test_a_capped_codex_refresh_adopts_a_token_a_peer_rotated(self, monkeypatch):
+        row = PooledCredential(provider="openai-codex", id="cx", label="cx", auth_type=AUTH_TYPE_OAUTH, priority=0,
+                               source="manual:device_code", access_token="cx-at-0", refresh_token="cx-rt-0")
+        pool = CredentialPool("openai-codex", [row])
+        monkeypatch.setattr("agent.credential_pool._auth_store_lock", lambda **_: nullcontext())
+        monkeypatch.setattr("agent.credential_pool._codex_access_token_is_expiring", lambda *_: False)
+        monkeypatch.setattr(pool, "_sync_entry_from_auth_store",
+                            lambda e: replace(e, access_token="cx-at-1", refresh_token="cx-rt-1"))
+
+        outcome = pool.refresh_failed_entry("cx-at-0", "cx", key_wins=True, may_post=lambda _row: False)
+
+        assert outcome.kind is RefreshKind.ADOPTED
+        assert outcome.entry.access_token == "cx-at-1"
+
+    def test_a_provider_without_a_refresh_path_reports_no_refresh(self):
+        row = PooledCredential(provider="example-oauth", id="ex", label="ex", auth_type=AUTH_TYPE_OAUTH, priority=0,
+                               source="manual", access_token="ex-at-0", refresh_token="ex-rt-0")
+        pool = CredentialPool("example-oauth", [row])
+
+        outcome = pool.refresh_failed_entry("ex-at-0", "ex", key_wins=True)
+
+        assert outcome.kind is RefreshKind.NEEDS_ROTATION and outcome.entry is None

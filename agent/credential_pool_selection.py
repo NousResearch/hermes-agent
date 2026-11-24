@@ -162,8 +162,10 @@ class CredentialPoolRefreshMixin:
     ) -> RefreshOutcome:
         """Under the pool lock: find the failed row, adopt a usable stored bearer, else POST if allowed.
 
-        ``key_wins`` resolves the row like rotation does (#79156). With no identity, select WITHOUT
-        the proactive refresh: the forced refresh must spend a rotating refresh token exactly once.
+        ``key_wins`` resolves the row like rotation does (#79156) when the key names a pool row. A key
+        no row holds is usually this row's own pre-rotation bearer (a stale 401, #138337), so the id
+        then still names the row and the refresh adopts its rotated token. With no identity, select
+        WITHOUT the proactive refresh: the forced refresh must spend a rotating refresh token exactly once.
         """
         with self._lock:
             entry = self._identify_failed_entry(credential_id, api_key_hint) if key_wins else None

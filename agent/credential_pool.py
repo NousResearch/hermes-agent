@@ -1475,6 +1475,8 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             if force:
                 self._mark_exhausted(entry, None)
             return NO_REFRESH
+        if self.provider not in REFRESHABLE_OAUTH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
+            return NO_REFRESH  # ``_refresh_entry_impl`` would hand the row back unchanged: nothing was refreshed
         # Plugin providers with a ``refresh_credential`` hook are treated as single-use by default:
         # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
         # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
@@ -1489,7 +1491,10 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
-                if synced is not entry and not force and not self._entry_needs_refresh(synced):
+                # A forced refresh still adopts a peer's rotation: a usable bearer other than the one that failed.
+                fresh = synced.runtime_api_key not in ("", failed_key) if force and failed_key else (
+                    synced is not entry and not force)
+                if fresh and not self._entry_needs_refresh(synced):
                     return RefreshOutcome(RefreshKind.ADOPTED, synced)
                 return self._post_refresh(synced, force=force, allow_post=allow_post)
             synced = self._sync_entry_from_pool_store(entry)

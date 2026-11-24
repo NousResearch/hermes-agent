@@ -256,3 +256,22 @@ def test_without_the_gemini_plugins_wire_a_call_raises_a_clear_error_and_sends_n
     assert "Solstice sends its requests through the gemini provider plugin's Interactions wire" in str(raised.value)
     assert ("no gemini provider plugin is loaded" if gemini == "absent" else "has no interactions module") in str(raised.value)
     assert seen == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_an_older_gemini_wire_without_key_guidance_is_refused_before_any_request(monkeypatch, stream):
+    """A profile-local gemini plugin copy from before ``http_error(key_guidance=...)`` existed: refused up
+    front with the reason, instead of a ``TypeError`` when the first error response comes back."""
+    from plugins.model_providers.solstice.transport import interactions_wire
+
+    def old_http_error(response, *, body_text, api_key, base_url):  # the signature before key_guidance
+        raise AssertionError("never reached")
+
+    monkeypatch.setattr(interactions_wire.__globals__["gemini_plugin_module"]("interactions"), "http_error", old_http_error)
+    seen, handler = _recorder(status=429, body=b'{"error": {"code": "too_many_requests", "message": "slow down"}}')
+    client = _client(handler)
+    with pytest.raises(GeminiAPIError) as raised:
+        _call(client, stream=stream)
+    assert raised.value.code == "gemini_wire_unavailable"
+    assert "http_error(key_guidance=...)" in str(raised.value)
+    assert seen == []

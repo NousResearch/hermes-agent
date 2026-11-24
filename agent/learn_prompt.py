@@ -32,9 +32,18 @@ Frontmatter:
   the description contains a colon, wrap the whole value in double quotes.
   This is the most-violated rule and it is NOT cosmetic: the system-prompt
   skill index truncates the description to {desc_limit} chars and loads it every
-  session, so anything past char {desc_limit} is silently cut and never routes. After
-  you write the description, COUNT the characters; if it is over {desc_limit}, cut it
-  down before saving — do not ship a sentence and hope.
+  session, so anything past char {desc_limit} is silently cut and never routes. Do
+  NOT estimate the length by reading the sentence — models cannot count
+  characters, and a confident guess ships over the limit. MEASURE it before you
+  compose the skill_manage payload: write the candidate sentence to a scratch
+  file with `write_file`, then run this fixed command against that path (the
+  sentence never touches the shell, so quotes and apostrophes in it cannot
+  break the command or run as code):
+      python3 -c 'import pathlib,sys; d=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8-sig").strip(); print(len(d))' <path>
+  The count is the normalized length the create-gate enforces. If it is over
+  {desc_limit}, shorten and re-measure — at most twice — then cut to the
+  shortest phrasing that still names the trigger. Never compose the SKILL.md
+  body until the count passes.
     Good (<={desc_limit}): `Search arXiv papers by keyword, author, or ID.`
     Bad (123):   `A comprehensive skill that lets the agent search arXiv for
                   academic papers using keywords, authors, and categories.`

@@ -80,7 +80,7 @@ async def resolve_image_source(
     # (a path-shape gate here regressed them once).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
-    host_target = _permitted_host_read_target(p, ctx)
+    host_target = _permitted_host_read_target(p, ctx, spelled=candidate)
     # Local backend only: under a sandbox a miss must still reach the in-container read, so the
     # confinement boundary in this module's docstring holds.
     if host_target is not None and not host_target.is_file() and _is_local_terminal_backend():
@@ -238,12 +238,15 @@ def _media_cache_roots() -> list:
     return [home / sub for sub in _MEDIA_CACHE_SUBDIRS]
 
 
-def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
+def _permitted_host_read_target(p: Path, ctx: ResolveContext, spelled: Optional[str] = None) -> Optional[Path]:
     """Host path to read, or ``None`` (caller exec-reads inside the sandbox instead).
 
     Local backend: any path. Non-local: only paths inside a media cache root (a
     container-visible cache path is first translated back to its host mount). Hosted scope: none —
     the profile's media caches are not the agent's, so every path is read inside its sandbox.
+    The translation takes the path as the agent *spelled* it: an ssh-family sandbox names its synced
+    cache ``~/.hermes/<cache dir>/…``, and ``p``'s host-side ``~`` expansion names the gateway host
+    user's home instead.
     """
     from tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
@@ -255,7 +258,7 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
             return p
     from tools.credential_files import from_agent_visible_cache_path
     try:
-        real = Path(from_agent_visible_cache_path(str(p))).resolve()
+        real = Path(os.path.expanduser(from_agent_visible_cache_path(spelled or str(p)))).resolve()
     except Exception:
         return None
     if any(real.is_relative_to(root.resolve()) for root in _media_cache_roots()):

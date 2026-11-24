@@ -47,13 +47,14 @@ def commit_api_images(content):
 def restore_api_images(content, media):
     """The transient content keeps its pixels; its text gains the validated committed reference
     per inline image (remote URLs keep their address) so the persisted user row records what
-    was seen, exactly like native image turns."""
+    was seen, exactly like native image turns (named where the agent's terminal backend reaches it)."""
+    from agent.context_references import _agent_visible_path
     from gateway.session_ingress_media import restore_native_media
     paths = iter(restore_native_media(media))
     hints = []
     for url in _image_urls(content):
         if data_url_bytes(url) is not None:
-            hints.append(f'[Image attached at: {next(paths)}]')
+            hints.append(f'[Image attached at: {_agent_visible_path(next(paths))}]')
         else:
             hints.append(f'[Image attached: {url}]')
     if not hints:

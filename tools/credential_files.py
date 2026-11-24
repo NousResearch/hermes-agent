@@ -379,11 +379,30 @@ def map_cache_path_to_container(host_path: str, container_base: str = "/root/.he
 
 
 def from_agent_visible_cache_path(container_path: str, container_base: str = "/root/.hermes") -> str:
-    """Inverse of :func:`to_agent_visible_cache_path`; unchanged unless Docker + cache dir."""
-    if _terminal_backend() != "docker":
+    """Inverse of :func:`to_agent_visible_cache_path` for the active backend: the docker bind-mount base, or
+    ``~/.hermes`` on ssh/daytona/vercel_sandbox (expanding that ``~`` on this host would name the gateway
+    host user's home, not the profile cache the remote copy came from). Unchanged otherwise or outside the
+    cache dirs."""
+    backend = _terminal_backend()
+    if backend in _HOME_RELATIVE_BACKENDS:
+        container_base = "~/.hermes"
+    elif backend != "docker":
         return container_path
     mapped = _remap_cache_path(container_path, container_base, "container_path", "host_path", lambda root, rel: str(Path(root) / rel))
     return mapped if mapped is not None else container_path
+
+
+def from_any_agent_visible_cache_path(path: str) -> str:
+    """Host path behind a cache path in any built-in backend's spelling (``~/.hermes/<cache dir>/…`` or
+    ``/root/.hermes/<cache dir>/…``), else *path* unchanged. Unlike :func:`from_agent_visible_cache_path`
+    it does not depend on the backend active now: a stored ``[Image attached at: …]`` hint keeps the
+    spelling of the backend that wrote it, and a later replay or history read may run under another."""
+    for base in ("~/.hermes", "/root/.hermes"):
+        if path.startswith(base + "/"):
+            mapped = _remap_cache_path(path, base, "container_path", "host_path", lambda root, rel: str(Path(root) / rel))
+            if mapped is not None:
+                return mapped
+    return path
 
 
 # Backends whose file-sync lands under the remote home: ``~/.hermes`` is

@@ -2,7 +2,8 @@
 
 userMessage → user; agentMessage → assistant; reasoning → stashed onto the next
 assistant entry; commandExecution / fileChange / mcpToolCall / dynamicToolCall /
-webSearch → assistant tool_call + tool result; anything else → opaque assistant note.
+webSearch / imageGeneration / imageView → assistant tool_call + tool result; anything
+else → opaque assistant note.
 Each item yields AT MOST one assistant + one tool entry (message-alternation
 invariant). ``is_tool_iteration`` ticks once per completed tool-shaped item.
 """
@@ -28,6 +29,16 @@ def _format_tool_args(d: dict) -> str:
 def _dict_args(raw: Any) -> dict:
     args = raw or {}
     return args if isinstance(args, dict) else {"arguments": args}
+
+
+def codex_image_generation_result(item: dict) -> dict:
+    """Codex already saved the PNG, so the inline base64 ``result`` is never copied into history."""
+    failure, status, saved_path = item.get("failure"), item.get("status"), item.get("savedPath")
+    if not failure and status == "completed" and saved_path:
+        return {"success": True, "image": saved_path, "provider": "codex"}
+    failure_type = failure.get("type") if isinstance(failure, dict) else None
+    error = failure_type or ("not_saved" if status == "completed" else status) or "failed"
+    return {"success": False, "image": None, "provider": "codex", "error": error}
 
 
 @dataclass
@@ -154,12 +165,23 @@ class CodexEventProjector:
             result["status"] = item["status"]
         return "web_search", "web_search", {"query": item.get("query") or ""}, json.dumps(result, ensure_ascii=False)
 
+    @staticmethod
+    def _image_generation_spec(item: dict) -> tuple[str, str, dict, str]:
+        content = json.dumps(codex_image_generation_result(item), ensure_ascii=False)
+        return "image_generate", "image_generate", {"prompt": item.get("revisedPrompt") or ""}, content
+
+    @staticmethod
+    def _image_view_spec(item: dict) -> tuple[str, str, dict, str]:
+        return "view_image", "view_image", {"path": item.get("path") or ""}, json.dumps({"provider": "codex"})
+
     _TOOL_PROJECTIONS: dict[str, Callable[[dict], tuple[str, str, dict, str]]] = {
         "commandExecution": _command_spec,
         "fileChange": _file_change_spec,
         "mcpToolCall": _mcp_tool_call_spec,
         "dynamicToolCall": _dynamic_tool_call_spec,
         "webSearch": _web_search_spec,
+        "imageGeneration": _image_generation_spec,
+        "imageView": _image_view_spec,
     }
 
     @staticmethod

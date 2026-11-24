@@ -266,6 +266,77 @@ class TestWebSearchProjection:
         assert json.loads(tool["content"])["provider"] == "codex"
 
 
+IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+
+def _image_generation_item(**overrides) -> dict:
+    item = {
+        "type": "imageGeneration", "id": "ig-1", "status": "completed", "revisedPrompt": "a red bicycle",
+        "failure": None, "generationId": None, "savedPath": "/tmp/codex/ig-1.png", "result": IMAGE_BASE64,
+    }
+    item.update(overrides)
+    return item
+
+
+def _project_completed(item: dict):
+    return CodexEventProjector().project({"method": "item/completed", "params": {"item": item}})
+
+
+class TestImageItemProjection:
+    def test_generated_image_is_recorded_as_image_generate_without_base64(self) -> None:
+        from agent.codex_runtime import _codex_item_to_args, _codex_item_to_tool_name, _stable_call_id
+
+        item = _image_generation_item()
+        result = _project_completed(item)
+
+        assistant, tool = result.messages
+        call = assistant["tool_calls"][0]
+        live_name = _codex_item_to_tool_name(item)
+        assert live_name == call["function"]["name"] == "image_generate"
+        assert call["id"] == tool["tool_call_id"] == _stable_call_id(item, live_name)
+        assert json.loads(call["function"]["arguments"]) == _codex_item_to_args(item) == {"prompt": "a red bicycle"}
+        assert json.loads(tool["content"]) == {"success": True, "image": "/tmp/codex/ig-1.png", "provider": "codex"}
+        assert IMAGE_BASE64 not in json.dumps(result.messages)
+
+    def test_failed_image_generation_reports_the_failure(self) -> None:
+        failure = {"type": "usageLimitExceeded", "limitId": "images", "resetsAt": None}
+        item = _image_generation_item(status="failed", failure=failure, savedPath=None)
+
+        _, tool = _project_completed(item).messages
+
+        assert json.loads(tool["content"]) == {
+            "success": False, "image": None, "provider": "codex", "error": "usageLimitExceeded"}
+
+    def test_generated_image_without_saved_path_is_not_reported_as_delivered(self) -> None:
+        item = _image_generation_item()
+        del item["savedPath"]
+
+        result = _project_completed(item)
+
+        assert json.loads(result.messages[1]["content"]) == {
+            "success": False, "image": None, "provider": "codex", "error": "not_saved"}
+        assert IMAGE_BASE64 not in json.dumps(result.messages)
+
+    def test_unfinished_image_generation_is_not_a_success(self) -> None:
+        item = _image_generation_item(status="in_progress", savedPath=None)
+
+        _, tool = _project_completed(item).messages
+
+        assert json.loads(tool["content"]) == {
+            "success": False, "image": None, "provider": "codex", "error": "in_progress"}
+
+    def test_viewed_image_path_stays_out_of_assistant_prose(self) -> None:
+        item = {"type": "imageView", "id": "iv-1", "path": "/Users/me/private/photo.png"}
+
+        assistant, tool = _project_completed(item).messages
+
+        assert assistant["content"] is None
+        call = assistant["tool_calls"][0]
+        assert call["function"]["name"] == "view_image"
+        assert json.loads(call["function"]["arguments"]) == {"path": "/Users/me/private/photo.png"}
+        assert tool["tool_call_id"] == call["id"]
+
+
 class TestUserAndOpaqueProjection:
     def test_user_message_text_fragments_only(self) -> None:
         item = {
@@ -331,6 +402,8 @@ class TestRoleAlternationInvariant:
              "arguments": {}, "status": "completed",
              "contentItems": [], "success": True},
             {"type": "webSearch", "id": "w1", "query": "x"},
+            _image_generation_item(),
+            {"type": "imageView", "id": "v1", "path": "/tmp/in.png"},
         ],
     )
     def test_tool_items_emit_assistant_then_tool(self, item) -> None:

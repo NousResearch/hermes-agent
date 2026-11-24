@@ -276,7 +276,8 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 
 # Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
 # so UI names match recorded names). webSearch is codex's built-in tool; the projector records it under the same id.
-_CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
+_CODEX_TOOL_ITEM_TYPES = frozenset({
+    "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageGeneration", "imageView"})
 # Text-delta notifications → the agent stream hook each one feeds. Single source for both the display
 # handlers and the liveness set below, so a new delta method can't stream without refreshing activity (#118410).
 _CODEX_TEXT_DELTA_METHODS = (
@@ -293,11 +294,15 @@ _CODEX_PROGRESS_DELTA_METHODS = frozenset(m for m, _ in _CODEX_TEXT_DELTA_METHOD
 _CODEX_PROGRESS_ITEM_TYPES = _CODEX_TOOL_ITEM_TYPES | {"agentMessage", "reasoning"}
 # Internal MCP server wrapping Hermes' native tools: its inner dispatch has no tool_progress_callback, so the
 # codex-level mcpToolCall IS the display event and the mcp.hermes-tools.* prefix is stripped (users see Hermes tools).
-_STATIC_TOOL_NAMES = {"commandExecution": "exec_command", "fileChange": "apply_patch", "webSearch": "web_search"}
+_STATIC_TOOL_NAMES = {
+    "commandExecution": "exec_command", "fileChange": "apply_patch", "webSearch": "web_search",
+    "imageGeneration": "image_generate", "imageView": "view_image"}
 _STABLE_ID_PREFIXES = {"commandExecution": "exec", "fileChange": "apply_patch"}
 _MCP_LIKE_ITEM_TYPES = {"mcpToolCall", "dynamicToolCall"}
 # Item types whose preview is the first 120 chars of one string field.
 _PREVIEW_FIELDS = {"commandExecution": "command", "webSearch": "query"}
+# Item types whose tool args are one string field: (arg name, item field).
+_SINGLE_FIELD_ARGS = {"webSearch": ("query", "query"), "imageGeneration": ("prompt", "revisedPrompt"), "imageView": ("path", "path")}
 
 
 def _delta_text(params: dict) -> str:
@@ -332,7 +337,10 @@ def _codex_item_to_args(item: dict) -> dict:
     if item_type in _MCP_LIKE_ITEM_TYPES:
         args = item.get("arguments") or {}
         return args if isinstance(args, dict) else {"arguments": args}
-    return {"query": item.get("query") or ""} if item_type == "webSearch" else {}
+    if item_type in _SINGLE_FIELD_ARGS:
+        arg, field = _SINGLE_FIELD_ARGS[item_type]
+        return {arg: item.get(field) or ""}
+    return {}
 
 
 def _codex_item_to_preview(item: dict, args: dict | None = None) -> Any:
@@ -385,6 +393,10 @@ def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
         content_items, success = item.get("contentItems") or [], item.get("success", True)
         has_items = isinstance(content_items, list) and content_items
         return (json.dumps(content_items, ensure_ascii=False)[:4000] if has_items else f"success={success}"), not bool(success)
+    if item_type == "imageGeneration":
+        from agent.transports.codex_event_projector import codex_image_generation_result
+        result = codex_image_generation_result(item)
+        return json.dumps(result, ensure_ascii=False), not result["success"]
     return "", False
 
 
@@ -435,7 +447,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         agent_cb("tool_progress_callback", "tool_progress_callback raised on tool.completed for %s", name,
                  args=("tool.completed", name, None, None),
                  kwargs={"duration": duration, "is_error": is_error, "result": result})
-        args = prior[1] if prior is not None else _codex_item_to_args(item)
+        started_args = prior[1] if prior is not None else {}
+        args = {**_codex_item_to_args(item), **{key: value for key, value in started_args.items() if value}}
         agent_cb("tool_complete_callback", "tool_complete_callback raised for %s", name,
                  args=(_stable_call_id(item, name), name, _codex_display_args(name, args), result))
 

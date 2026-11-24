@@ -184,7 +184,7 @@ Hermes 的后台自我改进在计数器达到阈值时触发：
 - 每 10 个用户 prompt（提示词）→ 一个分叉的审查 agent 查看对话，决定是否有内容应保存到记忆中。
 - 单次轮次内每 10 次工具迭代 → 同样的逻辑，但针对技能（`skill_manage` 写入）。
 
-**两者在 Codex 运行时上均持续生效。** Codex 路径将每个已完成的 `commandExecution` / `fileChange` / `mcpToolCall` / `dynamicToolCall` 事件项投影为合成的 `assistant tool_call` + `tool` 结果消息，因此审查运行时看到的格式与在默认 Hermes 运行时上看到的相同。
+**两者在 Codex 运行时上均持续生效。** Codex 路径将每个已完成的 `commandExecution` / `fileChange` / `mcpToolCall` / `dynamicToolCall` / `webSearch` / `imageGeneration` / `imageView` 事件项投影为合成的 `assistant tool_call` + `tool` 结果消息，因此审查运行时看到的格式与在默认 Hermes 运行时上看到的相同。
 
 连接方式保持等效：
 

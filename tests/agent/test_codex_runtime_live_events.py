@@ -9,6 +9,7 @@ tool cards depend on.
 Grafted from PR #65412 (@HaiderSultanArc) onto the merged bridge.
 """
 
+import json
 from types import SimpleNamespace
 
 from agent.codex_runtime import (
@@ -102,6 +103,39 @@ def test_failed_command_result_and_error_flag_are_preserved():
     assert is_error is True
     assert calls["tool_progress"][0][1]["is_error"] is True
     assert calls["tool_complete"][0][3] == "[exit 2]\nboom"
+
+
+def test_generated_image_card_carries_the_saved_path():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+    item = {
+        "type": "imageGeneration", "id": "ig-1", "status": "completed", "revisedPrompt": "a red bicycle",
+        "failure": None, "generationId": None, "savedPath": "/tmp/codex/ig-1.png", "result": "iVBORw0KGgo=",
+    }
+
+    bridge({"method": "item/started", "params": {"item": item}})
+    bridge({"method": "item/completed", "params": {"item": item}})
+
+    call_id, name, args = calls["tool_start"][0]
+    assert call_id == _deterministic_call_id("image_generate", "ig-1")
+    assert name == "image_generate"
+    assert args == {"prompt": "a red bicycle"}
+    _, _, _, result = calls["tool_complete"][0]
+    assert json.loads(result) == {"success": True, "image": "/tmp/codex/ig-1.png", "provider": "codex"}
+    assert "iVBORw0KGgo=" not in repr(calls)
+
+
+def test_image_card_gets_the_prompt_codex_fills_in_at_completion():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+    started = {"type": "imageGeneration", "id": "ig-2", "status": "in_progress", "revisedPrompt": None, "result": ""}
+    completed = {**started, "status": "completed", "revisedPrompt": "a red bicycle", "savedPath": "/tmp/ig-2.png"}
+
+    bridge({"method": "item/started", "params": {"item": started}})
+    bridge({"method": "item/completed", "params": {"item": completed}})
+
+    _, _, args, _ = calls["tool_complete"][0]
+    assert args == {"prompt": "a red bicycle"}
 
 
 

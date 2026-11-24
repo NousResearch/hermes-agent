@@ -23,7 +23,7 @@ from agent.agent_init_session import agent_interface
 from agent.prompt_builder import steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.route_verdicts import ROUTE_VERDICT_FIELDS, reset_route_verdicts, reset_route_verdicts_if_moved
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import THINK_TAG_NAMES, TOOL_CALL_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
@@ -37,7 +37,9 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 from session_rules.turns import _msg_has_payload, repair_message_sequence
 logger = logging.getLogger(__name__)
 
-_TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls", "toolcall")
+# Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
+_MAX_AUTH_REFRESH_ATTEMPTS = 2
+_TOOL_CALL_TAG_NAMES = TOOL_CALL_TAG_NAMES  # one list, shared with the streaming scrubber (#137775)
 # Optional XML namespace prefix: some models serialize native tool calls as <ns:function_calls>.
 _NS_PREFIX = r"(?:[\w.-]+:)?"
 _REASONING_BLOCK_PATTERNS = tuple(
@@ -48,6 +50,33 @@ _TOOL_CALL_BLOCK_PATTERNS = tuple(
     for name in _TOOL_CALL_TAG_NAMES
 )
 
+# DeepSeek native DSML tool-call serialization leaks into visible text via
+# OpenRouter and other OpenAI-compatible hosts (fullwidth pipes U+FF5C, sometimes
+# ASCII |) — #119261, #54283. Same fail-soft as ASCII tool-call XML: closed blocks,
+# orphan closers, cut tails. Stripping (not parsing) is deliberate: tool-call
+# extraction is the endpoint's job (#15453 ruling); this only keeps the markup off
+# the user's screen and out of replayed history, where it teaches the model to keep
+# writing calls as text (can1357/oh-my-pi#10556). ``function_calls`` is the
+# chat-template spelling Bedrock's deepseek.v3.2 leaks beside a valid toolUse block.
+_DSML_PIPE = r'[|\uFF5C]'
+_DSML_KINDS = r'(?:tool_calls|function_calls|invoke|parameter)'
+_DSML_BLOCK_PATTERN = re.compile(
+    rf'<{_DSML_PIPE}DSML{_DSML_PIPE}(tool_calls|function_calls|invoke|parameter)\b[^>]*>'
+    rf'(?:(?!</?{_DSML_PIPE}DSML{_DSML_PIPE}\1>).)*'
+    rf'</{_DSML_PIPE}DSML{_DSML_PIPE}\1>',
+    re.DOTALL | re.IGNORECASE,
+)
+_DSML_ORPHAN_CLOSER_PATTERN = re.compile(
+    rf'</{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}>\s*', re.IGNORECASE
+)
+# A DSML opener with no closer means the stream was cut mid-serialization
+# (#101899 analog). The call can't be recovered; strip to end of text. The
+# opener may itself be cut before its ``>`` (Bedrock: ``<｜DSML｜function_calls``
+# as the last bytes of the text channel), so only the tag name is required.
+_DSML_UNTERMINATED_PATTERN = re.compile(
+    rf'(?:^|\n)[ \t]*<{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}\b.*$',
+    re.DOTALL | re.IGNORECASE,
+)
 # Named <function name=...> blocks; boundary- and name-gated (see _THINK_STRIP_PATTERNS note).
 _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
@@ -425,17 +454,20 @@ def _flatten_content_text(content: Any) -> str:
 # tool-call CLOSERS only (bare/unterminated <function> is kept: a truncated streaming tail may still
 # be valuable, matching OpenClaw's asymmetry).
 _THINK_STRIP_PATTERNS = (
-    *_REASONING_BLOCK_PATTERNS, *_TOOL_CALL_BLOCK_PATTERNS, _NAMED_FUNCTION_BLOCK_PATTERN,
+    *_REASONING_BLOCK_PATTERNS, *_TOOL_CALL_BLOCK_PATTERNS, _DSML_BLOCK_PATTERN,
+    _NAMED_FUNCTION_BLOCK_PATTERN,
     _UNTERMINATED_REASONING_BLOCK_PATTERN, _ORPHAN_REASONING_TAG_PATTERN,
-    _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN,
+    _STRAY_TOOL_CALL_CLOSER_PATTERN, _DSML_ORPHAN_CLOSER_PATTERN,
+    _UNTERMINATED_TOOL_CALL_PATTERN, _DSML_UNTERMINATED_PATTERN,
 )
 
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
     pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
-    stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
+    stray orphan tags (all case-insensitive variants), standalone tool-call XML blocks some
+    open models emit, and DeepSeek native DSML blocks (``<｜DSML｜invoke>``) leaked via
+    OpenRouter (#119261); ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
     content = _flatten_content_text(content) if content else ""
     for pattern in _THINK_STRIP_PATTERNS if content else ():
         content = pattern.sub('', content)

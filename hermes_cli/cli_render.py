@@ -61,10 +61,14 @@ def _strip_reasoning_tags(text: str) -> str:
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
-    # Stray closers and cut tool-call fragments share storage's compiled patterns (#101899, #102303).
-    from agent.agent_runtime_helpers import _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN
-    cleaned = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', cleaned)
-    cleaned = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', cleaned)
+    # Stray closers, cut tool-call fragments and DeepSeek DSML leaks share storage's
+    # compiled patterns (#101899, #102303, #119261).
+    from agent.agent_runtime_helpers import (
+        _DSML_BLOCK_PATTERN, _DSML_ORPHAN_CLOSER_PATTERN, _DSML_UNTERMINATED_PATTERN,
+        _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN)
+    for pattern in (_DSML_BLOCK_PATTERN, _STRAY_TOOL_CALL_CLOSER_PATTERN, _DSML_ORPHAN_CLOSER_PATTERN,
+                    _UNTERMINATED_TOOL_CALL_PATTERN, _DSML_UNTERMINATED_PATTERN):
+        cleaned = pattern.sub('', cleaned)
     return cleaned.strip()
 
 

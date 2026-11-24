@@ -950,6 +950,13 @@ def test_copy_object_sends_signed_server_side_copy_and_verifies_destination(r2_s
     with pytest.raises(ValueError, match="Source artifact size mismatch"):
         r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload) + 1)
 
+    # An unconditional copy could take a same-size replacement the destination check cannot see.
+    def no_etag(**_request):
+        return r2.Response(200, [("Content-Length", str(len(payload)))], b"")
+
+    with pytest.raises(r2.R2RequestError, match="ETag"):
+        r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload), fetcher=no_etag)
+
     # The copy is bound to the checked object: a source that changed after copy_source fails.
     r2_server.store[src_key] = (payload, '"replaced-etag"')
     with pytest.raises(r2.R2RequestError) as changed:

@@ -787,7 +787,7 @@ class CopySource:
 
     key: str
     size: int
-    etag: str | None
+    etag: str
 
 
 def copy_source(
@@ -801,7 +801,7 @@ def copy_source(
     fetcher: Callable[..., Response] | None = None,
 ) -> CopySource:
     """Check a CopyObject source before anything is written: its path, the single-copy limit, and
-    that the object exists at its receipt size."""
+    that the object exists at its receipt size with an ETag to bind the copy to."""
     relative_artifact_path(key)
     if type(expected_size) is not int or expected_size <= 0 or expected_size > MAX_SINGLE_COPY_SIZE:
         raise ValueError(f"CopyObject size must be between 1 and {MAX_SINGLE_COPY_SIZE} bytes")
@@ -810,7 +810,10 @@ def copy_source(
         raise R2RequestError("HEAD", key, 404)
     if head.header("content-length") != str(expected_size):
         raise ValueError(f"Source artifact size mismatch: {key}")
-    return CopySource(key=key, size=expected_size, etag=head.header("etag"))
+    etag = head.header("etag")
+    if not etag:
+        raise R2RequestError("HEAD", key, 502, "missing ETag: the copy could not be bound to this object")
+    return CopySource(key=key, size=expected_size, etag=etag)
 
 
 def copy_object(
@@ -834,10 +837,9 @@ def copy_object(
     # R2's S3 CopyObject requires a leading slash on x-amz-copy-source.
     extra: dict[str, str] = {
         "x-amz-copy-source": f"/{bucket}/{encode_key_path(scope.key(source.key))}",
+        "x-amz-copy-source-if-match": source.etag,
         "x-amz-metadata-directive": "REPLACE",
     }
-    if source.etag:
-        extra["x-amz-copy-source-if-match"] = source.etag
     cache_control = cache_control_for(dest_key)
     if cache_control:
         extra["Cache-Control"] = cache_control

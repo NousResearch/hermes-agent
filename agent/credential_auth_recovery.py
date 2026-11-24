@@ -41,6 +41,13 @@ def _episode(agent: Any, provider: str, entry_id: Optional[str]) -> dict[str, An
     return episode
 
 
+def end_auth_episodes(agent: Any) -> None:
+    """A served response proves the credential authenticates, so the next 401 starts a fresh episode.
+    Nous keeps its tally: one forced refresh per turn (``nous_pool_refreshed_this_turn``)."""
+    counts = getattr(agent, "_auth_pool_refresh_counts", None) or {}
+    agent._auth_pool_refresh_counts = {key: state for key, state in counts.items() if key[0] == "nous"}
+
+
 def nous_pool_refreshed_this_turn(agent: Any) -> bool:
     """True once the pool spent this turn's forced Nous refresh (the singleton path must not re-POST)."""
     counts = getattr(agent, "_auth_pool_refresh_counts", None) or {}
@@ -118,7 +125,9 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
     # Only a 401 is the "valid key refused" shape worth backing off on; a non-entitlement 403
     # keeps the capped-refresh path and fails fast.
     nous = provider == "nous" and status_code == 401
-    entry_id = getattr(_entry_for(pool, credential_id, api_key_hint), "id", None) or credential_id
+    failed = _entry_for(pool, credential_id, api_key_hint) if nous else pool._identify_failed_entry(
+        credential_id, api_key_hint)
+    entry_id = getattr(failed, "id", None) or (credential_id if nous else None)
     if nous:
         episode = _episode(agent, provider, entry_id)
         if episode["refreshes"] >= 1:
@@ -127,9 +136,6 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
                 agent, pool, episode, failed_key=api_key_hint, entry_id=entry_id,
                 credential_id=credential_id, has_retried_429=has_retried_429)
     elif entry_id and _episode(agent, provider, entry_id)["refreshes"] >= _MAX_AUTH_REFRESH_ATTEMPTS:
-        # Capped BEFORE the POST: a further refresh revokes the token the entry's other holders
-        # (delegate_task siblings) have, and the rotated key no longer matches the failed one, so
-        # rotate_and_swap could not bench the entry. Bench it and rotate; fail only with no row left.
         log.warning(
             "Credential auth failure persists after %s refreshes for pool entry %s — "
             "rotating to another entry, or allowing fallback to activate.",
@@ -138,8 +144,8 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
     # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
     # burns its single-use refresh token for a failure it never had.
     refresh_kwargs = {"api_key_hint": api_key_hint}
-    if credential_id:
-        refresh_kwargs["credential_id"] = credential_id
+    if entry_id or credential_id:
+        refresh_kwargs["credential_id"] = entry_id or credential_id
     refreshed = pool.try_refresh_matching(**refresh_kwargs)
     if refreshed is None:
         # Refresh failed; rotate (the failed entry is already marked exhausted).
@@ -155,8 +161,6 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
                 agent, pool, episode, failed_key=api_key_hint, entry_id=refreshed_id,
                 credential_id=credential_id, has_retried_429=has_retried_429)
     elif refreshed_id is not None:
-        # try_refresh_matching() reports success even when upstream keeps rejecting: count it toward
-        # the cap above. Past it only when no entry matched before the POST (no id, rotated hint).
         state = _episode(agent, provider, refreshed_id)
         state["refreshes"] += 1
         if state["refreshes"] > _MAX_AUTH_REFRESH_ATTEMPTS:

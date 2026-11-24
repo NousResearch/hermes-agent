@@ -10,6 +10,7 @@ from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialP
 
 _API = "https://api.anthropic.com"
 _EIGHT_HOURS_MS = 8 * 3600 * 1000
+_ISSUE_RETRY_AFTER_S = 600.0
 
 
 @pytest.fixture(autouse=True)
@@ -186,8 +187,6 @@ def _two_refreshes_then_401(child):
 
 
 class TestRefreshCap:
-    """A long delegated turn: the cap is per auth-failure episode, and reaching it rotates."""
-
     def test_after_the_cap_the_session_rotates_to_another_healthy_row(self, endpoint, fake_pool_store):
         pool = CredentialPool("anthropic", [_row("claude-3"), _row("claude-4", priority=1)])
         child = _DelegatedChild(pool, "claude-3")
@@ -197,8 +196,29 @@ class TestRefreshCap:
         assert recovered is True
         assert (child._credential_pool_entry_id, child.api_key) == ("claude-4", "claude-4-at-0")
         assert _status(pool, "claude-3") == STATUS_EXHAUSTED
-        # No refresh past the cap: it would only revoke the token the row's other holders have.
         assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1"]
+
+    def test_a_capped_stale_id_does_not_bench_the_row_whose_key_failed(self, endpoint, fake_pool_store):
+        pool = CredentialPool("anthropic", [_row("claude-3"), _row("claude-4", priority=1)])
+        child = _DelegatedChild(pool, "claude-3")
+        assert _on_401(child) == (True, False)
+        assert _on_401(child) == (True, False)
+        child.api_key = "claude-4-at-0"
+
+        assert _on_401(child) == (True, False)
+        assert endpoint.posts[-1] == "claude-4-rt-0"
+        assert _status(pool, "claude-3") != STATUS_EXHAUSTED
+        assert _status(pool, "claude-4") != STATUS_EXHAUSTED
+
+    def test_a_served_response_between_401s_ends_the_episode(self, endpoint, fake_pool_store):
+        from agent.credential_auth_recovery import end_auth_episodes
+        pool = CredentialPool("anthropic", [_row("claude-3")])
+        child = _DelegatedChild(pool, "claude-3")
+        for _ in range(3):
+            assert _on_401(child) == (True, False)
+            end_auth_episodes(child)
+
+        assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]
 
     def test_at_the_cap_without_another_row_the_call_fails_without_a_post(self, endpoint, fake_pool_store):
         pool = CredentialPool("anthropic", [_row("claude-3")])
@@ -216,7 +236,7 @@ class TestRefreshCap:
         child = _DelegatedChild(pool, "claude-3")
         for _ in range(4):
             assert _on_401(child) == (True, False)
-            clock[0] += 600.0  # Retry-After wait between 401s, as in the #138337 log
+            clock[0] += _ISSUE_RETRY_AFTER_S
 
         assert child._credential_pool_entry_id == "claude-3"
         assert len(endpoint.posts) == 4

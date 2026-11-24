@@ -212,6 +212,8 @@ def check_api_response(
     start_prompt_cache_warming(agent, api_kwargs, response)
 
     _retry.has_retried_429 = False
+    from agent.credential_auth_recovery import end_auth_episodes
+    end_auth_episodes(agent)
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.
     if agent.provider == "nous":
         try:

@@ -284,11 +284,11 @@ remain outside the drag region.
 
 The redesigned shell is a window canvas with panels laid on it
 (`app/redesign/portal-shell.css`; every colour, radius and size comes from the tokens in
-"Portal design language" below). The titlebar band and the 60px rails show the canvas; zones
+"Portal design language" below). The titlebar band and the 54px rails show the canvas; zones
 touching the window top become panels starting below the band, together one workspace frame:
-a card on the canvas between the rails (`--portal-workspace-inset-start` past the global rail and
-before the developer rail, `-end` and `-bottom` to the window edge: x 65–1265, y 60–865 of Figma's
-1280×880) with 15px outer corners (`--portal-radius-frame`), a soft shadow
+a card on the canvas from one rail's edge to the other's (Figma leaves 5px beside each 60px rail;
+the owner asked for less canvas around them), with `--portal-workspace-inset-end` and `-bottom` to
+the window edge where there is no rail with 15px outer corners (`--portal-radius-frame`), a soft shadow
 (`--portal-shadow-workspace`) and a top highlight (`--portal-shadow-workspace-highlight`). Its
 panels, the developer tool panes among them, meet square inside it with no hairlines (Content
 `16292:14463`; a phone keeps the full window). Behind it all lies the launch's artwork (see "Artwork" below), which the canvas
@@ -883,7 +883,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 
 | Token | Dark | Light | Note |
 |---|---|---|---|
-| `--portal-rail-width` | `3.75rem` | ″ | The global rail and the developer rail (1036:7202). |
+| `--portal-rail-width` | `3.375rem` | ″ | The global rail and the developer rail: 54px, 12px either side of a 30px button, the inset the band's trailing cluster keeps from the window. Figma draws 60 (1036:7202); the owner asked for less canvas around the rails. app/shell/titlebar.ts mirrors the number for the band's lead. |
 | `--portal-rail-reserve` | `var(--portal-rail-width)` | ″ | What the rail takes from the layout: its width, none on compact, where it rides the sheet. `(max-width: 639.98px)`: `0px`. |
 | `--portal-rail-top` | `5.625rem` | ″ | The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every row), the destinations from 90px down on every host, clear of macOS traffic lights in the column; 30px buttons (the chrome row, the touch target on a coarse pointer), 20px apart, the foot's 40px off the window floor. Every glyph is 20px: Figma draws the destinations at 16 and the foot at 20, and the designer's review of the build (rev 11/16, 1260:39312) asks for 20 throughout. |
 | `--portal-rail-button` | `var(--portal-row-chrome)` | ″ |  |
@@ -908,8 +908,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-safe-end` | `env(safe-area-inset-right, 0px)` | ″ |  |
 | `--portal-panel-width` | `var(--portal-sidebar-width, var(--sessions-pane-width))` | ″ | ONE sidebar column for every rail destination: page panels (Agents, Routines, Settings) take the chat sidebar's width — the user's sash width once they size it (published by the pane tree as --portal-sidebar-width), else its default — so switching destinations never moves the panel edge, its divider or the stage's content edge. |
 | `--portal-frame-inset` | `1.25rem` | ″ | The page-frame contract: a page's content column sits centred in its stage (the frame past the page's sidebar panel, where it has one), as the chat column does, and never closer to the stage's edges than this inset. Figma left-anchors the column; the owner centres it. `(max-width: 639.98px)`: `1rem`. |
-| `--portal-workspace-inset-start` | `0rem` | ″ | The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. Beside a rail the frame starts at the rail's own edge, not Figma's 5px past it: a rail's buttons then stand as far from the frame as from the window's edge. |
-| `--portal-workspace-inset-end` | `0.9375rem` | ″ |  |
+| `--portal-workspace-inset-end` | `0.9375rem` | ″ | The workspace frame's gaps, where the artwork shows (Content 16292:14463): 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). Beside a rail there is none: the frame starts at the rail's own edge, not Figma's 5px past it, so a rail's buttons stand as far from the frame as from the window's edge. |
 | `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
 | `--portal-status-bar-rest-opacity` | `0.85` | ″ | The status bar ("status bar", rev 11/16: Frame 403 1262:39850) stands in the floor under the frame: 20px chips 9px apart, 12px off the window's floor and 8px under the frame, whose floor gap grows to 40px while the bar is open. Collapsed (1264:40699), its toggle floats 7px inside the frame's end corner. Open, it rests a step back so the floor stays quiet, and comes to full under the pointer or the keyboard. The step is small: at half ink the readouts could not be read over the artwork until the pointer found them. |
 | `--portal-status-bar-height` | `1.25rem` | ″ |  |

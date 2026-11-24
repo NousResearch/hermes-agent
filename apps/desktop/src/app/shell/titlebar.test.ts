@@ -155,17 +155,17 @@ describe('portalBandLeadingInset', () => {
   })
 
   it('aligns with the content inset (x=80) on Windows/Linux/web', () => {
-    expect(portalBandLeadingInset(null, false, false)).toBe(80)
-    expect(portalBandLeadingInset(undefined, false, false)).toBe(80)
+    expect(portalBandLeadingInset(null, false, false)).toBe(PORTAL_RAIL_WIDTH + 20)
+    expect(portalBandLeadingInset(undefined, false, false)).toBe(PORTAL_RAIL_WIDTH + 20)
   })
 
   it('aligns with the content inset in macOS fullscreen', () => {
-    expect(portalBandLeadingInset({ x: 23, y: 23 }, true, true)).toBe(80)
-    expect(portalBandLeadingInset(null, true, true)).toBe(80)
+    expect(portalBandLeadingInset({ x: 23, y: 23 }, true, true)).toBe(PORTAL_RAIL_WIDTH + 20)
+    expect(portalBandLeadingInset(null, true, true)).toBe(PORTAL_RAIL_WIDTH + 20)
   })
 
   it('moves in by the rail on a compact window, where the rail has no column', () => {
-    expect(portalBandLeadingInset(null, false, false, true)).toBe(80 - PORTAL_RAIL_WIDTH)
+    expect(portalBandLeadingInset(null, false, false, true)).toBe(20)
     expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true, true)).toBe(150 - PORTAL_RAIL_WIDTH)
   })
 
@@ -177,9 +177,9 @@ describe('portalBandLeadingInset', () => {
     $connection.set({ isFullscreen: false, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
     expect(start()).toBe('150px')
     $connection.set({ isFullscreen: true, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
-    expect(start()).toBe('80px')
+    expect(start()).toBe(`${PORTAL_RAIL_WIDTH + 20}px`)
     $connection.set({ isFullscreen: false, windowButtonPosition: null } as HermesConnection)
-    expect(start()).toBe('80px')
+    expect(start()).toBe(`${PORTAL_RAIL_WIDTH + 20}px`)
     stop()
     $connection.set(null)
   })

@@ -1,5 +1,5 @@
 /* Redesigned shell frame (Figma 906:19396, 1089:7972): the window canvas shows through the titlebar
-   band and the 60px rails; each zone at the window top is a panel with a hairline edge whose
+   band and the rails; each zone at the window top is a panel with a hairline edge whose
    leading top corner rounds at 9px (906:19804, 1089:8226), as does the row's trailing one. Tokens come from tokens/, the artwork and the panels' veils over it from portal-artwork.css. */
 
 /* A page or route overlay paints over the chat it covers (contrib/route-cover.tsx). The chat keeps
@@ -96,12 +96,12 @@
   :root[data-shell='portal'] [data-slot='layout-cover'] {
     position: relative;
     isolation: isolate;
-    margin-inline: var(--portal-workspace-inset-start) var(--portal-workspace-inset-end);
+    margin-inline-end: var(--portal-workspace-inset-end);
     margin-block-end: var(--portal-workspace-inset-bottom);
   }
 
   :root[data-shell='portal'] [data-slot='layout-cover']:has(+ [data-slot='developer-rail']) {
-    margin-inline-end: var(--portal-workspace-inset-start);
+    margin-inline-end: 0;
   }
 
   /* The shadow lies under the frame, which starts under the band; the highlight lies over it. */
@@ -134,7 +134,7 @@
   }
 
   :root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
-    padding-inline: var(--portal-workspace-inset-start) var(--portal-workspace-inset-end);
+    padding-inline-end: var(--portal-workspace-inset-end);
     padding-block-end: var(--portal-workspace-inset-bottom);
   }
 
@@ -228,7 +228,7 @@
 
 /* ── Rails ────────────────────────────────────────────────────────────────────────────────── */
 
-/* 60px columns on the canvas (906:19409 / 906:19875). The developer rail starts under the band, its
+/* Columns on the canvas, --portal-rail-width wide (906:19409 / 906:19875). The developer rail starts under the band, its
    top group 17px below the panel edge and the bottom group 20px off the window floor, 30px buttons
    15px apart. */
 :root[data-shell='portal'] .portal-rail {
@@ -645,6 +645,12 @@
 /* The main chat's Agent settings closes the band's trailing cluster (16292:15303). */
 :root[data-shell='portal'] [data-titlebar-cluster='right'] > [data-slot='portal-agent-settings'] {
   margin-inline-end: var(--portal-band-trail-inset);
+}
+
+/* Over the developer rail the cluster ends on the rail's own column of buttons, not inside a frame
+   that no longer reaches the window's end. */
+:root[data-shell='portal'][data-developer-rail] {
+  --portal-band-trail-inset: 0rem;
 }
 
 /* Too narrow for a readable title: the pill steps aside and "+" stays. */

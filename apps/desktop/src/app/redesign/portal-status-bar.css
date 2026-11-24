@@ -62,7 +62,7 @@
 
 /* The developer rail stands between the frame and the window's end: the bar ends with the frame. */
 :root[data-shell='portal'][data-developer-rail] [data-slot='portal-status-bar'] {
-  --portal-workspace-inset-end: calc(var(--portal-rail-width) + var(--portal-workspace-inset-start));
+  --portal-workspace-inset-end: var(--portal-rail-width);
 }
 
 /* The frame's floor gap makes room for the open bar. */

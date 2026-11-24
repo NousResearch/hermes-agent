@@ -138,6 +138,13 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         return None
 
 
+def is_no_arguments(raw: Any) -> bool:
+    """True for every spelling of "no arguments" models and gateways emit for a parameterless
+    tool: missing, ``""``/whitespace, and JSON ``null`` (#83937, #159689). A missing required
+    param on ``{}`` still surfaces as the tool's own "missing required" hint."""
+    return raw is None or (isinstance(raw, str) and raw.strip() in ("", "null"))
+
+
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -175,7 +182,7 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
-        if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
+        if is_no_arguments(raw_args):
             # "" / whitespace is how some OpenAI-compatible gateways spell "no arguments" for a
             # parameterless tool (#83937); the loop already treats an empty outer arguments string
             # as {} (turn_tool_validation), and a missing required param still surfaces below via

@@ -428,7 +428,7 @@ class PluginHost:
 
     def _serve_ctx(self, params: dict[str, Any]) -> Any:
         from hermes_cli.plugin_isolation import (
-            HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
+            HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS, HOST_UNSUPPORTED_HOOKS,
         )
         ctx = self._plugin_ctx(params)
         method = str(params.get("method") or "")
@@ -439,6 +439,9 @@ class PluginHost:
         resolve = functools.partial(self._resolve_ref, base=base)
         args = decode(params.get("args") or [], resolve)
         kwargs = decode(params.get("kwargs") or {}, resolve)
+        hook = (args[0] if args else kwargs.get("hook_name")) if method == "register_hook" else None
+        if hook in HOST_UNSUPPORTED_HOOKS:
+            raise PluginHostUnsupported(f"Hook {hook!r} cannot run in the plugin host: {HOST_UNSUPPORTED_HOOKS[hook]}")
         result = getattr(ctx, method)(*args, **kwargs)
         return self._encode_for_host(result)
 

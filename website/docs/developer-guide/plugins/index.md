@@ -1754,6 +1754,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
+| `llm_http_response` | Model HTTP response headers arrive, before SDK parsing or body consumption | `status_code: int, get_header: Callable[[str], str \| None]` | ignored |
 | `pre_auxiliary_call` | Before each provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, approval, ...); not a `pre_api_request` | `aux_task: str` plus the `pre_api_request` fields (`session_id`/`task_id`/`turn_id` are the parent turn's or empty, `api_request_id: str`, `retry_count: int`, `streaming: bool`, `request: dict`) | ignored |
 | `post_auxiliary_call` | After that attempt returns or raises | `pre_auxiliary_call` fields plus `api_duration: float, finish_reason, response_model, usage: dict \| None, response: dict \| None, error: str \| None, error_type: str \| None` | ignored |
 | [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
@@ -1776,6 +1777,17 @@ The kanban lifecycle hooks fire **after** the board DB change commits, so a call
 
 The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
+`llm_http_response` is an in-process Python observer for primary OpenAI-compatible and Anthropic
+clients and HTTPX-backed auxiliary clients. Register it with `ctx.register_hook`; shell hooks and
+`plugins.isolation: host` are not supported. It runs in the active model-call context, including
+error responses and each HTTP retry, before streaming starts. Call `get_header(name)` only during
+the callback; it returns a single value or `None` for missing, repeated or oversized values
+(header names up to 128 ASCII characters, values up to 4096 characters). No header collection,
+body, URL or client is supplied. Callbacks must be synchronous, short and nonblocking; results are ignored and
+exceptions do not change the HTTP result. Capture selected identifiers, not credentials. A
+response receipt does not establish successful body delivery. Non-HTTP clients and arbitrary
+tool subprocess requests do not emit this hook.
+
 ### Where each hook fires {#hook-fire-sites}
 
 Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. This table names the function that fires each one, so you can read the exact call and payload. Paths are relative to the repository root. When you add a hook, add its row here in the same change.
@@ -1796,6 +1808,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `pre_api_request` | `agent/turn_api_request.py` `_fire_pre_api_request_hook` |
 | `post_api_request` | `agent/turn_response_intake.py` `_fire_post_api_request_hook` |
 | `api_request_error` | `agent/api_request_hooks.py` `ApiRequestHooksMixin._invoke_api_request_error_hook` |
+| `llm_http_response` | `agent/served_model.py` `_notify_response` / `_anotify_response` |
 | `pre_auxiliary_call` / `post_auxiliary_call` | `agent/auxiliary_hooks.py` `_AuxCallHooks.pre` / `_AuxCallHooks.post` |
 | `transform_api_error_classification` | `hermes_cli/plugins.py` `get_plugin_error_classification`, called from `agent/error_classifier.py` `_plugin_verdict` |
 | `on_session_start` | `agent/conversation_loop.py` `_restore_or_build_system_prompt` |

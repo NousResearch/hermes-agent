@@ -84,6 +84,10 @@ HOST_DEGRADED_HOOKS: dict[str, str] = {
     "pre_gateway_dispatch": "receives the live gateway runner and session store",
 }
 
+HOST_UNSUPPORTED_HOOKS: dict[str, str] = {
+    "llm_http_response": "header access and active model context stay in the Hermes process",
+}
+
 
 def _plugins_config(config: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
     if config is None:

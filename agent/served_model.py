@@ -1,4 +1,4 @@
-"""Per-response *served model* capture for routing proxies (#54864).
+"""Early model-response observers and served-model capture for routing proxies (#54864).
 
 A LiteLLM-style proxy answers with the configured alias in the body's ``model`` field and puts
 the deployment it really routed to in a response header (``x-litellm-model-id``, else the
@@ -15,10 +15,57 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 SERVED_MODEL_HEADERS: tuple[str, ...] = ("x-litellm-model-id", "x-litellm-model-api-base")
 _HOOK_MARK = "_hermes_served_model_hook"
+
+
+def _response_metadata(response: httpx.Response) -> dict[str, Any]:
+    headers = response.headers
+
+    def get_header(name: str) -> str | None:
+        if not isinstance(name, str) or not 1 <= len(name) <= 128 or not name.isascii():
+            return None
+        values = headers.get_list(name)
+        return values[0] if len(values) == 1 and len(values[0]) <= 4096 else None
+
+    return {"status_code": response.status_code, "get_header": get_header}
+
+
+def _notify_response(response: httpx.Response) -> None:
+    from hermes_cli import plugins
+
+    try:
+        plugins.discover_plugins()
+        if plugins.has_hook("llm_http_response"):
+            plugins.invoke_hook("llm_http_response", **_response_metadata(response))
+    except Exception as exc:  # health: allow BLE001 -- optional observers must not alter SDK response handling
+        logger.warning("Model response observer skipped (%s)", type(exc).__name__)
+
+
+async def _anotify_response(response: httpx.Response) -> None:
+    from hermes_cli import plugins
+
+    try:
+        plugins.discover_plugins()
+        if plugins.has_hook("llm_http_response"):
+            await plugins.ainvoke_hook("llm_http_response", **_response_metadata(response))
+    except Exception as exc:  # health: allow BLE001 -- optional observers must not alter SDK response handling
+        logger.warning("Model response observer skipped (%s)", type(exc).__name__)
+
+
+def install_llm_response_hook(client: Any) -> Any:
+    """Observe headers before SDK parsing, without taking ownership of its HTTP client."""
+    http_client = getattr(client, "_client", None)
+    if isinstance(http_client, (httpx.Client, httpx.AsyncClient)):
+        hook = _anotify_response if isinstance(http_client, httpx.AsyncClient) else _notify_response
+        hooks = http_client.event_hooks
+        if hook not in hooks.get("response", ()):
+            http_client.event_hooks = {**hooks, "response": [hook, *hooks.get("response", ())]}
+    return client
 
 
 def served_model_from_headers(headers: Any) -> Optional[str]:

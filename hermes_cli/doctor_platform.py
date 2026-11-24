@@ -616,7 +616,7 @@ def _resolved_path_entry(entry: str, home: Path) -> Path:
     candidate = _expand_user_path(entry, home)
     try:
         return candidate.resolve()
-    except OSError:
+    except (OSError, RuntimeError):  # Python < 3.13 raises RuntimeError on a symlink loop
         return Path(os.path.normpath(str(candidate)))
 
 

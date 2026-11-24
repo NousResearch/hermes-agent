@@ -442,6 +442,30 @@ def test_path_check_judges_the_path_doctor_inherited(tmp_path, monkeypatch, inhe
 
 
 @pytest.mark.platforms("posix")
+def test_path_check_survives_a_path_entry_that_cannot_resolve(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    resolve = Path.resolve
+
+    def resolve_like_python_3_11(self, strict=False):
+        # 3.11 and 3.12 raise RuntimeError on a symlink loop; 3.13+ hand the path back.
+        if self == loop:
+            raise RuntimeError(f"Symlink loop from {str(self)!r}")
+        return resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_like_python_3_11)
+    monkeypatch.setenv("PATH", f"{loop}:{launcher.parent}")
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "is not on your PATH" not in out
+
+
+@pytest.mark.platforms("posix")
 def test_command_installation_path_check_respects_zdotdir_and_configured_rc(tmp_path, monkeypatch, capsys):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
     (link_dir / "hermes").symlink_to(launcher)

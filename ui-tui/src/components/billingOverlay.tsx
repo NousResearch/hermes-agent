@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { Box, Text, useInput } from '@hermes/ink'
-import { purchasePayerLabel } from '@hermes/shared/billing-policy'
+import { purchasePayer } from '@hermes/shared/billing-policy'
 import type { BillingStateResponse } from '@hermes/shared/gateway-types'
 import { useRef, useState } from 'react'
 
@@ -26,17 +26,19 @@ type BillingMessages = Translations['billing']
 
 /** "Payment: …" for whatever a purchase is paid with, or the no-card line. */
 function purchasePayLine(B: BillingMessages, s: BillingStateResponse): string {
-  const payer = purchasePayerLabel(s)
+  const payer = purchasePayer(s)
 
-  return payer ? B.common.payment(payer) : B.common.noSavedCard
+  return payer ? B.common.payment(payer.label) : B.common.noSavedCard
 }
 
 function overviewPayerLine(B: BillingMessages, s: BillingStateResponse): string {
-  if (s.managed_payments) {
-    return B.common.payment(s.managed_payments.label)
+  const payer = purchasePayer(s)
+
+  if (!payer) {
+    return B.overview.noCardHint
   }
 
-  return s.card ? B.overview.card(s.card.display ?? s.card.masked) : B.overview.noCardHint
+  return payer.kind === 'card' ? B.overview.card(payer.label) : B.common.payment(payer.label)
 }
 
 function autoReloadLine(B: BillingMessages, s: BillingStateResponse): null | string {
@@ -221,7 +223,7 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
   // flow continues right here once the card is saved. Card present → the normal
   // preset menu. (The card display is best-effort server-side, so "check again"
   // also recovers a transient miss.)
-  const noCard = !purchasePayerLabel(s)
+  const noCard = !purchasePayer(s)
 
   const rows = noCard
     ? [B.buy.addCardOnPortal, B.buy.checkAgain, B.common.back]
@@ -257,10 +259,10 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
       // screen flips into the preset menu and the purchase continues here.
       onPatch({ state: fresh })
 
-      const freshPayer = purchasePayerLabel(fresh)
+      const freshPayer = purchasePayer(fresh)
 
       if (freshPayer) {
-        ctx.sys(B.buy.cardFound(freshPayer))
+        ctx.sys(B.buy.cardFound(freshPayer.label))
       } else {
         ctx.sys(B.buy.stillNoCard)
       }
@@ -502,25 +504,33 @@ function ConfirmScreen({
   })
 
   const payLine = purchasePayLine(B, s)
+  const payer = purchasePayer(s)
+  // Link bills a Managed Payments purchase and adds any tax on top, so its amount is
+  // the credits bought before tax, not the total charged.
+  const managed = payer?.kind === 'managed_payments'
 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
         {B.confirm.title}
       </Text>
-      <Text color={t.color.text}>{B.confirm.total(usd(amount))}</Text>
+      <Text color={t.color.text}>{managed ? B.confirm.beforeTax(usd(amount)) : B.confirm.total(usd(amount))}</Text>
       <Text color={t.color.muted}>{payLine}</Text>
       {/* Provenance-less payloads (older NAS) keep the generic line; when the
           resolver says WHY this card, payLine already carries it. */}
-      {!s.managed_payments && s.card && !s.card.resolved_via && (
+      {payer?.kind === 'card' && !payer.card.resolved_via && (
         <Text color={t.color.muted}>{B.confirm.portalCardCharged}</Text>
       )}
-      {/* Link bills a Managed Payments purchase and adds any tax on top of the total shown. */}
       <Text color={t.color.muted}>
-        {s.managed_payments ? B.confirm.authorizationManagedPayments : B.confirm.authorization}
+        {managed ? B.confirm.authorizationManagedPayments : B.confirm.authorization}
       </Text>
       <Text />
-      <ActionRow active={sel === 0} color={t.color.ok} label={B.confirm.payNow(usd(amount))} t={t} />
+      <ActionRow
+        active={sel === 0}
+        color={t.color.ok}
+        label={managed ? B.confirm.buyCredits(usd(amount)) : B.confirm.payNow(usd(amount))}
+        t={t}
+      />
       <ActionRow active={sel === 1} label={B.common.cancel} t={t} />
       <Text />
       {footer(B.confirm.hint, t)}

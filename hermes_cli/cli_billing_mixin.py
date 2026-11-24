@@ -849,7 +849,8 @@ class CLIBillingMixin:
         payer = state.purchase_payer
         managed = state.managed_payments is not None
         self._block_header("💳", t("cli.billing.confirm_purchase"))
-        print(f"  {t('cli.billing.total_line', amount=format_money(amount))}")
+        # Link adds tax on top, so a Managed Payments amount is the credits bought, not the total.
+        print(f"  {t('cli.billing.before_tax_line' if managed else 'cli.billing.total_line', amount=format_money(amount))}")
         if payer:
             print(f"  {t('cli.billing.payment_line', card=payer)}")
             if not managed and state.card.provenance is None:  # older NAS without provenance → generic line
@@ -858,14 +859,15 @@ class CLIBillingMixin:
         # Link bills a Managed Payments purchase and adds any tax on top of the amount shown.
         self._dim(t("cli.billing.consent_charge_managed_payments" if managed else "cli.billing.consent_charge"))
         confirm_choices = [
-            ("pay", t("cli.billing.choice_pay_now", amount=format_money(amount)), t("cli.billing.desc_submit_charge")),
+            ("pay", t("cli.billing.choice_buy_credits" if managed else "cli.billing.choice_pay_now",
+                      amount=format_money(amount)), t("cli.billing.desc_submit_charge")),
             ("portal", t("cli.billing.choice_manage_on_portal"), t("cli.billing.desc_manage_card_billing")),
             _cancel_row(label_key="cli.billing.choice_go_back", desc_key="cli.billing.desc_do_not_charge")]
         if not self._app:
             print(f"  {t('cli.billing.run_interactive_to_confirm')}")
             return
         choice = self._modal_choice(
-            t("cli.billing.pay_question", amount=format_money(amount)),
+            t("cli.billing.buy_credits_question" if managed else "cli.billing.pay_question", amount=format_money(amount)),
             payer or t("cli.billing.no_saved_card_lower"), confirm_choices)
         if choice == "portal":
             self._billing_open_portal(state)
@@ -982,7 +984,9 @@ class CLIBillingMixin:
             print(f"  {t('cli.billing.allowed_but_org_off')}")
             self._billing_portal_hint(fresh)
             return
-        if fresh.card is None:  # half-done state: say so rather than a bare "✓ enabled"
+        # Half-done state: say so rather than a bare "✓ enabled". A purchase needs something to pay
+        # with (a Managed Payments payer will do); auto-reload setup (no amount) needs the card it charges.
+        if (fresh.purchase_payer if amount is not None else fresh.card) is None:
             print(f"  ✓ {t('cli.billing.allowed_no_card')}")
             self._dim(t("cli.billing.topup_on_portal_to_continue"))
             self._billing_portal_hint(fresh)

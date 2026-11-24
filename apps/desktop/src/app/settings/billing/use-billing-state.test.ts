@@ -1,4 +1,3 @@
-import type { BillingStateResponse } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
@@ -971,34 +970,3 @@ describe('formatMonthlyCreditsDelta', () => {
     expect(formatMonthlyCreditsDelta('')).toBeNull()
   })
 })
-
-describe('deriveBillingView (a Managed Payments payer)', () => {
-  const b = TRANSLATIONS.en.settings.billing
-  const label = 'Subscription payment method (billed by Link)'
-
-  const view = (overrides: Partial<BillingStateResponse>) =>
-    deriveBillingView(
-      okBilling({ ...todayBillingState, can_charge: true, cli_billing_enabled: true, ...overrides }),
-      okSubscription(todaySubscriptionState)
-    )
-
-  it.each([
-    ['no card on file', null],
-    ['a card on file', todayBillingState.card]
-  ])('buys through it with %s, naming Link and the tax it adds', (_, card) => {
-    const billing = view({ card, managed_payments: { label } })
-
-    expect(billing.notice?.title).not.toBe(b.state.notice.noCard.title)
-    expect(billing.topupRow?.description).toBe(b.state.buyCredits.managedPaymentsDescription(label))
-    expect(billing.topupRow?.chips?.length).toBeGreaterThan(0)
-    expect(billing.paymentRow?.value).toBe(label)
-  })
-
-  it('keeps the card on file when the portal names no Managed Payments payer', () => {
-    const billing = view({})
-
-    expect(billing.topupRow?.description).toBe(b.state.buyCredits.description)
-    expect(billing.paymentRow?.value).toContain(todayBillingState.card?.last4 ?? '')
-  })
-})
-

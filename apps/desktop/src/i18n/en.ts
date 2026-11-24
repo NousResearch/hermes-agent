@@ -1737,7 +1737,7 @@ export const en: Translations = {
         buyCredits: {
           description: 'A single charge on your card, added to your balance today.',
           managedPaymentsDescription: payer =>
-            `A single charge, billed by Link to ${payer} plus any sales tax or VAT, added to your balance today.`
+            `A single charge to ${payer}, plus any sales tax or VAT, added to your balance today.`
         },
         autoRefill: {
           title: 'Refill when low',

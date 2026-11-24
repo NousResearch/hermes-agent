@@ -192,12 +192,18 @@ describe('BillingOverlay — a Managed Payments payer', () => {
     expect(out).toContain('allow Link to charge')
     expect(out).not.toContain('Nous Research to charge your card')
     expect(out).not.toContain('visa')
+    // Link adds tax on top: the amount is the credits bought, never a "Total" or "Pay $X now".
+    expect(out).toContain('Before tax:')
+    expect(out).toContain('of credits')
+    expect(out).not.toContain('Total:')
+    expect(out).not.toContain('Pay $')
   })
 
   it('keeps the card on file when the portal names no Managed Payments payer', () => {
     const out = render(overlay('confirm'))
     expect(out).toContain('Payment: visa ····4242')
     expect(out).toContain('Nous Research to charge your card')
+    expect(out).toContain('Total:')
   })
 })
 

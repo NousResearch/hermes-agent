@@ -1,4 +1,4 @@
-import { purchasePayerLabel } from '@hermes/shared'
+import { purchasePayer } from '@hermes/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -181,7 +181,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
   const [amount, setAmount] = useState(initialAmount)
   const flow = useChargeFlow()
   const busy = flow.phase === 'charging' || flow.phase === 'polling'
-  const controlsDisabled = busy || !purchasePayerLabel(billing)
+  const controlsDisabled = busy || !purchasePayer(billing)
   const clampedAmount = clampAmount(amount, billing)
   const canBuy = !controlsDisabled && clampedAmount !== ''
 

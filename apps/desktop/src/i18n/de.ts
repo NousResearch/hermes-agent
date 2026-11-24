@@ -2091,7 +2091,7 @@ export const deOverrides = {
         buyCredits: {
           description: 'Eine einmalige Abbuchung von Ihrer Karte, die noch heute Ihrem Guthaben gutgeschrieben wird.',
           managedPaymentsDescription: payer =>
-            `Eine einmalige Abbuchung, die Link zuzüglich etwaiger Umsatz- oder Mehrwertsteuer über ${payer} abrechnet und die noch heute Ihrem Guthaben gutgeschrieben wird.`
+            `Eine einmalige Abbuchung über ${payer} zuzüglich etwaiger Umsatz- oder Mehrwertsteuer, die noch heute Ihrem Guthaben gutgeschrieben wird.`
         },
         autoRefill: {
           title: 'Bei niedrigem Guthaben aufladen',

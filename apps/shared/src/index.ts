@@ -4,7 +4,8 @@ export {
   BILLING_REFUSAL_POLICY,
   type BillingRecovery,
   type BillingRefusalPolicy,
-  purchasePayerLabel,
+  purchasePayer,
+  type PurchasePayer,
   refusalPolicy
 } from './billing-policy'
 export type {

@@ -50,6 +50,10 @@ def test_a_managed_payments_payer_buys_without_a_card(capsys):
     assert f"Payment: {LABEL}" in out
     assert "allow Link to charge this payment method for this amount plus any sales tax or VAT" in out
     assert "Nous Research to charge your card" not in out
+    # Link adds tax on top, so the amount is the credits bought, never a "Total" or "Pay $X".
+    assert "Before tax: $10" in out and "Total:" not in out
+    title, _, choices = cli.asked[-1]
+    assert title == "Buy $10 of credits?" and choices[0] == "pay"
 
 
 def test_the_managed_payments_payer_wins_over_the_card_on_file(capsys):
@@ -78,3 +82,40 @@ def test_no_payer_still_starts_with_adding_a_card(payload):
     cli._billing_buy_flow(_state(**payload))
     assert cli.submitted == []
     assert cli.asked and cli.asked[0][2] == ["portal", "recheck", "cancel"]
+
+
+class _StepUpCli(_Cli):
+    """Remote Spending is granted at once; billing state then reads back as ``fresh``."""
+
+    def __init__(self, *choices: str):
+        super().__init__(*choices)
+        self.keys: list[str] = []
+
+    def _step_up_remote_spending(self, **_kw):
+        return True
+
+    def _billing_submit_and_poll(self, state, amount, key, **_kw):
+        self.submitted.append(str(amount))
+        self.keys.append(key)
+
+
+def test_a_managed_payments_purchase_resumes_after_remote_spending_with_its_key(monkeypatch):
+    import agent.billing_view as bv
+    monkeypatch.setattr(bv, "build_billing_state", lambda **_kw: _state(managedPayments={"label": LABEL}))
+
+    cli = _StepUpCli("resume")
+    cli._billing_handle_scope_required(_state(), amount=Decimal(10), idempotency_key="key-1")
+
+    assert cli.submitted == ["10"] and cli.keys == ["key-1"]
+
+
+def test_auto_reload_setup_still_needs_a_card_after_remote_spending(monkeypatch, capsys):
+    import agent.billing_view as bv
+    monkeypatch.setattr(bv, "build_billing_state", lambda **_kw: _state(managedPayments={"label": LABEL}))
+
+    cli = _StepUpCli("resume")
+    cli._billing_handle_scope_required(_state())  # no amount: auto-reload setup
+
+    assert cli.submitted == []
+    assert "no card" in capsys.readouterr().out.lower()
+

@@ -9,9 +9,8 @@ import { ScreenHero } from '@/plugins/hermes-bots/screen-hero'
 import { openBotScreen } from '@/plugins/hermes-bots/screen-open'
 import {
   type PortalTone,
-  screenBotForRoute,
+  screenBotOwnFirst,
   screenTonePhrase,
-  servesProfile,
   useScreenPortalState
 } from '@/plugins/hermes-bots/screen-portal'
 import type { RosterRow } from '@/plugins/hermes-bots/types'
@@ -31,16 +30,6 @@ interface AgentScreen {
   open: () => Promise<boolean>
 }
 
-/** The roster row an agent's Screen stands on: its own row, else the alias that serves its profile
- *  (an alias's screen is its profile's), else a row made up for a machine and profile the roster
- *  does not list. Every surface here reads state for this row and opens this row, so they cannot
- *  speak of one bot's screen and open another's. */
-function screenBot(connectionId: null | string, profile: string, roster: RosterRow[]): RosterRow {
-  const own = screenBotForRoute({ connectionId, profile }, roster, (route, name) => route.profile === name)
-
-  return roster.includes(own) ? own : screenBotForRoute({ connectionId, profile }, roster, servesProfile)
-}
-
 /** Whether this app can open a Screen at all (an older Desktop cannot; the plugin then says so). */
 const screenOpens = () => typeof host.openWorkspace === 'function'
 
@@ -51,7 +40,7 @@ export async function openAgentScreen(connectionId: null | string, profile: stri
   try {
     const machine = connectionId ?? 'local'
     const served = (await host.profileRoutes()).find(route => route.connectionId === machine && route.profile === profile)
-    const bot = screenBot(connectionId, profile, $lastRoster.get())
+    const bot = screenBotOwnFirst({ connectionId, profile }, $lastRoster.get())
 
     openBotScreen(served ? { ...bot, targetProfile: served.targetProfile || served.profile } : bot, null)
 
@@ -63,13 +52,14 @@ export async function openAgentScreen(connectionId: null | string, profile: stri
   }
 }
 
-/** The row `screenBot` resolves, rebuilt with the roster, as classic's own Screen box does: the
+/** The roster row an agent's Screen stands on (the plugin's own-row-first resolver, which its
+ *  palette action uses too), rebuilt with the roster, as classic's own Screen box does: the
  *  plugin's status hook then asks again for an agent whose status has not settled, which is what
  *  recovers a read made too early. */
 export function useScreenBot(connectionId: null | string, profile: string): RosterRow {
   const roster = useStore($lastRoster)
 
-  return useMemo(() => screenBot(connectionId, profile, roster), [connectionId, profile, roster])
+  return useMemo(() => screenBotOwnFirst({ connectionId, profile }, roster), [connectionId, profile, roster])
 }
 
 /** One agent's Screen (Bot Mode: its own desktop), from the plugin's state for it. Mounting this

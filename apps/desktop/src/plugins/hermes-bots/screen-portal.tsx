@@ -231,7 +231,7 @@ type BotRoute = NonNullable<ReturnType<typeof resolveBotConnectionRoute>['route'
 const namesProfile = (route: BotRoute, profile: string) => route.profile === profile
 
 /** The focused chat's owner may name the profile an alias serves from. */
-export const servesProfile = (route: BotRoute, profile: string) => route.profile === profile || route.targetProfile === profile
+const servesProfile = (route: BotRoute, profile: string) => route.profile === profile || route.targetProfile === profile
 
 /** The roster row that owns a route's Screen, or a scoped row synthesized for it. */
 export function screenBotForRoute(
@@ -258,13 +258,22 @@ export function screenBotForRoute(
   )
 }
 
+/** The row a route's Screen is opened and described by where the route may name a profile an alias
+ *  serves (the redesign's doors): the profile's own row, else the alias that serves it, else a
+ *  scoped row made up for it. Own row first, so every door reaches one bot, and one Screen tab. */
+export function screenBotOwnFirst(route: ProfileGroupRoute, roster: RosterRow[]): RosterRow {
+  const own = screenBotForRoute(route, roster, namesProfile)
+
+  return roster.includes(own) ? own : screenBotForRoute(route, roster, servesProfile)
+}
+
 /** Explicit tool access follows the focused chat's complete owner, never the live socket alone. */
 export function profileScreenCommand(route: ProfileGroupRoute): Omit<PaletteContribution, 'id'> {
   return {
     label: botsText().screen.menu,
     keywords: ['screen', 'computer', 'display', 'desktop'],
     detail: () => {
-      const bot = screenBotForRoute(route, $lastRoster.get(), servesProfile)
+      const bot = screenBotOwnFirst(route, $lastRoster.get())
       const connectionId = route.connectionId ?? 'local'
       // A cold roster has no label for another machine; its id is then the only name there is.
       const machine = bot.connectionLabel || (connectionId === 'local' ? botsText().bot.thisDevice : connectionId)
@@ -272,7 +281,7 @@ export function profileScreenCommand(route: ProfileGroupRoute): Omit<PaletteCont
       return `${route.profile} · ${machine}`
     },
     run: async () => {
-      const bot = screenBotForRoute(route, $lastRoster.get(), servesProfile)
+      const bot = screenBotOwnFirst(route, $lastRoster.get())
 
       const target = (await host.profileRoutes()).find(candidate =>
         candidate.connectionId === (route.connectionId ?? 'local') && candidate.profile === route.profile

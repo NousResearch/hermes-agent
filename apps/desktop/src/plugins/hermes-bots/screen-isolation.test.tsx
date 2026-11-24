@@ -161,6 +161,15 @@ it('opens Screen from the tool palette on its captured owner, including a roster
   )
 })
 
+it('opens the profile’s own bot from the palette, not an alias listed ahead of it that serves the profile', async () => {
+  const alias: RosterRow = { ...botB, name: 'shared-bot', targetProfile: 'default', connectionLabel: 'Host B' }
+  $lastRoster.set([alias, botB])
+
+  await profileScreenCommand({ connectionId: 'host-b', profile: 'default' }).run()
+
+  expect(openBotScreen).toHaveBeenLastCalledWith(botB, null)
+})
+
 it('resolves a cold Portal alias through authoritative routes without visiting Bot Mode', async () => {
   vi.mocked(host.profileRoutes).mockResolvedValue([
     { connectionId: 'host-a', profile: 'moxie', targetProfile: 'other', mode: 'remote' },

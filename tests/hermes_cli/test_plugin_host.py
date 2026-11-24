@@ -277,10 +277,7 @@ def test_a_marked_linked_profiles_provider_extraction_from_the_host_does_not_get
     outside = _marked_profile_linked_out_of_the_root(
         tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"},
         {"host": {"launcher": [str(runner)]}})
-    plugin_dir = outside / "plugins" / "model-providers" / "hostmodel"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    _hosted_model_provider(outside)
     manager = plugins_mod.get_plugin_manager()
     manager.discover_and_load()
     try:
@@ -1292,10 +1289,7 @@ def test_a_secondarys_provider_extraction_runs_under_the_launcher_its_host_start
     (ops / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {
         "launcher": [str(runner), "${PLUGIN_TAG}"]}}}), encoding="utf-8")
     (ops / ".env").write_text("PLUGIN_TAG=ops-tag\n", encoding="utf-8")
-    plugin_dir = ops / "plugins" / "model-providers" / "hostmodel"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    _hosted_model_provider(ops)
     monkeypatch.setenv("PLUGIN_TAG", "launch-tag")  # the launch profile's value
     plugins_mod._reset_plugin_managers_for_tests()
     token = set_hermes_home_override(ops)
@@ -1323,10 +1317,7 @@ def test_a_launch_body_starts_provider_extraction_under_the_launcher_it_chose_fo
 
     monkeypatch.setenv("RUNNER_TAG", "loaded-before-the-edit")
     host, tags, home = _tagging_launch_host(tmp_path, monkeypatch, "RUNNER_TAG=edited-since\n")
-    plugin_dir = home / "plugins" / "model-providers" / "hostmodel"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    _hosted_model_provider(home)
     try:
         with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
             host.ensure_started()
@@ -1447,10 +1438,7 @@ def test_a_hosted_model_provider_of_a_renamed_linked_profile_still_runs_after_a_
     from tests.waiting import wait_until
 
     target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
-    plugin_dir = target / "plugins" / "model-providers" / "hostmodel"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    _hosted_model_provider(target)
     profiles = tmp_path / "root" / "profiles"
     profiles.mkdir(parents=True)
     (profiles / "ops").symlink_to(target, target_is_directory=True)
@@ -1489,10 +1477,7 @@ def test_a_hosted_model_providers_address_names_the_installation_its_profiles_we
     from hermes_cli import plugin_host_profiles
 
     target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
-    plugin_dir = target / "plugins" / "model-providers" / "hostmodel"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    _hosted_model_provider(target)
     elsewhere = _home_with_plugins(tmp_path / "elsewhere", monkeypatch, {})
     link = tmp_path / "root" / "profiles" / "ops"
     link.parent.mkdir(parents=True)
@@ -1673,15 +1658,20 @@ register_provider(HostModel(name="hostmodel", base_url="https://hostmodel.exampl
 '''
 
 
+def _hosted_model_provider(home) -> None:
+    """Install ``MODEL_PROVIDER_PLUGIN`` as the model-provider plugin ``hostmodel`` under *home*."""
+    plugin_dir = home / "plugins" / "model-providers" / "hostmodel"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+
+
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_model_provider_profile_data_is_local_and_overrides_run_in_the_host(tmp_path, monkeypatch):
     import providers
 
     home = _home_with_plugins(tmp_path, monkeypatch, {})
-    plugin_dir = home / "plugins" / "model-providers" / "hostmodel"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    _hosted_model_provider(home)
     profile = providers.get_provider_profile("hostmodel")
     try:
         assert isinstance(profile, providers.ProviderProfile)

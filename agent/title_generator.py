@@ -666,6 +666,9 @@ def generate_title(
         )
         message = response.choices[0].message
         raw_title = _extract_title_text(message.content or "") or _title_from_reasoning(message)
+        if not raw_title and getattr(response.choices[0], "finish_reason", None) == "length":
+            # Thinking spent the whole output cap; without this the derived title just stays, unlogged.
+            logger.warning("Title generation hit the %d-token output cap before writing a title", TITLE_MAX_TOKENS)
         title = _clean_title(raw_title, user_snippet)
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not

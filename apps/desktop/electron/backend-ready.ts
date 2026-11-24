@@ -80,12 +80,25 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  * A single `cleanup()` tears down every listener (data/exit/error/timeout)
  * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
+ *
+ * @param child the spawned backend process; its stdout is watched
+ * @param timeoutMs how long to wait for the port line, from the start
+ * @param describeOutputTail returns recent output, appended to the
+ *   "exited before port announcement" error
+ * @param bufferedOutput returns what the spawn-time output tail already
+ *   consumed, scanned first so a port line or banner emitted before this
+ *   listener attached is not missed
+ * @param completionGraceMs once an update-completion banner appears, the
+ *   deadline becomes this long after the latest banner (real clock) instead
+ *   of `timeoutMs`, capped at SOURCE_COMPLETION_MAX_TOTAL_MS from the start.
+ *   Production uses the 5-minute default; tests pass a few ms.
  */
 function waitForDashboardPort(
   child,
   timeoutMs = resolvePortAnnounceTimeoutMs(),
   describeOutputTail = () => '',
-  bufferedOutput: () => string = () => ''
+  bufferedOutput: () => string = () => '',
+  completionGraceMs = SOURCE_COMPLETION_GRACE_MS
 ) {
   return new Promise((resolve, reject) => {
     // Seed the line buffer with any output the spawn-time tail already
@@ -108,7 +121,7 @@ function waitForDashboardPort(
 
     function completionDeadline() {
       return completionInProgress
-        ? Math.min(startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS, realNow() + SOURCE_COMPLETION_GRACE_MS)
+        ? Math.min(startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS, realNow() + completionGraceMs)
         : null
     }
 

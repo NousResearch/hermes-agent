@@ -4,10 +4,12 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { lockImporters } from '../../../scripts/build/pnpm-lock.mjs'
 import { isMain } from './utils.mjs'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
 import { prepareDmgbuild } from './prepare-dmgbuild.mjs'
+import { prepareElectronRuntime } from '../../../scripts/build/electron-runtime.mjs'
 
 /** @param {string} source @param {string} name @returns {string} */
 export function pinnedPackageRoot(source, name) {
@@ -20,9 +22,10 @@ export function pinnedPackageRoot(source, name) {
     directory = parent
   }
   const installed = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'))
-  const lock = JSON.parse(fs.readFileSync(path.join(source, 'package-lock.json'), 'utf8'))
-  const key = path.relative(source, directory).split(path.sep).join('/')
-  if (!lock.packages?.[key] || lock.packages[key].version !== installed.version || installed.name !== name) {
+  const desktop = lockImporters(fs.readFileSync(path.join(source, 'pnpm-lock.yaml'), 'utf8'))['apps/desktop'] ?? {}
+  const locked = desktop.devDependencies?.[name] ?? desktop.dependencies?.[name]
+  // A locked version carries its peer resolution as a suffix: 1.2.3(react@19.3.0).
+  if (!locked || locked.version.replace(/\(.*$/, '') !== installed.version || installed.name !== name) {
     throw new Error(`Installed ${name} is not the source's lock-pinned package; prepare Node dependencies first`)
   }
   return directory
@@ -35,11 +38,32 @@ export function packagingTargetArch(target) {
   throw new Error(`Packaging preparation requires a same-OS x64/arm64 target, got ${target}`)
 }
 
+/**
+ * The unpacked host Electron, refused unless it is the desktop lock's version and complete.
+ * @param {string} source @returns {string}
+ */
+function installedElectronDist(source) {
+  prepareElectronRuntime({ source, install: false })
+  return path.join(pinnedPackageRoot(source, 'electron'), 'dist')
+}
+
 /** @param {string} from @param {string} to @returns {string} */
 function copyTool(from, to) {
   fs.rmSync(to, { recursive: true, force: true })
   fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true })
   return to
+}
+
+/**
+ * electron-builder's bundled icon-tool.js is CommonJS (uses require()).
+ * The desktop package.json declares "type":"module", which would make Node
+ * treat icon-tool.js as a module and die with 'require is not defined in ES
+ * module scope'. The icons package.json overrides the parent type for that
+ * directory only, so the script runs as CommonJS (#132172).
+ * @param {string} out packaged tools output root
+ */
+export function markIconsToolsetCommonJS(out) {
+  fs.writeFileSync(path.join(out, 'icons', 'package.json'), '{"type":"commonjs"}\n')
 }
 
 /**
@@ -85,16 +109,25 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
     load('util/electronGet.js'), load('toolsets/7zip.js'), load('toolsets/icons.js'),
   ])
   const resourcesDir = path.join(source, 'apps/desktop', config.directories?.buildResources || 'build')
+  // An unpacked (dir) build neither archives nor converts icons (the committed .icns/.ico pass
+  // through), and on the host arch it can use the lock-verified runtime install.js already unpacked.
+  // Fetching those GitHub release assets anyway failed `--dir` whenever one of them 504'd.
+  const unpackedOnly = formats.every(format => format === 'dir')
+  const hostRuntime = unpackedOnly && packagingTargetArch(target) === process.arch
   const [archive, archiveTool, iconTools] = await Promise.all([
-    electronGet.downloadElectronArtifactZip({ version: config.electronVersion, platformName: process.platform, arch: packagingTargetArch(target),
-      artifactName: 'electron', cacheDir: path.join(cache, 'electron') }),
-    sevenZip.getPath7za(), icons.getIconsToolsetPath(config.toolsets?.icons, resourcesDir),
+    hostRuntime ? null : electronGet.downloadElectronArtifactZip({ version: config.electronVersion, platformName: process.platform,
+      arch: packagingTargetArch(target), artifactName: 'electron', cacheDir: path.join(cache, 'electron') }),
+    unpackedOnly ? null : sevenZip.getPath7za(),
+    unpackedOnly ? null : icons.getIconsToolsetPath(config.toolsets?.icons, resourcesDir),
   ])
-  const electron = copyTool(archive, path.join(out, 'electron.zip'))
+  const electron = hostRuntime ? copyTool(installedElectronDist(source), path.join(out, 'electron'))
+    : copyTool(/** @type {string} */ (archive), path.join(out, 'electron.zip'))
   /** @type {import('./prepared-packaging.mjs').PackagingToolsets} */
-  const toolsets = {
-    sevenZip: copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip')),
-    icons: copyTool(iconTools, path.join(out, 'icons')),
+  const toolsets = {}
+  if (archiveTool) toolsets.sevenZip = copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip'))
+  if (iconTools) {
+    toolsets.icons = copyTool(iconTools, path.join(out, 'icons'))
+    markIconsToolsetCommonJS(out)
   }
   let windows = null
   if (process.platform === 'win32') {

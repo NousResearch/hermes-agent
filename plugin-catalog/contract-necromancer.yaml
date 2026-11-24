@@ -1,0 +1,36 @@
+name: contract-necromancer
+title: Done only when your tests pass
+repo: https://github.com/vijaygopalbalasa/hermes-necromancer
+sha: "0ff7bec40aba10091a84f94025d4471984fd7386"
+description: "Hermes's done doesn't count until your tests pass. Type /necro freeze in your project: it finds your tests and the command that runs them, writes necro.toml, locks the test files and the settings that choose what runs by hash, and runs them once to say where they stand. When Hermes says it is finished, the plugin runs them itself at the verify step and sends Hermes back with the failing test named; the final reply says when Hermes was sent back and ends with a receipt anyone can re-check, also in a fresh clone (/necro verify: CONFIRMED, MISMATCH or SUPERSEDED). Edits to locked tests are blocked, and any change that gets through fails the check. Only a person can freeze: /necro is a slash command the agent cannot type, and from its shell freezing refuses. A prompt or skill can only ask the model to test its work; these hooks run whether it asks or not. Disclosure — runs the test commands in the project's frozen necro.toml (split into words, no shell; a command the person types after /necro freeze that uses shell syntax such as && or | is stored and run as sh -c) in the project folder with the user's permissions, unsandboxed, with a small environment (no API keys unless a contract names them), at /necro freeze, from pre_verify, from the final-reply hook when project files changed or the reply claims done, from the necro_check tool (the model can call it but cannot change the commands) and from /necro check; verify re-runs them only for a lock the person approved for that folder, or with --run; with no necro.toml, /necro freeze reads file names and test settings (package.json, pyproject.toml, setup.cfg, tox.ini, Cargo.toml) to pick the command, and may run that command's Python with -c \"import pytest\" in an empty folder (a project interpreter such as .venv/bin/python only when the person typed it); contracts run with the PATH of the Hermes process that runs the agent, minus Hermes's own runtime; reads project files to hash them but never opens credential files such as .env (their pins hold only presence, size and file times); never opens or follows a link (its pin is the link's own text); runs git ls-files with fsmonitor and hooks off and the same small environment; writes .necro/ and necro.toml in the project, and approval records plus the key that seals them (HMAC) under the plugin's data directory; adds NECRO_AGENT_SESSION to the environment of commands the agent runs; runs ps when someone runs freeze, approve or unfreeze from a shell; no network, no telemetry, no credentials, no background processes."
+maintainer: vijaygopalbalasa
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/vijaygopalbalasa/hermes-necromancer#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/vijaygopalbalasa/hermes-necromancer/0ff7bec40aba10091a84f94025d4471984fd7386/docs/img/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/vijaygopalbalasa/hermes-necromancer/0ff7bec40aba10091a84f94025d4471984fd7386/docs/img/real-run.png
+  - https://raw.githubusercontent.com/vijaygopalbalasa/hermes-necromancer/0ff7bec40aba10091a84f94025d4471984fd7386/docs/img/freeze.png
+  - https://raw.githubusercontent.com/vijaygopalbalasa/hermes-necromancer/0ff7bec40aba10091a84f94025d4471984fd7386/docs/img/blocked.png
+  - https://raw.githubusercontent.com/vijaygopalbalasa/hermes-necromancer/0ff7bec40aba10091a84f94025d4471984fd7386/docs/img/mismatch.png
+platforms: [linux, macos]
+readme: true
+known_issues:
+  - "Tested end to end on macOS with Hermes 0.23.1 and 0.22.7 (a scripted stand-in model drives the real agent loop, and a recorded run used a local qwen3 4B model); unit tests run in CI on Ubuntu and macOS; Windows is untested."
+  - "The verify gate is bounded by agent.max_verify_nudges (3 by default); after that the reply goes out stamped Not done."
+  - "Guard rails, not a sandbox: the guard stops the agent's ordinary routes early and the hashes are the backstop (a changed frozen file fails its test, a removed lock fails closed); a same-user process that sets out to evade both can still change files and approvals."
+  - "In a very large mixed-language repo, zero-config freeze locks every test-looking file under the listed sources, including tests the chosen runner never runs; list narrower sources in necro.toml to lock less."
+  - "Freeze, approve and unfreeze are done with /necro in the Hermes chat; from a shell they refuse (Hermes marks every hermes process as an agent harness) and say what to type instead."
+capabilities:
+  provides_tools:
+    - necro_status
+    - necro_check
+  provides_hooks:
+    - pre_verify
+    - transform_llm_output
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

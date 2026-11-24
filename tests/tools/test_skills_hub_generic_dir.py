@@ -24,8 +24,10 @@ def _index_source(row, github, monkeypatch):
     return src
 
 
-@patch("tools.skills_hub.httpx.get")
-def test_finds_single_generic_skills_directory_when_slug_is_stale(mock_get):
+@patch("tools.skills_hub.check_website_access", return_value=None)
+@patch("tools.skills_hub.is_safe_url", return_value=True)
+@patch("tools.skills_hub._ssrf_safe_http_get")
+def test_finds_single_generic_skills_directory_when_slug_is_stale(mock_get, _safe, _policy):
     """A lone ``skills/SKILL.md`` answers for a stale slug; a lone NAMED skill (``skills/bar``) never does."""
     auth = MagicMock(spec=GitHubAuth)
     auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}

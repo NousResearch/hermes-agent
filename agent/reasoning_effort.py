@@ -35,6 +35,7 @@ CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
+GPT62_MODEL_IDS: frozenset[str] = frozenset({"gpt-6.2-astra", "gpt-6.2-sol"})
 #: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
 GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
 #: GPT-6.1 Sol takes Astra's ``low..max`` ladder (``none`` 400s, live 2026-09-29) without Astra's
@@ -92,6 +93,19 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 #: Gemini 4 (``gemini-4-argon``) ``thinkingLevel``: thinking cannot be disabled, ``minimal`` and
 #: ``thinkingBudget`` 400 (live on Vertex global, 2026-10-13).
 GEMINI4_THINKING_LEVELS: tuple[str, ...] = ("low", "medium", "high")
+#: Gemini 4 models with a fourth ``xhigh`` level (Argon and Carbon answer 400 to it), on AI Studio and Vertex.
+GEMINI4_XHIGH_MODELS: tuple[str, ...] = ("gemini-4-hydrogen", "gemini-4-neon")
+
+
+def gemini_top_thinking_level(model: Optional[str], reasoning_config: object, thinking_config: dict) -> dict:
+    """``thinking_config`` with ``xhigh`` for the efforts above ``high`` on the models that take it (the shared
+    Gemini 4 mapping stops at ``high``). The gemini and vertex profiles both apply it before shaping the wire."""
+    name = (model or "").strip().lower().removeprefix("google/")
+    effort = str(reasoning_config.get("effort") or "").strip().lower() if isinstance(reasoning_config, dict) else ""
+    above_high = effort in EFFORT_LADDER and EFFORT_LADDER.index(effort) >= EFFORT_LADDER.index("xhigh")
+    if name.startswith(GEMINI4_XHIGH_MODELS) and above_high and thinking_config.get("thinkingLevel") == "high":
+        return {**thinking_config, "thinkingLevel": "xhigh"}
+    return thinking_config
 
 
 def is_astra_model(model: Optional[str]) -> bool:
@@ -104,7 +118,7 @@ def is_astra_model(model: Optional[str]) -> bool:
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    if is_astra_model(model) or bare.startswith(NO_DISABLE_TIER_PREFIXES):
+    if is_astra_model(model) or bare in GPT62_MODEL_IDS or bare.startswith(NO_DISABLE_TIER_PREFIXES):
         return CODEX_ASTRA_EFFORTS
     return (
         CODEX_GPT56_EFFORTS
@@ -159,27 +173,39 @@ def clamp_effort(
 
 def route_supported_efforts(
     provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> tuple[str, ...]:
     """Levels the (provider, model) route's ENTRY clamp accepts: the Codex/OpenAI Responses set per
-    model generation, else the widest OpenAI-compatible vocabulary (narrower providers clamp again
-    downstream, never upward). On the Codex app-server runtime ``ultra`` is codex's own harness mode,
-    accepted wherever the model's ladder reaches ``max`` (codex runs it at ``max``; a model without
-    ``max`` rejects it), so it is sent verbatim there."""
+    model generation, the levels a managed local model's chat template accepts, else the widest
+    OpenAI-compatible vocabulary (narrower providers clamp again downstream, never upward). On the
+    Codex app-server runtime ``ultra`` is codex's own harness mode, accepted wherever the model's
+    ladder reaches ``max`` (codex runs it at ``max``; a model without ``max`` rejects it), so it is
+    sent verbatim there."""
     if (provider or "").strip().lower() == "openai-codex":
         supported = codex_supported_efforts(model)
         return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
-    return OPENAI_COMPAT_WIRE_EFFORTS
+    from hermes_cli.local_runtime.capabilities import managed_reasoning_efforts
+    local = managed_reasoning_efforts(provider or "", base_url or "", model or "")
+    # llama-server turns thinking off for ``none`` itself, so a chat template never sees that level.
+    return ("none", *local) if local else OPENAI_COMPAT_WIRE_EFFORTS
+
+
+def chat_endpoint_efforts(model: Optional[str], base_url: Optional[str]) -> tuple[str, ...]:
+    """Levels an OpenAI-compatible chat request to ``base_url`` may carry for ``model``. The endpoint
+    decides, whatever provider name the route carries: the managed local server answers with the
+    levels the model's chat template accepts, every other endpoint with the OpenAI-compatible set."""
+    return route_supported_efforts("custom", model, None, base_url)
 
 
 def effort_display_label(
     effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
-    api_mode: Optional[str] = None,
+    api_mode: Optional[str] = None, base_url: Optional[str] = None,
 ) -> str:
     """Picker / ``/reasoning`` status label for a ladder level: the level itself when the route sends
     it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
     ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
     requested = str(effort or "").strip().lower()
-    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode))
+    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode, base_url))
     return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
 
 

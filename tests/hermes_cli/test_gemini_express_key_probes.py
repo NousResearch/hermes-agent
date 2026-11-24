@@ -77,7 +77,7 @@ def test_dashboard_gemini_key_probe_keeps_aq_keys_on_the_studio_host(monkeypatch
     assert out["ok"] is True
     assert seen["url"] == _STUDIO_MODELS
     assert seen["headers"]["x-goog-api-key"] == body.value
-    assert "key" not in seen["params"]
+    assert not seen.get("params")
 
 
 @pytest.mark.parametrize("launch_source", ["env", "dotenv"])
@@ -131,4 +131,4 @@ def test_dashboard_gemini_probe_uses_each_profiles_base(tmp_path, monkeypatch, l
         assert url == expected
         assert kwargs["headers"]["x-goog-api-key"] == payload["value"]
         assert "Authorization" not in kwargs["headers"]
-        assert "key" not in kwargs["params"]
+        assert not kwargs.get("params")

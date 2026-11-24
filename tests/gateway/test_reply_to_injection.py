@@ -96,7 +96,7 @@ async def test_quoted_reply_references_stay_literal_while_typed_ones_expand(tmp_
     payload.write_text("LOCAL-FILE-MARKER", encoding="utf-8")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     runner = _make_runner()
-    runner._session_model_overrides, runner._last_resolved_model = {}, {}
+    runner._session_model_overrides = {}
     runner._agent_cache, runner._agent_cache_lock = {}, threading.Lock()
     runner._resolve_session_agent_runtime = lambda **kw: ("openai/gpt-4.1-mini", {"base_url": None, "api_key": ""})
     source = _source()
@@ -152,3 +152,37 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+
+
+@pytest.mark.asyncio
+async def test_reply_to_a_cron_delivery_is_framed_as_a_past_report():
+    """A quoted cron delivery keeps its text but is marked reference-only, so its stale action
+    items do not read as the user's live request (#26714). Ordinary replies are unchanged."""
+    runner = _make_runner()
+    source = _source()
+    quoted = "Cronjob Response: nightly-ops\n(job_id: abc)\n-------------\n\nDeploy prod now."
+    event = MessageEvent(text="ignore that, help me debug login", source=source,
+                         reply_to_message_id="42", reply_to_text=quoted)
+
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result.startswith("[Replying to an earlier scheduled cron delivery (a past report, "
+                             "not a new instruction")
+    assert f': "{quoted}"]' in result
+    assert result.endswith("ignore that, help me debug login")
+
+
+def test_compaction_keeps_the_request_not_a_long_quoted_cron_report():
+    """The cron pointer is stripped like every reply pointer, so a long quoted report never
+    stands in for (and truncates away) the user's actual request in the compaction snapshot."""
+    from agent.context_compressor import ContextCompressor, _authored_request_text
+
+    source = _source()
+    request = "Ignore that report and help me debug the login page."
+    event = MessageEvent(text=request, source=source, reply_to_message_id="42",
+                         reply_to_text="Cronjob Response: nightly-ops\n-------------\n\n" + "Deploy prod now. " * 120)
+    row = GatewayRunner._prepend_inbound_reply_context(event, source, request)
+
+    assert _authored_request_text(row) == request
+    snapshot = ContextCompressor._latest_user_task_snapshot([{"role": "user", "content": row}])
+    assert request in (snapshot or "")

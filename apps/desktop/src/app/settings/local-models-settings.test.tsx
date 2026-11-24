@@ -244,6 +244,21 @@ describe('LocalModelsSettings', () => {
       expect(detail).toBeTruthy()
     }
   )
+  it.each([
+    ['b10000', /newer llama\.cpp build \(b10290\).*you're on b10000/i],
+    ['b10290', /llama\.cpp b10290 with files it needs to run.*downloads the engine again/i]
+  ])('describes an engine update from %s to b10290 by what it downloads', async (tag, detail) => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      tag,
+      runtime_installed: true,
+      update_available: true,
+      models: [{ id: 'Qwen3.6-27B-UD-Q4_K_XL', size_bytes: 17 * 2 ** 30, size_label: '17.6 GB' }]
+    })
+    renderPane()
+
+    expect(await screen.findByText(detail)).toBeTruthy()
+  })
   it('keeps a failed explicit update visible with a direct retry and no staged models', async () => {
     mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true, update_available: true })
     setInstallStarting(true)

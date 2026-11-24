@@ -148,7 +148,7 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
     # A pre-registered client owns its pinned listener inside the SDK; the receiver picker must
     # publish that URI without attempting a second bind.
     pinned = DashboardOAuthFlow(
-        "pinned", "asana", None, str(get_hermes_home()), ""
+        "pinned", "asana", str(get_hermes_home()), ""
     )
     pinned_bound = []
     monkeypatch.setattr(
@@ -187,7 +187,6 @@ def _make_session(session_id="sess-relay-1", server="hosp", state="s3cr3tstate")
     flow = DashboardOAuthFlow(
         flow_id=session_id,
         server_name=server,
-        profile=None,
         hermes_home=str(get_hermes_home()),
         redirect_uri="http://127.0.0.1:9000/callback",
     )

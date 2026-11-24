@@ -31,7 +31,7 @@ import type { AgentProfileRoute } from '@/store/profile'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
-import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
+import { SIDEBAR_FOCUS_VISIBLE, SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
@@ -84,15 +84,19 @@ function SidebarSectionHeader({
     <div className="group/section flex shrink-0 items-center justify-between gap-1 pb-1 pt-1.5">
       {collapsible ? (
         <button
+          aria-expanded={open}
           // min-w-0 lets the label truncate at narrow sidebar widths instead of
           // pushing the header's trailing action icons out of view.
-          className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-left leading-none"
+          className={cn(
+            'group/section-label flex w-fit min-w-0 items-center gap-1 rounded-sm bg-transparent text-left leading-none',
+            SIDEBAR_FOCUS_VISIBLE
+          )}
           onClick={onToggle}
           type="button"
         >
           {labelBody}
           <DisclosureCaret
-            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100 group-focus-visible/section-label:opacity-100"
             open={open}
           />
         </button>
@@ -112,7 +116,9 @@ interface SidebarSessionsSectionProps {
   activeSessionId: null | string
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  /** `session` is the clicked row: its `archived` flag is what the menu
+   *  showed, so it decides Archive vs Unarchive. */
+  onArchiveSession: (sessionId: string, session?: SessionInfo) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
@@ -283,7 +289,7 @@ export function SidebarSessionsSection({
         card,
         isPinned: pinned,
         isSelected: session.id === activeSessionId,
-        onArchive: () => onArchiveSession(session.id),
+        onArchive: () => onArchiveSession(session.id, session),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),

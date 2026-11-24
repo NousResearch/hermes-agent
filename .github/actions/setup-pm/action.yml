@@ -1,8 +1,8 @@
 name: Set up the locked PM toolchain
-description: Install Python/uv and Node/npm from pm/lock.json; cache tools and dependency downloads.
+description: Install Python/uv and Node/npm/pnpm from pm/lock.json; cache tools and dependency downloads.
 inputs:
   toolchain:
-    description: python (Python and uv), node (Node and npm), or all.
+    description: python (Python and uv), node (Node, npm and pnpm), or all.
     default: python
   packages:
     description: Comma-separated extra PM tools to install beyond the toolchain roots (e.g. ffmpeg). Rides the tools cache like npm/uv.
@@ -32,19 +32,24 @@ inputs:
     description: Save the uv cache on success. Set false for restore-only jobs.
     default: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
   cache-node:
-    description: Cache npm downloads; never cache node_modules.
+    description: Cache the package manager's downloads; never cache node_modules.
     default: 'true'
   save-node-cache:
-    description: Save the npm cache on success. Set false for restore-only jobs.
+    description: Save the node cache on success. Set false for restore-only jobs.
     default: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
   python-cache-dependency-glob:
     description: Dependency files that invalidate the uv cache.
     default: |
       pyproject.toml
       uv.lock
+  node-package-manager:
+    description: Whose downloads the node cache holds; pnpm (the workspace) or npm (website/ and the other standalone npm projects).
+    default: pnpm
   node-cache-dependency-path:
-    description: npm lockfiles that invalidate the npm download cache; supports multiline globs.
-    default: package-lock.json
+    description: Files that invalidate the node download cache; supports multiline globs.
+    default: |
+      pnpm-lock.yaml
+      pnpm-workspace.yaml
   prune-python-cache:
     description: Use uv cache prune --ci before automatic saves. Explicit bundle saves preserve downloaded wheels.
     default: 'false'
@@ -64,6 +69,15 @@ outputs:
   npm-version:
     description: Locked npm version.
     value: ${{ steps.prepare.outputs.npm-version }}
+  pnpm-version:
+    description: Locked pnpm version.
+    value: ${{ steps.prepare.outputs.pnpm-version }}
+  just-version:
+    description: Locked just version (empty when pm/lock.json pins no just).
+    value: ${{ steps.prepare.outputs.just-version }}
+  just-path:
+    description: The installed just binary (empty when pm/lock.json pins no just).
+    value: ${{ steps.install.outputs.just-path }}
   python-path:
     description: Interpreter for subsequent steps, including requested extras.
     value: ${{ steps.dependencies.outputs.python-path || steps.install.outputs.python-path }}
@@ -80,7 +94,7 @@ outputs:
     description: Exact uv dependency cache hit.
     value: ${{ steps.python-cache.outputs.cache-hit || steps.python-cache-restore.outputs.cache-hit }}
   node-cache-hit:
-    description: Exact npm dependency cache hit.
+    description: Exact node dependency cache hit.
     value: ${{ steps.node-cache.outputs.cache-hit || steps.node-cache-restore.outputs.cache-hit }}
 runs:
   using: composite
@@ -179,34 +193,36 @@ runs:
         cache: ${{ steps.install.outputs.uv-cache-path }}
         lock-source: ${{ github.workspace }}
 
-    - name: Require an npm dependency lock for caching
+    - name: Require a dependency lock for caching
       if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && hashFiles(inputs.node-cache-dependency-path) == ''
       shell: bash
       run: |
-        printf '%s\n' '::error::No npm lock matched node-cache-dependency-path.'
+        printf '%s\n' '::error::No lock matched node-cache-dependency-path.'
         exit 1
 
-    - name: Cache npm dependency downloads
+    # pnpm's content-addressed store, or npm's download cache for the standalone
+    # npm projects.
+    - name: Cache node dependency downloads
       id: node-cache
       if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && inputs.save-node-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.install.outputs.npm-cache-path }}
-        key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
+        path: ${{ inputs.node-package-manager == 'npm' && steps.install.outputs.npm-cache-path || steps.install.outputs.pnpm-store-path }}
+        key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-${{ inputs.node-package-manager }}-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
         # A lockfile bump misses the exact key, but the previous download set
-        # is still mostly valid — npm verifies every tarball it reinstalls.
+        # is still mostly valid — both verify every package they reinstall.
         restore-keys: |
-          node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-
+          node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-${{ inputs.node-package-manager }}-
 
-    - name: Restore npm dependency downloads
+    - name: Restore node dependency downloads
       id: node-cache-restore
       if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && inputs.save-node-cache == 'false'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.install.outputs.npm-cache-path }}
-        key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
+        path: ${{ inputs.node-package-manager == 'npm' && steps.install.outputs.npm-cache-path || steps.install.outputs.pnpm-store-path }}
+        key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-${{ inputs.node-package-manager }}-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
         restore-keys: |
-          node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-
+          node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-${{ inputs.node-package-manager }}-
 
     - name: Install the requested Python dependencies through PM
       id: dependencies

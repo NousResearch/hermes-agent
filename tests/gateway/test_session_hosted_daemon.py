@@ -113,6 +113,126 @@ def test_native_room_service_local_member_and_restart(tmp_path):
         model.shutdown(); model.server_close()
 
 
+def test_existing_room_member_switches_off_exhausted_provider(tmp_path):
+    import sqlite3
+
+    from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Raw, Text
+    from tests.fakes.providers.catalog_oauth import make_jwt
+
+    root = Path(__file__).resolve().parents[2]
+    home, user = tmp_path / 'state', tmp_path / 'user'
+    user.mkdir()
+    member_home = home / 'profiles' / 'helper'
+    member_home.mkdir(parents=True)
+    old_model = 'deepseek/deepseek-v4.1-flash-1017'
+    new_model = 'local-model'
+    token = make_jwt('room-quota')
+    quota = Raw(json.dumps({
+        'status': 402, 'code': 'usage_window_and_credits_exhausted',
+        'message': 'Included usage is exhausted', 'display_message': 'Daily limit reached',
+    }), status=402)
+    exhausted = False
+
+    def old_reply(_request):
+        return quota if exhausted else Text('ORIGINAL_ROOM_REPLY')
+
+    def member_session():
+        with sqlite3.connect(member_home / 'state.db') as db:
+            session, = db.execute(
+                "SELECT id FROM sessions WHERE source = 'bot_room' AND title = 'Group: switch-room'"
+            ).fetchall()
+        return session[0]
+
+    with (FakeLLMServer(old_reply, api_key=token) as nous,
+          FakeLLMServer([Error(status=400, message='Local request rejected'), Text('REPLACEMENT_ROOM_REPLY')],
+                        api_key='local-only') as local):
+        config = {
+            'gateway': {'multiplex_profiles': True},
+            'hosted_rooms': {'profiles': {'helper': str(member_home)}},
+            'model': {'provider': 'nous', 'default': old_model, 'context_length': 128000},
+            'platform_toolsets': {'gui': ['terminal']},
+            'auxiliary': {'title_generation': {'enabled': False}},
+            'terminal': {'cwd': str(home)},
+        }
+        profile_config = member_home / 'config.yaml'
+        for profile in (home, member_home):
+            (profile / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
+            (profile / 'auth.json').write_text(json.dumps({
+                'version': 1, 'providers': {'nous': {
+                    'access_token': token, 'agent_key': token, 'scope': 'inference:invoke',
+                }},
+            }), encoding='utf-8')
+            (profile / '.env').write_text(
+                f'NOUS_INFERENCE_BASE_URL={nous.base_url}\n'
+                f'HERMES_PORTAL_BASE_URL={nous.base_url.removesuffix("/v1")}\n', encoding='utf-8')
+        env = child_env() | dict(
+            HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
+            HERMES_SHARED_AUTH_DIR=str(tmp_path / 'shared-auth'),
+            HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1',
+            NO_PROXY='127.0.0.1,localhost',
+        )
+
+        async def run_room(desc):
+            nonlocal exhausted
+            async with websocket(home, desc) as ws:
+                created = await rpc(ws, 'groups.create', room_id='switch-room', name='Switch room', members=[
+                    {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
+                    {'member_id': 'helper', 'profile': 'helper', 'handle': 'helper'},
+                ])
+                assert 'result' in created, created
+
+                async def turn(marker):
+                    sent = await rpc(ws, 'groups.send', room_id='switch-room', event_id=marker,
+                                     payload={'text': f'@helper {marker}', 'thread_id': 'thread'})
+                    assert sent['result']['accepted'], sent
+                    event_id = sent['result']['event']['event_id']
+                    deadline = time.monotonic() + 45
+                    while True:
+                        log = await rpc(ws, 'groups.log', room_id='switch-room')
+                        events = log['result']['events']
+                        for event in events:
+                            if (event['kind'] in ('turn.settled', 'turn.failed')
+                                    and event['payload']['discussion_event_id'] == event_id):
+                                return event
+                        assert time.monotonic() < deadline, events
+                        await asyncio.sleep(.1)
+
+                assert (await turn('warm-room-history'))['kind'] == 'turn.settled'
+                sid = member_session()
+                exhausted = True
+                refused = await turn('quota-refusal')
+                assert refused['kind'] == 'turn.failed', refused
+                assert 'Daily limit reached' in refused['payload']['error']
+
+                replacement = config | {
+                    'model': {'provider': 'local-test', 'default': new_model},
+                    'providers': {'local-test': {
+                        'base_url': local.base_url, 'api_key': 'local-only', 'api_mode': 'chat_completions',
+                    }},
+                    # Model changes must not re-read the member's frozen toolset or lift its clarify ban.
+                    'platform_toolsets': {'gui': [], 'bot_room': []},
+                }
+                profile_config.write_text(json.dumps(replacement), encoding='utf-8')
+                old_count = len(nous.main_requests())
+                switched = await turn('after-profile-edit')
+                assert switched['kind'] == 'turn.failed', switched
+                assert 'Local request rejected' in switched['payload']['error']
+                recovered = await turn('retry-local-provider')
+                assert recovered['kind'] == 'turn.settled', recovered
+                assert len(nous.main_requests()) == old_count
+                requests = local.main_requests()
+                assert len(requests) == 2
+                assert all(request['model'] == new_model for request in requests)
+                request = requests[-1]
+                assert 'ORIGINAL_ROOM_REPLY' in json.dumps(request['messages'])
+                names = {tool['function']['name'] for tool in request['tools']}
+                assert 'terminal' in names and 'clarify' not in names
+                assert member_session() == sid
+
+        with daemon(root, home, env, barrier=False) as (_, desc):
+            asyncio.run(run_room(desc))
+
+
 def test_room_unknown_discard_releases_only_its_followers(tmp_path):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'

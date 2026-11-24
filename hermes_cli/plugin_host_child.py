@@ -14,6 +14,7 @@ plugin lands in the host log instead of corrupting the wire.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import importlib
 import importlib.metadata
@@ -36,6 +37,11 @@ from hermes_cli.plugin_host_wire import (
 logger = logging.getLogger("hermes_cli.plugin_host_child")
 
 _ENTRY_POINTS_GROUP = "hermes_agent.plugins"
+
+# The plugin whose code this request runs (its ``plugin_key``) and the load it runs in: bound per incoming
+# request, so it follows that code onto the host loop's tasks; a thread the plugin starts itself has none.
+_EXECUTING_PLUGIN: contextvars.ContextVar[tuple[str, Optional[int]]] = contextvars.ContextVar(
+    "plugin_host_executing", default=("", None))
 
 
 class RemoteRegistration:
@@ -135,6 +141,7 @@ class HostRuntime:
         self._lock = threading.Lock()
         self.unload_callbacks: dict[str, list[Callable[[], Any]]] = {}
         self.modules: dict[str, str] = {}
+        self.loads: dict[str, Optional[int]] = {}  # plugin_key -> its current load, as Hermes numbered it
         self.asgi_apps: dict[str, Any] = {}
         self.profiles: dict[str, dict[str, Any]] = {}
         self.instance_modules: dict[str, Any] = {}
@@ -210,6 +217,14 @@ class HostRuntime:
         return self._send_call("facade", plugin_key, {"facade": facade, "method": method, "probe": _probe,
                                                       "args": args, "kwargs": kwargs}, allow_objects=False)
 
+    def session_event(self, plugin_id: str, session_id: str, event: str, payload: dict) -> Any:
+        """``emit_plugin_session_event`` in the gateway process, which holds the sessions, sent as the
+        plugin whose code is running (``plugin``). ``payload`` is already plain JSON, so it travels as
+        is (no ``encode``: its keys are the plugin's own)."""
+        plugin, load = _EXECUTING_PLUGIN.get()
+        return self.channel.call("session_event", {"plugin": plugin, "load": load, "plugin_id": plugin_id,
+                                                   "session_id": session_id, "event": event, "payload": payload})
+
     def spawn(self, coro: Any, *, name: Optional[str] = None) -> Any:
         if not inspect.iscoroutine(coro):
             raise TypeError("spawn_task() requires a coroutine object")
@@ -220,7 +235,13 @@ class HostRuntime:
         handler = _HANDLERS.get(method)
         if handler is None:
             raise ValueError(f"unknown plugin host request {method!r}")
-        return handler(self, params)
+        ref = params.get("ref")
+        plugin = str(params.get("plugin_key") or "") if ref is None else self.owners.get(int(ref), "")
+        token = _EXECUTING_PLUGIN.set((plugin, params["load"] if "load" in params else self.loads.get(plugin)))
+        try:
+            return handler(self, params)
+        finally:
+            _EXECUTING_PLUGIN.reset(token)
 
     def _run(self, result: Any) -> Any:
         """Await plugin coroutines on the host loop, still attributed to the request being served
@@ -252,6 +273,7 @@ class HostRuntime:
             raise AttributeError(f"Plugin '{params.get('name')}' has no register() function")
         module_name = getattr(target, "__name__", None) or getattr(register, "__module__", None)
         self.modules[plugin_key] = str(module_name or "")
+        self.loads[plugin_key] = params.get("load")
         self._run(register(RemotePluginContext(self, plugin_key, params)))
         return {"module": module_name}
 
@@ -266,6 +288,7 @@ class HostRuntime:
         if module is None:
             module = self.instance_modules[str(params["path"])] = _import_plugin(params)
         self.modules[plugin_key] = module.__name__
+        self.loads[plugin_key] = params.get("load")
         base = _import_base(str(params["base"]))
         capture = str(params["capture"])
         captured: list[Any] = []
@@ -403,6 +426,7 @@ class HostRuntime:
             for ref in [r for r, owner in self.owners.items() if owner == plugin_key]:
                 self.refs.pop(ref, None)
                 self.owners.pop(ref, None)
+        self.loads.pop(plugin_key, None)
         module_name = self.modules.pop(plugin_key, "")
         if module_name:
             for name in [m for m in sys.modules if m == module_name or m.startswith(module_name + ".")]:
@@ -454,12 +478,15 @@ def _import_base(ref: str) -> type:
 def _provider_base(value: Any) -> Optional[type]:
     """The provider ABC (``HOST_OBJECT_BASES``) ``value`` implements. Only an already-imported base
     can match: a plugin object subclassing it imported it."""
+    from hermes_agent.compat.finder import current_name
+    from hermes_agent.compat.moves import MOVES
     from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
     for ref in HOST_OBJECT_BASES.values():
         module, attr = ref.split(":")
-        base = getattr(sys.modules.get(module), attr, None)
-        if isinstance(base, type) and isinstance(value, base):
-            return base
+        for name in (module, current_name(module, MOVES)):
+            base = getattr(sys.modules.get(name), attr, None)
+            if isinstance(base, type) and isinstance(value, base):
+                return base
     return None
 
 
@@ -597,9 +624,13 @@ def extract_profiles_main(path: str, module_name: str) -> int:
 def main() -> int:
     reader, writer = _take_protocol_streams()
     import hermes_bootstrap
-    logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
-                        format="%(levelname)s %(name)s: %(message)s")
+    from hermes_logging import DisplayNameFormatter
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(DisplayNameFormatter("%(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(handlers=[stderr_handler], level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"))
     runtime = HostRuntime(reader, writer)
+    from hermes_cli import plugin_events
+    plugin_events._session_event_forwarder = runtime.session_event
     runtime.channel.start()
     runtime.stopped.wait()
     runtime.channel.close("host shutdown")

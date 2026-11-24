@@ -1,0 +1,22 @@
+name: living-field
+title: Living Field
+repo: https://github.com/abuz8studios-ship-it/hermes-living-field
+sha: d727be944518ab562857c61e1db4a0dc62ae742a
+description: >-
+  Hermes Desktop pane of the ABUZ8 living spatial field. Four domains and a
+  seeded neural field. Synapses speed up only while the focused session is
+  actually working, and the field dims when the gateway socket is not open.
+  No network, no shell, no fabricated metrics.
+maintainer: abuz8studios-ship-it
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+docs_url: https://github.com/abuz8studios-ship-it/hermes-living-field
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

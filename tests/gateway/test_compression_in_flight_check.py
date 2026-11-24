@@ -1,5 +1,6 @@
 """#5 regression: _session_has_compression_in_flight must offload both blocking sources to thread pool."""
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,18 +17,17 @@ def _make_runner(holder_value=None, record_thread=False, thread_sink=None):
     store._ensure_loaded_locked = lambda: None
     runner.session_store = store
 
-    raw_db = MagicMock()
+    coordination = MagicMock()
     if record_thread and thread_sink is not None:
-        def _holder(sid):
+        def _holder(*, session_id):
             thread_sink["thread"] = threading.get_ident()
             return holder_value
-        raw_db.get_compression_lock_holder = _holder
+        coordination.get_compression_lock_holder = _holder
     else:
-        raw_db.get_compression_lock_holder = MagicMock(return_value=holder_value)
+        coordination.get_compression_lock_holder = MagicMock(return_value=holder_value)
 
-    session_db = MagicMock()
-    session_db._db = raw_db
-    runner._session_db = session_db
+    # The runner's storage handle is borrowed from its session store.
+    store.persistence = SimpleNamespace(coordination=coordination)
     return runner
 
 

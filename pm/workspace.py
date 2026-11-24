@@ -10,12 +10,12 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from pm.environment import PythonEnvironment
+    from pm.environment import PythonEnvironment  # noqa: TID251
 
 from pm import paths
 from pm.package import InstallError
@@ -31,7 +31,7 @@ def _member_ignored(directory, names):
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
-from pm.environment import ResolutionConflict, classify_uv_failure
+from pm.environment import ResolutionConflict, classify_uv_failure  # noqa: TID251
 
 
 def member_sources(plugin_dirs) -> dict[Path, Path]:
@@ -86,6 +86,9 @@ def _published_store_entries(directory: Path) -> frozenset[str]:
     return frozenset(name for name in names if (directory / name).is_dir())
 
 
+_ROOT_DATA_DIRS = frozenset({"locales", "skills", "optional-skills", "plugin-catalog", "optional-mcps"})
+
+
 def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
     import fnmatch
@@ -94,8 +97,11 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     metadata = tomllib.loads((source / "pyproject.toml").read_text(encoding="utf-8-sig"))
     project = metadata.get("project", {})
     setuptools = metadata.get("tool", {}).get("setuptools", {})
-    patterns = setuptools.get("packages", {}).get("find", {}).get("include", ["*"])
+    find = setuptools.get("packages", {}).get("find", {})
+    patterns = find.get("include", ["*"])
     package_roots = {pattern.split(".", 1)[0] for pattern in patterns}
+    # A ``where`` root (``src``) holds packages the include patterns name below it, not by its own name.
+    where_roots = {Path(where).parts[0] for where in find.get("where", ["."]) if Path(where).parts}
     files = {"pyproject.toml", "setup.py", "setup.cfg"}
     readme = project.get("readme")
     if isinstance(readme, str):
@@ -117,10 +123,17 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         return [name for name in names if name in nested_excluded or name.startswith(".")
                 or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
+    # Runtime data dirs ride the same one-pass directory sweep: they are read beside the
+    # project root (agent/i18n.py, tools/skills_sync.py, hermes_cli/plugin_catalog.py,
+    # hermes_cli/mcp_catalog.py), not as package data, and are deliberately not setuptools
+    # packages. Naming them here keeps a single copy even when the include patterns (or their
+    # ["*"] default) already match — a second pass would collide with the copied directory.
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
-                and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
+                and (entry.name in where_roots
+                     or entry.name in _ROOT_DATA_DIRS
+                     or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
             shutil.copytree(entry, target, ignore=ignore)
     for name in files:
@@ -162,6 +175,10 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        # A member requirement naming core (a selected extra's ``hermes-agent[x] @ git+…``)
+        # names a workspace member, which uv refuses without a source; root sources apply
+        # to every member, renamed virtual ones included.
+        uv_policy.setdefault("sources", {})[document["project"]["name"]] = {"workspace": True}
         _solve_only_for(uv_policy, target)
         text = tomli_w.dumps(document)
     else:
@@ -290,20 +307,18 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
 def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
     """Keep every selected member or refuse an incompatible selection.
 
-    A member whose requires_hermes rejects the running version sits out instead: the
-    verdict is only as good as our version identity (an untagged source checkout reads
-    as an older release), the loader skips that plugin anyway, and the member rejoins
-    as soon as the verdict flips. Enabling one is still refused at admission.
+    A member that does not accept the running Hermes (``hermes_fit_error``) sits out instead:
+    the verdict is only as good as our version identity (an untagged source checkout reads
+    as an older release), the loader skips that plugin anyway, and the member rejoins as
+    soon as the verdict flips. Enabling one is still refused at admission. Judged with no
+    core extra selected; ``build_member_dirs`` adds the extras a build selects.
     """
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
     members = []
     for path in selected:
-        # Per plugin: with none selected, PM must not import the application's manifest module.
-        from hermes_cli.plugins_manifest import requires_hermes_error
-
         declaration = read_python_declaration(path)
-        if requires_hermes_error(declaration.manifest):
+        if hermes_fit_error(declaration, ()):
             continue
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
@@ -311,6 +326,17 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
         if declaration.installs_packages:
             members.append(path)
     return members
+
+
+def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list[Path]:
+    """``enabled_member_dirs`` for a build selecting core *extras*: a plugin extra they select
+    can add a ``hermes-agent`` requirement the running Hermes misses, which sits out too.
+    A build passes its interpreter *python*, whose markers the generation (and so the loader)
+    sees; PM itself may run under a bootstrap Python."""
+    extras, members = list(extras), enabled_member_dirs()
+    target = _target_environment(python) if members and python is not None else None
+    return [path for path in members
+            if not core_requirement_error(read_python_declaration(path), extras, target)]
 
 
 def _member_key(identity: Path) -> str:
@@ -519,6 +545,70 @@ def _runtime_member_metadata(document: dict, extras: Iterable[str],
     return changed
 
 
+def _recorded_extras() -> list[str]:
+    """The extras of the generation this install selected: what a gate asked outside a build
+    (admission, the loader) evaluates a plugin's extras under."""
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+
+    extras = (Facts(runtime_facts_path(paths.repo_root())).get("venv") or {}).get("extras")
+    return [extra for extra in extras if isinstance(extra, str)] if isinstance(extras, list) else []
+
+
+def core_requirement_error(declaration, extras: Iterable[str] | None = None,
+                           target: Mapping[str, str] | None = None) -> Optional[str]:
+    """Why the plugin's applicable requirement on ``hermes-agent`` rejects the running Hermes.
+
+    PM satisfies ``hermes-agent`` from the checkout itself: a runtime requirement naming it is
+    dropped, and a selected extra naming it binds to the workspace root, where uv ignores the
+    specifier. So the specifier is judged here, PEP 440 like any requirement, under *extras*
+    (the core extras the build selects; ``None`` reads the recorded selection) and the markers
+    of *target* (the installing interpreter; ``None`` is this process, which the loader runs
+    in). The identity is the one ``requires_hermes`` reads (the committed pyproject version is
+    a placeholder); with none (``unknown``) nothing is judged. It is read only for a plugin
+    that names core: the read walks git, and every plugin passes here at startup.
+    """
+    import tomllib
+
+    from packaging.markers import default_environment
+    from packaging.version import InvalidVersion, Version
+
+    from hermes_cli.plugins_manifest import running_hermes_version
+    from pm.install import _extra_key
+
+    if declaration.external:
+        return None
+    environment = default_environment() if target is None else target
+    specs, installed = list(declaration.requirements), set()
+    if declaration.pyproject is not None:
+        document = tomllib.loads(declaration.pyproject.read_text(encoding="utf-8-sig"))
+        installed = _selected_member_extras(document, _recorded_extras() if extras is None else extras, environment)[0]
+        specs += [spec for name, values in document["project"].get("optional-dependencies", {}).items()
+                  if _extra_key(name) in installed for spec in values]
+    pins = [requirement for requirement in _self_references(specs, "hermes-agent")
+            if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), environment)]
+    if not pins:
+        return None
+    current = running_hermes_version()
+    try:
+        Version(current)
+    except InvalidVersion:
+        return None
+    rejected = [str(requirement) for requirement in pins
+                if not requirement.specifier.contains(current, prereleases=True)]
+    return f"requires {rejected[0]}, running {current}" if rejected else None
+
+
+def hermes_fit_error(declaration, extras: Iterable[str] | None = None) -> Optional[str]:
+    """Why this Hermes is not one the plugin accepts: its ``requires_hermes`` or an applicable
+    ``hermes-agent`` requirement rejects the running version. Either verdict is only as good as
+    our version identity, so a selected misfit sits out of the build (config untouched) and
+    rejoins once it flips; admission refuses it."""
+    from hermes_cli.plugins_manifest import requires_hermes_error
+
+    return requires_hermes_error(declaration.manifest) or core_requirement_error(declaration, extras)
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = (),
                       target: Mapping[str, str] | None = None) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
@@ -634,6 +724,134 @@ def install_node_sidecar(
     return None
 
 
+def _conjuncts(marker: str) -> frozenset[str]:
+    """Top-level ``and`` terms of a PEP 508 marker; a marker with a top-level ``or`` stays one term."""
+    def ungroup(term: str) -> str:
+        """Ignore parentheses surrounding a whole marker conjunction."""
+        term = term.strip()
+        while term.startswith("(") and term.endswith(")"):
+            depth, quote = 0, ""
+            for offset, char in enumerate(term):
+                if quote:
+                    quote = "" if char == quote else quote
+                elif char in ("'", '"'):
+                    quote = char
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0 and offset != len(term) - 1:
+                        return term
+            if depth:
+                return term
+            term = term[1:-1].strip()
+        return term
+
+    terms, depth, quote, start = [], 0, "", 0
+    for index, char in enumerate(marker):
+        if quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in "()":
+            depth += 1 if char == "(" else -1
+        elif depth == 0 and marker.startswith(" or ", index):
+            return frozenset({ungroup(marker)})
+        elif depth == 0 and marker.startswith(" and ", index):
+            terms.append(marker[start:index])
+            start = index + len(" and ")
+    terms.append(marker[start:])
+    return frozenset(ungroup(term) for term in terms)
+
+
+def _seed_fork_pins(forks: Mapping[tuple[str, tuple[str, ...]], list], name: str, markers: Sequence[str]) -> list:
+    """The seed's pins for the fork core's *markers* name, or ``[]`` when no seed fork matches.
+
+    A generation solves only its host (``_solve_only_for``), so each seed fork is core's fork
+    with the host terms ANDed on: a seed fork matches when it holds every term of a core marker.
+    """
+    if not markers:
+        return []
+    exact = forks.get((name, tuple(markers)))
+    if exact is not None:
+        return exact
+    wanted = [_conjuncts(marker) for marker in markers]
+    return [pin for (seed_name, seed_markers), pins in forks.items() if seed_name == name
+            and any(core <= _conjuncts(seed) for core in wanted for seed in seed_markers)
+            for pin in pins]
+
+
+CORE_LOCK_RECORD = "core-uv.lock"
+
+
+def _registry_pins(lock: Path) -> tuple[dict, dict]:
+    """``(name -> pins, (name, resolution-markers) -> pins)`` for a lock's index packages."""
+    import tomllib
+
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    pins: dict[str, list[Version]] = {}
+    forks: dict[tuple[str, tuple[str, ...]], list[Version]] = {}
+    for package in tomllib.loads(lock.read_text(encoding="utf-8-sig")).get("package", []):
+        if "registry" not in package.get("source", {}):
+            continue
+        try:
+            name, pinned = canonicalize_name(package["name"]), Version(package["version"])
+        except (KeyError, InvalidVersion):
+            continue
+        pins.setdefault(name, []).append(pinned)
+        forks.setdefault((name, tuple(package.get("resolution-markers", []))), []).append(pinned)
+    return pins, forks
+
+
+def core_lock_upgrades(core_lock: Path, seed_lock: Path, *, python: Path | None = None) -> list[str]:
+    """``uv lock -P`` requirements moving a seeded generation onto core's newer pins.
+
+    uv keeps every seeded pin that still resolves, so a core uv.lock bump (a security fix in a
+    transitive) never reached an install with plugin members (#91424). Only an index package
+    core's lock holds at a version newer than every pin the seed has for it moves: a package
+    only a plugin brings is not core's to pin, and one a plugin moved above core's pin stays
+    where the plugin needs it. Path, git and URL sources follow core's manifest already.
+    When the seed's generation recorded the core lock it was built from, only a pin core moved
+    since then counts, so a plugin holding a package below core's pin keeps it. A fork the
+    installing *python* never selects is skipped: ``-P`` unpins the name in every fork.
+    """
+    import tomllib
+
+    from packaging.markers import Marker
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    seeded, forks = _registry_pins(seed_lock)
+    record = seed_lock.with_name(CORE_LOCK_RECORD)
+    built_from = _registry_pins(record) if record.is_file() else None
+    target = _target_environment(python) if python is not None else None
+    upgrades = []
+    for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
+        name = canonicalize_name(package.get("name", ""))
+        if "registry" not in package.get("source", {}) or name not in seeded:
+            continue
+        try:
+            version = Version(package["version"])
+        except (KeyError, InvalidVersion):
+            continue
+        markers = package.get("resolution-markers", [])
+        if target is not None and markers and not any(Marker(marker).evaluate(target) for marker in markers):
+            continue
+        if built_from is not None and name in built_from[0]:
+            before = _seed_fork_pins(built_from[1], name, markers) or built_from[0][name]
+            if not all(version > pinned for pinned in before):
+                continue
+        # A platform fork compares against the seed's same fork, so a bump to one fork still moves.
+        prior = _seed_fork_pins(forks, name, markers) or seeded[name]
+        if all(version > pinned for pinned in prior):
+            # A name core forks by platform carries each fork's markers, or the exact pins clash.
+            joined = " or ".join(f"({marker})" for marker in markers)
+            upgrades.append(f"{name}=={version}" + (f"; {joined}" if joined else ""))
+    return upgrades
+
+
 def lock_and_sync(
     plugin_dirs: list[Path] | Mapping[Path, Path],
     extras: list[str],
@@ -644,10 +862,12 @@ def lock_and_sync(
     environment: PythonEnvironment,
     frozen: bool = False,
     replay: Path | None = None,
+    upgrade: Sequence[str] = (),
 ) -> None:
     """Prepare a fresh generation using explicit inputs and a prepared engine.
 
-    The caller selects the seed; uv retains its compatible versions. Repair
+    The caller selects the seed; uv retains its compatible versions except the
+    *upgrade* requirements (``uv lock -P``), which bind like core pins. Repair
     copies the recorded build inputs and never reads current manifests.
     Resolver conflicts remain distinct from download/build failures.
     """
@@ -669,4 +889,4 @@ def lock_and_sync(
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")
         frozen = True
 
-    environment.sync(root, extras=extras, frozen=frozen)
+    environment.sync(root, extras=extras, frozen=frozen, upgrade=() if frozen else upgrade)

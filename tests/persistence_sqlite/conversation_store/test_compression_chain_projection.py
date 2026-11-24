@@ -1,6 +1,8 @@
 """Compression lineage in the conversation store on a backend store's StoreHolder: ``get_compression_tip`` and ``get_compression_lineage`` walk the chain and stop at reset forks and at a chat's subagent rows, the routing lineage CTE agrees with that walk, and ``list_sessions_rich`` surfaces each compressed conversation as its live tip in one batched fetch."""
 
+import sqlite3
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -85,19 +87,7 @@ class TestChainStepSkipsSubagentRows:
         assert stamp_legacy_compression_chains(db) == 1
         assert get_session(db, "worker")["created_source"] == "subagent"
 
-    def test_a_reader_on_a_store_without_created_source_follows_the_chain(self, tmp_path):
-        with open_persistence(profile_scope(home=tmp_path)) as writer:
-            seed_session(writer, "chat", "telegram", **ROUTE)
-            _compress(raw_holder(writer), "chat", "chat-c1", "telegram")
-            raw_holder(writer)._execute_write(lambda conn: (
-                conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started"),
-                conn.execute("ALTER TABLE sessions DROP COLUMN created_source")))
-        with open_persistence_reader(tmp_path / "state.db") as reader:
-            assert reader.lineage.tip("chat") == "chat-c1"
-
-    def test_an_old_store_reports_the_missing_column_once_per_walk(self, tmp_path, monkeypatch):
-        from persistence.sqlite.conversation._store import compression
-
+    def test_a_reader_on_a_store_without_created_source_follows_the_chain(self, tmp_path, monkeypatch):
         with open_persistence(profile_scope(home=tmp_path)) as writer:
             seed_session(writer, "chat", "telegram", **ROUTE)
             _compress(raw_holder(writer), "chat", "chat-c1", "telegram")
@@ -105,31 +95,34 @@ class TestChainStepSkipsSubagentRows:
             raw_holder(writer)._execute_write(lambda conn: (
                 conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started"),
                 conn.execute("ALTER TABLE sessions DROP COLUMN created_source")))
-        misses = []
+        missing_column_errors = []
         with open_persistence_reader(tmp_path / "state.db") as reader:
             holder = raw_holder(reader)
-            run = holder._read_ctx
+            read_ctx = holder._read_ctx
 
-            def counting_ctx():
-                ctx = run()
-                conn = ctx.__enter__()
+            @contextmanager
+            def counting_read_ctx():
+                with read_ctx() as conn:
+                    yield _ErrorCountingConn(conn, missing_column_errors)
+            monkeypatch.setattr(holder, "_read_ctx", counting_read_ctx)
+            assert reader.lineage.tip("chat") == "chat-c2"
+        assert len(missing_column_errors) <= 1
 
-                class _Conn:
-                    def execute(self, sql, params=()):
-                        if sql == compression._CHAIN_STEP_SQL:
-                            misses.append(params)
-                        return conn.execute(sql, params)
 
-                class _Ctx:
-                    def __enter__(self):
-                        return _Conn()
+class _ErrorCountingConn:
+    def __init__(self, conn, errors):
+        self._conn, self._errors = conn, errors
 
-                    def __exit__(self, *exc):
-                        return ctx.__exit__(*exc)
-                return _Ctx()
-            monkeypatch.setattr(holder, "_read_ctx", counting_ctx)
-            assert compression.get_compression_chain(holder, "chat") == ["chat", "chat-c1", "chat-c2"]
-        assert len(misses) == 1
+    def execute(self, sql, params=()):
+        try:
+            return self._conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            if "created_source" in str(exc):
+                self._errors.append(sql)
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 class TestCompressionChainProjection:

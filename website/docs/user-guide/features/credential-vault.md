@@ -120,12 +120,35 @@ cannot spend. Address fills need no confirmation. Card and address values are
 written straight into their fields like the password; only a login's identifier
 is ever typed as browser input.
 
+## Asking before a login fills
+
+Logins fill without a prompt by default. To be asked first on sensitive sites,
+list them under `vault.confirm_logins`; every fill there shows the same approval
+prompt as a card, and declining writes nothing.
+
+```bash
+hermes vault confirm bank.example mail.example   # add sites (subdomains included)
+hermes vault confirm                             # show the list
+hermes vault confirm --remove mail.example
+hermes vault confirm "*"                         # ask before every login
+hermes vault confirm --all-profiles bank.example # the default profile and every profile
+```
+
+```yaml
+vault:
+  confirm_logins: ["https://bank.example", "*"]
+```
+
+A listed site covers its subdomains (`bank.example` also covers
+`www.bank.example`). Headless sessions cannot approve, so a listed login is
+refused there. The list is read on every fill, so edits apply without a restart.
+
 ## Managing what's saved
 
 - **Desktop → Settings → Passwords & Logins**: everything saved, the detected
   password managers with Unlock/Lock, Add, Remove.
 - **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
-  `hermes vault sources`, `hermes vault key`.
+  `hermes vault sources`, `hermes vault key`, `hermes vault confirm`.
 
 Items live encrypted under `~/.hermes/vault/`, scoped to the profile. Labels,
 site origins and login identifiers are visible metadata; passwords and card
@@ -185,7 +208,8 @@ That is why keychain storage is opt-in rather than the default.
 ## Headless sessions
 
 Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
-prompt. Saved local logins keep working there; a locked password manager reports
+prompt. Saved local logins keep working there (except sites in
+`vault.confirm_logins`, which are refused); a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
 Unlock or save from an interactive session first, or give 1Password a service
 account token (`OP_SERVICE_ACCOUNT_TOKEN`).

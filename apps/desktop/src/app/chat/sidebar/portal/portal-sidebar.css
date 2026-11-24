@@ -1348,7 +1348,7 @@ button.portal-section-title:hover {
 .portal-hidden-row {
   position: relative;
   display: flex;
-  min-height: 2.5rem;
+  min-height: var(--portal-sidebar-chat-row);
   align-items: center;
   gap: 0.5rem;
   padding-inline: calc(var(--portal-sidebar-bleed) + 0.6875rem) var(--portal-sidebar-bleed);
@@ -1360,7 +1360,7 @@ button.portal-section-title:hover {
 }
 
 .portal-hidden-row .portal-agent-chat {
-  min-height: 2.5rem;
+  min-height: var(--portal-sidebar-chat-row);
   color: var(--ui-text-secondary);
 }
 

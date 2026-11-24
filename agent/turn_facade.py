@@ -9,7 +9,7 @@ import logging
 import uuid
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, Iterator, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
@@ -23,9 +23,12 @@ def detached_fork_origin() -> str:
 
 
 @contextmanager
-def bind_detached_fork_origin(agent: Any):
-    """Bind the builder's label, not the separate skill/memory write provenance."""
-    token = _FORK_ORIGIN.set(getattr(agent, "_turn_origin", None) or "")
+def bind_detached_fork_origin(origin: str) -> Iterator[None]:
+    """Scope the fork label without replacing a worker's binding for the same fork."""
+    if origin == detached_fork_origin():
+        yield
+        return
+    token = _FORK_ORIGIN.set(origin)
     try:
         yield
     finally:
@@ -161,10 +164,10 @@ class TurnFacadeMixin:
                 persistence=agent_interface(self),
             )
 
-            # Keep the ContextVar scope local (agent tokens may be observed from another thread).
-            # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
-            with (bind_detached_fork_origin(self), bind_subagent_parent(self),
-                  scoped_runtime_main({}), track_in_interrupt_scope(self)):
+            # Use the builder's turn label, not skill/memory write provenance. An ordinary turn
+            # masks any inherited fork context, while a fork worker already owns its binding.
+            with (bind_detached_fork_origin(getattr(self, "_turn_origin", None) or ""),
+                  bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self)):
                 try:
                     if lease is not None:
                         lease.start()

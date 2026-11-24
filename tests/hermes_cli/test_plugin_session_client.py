@@ -477,14 +477,19 @@ def register(ctx):
 @pytest.mark.parametrize('origin', ['', 'background_review', 'side_question', 'plugin_fork:facts'],
                          ids=['curator', 'review', 'btw', 'plugin-fork'])
 def test_the_ctx_session_accessors_answer_what_the_functions_answer(tmp_path, monkeypatch, isolation, origin):
-    """Build actual forks, replacing only the conversation loop to observe the turn's hook context."""
-    from agent.background_review import build_cache_parity_fork
+    """Observe hook context and real tool-dispatch kwargs without calling an LLM."""
+    from agent import background_review, curator
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
+    from agent.side_question import answer_side_question
     from hermes_cli import plugin_session
     from hermes_cli.plugins import PluginManager
+    from model_tools import handle_function_call
     from run_agent import AIAgent
+    from tools.registry import registry
     from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
 
+    dispatched = []
+    monkeypatch.setattr(registry, 'dispatch', lambda *a, **kw: dispatched.append(kw) or '{}')
     home = _home_with_plugins(tmp_path, monkeypatch, {'facts': SESSION_FACTS_PLUGIN}, isolation=isolation)
     manager = PluginManager()
     manager.discover_and_load()
@@ -500,6 +505,18 @@ def test_the_ctx_session_accessors_answer_what_the_functions_answer(tmp_path, mo
         try:
             assert facts() == ['gui', True, True, origin]
             assert manager.invoke_hook('post_llm_call') == [['gui', True, True, origin]]
+            # The real /btw entry point denies dispatch even though the fork carries a label.
+            if message.endswith('Side question: probe?'):
+                before = len(dispatched)
+                assert 'Side question (/btw) denied' in handle_function_call('skills_list', {})
+                assert len(dispatched) == before
+                return {'final_response': 'ok'}
+            # Also check kwargs when dispatch is reachable, independent of /btw's whitelist.
+            assert handle_function_call('skills_list', {}) == '{}'
+            if origin.startswith('plugin_fork:'):
+                assert dispatched[-1]['turn_origin'] == origin
+            else:
+                assert 'turn_origin' not in dispatched[-1]
             if message == 'raise':
                 raise RuntimeError('loop error')
             return {'final_response': 'ok'}
@@ -517,7 +534,7 @@ def test_the_ctx_session_accessors_answer_what_the_functions_answer(tmp_path, mo
         stack.callback(parent.close)
         agent = parent
         if origin:
-            agent, _, _ = build_cache_parity_fork(parent, {}, max_iterations=1, write_origin=origin)
+            agent, _, _ = background_review.build_cache_parity_fork(parent, {}, max_iterations=1, write_origin=origin)
             stack.callback(agent.close)
         assert manager.invoke_hook('post_llm_call') == [facts()] == [['', False, False, '']]
         with _turn_of(home, monkeypatch, source='gui'), delegated_child_context():
@@ -525,6 +542,17 @@ def test_the_ctx_session_accessors_answer_what_the_functions_answer(tmp_path, mo
             assert manager.invoke_hook('post_llm_call') == [facts()] == [['gui', True, True, '']]
             with pytest.raises(RuntimeError, match='loop error'):
                 agent.run_conversation('raise')
+            if origin == 'side_question':
+                assert answer_side_question('probe?', [], parent_agent=parent) == 'ok'
+            elif origin == 'background_review':
+                before = len(dispatched)
+                background_review._run_review_in_thread(parent, [], 'review')
+                assert len(dispatched) == before + 1
+            elif not origin:
+                runtime = {'api_key': 'test-key', 'base_url': 'https://openrouter.ai/api/v1'}
+                monkeypatch.setattr(curator, '_resolve_review_provider',
+                                    lambda: (runtime, 'test/model', 'openrouter', {}))
+                assert curator._run_llm_review('curate')['final'] == 'ok'
             assert manager.invoke_hook('post_llm_call') == [facts()] == [['gui', True, True, '']]
         monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, '1')  # a child's subprocess, no child context
         assert manager.invoke_hook('post_llm_call') == [facts()] == [['', False, True, '']]

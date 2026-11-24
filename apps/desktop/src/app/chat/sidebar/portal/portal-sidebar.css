@@ -1145,6 +1145,13 @@ button.portal-section-title:hover {
   display: none;
 }
 
+/* The agent's live Screen is a chat-shaped row that stands without chats: its list always shows,
+   and gives its floor to the chats under it. */
+.portal-agent-sessions.portal-agent-screen {
+  display: block;
+  padding-block-end: 0;
+}
+
 .portal-agent-sessions .portal-session-list {
   gap: 0;
 }

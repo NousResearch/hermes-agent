@@ -12,10 +12,20 @@ import { $profiles } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 import { stubMenuDomApis } from '@/test/jsdom'
 
+import type * as BotChatRow from '../simplified-bot-chat-row'
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
 import { useNewAgentOffers } from './new-agent-offers'
 import { PortalAgentGroups } from './portal-agent-groups'
+
+// Bot Mode loaded; its Screen row stands in as a marker, so mounting it (which reads a status) shows.
+vi.mock('../simplified-bot-chat-row', async original => ({
+  ...(await original<typeof BotChatRow>()),
+  useBotModeLoaded: () => true
+}))
+vi.mock('./portal-agent-screen', () => ({
+  AgentScreenRow: ({ agent }: { agent: SimplifiedAgent }) => <i data-agent={agent.profile} data-testid="screen-row" />
+}))
 
 const agent = (connectionId: string, profile: string, gateway: string): SimplifiedAgent => ({
   connectionId,
@@ -137,4 +147,10 @@ it('reads this window’s own machine from its profile list where there is no ro
   fireEvent.click(newAgentOn('Studio'))
 
   expect(onNewAgent).toHaveBeenLastCalledWith({ connectionId: 'studio', profile: 'default' })
+})
+
+it('reads a live Screen only for the agents of this window’s machine', () => {
+  mount([agent('studio', 'default', 'Studio'), agent('lab', 'ops', 'Lab box')])
+
+  expect(screen.getAllByTestId('screen-row').map(row => row.dataset.agent)).toEqual(['default'])
 })

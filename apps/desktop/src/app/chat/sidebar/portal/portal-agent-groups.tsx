@@ -22,7 +22,7 @@ import { $sessionTiles } from '@/store/session-states'
 import { tileOwnerRoute } from '../../session-tile-owner'
 import { ProfileGroupHeaderSlot } from '../gateway-groups'
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
-import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
+import { SimplifiedBotChatRow, useBotModeLoaded } from '../simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
 import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
@@ -30,6 +30,7 @@ import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use
 import { type AgentChatCount, agentChatCount } from './agent-chat-cap'
 import type { NewAgentOffer } from './new-agent-offers'
 import { PortalAgentMenu } from './portal-agent-menu'
+import { AgentScreenRow } from './portal-agent-screen'
 import { PortalHiddenAgents } from './portal-hidden-agents'
 
 interface PortalAgentGroupsProps {
@@ -152,6 +153,7 @@ export const agentMatches = (list: PortalAgentGroupsProps['agents'], agent: Simp
   (list.sessionsByAgent.get(agentKey(agent))?.length ?? 0) > 0 || agent.label.toLowerCase().includes(query.trim().toLowerCase())
 
 export function PortalAgentGroups(props: PortalAgentGroupsProps) {
+  const botMode = useBotModeLoaded()
   const hidden = new Set(useStore($hiddenSidebarAgents))
   const activeConnection = useStore($activeConnectionId)
   const activeProfile = useStore($activeGatewayProfile)
@@ -239,6 +241,8 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                       pending={props.pending}
                       selected={agentKey(agent) === activeAgentKey}
                     >
+                      {/* Each row reads its agent's screen once: this window's machine only. */}
+                      {botMode && machine.selected && <AgentScreenRow agent={agent} />}
                       {props.renderSessions(chatsOf(agent), agent)}
                     </AgentCard>
                   ))}

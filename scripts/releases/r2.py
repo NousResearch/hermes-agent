@@ -743,35 +743,6 @@ def head_object(
         raise
 
 
-def read_object(
-    creds: dict[str, str],
-    base: str,
-    bucket: str,
-    key: str,
-    now: str,
-    fetcher: Callable[..., Response] | None = None,
-) -> tuple[bytes, str] | None:
-    """GET one object's raw bytes and ETag, or None on 404."""
-    url = R2Scope.configured().object_url(base, bucket, key)
-    if fetcher is not None:
-        response = fetcher(method="GET", url=url, body_hash=EMPTY_SHA)
-        if response.status == 404:
-            return None
-        if response.status >= 400:
-            raise R2RequestError("GET", key, response.status, response.text())
-    else:
-        try:
-            response = signed_request("GET", url, creds=creds, now=now)
-        except R2RequestError as err:
-            if err.status == 404:
-                return None
-            raise
-    etag = response.header("etag")
-    if not etag:
-        raise ValueError(f"No ETag for {key}")
-    return response._body, etag
-
-
 def _parse_copy_result(dest_key: str, response: Response) -> None:
     from xml.etree import ElementTree as ET
 

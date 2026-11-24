@@ -601,6 +601,7 @@ class StableDownloads:
     @classmethod
     def prepare(cls, manifest: dict, public_base: str) -> StableDownloads:
         from scripts.releases import r2
+        from scripts.releases.channels import R2ChannelStore
         from scripts.releases.downloads_page import DEFAULT_REPO, render_channel_page_from_manifest
 
         source_dmg_key, dmg_item = _stable_darwin_dmg_item(manifest, public_base)
@@ -620,7 +621,7 @@ class StableDownloads:
             expected_sha256=dmg_item["sha256"],
         )
         page_needs_write, page_conditions = _check_stable_page_state(
-            r2.read_object(creds, base, bucket, r2.channel_page_key_for("stable"), now),
+            R2ChannelStore(creds, base, bucket).get(r2.channel_page_key_for("stable")),
             tag=manifest["tag"],
             page_bytes=page_bytes,
         )

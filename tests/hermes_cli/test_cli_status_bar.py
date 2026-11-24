@@ -523,3 +523,23 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
+
+
+class TestBedrockProfilePrefixInStatusBar:
+    PROFILE = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+    def test_geo_prefix_is_dropped_from_the_short_name(self):
+        snap = _make_cli(self.PROFILE)._get_status_bar_snapshot()
+        assert snap["model_short"] == "anthropic.claude-sonnet..."
+
+    def test_full_profile_id_is_kept_in_model_name(self):
+        snap = _make_cli(self.PROFILE)._get_status_bar_snapshot()
+        assert snap["model_name"] == self.PROFILE
+
+    def test_short_profile_id_fits_without_ellipsis(self):
+        snap = _make_cli("us.deepseek.v3.2")._get_status_bar_snapshot()
+        assert snap["model_short"] == "deepseek.v3.2"
+
+    def test_non_profile_name_is_unchanged(self):
+        snap = _make_cli("anthropic/claude-sonnet-4-20250514")._get_status_bar_snapshot()
+        assert snap["model_short"] == "claude-sonnet-4-20250514"

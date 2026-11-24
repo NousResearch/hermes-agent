@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _snapshot: Optional[dict[str, str]] = None
+# What the launch ``.env``'s ``${VAR}``s resolve against in the snapshot: it with this process's own dotenv
+# output peeled back, by the publication record of the capture (a later reload's no longer matches it).
+_snapshot_template_env: Optional[dict[str, str]] = None
 # Per (profile home key, name): a secret-source write the frozen launch env holds — (source, value the
 # source put in the snapshot, the snapshot's value before the source's first write or None). Kept apart
 # from env_loader's ``os.environ`` write record on purpose: that record is dropped or retargeted whenever
@@ -43,12 +46,22 @@ def capture_launch_env() -> dict[str, str]:
     Called at activation, immediately before the first secondary home is registered as
     served — the last moment ambient env is provably the launch profile's.
     """
-    global _snapshot, _source_writes
+    global _snapshot, _snapshot_template_env, _source_writes
     with _lock:
         if _snapshot is None:
             _snapshot = dict(os.environ)
+            loader = sys.modules.get("hermes_cli.env_loader")  # not imported yet: no dotenv output to peel
+            _snapshot_template_env = loader.dotenv_lookup_from(_snapshot) if loader is not None else dict(_snapshot)
             _source_writes = _source_writes_held_by(_snapshot)
         return dict(_snapshot)
+
+
+def launch_template_env() -> dict[str, str]:
+    """What the launch ``.env``'s ``${VAR}``s resolve against in the frozen launch env (see
+    ``_snapshot_template_env``)."""
+    capture_launch_env()
+    with _lock:
+        return dict(_snapshot_template_env)
 
 
 def _source_writes_held_by(snapshot: dict[str, str]) -> dict[tuple[str, str], tuple[str, str, Optional[str]]]:
@@ -220,18 +233,19 @@ def launch_secret_scope(launch_home: str | Path, *, frozen_templates: bool = Fal
     two values it sees. Env-only keys (systemd ``Environment=``, ``op run``, Compose) are unaffected:
     nothing in the files shadows them.
 
-    *frozen_templates* resolves the ``.env``'s ``${VAR}``s against that same launch env, frozen under
-    multiplexing, rather than the live one: for a caller that builds the mapping again later in a body
-    (the plugin host's launcher), which must not follow a write to the live env since the body bound.
+    *frozen_templates* resolves the ``.env``'s ``${VAR}``s against that same launch env once multiplexing
+    froze it (``launch_template_env``), rather than the live one: for a caller that builds the mapping
+    again later in a body (the plugin host's launcher), which must not follow a write to the live env
+    since the body bound.
     """
-    from agent.secret_scope import _is_global_env, build_profile_secret_scope
+    from agent.secret_scope import _is_global_env, build_profile_secret_scope, is_multiplex_active
     from gateway.bridged_env import follow_bridged_env
-    env = _launch_env()
-    scope = {k: v for k, v in env.items() if not _is_global_env(k)}
+    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
     # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
     follow_bridged_env(scope)
-    scope.update(build_profile_secret_scope(Path(launch_home), process_env=env if frozen_templates else None))
+    templates = launch_template_env() if frozen_templates and is_multiplex_active() else None
+    scope.update(build_profile_secret_scope(Path(launch_home), template_env=templates))
     return scope
 
 

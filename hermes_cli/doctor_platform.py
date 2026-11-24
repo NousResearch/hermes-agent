@@ -693,16 +693,17 @@ def _display_rc_path(rc_path: Path) -> str:
 def _check_link_dir_on_path(
     link_dir: Path, display: str, cmd_name: str, entry_point: Path, termux: bool, f: Finding
 ) -> None:
+    from hermes_platform.resolver import LookupContext, locate_command
     from pm.environments import inherited_path
 
     # Startup put Hermes's own command dirs first on this PATH; a new terminal won't have them.
     terminal_path = inherited_path()
     if _dir_on_path(link_dir, terminal_path):
         return
-    found = shutil.which(cmd_name, path=terminal_path)
+    found = locate_command(cmd_name, LookupContext(path=terminal_path)).command
     if found:
         try:
-            if Path(found).resolve() == entry_point.resolve():
+            if Path(found[0]).resolve() == entry_point.resolve():
                 return
         except OSError:
             pass

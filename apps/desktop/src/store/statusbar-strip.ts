@@ -9,3 +9,7 @@ import { $portalShell } from './shell-variant'
  *  System popover carry the bar's items. Every way to toggle the bar (⌘⇧S, ⌘K, menus) offers it
  *  only here, so an invisible toggle can never hide the classic bar for a later rollback. */
 export const $statusbarStripAvailable = computed($portalShell, portal => !portal)
+
+/** Whether this window's shell has the sidebar's profile rail. The redesign lists agents in its
+ *  sidebar instead, so every way to toggle the rail is offered only in classic. */
+export const $profileRailAvailable = computed($portalShell, portal => !portal)

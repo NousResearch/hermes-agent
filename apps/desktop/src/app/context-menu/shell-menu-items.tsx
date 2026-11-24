@@ -9,7 +9,7 @@ import { cloudOwnsUpdates } from '@/store/cloud-updates'
 import { openCommandPalette } from '@/store/command-palette'
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
-import { $statusbarStripAvailable } from '@/store/statusbar-strip'
+import { $profileRailAvailable, $statusbarStripAvailable } from '@/store/statusbar-strip'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 
@@ -21,7 +21,8 @@ function shellSections(
   navigate: ReturnType<typeof useNavigate>,
   t: Translations,
   primaryOnly: boolean,
-  statusbarStrip: boolean
+  statusbarStrip: boolean,
+  profileRail: boolean
 ): ReactNode[][] {
   const newChat = renderActionItem(kit, {
     icon: 'add',
@@ -81,12 +82,14 @@ function shellSections(
             onSelect: toggleStatusbarVisible
           })
         : null,
-      renderActionItem(kit, {
-        icon: 'organization',
-        key: 'shell-profile-rail',
-        label: t.keybinds.actions['view.toggleProfileRail'],
-        onSelect: toggleProfileRailVisible
-      }),
+      profileRail
+        ? renderActionItem(kit, {
+            icon: 'organization',
+            key: 'shell-profile-rail',
+            label: t.keybinds.actions['view.toggleProfileRail'],
+            onSelect: toggleProfileRailVisible
+          })
+        : null,
       // The pointer-only way back to a hidden tab strip: right-clicking the
       // shell reaches this menu from anywhere, including a zone that has no
       // chrome left to right-click.
@@ -107,8 +110,9 @@ export function ShellMenuItems({ kit, primaryOnly = false }: { kit: MenuKit; pri
   const navigate = useNavigate()
   const { t } = useI18n()
   const statusbarStrip = useStore($statusbarStripAvailable)
+  const profileRail = useStore($profileRailAvailable)
 
-  return shellSections(kit, navigate, t, primaryOnly, statusbarStrip).map((section, index) => (
+  return shellSections(kit, navigate, t, primaryOnly, statusbarStrip, profileRail).map((section, index) => (
     <div className="contents" key={index}>
       {index > 0 && <kit.Separator />}
       {section}

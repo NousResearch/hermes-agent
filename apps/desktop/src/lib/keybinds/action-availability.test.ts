@@ -21,6 +21,14 @@ describe('shell-dependent shortcuts', () => {
     expect(listed('view.toggleStatusbar')).toBe(false)
   })
 
+  it('lists the profile rail toggle only in the shell that has a profile rail', () => {
+    $shellChoice.set(false)
+    expect(listed('view.toggleProfileRail')).toBe(true)
+
+    $shellChoice.set(true)
+    expect(listed('view.toggleProfileRail')).toBe(false)
+  })
+
   it('updates a live list of offered actions when the shell flips', () => {
     const seen: boolean[] = []
 

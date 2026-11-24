@@ -14,7 +14,7 @@ import { persistStore } from '@/lib/persist-store'
 import { arraysEqual, persistString, storedString, type WriteOptions } from '@/lib/storage'
 
 import { $portalPreferred } from './shell-variant'
-import { $statusbarStripAvailable } from './statusbar-strip'
+import { $profileRailAvailable, $statusbarStripAvailable } from './statusbar-strip'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
 
@@ -129,6 +129,7 @@ followBrowserWindowKind($bindings, defaultBindings, keepOffUserChords)
 // Window-dependent actions, declared beside the bindings every keybind surface (panel, dispatcher,
 // hints) already reads, so none of them depends on which store happened to load first.
 declareKeybindAvailability('view.toggleStatusbar', $statusbarStripAvailable)
+declareKeybindAvailability('view.toggleProfileRail', $profileRailAvailable)
 // Back/Forward live in the redesign's band; the classic shell has no history controls.
 declareKeybindAvailability('nav.back', $portalPreferred)
 declareKeybindAvailability('nav.forward', $portalPreferred)

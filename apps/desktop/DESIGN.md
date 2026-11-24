@@ -135,14 +135,17 @@ hover, visible keyboard focus, or an open menu, not lingering mouse focus;
 touch controls remain visible. Only truncated titles need a tooltip.
 Screen (an agent's own desktop) is a tool rather than a conversation, and it is reached from the
 agent, with Bot Mode loaded, whichever chat is in front. The agent's menu carries **Open Screen**
-and, as a setting under it with no icon of its own, **Open Screen when the agent uses it**. While a
-screen is running, a row under the agent's card says so in the chat rows' own shape: "Screen", the
-mark green while the agent holds it and orange while a person does, and one word for the holder
-(Live, You, Viewer) where a chat has its age; an agent with no running screen has no row. The row
-reads that agent's screen status once, so it is mounted only for the agents of the machine the
-list was read from, under unfolded cards. The agent's Overview lists **Screen** among its rows with
-where it stands in a phrase (not installed, stopped, live and who holds it), and opening it leaves
-the page, since the Screen is a tab beside the chat. **Open Screen** in the command palette stays,
+and, as a setting under it with no icon of its own, **Auto-open Screen** (it opens when the agent
+starts using its desktop). While a screen is running, a row under the agent's card says so in the
+chat rows' own shape: "Screen", the mark green while the agent holds it and orange while a person
+does, and one word for who is in control (Agent, You, Viewer) where a chat has its age; an agent
+with no running screen has no row. The row reads that agent's screen status once, so it is
+mounted only for the agents of the machine the list was read from, under unfolded cards. The
+agent's Overview has **Screen** among its rows: a row saying where a screen that is not running
+stands (not installed, stopped), and in its place, while the screen runs, the screen itself as a
+live thumbnail whose caption says who holds it. Either opens the Screen and leaves the page, since
+the Screen is a tab beside the chat. Every door opens the profile's own bot before an alias that
+serves it. **Open Screen** in the command palette stays,
 for the focused owner; classic/Bot Mode entry points remain available.
 
 **Hidden agents** stays outside the agent list's scroll viewport so its count

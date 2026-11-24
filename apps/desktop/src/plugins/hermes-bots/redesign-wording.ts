@@ -220,7 +220,7 @@ const en: BotsWording = {
   screen: {
     holderAgent: 'Agent',
     agentControls: 'Agent is in control',
-    autoOpenMenu: 'Open Screen when the agent uses it',
+    autoOpenMenu: 'Auto-open Screen',
     imageSwitchBody: (current, target) =>
       `Your sandbox still runs ${current}, which has no desktop. Switching to ${target} recreates the container the next time the agent uses its terminal: files in /root and /workspace stay on this machine, packages installed inside the container are reinstalled on demand.`,
     installHint: 'Runs on the machine as the user Hermes runs as; sudo is asked for once, through Hermes.',
@@ -455,7 +455,7 @@ const ja: BotsWording = {
   screen: {
     holderAgent: 'エージェント',
     agentControls: 'エージェントが操作中',
-    autoOpenMenu: 'エージェントが画面を使い始めたら Screen を開く',
+    autoOpenMenu: 'Screen を自動で開く',
     imageSwitchBody: (current, target) =>
       `サンドボックスはまだ ${current} で動作しており、デスクトップがありません。${target} に切り替えると、エージェントが次にターミナルを使うときにコンテナが再作成されます。/root と /workspace のファイルはこのマシンに残り、コンテナ内にインストールしたパッケージは必要に応じて再インストールされます。`,
     installHint:

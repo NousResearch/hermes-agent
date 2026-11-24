@@ -240,7 +240,7 @@
 /* A running screen in the Screen row's place: the plugin's own tile (its colours and caption are
    classic's), never wider than a comfortable preview, with the radius of a control nested in the
    card. The row around it is not itself a control. */
-.agent-overview-screen:hover {
+.agent-overview-row.agent-overview-screen:hover {
   background: none;
 }
 

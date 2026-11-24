@@ -157,32 +157,20 @@ def _failed_turn_why_clause(
         if raw:
             parts.append(_why_for_unglossed_failure_reason(raw))
 
-    # Interrupt / system stop reasons (reuse interrupt humanizer when available).
-    try:
-        from agent.interrupt_control import humanize_turn_exit_reason, USER_INTERRUPT_REASONS
-    except Exception:  # pragma: no cover - interrupt module always present in-tree
-        humanize_turn_exit_reason = None  # type: ignore[assignment]
-        USER_INTERRUPT_REASONS = frozenset()  # type: ignore[assignment]
+    # Interrupt / system stop reasons (reuse interrupt humanizer).
+    from agent.interrupt_control import USER_INTERRUPT_REASONS, humanize_turn_exit_reason
 
     if tool_reason:
         tr = str(tool_reason).strip()
         if tr:
-            if humanize_turn_exit_reason is not None and tr in USER_INTERRUPT_REASONS:
-                parts.append(tr)
-            else:
-                parts.append(f"system stop ({tr.replace('_', ' ')})" if tr not in USER_INTERRUPT_REASONS else tr)
+            parts.append(tr if tr in USER_INTERRUPT_REASONS else f"system stop ({tr.replace('_', ' ')})")
 
-    if humanize_turn_exit_reason is not None:
-        human_exit = humanize_turn_exit_reason(turn_exit_reason)
-        if human_exit and human_exit not in parts:
-            # Skip exit phrases already covered by the failure gloss (e.g. timeout).
-            if not (gloss and human_exit.replace(" ", "_") in str(failure_reason or "")):
-                if human_exit.casefold() not in " ".join(parts).casefold():
-                    parts.append(human_exit)
-    elif turn_exit_reason:
-        raw = str(turn_exit_reason).strip().replace("_", " ")
-        if raw and raw.casefold() not in " ".join(parts).casefold():
-            parts.append(raw)
+    human_exit = humanize_turn_exit_reason(turn_exit_reason)
+    if human_exit and human_exit not in parts:
+        # Skip exit phrases already covered by the failure gloss (e.g. timeout).
+        if not (gloss and human_exit.replace(" ", "_") in str(failure_reason or "")):
+            if human_exit.casefold() not in " ".join(parts).casefold():
+                parts.append(human_exit)
 
     if not parts:
         return None

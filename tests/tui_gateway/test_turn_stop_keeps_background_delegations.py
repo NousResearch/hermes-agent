@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-import agent.interrupt_compat as interrupt_compat
-import tools.async_delegation as async_delegation
+from agent import interrupt_compat
+from tools import async_delegation
 from tui_gateway import server
 
 

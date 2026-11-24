@@ -6,7 +6,7 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import contextlib
 import logging
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 from agent.interrupt_compat import request_hard_interrupt
 from tools.interrupt import request_yield as _request_yield
@@ -187,6 +187,31 @@ def interrupted_during_api_call_reason(agent) -> str:
     """Turn exit reason for an API call cut short by an interrupt (``turn_explainers`` matches the prefix)."""
     issuer = interrupt_issuer(agent)
     return f"interrupted_during_api_call({issuer})" if issuer else "interrupted_during_api_call"
+
+
+def abort_turn_exit_reason(agent) -> tuple[str, Any]:
+    """Classify ``(turn_exit_reason, tool_interrupt_reason)`` before hard-cancel clears agent flags."""
+    issuer = interrupt_issuer(agent)
+    tool_reason = getattr(agent, "_tool_interrupt_reason", None)
+    if issuer:
+        return f"interrupted_by_system({issuer})", tool_reason
+    if tool_reason in USER_INTERRUPT_REASONS:
+        return "interrupted_by_user", tool_reason
+    return "interrupted_by_system(unrecorded)", tool_reason
+
+
+def queued_followup_stop_notice(response: Any, result: dict) -> Optional[str]:
+    """Return a reasoned system-stop notice for queued-followup delivery, else None for user steers."""
+    exit_reason = str(result.get("turn_exit_reason") or "")
+    if not (
+        exit_reason.startswith("interrupted_by_system(")
+        or exit_reason.startswith("interrupted_during_api_call(")
+    ):
+        return None
+    text = response if isinstance(response, str) else (result.get("final_response") or "")
+    if isinstance(text, str) and text.strip() and not is_bare_interrupt_text(text):
+        return text
+    return None
 
 
 def _fence_cancel_before_commit(fence, *, when_in_flight: bool, failure_log: str) -> None:

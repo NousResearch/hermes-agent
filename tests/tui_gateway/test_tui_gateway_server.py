@@ -4937,9 +4937,7 @@ def test_session_close_settles_active_turn_before_teardown(monkeypatch):
 
 
 def test_ws_orphan_reap_interrupts_isolated_turn_then_reaps(monkeypatch):
-    callbacks = []
-    interrupted = []
-    torn_down = []
+    callbacks, interrupted, torn_down = [], [], []
 
     class _Timer:
         def __init__(self, _delay, callback):

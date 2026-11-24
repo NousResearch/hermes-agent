@@ -958,6 +958,29 @@ def _pause_mark(session: dict, status: str) -> dict:
     return {"paused": True} if status == "interrupted" and pause is True else {}
 
 
+def _apply_complete_status_fields(
+    payload: dict, raw: Any, status: str, error_value: Any,
+    has_partial_text: bool, _error_surface: Any,
+) -> Any:
+    """Attach error/interrupted metadata to ``payload`` and return the finalized ``raw`` text."""
+    if status == "error":
+        payload["error"] = str(error_value or raw)
+        payload["recoverable"] = True
+        # Desktop distinguishes retained answer text from error copy using this flag.
+        if has_partial_text:
+            payload["partial"] = True
+        if _error_surface:
+            payload["error_surface"] = _error_surface
+    elif status == "interrupted":
+        # Always carry a reason on interrupted completes for clients that only read error/text.
+        reason = str(error_value or raw or "Operation interrupted: unknown cause.")
+        payload["error"] = reason
+        if not (isinstance(raw, str) and raw.strip()):
+            payload["text"] = reason
+            return reason
+    return raw
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -1030,21 +1053,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
                 error_value, result.get("failure_reason"), st.prompt_text)
         else:
             _clear_inflight_turn(session)
-    if status == "error":
-        payload["error"] = str(error_value or raw)
-        payload["recoverable"] = True
-        # Desktop distinguishes retained answer text from error copy using this flag.
-        if has_partial_text:
-            payload["partial"] = True
-        if _error_surface:
-            payload["error_surface"] = _error_surface
-    elif status == "interrupted":
-        # Always carry a reason on interrupted completes for clients that only read error/text.
-        reason = str(error_value or raw or "Operation interrupted: unknown cause.")
-        payload["error"] = reason
-        if not (isinstance(raw, str) and raw.strip()):
-            payload["text"] = reason
-            raw = reason
+    raw = _apply_complete_status_fields(
+        payload, raw, status, error_value, has_partial_text, _error_surface,
+    )
     if st.terminal_callback is not None:
         st.receipt_attempted = True
         st.terminal_callback({

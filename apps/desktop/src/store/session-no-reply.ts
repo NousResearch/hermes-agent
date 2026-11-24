@@ -92,3 +92,7 @@ export function withInterruptedEmptyNotice(messages: ChatMessage[]): ChatMessage
     }
   ]
 }
+
+export function withEndedTurnNotice(messages: ChatMessage[], interrupted?: boolean): ChatMessage[] {
+  return interrupted ? withInterruptedEmptyNotice(messages) : withNoReplyNotice(messages)
+}

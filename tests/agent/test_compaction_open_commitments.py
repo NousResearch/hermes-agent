@@ -50,11 +50,17 @@ def test_the_prefix_exempts_commitments_from_both_discard_rules():
 
 def test_the_prefix_carries_the_exemption_through_the_other_two_rules():
     """The first draft still contradicted itself: "do nothing" without a new message, and reverse signals
-    ending "work described in the summary", both of which a reader could apply to an owed item."""
+    ending "work described in the summary", both of which a reader could apply to an owed item. A third
+    sentence, "this handoff must never become the active turn by itself", had to be qualified too or it
+    directly cancelled the exemption."""
     do_nothing = SUMMARY_PREFIX.index("If no user message appears AFTER this summary, do nothing")
     assert "Open Commitments" in SUMMARY_PREFIX[do_nothing:do_nothing + 400]
     reverse = SUMMARY_PREFIX.index("Reverse signals in the latest message")
     assert "including an owed item in '## Open Commitments'" in SUMMARY_PREFIX[reverse:reverse + 300]
+    never = SUMMARY_PREFIX.index("must never become the active turn by itself")
+    assert "is the one thing it may carry" in SUMMARY_PREFIX[never:never + 120]
+    # Both exceptions survive as parallel, closed sentences — no dangling parenthesis.
+    assert SUMMARY_PREFIX.count("(") == SUMMARY_PREFIX.count(")")
 
 
 def test_both_prefix_copies_stay_identical():

@@ -128,22 +128,23 @@ function isPosixPathWithin(root: string, candidate: string): boolean {
   return rel !== '' && rel !== '..' && !rel.startsWith('../') && !path.posix.isAbsolute(rel)
 }
 
-export function classifyMacBundleLocation(
-  bundlePath: string,
-  opts?: { homeDir?: string; access?: (file: string, mode: number) => void }
-): MacUnsafeBundleLocation | null {
-  const normalized = path.posix.resolve(bundlePath)
+export type MacEphemeralBundleLocation = Extract<MacUnsafeBundleLocation, 'app-translocation' | 'read-only-volume'>
+
+// A bundle macOS can take away: a translocated copy is dropped on restart, a read-only volume on eject.
+// EACCES (a root-owned folder) is left to Squirrel's admin prompt; only EROFS means a read-only mount.
+export function ephemeralMacBundleLocation(
+  target: string,
+  access: (file: string, mode: number) => void = fs.accessSync
+): MacEphemeralBundleLocation | null {
+  const normalized = path.posix.resolve(target)
 
   if (normalized.includes('/AppTranslocation/')) {
     return 'app-translocation'
   }
 
-  const access = opts?.access ?? fs.accessSync
-
-  // EACCES (root-owned folder) is left to Squirrel's admin prompt; only EROFS means a read-only mount.
-  for (const target of [path.posix.dirname(normalized), normalized]) {
+  for (const candidate of [path.posix.dirname(normalized), normalized]) {
     try {
-      access(target, fs.constants.W_OK)
+      access(candidate, fs.constants.W_OK)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EROFS') {
         return 'read-only-volume'
@@ -151,7 +152,21 @@ export function classifyMacBundleLocation(
     }
   }
 
+  return null
+}
+
+export function classifyMacBundleLocation(
+  bundlePath: string,
+  opts?: { homeDir?: string; access?: (file: string, mode: number) => void }
+): MacUnsafeBundleLocation | null {
+  const ephemeral = ephemeralMacBundleLocation(bundlePath, opts?.access)
+
+  if (ephemeral) {
+    return ephemeral
+  }
+
   // Only flag Downloads/Desktop; CI ShipIt relaunches run in writable runner temp dirs without CI env vars.
+  const normalized = path.posix.resolve(bundlePath)
   const home = opts?.homeDir ? path.posix.resolve(opts.homeDir) : ''
 
   if (home) {
@@ -343,28 +358,6 @@ export function readBundleShortVersion(
   } catch {
     return null
   }
-}
-
-// CLI links into a translocated or read-only bundle dangle once macOS drops the translocation or the volume
-// ejects. This is judged on the payload the links point into, whatever the launch guard decided; without a
-// home dir, classifyMacBundleLocation reports only those two locations.
-export function shouldProvisionBundledCliLinks(
-  payloadRoot: string,
-  log: (message: string) => void,
-  platform: NodeJS.Platform = process.platform,
-  access?: (file: string, mode: number) => void
-): boolean {
-  if (platform === 'win32') {
-    return false
-  }
-
-  const location = platform === 'darwin' ? classifyMacBundleLocation(payloadRoot, { access }) : null
-
-  if (location) {
-    log(`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`)
-  }
-
-  return !location
 }
 
 interface InstalledCopyBlock {

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import path from 'node:path'
 
+import { ephemeralMacBundleLocation } from './mac-applications-guard'
+
 type ProvisionFs = Pick<
   typeof fs,
   'mkdirSync' | 'lstatSync' | 'readlinkSync' | 'statSync' | 'symlinkSync' | 'renameSync' | 'unlinkSync'
@@ -54,6 +56,30 @@ function supersededBuild(destination: string, source: string): boolean {
   const build = (command: string): string => path.dirname(path.dirname(path.dirname(command)))
 
   return build(destination) !== build(source) && path.dirname(build(destination)) === path.dirname(build(source))
+}
+
+/**
+ * Whether to link the bundled CLI into ~/.local/bin. Judged on the payload the links point into, never on
+ * the Applications move prompt: on macOS a translocated or read-only payload is skipped, since its links
+ * dangle once macOS drops the copy or the volume ejects. Linux links as before; Windows never links.
+ */
+export function shouldProvisionBundledCliLinks(
+  payloadRoot: string,
+  log: (message: string) => void,
+  platform: NodeJS.Platform = process.platform,
+  access?: (file: string, mode: number) => void
+): boolean {
+  if (platform === 'win32') {
+    return false
+  }
+
+  const location = platform === 'darwin' ? ephemeralMacBundleLocation(payloadRoot, access) : null
+
+  if (location) {
+    log(`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`)
+  }
+
+  return !location
 }
 
 export function provisionCliLinks(

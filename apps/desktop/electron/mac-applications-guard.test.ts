@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   classifyMacBundleLocation,
   compareBundleVersions,
+  ephemeralMacBundleLocation,
   guardMacApplicationsLaunch,
   MAC_APPLICATIONS_GUARD_FILENAME,
   type MacApplicationsGuardDeps,
@@ -16,8 +17,7 @@ import {
   parseBundleShortVersionFromPlist,
   readBundleShortVersion,
   readMacApplicationsGuardPreference,
-  resolveMacAppBundle,
-  shouldProvisionBundledCliLinks
+  resolveMacAppBundle
 } from './mac-applications-guard'
 import { ensureMainWindow } from './main-window-lifecycle'
 
@@ -213,6 +213,17 @@ describe('classifyMacBundleLocation', () => {
         access: writable
       })
     ).toBeNull()
+  })
+})
+
+describe('ephemeralMacBundleLocation', () => {
+  it('reports only what macOS can take away, not the prompt-only Downloads and Desktop rules', () => {
+    for (const folder of ['Downloads', 'Desktop']) {
+      const bundle = `/Users/alice/${folder}/Hermes Agent.app`
+
+      expect(classifyMacBundleLocation(bundle, { homeDir: '/Users/alice', access: () => undefined })).not.toBeNull()
+      expect(ephemeralMacBundleLocation(bundle, () => undefined)).toBeNull()
+    }
   })
 })
 
@@ -653,72 +664,6 @@ describe('guardMacApplicationsLaunch', () => {
       error: 'NSBundle unavailable'
     })
     expect(broken.logs.some(line => line.includes('NSBundle unavailable'))).toBe(true)
-  })
-})
-
-describe('shouldProvisionBundledCliLinks', () => {
-  const erofs = () => {
-    throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
-  }
-
-  const writable = () => undefined
-
-  it.each([
-    [
-      'a mounted DMG',
-      '/Volumes/Hermes Agent/Hermes Agent.app/Contents/Resources/agent-payload',
-      erofs,
-      'read-only-volume'
-    ],
-    [
-      'App Translocation',
-      '/private/var/folders/aa/bb/T/AppTranslocation/1111/d/Hermes Agent.app/Contents/Resources/agent-payload',
-      writable,
-      'app-translocation'
-    ]
-  ] as const)(
-    'skips CLI links into %s whatever the launch guard decided',
-    async (_label, payloadRoot, access, location) => {
-      // An automated launch never prompts, so the guard has no location to report.
-      const { deps } = makeDeps({ env: { HERMES_DESKTOP_USER_DATA_DIR: '/tmp/smoke-ud' }, access })
-
-      await expect(guardMacApplicationsLaunch(deps)).resolves.toMatchObject({ reason: 'automated-environment' })
-
-      const logs: string[] = []
-
-      expect(shouldProvisionBundledCliLinks(payloadRoot, line => logs.push(line), 'darwin', access)).toBe(false)
-      expect(logs).toEqual([`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`])
-    }
-  )
-
-  it('links a payload on a writable or merely root-owned volume, and keeps Linux and Windows as they were', () => {
-    const eacces = () => {
-      throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
-    }
-
-    const log = vi.fn()
-
-    expect(
-      shouldProvisionBundledCliLinks(
-        '/Users/alice/Downloads/Hermes Agent.app/Contents/Resources/agent-payload',
-        log,
-        'darwin',
-        writable
-      )
-    ).toBe(true)
-    expect(
-      shouldProvisionBundledCliLinks(
-        '/Applications/Hermes Agent.app/Contents/Resources/agent-payload',
-        log,
-        'darwin',
-        eacces
-      )
-    ).toBe(true)
-    expect(shouldProvisionBundledCliLinks('/tmp/.mount_hermes/resources/agent-payload', log, 'linux', erofs)).toBe(true)
-    expect(
-      shouldProvisionBundledCliLinks('C:\\Program Files\\Hermes\\resources\\agent-payload', log, 'win32', writable)
-    ).toBe(false)
-    expect(log).not.toHaveBeenCalled()
   })
 })
 

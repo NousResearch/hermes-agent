@@ -138,47 +138,22 @@ class TestCacheMediaBytes:
         assert os.path.exists(result.path)
 
 
-
-
-# ---------------------------------------------------------------------------
-# Filename-length hardening: chat platforms can deliver display names that,
-# after the doc_ uuid prefix, exceed the 255-byte filesystem component limit
-# (ENAMETOOLONG dropped the whole inbound file message upstream).
-# ---------------------------------------------------------------------------
-
 class TestDocumentNameLength:
-    def test_oversized_cjk_name_is_truncated_and_saved(self):
-        name = "名单" * 130 + ".doc"  # 520 bytes + ext
+    """Inbound display names are unbounded; an oversized component raised ENAMETOOLONG on write."""
+
+    @pytest.mark.parametrize("name", [
+        "名单" * 130 + ".doc", "4-2.%E4%BB%A3%E8%A1%A8" * 24 + ".doc", "文" * 200 + ".pdf",
+        "a" * 300, "x." + "e" * 300, "😀" * 90 + ".docx"],
+        ids=["cjk", "percent-encoded", "cjk-pdf", "no-ext", "huge-ext", "emoji"])
+    def test_any_name_is_saved_within_one_component(self, name):
         path = cache_document_from_bytes(b"x", name)
         comp = os.path.basename(path)
-        assert len(comp.encode("utf-8")) <= 255
-        assert comp.endswith(".doc")
-        os.unlink(path)
-
-    def test_percent_encoded_display_name_survives(self):
-        # WeCom-style: URL-encoded CJK triples byte length.
-        name = ("4-2.%E4%BB%A3%E8%A1%A8" * 24) + ".doc"
-        assert len(name.encode()) > 237
-        path = cache_document_from_bytes(b"x", name)
-        comp = os.path.basename(path)
-        assert len(comp.encode("utf-8")) <= 255 and comp.endswith(".doc")
-        os.unlink(path)
-
-    def test_truncation_never_splits_a_codepoint(self):
-        name = "文" * 200 + ".pdf"
-        path = cache_document_from_bytes(b"x", name)
-        stem = os.path.basename(path).split("_", 2)[2].rsplit(".", 1)[0]
-        stem.encode("utf-8").decode("utf-8")  # raises on a half codepoint
-        assert path.endswith(".pdf")
-        os.unlink(path)
-
-    def test_long_name_without_extension_is_saved(self):
-        name = "a" * 300
-        path = cache_document_from_bytes(b"x", name)
-        assert os.path.basename(path).count(".") == 0
-        os.unlink(path)
+        assert os.path.exists(path) and len(comp.encode("utf-8")) <= 255
+        comp.encode("utf-8").decode("utf-8")  # never half a codepoint
+        ext = name.rpartition(".")[2]
+        if "." in name and len(ext) <= 32:
+            assert comp.endswith("." + ext)
 
     def test_normal_names_are_untouched(self):
         path = cache_document_from_bytes(b"x", "季度报表 2026.docx")
-        assert os.path.basename(path).endswith("季度报表 2026.docx")
-        os.unlink(path)
+        assert os.path.basename(path).endswith("_季度报表 2026.docx")

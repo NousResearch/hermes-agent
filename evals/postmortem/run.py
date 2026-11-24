@@ -44,14 +44,15 @@ PROBES = [
 
 def run_probe(script: str, args: list[str], repo: str, timeout: int = 240) -> tuple[int, str]:
     env = dict(os.environ)
-    env.setdefault("HERMES_HOME", tempfile.mkdtemp(prefix="pm-probe-"))
     env["PYTHONPATH"] = repo + os.pathsep + env.get("PYTHONPATH", "")
     cmd = [sys.executable, str(HERE / script), *[a.format(repo=repo) for a in args]]
-    try:
-        p = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env, check=False)
-        return p.returncode, (p.stdout + "\n" + p.stderr)
-    except subprocess.TimeoutExpired:
-        return 124, "TIMEOUT"
+    with tempfile.TemporaryDirectory(prefix="pm-probe-") as home:
+        env.setdefault("HERMES_HOME", home)
+        try:
+            p = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env, check=False)
+            return p.returncode, (p.stdout + "\n" + p.stderr)
+        except subprocess.TimeoutExpired:
+            return 124, "TIMEOUT"
 
 
 def main(argv=None) -> int:

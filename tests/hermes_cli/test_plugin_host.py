@@ -583,8 +583,9 @@ def repointed_profile_link(tmp_path, monkeypatch):
 @pytest.mark.parametrize("moves", [
     # (where the link points when the host is opened by it, when the caller binds, when the host starts)
     ("old", "new", "new"),  # bound after the repoint: holds the new directory's values, the host is the old one's
+    ("old", "new", "old"),  # bound while repointed, link restored before the start
     (None, "old", "new"),   # bound before the repoint: holds the old directory's values, the host is the new one's
-], ids=["bound_after_the_repoint", "bound_before_the_repoint"])
+], ids=["bound_after_the_repoint", "restored_before_the_start", "bound_before_the_repoint"])
 def test_a_caller_bound_through_a_moving_profile_link_lends_its_values_to_no_host(repointed_profile_link, moves):
     """A caller bound through a profile's link holds what the link's directory held when it bound. However the
     link moved around that bind, the host that starts expands its launcher from the files of its own directory."""
@@ -601,6 +602,27 @@ def test_a_caller_bound_through_a_moving_profile_link_lends_its_values_to_no_hos
         env.point(started)
         host.ensure_started()
     assert env.ran() == ["old" if opened_by else "new"]
+
+
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
+def test_a_launch_body_bound_before_its_own_link_was_repointed_lends_nothing_to_the_new_directorys_host(
+        repointed_profile_link, monkeypatch):
+    """The launch profile's body holds what its directory held when it bound. After the process's own link is
+    repointed at another profile's directory, that profile's host expands from its own files, not the body's."""
+    from agent import secret_scope as ss
+    from hermes_constants import hermes_home_key
+    from tui_gateway import server
+
+    env = repointed_profile_link
+    env.point("old")
+    monkeypatch.setenv("HERMES_HOME", str(env.link))
+    hermes_home_key(env.link)  # the process served its own profile, the old directory, under this name
+    host = env.host_for(env.dirs["new"])
+    with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+        assert ss.get_secret("PLUGIN_RUNNER").endswith("old-runner")
+        env.point("new")
+        host.ensure_started()
+    assert env.ran() == ["new"]
 
 
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
@@ -843,11 +865,13 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
     """The process keeps naming its own profile by the path it started with. After that link is renamed the
     manager answers to the new name, and a crash restart under multiplexing still expands the launcher from both
     of the launch profile's sources: its env-only keys (systemd ``Environment=``) and its ``.env``, read through
-    the name that now leads to it."""
+    the name that now leads to it. A start inside a launch-profile body bound since (its scope read through the old
+    name, so without the ``.env``) builds that scope again through the new name rather than borrowing the body's."""
     import signal
 
     from agent import secret_scope as ss
     from tests.waiting import wait_until
+    from tui_gateway import server
 
     ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
     runner.write_text(f'#!/bin/sh\necho "$1" >> "{ran}"\nshift\nexec "$@"\n', encoding="utf-8")
@@ -878,6 +902,11 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
         after = wait_until(reloaded, timeout=15, what="the crashed host's restart")
         assert after is not None and after.error is None
         assert ran.read_text(encoding="utf-8").split() == ["from-env-file", "from-env-file"]
+        manager._plugin_host().shutdown()
+        with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+            assert ss.get_secret("RUNNER_TAG") is None
+            manager._plugin_host().ensure_started()
+        assert ran.read_text(encoding="utf-8").split() == ["from-env-file"] * 3
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

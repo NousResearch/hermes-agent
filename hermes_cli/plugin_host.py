@@ -75,12 +75,14 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     caller bound to another profile, or from a crash restart's thread, which has no binding at all.
 
     A profile a plugin runs elsewhere expands its ``${VAR}``s against the process env, as ``host_launcher``
-    documents for the managed overlay's launcher. A caller already bound to *home*'s secrets (stamped with it, or
-    unstamped, which marks the launch profile's) lends them: the TUI gateway binds the launch profile's ``.env``
-    over the live env even single-profile, and the launcher reads what the rest of that body reads, under its
-    task-local multiplexing too: a name the lent scope lacks stays unresolved, as in the body, rather than read
-    from the live env. With no such caller the launch profile outside multiplexing uses the process env, so a
-    restart reads what the process loaded. The process env holds the launch profile's values, so any other
+    documents for the managed overlay's launcher. A caller bound to the launch profile's own scope (unstamped) lends
+    it to the launch profile's launcher: the TUI gateway binds that ``.env`` over the live env even single-profile,
+    and the launcher reads what the rest of that body reads, under its task-local multiplexing too: a name the lent
+    scope lacks stays unresolved, as in the body, rather than read from the live env. A scope stamped with another
+    profile's home is never lent: it holds what that profile's files held when the caller read them through a name,
+    which a link moved since can make another directory's, and the scope built below reads the files of the
+    directory this host starts in. With no such caller the launch profile outside multiplexing uses the process
+    env, so a restart reads what the process loaded. The process env holds the launch profile's values, so any other
     profile's launcher expands through its own secrets (``owner_secret_scope``), multiplexing or not: a desktop
     backend's cron ticker serves a sibling under task-local multiplexing, which a fresh context does not carry.
     Under multiplexing the launch profile's expands through its own scope too (``launch_secret_scope``: its
@@ -93,11 +95,9 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     launch, key = get_routing_process_hermes_home(), hermes_home_key(home)
     own = hermes_home_key(launch) == key
-    # The caller's scope was read through *source*: *home*'s only while that name leads to home's directory under
-    # the key the process remembers for it, as ``PluginManager._leads_here`` asks. A repointed link keeps its old
-    # key, and the host of the manager opened by it then starts in the old directory.
-    source = current_secret_scope_home() or launch
-    lends = hermes_home_key(source) == key == os.path.normcase(os.path.realpath(source))
+    # The launch scope was read through the process's own name: *home*'s only while that name leads to home's
+    # directory, as ``PluginManager._leads_here`` asks (after a rename the old name leads to no files).
+    lends = own and current_secret_scope_home() is None and os.path.normcase(os.path.realpath(launch)) == key
     lent = current_secret_scope() if lends else None
     multiplexed = is_multiplex_active()
 

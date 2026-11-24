@@ -59,13 +59,19 @@ export interface ArtworkLaunch {
 
 const isArtwork = (value: unknown): value is Artwork => ARTWORKS.includes(value as Artwork)
 
-/** The artwork the person chose, or null: never chosen, so the launches rotate. An appearance
- *  preference like the accent (a machine-level UI preference, lib/ui-preferences/keys.ts), where the
- *  rotation itself stays per device. */
+/** No artwork: the ground colour and the panels' grain alone. A choice, never part of the cycle. */
+export const NO_ARTWORK = 'none'
+
+export type ArtworkChoice = Artwork | typeof NO_ARTWORK
+
+/** The artwork the person chose (or none at all), or null: never chosen, so the launches rotate. An
+ *  appearance preference like the accent (a machine-level UI preference, lib/ui-preferences/keys.ts),
+ *  where the rotation itself stays per device. A stored value this build does not know reads as no
+ *  choice, which is also what an older build makes of "none". */
 export const ARTWORK_CHOICE_KEY = 'hermes.desktop.portalArtwork.v1'
 
-export const $artworkChoice = persistentAtom<Artwork | null>(ARTWORK_CHOICE_KEY, null, {
-  decode: raw => (isArtwork(raw) ? raw : null),
+export const $artworkChoice = persistentAtom<ArtworkChoice | null>(ARTWORK_CHOICE_KEY, null, {
+  decode: raw => (raw === NO_ARTWORK || isArtwork(raw) ? raw : null),
   encode: value => value
 })
 
@@ -73,8 +79,14 @@ export function chooseArtwork(artwork: Artwork): void {
   $artworkChoice.set(artwork)
 }
 
+/** Settings' artwork switch. Off paints none; on again goes back to the rotating launches (the
+ *  welcome's "Make it yours" is where one artwork is picked for good). */
+export function setArtworkShown(shown: boolean): void {
+  $artworkChoice.set(shown ? null : NO_ARTWORK)
+}
+
 /** What each theme paints right now, as mirrored onto <html>; null where the redesign is not shown. */
-export const $paintedArtwork = atom<null | Record<ArtworkMode, Artwork>>(null)
+export const $paintedArtwork = atom<null | Record<ArtworkMode, ArtworkChoice>>(null)
 
 /** The launch's artwork. A launch that already picked keeps its pick (a second window, a reload);
  *  a new one takes the next after the previous launch's, in the theme it opens in, so two
@@ -133,7 +145,11 @@ export function installArtworkAttributes(root: HTMLElement = document.documentEl
       }
 
       const pick = choice ?? launchArtwork()
-      const painted = { dark: artworkForMode(pick, 'dark'), light: artworkForMode(pick, 'light') }
+
+      const painted =
+        pick === NO_ARTWORK
+          ? { dark: pick, light: pick }
+          : { dark: artworkForMode(pick, 'dark'), light: artworkForMode(pick, 'light') }
 
       root.dataset.artworkDark = painted.dark
       root.dataset.artworkLight = painted.light

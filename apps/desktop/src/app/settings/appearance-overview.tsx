@@ -12,6 +12,8 @@ import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import { getBaseColors, useTheme } from '@/themes/context'
 
+import { $artworkChoice, NO_ARTWORK, setArtworkShown } from '../redesign/artwork'
+
 import { appearanceOverviewCopy } from './appearance-overview-copy'
 import { ListRow, RowFootnoteAction, SettingsContent, ToggleRow } from './primitives'
 import { SettingsCard, SettingsDisclosure } from './settings-card'
@@ -35,6 +37,7 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
   const spentTips = useStore($spentTipCount)
+  const artworkChoice = useStore($artworkChoice)
   const groupName = useId()
   const advancedRef = useRef<HTMLDetailsElement>(null)
   const pendingSetting = useSettingDeepLink('config:appearance')
@@ -151,6 +154,12 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
                 }}
               />
             </div>
+            <ToggleRow
+              checked={artworkChoice !== NO_ARTWORK}
+              description={copy.artworkDescription}
+              label={copy.artwork}
+              onChange={setArtworkShown}
+            />
           </SettingsCard>
         </section>
 

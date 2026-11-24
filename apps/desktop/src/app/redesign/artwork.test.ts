@@ -15,7 +15,8 @@ import {
   artworksFor,
   chooseArtwork,
   installArtworkAttributes,
-  nextArtwork
+  nextArtwork,
+  setArtworkShown
 } from './artwork'
 
 function launches(mode: ArtworkMode, count: number): Artwork[] {
@@ -162,6 +163,45 @@ describe('installArtworkAttributes', () => {
       launch: 'previous-launch',
       artwork: 'wing'
     })
+    disposeFresh()
+    freshShell.set(null)
+  })
+
+  it('paints no artwork when it is turned off, in both themes, without spending a launch pick', () => {
+    $artworkChoice.set('none')
+    dispose = installArtworkAttributes(root)
+
+    expect(root.dataset.artworkDark).toBe('none')
+    expect(root.dataset.artworkLight).toBe('none')
+    expect($paintedArtwork.get()).toEqual({ dark: 'none', light: 'none' })
+    expect(localStorage.getItem(ARTWORK_KEY)).toBeNull()
+  })
+
+  it('turns the artwork off and back on: on again, the launches rotate as before any choice', () => {
+    dispose = installArtworkAttributes(root)
+    const launchPick = root.dataset.artworkDark
+
+    setArtworkShown(false)
+    expect(root.dataset.artworkDark).toBe('none')
+    expect(localStorage.getItem(ARTWORK_CHOICE_KEY)).toBe('none')
+
+    setArtworkShown(true)
+    expect(root.dataset.artworkDark).toBe(launchPick)
+    expect(localStorage.getItem(ARTWORK_CHOICE_KEY)).toBeNull()
+  })
+
+  // What a build without the "none" choice does with one stored by a build that has it (a revert,
+  // or an older client reading the synced preference): any value it does not know is no choice.
+  it('reads a stored choice it does not know as no choice, and rotates', async () => {
+    localStorage.setItem(ARTWORK_CHOICE_KEY, 'no-such-artwork')
+    vi.resetModules()
+    const fresh = await import('./artwork')
+    const { $shellChoice: freshShell } = await import('@/store/shell-variant')
+    freshShell.set(true)
+    const disposeFresh = fresh.installArtworkAttributes(root)
+
+    expect(fresh.$artworkChoice.get()).toBeNull()
+    expect(root.dataset.artworkDark).toBe('ascend')
     disposeFresh()
     freshShell.set(null)
   })

@@ -528,6 +528,10 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("zsh", ".zprofile", 'export PATH="/opt/team/.local/bin:$PATH"'),
     ("zsh", ".zprofile", 'export PYTHONPATH="$HOME/.local/bin:$PYTHONPATH"'),
     ("zsh", ".zprofile", 'export PATH+="$HOME/.local/bin"'),  # appends without a colon: glued to the last entry
+    ("zsh", ".zprofile", 'export PATH="~/.local/bin:$PATH"'),  # a quoted ~ stays a literal ~
+    ("zsh", ".zprofile", 'export PATH+=":~/.local/bin"'),
+    ("zsh", ".zprofile", "export PATH='$HOME/.local/bin':$PATH"),  # single quotes keep $HOME literal
+    ("fish", ".config/fish/config.fish", 'fish_add_path "~/.local/bin"'),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin-tools"'),
     ("fish", ".config/fish/config.fish", "fish_add_path /opt/team/.local/bin"),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin/scripts"'),
@@ -546,15 +550,24 @@ def test_path_check_needs_a_line_that_puts_local_bin_on_path(tmp_path, monkeypat
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("line", ['export PATH+=":$HOME/.local/bin"', "PATH+=:~/.local/bin"])
-def test_path_check_counts_an_append_that_starts_a_new_entry(tmp_path, monkeypatch, capsys, line):
+@pytest.mark.parametrize("shell, rc_file, line", [
+    ("zsh", ".zprofile", 'export PATH+=":$HOME/.local/bin"'),  # an append that starts a new entry
+    ("zsh", ".zprofile", "PATH+=:~/.local/bin"),
+    ("zsh", ".zprofile", 'export PATH="$PATH":~/.local/bin'),  # the ~ is outside the quotes
+    ("zsh", ".zprofile", 'export PATH="$HOME"/.local/bin:$PATH'),
+    ("fish", ".config/fish/config.fish", "set -gx PATH $HOME/.local/bin $PATH"),
+])
+def test_path_check_counts_a_line_that_puts_local_bin_on_path(tmp_path, monkeypatch, capsys, shell, rc_file, line):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
     (link_dir / "hermes").symlink_to(launcher)
-    (Path.home() / ".zprofile").write_text(line + "\n", encoding="utf-8")
+    monkeypatch.setenv("SHELL", f"/bin/{shell}")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    (Path.home() / rc_file).parent.mkdir(parents=True, exist_ok=True)
+    (Path.home() / rc_file).write_text(line + "\n", encoding="utf-8")
 
     assert doctor.run_doctor(Namespace(fix=False)) == 0
 
-    assert "configured in ~/.zprofile" in capsys.readouterr().out
+    assert f"configured in ~/{rc_file}" in capsys.readouterr().out
 
 
 @pytest.mark.platforms("posix")

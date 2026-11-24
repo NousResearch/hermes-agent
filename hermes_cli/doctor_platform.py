@@ -600,10 +600,10 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
-# What puts an entry on PATH in an rc line (PATH itself, not PYTHONPATH); a "#" ends the line for both families.
+# What puts an entry on PATH in an rc line (PATH itself, not PYTHONPATH); a "#" ends the line in both families.
 # PATH+= only counts when its value starts a new entry with ":"; without one it extends the last entry.
 _PATH_SETTERS = {
-    "fish": r"(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)",
+    "fish": r"(?:fish_add_path\b|set\b[^#\n]*?\bPATH\b)",
     "posix": r"(?:\bPATH=|\bPATH\+=[\"']?:|\bpath\+?=\()",
 }
 # A PATH entry ends at an optional trailing slash and then a delimiter, so ~/.local/bin-tools,
@@ -665,14 +665,44 @@ def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
     return shell, [*([login] if login else []), bashrc], advice, [path for path in logins if path != login]
 
 
+def _open_quote(code: str, pos: int) -> str:
+    """The quote character still open at ``code[pos]``, or "" outside quotes."""
+    quote, escaped = "", False
+    for ch in code[:pos]:
+        if escaped:
+            escaped = False
+        elif ch == "\\" and quote != "'":
+            escaped = True
+        elif ch == quote:
+            quote = ""
+        elif not quote and ch in "\"'":
+            quote = ch
+    return quote
+
+
+def _shell_expands(root: str, quote: str) -> bool:
+    # A quoted ~ and a single-quoted $HOME stay literal in PATH; a literal path needs no expansion.
+    if root == "~":
+        return not quote
+    return quote != "'" or not root.startswith("$")
+
+
+def _puts_entry_on_path(line: str, setter: re.Pattern[str], entry: re.Pattern[str]) -> bool:
+    code = line.split("#", 1)[0]
+    found = setter.search(code)
+    return found is not None and any(
+        _shell_expands(m["root"], _open_quote(code, m.start("root"))) for m in entry.finditer(code, found.end())
+    )
+
+
 def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
     if termux:
-        entry = rf"(?:\$PREFIX/bin|\$\{{PREFIX\}}/bin|{re.escape(str(link_dir))})"
+        roots, rest = rf"\$PREFIX|\$\{{PREFIX\}}|{re.escape(str(link_dir.parent))}", "bin"
     else:
         # ~/.local/bin by any spelling of home; /opt/team/.local/bin is another directory.
-        entry = rf"(?<![\w./-])(?:\$HOME|\$\{{HOME\}}|~|{re.escape(str(Path.home()))})[\"']?/\.local/bin"
-    setter = _PATH_SETTERS["fish" if shell == "fish" and not termux else "posix"]
-    pattern = re.compile(rf"^\s*[^#\n]*{setter}[^#\n]*{entry}{_PATH_ENTRY_END}")
+        roots, rest = rf"\$HOME|\$\{{HOME\}}|~|{re.escape(str(Path.home()))}", r"\.local/bin"
+    entry = re.compile(rf"(?<![\w./-])(?P<root>{roots})[\"']?/{rest}{_PATH_ENTRY_END}")
+    setter = re.compile(_PATH_SETTERS["fish" if shell == "fish" and not termux else "posix"])
     for rc_path in candidates:
         if not rc_path.is_file():
             continue
@@ -680,7 +710,7 @@ def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, 
             text = rc_path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        if any(pattern.search(line) for line in text.splitlines()):
+        if any(_puts_entry_on_path(line, setter, entry) for line in text.splitlines()):
             return rc_path
     return None
 

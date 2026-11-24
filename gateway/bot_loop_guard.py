@@ -33,6 +33,7 @@ class BotLoopGuardSettings:
     cooldown_seconds: float = 600.0
     max_hops: int = 4
     bot_replies_expect_reply: bool = False
+    reset_all_on_human: bool = False
 
 
 def _as_bool(raw, default: bool) -> bool:
@@ -76,6 +77,7 @@ def settings_from_config(cfg) -> BotLoopGuardSettings:
         cooldown_seconds=_as_positive(block.get("cooldown_seconds"), defaults.cooldown_seconds),
         max_hops=_as_positive_int(block.get("max_hops"), defaults.max_hops),
         bot_replies_expect_reply=_as_bool(block.get("bot_replies_expect_reply"), defaults.bot_replies_expect_reply),
+        reset_all_on_human=_as_bool(block.get("reset_all_on_human"), defaults.reset_all_on_human),
     )
 
 
@@ -201,12 +203,10 @@ class BotLoopGuard:
 
     def _apply_shared_epoch(self) -> None:
         """Clear every conversation when the shared epoch advanced. Caller holds ``self._lock``."""
-        from hermes_cli.config import bot_loop_reset_on_human_enabled
-        if bot_loop_reset_on_human_enabled() is not True:
+        from gateway.bot_loop_reset import get_hermes_root, read_epoch, reset_all_on_human
+        if reset_all_on_human() is not True:
             return
-        from gateway.bot_loop_reset import read_epoch
-        from hermes_constants import get_default_hermes_root
-        epoch = read_epoch(get_default_hermes_root())
+        epoch = read_epoch(get_hermes_root())
         if not isinstance(epoch, float) or epoch <= self._applied_epoch:
             return
         self._events.clear()

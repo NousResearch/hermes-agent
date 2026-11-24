@@ -125,10 +125,10 @@ def test_bot_users_marks_a_peer_on_a_platform_without_a_bot_flag():
 def _force_shared_epoch(monkeypatch, tmp_path, *, enabled):
     """Patch the flag and install root the guard imports at call time."""
     monkeypatch.setattr(
-        "hermes_cli.config.bot_loop_reset_on_human_enabled",
-        lambda config_path=None: enabled,
+        "gateway.bot_loop_reset.reset_all_on_human",
+        lambda root=None: enabled,
     )
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **_kwargs: tmp_path)
+    monkeypatch.setattr("gateway.bot_loop_reset.get_hermes_root", lambda: tmp_path)
 
 
 def test_shared_epoch_clears_the_window_and_every_gateway_chain(clock, monkeypatch, tmp_path):

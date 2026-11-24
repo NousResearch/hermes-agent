@@ -214,6 +214,17 @@ def get_hermes_home() -> Path:
     return get_process_hermes_home()
 
 
+def get_hermes_root() -> Path:
+    """Install root that holds :func:`get_hermes_home`.
+
+    A profile home ``<root>/profiles/<name>`` resolves to ``<root>``. The platform
+    default, with ``HERMES_HOME`` unset, is its own root. Not memoized:
+    :func:`get_default_hermes_root` caches, and a test that changes ``HERMES_HOME``
+    would otherwise see a stale root.
+    """
+    return _hermes_root_of(_get_platform_default_hermes_home(), get_hermes_home())
+
+
 # Resolved keys, keyed by the path string that was handed in. Path.resolve()
 # is a filesystem call, and this function sits under every ToolRegistry
 # lookup through current_scope_key(), so without this the registry pays a

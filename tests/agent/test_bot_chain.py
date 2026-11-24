@@ -169,14 +169,14 @@ def test_a_disabled_guard_turns_the_bot_mode_rules_off(bot_chain, monkeypatch):
 def _force_shared_epoch(monkeypatch, tmp_path, *, enabled):
     """Patch the flag reader and install root ``bot_chain`` looks up at call time.
 
-    ``on_turn_start`` / ``admit_send`` import ``bot_loop_reset_on_human_enabled`` from
-    ``hermes_cli.config`` and ``get_default_hermes_root`` from ``hermes_constants``.
+    ``on_turn_start`` / ``admit_send`` import ``reset_all_on_human`` and
+    ``get_hermes_root`` from ``gateway.bot_loop_reset``.
     """
     monkeypatch.setattr(
-        "hermes_cli.config.bot_loop_reset_on_human_enabled",
-        lambda config_path=None: enabled,
+        "gateway.bot_loop_reset.reset_all_on_human",
+        lambda root=None: enabled,
     )
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **_kwargs: tmp_path)
+    monkeypatch.setattr("gateway.bot_loop_reset.get_hermes_root", lambda: tmp_path)
 
 
 def test_newer_shared_epoch_lets_a_capped_send_start_fresh(bot_chain, monkeypatch, tmp_path):

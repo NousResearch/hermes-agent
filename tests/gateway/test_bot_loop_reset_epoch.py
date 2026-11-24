@@ -1,4 +1,4 @@
-"""Bot-loop reset epoch file under ``<root>/gateway-state``."""
+"""Bot-loop reset epoch file, a sibling of ``<root>/config.yaml``."""
 
 from __future__ import annotations
 
@@ -12,55 +12,50 @@ from gateway.bot_loop_reset import EPOCH_NAME, epoch_path, read_epoch, write_epo
 
 def test_epoch_name_and_path(tmp_path: Path) -> None:
     assert EPOCH_NAME == "bot-loop-reset-epoch"
-    assert epoch_path(tmp_path) == tmp_path / "gateway-state" / EPOCH_NAME
+    assert epoch_path(tmp_path) == tmp_path / EPOCH_NAME
 
 
-def test_missing_file_reads_as_none(tmp_path: Path) -> None:
+def test_missing_file_reads_as_zero(tmp_path: Path) -> None:
     assert not epoch_path(tmp_path).exists()
-    assert read_epoch(tmp_path) is None
+    assert read_epoch(tmp_path) == 0.0
 
 
 def test_write_then_read_returns_the_same_float(tmp_path: Path) -> None:
-    stored = write_epoch(tmp_path, when=0.1)
-    assert stored == 0.1
-    assert read_epoch(tmp_path) == stored
+    assert write_epoch(tmp_path, 0.1) is None
+    assert epoch_path(tmp_path).read_text(encoding="utf-8") == "0.100000\n"
+    assert read_epoch(tmp_path) == 0.1
 
 
-def test_second_write_is_greater_or_equal_and_file_has_one_line(tmp_path: Path) -> None:
-    first = write_epoch(tmp_path)
-    second = write_epoch(tmp_path)
-    assert isinstance(first, float)
-    assert isinstance(second, float)
-    assert second >= first
+def test_later_write_replaces_the_file_with_one_line(tmp_path: Path) -> None:
+    write_epoch(tmp_path, 1.5)
+    write_epoch(tmp_path, 2.25)
     text = epoch_path(tmp_path).read_text(encoding="utf-8")
-    lines = text.splitlines()
-    assert lines == [text.strip()]
-    assert len(lines) == 1
-    assert read_epoch(tmp_path) == second
+    assert text == "2.250000\n"
+    assert text.splitlines() == ["2.250000"]
+    assert len(text.splitlines()) == 1
+    assert read_epoch(tmp_path) == 2.25
 
 
-def test_corrupt_file_reads_as_none(tmp_path: Path) -> None:
+def test_garbage_non_finite_and_non_positive_read_as_zero(tmp_path: Path) -> None:
     path = epoch_path(tmp_path)
-    path.parent.mkdir(parents=True)
-    path.write_text("not-a-float\n", encoding="utf-8")
-    assert read_epoch(tmp_path) is None
-
-    path.write_text("", encoding="utf-8")
-    assert read_epoch(tmp_path) is None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for body in ("not-a-float\n", "", "1e99999\n", "nan\n", "inf\n", "-inf\n", "0\n", "0.0\n", "-1.5\n"):
+        path.write_text(body, encoding="utf-8")
+        assert read_epoch(tmp_path) == 0.0
 
     path.write_bytes(b"\xff\xfe not utf-8 epoch")
-    assert read_epoch(tmp_path) is None
-
-    path.write_text("1e99999\n", encoding="utf-8")
-    assert read_epoch(tmp_path) is None
+    assert read_epoch(tmp_path) == 0.0
 
 
-def test_write_creates_gateway_state_directory(tmp_path: Path) -> None:
+def test_write_creates_root_not_a_gateway_state_subdirectory(tmp_path: Path) -> None:
     root = tmp_path / "fresh-home"
     assert not root.exists()
-    write_epoch(root, when=1.25)
-    assert epoch_path(root).parent.is_dir()
+    write_epoch(root, 1.25)
+    assert root.is_dir()
+    assert epoch_path(root) == root / EPOCH_NAME
     assert epoch_path(root).is_file()
+    assert not (root / "gateway-state").exists()
+    assert epoch_path(root).read_text(encoding="utf-8") == "1.250000\n"
 
 
 def test_write_replaces_a_temp_file_in_the_same_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,11 +67,12 @@ def test_write_replaces_a_temp_file_in_the_same_directory(tmp_path: Path, monkey
         return real_replace(src, dst)
 
     monkeypatch.setattr("gateway.bot_loop_reset.os.replace", _replace)
-    stored = write_epoch(tmp_path, when=2.5)
-    assert read_epoch(tmp_path) == stored
+    root = tmp_path / "install"
+    assert write_epoch(root, 2.5) is None
+    assert read_epoch(root) == 2.5
     assert len(replaced) == 1
     src, dst = replaced[0]
-    assert dst == epoch_path(tmp_path)
+    assert dst == epoch_path(root)
     assert src.parent == dst.parent
     assert src.name != dst.name
     assert not src.exists()
@@ -85,7 +81,7 @@ def test_write_replaces_a_temp_file_in_the_same_directory(tmp_path: Path, monkey
 
 def test_read_uses_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = epoch_path(tmp_path)
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes("4.5\n".encode("utf-8"))
     encodings: list[object] = []
     real_read_text = Path.read_text

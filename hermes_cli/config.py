@@ -1752,18 +1752,6 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def bot_loop_reset_on_human_enabled(config_path: Optional[Path] = None) -> bool:
-    """True only when raw ``gateway.bot_loop_reset_on_human`` is the boolean ``True``.
-
-    Reads the user config with no defaults merged. A missing file, a missing key,
-    ``false``, and any non-bool (including the string ``"true"``) are off.
-    """
-    gateway = read_user_config_raw(config_path).get("gateway")
-    if not isinstance(gateway, dict):
-        return False
-    return gateway.get("bot_loop_reset_on_human") is True
-
-
 def read_raw_config_readonly() -> dict[str, Any]:
     """``read_raw_config()`` without the per-call deepcopy, for callers that ONLY READ.
     **Mutating the result corrupts the in-process cache for every subsequent caller.** Meant for

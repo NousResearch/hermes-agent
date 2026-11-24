@@ -121,20 +121,21 @@ def _install_epoch_sandbox(monkeypatch, tmp_path, *, enabled: object = True):
 
     def _forbid_real_root(*_args, **_kwargs):
         raise AssertionError(
-            "get_default_hermes_root must be the name imported into gateway.bot_loop_reset"
+            "get_hermes_root must be the name imported into gateway.bot_loop_reset"
         )
 
+    monkeypatch.setattr("hermes_constants.get_hermes_root", _forbid_real_root)
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", _forbid_real_root)
-    monkeypatch.setattr(reset, "get_default_hermes_root", lambda: tmp_path)
-    monkeypatch.setattr(reset, "bot_loop_reset_on_human_enabled", lambda: enabled)
+    monkeypatch.setattr(reset, "get_hermes_root", lambda: tmp_path)
+    monkeypatch.setattr(reset, "reset_all_on_human", lambda root=None: enabled)
 
     real_write = reset.write_epoch
 
-    def _write(root, when=None):
+    def _write(root, now):
         root = Path(root)
         if root != tmp_path and tmp_path not in root.parents:
             raise AssertionError(f"refusing epoch write outside tmp_path: {root}")
-        return real_write(root, when=when)
+        return real_write(root, now)
 
     monkeypatch.setattr(reset, "write_epoch", _write)
     return reset
@@ -155,15 +156,15 @@ def test_note_human_reset_writes_epoch_only_for_bot_chat_when_flag_on(tmp_path, 
     reset = _install_epoch_sandbox(monkeypatch, tmp_path, enabled=True)
     reset.note_human_reset(_bot_chat_agent())
     stored = reset.read_epoch(tmp_path)
-    assert isinstance(stored, float)
-    assert reset.epoch_path(tmp_path) == tmp_path / "gateway-state" / reset.EPOCH_NAME
+    assert isinstance(stored, float) and stored > 0
+    assert reset.epoch_path(tmp_path) == tmp_path / reset.EPOCH_NAME
     assert reset.epoch_path(tmp_path).is_file()
 
 
 def test_flag_off_does_not_write(tmp_path, monkeypatch):
     reset = _install_epoch_sandbox(monkeypatch, tmp_path, enabled=False)
     reset.note_human_reset(_bot_chat_agent())
-    assert reset.read_epoch(tmp_path) is None
+    assert reset.read_epoch(tmp_path) == 0.0
     assert not reset.epoch_path(tmp_path).exists()
 
 
@@ -223,7 +224,7 @@ def test_hint_is_used_before_the_session_store(tmp_path, monkeypatch):
 def test_raising_write_epoch_does_not_propagate(tmp_path, monkeypatch, caplog):
     reset = _install_epoch_sandbox(monkeypatch, tmp_path, enabled=True)
 
-    def _boom(_root, when=None):
+    def _boom(_root, now):
         raise OSError("disk full")
 
     monkeypatch.setattr(reset, "write_epoch", _boom)

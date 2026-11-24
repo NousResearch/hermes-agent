@@ -13,7 +13,7 @@ Desktop relay) is still capped. ``gateway.bot_loop_guard.enabled: false`` turns 
 
 Recipients are compared by the identity the receiving turn's author id carries (``bot:<profile>``,
 ``bot:<connection>/<profile>``), resolved by the caller with the same resolver delivery uses.
-When ``gateway.bot_loop_reset_on_human`` is on, a newer epoch file drops every in-process chain
+When ``gateway.bot_loop_guard.reset_all_on_human`` is on, a newer epoch file drops every in-process chain
 before a turn or send is counted, so a process that missed the human message still starts fresh.
 """
 
@@ -79,19 +79,17 @@ def _apply_shared_epoch() -> None:
     """Drop every in-process chain when the shared epoch file is newer than the stamp
     this process last applied.
 
-    No-op unless ``bot_loop_reset_on_human_enabled`` is exactly True. A missing or
-    unreadable epoch does not clear. Caller must not hold ``_LOCK`` — it is a
+    No-op unless ``reset_all_on_human`` is exactly True. A missing epoch is 0.0 and
+    does not clear (applied starts at 0.0). Caller must not hold ``_LOCK`` — it is a
     ``Lock``, not an ``RLock``. The file read runs under the lock so the clear and
     the stamp cannot race a chain read.
     """
     global _APPLIED_EPOCH
-    from hermes_cli.config import bot_loop_reset_on_human_enabled
-    if bot_loop_reset_on_human_enabled() is not True:
+    from gateway.bot_loop_reset import get_hermes_root, read_epoch, reset_all_on_human
+    if reset_all_on_human() is not True:
         return
-    from gateway.bot_loop_reset import read_epoch
-    from hermes_constants import get_default_hermes_root
     with _LOCK:
-        epoch = read_epoch(get_default_hermes_root())
+        epoch = read_epoch(get_hermes_root())
         if isinstance(epoch, float) and epoch > _APPLIED_EPOCH:
             _CHAINS.clear()
             _APPLIED_EPOCH = epoch

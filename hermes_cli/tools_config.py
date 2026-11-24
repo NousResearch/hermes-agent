@@ -489,6 +489,13 @@ def _left_core_core_bundles() -> set[str]:
     return {f"hermes-{f.platform}" for f in LEFT_CORE if f.platform and not f.toolsets}
 
 
+def _resolve_preset(name: str) -> list[str]:
+    """``resolve_toolset``, plus a left-core core-tools bundle (:func:`_left_core_core_bundles`) read as the
+    core tools it carried whether or not the plugin is loaded: both picker paths read it the same way."""
+    from toolsets import _HERMES_CORE_TOOLS, resolve_toolset
+    return resolve_toolset(name) or (list(_HERMES_CORE_TOOLS) if name in _left_core_core_bundles() else [])
+
+
 def _platform_default_keys() -> set[str]:
     return {p["default_toolset"] for p in PLATFORMS.values()} | _left_core_core_bundles()
 
@@ -502,12 +509,10 @@ def _explicit_toolsets(
     from toolsets import resolve_toolset, TOOLSETS
 
     enabled = {ts for ts in toolset_names if ts in explicit_known_keys and _toolset_allowed_for_platform(ts, platform)}
-    from toolsets import _HERMES_CORE_TOOLS
-    core_bundles = _left_core_core_bundles()
     composite_tools = {
         t for ts_name in toolset_names if ts_name not in explicit_known_keys
-        and (ts_name in TOOLSETS or ts_name in core_bundles)
-        for t in (resolve_toolset(ts_name) if ts_name in TOOLSETS else _HERMES_CORE_TOOLS)}
+        and (ts_name in TOOLSETS or ts_name in _left_core_core_bundles())
+        for t in _resolve_preset(ts_name)}
     if composite_tools:
         enabled |= _configurable_subset_of(composite_tools, platform) - _default_off_toolsets(platform, explicitly_configured)
     _enable_recently_shipped_toolsets(enabled, config, platform)
@@ -519,7 +524,7 @@ def _composite_toolsets(toolset_names: list[str], platform: str, explicitly_conf
     saved). ``x_search`` is not in any composite, so inject it when xAI creds exist and exempt it from default-off."""
     from toolsets import resolve_toolset
 
-    all_tool_names = {t for ts_name in toolset_names for t in resolve_toolset(ts_name)}
+    all_tool_names = {t for ts_name in toolset_names for t in _resolve_preset(ts_name)}
     enabled = _configurable_subset_of(all_tool_names, platform)
     default_off = _default_off_toolsets(platform, explicitly_configured)
     if _toolset_allowed_for_platform("x_search", platform) and _xai_credentials_present():

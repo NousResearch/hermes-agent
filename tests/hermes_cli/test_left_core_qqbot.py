@@ -177,6 +177,17 @@ def test_a_mixed_list_naming_hermes_qqbot_keeps_its_core_tools_and_an_unchecked_
     assert "terminal" not in tools_config._get_platform_tools(config, "telegram")
 
 
+def test_a_bare_hermes_qqbot_row_reads_as_its_core_tools_without_the_plugin():
+    """``telegram: [hermes-qqbot]`` alone (the composite path) shows the preset's core tools before the plugin
+    loads, so a save from the picker keeps them instead of dropping the preset with nothing in its place."""
+    from hermes_cli import tools_config
+    config = {"platform_toolsets": {"telegram": ["hermes-qqbot"]}}
+    enabled = tools_config._get_platform_tools(config, "telegram")
+    assert enabled >= {"file", "terminal", "web"}
+    tools_config._save_platform_tools(config, "telegram", enabled)
+    assert tools_config._get_platform_tools(config, "telegram") >= {"file", "terminal", "web"}
+
+
 def test_a_newer_yaml_disable_under_the_old_key_beats_a_gateway_json_enable(tmp_path):
     """Layer order decides between the two spellings: config.yaml's ``qqbot-platform: {enabled: false}`` is
     newer than gateway.json's ``qqbot`` enable, as startup reads them."""

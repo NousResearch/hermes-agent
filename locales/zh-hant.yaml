@@ -1885,6 +1885,7 @@ cli:
     total_line: "總計：{amount}"
     portal_card_will_be_charged: "將從你儲存在 Portal 的卡片扣款。"
     consent_charge: "確認即表示你允許 Nous Research 從你的卡片扣款。"
+    consent_charge_managed_payments: "確認即表示你允許 Link 從此付款方式扣除這筆金額，外加任何適用的銷售稅或加值稅。"
     choice_pay_now: "立即支付 {amount}"
     desc_submit_charge: "送出扣款"
     desc_manage_card_billing: "在瀏覽器管理你的卡片／帳務"

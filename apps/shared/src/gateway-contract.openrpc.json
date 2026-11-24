@@ -6683,6 +6683,21 @@
         "title": "BillingKeepGoingOnCreditsParams",
         "type": "object"
       },
+      "BillingManagedPayments": {
+        "additionalProperties": false,
+        "description": "Purchases bill Stripe Managed Payments instead of ``card``: Link charges this payer, adds any\nsales tax or VAT on top, and sends the receipt. ``label`` names it.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "BillingManagedPayments",
+        "type": "object"
+      },
       "BillingMonthlyCap": {
         "additionalProperties": false,
         "properties": {
@@ -7253,6 +7268,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/BillingPaymentMethod"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "managed_payments": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BillingManagedPayments"
               },
               {
                 "type": "null"
@@ -31023,7 +31049,6 @@
         "type": "object"
       },
       "ProfileCreateReceipt": {
-        "additionalProperties": false,
         "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
         "properties": {
           "path": {

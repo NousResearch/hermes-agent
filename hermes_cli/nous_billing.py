@@ -239,6 +239,13 @@ def _raise_for_error(status: int, payload: dict[str, Any], headers: Any = None) 
     raise cls(p.get("message") or (error if cls is BillingError else None) or fallback, **common)
 
 
+# The payers every purchase surface (CLI, TUI, desktop) can show before a charge. The portal
+# reports, and bills, a Managed Payments payer only for a client that names it here, so a
+# client that can't show Link and the tax it adds keeps paying with the card on file.
+BILLING_PAYERS_HEADER = "Hermes-Billing-Payers"
+BILLING_PAYERS = "managed-payments"
+
+
 def _request(
     method: str, path: str, *, body: Optional[dict[str, Any]] = None,
     extra_headers: Optional[dict[str, str]] = None, timeout: float = DEFAULT_TIMEOUT, _retried_auth: bool = False,
@@ -249,7 +256,8 @@ def _request(
     one retry with a freshly-resolved token so a cached-but-just-expired token self-heals.
     """
     token, base = _resolve_token_and_base(use_cache=not _retried_auth)
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
+               BILLING_PAYERS_HEADER: BILLING_PAYERS}
     if body is not None:
         headers["Content-Type"] = "application/json"
     headers.update(extra_headers or {})

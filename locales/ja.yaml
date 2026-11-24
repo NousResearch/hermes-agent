@@ -1885,6 +1885,7 @@ cli:
     total_line: "合計: {amount}"
     portal_card_will_be_charged: "ポータルに保存されたカードに課金されます。"
     consent_charge: "確認すると、Nous Research によるカードへの課金を許可したことになります。"
+    consent_charge_managed_payments: "確認すると、この金額に売上税または VAT を加えた額を Link がこのお支払い方法に課金することを許可したことになります。"
     choice_pay_now: "今すぐ {amount} を支払う"
     desc_submit_charge: "課金を送信"
     desc_manage_card_billing: "ブラウザでカード / 請求を管理"

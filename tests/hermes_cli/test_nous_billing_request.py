@@ -101,6 +101,17 @@ def test_401_refreshes_token_and_retries_successfully(monkeypatch):
 
 
 
+@pytest.mark.parametrize("call", [
+    lambda: nb.get_billing_state(),
+    lambda: nb.post_charge(amount_usd="10.00", idempotency_key="key-1"),
+])
+def test_billing_requests_name_the_payers_this_client_can_show(monkeypatch, call):
+    # The portal reports, and bills, a Managed Payments payer only for a client that names it.
+    seen = _sequence(monkeypatch, _FakeResp(b'{"chargeId": "charge_1"}'))
+    call()
+    assert seen[0]["headers"]["hermes-billing-payers"] == "managed-payments"
+
+
 def test_403_remote_spending_revoked_maps_through_request(monkeypatch):
     # The wire discriminator keeps spend-revocation distinct from missing scope.
     _sequence(

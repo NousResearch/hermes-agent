@@ -1885,6 +1885,7 @@ cli:
     total_line: "Итого: {amount}"
     portal_card_will_be_charged: "Средства будут списаны с карты, сохранённой на портале."
     consent_charge: "Подтверждая, вы разрешаете Nous Research списать средства с вашей карты."
+    consent_charge_managed_payments: "Подтверждая, вы разрешаете Link списать с этого способа оплаты эту сумму плюс налог с продаж или НДС, если он применяется."
     choice_pay_now: "Оплатить {amount} сейчас"
     desc_submit_charge: "отправить платёж"
     desc_manage_card_billing: "управлять картой / оплатой в браузере"

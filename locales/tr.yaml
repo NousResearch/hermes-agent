@@ -1885,6 +1885,7 @@ cli:
     total_line: "Toplam: {amount}"
     portal_card_will_be_charged: "Portalda kayıtlı kartınızdan ücret alınacak."
     consent_charge: "Onaylayarak Nous Research'ün kartınızdan ücret almasına izin verirsiniz."
+    consent_charge_managed_payments: "Onaylayarak Link'in bu ödeme yönteminden bu tutarı ve varsa satış vergisini ya da KDV'yi almasına izin verirsiniz."
     choice_pay_now: "Şimdi {amount} öde"
     desc_submit_charge: "ücreti gönder"
     desc_manage_card_billing: "kartınızı / faturalandırmayı tarayıcıda yönetin"

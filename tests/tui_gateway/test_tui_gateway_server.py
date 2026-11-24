@@ -19449,6 +19449,21 @@ def test_billing_state_serializes_server_plan_capability(monkeypatch):
     assert result["can_change_plan"] is True
 
 
+@pytest.mark.parametrize("label", ["Subscription payment method (billed by Link)", None])
+def test_billing_state_serializes_the_managed_payments_payer(monkeypatch, label):
+    from agent.billing_view import BillingState, ManagedPaymentsPayer
+
+    monkeypatch.setattr(server, "_usage_payload", lambda state: {"available": False})
+    state = BillingState(
+        logged_in=True,
+        managed_payments=ManagedPaymentsPayer(label=label) if label else None,
+    )
+
+    result = server._serialize_billing_state(state)
+
+    assert result["managed_payments"] == ({"label": label} if label else None)
+
+
 class _BillingHeaders:
     def __init__(self, values):
         self._values = values

@@ -1885,6 +1885,7 @@ cli:
     total_line: "Iomlán: {amount}"
     portal_card_will_be_charged: "Gearrfar an muirear ar do chárta atá sábháilte ar an tairseach."
     consent_charge: "Trí dhearbhú, tugann tú cead do Nous Research muirear a ghearradh ar do chárta."
+    consent_charge_managed_payments: "Trí dhearbhú, tugann tú cead do Link an méid seo, móide aon cháin díolacháin nó CBL, a ghearradh ar an modh íocaíochta seo."
     choice_pay_now: "Íoc {amount} anois"
     desc_submit_charge: "cuir an muirear isteach"
     desc_manage_card_billing: "bainistigh do chárta / billeáil sa bhrabhsálaí"

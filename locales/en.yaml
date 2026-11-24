@@ -1963,6 +1963,7 @@ cli:
     total_line: "Total: {amount}"
     portal_card_will_be_charged: "Your card saved on the portal will be charged."
     consent_charge: "By confirming, you allow Nous Research to charge your card."
+    consent_charge_managed_payments: "By confirming, you allow Link to charge this payment method for this amount plus any sales tax or VAT."
     choice_pay_now: "Pay {amount} now"
     desc_submit_charge: "submit the charge"
     desc_manage_card_billing: "manage your card / billing in the browser"

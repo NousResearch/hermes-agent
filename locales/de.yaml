@@ -1885,6 +1885,7 @@ cli:
     total_line: "Gesamt: {amount}"
     portal_card_will_be_charged: "Ihre im Portal gespeicherte Karte wird belastet."
     consent_charge: "Mit der Bestätigung erlauben Sie Nous Research, Ihre Karte zu belasten."
+    consent_charge_managed_payments: "Mit der Bestätigung erlauben Sie Link, diese Zahlungsmethode mit diesem Betrag zuzüglich etwaiger Umsatz- oder Mehrwertsteuer zu belasten."
     choice_pay_now: "{amount} jetzt zahlen"
     desc_submit_charge: "Abbuchung absenden"
     desc_manage_card_billing: "Karte / Abrechnung im Browser verwalten"

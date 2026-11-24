@@ -1,4 +1,4 @@
-import type { KnownBillingRefusalCode } from './billing-types.js'
+import type { BillingStateResponse, KnownBillingRefusalCode } from './billing-types.js'
 
 export type BillingRecovery = 'login' | 'none' | 'portal' | 'reconnect' | 'retry' | 'step_up'
 
@@ -34,6 +34,19 @@ export const BILLING_REFUSAL_POLICY: Record<KnownBillingRefusalCode, BillingRefu
   temporarily_unavailable: { recovery: 'retry', reuseIdempotencyKey: true },
   upgrade_cap_exceeded: { recovery: 'none' },
   validation_failed: { recovery: 'none' }
+}
+
+/**
+ * What a credit purchase is paid with, for display, or null when nothing can pay
+ * yet (the add-card path comes first). A Managed Payments payer wins over the card
+ * on file; auto-reload keeps reading `card`, since only purchases go through Link.
+ */
+export function purchasePayerLabel(state: Pick<BillingStateResponse, 'card' | 'managed_payments'>): null | string {
+  if (state.managed_payments) {
+    return state.managed_payments.label
+  }
+
+  return state.card ? (state.card.display ?? state.card.masked) : null
 }
 
 export function refusalPolicy(code: string): BillingRefusalPolicy {

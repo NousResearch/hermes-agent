@@ -42,6 +42,7 @@
   "billing.common.noSavedCard",
   "billing.common.payment",
   "billing.confirm.authorization",
+  "billing.confirm.authorizationManagedPayments",
   "billing.confirm.hint",
   "billing.confirm.payNow",
   "billing.confirm.portalCardCharged",

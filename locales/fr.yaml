@@ -2134,6 +2134,7 @@ cli:
     total_line: "Total : {amount}"
     portal_card_will_be_charged: "Votre carte enregistrée sur le portail sera débitée."
     consent_charge: "En confirmant, vous autorisez Nous Research à débiter votre carte."
+    consent_charge_managed_payments: "En confirmant, vous autorisez Link à débiter ce moyen de paiement de ce montant, plus toute taxe de vente ou TVA applicable."
     choice_pay_now: "Payer {amount} maintenant"
     desc_submit_charge: "soumettre le débit"
     desc_manage_card_billing: "gérer votre carte / facturation dans le navigateur"

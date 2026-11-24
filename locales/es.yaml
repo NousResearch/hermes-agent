@@ -1885,6 +1885,7 @@ cli:
     total_line: "Total: {amount}"
     portal_card_will_be_charged: "Se cobrará a la tarjeta guardada en el portal."
     consent_charge: "Al confirmar, autorizas a Nous Research a cobrar a tu tarjeta."
+    consent_charge_managed_payments: "Al confirmar, autorizas a Link a cobrar a este método de pago este importe más cualquier impuesto sobre las ventas o IVA."
     choice_pay_now: "Pagar {amount} ahora"
     desc_submit_charge: "enviar el cargo"
     desc_manage_card_billing: "gestionar tu tarjeta / facturación en el navegador"

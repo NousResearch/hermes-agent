@@ -1885,6 +1885,7 @@ cli:
     total_line: "Totale: {amount}"
     portal_card_will_be_charged: "Verrà addebitata la carta salvata sul portale."
     consent_charge: "Confermando, autorizzi Nous Research ad addebitare la tua carta."
+    consent_charge_managed_payments: "Confermando, autorizzi Link ad addebitare su questo metodo di pagamento questo importo più eventuali imposte sulle vendite o IVA."
     choice_pay_now: "Paga {amount} ora"
     desc_submit_charge: "invia l'addebito"
     desc_manage_card_billing: "gestisci carta / fatturazione nel browser"

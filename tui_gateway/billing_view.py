@@ -109,6 +109,10 @@ def _serialize_billing_state(state, *, free_tier_account: bool = False) -> dict:
         "charge_presets_display": [format_money(p) for p in state.charge_presets],
         "min_usd": _wire_str(state.min_usd), "max_usd": _wire_str(state.max_usd),
         "card": card, "payment_method": _serialize_payment_method(state.payment_method),
+        # Set when purchases bill Managed Payments instead of `card` (Link adds any tax on top);
+        # `card` still names the card on file, which auto-reload charges.
+        "managed_payments": (
+            {"label": state.managed_payments.label} if getattr(state, "managed_payments", None) else None),
         "monthly_cap": mc, "auto_reload": _serialize_auto_reload(state.auto_reload, format_money),
         "keep_going_on_credits": getattr(state, "keep_going_on_credits", None),
         "portal_url": state.portal_url, "error": state.error,

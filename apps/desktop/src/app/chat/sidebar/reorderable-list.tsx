@@ -1,7 +1,10 @@
 import type { useSensors } from '@dnd-kit/core'
-import { closestCenter, DndContext, type DragEndEvent } from '@dnd-kit/core'
+import { closestCenter, DndContext, type DragEndEvent, type DragMoveEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import type * as React from 'react'
+import { useRef } from 'react'
+
+import { PROJECT_ROW_DROP_ATTR } from '../session-drag'
 
 // Sidebar reordering is a strictly vertical list. The dragged item's transform
 // is rendered Y-only in useSortableBindings (no x, no scale); this just stops
@@ -15,18 +18,51 @@ const reorderAutoScroll = { threshold: { x: 0, y: 0.2 } }
 // around or inside it. Pair each item with useSortableBindings(id); the list reports
 // the new id order and the caller persists it. This is the single generic primitive
 // behind every reorderable surface in the sidebar.
+/** A place outside the list where an item can be let go instead of being moved within it. */
+export interface OutsideDrop {
+  accepts: (id: string) => boolean
+  onDrop: (id: string) => void
+  target: () => HTMLElement | null
+}
+
 export function ReorderableList({
   children,
   ids,
   onReorder,
+  outside,
   sensors
 }: {
   children: React.ReactNode
   ids: string[]
   onReorder: (ids: string[]) => void
+  outside?: OutsideDrop
   sensors?: ReturnType<typeof useSensors>
 }) {
-  const handleDragEnd = ({ activatorEvent, active, over }: DragEndEvent) => {
+  // The outside target the dragged item is over, wearing the drop mark.
+  const over = useRef<HTMLElement | null>(null)
+
+  const mark = (target: HTMLElement | null) => {
+    if (target !== over.current) {
+      over.current?.removeAttribute(PROJECT_ROW_DROP_ATTR)
+      target?.setAttribute(PROJECT_ROW_DROP_ATTR, 'true')
+      over.current = target
+    }
+  }
+
+  const handleDragMove = ({ active }: DragMoveEvent) => {
+    const item = active.rect.current.translated
+    const target = item && outside?.accepts(String(active.id)) ? outside.target() : null
+    const box = target?.getBoundingClientRect()
+    const y = item ? item.top + item.height / 2 : 0
+
+    mark(box && y >= box.top && y <= box.bottom ? target : null)
+  }
+
+  const handleDragEnd = ({ activatorEvent, active, over: overItem }: DragEndEvent) => {
+    const dropped = over.current
+
+    mark(null)
+
     // dnd-kit only restores focus for keyboard drags; after a pointer drop the
     // browser leaves :focus on the grab handle, which keeps a focus-within
     // grabber/affordance reveal stuck "on". Drop that focus so the row returns
@@ -35,12 +71,18 @@ export function ReorderableList({
       ;(document.activeElement as HTMLElement | null)?.blur()
     }
 
-    if (!over || active.id === over.id) {
+    if (dropped) {
+      outside?.onDrop(String(active.id))
+
+      return
+    }
+
+    if (!overItem || active.id === overItem.id) {
       return
     }
 
     const from = ids.indexOf(String(active.id))
-    const to = ids.indexOf(String(over.id))
+    const to = ids.indexOf(String(overItem.id))
 
     if (from >= 0 && to >= 0) {
       onReorder(arrayMove(ids, from, to))
@@ -51,7 +93,9 @@ export function ReorderableList({
     <DndContext
       autoScroll={reorderAutoScroll}
       collisionDetection={closestCenter}
+      onDragCancel={() => mark(null)}
       onDragEnd={handleDragEnd}
+      onDragMove={outside && handleDragMove}
       sensors={sensors}
     >
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
@@ -59,18 +103,6 @@ export function ReorderableList({
       </SortableContext>
     </DndContext>
   )
-}
-
-/**
- * Call a pointer reorder off mid-drag, as its own Esc does: the row goes back to its place at once.
- *
- * For a second drag riding the same press (session-pin-drag.ts). Its session takes Esc at the
- * window and stops it, so dnd-kit, which ends a pointer drag on an Escape keydown at the document,
- * never hears the key. The key is handed to the document alone: it does not bubble on to the
- * window, where the app's own Escape handlers listen.
- */
-export function cancelReorderDrag(): void {
-  document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape' }))
 }
 
 export function useSortableBindings(id: string) {

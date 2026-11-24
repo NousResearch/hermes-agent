@@ -183,20 +183,19 @@ it('pins nothing when the chat is let go anywhere else', async () => {
   expect(onUpdate).not.toHaveBeenCalled()
 })
 
-it('calls the whole drag off with Esc: the release then neither pins nor rearranges', async () => {
+it.each([
+  ['Esc', () => fireEvent.keyDown(doc.body, { code: 'Escape', key: 'Escape' })],
+  ['the pointer being taken away', () => fireEvent.pointerCancel(doc, pointer(150, 50))]
+])('calls the drag off on %s: the chat is neither pinned nor moved', async (_, callOff) => {
   const onUpdate = vi.fn()
   const onReorder = vi.fn()
 
   render(<Sidebar onReorder={onReorder} onUpdate={onUpdate} />)
   await carry(agentRow('Chat 2'), 150, 50)
-  const lifted = () => agentRow('Chat 2').closest('.portal-session-item')!.hasAttribute('data-dragging')
-  expect(lifted()).toBe(true)
   await act(async () => {
-    fireEvent.keyDown(doc.body, { code: 'Escape', key: 'Escape' })
+    callOff()
     await frame()
   })
-  // Set down at once, not left following the pointer until the button comes up.
-  expect(lifted()).toBe(false)
   await letGo(150, 50)
 
   expect(onUpdate).not.toHaveBeenCalled()

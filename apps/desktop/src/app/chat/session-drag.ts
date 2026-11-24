@@ -64,8 +64,8 @@ import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './compo
 import { NO_PROJECT_ID } from './sidebar/projects/workspace-groups'
 import { tileZoneHost } from './tile-zone-host'
 
-const PROJECT_ROW_DROP_ATTR = 'data-session-drop-hover'
-const PIN_DROP_SELECTOR = '[data-session-pin-drop]'
+export const PROJECT_ROW_DROP_ATTR = 'data-session-drop-hover'
+export const PIN_DROP_SELECTOR = '[data-session-pin-drop]'
 const UNPIN_DROP_SELECTOR = '[data-session-unpin-drop]'
 
 /** A sidebar project row's drop geometry — tagged by `ProjectOverviewRow` via

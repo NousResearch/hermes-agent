@@ -1,12 +1,13 @@
 import { PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
-import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
 import { openSession } from '@/app/open-session'
 import { useStableNavigate } from '@/app/stable-navigate'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
+import { queryVisible } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -26,13 +27,13 @@ import { canOpenSessionOwner } from '@/store/session-owner-open'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 import { $sessionTiles, runtimeSessionOwner } from '@/store/session-states'
 
+import { PIN_DROP_SELECTOR } from '../session-drag'
 import { SessionStatusDot } from '../session-status-dot'
 
 import { mergeVisibleReorder } from './order'
 import { capAgentChats } from './portal/agent-chat-cap'
-import { cancelReorderDrag, ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
+import { type OutsideDrop, ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
-import { startSessionPinDrag } from './session-pin-drag'
 import { SessionRowSlot } from './session-row-slots'
 import { sessionRowKey } from './simplified-session-identity'
 
@@ -123,8 +124,6 @@ interface SessionRowProps extends Omit<
   /** Drag bindings and the keyboard move, when the list can be reordered. */
   sortable?: ReturnType<typeof useSortableBindings>
   onMove?: (step: -1 | 1) => void
-  /** The row's drag was settled some other way than by the list's reorder: a drop on Pinned, or Esc. */
-  onDragSettled: () => void
 }
 
 const MOVE_STEP: Record<string, -1 | 1> = { ArrowUp: -1, ArrowDown: 1 }
@@ -134,7 +133,7 @@ function SortableSessionRow(props: SessionRowProps) {
   return <SessionRow {...props} sortable={useSortableBindings(sessionRowKey(props.row))} />
 }
 
-function SessionRow({ row, selected, surface, meta, sortable, onMove, onDragSettled, ...props }: SessionRowProps) {
+function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }: SessionRowProps) {
   const { t } = useI18n()
   const navigate = useStableNavigate()
   const title = sessionTitle(row)
@@ -159,8 +158,6 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, onDragSett
     title,
     unread: row.unread === true
   }
-
-  const pinnable = !ambiguous && !pinned && Boolean(actions.onPin)
 
   // The row is the click target (a modified click opens a tab or window), its title the one
   // focusable button, as in the classic sidebar: plugin decorations (`sessionRow.*`) sit in the row
@@ -200,28 +197,14 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, onDragSett
       }
       // The row is the drag handle; a press that started in its menu or a dialog is not a grab, and
       // a finger scrolls the list.
-      onPointerDown={event => {
-        if (!shellOwnsPress(event) || event.pointerType === 'touch') {
-          return
-        }
-
-        // Carried onto Pinned, a chat is pinned: offered to the rows whose menu offers "Pin".
-        if (pinnable) {
-          startSessionPinDrag(event, {
-            label: title,
-            onAbort: () => {
-              onDragSettled()
-              cancelReorderDrag()
-            },
-            onPin: () => {
-              onDragSettled()
-              props.onUpdate(row, 'pinned', true)
-            }
-          })
-        }
-
-        sortable?.dragHandleProps.onPointerDown?.(event)
-      }}
+      onPointerDown={
+        sortable &&
+        (event => {
+          if (shellOwnsPress(event) && event.pointerType !== 'touch') {
+            sortable.dragHandleProps.onPointerDown?.(event)
+          }
+        })
+      }
     >
       <SessionRowMark row={row} />
       {/* Wrappers with no box: a row no plugin decorates (or one it declines) keeps its geometry. */}
@@ -370,11 +353,6 @@ export function SimplifiedSessionList({
   // A search is a result list, never an arrangement.
   const reorder = props.searching ? undefined : onReorder
 
-  // The row is the handle of two drags at once: the list's reorder and the carry onto Pinned. A
-  // release on Pinned ends both, the pin first, and must not also rearrange the list it left; Esc
-  // calls the carry off and never reaches the reorder, whose release must then move nothing either.
-  const dragSettled = useRef(false)
-
   // Rows past the cap and in the other partition keep their places: only the moved ones trade slots.
   const commit = (keys: string[]) => {
     const byKey = new Map(ordered.map(row => [sessionRowKey(row), row]))
@@ -399,9 +377,24 @@ export function SimplifiedSessionList({
     requestAnimationFrame(() => target.focus())
   }
 
+  // Let go over Pinned, a chat is pinned: the row menu's Pin, by hand.
+  // ponytail: the row is clipped by its list as it leaves it, so the ring on Pinned is the only
+  // feedback up there; dnd-kit's DragOverlay if the row should be seen all the way.
+  const pinDrop: OutsideDrop = {
+    accepts: key => {
+      const row = ordered.find(candidate => sessionRowKey(candidate) === key)
+
+      return Boolean(row && !props.ambiguousIds.has(row.id) && !props.pinPending?.(row))
+    },
+    onDrop: key => props.onUpdate(ordered.find(row => sessionRowKey(row) === key)!, 'pinned', true),
+    target: () => queryVisible<HTMLElement>(PIN_DROP_SELECTOR)
+  }
+
   const lists = partition(shown).map((rows, part) => {
     const keys = rows.map(row => sessionRowKey(row))
-    const sortable = reorder && rows.length > 1
+    // The unpinned chats of an agent's list can also be carried onto Pinned, even a lone one.
+    const pinnable = reorder && !props.showAgent && part === 1
+    const sortable = reorder && (rows.length > 1 || pinnable)
     const Row = sortable ? SortableSessionRow : SessionRow
 
     const list = rows.map((row, index) => (
@@ -409,9 +402,6 @@ export function SimplifiedSessionList({
         {...props}
         key={keys[index]}
         meta={metaFor(row)}
-        onDragSettled={() => {
-          dragSettled.current = true
-        }}
         onMove={sortable ? step => move(keys, index, step, document.activeElement as HTMLElement) : undefined}
         row={row}
         selected={isSelected(row)}
@@ -423,7 +413,7 @@ export function SimplifiedSessionList({
     return (
       <Fragment key={part}>
         {sortable ? (
-          <ReorderableList ids={keys} onReorder={next => !dragSettled.current && commit(next)} sensors={sensors}>
+          <ReorderableList ids={keys} onReorder={commit} outside={pinnable ? pinDrop : undefined} sensors={sensors}>
             {list}
           </ReorderableList>
         ) : (
@@ -434,13 +424,7 @@ export function SimplifiedSessionList({
   })
 
   return (
-    <div
-      className="portal-session-list"
-      // Every drag starts with a press here.
-      onPointerDownCapture={() => {
-        dragSettled.current = false
-      }}
-    >
+    <div className="portal-session-list">
       {lists}
       {foldable && (
         <RowButton aria-expanded={cap.showAll} className="portal-session-more" onClick={cap.onToggle}>

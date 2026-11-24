@@ -1371,6 +1371,63 @@ Older configs used a top-level `custom_providers:` list instead. It still works 
 
 **Reasoning effort on custom endpoints.** The configured `reasoning_effort` (`/reasoning max`, `agent.reasoning_effort`) reaches a custom endpoint unchanged on both the `chat_completions` and the `codex_responses` transport — up to `max`; only the Hermes-internal `ultra` is clamped to `max`. Two exceptions follow the host rather than the entry: a custom entry pointed at `api.openai.com` keeps OpenAI's per-model ladder (`max` is a gpt-5.6-only level there), and an entry pointed at a provider whose profile publishes a per-model vocabulary (Ramp Router) is clamped to that catalog. An endpoint that rejects the level answers with an HTTP 400 instead of Hermes silently downgrading it. When no effort is configured at all, `chat_completions` requests carry `reasoning_effort: medium` — the same default the Nous Portal and OpenRouter routes apply — rather than leaving the endpoint's own default in charge (kimi-k3's is `max`, about 3x the reasoning tokens of `medium`); models marked `supports_reasoning: false` in the catalog or `model_overrides`, and Ollama models without the `thinking` capability, keep the field off.
 
+#### Anthropic Messages gateways with opaque model IDs
+
+The Messages transport normally infers adaptive versus manual thinking from the
+model family. An opaque gateway ID such as `auto`, `opus`, or a non-Claude model
+served through a protocol-translating gateway cannot carry that information.
+If the **gateway's inbound Messages API** accepts adaptive thinking and explicit
+`output_config.effort`, declare that wire capability for the exact routing ID:
+
+```yaml
+providers:
+  relay:
+    api: https://relay.example/anthropic
+    transport: anthropic_messages
+    models:
+      opaque-model:
+        supports_adaptive_thinking: true
+        supports_xhigh_effort: true  # Only if this inbound API accepts xhigh.
+```
+
+With `supports_adaptive_thinking: true`, `/reasoning max` emits
+`thinking: {type: adaptive, display: summarized}` and
+`output_config: {effort: max}` instead of converting the effort to a manual
+`budget_tokens` value. The model ID, authentication, sampling policy, output
+limit, and thinking-replay policy are not reclassified as Claude.
+
+Both fields accept YAML booleans only. Overrides apply only to non-Claude/non-Kimi
+routing IDs on third-party Messages endpoints. Recognized Claude and Kimi families,
+native Anthropic, OAuth and Nous Portal retain their existing contracts, including
+pre-thinking Haiku exclusions and the native `xhigh` vocabulary.
+
+The lookup is scoped to the exact routing ID before wire normalization and the
+normalized base URL (including path and port). Main requests use the owning agent's
+profile-local custom-provider snapshot and match its current route on every build;
+model switches, fallbacks and retries do not reuse another route's decision.
+Standalone/auxiliary builders without a supplied snapshot resolve their bound
+profile's read-only config once per request, reusing it for both flags. An explicitly
+empty snapshot means no declarations and never falls back to the ambient profile.
+Legacy `custom_providers[].models.<id>` declarations work too. Existing precedence
+is unchanged: legacy entries precede `providers:` entries in the compatible view,
+and the first matching YAML boolean wins. Avoid conflicting declarations for the
+same route and ID during migration.
+
+For an eligible ID, `supports_adaptive_thinking: false` selects manual thinking;
+omitted or malformed values keep the existing family policy. This does **not**
+fix the separate effort-to-budget table gap on manual-only endpoints.
+
+For adaptive requests, `supports_xhigh_effort` controls whether `xhigh` is sent
+as-is. Without a declaration the existing family policy applies (opaque IDs
+use the conservative `xhigh` → `max` mapping). `minimal` maps to `low` and
+Hermes-internal `ultra` maps to `max`, as on the native adaptive wire. The
+capability does not invent thinking-disable semantics: disable requests keep
+the existing family policy and carry no effort dial.
+
+Do not enable this merely because the backend is a reasoning model: manual-only
+Messages implementations can reject `thinking.type: adaptive`. Confirm the
+inbound gateway contract, not just the final model family.
+
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 
 ```yaml

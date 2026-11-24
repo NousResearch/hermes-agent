@@ -162,6 +162,15 @@ class TestCommandHandler:
         assert (jobs[0].get("schedule_display") or jobs[0].get("schedule")) == "30 7 * * *"
         assert jobs[0].get("deliver") == "telegram"
 
+    def test_conversational_seed_carries_every_blueprint_skill(self):
+        """`/blueprint <name>` with no values hands the agent a seed instead of creating the job;
+        the skills the direct path attaches must reach that seed's create call too (#82754)."""
+        from hermes_cli.blueprint_cmd import handle_blueprint_command
+
+        for blueprint in (bp for bp in CATALOG if bp.skills):
+            seed = handle_blueprint_command(blueprint.key).agent_seed
+            assert seed and f"skills={list(blueprint.skills)!r}" in seed, blueprint.key
+
     def test_fill_refuses_prompt_injection_in_slot_value(self, isolated_home):
         """Slot text lands in the stored prompt; the direct-create shortcut applies the
         cronjob tool's prompt scan like every other cron writer."""

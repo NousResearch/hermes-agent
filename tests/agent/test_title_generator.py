@@ -148,7 +148,7 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=resp), caplog.at_level("WARNING", "agent.title_generator"):
             assert generate_title("rebase PR 158676 and track it in Linear") is None
 
-        assert any("output cap before writing a title" in r.getMessage() for r in caplog.records)
+        assert any("finish_reason=length" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.parametrize(
         ("content", "expected"),

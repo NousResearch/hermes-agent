@@ -161,6 +161,7 @@ def test_files_pane_maps_a_named_profiles_dirs_in_its_own_scope(image_home, monk
 
     captured = {}
     monkeypatch.setattr(file_routes, "_profile_scope", scope)
+    monkeypatch.setattr(file_routes, "_fs_profile_home", lambda _name: Path(profile))
     monkeypatch.setattr(file_routes, "load_config", lambda: {"terminal": {"backend": "ssh", "cwd": profile}})
     monkeypatch.setattr(file_routes, "load_env", lambda: {"TERMINAL_SSH_HOST": "h", "TERMINAL_SSH_USER": "u"})
     monkeypatch.setattr(ssh_workspace_fs, "get_ssh_workspace_fs", lambda _key, terminal: captured.update(terminal))

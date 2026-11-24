@@ -1543,3 +1543,22 @@ def test_plugin_register_shape():
     from gateway.config import PlatformConfig
     is_connected = captured["is_connected"]
     assert is_connected(PlatformConfig(enabled=True, extra={"phone_number_id": "1", "access_token": "t"}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("move", ("delete", "rename"))
+async def test_media_cache_skips_a_deleted_or_renamed_profile_home(tmp_path, move):
+    """Inbound media for a dead profile is dropped (None), never cached into a recreated home (#155595 U3)."""
+    from unittest.mock import patch as _patch
+    import plugins.platforms.whatsapp_cloud.adapter as wac
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    adapter = _make_adapter()
+    adapter._http_client = MagicMock()
+    meta = MagicMock(status_code=200)
+    meta.json = MagicMock(return_value={"url": "https://lookaside.fbsbx.com/x", "mime_type": "image/jpeg"})
+    adapter._http_client.get = AsyncMock(side_effect=[meta, MagicMock(status_code=200, content=b"jpeg")])
+    with _patch.object(wac, "_INBOUND_MEDIA_CACHE", home / "platforms" / "whatsapp_cloud" / "media"):
+        assert await adapter._download_media_to_cache("media_dead") == (None, None)
+    assert not home.exists()

@@ -188,6 +188,9 @@ def staged_candidate(tmp_path, r2_server, https_origin):
             metadata.write_text(json.dumps(row), encoding='utf-8')
             includes = [package, metadata.name]
             if platform == 'macos':
+                dmg = package.removesuffix('.zip') + '.dmg'
+                (built / dmg).write_bytes(b'macOS dmg transport fixture')
+                includes.append(dmg)
                 feed = f'{arch}-stable-mac.yml'
                 (built / feed).write_text(legs[feed], encoding='utf-8')
                 includes.append(feed)
@@ -312,7 +315,7 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     with pytest.raises(ValueError, match='one Store candidate'):
         materialize(missing, tmp_path / 'missing-store', public_base=base, store_only=True)
     changed = copy.deepcopy(manifest)
-    changed['files'][0]['sha256'] = 'b' * 64
+    next(f for f in changed['files'] if f['path'].endswith('.zip'))['sha256'] = 'b' * 64
     with pytest.raises(ValueError, match='receipts differ'):
         materialize(changed, tmp_path / 'bad', public_base=base)
 
@@ -324,8 +327,10 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     artifacts.promote(manifest, tmp_path / 'promote', base)
     puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
     assert puts == ['/hermes-releases/' + name for name in (
-        'releases/darwin/stable/stable-mac.yml', 'releases/win32/stable/stable.appinstaller',
-        'releases/termux/stable/dists/hermes-stable/Release', 'releases/termux/stable/dists/hermes-stable/InRelease')]
+        'releases/darwin/stable/stable-mac.yml', 'releases/darwin/stable/HermesBundled-mac-arm64.dmg',
+        'releases/win32/stable/stable.appinstaller',
+        'releases/termux/stable/dists/hermes-stable/Release', 'releases/termux/stable/dists/hermes-stable/InRelease',
+        'releases/stable/index.html')]
     # Promotion materializes only feed legs and indexes; packages stay receipt-bound on R2.
     for item in manifest['files']:
         local = tmp_path / 'promote' / item['path']

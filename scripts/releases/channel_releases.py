@@ -441,18 +441,23 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     # canary's names the live canary, whose objects the R2 pruner keeps however old.
     channel = "canary" if policy == "canary-release" else "stable"
     pointer = f"releases/{channel}/release-candidates.json"
-    # A rejected older canary must not replace the pointer protecting the live
-    # canary's archive from pruning. Feed/head monotonicity checks run too late.
-    if policy == "canary-release":
-        live = publisher._read(name)
-        if live is not None and live[0]["head"] is not None:
-            live_build = live[0]["head"]["buildId"]
-            if live_build != request["buildId"]:
+    # A rejected older release must not advance feeds or overwrite the retention pointer.
+    live = publisher._read(name)
+    if live is not None and live[0]["head"] is not None:
+        live_build = live[0]["head"]["buildId"]
+        if live_build != request["buildId"]:
+            previous_request = publisher.request(live_build)
+            if policy == "canary-release":
                 from hermes_cli.update_channel import published_canary_timestamp
-                previous = published_canary_timestamp(publisher.request(live_build)["releaseTag"])
+                previous = published_canary_timestamp(previous_request["releaseTag"])
                 candidate = published_canary_timestamp(payload_tag)
                 if previous is None or candidate is None or candidate <= previous:
                     raise ChannelError("Refusing a stale canary publication: it cannot overwrite the live retention pointer")
+            else:
+                from scripts.releases.semver import compare
+                if (compare(request["version"], previous_request["version"]) <= 0
+                        or stable.windows_version(request["windowsVersion"]) <= stable.windows_version(previous_request["windowsVersion"])):
+                    raise ChannelError("Refusing a stale stable publication: protected native versions must increase")
     log(f"Promoting the {channel} feeds")
     promote_stable_feeds(accepted, root, publisher.public_base)
     log(f"Promoting build {request['buildId']} to the {name} head")

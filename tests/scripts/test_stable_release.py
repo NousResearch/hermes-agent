@@ -322,6 +322,13 @@ def https_origin(tmp_path, monkeypatch):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            requests.append(self.path)
+            item = self.server.store.get(self.path.lstrip('/'))
+            self.send_response(200 if item else 404)
+            self.send_header("Content-Length", str(len(item[0])) if item else "0")
+            self.end_headers()
+
         def do_GET(self):
             requests.append(self.path)
             if self.path in ("/same", "/cross"):

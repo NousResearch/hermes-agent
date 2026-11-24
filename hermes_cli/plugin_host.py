@@ -75,40 +75,36 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     caller bound to another profile, or from a crash restart's thread, which has no binding at all.
 
     A profile a plugin runs elsewhere expands its ``${VAR}``s against the process env, as ``host_launcher``
-    documents for the managed overlay's launcher. A caller bound to the launch profile's own scope (unstamped, or
-    stamped with its home as the dashboard binds it) lends it to the launch profile's launcher: the TUI gateway
-    and the dashboard bind that ``.env`` over the live env even single-profile, and the launcher reads what the
-    rest of that body reads, under its task-local multiplexing too: a name the lent scope lacks stays unresolved,
-    as in the body, rather than read from the live env. Another profile's scope is never lent: it holds what that
-    profile's files held when the caller read them through a name, which a link moved since can make another
-    directory's, and the scope built below reads the files of the directory this host starts in. With no such
-    caller the launch profile outside multiplexing uses the process env, so a restart reads what the process
-    loaded. The process env holds the launch profile's values, so any other profile's launcher expands through
-    its own files (``build_profile_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a
-    sibling under task-local multiplexing, which a fresh context does not carry. Under multiplexing the launch
-    profile's expands through its own scope too (``launch_secret_scope``: its env-only keys and files). The
-    launch profile is the one whose directory the process's own path keys, as ``serves_routed_profile`` asks, by
-    the key the process remembered for that path: after that link is renamed, *home* is the new name, which
+    documents for the managed overlay's launcher. A start inside a launch-profile body (a caller bound to the
+    launch profile's own scope: unstamped, or stamped with a home keyed to it, as the dashboard binds it) expands
+    the launch profile's launcher through the launch scope (``launch_secret_scope``: its ``.env`` over the launch
+    env), as that body reads, under its task-local multiplexing too, so a name the launch env froze without stays
+    unresolved; the TUI gateway and the dashboard bind it even single-profile. That scope is built again from
+    *home* rather than borrowed: the body read its files through a name a link moved since can have led
+    elsewhere. No caller's scope is ever lent. With no launch-profile body the launch profile outside
+    multiplexing uses the process env, so a restart reads what the process loaded; under multiplexing it uses the
+    launch scope too. The process env holds the launch profile's values, so any other profile's launcher expands
+    through its own files (``build_profile_secret_scope``), multiplexing or not: a desktop backend's cron ticker
+    serves a sibling under task-local multiplexing, which a fresh context does not carry. The launch profile is
+    the one whose directory the process's own path keys, as ``serves_routed_profile`` asks, by the key the
+    process remembered for that path: after that link is renamed, *home* is the new name, which
     ``owner_secret_scope`` would take for another profile, and the old name leads to no files; after it is
     repointed at another profile's directory, ``owner_secret_scope`` would hand that profile the launch env. No
     terminal policy: the launcher is only read here."""
     from agent.secret_scope import (current_secret_scope, current_secret_scope_home, is_multiplex_active,
                                     set_multiplex_context)
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
-    launch, key = get_routing_process_hermes_home(), hermes_home_key(home)
-    own = hermes_home_key(launch) == key
-    # The launch profile's own scope was read through *source* (its stamp, else the process's own name): *home*'s
-    # only while that name leads to home's directory under the key remembered for it, as ``_leads_here`` asks.
-    source = current_secret_scope_home() or launch
-    lends = own and hermes_home_key(source) == key == os.path.normcase(os.path.realpath(source))
-    lent = current_secret_scope() if lends else None
+    launch_key = hermes_home_key(get_routing_process_hermes_home())
+    own = launch_key == hermes_home_key(home)
+    stamp = current_secret_scope_home()
+    launch_body = current_secret_scope() is not None and (stamp is None or hermes_home_key(stamp) == launch_key)
     multiplexed = is_multiplex_active()
 
     def choose() -> list:
         from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
-        if lent is not None and multiplexed:
+        if launch_body and multiplexed:
             set_multiplex_context(True)  # this context's own copy, dropped with it
-        if run_elsewhere_refusal(home) is not None or (lent is None and own and not is_multiplex_active()):
+        if run_elsewhere_refusal(home) is not None or (own and not launch_body and not is_multiplex_active()):
             from hermes_cli.plugins_loader import _plugin_home_scope
             with _plugin_home_scope(home):
                 return host_launcher(home=home)
@@ -118,10 +114,7 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
         # The launch profile's scope with its files read through *home*, the name that leads there now; any other
         # profile's from its own files, by ``own`` rather than by where the process's own name leads now (its
         # ``.env`` templates included).
-        if lent is not None:
-            secrets = lent
-        else:
-            secrets = launch_secret_scope(home) if own else build_profile_secret_scope(Path(home), process_home=False)
+        secrets = launch_secret_scope(home) if own else build_profile_secret_scope(Path(home), process_home=False)
         with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
             return host_launcher(home=home)
 

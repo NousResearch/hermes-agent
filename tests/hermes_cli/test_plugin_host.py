@@ -686,6 +686,31 @@ def test_a_secondary_hosts_env_templates_resolve_as_another_profiles_after_the_l
     assert env.ran() == ["new"]
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
+@pytest.mark.parametrize("surface", ["tui_gateway", "dashboard"])
+def test_a_launch_body_bound_while_the_process_link_pointed_elsewhere_gives_the_launch_host_its_own_files(
+        repointed_profile_link, monkeypatch, surface):
+    """A launch-profile body that bound while the process's own link pointed at another directory holds that
+    directory's ``.env``. If the link is back before the launch host starts, the host reads the launch profile's own
+    files, not the body's values."""
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_constants import hermes_home_key
+    from tui_gateway import server
+
+    env = repointed_profile_link
+    env.point("old")
+    monkeypatch.setenv("HERMES_HOME", str(env.link))
+    hermes_home_key(env.link)  # the process serves its own profile, the old directory, under this name
+    host = env.host_for(env.link)
+    env.point("new")
+    body = (server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False)
+            if surface == "tui_gateway" else _config_profile_scope(None))
+    with body:
+        env.point("old")
+        host.ensure_started()
+    assert env.ran() == ["old"]
+
+
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
 def test_a_single_profile_launcher_expands_against_the_process_env_not_a_later_env_file(tmp_path, monkeypatch):
     """Outside multiplexing a launcher's ``${VAR}`` is the running process's value, as on main: an ``.env`` edited

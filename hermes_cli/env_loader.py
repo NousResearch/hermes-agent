@@ -456,18 +456,32 @@ def dotenv_lookup_from(env: dict[str, str], record: dict[str, tuple[str | None, 
 
 def _resolve_dotenv_assignments(
     assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
+    live_env: dict[str, str] | None = None, live_names: Callable[[str], bool] | None = None,
 ) -> dict[str, str | None]:
     """Expand ``${VAR}`` / ``${VAR:-default}`` like ``dotenv.main.resolve_variables``, minus the live
     ``os.environ``: a line sees *lookup_env* and the file's earlier lines (earlier lines win under
-    *override*, the environment otherwise)."""
+    *override*, the environment otherwise). With *live_env* (and *override*), each line is also expanded as
+    a load against *live_env* would expand it, a name *live_names* marks takes that value, which later lines
+    then see, and *live_env* takes the file's live values, as the caller does with *lookup_env*."""
     from dotenv.variables import parse_variables
 
+    def expand(value: str, lookup: dict[str, str | None]) -> str:
+        return "".join(atom.resolve(lookup) for atom in parse_variables(value))
+
     resolved: dict[str, str | None] = {}
+    live: dict[str, str | None] = {}
     for name, value in assignments:
-        if value is not None:
-            lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
-            value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
-        resolved[name] = value
+        if value is None:  # a bare key: nothing to expand
+            live[name] = resolved[name] = None
+            continue
+        if live_env is not None:
+            live[name] = expand(value, {**live_env, **live})
+        if live_env is not None and live_names(name):
+            resolved[name] = live[name]
+        else:
+            resolved[name] = expand(value, {**lookup_env, **resolved} if override else {**resolved, **lookup_env})
+    if live_env is not None:
+        live_env.update((k, v) for k, v in live.items() if v is not None)
     return resolved
 
 
@@ -537,33 +551,12 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
             assignments = _parse_dotenv_file(path)
         except OSError:
             continue
-        resolved = (_resolve_dotenv_assignments(assignments, lookup_env, override=True) if live_env is None
-                    else _resolve_pinned_assignments(assignments, lookup_env, live_env, live_names))
+        resolved = _resolve_dotenv_assignments(assignments, lookup_env, override=True, live_env=live_env,
+                                               live_names=live_names)
         for name, value in resolved.items():
             if value is not None:
                 lookup_env[name] = out[name] = value
     return out
-
-
-def _resolve_pinned_assignments(
-    assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], live_env: dict[str, str],
-    live_names: Callable[[str], bool],
-) -> dict[str, str | None]:
-    """``_resolve_dotenv_assignments`` with override against *lookup_env*, except that a name *live_names*
-    marks takes the value the same lines give it against *live_env*, and later lines see that value.
-    *live_env* takes this layer's live values, as the caller does with *lookup_env*."""
-    from dotenv.variables import parse_variables
-
-    def expand(value: str | None, lookup: dict[str, str | None]) -> str | None:
-        return value if value is None else "".join(atom.resolve(lookup) for atom in parse_variables(value))
-
-    resolved: dict[str, str | None] = {}
-    live: dict[str, str | None] = {}
-    for name, value in assignments:
-        live[name] = expand(value, {**live_env, **live})
-        resolved[name] = live[name] if live_names(name) else expand(value, {**lookup_env, **resolved})
-    live_env.update((k, v) for k, v in live.items() if v is not None)
-    return resolved
 
 
 def _release_bridge_claim(name: str) -> None:

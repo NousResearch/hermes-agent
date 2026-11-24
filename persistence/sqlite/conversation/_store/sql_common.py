@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from persistence.conversation.messages import QUEUED_PROMPT_METADATA_KEY
-from persistence.sqlite._schema_ddl import _BRANCH_CHILD_SQL, _RESET_CHILD_SQL, _sql_json_extract, _sql_literal
+from persistence.sqlite._schema_ddl import (
+    _BRANCH_CHILD_SQL, _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_literal,
+)
 from persistence.sqlite.conversation._store.rules import (
     AUTO_LOAD_SCAFFOLD_SQL_LIKE, EPOCH_MAX, EPOCH_MIN, SKILL_SCAFFOLD_SQL_LIKE,
 )
@@ -133,16 +135,6 @@ _RECOVERABLE_END_REASONS = ("agent_close", "ws_orphan_reap", "superseded_by_resu
 
 _RECOVERABLE_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RECOVERABLE_END_REASONS)
 
-
-def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
-    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
-    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
-    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
-    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
-    return "".join(
-        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
-        for marker in ("_branched_from", "_delegate_from", "_reset_from")
-    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
 
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).

@@ -10,6 +10,7 @@ left them, then reopened through the schema migration.
 from __future__ import annotations
 
 from gateway.config import GatewayConfig, Platform
+from gateway.session_ingress_media import native_inputs_root
 from gateway.session import SessionSource, SessionStore
 from persistence.conversation.lineage import CompressionChild
 from persistence.conversation.messages import NewMessage
@@ -107,12 +108,13 @@ def _compress(db, session_id):
 
 
 def test_a_handed_off_row_whose_continuation_was_deleted_is_adopted(tmp_path):
-    store, _entry, handed = _old_route_onto_markerless_worker(tmp_path, handed_off=True)
+    # A deleted newest segment starts a fresh chat, for any chat; the older row only has to stay
+    # the user's, so /resume can still pick it.
+    store, entry, handed = _old_route_onto_markerless_worker(tmp_path, handed_off=True)
     db = store.persistence
     tip = _compress(db, handed)
-    raw_holder(db)._execute_write(lambda conn: (
-        conn.execute("DELETE FROM messages WHERE session_id = ?", (tip,)),
-        conn.execute("DELETE FROM sessions WHERE id = ?", (tip,))))
+    assert store.switch_session(entry.session_key, tip) is not None
+    assert db.sessions.delete(tip, media_root=str(native_inputs_root()))
     upgraded = _reopen_after_upgrade(store, tmp_path)
     try:
         assert upgraded.persistence.sessions.get_model_config_value(handed, "_chat_adopted") is True

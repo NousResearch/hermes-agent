@@ -30,13 +30,12 @@ from persistence.sqlite._state.common import (
     escape_like as _escape_like, fts_rebuild_admission,
 )
 from persistence.sqlite._state.holders import _read_proc_argv
-from persistence.sqlite.conversation._store.sql_common import _non_continuation_child_sql
 from storage_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 from ._schema_ddl import (
     DEFERRED_INDEX_SQL, FTS_REBUILD_DEFERRAL_KEY,
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL,
-    SCHEMA_SQL, SCHEMA_VERSION, _FTS5_SHADOW_SUFFIXES, _FTS_TRIGGERS, _drop_orphan_fts_shadow_tables,
+    SCHEMA_SQL, SCHEMA_VERSION, _FTS5_SHADOW_SUFFIXES, _non_continuation_child_sql, _FTS_TRIGGERS, _drop_orphan_fts_shadow_tables,
     _ephemeral_child_sql, _sql_json_extract, base_index_recognised, base_source_view_is_stale,
     fts_layout_current, fts_layout_drift, fts_trigram_session_sql,
 )

@@ -553,6 +553,75 @@ def test_a_single_profile_launcher_expands_against_the_process_env_not_a_later_e
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_host_started_inside_the_launch_profiles_bound_scope_takes_its_launcher_value_from_it(tmp_path, monkeypatch):
+    """The TUI gateway binds the launch profile's secrets around its bodies even single-profile (``.env`` over the
+    live env). A host started inside such a body expands its launcher from that scope, as on main, so a value only
+    the ``.env`` holds (set after the process loaded it) still reaches the launcher."""
+    from tui_gateway import server
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+    monkeypatch.delenv("PLUGIN_RUNNER", raising=False)
+    (home / ".env").write_text(f"PLUGIN_RUNNER={runner}\n", encoding="utf-8")
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+            host.ensure_started()
+        assert ran.read_text(encoding="utf-8").count("ran") == 1
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
+@pytest.mark.parametrize("caller", ["launch", "secondary"])
+def test_a_caller_bound_to_another_profile_lends_its_scope_to_no_other_profiles_launcher(
+        tmp_path, monkeypatch, caller):
+    """Only a caller bound to the started profile's own secrets lends them to its launcher. A body bound to the
+    launch profile that starts a secondary's host leaves the secondary on its own ``.env``, and a body bound to a
+    secondary that starts the launch profile's host leaves it on the launch env."""
+    from agent import secret_scope as ss
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tui_gateway import server
+
+    def runner(name):
+        ran, script = tmp_path / f"{name}.ran", tmp_path / name
+        script.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+        script.chmod(0o755)
+        return ran
+
+    ops_ran, launch_ran = runner("ops-runner"), runner("launch-runner")
+    ops = _home_with_plugins(tmp_path / "ops", monkeypatch, {})
+    launch = _home_with_plugins(tmp_path, monkeypatch, {})
+    launcher = yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}})
+    for home in (ops, launch):
+        (home / "config.yaml").write_text(launcher, encoding="utf-8")
+    (ops / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / 'ops-runner'}\n", encoding="utf-8")
+    monkeypatch.setenv("PLUGIN_RUNNER", str(tmp_path / "launch-runner"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    started, bound_to = (ops, None) if caller == "launch" else (launch, str(ops))
+    home_token = set_hermes_home_override(started)
+    try:
+        host = plugins_mod.get_plugin_manager()._plugin_host()
+    finally:
+        reset_hermes_home_override(home_token)
+    context_token = ss.set_multiplex_context(True)
+    try:
+        with server._session_profile_runtime_scope({"profile_home": bound_to}, hydrate_secrets=False):
+            host.ensure_started()
+        assert (ops_ran.exists(), launch_ran.exists()) == ((True, False) if started == ops else (False, True))
+    finally:
+        host.shutdown()
+        ss.reset_multiplex_context(context_token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
 def test_a_secondary_profiles_launcher_under_task_local_multiplexing_expands_from_its_own_env_file(
         tmp_path, monkeypatch):

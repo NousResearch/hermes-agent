@@ -74,30 +74,35 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home*: a start can come from a
     caller bound to another profile, or from a crash restart's thread, which has no binding at all.
 
-    Its ``${VAR}``s expand against the process env, as ``host_launcher`` documents, for a profile a plugin runs
-    elsewhere (the managed overlay's launcher) and for the launch profile outside multiplexing. That env holds
-    the launch profile's values, so any other profile's launcher expands through its own secrets
-    (``owner_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a sibling under
-    task-local multiplexing, which a fresh context does not carry. Under multiplexing the launch profile's
-    expands through its own scope too (``launch_secret_scope``: its env-only keys and files). The launch profile
-    is the one whose directory the process's own path keys, as ``serves_routed_profile`` asks: after that link
-    is renamed, *home* is the new name, which ``owner_secret_scope`` would take for another profile, and the old
-    name leads to no files. No terminal policy: the launcher is only read here."""
+    A profile a plugin runs elsewhere expands its ``${VAR}``s against the process env, as ``host_launcher``
+    documents for the managed overlay's launcher. A caller already bound to *home*'s secrets (stamped with it, or
+    unstamped, which marks the launch profile's) lends them: the TUI gateway binds the launch profile's ``.env``
+    over the live env even single-profile, and the launcher reads what the rest of that body reads. With no such
+    caller the launch profile outside multiplexing uses the process env, so a restart reads what the process
+    loaded. The process env holds the launch profile's values, so any other profile's launcher expands through
+    its own secrets (``owner_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a
+    sibling under task-local multiplexing, which a fresh context does not carry. Under multiplexing the launch
+    profile's expands through its own scope too (``launch_secret_scope``: its env-only keys and files). The
+    launch profile is the one whose directory the process's own path keys, as ``serves_routed_profile`` asks:
+    after that link is renamed, *home* is the new name, which ``owner_secret_scope`` would take for another
+    profile, and the old name leads to no files. No terminal policy: the launcher is only read here."""
+    from agent.secret_scope import current_secret_scope, current_secret_scope_home
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    own = hermes_home_key(get_routing_process_hermes_home()) == hermes_home_key(home)
+    stamp = current_secret_scope_home()
+    lent = current_secret_scope() if (hermes_home_key(stamp) == hermes_home_key(home) if stamp else own) else None
 
     def choose() -> list:
         from agent.secret_scope import is_multiplex_active
         from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
-        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
-        launch = get_routing_process_hermes_home()
-        own = hermes_home_key(launch) == hermes_home_key(home)
-        if run_elsewhere_refusal(home) is not None or (own and not is_multiplex_active()):
+        if run_elsewhere_refusal(home) is not None or (lent is None and own and not is_multiplex_active()):
             from hermes_cli.plugins_loader import _plugin_home_scope
             with _plugin_home_scope(home):
                 return host_launcher(home=home)
         from agent.runtime_scope import bind_state, scope_for_profile
         from tui_gateway.launch_profile_policy import launch_secret_scope, owner_secret_scope
         # The launch profile's scope with its files read through *home*, the name that leads there now.
-        secrets = launch_secret_scope(home) if own else owner_secret_scope(home)
+        secrets = lent if lent is not None else launch_secret_scope(home) if own else owner_secret_scope(home)
         with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
             return host_launcher(home=home)
 

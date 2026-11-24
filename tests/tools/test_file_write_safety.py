@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent.file_safety import is_write_denied as _is_write_denied
+from agent.file_safety import local_drive_spelling
 
 
 class TestStaticDenyList:
@@ -562,6 +563,7 @@ class TestBomHandling:
             f"*** Begin Patch\n*** Update File: {target}\n@@\n-VERSION=1\n+VERSION=2\n*** End Patch").success
         assert target.read_bytes() == original
 
+    @pytest.mark.require_symlinks
     @pytest.mark.parametrize("op", ["add", "move"])
     def test_a_dangling_symlink_destination_is_occupied(self, ops, tmp_path: Path, op):
         # `[ -f ]` and `[ -e ]` follow the link, so a dangling one read as an absent path: Add
@@ -573,7 +575,9 @@ class TestBomHandling:
                 else f"*** Move File: {tmp_path / 'src.txt'} -> {link}\n")
         res = ops.patch_v4a(f"*** Begin Patch\n{body}*** End Patch")
         assert not res.success
-        assert link.is_symlink() and os.readlink(link) == str(tmp_path / "gone.txt")
+        # Windows reads an absolute link target back as \\?\C:\...
+        assert link.is_symlink()
+        assert local_drive_spelling(os.readlink(link)) == str(tmp_path / "gone.txt")
         assert not (tmp_path / "gone.txt").exists()
         assert (tmp_path / "src.txt").read_bytes() == b"SOURCE\n"
 

@@ -793,51 +793,6 @@ class TestSecondaryProfileConfigHandling:
         assert created[Platform.SMS]._shared_listener_profile == "reviewer"
         assert getattr(created[Platform.TELEGRAM], "_shared_listener_profile", None) is None
 
-    @pytest.mark.asyncio
-    async def test_a_plugin_only_in_the_secondary_decides_its_port_in_that_profile(self, monkeypatch, tmp_path):
-        """``binds_port_fn`` lives on an entry registered in the SECONDARY's registry scope; the verdict is
-        taken where the adapter is built (that scope), so webhook mode still runs in shared-listener mode."""
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
-        from gateway.platform_registry import PlatformEntry, platform_registry
-        from hermes_constants import hermes_home_key
-
-        secondary = tmp_path / "profiles" / "reviewer"
-        secondary.mkdir(parents=True)
-        platform_registry.register(PlatformEntry(
-            name="modebinder", label="Mode binder", adapter_factory=lambda cfg: None, check_fn=lambda: True,
-            binds_port_fn=lambda extra: extra.get("connection_mode") == "webhook"), scope=hermes_home_key(secondary))
-        try:
-            runner = GatewayRunner.__new__(GatewayRunner)
-            runner.config = GatewayConfig(multiplex_profiles=True)
-            runner._profile_adapters = {}
-            runner.adapters = {}
-            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-            token = set_hermes_home_override(secondary)  # Platform() resolves a plugin name only where it registered
-            try:
-                plat = Platform("modebinder")
-            finally:
-                reset_hermes_home_override(token)
-            reviewer_cfg = GatewayConfig(multiplex_profiles=True)
-            reviewer_cfg.platforms = {plat: PlatformConfig(enabled=True, token="t", extra={"connection_mode": "webhook"})}
-            monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
-            created = {}
-
-            def fake_create(platform, platform_config):
-                created[platform] = _FakeAdapter(token=platform_config.token or None)
-                created[platform].config = platform_config
-                return created[platform]
-
-            monkeypatch.setattr(runner, "_create_adapter", fake_create)
-            monkeypatch.setattr(runner, "_wire_adapter_handlers", lambda *a, **k: None)
-            monkeypatch.setattr(runner, "_bind_voice_input_callback", lambda *a, **k: None)
-            monkeypatch.setattr(runner, "_sync_voice_mode_state_to_adapter", lambda *a, **k: None)
-            monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", AsyncMock(return_value=True))
-
-            assert await runner._start_one_profile_adapters("reviewer", str(secondary), {}) == 1
-            assert created[plat]._shared_listener_profile == "reviewer"
-        finally:
-            platform_registry.unregister("modebinder", scope=hermes_home_key(secondary))
-
     def test_configured_secondary_adapter_namespaces_runtime_status(self):
         runner = _secondary_recovery_runner()
         adapter = _SecondaryRecoveryAdapter()
@@ -1249,6 +1204,43 @@ class TestSecondaryProfileHookRegistration:
 
         assert ("shell", profile_cfg) in seen
         assert ("webhook", profile_cfg) in seen
+
+
+class TestTransportTraitsAcrossProfiles:
+    """A transport trait describes the adapter, not a profile: an entry loaded only in one profile's scope
+    answers from every scope (the launch profile wiring a secondary's adapter, a turn routed elsewhere)."""
+
+    def test_an_entry_loaded_only_in_a_secondary_answers_from_the_launch_scope(self, tmp_path):
+        from gateway.config import platform_binds_port
+        from gateway.platform_registry import PlatformEntry, platform_registry, registered_trait
+        from hermes_constants import hermes_home_key
+
+        secondary = tmp_path / "profiles" / "reviewer"
+        secondary.mkdir(parents=True)
+        platform_registry.register(PlatformEntry(
+            name="modebinder", label="Mode binder", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            binds_port_fn=lambda extra: extra.get("connection_mode") == "webhook", thread_reply_anchor=True),
+            scope=hermes_home_key(secondary))
+        try:
+            assert platform_binds_port("modebinder", {"connection_mode": "webhook"}) is True
+            assert registered_trait("modebinder", "thread_reply_anchor", False) is True
+        finally:
+            platform_registry.unregister("modebinder", scope=hermes_home_key(secondary))
+
+    def test_a_raising_binds_port_fn_reads_as_no_port(self):
+        from gateway.config import platform_binds_port
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        def broken(extra):
+            raise RuntimeError("plugin bug")
+
+        platform_registry.register(PlatformEntry(
+            name="brokenbinder", label="Broken", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            binds_port_fn=broken))
+        try:
+            assert platform_binds_port("brokenbinder", {"connection_mode": "webhook"}) is False
+        finally:
+            platform_registry.unregister("brokenbinder")
 
 
 class TestPluginPortBindingConditional:

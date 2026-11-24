@@ -195,10 +195,14 @@ class PlatformEntry:
 
 
 def registered_trait(platform, field_name: str, default: Any = None) -> Any:
-    """*field_name* of the registered entry for *platform* (a ``Platform`` or its value), else *default*
-    (a platform no plugin registered)."""
+    """*field_name* of the loaded entry for *platform* (a ``Platform`` or its value), else *default*.
+
+    For the transport traits (``binds_port_fn``, ``listen_port``, ``thread_reply_anchor``, ``opus_voice``):
+    they describe the adapter's implementation, not a profile, so an entry another profile loaded answers
+    when the current scope has none (a plugin installed only in a secondary; a turn routed to a profile
+    without it). Never imports a deferred adapter: the caller may be on the event loop."""
     name = str(getattr(platform, "value", platform) or "").strip().lower()
-    entry = platform_registry.get(name) if name else None
+    entry = platform_registry.loaded_entry_any_scope(name) if name else None
     return getattr(entry, field_name, default) if entry is not None else default
 
 
@@ -440,6 +444,14 @@ class PlatformRegistry:
             unresolved.update(name for (owner, name) in self._failed_loads if owner in (None, scope))
             unresolved.difference_update(entry.name for entry in entries)
         return entries, any(wanted(name) for name in unresolved)
+
+    def loaded_entry_any_scope(self, name: str) -> Optional[PlatformEntry]:
+        """The materialized entry for *name*: the current scope's, else the process-wide one, else the
+        first other profile scope that loaded it. Never imports a deferred adapter."""
+        with self._lock:
+            scoped = self._scoped_entries.get(self.current_scope_key(), {})
+            found = scoped.get(name) or self._entries.get(name)
+            return found or next((entries[name] for entries in self._scoped_entries.values() if name in entries), None)
 
     def loaded_entries(self) -> list[PlatformEntry]:
         """Entries already materialized (never imports a deferred adapter)."""

@@ -362,7 +362,13 @@ def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bo
         return True
     from gateway.platform_registry import registered_trait
     binds = registered_trait(platform_value, "binds_port_fn")
-    return bool(binds(extra or {})) if binds is not None else False
+    if binds is None:
+        return False
+    try:
+        return bool(binds(extra or {}))
+    except Exception:  # plugin code: a broken check must not stop the other adapters' startup
+        logger.warning("binds_port_fn for %s raised; treating it as not binding a port", platform_value, exc_info=True)
+        return False
 
 _DISCORD_CHANNEL_LINK_RE = re.compile(
     r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/(?:[0-9]+|@me)/([0-9]+)/?")

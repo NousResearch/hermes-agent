@@ -92,7 +92,7 @@ def test_a_platform_keeps_exactly_the_feishu_toolsets_it_selected(tmp_path):
     (or a composite) carried both; a platform with no saved list had neither."""
     from hermes_cli.tools_config import _enabled_plugin_toolsets
     selections = {"telegram": ["hermes-telegram", "feishu_doc"], "slack": ["web", "hermes-feishu"],
-                  "discord": ["web"], "feishu": ["hermes-feishu"]}
+                  "discord": ["web"], "feishu": ["web"]}  # core re-added feishu_* to Feishu's own saved list
     rows = "".join(f"  {p}: [{', '.join(sel)}]\n" for p, sel in selections.items())
     home = _home(tmp_path, env=_CREDS, config="platform_toolsets:\n" + rows)
     lcm.migrate_home(home, install=lambda n: {"ok": True}, say=lambda m: None)
@@ -100,6 +100,28 @@ def test_a_platform_keeps_exactly_the_feishu_toolsets_it_selected(tmp_path):
     plugin = {"feishu_doc", "feishu_drive"}
     enabled = {p: _enabled_plugin_toolsets(config, p, sel, plugin) for p, sel in {**selections, "cli": ["hermes-cli"]}.items()}
     assert enabled == {"telegram": {"feishu_doc"}, "slack": plugin, "discord": set(), "feishu": plugin, "cli": set()}
+
+
+def test_a_string_saved_selection_counts_as_use(tmp_path):
+    """Older ``hermes config set`` saved a list as a string; the runtime parses it, so the migration does."""
+    home = _home(tmp_path, config="platform_toolsets:\n  telegram: '[\"hermes-telegram\", \"hermes-feishu\"]'\n")
+    assert lcm.feishu_in_use(home) is True
+
+
+def test_a_home_with_both_labs_platforms_keeps_each_ones_tools_off_on_the_other(tmp_path):
+    from hermes_cli.tools_config import _enabled_plugin_toolsets
+    home = _home(tmp_path, env=_CREDS + "YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n")
+    lcm.migrate_home(home, install=lambda n: {"ok": True}, say=lambda m: None)
+    config = lcm._read_config(home)
+    assert not _enabled_plugin_toolsets(config, "feishu", ["hermes-feishu"], {"yuanbao"})
+    assert not _enabled_plugin_toolsets(config, "yuanbao", ["hermes-yuanbao"], {"feishu_doc", "feishu_drive"})
+
+
+def test_the_notice_names_host_isolation(tmp_path):
+    home = _home(tmp_path, env=_CREDS, config="plugins:\n  isolation: host\n")
+    assert "plugins.isolation: host" in lcm._feishu_notice(home)
+    (tmp_path / "b").mkdir()
+    assert "isolation" not in lcm._feishu_notice(_home(tmp_path / "b", env=_CREDS))
 
 
 def test_child_processes_keep_the_feishu_strip_set():

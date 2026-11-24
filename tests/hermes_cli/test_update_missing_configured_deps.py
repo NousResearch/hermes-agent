@@ -100,7 +100,9 @@ def test_update_names_missing_configured_features_from_selected_child(configured
     assert not (root / ".update-incomplete").exists()
 
     # Only the target gains the anchors; no updater module/cache is repaired.
-    for name in ("microsoft_teams/__init__", "microsoft_teams/apps", "mcp"):
+    # Teams' passive check also needs aiohttp (its webhook server); stub it where the environment lacks it.
+    aiohttp = () if (site / "aiohttp").exists() else ("aiohttp/__init__", "aiohttp/web")
+    for name in ("microsoft_teams/__init__", "microsoft_teams/apps", *aiohttp, "mcp"):
         (site / f"{name}.py").parent.mkdir(parents=True, exist_ok=True)
         (site / f"{name}.py").write_text("# Passive dependency-probe fixture.\n", encoding="utf-8")
     build()

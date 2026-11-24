@@ -24,4 +24,6 @@ Every name stays the same: the `FEISHU_*` environment variables (`FEISHU_APP_ID`
 
 :::info Upgrading from a release that bundled Feishu / Lark
 Nothing to do. Every profile that was already using Feishu (`FEISHU_APP_ID` plus `FEISHU_APP_SECRET` in its `.env`, `platforms.feishu` enabled or carrying an `app_id` in `config.yaml`, or the `feishu_doc` / `feishu_drive` / `hermes-feishu` toolset listed for another platform) gets the plugin installed automatically from the catalog by `hermes update`, or the first time the profile starts (agent or gateway start; this honours `security.allow_lazy_installs`). A failed attempt is retried with a backoff; `hermes update` always retries. This happens once per profile: if you later remove the plugin (`hermes plugins remove feishu`), it stays removed.
+
+One exception: a profile that sets `plugins.isolation: host` loads catalog plugins in the plugin host, where platform adapters cannot run. The plugin installs, but Feishu stays off there until that profile loads plugins in-process; the upgrade notice says so.
 :::

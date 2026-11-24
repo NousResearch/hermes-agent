@@ -101,8 +101,10 @@ def _toolset_listed(config: dict, names: frozenset[str], *, own_platform: str = 
     platform is on (:func:`platform_configured_on`). The installers copy cli-config.yaml.example into
     config.yaml, and it carried ``homeassistant: [hermes-homeassistant]`` until Home Assistant left core,
     so that row alone is not use."""
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
     rows = config.get("platform_toolsets")
-    selections = [sel for platform, sel in rows.items() if platform != own_platform] if isinstance(rows, dict) else []
+    selections = [parse_platform_toolsets_value(sel) for platform, sel in rows.items()
+                  if platform != own_platform] if isinstance(rows, dict) else []
     selections.append(config.get("toolsets"))
     return any(isinstance(sel, list) and any(str(item) in names for item in sel) for sel in selections)
 
@@ -201,7 +203,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
 
 # Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
 # platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
-_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant")
+_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant", "feishu")
 
 _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
                    "maintained going forward. Fixes from the community are welcome.")
@@ -233,11 +235,16 @@ _FEISHU_NOTICE = ("Feishu / Lark is now a Hermes Labs plugin: built by Nous Rese
 
 
 def _feishu_notice(home: Path, *, process_env: bool = False) -> str:
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    notice = _FEISHU_NOTICE
     # Core's adapter ignored a bare ``feishu`` in plugins.disabled; the catalog plugin does not (see _yuanbao_notice).
     if plugin_present("feishu", home) and _plugins_listed(home, ("feishu",))[1]:
-        return (f"{_FEISHU_NOTICE} plugins.disabled lists 'feishu', which now turns Feishu off; "
-                "remove it to keep using Feishu.")
-    return _FEISHU_NOTICE
+        notice += " plugins.disabled lists 'feishu', which now turns Feishu off; remove it to keep using Feishu."
+    # The bundled adapter was exempt from host isolation; a catalog platform adapter cannot run in the host.
+    if isolation_mode(_read_config(home)) == ISOLATION_HOST:
+        notice += (" This profile sets plugins.isolation: host, where platform adapters cannot load: Feishu "
+                   "stays off until the profile loads plugins in-process.")
+    return notice
 
 
 def _auth_store(home: Path) -> dict:
@@ -606,6 +613,9 @@ class LeftCoreFeature:
     # naming one disabled those tools; neither name reaches them now, so the one-time scope conversion disables
     # the plugin's toolsets there too. Unlike *replaces_toolsets*, nothing else is turned off.
     legacy_toolsets: tuple[str, ...] = ()
+    # The toolsets were not in core's CONFIGURABLE_TOOLSETS, so ``_recover_platform_native_toolsets`` re-added
+    # them to *platform*'s own saved list whatever it named: they stay on there.
+    native_on_own_platform: bool = False
     # Gateway platform the plugin ships: a running gateway serves it only after a restart.
     platform: str = ""
     # Channel ownership core declared for that platform, kept while the plugin is absent (migration
@@ -750,7 +760,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         secret_env=("FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN"),
         private_env=FEISHU_PRIVATE_ENV,
         toolsets=("feishu_doc", "feishu_drive"), off_platforms=_FEISHU_OFF_PLATFORMS,
-        legacy_toolsets=("hermes-feishu", "hermes-gateway"),
+        legacy_toolsets=("hermes-feishu", "hermes-gateway"), native_on_own_platform=True,
         platform="feishu", enable_env=("FEISHU_APP_ID", "FEISHU_APP_SECRET"), notice=_feishu_notice,
     ),
 )
@@ -1213,6 +1223,8 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
         for platform, selection in selections.items():
             if selection is None and platform not in feature.off_platforms:
                 continue  # no (valid) saved list: core's default composite carried the toolsets
+            if feature.native_on_own_platform and platform == feature.platform:
+                continue
             carried = _core_carried(feature, selection) if selection is not None else set()
             current = known.get(platform) if isinstance(known.get(platform), list) else []
             if missing := [ts for ts in feature.toolsets if ts not in current and ts not in carried]:

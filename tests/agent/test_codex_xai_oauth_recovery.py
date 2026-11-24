@@ -424,6 +424,7 @@ def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
             api_key_hint=None,
             failure_reason=None,
             model=None,
+            endpoint_url=None,
         ):
             assert status_code == 403
             assert api_key_hint == "test-key"

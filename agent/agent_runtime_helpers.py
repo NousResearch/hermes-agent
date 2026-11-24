@@ -607,9 +607,9 @@ def recover_with_credential_pool(
         if effective_reason is not None:
             from agent.credential_pool_model_cooldowns import pool_failure_reason
             kwargs["failure_reason"] = pool_failure_reason(effective_reason, error_context, billing_unverified)
-        model = getattr(agent, "model", None)
-        if isinstance(model, str) and model.strip():
-            kwargs["model"] = model
+        for key, value in (("model", getattr(agent, "model", None)), ("endpoint_url", getattr(agent, "base_url", None))):
+            if isinstance(value, str) and value.strip():
+                kwargs[key] = value
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False

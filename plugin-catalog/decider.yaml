@@ -1,0 +1,18 @@
+name: decider
+repo: https://github.com/greqone/hermes-decider
+sha: a4e4e2361257443a6193f525255ae8fea2ea7bf7
+description: >
+  Delegation backend that asks one local decision model which of your configured routes a subagent
+  should run on. One endpoint, no fallback host, no environment variables: the only credential is a
+  declared secret sent solely to the host you name, and a task the endpoint cannot route takes the
+  route you marked default.
+maintainer: greqone
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

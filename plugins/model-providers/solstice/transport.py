@@ -109,8 +109,9 @@ class SolsticeClient(GeminiNativeClient):
             stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
             response_format=response_format or extra.get("response_format"),
         ), wire.SINGLE_REQUEST_OUTPUT_CAP)
-        # An explicit per-call timeout (the agent's configured / stale-matched budget) wins; else 3600 s read.
-        timeout = timeout or self._request_timeout
+        # An explicit per-call timeout (the agent's configured / stale-matched budget, zero included) wins;
+        # else 3600 s read.
+        timeout = self._request_timeout if timeout is None else timeout
         url = interactions_url(self.base_url)
         if stream:
             return self._stream(model, url, request, timeout)

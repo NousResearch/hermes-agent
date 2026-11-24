@@ -211,26 +211,14 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
 # platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
 _YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant", "qqbot")
 
-_YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
-                   "maintained going forward. Fixes from the community are welcome.")
-
-
-def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
-    # Core's adapter ignored a bare ``yuanbao`` in plugins.disabled; the catalog plugin does not, and the
-    # automatic install keeps the entry: its kept-off notice (_install_locked) names the enable command.
-    return _YUANBAO_NOTICE
-
-
 def _labs_notice(plugin: str, label: str) -> Callable[..., str]:
-    """A Labs plugin's migration notice, plus the sentence for a bare *plugin* left in ``plugins.disabled``
-    after the install (core's adapter ignored that name; the catalog plugin does not), as Yuanbao's."""
+    """A Labs plugin's migration notice. Core's adapter ignored a bare *plugin* in ``plugins.disabled``; the
+    catalog plugin does not, and the automatic install keeps the entry: its kept-off notice (_install_locked)
+    names the enable command."""
     base = (f"{label} is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
             "maintained going forward. Fixes from the community are welcome.")
 
     def notice(home: Path, *, process_env: bool = False) -> str:
-        if plugin_present(plugin, home) and _plugins_listed(home, (plugin,))[1]:
-            return (f"{base} plugins.disabled lists '{plugin}', which now turns {label} off; "
-                    f"remove it to keep using {label}.")
         return base
     return notice
 
@@ -734,7 +722,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                      "YUANBAO_HOME_CHANNEL_NAME"),
         toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
-        platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
+        platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_labs_notice("yuanbao", "Yuanbao"),
     ),
     LeftCoreFeature(
         # QQ_STT_API_KEY stays on local_env_policy's own short list, as core had it. QQ_* channel ownership
@@ -887,6 +875,12 @@ def legacy_plugin_alias(name: str) -> str:
     """The catalog plugin a bundled key that left core now names (``observability/langfuse`` ->
     ``langfuse``), else ``""``."""
     return next((f.plugin for f in LEFT_CORE if f.plugin_key and name in (f.plugin_key, *f.plugin_names)), "")
+
+
+def legacy_platform_alias(name: str) -> str:
+    """The platform a left-core row's old bundled manifest name configured (``platforms.qqbot-platform``
+    read as ``platforms.qqbot``, as core's bundled-alias scan did), else ``""``."""
+    return next((f.platform for f in LEFT_CORE if f.platform and name in f.plugin_names), "")
 
 
 def legacy_plugin_keys(plugin: str) -> set[str]:

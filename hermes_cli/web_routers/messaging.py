@@ -106,6 +106,8 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         ("FEISHU_VERIFICATION_TOKEN", "Feishu / Lark verification token", "Verification token", {"password": True}),
         ("DINGTALK_CLIENT_ID", "DingTalk client ID (App key)", "Client ID", {}),
         ("DINGTALK_CLIENT_SECRET", "DingTalk client secret (App secret)", "Client secret", {"password": True}),
+        ("QQ_APP_ID", "QQ Bot App ID from QQ Open Platform (q.qq.com)", "QQ App ID", {"url": "https://q.qq.com"}),
+        ("QQ_CLIENT_SECRET", "QQ Bot Client Secret from QQ Open Platform", "QQ Client Secret", {"password": True}),
     )
 }
 

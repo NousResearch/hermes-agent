@@ -52,7 +52,7 @@ _SHIPPED_PLATFORM_TOOLSETS = "platform_toolsets:\n  cli: [hermes-cli]\n  telegra
     ("", "qqbot:\n  app_id: a\n  client_secret: s\n", True),  # top-level block, bridged into extra
     ("", "platform_toolsets:\n  telegram: [hermes-qqbot]\n", True),
     ("", "", False),
-    ("QQ_APP_ID=a\n", "", False),  # half a credential set never enabled the adapter
+    ("QQ_APP_ID=a\n", "", False),  # half a set: core enabled the adapter, but it never connected
     ("", "platforms:\n  qqbot:\n    extra: {app_id: a}\n", False),
     ("", _SHIPPED_PLATFORM_TOOLSETS, False),
     # An explicit disable kept core's adapter off whatever credentials were set.
@@ -93,9 +93,84 @@ def test_a_fresh_or_shipped_default_home_installs_nothing(tmp_path):
         assert said == []
 
 
+@pytest.mark.parametrize("name", ["platforms/qqbot", "qqbot-platform"])
+def test_core_s_old_disable_still_disables_the_installed_plugin(name):
+    """``plugins.disabled`` naming core's adapter kept QQ Bot off; it names the catalog plugin now and still wins."""
+    from hermes_cli.plugins_discovery import gate_manifest
+    from hermes_cli.plugins_manifest import PluginManifest
+    manifest = PluginManifest(name="qqbot", source="user", path="qqbot", key="qqbot")
+    assert lcm.legacy_plugin_alias(name) == "qqbot"
+    assert gate_manifest(manifest, {name}, {"qqbot"}).error == \
+        "listed in both plugins.enabled and plugins.disabled — disabled wins"
+
+
+def test_child_processes_keep_the_qq_strip_set_core_had():
+    """With the plugin absent, children lose the QQ names core's manifest made them lose."""
+    from tools.environments import local_env_policy as policy
+    assert {"QQ_CLIENT_SECRET", "QQ_STT_API_KEY"} <= policy._ADAPTER_SECRET_ENV & policy._ALWAYS_STRIP_KEYS
+    assert {"QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_ALLOWED_USERS", "QQBOT_HOME_CHANNEL"} <= \
+        policy._HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+def test_yuanbao_tools_stay_off_in_qqbot_sessions():
+    """A home upgrading across both removals: core never carried the yb_* tools in hermes-qqbot."""
+    assert "qqbot" in next(f for f in lcm.LEFT_CORE if f.plugin == "yuanbao").off_platforms
+
+
 @pytest.mark.parametrize("name", ["QQ_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQBOT_ALLOWED_USERS"])
 def test_qq_gates_stay_profile_gates_with_the_plugin_absent(name):
     """``QQ_*`` and ``QQBOT_*`` gates stayed out of another profile's children while core shipped QQ Bot
     (``Platform.QQBOT`` named the prefix); the row keeps that while the plugin is absent."""
     from tools.environments.local_env_policy import is_profile_gate_env
     assert is_profile_gate_env(name) is True
+
+
+def test_the_channels_card_keeps_the_qq_secret_masked_without_the_plugin_manifest(monkeypatch):
+    """The dashboard reads field metadata from OPTIONAL_ENV_VARS, which lists the plugin's names only when the
+    launch home had the plugin when hermes_cli.config was imported. A card built after an in-process install, or
+    for a secondary profile's plugin, must still render QQ_CLIENT_SECRET as a password field, as core did."""
+    from hermes_cli import config
+    from hermes_cli.web_routers import messaging
+    for name in ("QQ_APP_ID", "QQ_CLIENT_SECRET"):
+        monkeypatch.delitem(config.OPTIONAL_ENV_VARS, name, raising=False)
+    assert messaging._messaging_env_info("QQ_CLIENT_SECRET")["is_password"] is True
+    assert messaging._messaging_env_info("QQ_APP_ID")["prompt"] == "QQ App ID"
+
+
+@pytest.mark.parametrize(("config", "in_use"), [
+    ("platforms:\n  qqbot-platform:\n    extra: {app_id: a, client_secret: s}\n", True),
+    ("platforms:\n  qqbot-platform:\n    enabled: true\n", True),
+    ("platforms:\n  qqbot-platform:\n    enabled: false\n", False),
+])
+def test_the_old_manifest_key_is_read_as_platforms_qqbot(tmp_path, config, in_use):
+    """Core resolved ``platforms.qqbot-platform`` (its manifest name) to ``qqbot``; the migration does too."""
+    env = _CREDS if not in_use else ""
+    assert _qqbot_in_use(_home(tmp_path, env=env, config=config)) is in_use
+    from gateway.config import Platform
+    from hermes_cli.left_core_migration import legacy_platform_alias
+    assert legacy_platform_alias("qqbot-platform") == "qqbot"
+    with pytest.raises(ValueError):  # unregistered: no pseudo member until the plugin registers qqbot
+        Platform("qqbot-platform")
+
+
+def test_reload_and_config_set_still_know_the_qq_env_names():
+    """reload_env drops a removed QQ_* line and `config set` routes it to .env, as when core shipped QQ Bot,
+    even after an in-process install whose manifest this process never read."""
+    from hermes_cli import config
+    assert {"QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"} <= config._EXTRA_ENV_KEYS
+
+
+def test_webhook_routes_keep_a_qqbot_target_before_the_plugin_registers():
+    from gateway.webhook_targets import is_dispatchable_target
+    assert is_dispatchable_target("qqbot") is True
+
+
+def test_a_mixed_list_naming_hermes_qqbot_keeps_its_tools_once_the_plugin_registers(monkeypatch):
+    """``telegram: [hermes-qqbot, file]`` resolved hermes-qqbot's core tools on main; it does again once the plugin
+    registers the platform (the implicit bundle), not just ``file``."""
+    from hermes_cli import tools_config
+    import toolsets
+    core = toolsets.resolve_toolset("hermes-cli")
+    monkeypatch.setattr(toolsets, "_plugin_platform_bundle", lambda name: core if name == "hermes-qqbot" else [])
+    config = {"platform_toolsets": {"telegram": ["hermes-qqbot", "file"]}}
+    assert tools_config._get_platform_tools(config, "telegram") >= {"file", "terminal", "web"}

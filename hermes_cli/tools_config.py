@@ -495,9 +495,11 @@ def _explicit_toolsets(
     from toolsets import resolve_toolset, TOOLSETS
 
     enabled = {ts for ts in toolset_names if ts in explicit_known_keys and _toolset_allowed_for_platform(ts, platform)}
+    from toolsets import _plugin_platform_bundle
+    # A plugin platform's implicit ``hermes-<platform>`` bundle expands like a static composite.
     composite_tools = {
-        t for ts_name in toolset_names if ts_name not in explicit_known_keys and ts_name in TOOLSETS
-        for t in resolve_toolset(ts_name)}
+        t for ts_name in toolset_names if ts_name not in explicit_known_keys
+        for t in (resolve_toolset(ts_name) if ts_name in TOOLSETS else _plugin_platform_bundle(ts_name))}
     if composite_tools:
         enabled |= _configurable_subset_of(composite_tools, platform) - _default_off_toolsets(platform, explicitly_configured)
     _enable_recently_shipped_toolsets(enabled, config, platform)

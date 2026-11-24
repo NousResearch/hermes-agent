@@ -279,6 +279,12 @@ class Platform(Enum):
             with contextlib.suppress(Exception):
                 from gateway.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
+            if not registered:  # a left-core platform's old manifest key (``qqbot-platform``), as above
+                with contextlib.suppress(Exception):
+                    from hermes_cli.left_core_migration import legacy_platform_alias
+                    target = legacy_platform_alias(value)
+                    if target and target != value:
+                        return cls(target)
         return cls._add_pseudo_member(value) if registered else None
 
     @classmethod
@@ -332,7 +338,12 @@ def platform_value(key: Any) -> str:
     if value in Platform._value2member_map_:
         return Platform._value2member_map_[value].value
     names, aliases = Platform._bundled_plugin_platforms()
-    return value if value in names else aliases.get(value, value)
+    if value in names:
+        return value
+    if value in aliases:
+        return aliases[value]
+    from hermes_cli.left_core_migration import legacy_platform_alias  # a left-core platform's old manifest key
+    return legacy_platform_alias(value) or value
 
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.

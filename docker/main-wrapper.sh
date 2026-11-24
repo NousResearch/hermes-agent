@@ -13,8 +13,7 @@
 # re-exec and continue directly.
 #
 # Routing:
-#   no args, with a TTY           → exec `hermes` (the interactive CLI)
-#   no args, no TTY (docker -d)   → exec `hermes gateway run` (supervised gateway)
+#   no args                       → exec `hermes` (the default)
 #   first arg is an executable    → exec it directly (sleep, bash, sh, …)
 #   first arg is anything else    → exec `hermes <args>` (subcommand passthrough)
 #
@@ -78,12 +77,7 @@ cd /opt/data
 cd "$_hermes_orig_cwd"
 
 if [ $# -eq 0 ]; then
-    # No command: the interactive CLI needs a terminal. A detached `docker run -d` has none, and the
-    # CLI would quit at once and take the container (and its supervised gateway) down in a restart
-    # loop (#159590), so run the documented headless mode instead.
-    [ -t 0 ] && drop hermes
-    echo "[hermes] no command and no terminal: running the supervised gateway (use 'docker run -it' for the interactive CLI)" >&2
-    drop hermes gateway run
+    drop hermes
 fi
 
 # A leading flag is a hermes global option (`-p <profile> gateway run`), never an executable:

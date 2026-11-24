@@ -72,7 +72,7 @@ docker run -d \
   nousresearch/hermes-agent gateway run
 ```
 
-A detached container started with no command at all (`docker run -d ... nousresearch/hermes-agent`) also runs the supervised gateway: the interactive CLI needs a terminal, so without `-it` the image picks the gateway instead of exiting.
+A container started with no command and no terminal (`docker run -d ... nousresearch/hermes-agent`, no `-it`) runs exactly as if you had passed `gateway run`: the interactive CLI needs a terminal, so the image picks the gateway instead of exiting.
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./features/api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
@@ -741,13 +741,14 @@ On the PID-1 path, `/init`:
 2. Runs `/etc/cont-init.d/02-reconcile-profiles` (= `hermes_cli.container_boot`): walks `$HERMES_HOME/profiles/<name>/`, recreates the per-profile gateway s6 service slot under `/run/hermes-service/gateway-<profile>/`, and auto-starts only those whose last recorded state was `running` (see [Per-profile gateway supervision](#per-profile-gateway-supervision)).
 3. Starts the static `main-hermes` and `dashboard` s6-rc services.
 4. Exec's the container's CMD as the main program (`/opt/hermes/docker/main-wrapper.sh`), which routes the arguments the user passed to `docker run`:
-   - no args → `hermes` (the default)
+   - no args with a terminal (`-it`) → `hermes` (the interactive CLI)
+   - no args without a terminal (`-d`) → `hermes gateway run` (chosen by the entrypoint before `/init`, so boot treats it exactly like an explicit `gateway run`)
    - first arg is an executable on PATH (e.g. `sleep`, `bash`) → exec it directly
    - anything else → `hermes <args>` (subcommand passthrough)
    The container exits when this main program exits, with its exit code.
 
 :::warning Breaking change vs. pre-s6 images
-The container ENTRYPOINT is now the `entrypoint-dispatch.sh` dispatcher (which delegates to s6-overlay's `/init` under PID 1), not `/usr/bin/tini`. All five documented `docker run` invocation patterns (no args, `chat -q "…"`, `sleep infinity`, `bash`, `--tui`) behave identically to the tini-based image. If you have a downstream wrapper that depended on tini-specific signal behavior or hard-coded `/usr/bin/tini --` invocation, pin to the previous image tag.
+The container ENTRYPOINT is now the `entrypoint-dispatch.sh` dispatcher (which delegates to s6-overlay's `/init` under PID 1), not `/usr/bin/tini`. All five documented `docker run` invocation patterns (no args, `chat -q "…"`, `sleep infinity`, `bash`, `--tui`) behave identically to the tini-based image, except that no args without a terminal now runs `gateway run` instead of a CLI that exits at once. If you have a downstream wrapper that depended on tini-specific signal behavior or hard-coded `/usr/bin/tini --` invocation, pin to the previous image tag.
 :::
 
 :::warning Privilege model

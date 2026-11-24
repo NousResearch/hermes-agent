@@ -1,26 +1,26 @@
 name: hermes-mini
 repo: https://github.com/ieatcode4breakfast/hermes-mini
-sha: a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1
+sha: 73f592518ed05a13b39243d95e4ff96aca115ffe
 title: Hermes Mini
-description: "A mobile-first chat app for your own Hermes agent, served from the Hermes dashboard and installable to the home screen: several chats, an inbox for scheduled-job results, live narration of what the agent is doing, to-dos, a schedules panel, a model and provider picker, dictation through Hermes' speech-to-text, and opt-in Web Push. Disclosure — serves a web app and routes from the dashboard behind its login (no own port); registers an in-process `hermes-mini` gateway platform for job delivery; in app chats only, adds a turn rule and job-delivery default to the prompt, appends a progress-update request to tool results during long turns, and blocks edits to its own files; writes the live narration line with small auxiliary-model calls on the user's provider; writes `platforms.hermes-mini.home_channel` to config.yaml once; lets the user answer an approval from a push notification; runs ffmpeg for audio metadata, `hermes gateway restart -y --detach` plus a dashboard restart from its Restart button, and, for the optional computer view's clipboard, a Tk helper and xclip; uses internal Hermes modules for dictation and the computer view, which may stop working after a Hermes update; opt-in Web Push to FCM/Mozilla/Apple push services; no telemetry."
+description: "A mobile-first chat app for your own Hermes agent, served from the Hermes dashboard and installable to the home screen: multiple chats, an inbox for scheduled-job results, search, bookmarks, to-dos, scheduled jobs and slash-triggered skills, live narration of what the agent is doing, a model/provider picker and approval-mode selector, profile editing, inline prompt and app-connection cards, Android share-sheet support, dictation through Hermes' speech-to-text, an optional computer view, and opt-in Web Push. Disclosure — serves a web app and routes from the dashboard behind its login (no own port); registers an in-process `hermes-mini` gateway platform for job delivery; in app chats only, adds a turn rule and job-delivery default to the prompt, appends a progress-update request to tool results during long turns, and blocks edits to its own files; reads Hermes' state.db read-only for Inbox and Search; writes the live narration line with small auxiliary-model calls on the user's provider; writes `platforms.hermes-mini.home_channel` to config.yaml once; only on explicit user action, calls Hermes' gateway methods to edit profile name/avatar, save provider API keys, or change `approvals.mode` (with confirmation before switching to Off; never auto-approves), and renders Hermes' own password/secret prompt cards (never runs sudo itself); lets the user answer an approval from a push notification; runs ffmpeg for audio metadata, `hermes gateway restart -y --detach` plus a dashboard restart from its Restart button, and, for the optional computer view's clipboard, a Tk helper and xclip; uses internal Hermes modules for dictation, the computer view, and YAML helpers, which may stop working after a Hermes update; opt-in Web Push to FCM/Mozilla/Apple/Windows push services; no telemetry."
 maintainer: ieatcode4breakfast
 tier: community
 category: web
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ieatcode4breakfast/hermes-mini#readme
-version: "0.2.1"
-image: https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1/docs/media/banner.png
+version: "0.3.1"
+image: https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/73f592518ed05a13b39243d95e4ff96aca115ffe/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1/docs/media/phone-01-chat.png
-  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1/docs/media/phone-02-working.png
-  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1/docs/media/phone-04-inbox.png
-  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1/docs/media/phone-05-todo.png
-  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1/docs/media/phone-07-models.png
-  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/a8e79bf5731f5cd7bf9ed3ce3df92483691fe7d1/docs/media/desktop-01-computer.png
+  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/73f592518ed05a13b39243d95e4ff96aca115ffe/docs/media/phone-01-chat.png
+  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/73f592518ed05a13b39243d95e4ff96aca115ffe/docs/media/phone-02-working.png
+  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/73f592518ed05a13b39243d95e4ff96aca115ffe/docs/media/phone-04-inbox.png
+  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/73f592518ed05a13b39243d95e4ff96aca115ffe/docs/media/phone-05-todo.png
+  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/73f592518ed05a13b39243d95e4ff96aca115ffe/docs/media/phone-07-models.png
+  - https://raw.githubusercontent.com/ieatcode4breakfast/hermes-mini/73f592518ed05a13b39243d95e4ff96aca115ffe/docs/media/desktop-01-computer.png
 platforms: []
 known_issues:
-  - Thoroughly tested on Android (Chrome, installed to the home screen); not yet tested on iPhone or iPad.
-  - Restart the Hermes dashboard and gateway after installing so the app and its hooks load.
+  - Tested on Android Chrome (installed to the home screen) and desktop Chrome; not yet tested on iPhone or iPad.
+  - Restart the Hermes dashboard and gateway after installing or updating so the app and its hooks load.
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -201,6 +201,7 @@ def test_fs_backend_resolves_ssh_connection_from_profile_env(monkeypatch):
     captured = {}
     expected = object()
     monkeypatch.setattr(file_routes, "_profile_scope", lambda _profile: nullcontext())
+    monkeypatch.setattr(file_routes, "_fs_profile_home", lambda _profile: None)
     monkeypatch.setattr(
         file_routes,
         "load_config",

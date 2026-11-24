@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
@@ -263,9 +263,7 @@ def _scan_merged_tree(plugin_dir: Path, identifier: str, merged: Optional[list[s
 
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
-    plugins = get_hermes_home() / "plugins"
-    plugins.mkdir(parents=True, exist_ok=True)
-    return plugins
+    return mkdir_under_hermes_home(get_hermes_home() / "plugins")
 
 
 def _sanitize_plugin_name(name: str, plugins_dir: Path, *, allow_subdir: bool = False) -> Path:

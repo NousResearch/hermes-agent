@@ -210,3 +210,26 @@ def test_commit_no_job_matches_sets_up_no_environment(checkout: Path, tmp_path: 
     assert commit.returncode == 0, commit.stderr
     assert not runner.exists()
     assert not (tmp_path / "calls").exists()
+
+
+def test_root_job_in_a_linked_worktree_finds_the_checkouts_hook_just(checkout: Path, tmp_path: Path):
+    """A `root: apps/desktop/` job committed from a linked worktree resolves `{just}` at the
+    worktree root. Git exports GIT_DIR to hooks there, and with it set `--show-toplevel`
+    answers the job's cwd, so the job died on `apps/desktop/scripts/hook-just`."""
+    pinned, env = _install_hooks(checkout, tmp_path)
+    native = _native_lefthook(checkout)
+    native.parent.mkdir(parents=True)
+    shutil.copy2(pinned, native)
+    received = tmp_path / "just-args"
+    _shim(tmp_path / "bin" / "just", f'echo "$PWD $*" >> "{posix(received)}"')
+    subprocess.run([*GIT, "add", "lefthook.yml", "scripts"], cwd=checkout, env=env, check=True, timeout=60)
+    subprocess.run([*GIT, "commit", "-q", "--no-verify", "-m", "init"], cwd=checkout, env=env, check=True, timeout=60)
+    linked = tmp_path / "linked"
+    subprocess.run([*GIT, "worktree", "add", "-q", "--detach", str(linked)], cwd=checkout, env=env, check=True,
+                   timeout=60)
+    (linked / "apps" / "desktop").mkdir(parents=True)
+
+    commit = _commit(linked, env, "apps/desktop/a.ts")
+
+    assert commit.returncode == 0, commit.stdout + commit.stderr
+    assert received.read_text(encoding="utf-8").split() == [posix(linked / "apps" / "desktop"), "eslint", "./a.ts"]

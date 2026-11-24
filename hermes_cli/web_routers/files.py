@@ -9,6 +9,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import importlib
 import logging
 import mimetypes
 import os
@@ -52,6 +53,10 @@ from hermes_cli.web_models import (
     ManagedFileUpload,
 )
 from utils import atomic_write_bytes, atomic_write_text
+
+# v0.23.3 and earlier gateways cache agent.file_safety at boot before hermes_credential_homes existed.
+_file_safety = importlib.import_module("agent.file_safety")
+hermes_credential_homes = getattr(_file_safety, "hermes_credential_homes", _file_safety._credential_store_dirs)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -102,9 +107,12 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # anywhere in the path so the trees are blocked wherever they sit under the root,
 # no HERMES_HOME resolution (``whatsapp/session``, not every ``session`` dir).
 # vault/ is covered by its file names above: a bare ``vault`` component is too
-# common (an Obsidian vault) to hide wherever it appears.
+# common (an Obsidian vault) to hide wherever it appears. A backend migration's
+# backups (and its record beside them) are refused only directly under a Hermes or
+# profile home (_HOME_ONLY_STORES): a project's own ``backend_migration/`` is not one.
+_HOME_ONLY_STORES = ("backend_migration", "backend_migration.json")
 _SENSITIVE_MANAGED_DIR_PARTS = tuple(
-    tuple(PurePosixPath(store).parts) for store in CREDENTIAL_STORE_DIRS if store != "vault")
+    tuple(PurePosixPath(store).parts) for store in CREDENTIAL_STORE_DIRS if store not in ("vault", *_HOME_ONLY_STORES))
 
 # OS/CLI credential trees (~/.ssh, ~/.aws, ~/.config/gh, ...) as lowercase component
 # sequences, matched as consecutive path components for the same reason: the default
@@ -138,22 +146,36 @@ def _is_sensitive_path(path: Path) -> bool:
     )
 
 
+def _local_stores() -> tuple[set[str], list[str], list[str]]:
+    """The resolved home credential stores and, case-folded, the Hermes-home-only store paths
+    (``<home>/backend_migration`` and ``.json``, for the active home, the root and every profile home)."""
+    files, dirs = resolved_home_credential_stores()
+    return files, dirs, [os.path.join(str(home), name).casefold()
+                         for home in hermes_credential_homes() for name in _HOME_ONLY_STORES]
+
+
+def _is_home_only_store(real: str, anchored: list[str]) -> bool:
+    folded = real.casefold()  # without regard to case, as the name checks: a case-insensitive mount opens either
+    return any(folded == store or folded.startswith(store + os.sep) for store in anchored)
+
+
 def _is_local_sensitive_path(
-    path: Path, stores: Optional[tuple[set[str], list[str]]] = None, real: Optional[str] = None,
+    path: Path, stores: Optional[tuple[set[str], list[str], list[str]]] = None, real: Optional[str] = None,
 ) -> bool:
     """:func:`_is_sensitive_path`, or *path* (a path on THIS host) resolves to or under a home
     credential store: names alone miss ``~/.ssh -> ~/keys`` (both ``~/.ssh/id_rsa`` and
     ``~/keys/id_rsa`` resolve into the store). *stores* lets a directory scan resolve the
-    store locations once (:func:`agent.file_safety.resolved_home_credential_stores`), and
+    store locations once (:func:`_local_stores`), and
     *real* its entries' resolved paths (:func:`_scan_entry_realpath`)."""
     if _is_sensitive_path(path):
         return True
-    files, dirs = stores if stores is not None else resolved_home_credential_stores()
+    files, dirs, anchored = stores if stores is not None else _local_stores()
     try:
         real = real if real is not None else os.path.realpath(path)
     except (OSError, ValueError):
         return True  # fail closed: a path that cannot be resolved cannot be cleared
-    return deny_key(real) in {deny_key(f) for f in files} or any(deny_path_under(real, d) for d in dirs)
+    return (deny_key(real) in {deny_key(f) for f in files} or any(deny_path_under(real, d) for d in dirs)
+            or _is_home_only_store(real, anchored))
 
 
 def _scan_entry_realpath(base: str, entry: os.DirEntry) -> Optional[str]:
@@ -415,6 +437,7 @@ def _fs_backend(profile: Optional[str] = None):
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError, get_ssh_workspace_fs
     from tools.terminal_tool_config import coerce_ssh_remote_cwd
 
+    _fs_profile_home(profile)  # 409 for a profile a plugin runs elsewhere, before its config names a machine to dial
     with _profile_scope(profile):
         terminal = dict(load_config().get("terminal") or {})
         profile_env = load_env()
@@ -748,7 +771,7 @@ def list_managed_files(request: Request, path: Optional[str] = None):
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
-    stores, base = resolved_home_credential_stores(), os.path.realpath(target)
+    stores, base = _local_stores(), os.path.realpath(target)
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
         entries = []
         for entry in scan:
@@ -1130,7 +1153,7 @@ _FS_LIST_ERRNO = (
 
 
 def _fs_list_entries(target: Path) -> list[dict[str, Any]]:
-    entries, stores, base = [], resolved_home_credential_stores(), os.path.realpath(target)
+    entries, stores, base = [], _local_stores(), os.path.realpath(target)
     with os.scandir(target) as scan:
         for entry in scan:
             real = _scan_entry_realpath(base, entry)

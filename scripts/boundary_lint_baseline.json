@@ -785,7 +785,7 @@
     "gateway/platforms/api_server.py plugins.cron_providers.chronos.verify": 1,
     "gateway/run.py plugins.teams_pipeline.runtime": 1,
     "gateway/session_a2a.py plugins.platforms.a2a.adapter": 1,
-    "hermes_cli/main_dashboard.py plugins.dashboard_auth.basic": 1,
+    "hermes_cli/dashboard_password.py plugins.dashboard_auth.basic": 1,
     "hermes_cli/main_platform_setup.py plugins.platforms.whatsapp_cloud.setup_wizard": 1,
     "hermes_cli/web_routers/cron.py plugins.cron_providers.chronos.verify": 1,
     "hermes_cli/web_routers/tools.py plugins.web.firecrawl.provider": 1,

@@ -4,6 +4,7 @@ Ruamel's native schema includes bare y/n booleans and rejects duplicate keys.
 Every operation owns its parser/emitter; instances must not be shared by threads.
 """
 
+from contextlib import suppress
 from io import StringIO
 from typing import Any, IO, overload
 
@@ -19,10 +20,49 @@ class _Yaml11Resolver(VersionedResolver):
         return (1, 1)
 
 
+# Loader attributes that form the self-referencing graph ``YAML.load`` leaves behind (see
+# ``_release_loader``): the composer/parser/constructor/resolver aliases are the loader itself, the rest
+# are its per-document state. The attributes are deleted, not set to None, so the lazy properties that
+# rebuild them still work if a caller keeps the instance. Only names a loader declares are touched.
+_LOADER_GRAPH_ATTRS = (
+    "_parser", "_composer", "_constructor", "_resolver",  # C parser: aliases of the loader itself
+    "loader", "loadumper",                                # pure parser: the same aliases by their public names
+    "_reader", "_scanner", "_stream",                     # the stream the loader still shows
+    "constructed_objects", "recursive_objects", "state_generators",  # per-document construction state
+    "resolver_exact_paths", "resolver_prefix_paths",
+)
+# The loader is also parked on the ``YAML`` instance itself; delete those too.
+_YAML_LOADER_ATTRS = ("_scanner", "_stream", "_reader", "_parser", "_composer", "_constructor", "_resolver")
+
+
+def _release_loader(yaml: YAML) -> None:
+    """Unlink the loader graph ``YAML.load`` leaves behind so refcounting frees it with the call.
+
+    Ruamel parks the loader on ``yaml._scanner`` and gives the loader self-references
+    (``loader._parser = loader._composer = loader``, with the constructor and resolver pointing back at it
+    too), so no reference count ever reaches zero: the loader, the parsed document text and its libyaml
+    buffers all survive until a gen-2 cyclic collection. A process that re-reads configs — the gateway's
+    change watcher does ~590 reads/min across served homes — therefore accumulates them (#159451).
+    Nothing reads the loader once ``load`` returns (the result is plain dicts/lists), and deleting rather
+    than clearing the attributes keeps a reused instance working: the properties rebuild on next access.
+    """
+    loader = getattr(yaml, "_scanner", None)
+    if loader is not None:
+        for attr in _LOADER_GRAPH_ATTRS:
+            with suppress(AttributeError):  # slots class without that attribute
+                delattr(loader, attr)
+    for attr in _YAML_LOADER_ATTRS:
+        with suppress(AttributeError):
+            delattr(yaml, attr)
+
+
 def _load(document: str | bytes, *, pure: bool) -> Any:
     yaml = YAML(typ="safe", pure=pure)
     yaml.version = (1, 1)
-    return yaml.load(document)
+    try:
+        return yaml.load(document)
+    finally:
+        _release_loader(yaml)
 
 
 def safe_load(stream: str | bytes | IO[str] | IO[bytes]) -> Any:

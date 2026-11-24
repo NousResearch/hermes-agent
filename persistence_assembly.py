@@ -150,11 +150,12 @@ def _provider_for_home(home: Path) -> str:
     else:
         config_path = home / "config.yaml"
         if config_path.exists():
-            from utils import fast_safe_load
+            from utils import load_yaml_file_readonly
 
             try:
-                with open(config_path, encoding="utf-8") as fh:
-                    loaded = fast_safe_load(fh)
+                # mtime-cached: the change watcher calls this several times a second across every
+                # served home, and an unchanged profile must not re-parse its YAML each time (#159451).
+                loaded = load_yaml_file_readonly(config_path)
             except Exception:  # health: allow BLE001 -- an unreadable foreign config means the default provider
                 loaded = None
             if isinstance(loaded, dict):

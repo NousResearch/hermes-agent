@@ -507,6 +507,61 @@ def test_the_pointer_names_the_default_profile_for_the_default_home(monkeypatch)
     assert gmb.format_report([item])[-1].endswith(": hermes -p default gateway migrate --backends --apply --dry-run")
 
 
+# ── a profile a plugin runs elsewhere (hermes_cli.profiles_run_elsewhere) ────────────
+
+
+def _elsewhere_line(profile: str) -> str:
+    return (f"Profile '{profile}' runs elsewhere (the 'sandbox-plugin' plugin runs its backend): Hermes does not "
+            "move this backend to the gateway on this host.")
+
+
+@pytest.mark.platforms("linux")  # the fake process table is read through `ps`
+@pytest.mark.parametrize("profile,marked", [("default", False), ("default", True), ("work", True)])
+def test_a_backend_of_a_profile_a_plugin_runs_elsewhere_is_listed_as_that(host, monkeypatch, capsys, profile,
+                                                                          marked):
+    """The backend a plugin runs for a profile can be a ``serve`` process of this machine, which the scan
+    finds like any other. Its row says a plugin runs the profile elsewhere, in the text report and in JSON,
+    for this home's profile and for another profile's home."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    backend_home = host.home if profile == "default" else host.home / "profiles" / profile
+    backend_home.mkdir(parents=True, exist_ok=True)
+    if marked:
+        pre.mark_profile_run_elsewhere(profile, "sandbox-plugin", root=host.home)
+    host.proc(4801, _argv("serve", "--isolated", "--host", "127.0.0.1", "--port", "47999"), ppid=1)
+    monkeypatch.setattr("hermes_cli.dashboard_procs._hermes_home_for_pid", lambda pid: str(backend_home))
+
+    (item,) = gmb.collect_backends()
+    assert (_elsewhere_line(profile) in item.notes) is marked, item.notes
+
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=False, dry_run=False, yes=False, multiplex=False))
+    text = capsys.readouterr().out
+    assert "PID 4801" in text and (f"    note:    {_elsewhere_line(profile)}" in text) is marked, text
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=True, dry_run=True, yes=False, multiplex=False))
+    (row,) = json.loads(capsys.readouterr().out)["backends"]
+    assert (_elsewhere_line(profile) in row["notes"]) is marked, row
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_the_report_points_at_no_dry_run_for_a_profile_a_plugin_runs_elsewhere(tmp_path, monkeypatch, marked):
+    """The last line offers the dry run of this home's move. For a profile a plugin runs elsewhere that
+    move is blocked, and the backend listed for its home may be the one the plugin runs: no line offers it."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: profile)
+    if marked:
+        pre.mark_profile_run_elsewhere("work", "sandbox-plugin", root=root)
+    item = gmb.BackendItem(supervisor="manual", running=True, pid=4701, argv=_argv("serve"), this_home=True)
+
+    pointers = [line for line in gmb.format_report([item]) if "--apply --dry-run" in line]
+
+    assert pointers == ([] if marked else
+                        ["To see what moving it to the gateway would do (changes nothing): "
+                         "hermes -p work gateway migrate --backends --apply --dry-run"])
+
+
 def test_the_scan_lists_its_own_process_only_when_that_process_is_a_backend(monkeypatch):
     me = os.getpid()
     rows = {"dashboard": [(me, "/venv/bin/python -m hermes_cli.main dashboard --no-open --port 9119")],

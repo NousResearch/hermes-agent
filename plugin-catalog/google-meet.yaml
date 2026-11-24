@@ -1,0 +1,37 @@
+name: google-meet
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: 063463c0abdc9f75f02afb0e58837ed6846730ff
+subdir: google-meet
+description: 'Google Meet for Hermes: the agent joins a meet.google.com call you give it (meet_join),
+  scrapes live captions into a transcript (meet_status, meet_transcript), can speak in the call in
+  realtime mode (meet_say), leaves (meet_leave), and can run the bot on another machine through a
+  remote node; `hermes meet setup|install|auth|join|node`. Explicit by design: it only joins URLs passed
+  in, with no calendar scanning or auto-dial. Formerly built into Hermes core; existing users are
+  migrated automatically. Disclosure: Python dependencies playwright and websockets; `hermes meet
+  install` downloads Chromium through Hermes and, with --realtime, asks before running apt-get or brew
+  for audio tools. The bot opens Google Meet in headless Chromium (optionally signed in with a Google
+  session you save via `hermes meet auth`, stored in your profile). Captions stay in your profile''s
+  meetings folder and reach your model only as tool output. Realtime mode streams call audio and the
+  agent''s replies to the OpenAI Realtime API with HERMES_MEET_REALTIME_KEY or OPENAI_API_KEY. A remote
+  node is reached over a WebSocket you approve with a shared token.'
+maintainer: NousResearch
+tier: official
+category: general
+requires_hermes: ">=0.21.7"
+version: "0.3.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/063463c0abdc9f75f02afb0e58837ed6846730ff/assets/google-meet.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - meet_join
+    - meet_leave
+    - meet_status
+    - meet_transcript
+    - meet_say
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

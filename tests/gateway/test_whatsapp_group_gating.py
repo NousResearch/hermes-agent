@@ -318,3 +318,49 @@ async def test_merged_whatsapp_group_turn_retains_addressed_reply_expectation():
     turn_ctx.reply_expected = pending["group"].reply_expected
     await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
     assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+
+
+@pytest.mark.parametrize(
+    "media_type, body",
+    [("ptt", "[ptt received]"), ("ptt", ""), ("audio", "[audio received]"), ("audio", "")],
+    ids=["ptt_placeholder", "ptt_empty", "audio_placeholder", "audio_empty"],
+)
+def test_captionless_voice_note_keeps_the_silence_notice(media_type, body):
+    """A voice note carries its words in the audio, not in the body the bridge fills with a
+    placeholder. Reading that text as chatter would silence a spoken question to the bot."""
+    adapter = _make_adapter(require_mention=False, mention_patterns=[], group_policy="open")
+
+    assert adapter._reply_expected_for_message(_group_message(body, mediaType=media_type)) is None
+
+
+@pytest.mark.parametrize(
+    "caption, expected",
+    [("thanks for the invite", False), ("can someone confirm?", None)],
+    ids=["statement", "question"],
+)
+def test_captioned_voice_note_follows_the_text_rules(caption, expected):
+    """A caption is text the rules can read, so the exemption above does not swallow it."""
+    adapter = _make_adapter(require_mention=False, mention_patterns=[], group_policy="open")
+
+    assert adapter._reply_expected_for_message(_group_message(caption, mediaType="ptt")) is expected
+
+
+def test_free_response_group_chatter_is_admitted_yet_may_stay_silent():
+    """The seam this fix exists for: a free-response group admits every message, and the gateway
+    lets a bare silence marker stand on the ones nobody addressed to the bot."""
+    from gateway.response_filters import silence_allowed
+
+    adapter = _make_adapter(
+        require_mention=True, mention_patterns=[], group_policy="open",
+        free_response_chats=["120363001234567890@g.us"],
+    )
+
+    chatter = _group_message("the meeting moved to friday")
+    assert adapter._should_process_message(chatter) is True
+    assert adapter._reply_expected_for_message(chatter) is False
+    assert silence_allowed(None, adapter._reply_expected_for_message(chatter)) is True
+
+    addressed = _group_message("@15551230000 can you join?", mentionedIds=["15551230000@s.whatsapp.net"])
+    assert adapter._should_process_message(addressed) is True
+    assert adapter._reply_expected_for_message(addressed) is True
+    assert silence_allowed(None, adapter._reply_expected_for_message(addressed)) is False

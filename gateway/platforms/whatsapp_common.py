@@ -28,6 +28,9 @@ from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
+# Bridge ``mediaType`` values whose words are spoken, not written, so the question rule in
+# ``_reply_expected_for_message`` cannot read them.
+_SPOKEN_MEDIA_TYPES = frozenset({"ptt", "audio"})
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -258,8 +261,21 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         mentioned = {self._normalize_whatsapp_id(m).split("@", 1)[0] for m in data.get("mentionedIds") or ()}
         if (lead and lead.group(1) in mentioned) or data.get("quotedParticipant"):
             return False
+        # A captionless voice note or audio file says nothing in its text; it may well be a
+        # spoken question for the bot, so the question rule below must not read it as chatter.
+        if self._is_captionless_spoken_media(data):
+            return None
         # A bare question may be aimed at the bot even in a free-response group.
         return None if "?" in body else False
+
+    @staticmethod
+    def _is_captionless_spoken_media(data: dict[str, Any]) -> bool:
+        """A voice note or audio file with no caption: the bridge writes the body as its
+        ``[<mediaType> received]`` placeholder, so the message carries no words to read."""
+        media_type = str(data.get("mediaType") or "")
+        if media_type not in _SPOKEN_MEDIA_TYPES:
+            return False
+        return str(data.get("body") or "").strip().lower() in ("", f"[{media_type} received]")
 
     def _clean_bot_mention_text(self, text: str, data: dict[str, Any]) -> str:
         if not text:

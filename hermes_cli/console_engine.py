@@ -812,7 +812,7 @@ def _cron_run(_engine: HermesConsoleEngine, args: list[str]) -> str:
         with _jobs_lock():
             job = resolve_job_ref(ref)
             stored = job and next((j for j in load_jobs() if j.get("id") == job["id"]), job)
-            if stored and not is_terminal_job(stored) and not is_job_runnable(stored):
+            if stored and not is_terminal_job(job) and not is_job_runnable(stored):
                 raise ConsoleCommandError(NOT_RUNNABLE_ERROR)
             return trigger_job(ref)
 

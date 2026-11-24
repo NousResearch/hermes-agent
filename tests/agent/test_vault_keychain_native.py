@@ -74,7 +74,7 @@ class _CredWriteError(OSError):
 def test_only_no_logon_session_skips_a_refused_probe_write(error):
     """The skip is for WinError 1312 alone: any other write refusal still fails the native tests."""
     with pytest.raises(pytest.skip.Exception):
-        _skip_without_logon_session(_RefusingBackend(_CredWriteError(_NO_SUCH_LOGON_SESSION)))
+        _skip_without_logon_session(_RefusingBackend(_CredWriteError(1312)))  # the literal, not the constant
     # Catch the skip outcome too, so a widened skip fails here instead of skipping this test.
     with pytest.raises((OSError, pytest.skip.Exception)) as raised:
         _skip_without_logon_session(_RefusingBackend(error))

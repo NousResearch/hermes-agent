@@ -631,6 +631,33 @@ def test_a_launch_body_bound_before_its_own_link_was_repointed_lends_nothing_to_
     assert env.ran() == ["new"]
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
+@pytest.mark.parametrize("caller", ["bound_to_the_secondary", "none"])
+def test_a_secondary_host_takes_no_launch_env_value_after_the_launch_link_is_repointed_at_its_directory(
+        repointed_profile_link, monkeypatch, caller):
+    """The process names its own profile by the key it remembered for its own path. After that link is repointed at
+    a secondary's directory, the secondary's host is still another profile's: a launcher name its files lack stays
+    unresolved, never the launch profile's env-only value, whether a body bound to the secondary starts it or not."""
+    import contextlib
+
+    from hermes_constants import hermes_home_key
+    from tui_gateway import server
+
+    env = repointed_profile_link
+    (env.dirs["new"] / ".env").write_text("", encoding="utf-8")  # the launch runner is then in the process env only
+    env.point("old")
+    monkeypatch.setenv("HERMES_HOME", str(env.link))
+    hermes_home_key(env.link)  # the process served its own profile, the old directory, under this name
+    host = env.host_for(env.dirs["new"])
+    body = (server._session_profile_runtime_scope({"profile_home": str(env.dirs["new"])}, hydrate_secrets=False)
+            if caller == "bound_to_the_secondary" else contextlib.nullcontext())
+    with body:
+        env.point("new")
+        with pytest.raises(FileNotFoundError, match=r"\$\{PLUGIN_RUNNER\}"):
+            host.ensure_started()
+    assert env.ran() == []
+
+
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
 def test_a_single_profile_launcher_expands_against_the_process_env_not_a_later_env_file(tmp_path, monkeypatch):
     """Outside multiplexing a launcher's ``${VAR}`` is the running process's value, as on main: an ``.env`` edited

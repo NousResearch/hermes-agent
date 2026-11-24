@@ -489,14 +489,21 @@ stops and says to restart that backend with the updated hermes, then run the dry
 The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
 take: the same bind and port (loopback stays loopback, a wildcard stays a wildcard, one IP address
 stays that address). It says whether sign-in is required, which `HERMES_DASHBOARD_*` settings would be
-copied into `.env` (names only; values are never printed), the public URL it would copy into
+copied into `.env` (names only; values are never printed; one `.env` already sets is not copied, and a
+`.env` line that sets a sign-in setting as a `${VAR}` template reading a VAR from outside the `.env` blocks
+the move when the gateway's service would not start with the value VAR has for the old backend (a gateway
+service not installed yet is judged as `hermes gateway install` would write it: the user manager's
+environment plus the unit's `Environment=` lines, or the LaunchAgent's variables), or when
+the old unit's `env` launcher sets VAR: put the literal value in `.env`, or set VAR where the gateway
+runs), the public URL it would copy into
 `webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
 state of the gateway service and the
 Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
 out it probes the old backend on its address as above and reads `systemctl show` / `launchctl`
 and `/proc`; normal Hermes startup runs first, as for the report. Options: `--address HOST:PORT` (plan
 for one backend when several serve this home), `--keep-webapp-address` (keep an already enabled Webapp
-where it is), `--force-interrupt` (plan the move although a turn is running), `--json`.
+where it is), `--force-interrupt` (plan the move although a turn is running or a gateway runs outside its
+service), `--json`.
 
 Exit codes: 0 the move could run, or no old backend serves this home; 2 invalid invocation; 3 blocked
 (the blockers are listed, for example a running turn, an address that matches no backend, a bind the
@@ -521,7 +528,15 @@ the gateway cannot be a service, the last step is `hermes gateway run`, for the 
 stopped system unit counts for this home only when it runs as you (`User=`) and pins no other
 `HERMES_HOME`, judged by the environment systemd gives it (`Environment=`, then each `EnvironmentFile=`
 in order, the later value winning); when a file it needs cannot be read, the dry run is blocked instead
-of guessing. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
+of guessing. An `env` launcher in its ExecStart (`/usr/bin/env HERMES_HOME=/srv/other hermes dashboard`)
+runs after that environment, and `systemctl show` joins its arguments with spaces, so the planner does
+not read values on that line: one that sets or unsets a home variable (`HERMES_HOME`, `HOME`), uses an
+option that changes the environment as a whole (`-i`, `-S`) or one it does not know, or has a `$` anywhere
+but inside another variable's value (`-u ${DROP}`), blocks the dry run for that unit. Put `HERMES_HOME` in the unit's `Environment=` instead, or stop and disable that unit by
+hand. A line that sets or unsets only other variables leaves the home to the unit's environment. A `.env`
+sign-in template that reads a variable from outside the `.env` blocks the move when that line sets that
+variable, or has a `-u`, `-C` or `-S` option at all, because the joined line does not show what those
+leave set: put the literal value in `.env`. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
 Startup-folder entry whose target and arguments are exactly the backend's command (when more than one
 matches, or a matching entry may not be what started it, the steps say so and ask you to pick). The
 steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set the entry
@@ -562,8 +577,9 @@ exactly (for example a `linked` unit), when a hand-started backend's start time 
 `config.yaml` or `.env` is a symbolic link (replace it with a copy first), when `backend_migration/` or
 `backend_migration.json` is a symbolic link (also for `--restore` and the rollback of an unfinished run: the
 backups would land outside the home; put a real folder or file in its place), when the gateway's unit or
-LaunchAgent of the same name belongs to another Hermes home, when a legacy `hermes.service` is installed
-(run `hermes gateway migrate-legacy` first), when a config backend other than the file one is selected
+LaunchAgent of the same name belongs to another Hermes home, when a legacy `hermes.service` cannot be
+replaced (a system-wide one, or one that serves another home or whose home cannot be read: remove it from the
+home it serves first), when a config backend other than the file one is selected
 (`HERMES_CONFIG_BACKEND`, for example `remote`: the backups and the undo cover `config.yaml` only; `--apply
 --detach` checks it before it starts the background run), when the
 old backend requires sign-in but its `/api/auth/providers` list cannot be read (the check after the move compares
@@ -598,9 +614,28 @@ rollback undo all three.
 After a migration, `hermes update` leaves the stopped old backend stopped, and a second `--apply` says
 there is nothing to migrate.
 
+The plan's "The move also" list (JSON `takes_over`) names what the move stops or replaces besides the old
+backend:
+
+- **A legacy `hermes.service`** (a user unit from a pre-rename install that serves this home) is replaced by
+  the gateway service. Its own `Environment=` and `EnvironmentFile=` lines are kept in a mode-600
+  `hermes-gateway.service.d/hermes-legacy-environment.conf` drop-in (without the ones the gateway unit sets
+  itself: `HOME`, `PATH`, `HERMES_HOME`, ...), and a private copy of its unit file is kept in
+  `backend_migration/`. Bot tokens and pairings live in the home, so no messaging platform signs in again. A
+  rollback or `--restore` removes the drop-in and puts the unit back, enabled and running as it was.
+- **A gateway of this home running outside its service** (one a dashboard chat window started, which ends
+  itself when idle, or one started by hand) is stopped right after the old backend, and the gateway service
+  takes over its chats and bots. Like a running turn, this needs consent: without `--force-interrupt` it
+  blocks (exit 3), and one that starts after the check holds the old backend's stop (exit 4, nothing stopped).
+
+The dashboard's **Move** button is not held by what consent clears (running turns, unreadable turn
+activity, a gateway outside its service): its confirmation lists what is stopped, and confirming sends the
+move with `--force-interrupt`. Every other blocker still holds the button.
+
 Options: `--address HOST:PORT` (pick one backend when several serve this home), `--keep-webapp-address`
 (retire the old backend but keep an already enabled Webapp where it is), `--force-interrupt` (proceed
-although a turn is running on the old backend, or its turn activity cannot be read; without it either
+although a turn is running on the old backend, its turn activity cannot be read, or a gateway of this home runs
+outside its service, which is then stopped; without it each
 blocks with exit 3, and a forced move past unreadable activity says so before it starts; a turn that starts,
 or activity that becomes unreadable, after that check and before the old backend is stopped rolls the move back
 with exit 4, the old backend never stopped; so does an old backend whose process changed since the check, for

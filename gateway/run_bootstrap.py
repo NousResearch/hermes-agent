@@ -397,6 +397,18 @@ async def _start_gateway_start_control_socket(runner):
     return _control_server
 
 
+def _cron_registry_profile_count(ticked: list) -> int:
+    """How many profiles one external provider's registry would hold: the *ticked* ones, plus the profiles
+    a plugin runs elsewhere, which are not ticked here but whose backend may arm its jobs in that registry.
+    By name, as a union: a standalone launch profile is ticked but not listed, a marked default the reverse."""
+    from hermes_cli.profiles import profiles_to_serve
+    try:
+        listed = profiles_to_serve(multiplex=True, include_run_elsewhere=True)
+    except OSError:
+        listed = []
+    return len({name for name, _home in [*ticked, *listed]})
+
+
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
@@ -416,7 +428,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         cron_profile_homes = []
     # External providers own one unscoped remote registry, so they can only serve a single home.
     cron_provider = scheduler_for_profile_mode(
-        resolve_cron_scheduler(), multiplex_profiles=len(cron_profile_homes) > 1)
+        resolve_cron_scheduler(), multiplex_profiles=_cron_registry_profile_count(cron_profile_homes) > 1)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
     if isinstance(cron_provider, InProcessCronScheduler) and cron_profile_homes:
@@ -589,6 +601,21 @@ def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayCon
     if reserved:
         reloaded._runtime_profile_homes = reserved
     return reloaded
+
+
+def _refuse_profile_run_elsewhere() -> None:
+    """Exit 78 before reading any config when a plugin runs this profile's backend elsewhere
+    (``hermes_cli.profiles_run_elsewhere``). The host gateway runs as the default profile, so a
+    marked ``default`` keeps it down; a marked named profile is also left out of its served set."""
+    from gateway.run import get_hermes_home
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    elsewhere = run_elsewhere_for_home(get_hermes_home())
+    if elsewhere is None:
+        return
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    logger.error("Refusing to start the gateway: %s", elsewhere.message())
+    print(elsewhere.message())
+    raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
 def _start_gateway_resolve_terminal_cwd() -> None:
@@ -768,6 +795,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         os,
         threading,
     )
+    _refuse_profile_run_elsewhere()
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
     from hermes_cli.update_proxy_env import restore_user_proxy_env

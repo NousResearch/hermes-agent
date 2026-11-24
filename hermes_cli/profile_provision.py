@@ -428,9 +428,11 @@ def _mirror_secret(path: Path, launch_home: Path, name: str, wanted) -> bool:
 
 
 def _env_over_stub(src: Path, dst: Path) -> bool:
-    """Mirror .env only over the seeded comment-only stub, never over a clone's own secrets."""
+    """Mirror .env only over the seeded comment-only stub, never over a clone's own secrets. The
+    destination is read as the file it is: in a home a plugin runs elsewhere it otherwise reads as
+    empty, and a clone made under a marked name would lose its keys to the launch profile's."""
     from agent.secret_scope import load_env_file
-    return bool(load_env_file(src)) and not load_env_file(dst)
+    return bool(load_env_file(src)) and not load_env_file(dst, for_overwrite_check=True)
 
 
 def _mirror_voice_sections(path: Path) -> bool:
@@ -508,8 +510,8 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
     """Copy the launch profile's .env / auth.json / voice sections into a new profile, recording each
     item in ``mirrored`` (best-effort per item). ``auth_home`` (default: the launch profile) is the
     auth.json source; ``provision_profile`` passes ``_logins_home(...)``, the store the new profile's
-    source signs in with. ``share_auth`` skips the copy
-    when that is the root, so the new profile reads the root's auth.json; a named source's own
+    source signs in with. ``share_auth`` skips the copy when that is the root, so a new profile without
+    its own auth.json (a ``--clone-all`` copies the source's, if it has one) reads the root's; a named source's own
     auth.json is copied instead, so its keys stay paired with its logins.
     Returns the providers whose single-use logins were left out of a copy (read from the root instead)."""
     from hermes_constants import get_hermes_home

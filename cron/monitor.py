@@ -18,6 +18,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from cron.prompt_scan import _scan_cron_skill_assembled
+
 logger = logging.getLogger(__name__)
 
 # Prompt-injection caps: unified diff, and new-output block (mirrors the 8k context_from truncation
@@ -204,10 +206,19 @@ def check_monitor(job: dict, *, persist: bool = True) -> MonitorOutcome:
     )
 
 
-def commit_monitor(job: dict, outcome: MonitorOutcome) -> None:
-    """Persist a changed outcome whose write ``check_monitor(persist=False)`` deferred."""
-    if outcome.changed:
+def commit_monitor(job: dict, outcome: Optional[MonitorOutcome]) -> None:
+    """Persist a changed outcome whose write ``check_monitor(persist=False)`` deferred (None: no-op)."""
+    if outcome is not None and outcome.changed:
         _persist_monitor_state(str(job.get("id") or ""), outcome.output_hash, outcome.output)
+
+
+def commit_monitor_if_blocked(job: dict, outcome: Optional[MonitorOutcome]) -> None:
+    """After a prompt-scanner refusal, commit only if rescanning the monitor context (diff included)
+    also reports a block. A refusal from a skill or a per-run prompt leaves the change for the next tick."""
+    if outcome is None:
+        return
+    if _scan_cron_skill_assembled(outcome.context_block or "")[1]:
+        commit_monitor(job, outcome)
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:

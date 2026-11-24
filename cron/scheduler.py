@@ -1518,17 +1518,16 @@ def _run_no_agent_job(
 
 def _apply_monitor_gate(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str],
-) -> tuple[Optional[tuple], Optional[str], Optional[str], Optional[Any]]:
+) -> tuple[Optional[tuple], Optional[str], Optional[Any]]:
     """Monitor gate (hash-suppressed change detection). Must run BEFORE any agent machinery so an
     unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt,
-    monitor_context, pending_outcome)``. Monitor context is runtime data, distinct from a
-    user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
-    A changed outcome is not persisted here; ``run_job`` commits it once the agent is constructed.
-    """
+    pending_outcome)``; its ``context_block`` is runtime data, distinct from a user-authored
+    ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary. The gate
+    persists nothing: ``run_job`` commits a changed outcome once the agent is constructed."""
     from cron.monitor import check_monitor, job_has_monitor
 
     if not job_has_monitor(job):
-        return None, extra_prompt, None, None
+        return None, extra_prompt, None
     _mon = check_monitor(job, persist=False)
     _mon_now = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
     header = _job_doc_header(job_name, job_id, _mon_now, "monitor")
@@ -1536,23 +1535,19 @@ def _apply_monitor_gate(
         # Source failure is an ERROR, never a change: alert so a broken monitor can't silently
         # stop watching. Stored hash untouched.
         logger.error("Job '%s': monitor source failed: %s", job_id, _mon.error)
-        _mon_alert = (
-            f"⚠ Cron monitor '{job_name}' source failed\n\n"
-            f"{_mon.error}\n\n"
-            f"Time: {_mon_now}"
-        )
+        _mon_alert = f"⚠ Cron monitor '{job_name}' source failed\n\n{_mon.error}\n\nTime: {_mon_now}"
         return (
             False, f"{header}**Status:** monitor source failed\n\n{_mon.error}\n", _mon_alert, _mon.error,
-        ), extra_prompt, None, None
+        ), extra_prompt, None
     if not _mon.changed:
         # Unchanged: silent no_change tick (ledger doc kept; SILENT_MARKER blocks delivery).
         logger.info("Job '%s': monitor output unchanged — suppressing agent run", job_id)
         return (
             True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
-        ), extra_prompt, None, None
+        ), extra_prompt, None
     # Changed (or first run): pass monitor output through the runtime-data seam. Keep any manual
     # per-run prompt separate: it remains user input and is therefore still strict-scanned.
-    return None, extra_prompt, _mon.context_block, _mon
+    return None, extra_prompt, _mon
 
 
 @dataclass
@@ -2219,8 +2214,7 @@ def _prepare_job_prompt(
     if job_payload_is_empty(job):
         return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None, None
 
-    _early, extra_prompt, monitor_context, pending_monitor = _apply_monitor_gate(
-        job, job_id, job_name, extra_prompt)
+    _early, extra_prompt, monitor = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
     if _early is not None:
         return _early, None, None
 
@@ -2255,18 +2249,12 @@ def _prepare_job_prompt(
     try:
         prompt = _build_job_prompt(
             job, prerun_script=prerun_script, extra_prompt=extra_prompt,
-            runtime_data_prompt=monitor_context,
+            runtime_data_prompt=monitor and monitor.context_block,
         )
     except CronPromptInjectionBlocked as block_exc:
-        # Consume a monitor payload only when that payload itself is blocked. A refusal caused
-        # by a skill or per-run user prompt must leave safe monitor data for the healed tick.
-        if pending_monitor is not None:
-            from cron.monitor import commit_monitor
-            from cron.prompt_scan import _scan_cron_skill_assembled
-
-            _cleaned, monitor_error = _scan_cron_skill_assembled(monitor_context or "")
-            if monitor_error:
-                commit_monitor(job, pending_monitor)
+        # Injection scanner tripped: refuse this tick and tell the operator WHY.
+        from cron.monitor import commit_monitor_if_blocked
+        commit_monitor_if_blocked(job, monitor)
         logger.warning(
             "Job '%s' (ID: %s): blocked by prompt-injection scanner — %s", job_name, job_id, block_exc,
         )
@@ -2288,7 +2276,7 @@ def _prepare_job_prompt(
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         note_cron_skipped(job)
         return (True, "", SILENT_MARKER, None), None, None
-    return None, prompt, pending_monitor
+    return None, prompt, monitor
 
 
 _CRON_DELIVERY_VARS = (
@@ -2549,8 +2537,7 @@ def run_job(
     _worker_state: dict = {}
     scope = None
     try:
-        early, prompt, pending_monitor = _prepare_job_prompt(
-            job, job_id, job_name, extra_prompt, cancel_event)
+        early, prompt, monitor = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
         if early is not None:
             return early
         from run_agent import AIAgent
@@ -2575,14 +2562,8 @@ def run_job(
         _session_db = _open_cron_session_db(job)
         agent = _construct_cron_agent(AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
                                       session_db=_session_db, persistence=_session_db)
-
-        # The agent exists, so nothing before inference can refuse the run any more: consume the
-        # monitor change. A refusal above (gate, state.db open, agent construction) leaves it for
-        # the next tick; an inference failure below must not re-alert forever.
-        if pending_monitor is not None:
-            from cron.monitor import commit_monitor
-
-            commit_monitor(job, pending_monitor)
+        from cron.monitor import commit_monitor
+        commit_monitor(job, monitor)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(

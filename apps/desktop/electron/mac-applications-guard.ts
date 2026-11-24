@@ -93,6 +93,12 @@ export function resolveMacAppBundle(exePath: string, platform: NodeJS.Platform =
   return dir.endsWith('.app') ? dir : null
 }
 
+// While the move prompt waits, app.isReady() is already true, so a second launch must not open the first
+// window (and start the backend) behind it; startup opens that window once the guard lets it continue.
+export function macGuardAllowsWindows(result: MacApplicationsGuardResult | null): boolean {
+  return result?.action === 'continue'
+}
+
 function isTruthyEnv(value: string | undefined): boolean {
   const normalized = String(value ?? '')
     .trim()

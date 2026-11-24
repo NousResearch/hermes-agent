@@ -362,7 +362,7 @@ import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPat
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
-import { guardMacApplicationsLaunch, type MacApplicationsGuardResult, resolveMacAppBundle, shouldProvisionBundledCliLinks } from './mac-applications-guard'
+import { guardMacApplicationsLaunch, type MacApplicationsGuardResult, macGuardAllowsWindows, resolveMacAppBundle, shouldProvisionBundledCliLinks } from './mac-applications-guard'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -17290,7 +17290,7 @@ if (!isPrimaryInstance) {
     // re-create it when it was destroyed.
     rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
     ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
+      isReady: macGuardAllowsWindows(macGuardResult),
       createWindow,
       focusWindow: activateWindow,
       // deep-link delivery focuses a live window after its renderer is ready.

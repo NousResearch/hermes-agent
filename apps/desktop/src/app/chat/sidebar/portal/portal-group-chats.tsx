@@ -19,6 +19,7 @@ import { $groupChats, $groupChatWorkspace } from '@/plugins/hermes-bots/group-ch
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import { groupChatMemberBots, groupChatNames } from '@/plugins/hermes-bots/group-membership'
 import { useBots } from '@/plugins/hermes-bots/i18n'
+import { $activeConnectionId } from '@/store/connections'
 
 import { PortalSectionHeader } from './portal-section-header'
 
@@ -32,7 +33,14 @@ export interface GroupChatMatches {
 export function useGroupChatMatches(query: string): GroupChatMatches {
   const meta = useStore($botMeta)
   const rooms = useStore($groupChats)
-  const gatewayRooms = useGatewayGroupRooms()
+  const roster = useStore($lastRoster)
+  const connectionId = useStore($activeConnectionId)
+
+  // Every agent on this machine: the section is not the active agent's alone.
+  const gatewayRooms = useGatewayGroupRooms(
+    roster.filter(row => !row.ghost && row.connectionId === connectionId).map(row => row.name)
+  )
+
   const needle = query.trim().toLocaleLowerCase()
 
   return {

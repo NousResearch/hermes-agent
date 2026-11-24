@@ -235,21 +235,27 @@ async function listGatewayGroupRooms(route: CanonicalGroupRoute): Promise<Gatewa
 
 const ROOMS_KEY = [ID, 'gateway-group-rooms']
 
-/** Gateway Group Chats for the Bots roster, kept current without a refresh
- *  button: re-read on a poll, on every socket/source change and after a
- *  create or disband here. A failed read keeps the last good list (the roster
- *  shows rooms, never a transport error); a window whose connection has no
- *  registry id cannot bind a room to an authority, so it lists none. */
-export function useGatewayGroupRooms(): GatewayGroupRoom[] {
+/** Gateway Group Chats, kept current without a refresh button: re-read on a
+ *  poll, on every socket/source change and after a create or disband here. A
+ *  failed read keeps the last good list (the roster shows rooms, never a
+ *  transport error); a window whose connection has no registry id cannot bind a
+ *  room to an authority, so it lists none.
+ *
+ *  The Bots roster lists the active profile's rooms. A list that is not one
+ *  profile's (the redesign's sidebar section) names every profile in
+ *  `profiles`: their rooms are read together on a slower poll, so a room stays
+ *  listed while another profile is the active one. */
+export function useGatewayGroupRooms(profiles: readonly string[] = []): GatewayGroupRoom[] {
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
   const revision = useValue($canonicalGroupListRevision)
   const disbanded = useValue($disbandedGatewayRooms)
+  const open = gateway === 'open'
 
   const { data, refetch } = useQuery({
     queryKey: [...ROOMS_KEY, connectionId, profile],
-    enabled: Boolean(connectionId && profile) && gateway === 'open',
+    enabled: Boolean(connectionId && profile) && open,
     queryFn: () => listGatewayGroupRooms({ connectionId: connectionId!, profile }),
     refetchInterval: 10_000,
     retry: false,
@@ -257,15 +263,38 @@ export function useGatewayGroupRooms(): GatewayGroupRoom[] {
     staleTime: 0
   })
 
+  // Not keyed on the active profile, so a switch keeps this list. A profile whose read fails (not
+  // served here, an older backend) lists nothing and does not cost the others theirs.
+  const { data: named, refetch: refetchNamed } = useQuery({
+    queryKey: [...ROOMS_KEY, connectionId, 'named', ...profiles],
+    enabled: Boolean(connectionId) && open && profiles.length > 0,
+    queryFn: async () =>
+      (
+        await Promise.all(
+          profiles.map(name => listGatewayGroupRooms({ connectionId: connectionId!, profile: name }).catch(() => []))
+        )
+      ).flat(),
+    refetchInterval: 60_000,
+    retry: false,
+    staleTime: 0
+  })
+
   // A create or disband here re-reads now; a failed re-read keeps the last good list.
   useEffect(() => {
-    if (revision && host.state.gateway.get() === 'open') {void refetch()}
-  }, [revision, refetch])
+    if (revision && host.state.gateway.get() === 'open') {
+      void refetch()
+      void refetchNamed()
+    }
+  }, [revision, refetch, refetchNamed])
 
-  return useMemo(
-    () => (connectionId ? (data ?? []).filter(room => !disbanded.has(room.key)) : []),
-    [connectionId, data, disbanded]
-  )
+  return useMemo(() => {
+    if (!connectionId) {return []}
+
+    // The active profile's read is the fresher of the two for its own rooms.
+    const rooms = new Map([...(named ?? []), ...(data ?? [])].map(room => [room.key, room]))
+
+    return [...rooms.values()].filter(room => !disbanded.has(room.key))
+  }, [connectionId, data, disbanded, named])
 }
 
 /** Disband on the room's own gateway, then retire it everywhere this window shows it.

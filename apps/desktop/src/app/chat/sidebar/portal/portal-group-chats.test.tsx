@@ -8,6 +8,7 @@ import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
 import { $groupChats } from '@/plugins/hermes-bots/group-chat'
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
+import { $connection } from '@/store/session'
 
 import { PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
 
@@ -93,4 +94,26 @@ it('a dismissed group dialog hands focus back to its "+"; a created group chat k
   await nextFrame()
   expect(openGroupChat).toHaveBeenLastCalledWith('canonical:local:default:room', 'key')
   expect(window.document.activeElement).not.toBe(plus)
+})
+
+it('lists the rooms of every agent on the active machine, not the active agent\'s alone', () => {
+  $connection.set({ connectionId: 'local' } as never)
+  $lastRoster.set([
+    { name: 'default', connectionId: 'local' },
+    { name: 'ops', connectionId: 'local' },
+    { name: 'ops', connectionId: 'local', ghost: true },
+    { name: 'away', connectionId: 'elsewhere' }
+  ] as never)
+
+  function Probe() {
+    useGroupChatMatches('')
+
+    return null
+  }
+
+  render(<Probe />)
+
+  expect(vi.mocked(useGatewayGroupRooms)).toHaveBeenLastCalledWith(['default', 'ops'])
+  $connection.set(null)
+  $lastRoster.set([])
 })

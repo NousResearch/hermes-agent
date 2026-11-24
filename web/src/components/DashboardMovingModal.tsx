@@ -7,7 +7,7 @@ import { useI18n } from "@/i18n";
 
 const STORAGE_KEY = "dashboardMovingModalDismissed";
 /** The day the Hermes Cloud dashboard retires in favour of the web app. */
-const RETIREMENT_DATE = new Date(2027, 0, 15);
+const RETIREMENT_DATE = new Date(2026, 11, 6);
 /** Agent settings in the web app (a hash route, like every page there). */
 const WEBAPP_SETTINGS_HASH = "/#/settings";
 

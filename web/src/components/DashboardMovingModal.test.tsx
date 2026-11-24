@@ -62,7 +62,7 @@ describe("DashboardMovingModal", () => {
     expect(modal()?.getAttribute("aria-modal")).toBe("true");
     expect(modal()?.textContent).toContain("Your dashboard is moving");
     expect(modal()?.textContent).toContain(
-      "This dashboard moves to the Hermes web app on January 15.",
+      "This dashboard moves to the Hermes web app on December 6.",
     );
     expect(document.activeElement).toBe(button("Open in web app"));
     expect(stateLabel()).toBe("Ready");

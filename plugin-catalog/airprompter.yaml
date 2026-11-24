@@ -1,14 +1,14 @@
 name: airprompter
 title: AirPrompter
 repo: https://github.com/airprompter/airprompter-hermes-plugin
-sha: 50dc3f8479d572c20d0490045e77530d7fcc55f7
+sha: 7279b39155417018d533a85f7b99381fcf2bcb13
 description: "AirPrompter connects Hermes to your saved prompt and workflow library, so you can find, run, create, and update reusable prompts and multi-step workflows. This is a portable Agent Plugins v1 package submitted by AirPrompter, which runs the service. It contains no local code: it adds one skill and one remote MCP server (https://mcp.airprompter.com/mcp). Hermes stores and refreshes the sign-in tokens; none are in the package. Every read, save, and run goes to AirPrompter, with what the call carries. What the tools return reaches your model provider through the session: your saved prompts and workflows, including the saved prompt text a run hands back for the assistant to follow. Write tools change your saved AirPrompter library, and Hermes asks before each one. The tool list comes from the AirPrompter server at run time, so a pinned commit does not fix it. There is no background process and no self-update, and the package itself sends no telemetry. Every workflow you run through this plugin is reported to AirPrompter and saved as a run record on your account. This reporting cannot be turned off. You need an AirPrompter account."
 maintainer: AirPrompter
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://airprompter.com/docs
-version: "0.2.7"
+version: "0.2.8"
 readme: true
 platforms: []
 known_issues:

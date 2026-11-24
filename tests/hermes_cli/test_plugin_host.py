@@ -603,6 +603,7 @@ def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_p
     from agent import secret_scope as ss
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.waiting import wait_until
+    from tools.registry import registry
     from tui_gateway.launch_profile_policy import owner_secret_scope
 
     def runner(name):
@@ -633,10 +634,21 @@ def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_p
     manager = plugins_mod.get_plugin_manager()
     try:
         manager.discover_and_load()
-        assert manager._plugins["hostprobe"].error is None
+        first = manager._plugins["hostprobe"]
+        assert first.error is None
         assert runs(own_ran) == 1
-        os.kill(manager._plugin_host().pid, signal.SIGKILL)
-        wait_until(lambda: runs(own_ran) + runs(launch_ran) >= 2, timeout=15, what="the crashed host's restart")
+        crashed_pid = manager._plugin_host().pid
+        os.kill(crashed_pid, signal.SIGKILL)
+
+        def reloaded():
+            loaded = manager._plugins.get("hostprobe")
+            return loaded if loaded is not first else None
+
+        # The restarted host answered hello and loaded the plugin again, so both launcher counts are final.
+        after = wait_until(reloaded, timeout=15, what="the crashed host's restart and reload")
+        assert after is not None and after.error is None
+        answer = json.loads(registry.dispatch("hostprobe_pid", {}, scope=manager.scope_key))
+        assert answer["pid"] not in {crashed_pid, os.getpid()}
         assert (runs(own_ran), runs(launch_ran)) == (2, 0)
     finally:
         manager.unload()

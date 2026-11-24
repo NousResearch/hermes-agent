@@ -110,27 +110,59 @@ def _arguments_ok(obj: dict) -> bool:
     return isinstance(args, dict)
 
 
-def _hermes_json(text: str) -> Iterator[_Match]:
+# Scanners take ``known`` (the offered tool a raw name resolves to, or None) and check it before any
+# lookahead past the opener, so text full of calls to tools that are not offered stays linear.
+_Known = Callable[[str], Optional[str]]
+
+
+def _hermes_name(head: str) -> Optional[str]:
+    # Decode within ``head`` only: a failed decode costs O(offset) (JSONDecodeError counts lines).
+    stripped = head.lstrip()
+    if stripped.startswith("{"):
+        obj, _ = _decode_object(head, len(head) - len(stripped))
+        if obj is not None and isinstance(obj.get("name"), str):
+            return obj["name"]
+    name = _JSON_NAME_RE.search(head)
+    return name.group(1) if name else None
+
+
+def _hermes_json(text: str, known: _Known) -> Iterator[_Match]:
+    next_close = -2  # memo: the first closer at or after the last search start (-1: none left)
     for m in _HERMES_OPEN_RE.finditer(text):
-        close = text.find(_HERMES_CLOSE, m.end())
+        if next_close == -2 or 0 <= next_close < m.end():
+            next_close = text.find(_HERMES_CLOSE, m.end())
+        close = next_close
+        # Name the call from its text up to the next opener first: an unclosed call's body runs on
+        # to a later closer, and reading it for every call to an unoffered tool is quadratic.
+        nxt = _HERMES_OPEN_RE.search(text, m.end())
+        stop = min(p for p in (close, nxt.start() if nxt else -1, len(text)) if p >= 0)
+        head = text[m.end():stop]
+        if "<function=" in head:
+            continue  # Qwen3-coder XML inside <tool_call>: the XML scanner owns it.
+        if not known(_hermes_name(head) or ""):
+            continue
         body = text[m.end():close if close >= 0 else len(text)]
         end = close + len(_HERMES_CLOSE) if close >= 0 else len(text)
         if "<function=" in body:
-            continue  # Qwen3-coder XML inside <tool_call>: the XML scanner owns it.
+            continue
         stripped = body.lstrip()
         if stripped.startswith("{"):
             obj, obj_end = _decode_object(text, m.end() + len(body) - len(stripped))
             if obj is not None and isinstance(obj.get("name"), str):
-                yield (m.start(), obj["name"], "hermes_json", close >= 0 and _arguments_ok(obj),
-                       end if close >= 0 else obj_end)
+                if known(obj["name"]):
+                    yield (m.start(), known(obj["name"]), "hermes_json", close >= 0 and _arguments_ok(obj),
+                           end if close >= 0 else obj_end)
                 continue
         name = _JSON_NAME_RE.search(body)
-        if name:
-            yield m.start(), name.group(1), "hermes_json", False, end
+        if name and known(name.group(1)):
+            yield m.start(), known(name.group(1)), "hermes_json", False, end
 
 
-def _xml_function(text: str) -> Iterator[_Match]:
+def _xml_function(text: str, known: _Known) -> Iterator[_Match]:
     for m in _XML_FUNCTION_RE.finditer(text):
+        name = known(m.group(1))
+        if not name:
+            continue
         nxt = _XML_FUNCTION_RE.search(text, m.end())
         # A closer after the next opener doesn't close this call: bound the search there (linear).
         close = text.find("</function>", m.end(), nxt.start() if nxt else len(text))
@@ -140,35 +172,44 @@ def _xml_function(text: str) -> Iterator[_Match]:
             end = _XML_WRAPPER_CLOSE_RE.match(text, close + len("</function>")).end()
         else:
             end = nxt.start() if nxt else len(text)
-        yield m.start(), m.group(1), "xml_function", close >= 0 and balanced, end
+        yield m.start(), name, "xml_function", close >= 0 and balanced, end
 
 
-def _gemma(text: str) -> Iterator[_Match]:
+def _gemma(text: str, known: _Known) -> Iterator[_Match]:
     for m in _GEMMA_OPEN_RE.finditer(text):
+        name = known(m.group(1))
+        if not name:
+            continue
         done = _GEMMA_COMPLETE_RE.match(text, m.end())
         complete = False
         if done:
             args = _GEMMA_QUOTED_RE.sub('""', done.group(1))
             complete = args.count("{") == args.count("}") and "<|" not in args
-        yield m.start(), m.group(1), "gemma", complete, done.end() if done else len(text)
+        yield m.start(), name, "gemma", complete, done.end() if done else len(text)
 
 
-def _harmony(text: str) -> Iterator[_Match]:
+def _harmony(text: str, known: _Known) -> Iterator[_Match]:
     for m in _HARMONY_RE.finditer(text):
+        name = known(m.group(1))
+        if not name:
+            continue
         lead = _HARMONY_ARGS_RE.match(text, m.end())
         obj, end = _decode_object(text, lead.end()) if lead else (None, len(text))
         if obj is not None:
             end = _HARMONY_CALL_END_RE.match(text, end).end()
-        yield m.start(), m.group(1), "harmony", obj is not None, end
+        yield m.start(), name, "harmony", obj is not None, end
 
 
-def _bare_json(text: str) -> Iterator[_Match]:
+def _bare_json(text: str, known: _Known) -> Iterator[_Match]:
     for m in _BARE_JSON_RE.finditer(text):
+        name = known(m.group(1))
+        if not name:
+            continue
         obj, end = _decode_object(text, m.start())
-        yield m.start(), m.group(1), "bare_json", obj is not None and _arguments_ok(obj), end
+        yield m.start(), name, "bare_json", obj is not None and _arguments_ok(obj), end
 
 
-_SCANNERS: tuple[Callable[[str], Iterator[_Match]], ...] = (
+_SCANNERS: tuple[Callable[[str, _Known], Iterator[_Match]], ...] = (
     _hermes_json, _xml_function, _gemma, _harmony, _bare_json,
 )
 
@@ -197,13 +238,15 @@ def find_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Optional[Le
     # Every named match must name an offered tool: skip the scanners when none appears.
     named = any(name in text for name in tool_names)
     best: Optional[_Match] = None
+
+    def known(raw_name: str) -> Optional[str]:
+        return _known(raw_name, tool_names)
+
     for scan in _SCANNERS if named else ():
-        for start, raw_name, fmt, complete, end in scan(masked):
-            name = _known(raw_name, tool_names)
-            if name:  # matches arrive in order: this is the scanner's earliest
-                if best is None or start < best[0]:
-                    best = (start, name, fmt, complete, end)
-                break
+        # Scanners yield offered tools only, in order: the first is the scanner's earliest.
+        match = next(scan(masked, known), None)
+        if match is not None and (best is None or match[0] < best[0]):
+            best = match
     if best is None:
         return _xml_fragment(text, masked)
     start, name, fmt, complete, end = best

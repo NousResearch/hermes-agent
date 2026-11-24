@@ -554,3 +554,30 @@ def test_scans_stay_fast_on_many_unclosed_openers(key, suffix):
         started = time.perf_counter()
         scan(text, TOOLS)
         assert time.perf_counter() - started < 0.2, scan.__name__
+
+
+# Many openers naming a tool that is NOT offered, with an offered tool's name elsewhere in the text.
+_UNOFFERED = {
+    "gemma": "<|tool_call>call:launch{" * 10_000,
+    "bare_json": '{"name": "launch", "arguments": ' * 10_000,
+    "xml_openers": "<function=launch>" * 20_000,
+    "hermes": '<tool_call>{"name": "launch" ' * 10_000,
+    "harmony": "to=functions.launch " * 20_000,
+    "xml_closed": "<function=launch><parameter=a>1</parameter></function>" * 10_000,
+}
+_REAL_CALL = '<tool_call>{"name": "terminal", "arguments": {"command": "ls"}}</tool_call>'
+
+
+@pytest.mark.parametrize("real_call", [False, True])
+@pytest.mark.parametrize("key", sorted(_UNOFFERED))
+def test_unoffered_tool_openers_are_skipped_before_any_lookahead(key, real_call):
+    # Each unknown-tool match searched ahead to the end of the text before its name was checked.
+    from agent.leaked_tool_call import find_trailing_leaked_tool_call
+
+    text = _UNOFFERED[key] + " terminal" + (_REAL_CALL if real_call else "")
+    for scan in (find_leaked_tool_call, find_trailing_leaked_tool_call):
+        started = time.perf_counter()
+        leak = scan(text, TOOLS)
+        assert time.perf_counter() - started < 0.2, scan.__name__
+        if real_call:
+            assert (leak.name, leak.fmt, leak.complete) == ("terminal", "hermes_json", True), scan.__name__

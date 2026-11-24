@@ -1,6 +1,6 @@
 name: free-model-radar
 repo: https://github.com/jh4184591-lgtm/free-model-radar
-sha: 103a4b3a59740394aa5e19cf670eff0b899ce56f
+sha: 6ba813528256aae9c449f2c02b4cbc9620a3f2f1
 subdir: ""
 description: "Watch Nous + OpenRouter (+ optional Groq) free-tier windows. Drift detection with fallback suggestions, newest-free switch recommendations, API-published retire dates and an .ics calendar export. Hourly watchdog; provider outages never count as drift. 17 unit tests. Keyless by default, $0."
 maintainer: Joshua Harrison

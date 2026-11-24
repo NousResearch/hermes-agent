@@ -259,12 +259,16 @@
   color: var(--portal-rail-ink);
 }
 
-:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
+:root[data-shell='portal']
+  [data-slot='global-nav']
+  .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
   background-color: var(--portal-rail-fill-hover);
   color: var(--ui-text-secondary);
 }
 
-:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
+:root[data-shell='portal']
+  [data-slot='global-nav']
+  .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
   background-color: var(--portal-rail-fill-selected);
   box-shadow: none;
   color: var(--portal-rail-ink-selected);
@@ -298,7 +302,9 @@
 }
 
 /* The developer rail's destinations rest at .8 ink. */
-:root[data-shell='portal'] .portal-rail:not([data-slot='global-nav']) .portal-chrome-button:not([aria-current='page'], [aria-pressed='true']) {
+:root[data-shell='portal']
+  .portal-rail:not([data-slot='global-nav'])
+  .portal-chrome-button:not([aria-current='page'], [aria-pressed='true']) {
   color: color-mix(in srgb, var(--ui-base) 80%, transparent);
 }
 
@@ -524,6 +530,37 @@
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {
   background-color: var(--portal-surface-selected);
+}
+
+/* A side panel's tab (Browser, a file preview, Files, Review, Terminal, Items) rides the band above
+   its panel, away from the content it names, and its close and the panel's fold only showed under
+   the pointer: nothing at rest said the panel could be closed. Both always show there, the close
+   in room of its own beside the label. A chat's own tabs keep the hover close. */
+:root[data-shell='portal']
+  [data-tree-group]:is(
+    [data-zone-pane^='preview-tile'],
+    [data-zone-pane='files'],
+    [data-zone-pane='review'],
+    [data-zone-pane='terminal'],
+    [data-zone-pane='chat-items']
+  )
+  > [data-panel-header] {
+  & [data-slot='pane-tab'][data-closeable] {
+    padding-inline-end: var(--pane-tab-close-width);
+  }
+
+  & [data-slot='pane-tab'][data-closeable] > .pane-tab-content {
+    mask-image: none;
+  }
+
+  & :is([data-slot='pane-tab-close'], [data-slot='zone-minimize']) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  & :is([data-slot='pane-tab-close'] > button, [data-slot='zone-minimize']) {
+    color: var(--portal-text-secondary);
+  }
 }
 
 /* Kept-alive pane hosts (terminal, browser) float over their zone's body: the outer corners too. */

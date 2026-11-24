@@ -151,6 +151,27 @@ class TestGenerateTitle:
         assert any("finish_reason=length" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.parametrize(
+        ("content", "finish_reason", "logged"),
+        [
+            ('{"title": "..."}', "length", True),  # extracted text that cleanup drops still leaves no title
+            ("...", "length", True),
+            ('{"title": "..."}', "stop", False),  # not cut at the cap: nothing to say about the budget
+            ('{"title": "Rebase PR 158676"}', "length", False),  # a usable title despite the cap
+        ],
+    )
+    def test_capped_reply_without_a_usable_title_is_logged(self, caplog, content, finish_reason, logged):
+        resp = MagicMock()
+        resp.choices = [MagicMock(finish_reason=finish_reason)]
+        resp.choices[0].message.content = content
+        resp.choices[0].message.reasoning_content = None
+        resp.choices[0].message.reasoning = None
+
+        with patch("agent.title_generator.call_llm", return_value=resp), caplog.at_level("WARNING", "agent.title_generator"):
+            generate_title("rebase PR 158676 and track it in Linear")
+
+        assert any("finish_reason=length" in r.getMessage() for r in caplog.records) is logged
+
+    @pytest.mark.parametrize(
         ("content", "expected"),
         [
             # #83903: a token cap cutting the JSON mid-value or right after the fence opener must not

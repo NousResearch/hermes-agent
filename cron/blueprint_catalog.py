@@ -115,15 +115,21 @@ CATALOG: list[AutomationBlueprint] = [
         schedule_template="{minute} {hour} * * *",
         prompt_template=(
             "Produce a concise morning briefing for the user: today's calendar "
-            "events, the local weather, and any urgent items. When Gmail/Google "
-            "Calendar are connected, follow the google-workspace skill's "
-            "references/daily-brief.md procedure (exact day window, conflict "
-            "detection, meeting prep, mail-to-meeting links). Keep it short and "
-            "scannable. If no data sources are connected, give a brief "
-            "good-morning with the date and offer to connect calendar/email."
+            "events, the local weather, and any urgent items. Read calendar and "
+            "mail from whatever the user has connected (connected apps such as "
+            "Gmail, Google Calendar or Outlook, or a set-up mail/calendar skill). "
+            "Use today's exact local day window; flag overlapping or back-to-back "
+            "meetings; note prep for meetings that a recent email relates to; "
+            "list mail that needs a reply or has a deadline today. Suggest actions "
+            "in the brief, but do not send mail, edit events, or create tasks. "
+            "Keep it short and scannable. If no calendar or mail source is connected, give a "
+            "brief good-morning with the date and weather and offer to connect "
+            "calendar/email."
         ),
+        # No attached skill: an attached skill that needs credentials (google-workspace) makes
+        # cron preflight refuse the whole job for anyone who has not set it up, so the fallback
+        # above never runs. Connected apps need no skill, and the agent loads one on demand.
         slots=[_TIME("08:00"), _DELIVER],
-        skills=("google-workspace",),
         tags=("daily", "briefing"),
     ),
     AutomationBlueprint(

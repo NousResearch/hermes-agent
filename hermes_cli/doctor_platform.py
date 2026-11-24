@@ -630,7 +630,8 @@ def _dir_on_path(directory: Path, path_env: str | None = None) -> bool:
     return any(entry and _resolved_path_entry(entry, home) == target for entry in raw_path.split(os.pathsep))
 
 
-def _shell_rc_targets() -> tuple[str, list[Path], str]:
+def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
+    """The shell, the rc files a new terminal reads, where to add the PATH line, and rc files it skips."""
     default_shell = "/bin/zsh" if sys.platform == "darwin" else "/bin/bash"
     shell = Path(os.environ.get("SHELL") or default_shell).name
     home = Path.home()
@@ -638,13 +639,17 @@ def _shell_rc_targets() -> tuple[str, list[Path], str]:
         zdotdir_env = os.environ.get("ZDOTDIR", "").strip()
         if zdotdir_env:
             zdir = _expand_user_path(zdotdir_env, home)
-            return shell, [zdir / ".zprofile", zdir / ".zshrc"], f"{zdotdir_env.rstrip('/')}/.zprofile"
-        return shell, [home / ".zprofile", home / ".zshrc"], "~/.zprofile"
+            return shell, [zdir / ".zprofile", zdir / ".zshrc"], f"{zdotdir_env.rstrip('/')}/.zprofile", []
+        return shell, [home / ".zprofile", home / ".zshrc"], "~/.zprofile", []
     if shell == "fish":
-        return shell, [home / ".config" / "fish" / "config.fish"], "~/.config/fish/config.fish"
-    candidates = [home / ".bash_profile", home / ".bash_login", home / ".profile", home / ".bashrc"]
-    preferred = "~/.bash_profile" if (home / ".bash_profile").is_file() and not (home / ".bashrc").is_file() else "~/.bashrc"
-    return shell, candidates, preferred
+        return shell, [home / ".config" / "fish" / "config.fish"], "~/.config/fish/config.fish", []
+    *logins, bashrc = candidates = [home / ".bash_profile", home / ".bash_login", home / ".profile", home / ".bashrc"]
+    preferred = "~/.bash_profile" if (home / ".bash_profile").is_file() and not bashrc.is_file() else "~/.bashrc"
+    if shell != "bash":
+        return shell, candidates, preferred, []
+    # A login bash reads only the first of its login files that exists (bash(1), INVOCATION).
+    login = next((path for path in logins if path.is_file()), None)
+    return shell, [*([login] if login else []), bashrc], preferred, [path for path in logins if path != login]
 
 
 def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
@@ -696,7 +701,7 @@ def _check_link_dir_on_path(
                 return
         except OSError:
             pass
-    shell, candidates, rc_display = _shell_rc_targets()
+    shell, candidates, rc_display, skipped = _shell_rc_targets()
     configured = _configured_shell_rc(link_dir, shell, candidates, termux=termux)
     if configured is not None:
         check_info(
@@ -706,7 +711,9 @@ def _check_link_dir_on_path(
         return
     path_var = "$PREFIX/bin" if termux else "$HOME/.local/bin"
     path_cmd = f'fish_add_path "{path_var}"' if shell == "fish" else f'export PATH="{path_var}:$PATH"'
-    check_warn(f"{display} is not on your PATH", f"(add to {rc_display}: {path_cmd})")
+    unread = _configured_shell_rc(link_dir, shell, skipped, termux=termux)
+    hint = f"; a login {shell} skips {_display_rc_path(unread)}" if unread is not None else ""
+    check_warn(f"{display} is not on your PATH", f"(add to {rc_display}: {path_cmd}{hint})")
     f.manual_issues.append(f"Add {display} to your PATH (in {rc_display}: {path_cmd})")
 
 

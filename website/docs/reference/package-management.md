@@ -718,12 +718,15 @@ is CA trust stores (`certifi`): a release that distrusts a compromised CA is
 locked the day it ships, since waiting keeps the bad root trusted. Set a mirror with `index-url` in `pip.conf`,
 which Hermes passes to uv, or with `UV_INDEX_URL`.
 
-Hermes strips other ambient `UV_*` settings so they cannot redirect its project,
-interpreter or cache, but keeps the network ones: `UV_NATIVE_TLS`,
-`UV_INSECURE_HOST`, `UV_HTTP_TIMEOUT`, `UV_HTTP_RETRIES` and
-`UV_CONCURRENT_DOWNLOADS`. On a slow link where `hermes update` times out
-downloading several large wheels at once, set `UV_CONCURRENT_DOWNLOADS=1`
-(fewer parallel downloads) before raising `UV_HTTP_TIMEOUT`.
+Ambient `UV_*` settings cannot redirect the project, interpreter or cache Hermes
+installs into. Regular builds keep uv's index settings (including
+`UV_EXTRA_INDEX_URL` and named-index credentials) and these transport settings:
+`UV_NATIVE_TLS`, `UV_INSECURE_HOST`, `UV_HTTP_TIMEOUT`, `UV_HTTP_RETRIES` and
+`UV_CONCURRENT_DOWNLOADS`. The pinned runtime build keeps only the transport
+settings. On a slow link where `hermes update` times out downloading several
+large wheels at once, set `UV_CONCURRENT_DOWNLOADS=1` before raising
+`UV_HTTP_TIMEOUT`. An update started from an older Hermes may drop both while
+it hands off; if that update times out, run `hermes update` again.
 
 `hermes pm lock` is the one step that applies the check. Run against a mirror
 without upload times, it stops with `has no publish time`; use

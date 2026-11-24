@@ -29,6 +29,7 @@ export type MacApplicationsGuardResult =
         | 'automated-environment'
         | 'conflict-newer-installed'
         | 'conflict-running'
+        | 'conflict-unverified-installed'
         | 'custom-writable-location'
         | 'dismissed'
         | 'error'
@@ -56,6 +57,7 @@ export interface MacApplicationsGuardDeps {
   argv?: readonly string[]
   homeDir?: string
   access?: (file: string, mode: number) => void
+  exists?: (file: string) => boolean
   readBundleVersion?: (bundlePath: string) => string | null
   log: (message: string) => void
 }
@@ -338,11 +340,20 @@ export function shouldProvisionBundledCliLinks(
   return !isWindows && !guardResult?.skipCliProvision
 }
 
-function readInstalledBundleVersion(
+interface InstalledCopyBlock {
+  existingVersion: string | null
+  newer: boolean
+}
+
+// Electron replaces whichever of /Applications or ~/Applications it picks, so every installed copy must be
+// confirmed no newer than this one. A copy whose version can't be read or compared is never replaced.
+function installedCopyBlockingMove(
   bundlePath: string,
+  runningVersion: string,
   homeDir: string,
-  readBundleVersion: (targetBundle: string) => string | null
-): string | null {
+  readBundleVersion: (targetBundle: string) => string | null,
+  exists: (file: string) => boolean
+): InstalledCopyBlock | null {
   const bundleName = path.posix.basename(path.posix.resolve(bundlePath))
   const candidates = [path.posix.join('/Applications', bundleName)]
 
@@ -350,11 +361,18 @@ function readInstalledBundleVersion(
     candidates.push(path.posix.join(path.posix.resolve(homeDir), 'Applications', bundleName))
   }
 
-  for (const candidate of candidates) {
-    const version = readBundleVersion(candidate)
+  const installed = candidates.filter(candidate => exists(candidate))
 
-    if (version) {
-      return version
+  if (installed.length === 0) {
+    return { existingVersion: null, newer: false }
+  }
+
+  for (const candidate of installed) {
+    const existingVersion = readBundleVersion(candidate)
+    const comparison = existingVersion ? compareBundleVersions(runningVersion, existingVersion) : null
+
+    if (comparison === null || comparison < 0) {
+      return { existingVersion, newer: comparison !== null }
     }
   }
 
@@ -386,16 +404,64 @@ function noteSkippedCliProvision(
   }
 }
 
+async function reportInstalledCopyConflict(
+  deps: Pick<MacApplicationsGuardDeps, 'appName' | 'dialog' | 'log'>,
+  location: MacUnsafeBundleLocation,
+  runningVersion: string,
+  { existingVersion, newer }: InstalledCopyBlock
+): Promise<MacApplicationsGuardResult> {
+  const skipCliProvision = shouldSkipMacCliProvision(location)
+
+  const notice = newer
+    ? {
+        reason: 'conflict-newer-installed' as const,
+        log: `running ${runningVersion} is older than installed ${existingVersion}`,
+        title: `Newer ${deps.appName} already installed`,
+        message: `A newer version of ${deps.appName} is already in Applications`,
+        detail:
+          `This copy is version ${runningVersion}, while Applications already has version ${existingVersion}. ` +
+          `Open ${deps.appName} from Applications instead to avoid downgrading.`
+      }
+    : {
+        reason: 'conflict-unverified-installed' as const,
+        log: `could not confirm the installed copy (${existingVersion ?? 'version unreadable'}) is not newer than running ${runningVersion}`,
+        title: `${deps.appName} is already in Applications`,
+        message: `${deps.appName} is already in Applications`,
+        detail:
+          `This copy is version ${runningVersion}, but the version of the copy in Applications could not be confirmed, ` +
+          `so it was left in place. Open ${deps.appName} from Applications, or replace it in Finder.`
+      }
+
+  deps.log(`[install] move to /Applications refused: ${notice.log}`)
+  await deps.dialog.showMessageBox({
+    type: 'info',
+    title: notice.title,
+    message: notice.message,
+    detail: notice.detail,
+    buttons: ['Continue'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  })
+  noteSkippedCliProvision(deps.log, location, skipCliProvision)
+
+  return { action: 'continue', reason: notice.reason, location, skipCliProvision }
+}
+
 async function attemptMoveToApplications(
-  deps: Pick<MacApplicationsGuardDeps, 'app' | 'appName' | 'dialog' | 'homeDir' | 'log' | 'readBundleVersion'>,
+  deps: Pick<
+    MacApplicationsGuardDeps,
+    'app' | 'appName' | 'dialog' | 'exists' | 'homeDir' | 'log' | 'readBundleVersion'
+  >,
   bundlePath: string,
   location: MacUnsafeBundleLocation
 ): Promise<MacApplicationsGuardResult> {
   const skipCliProvision = shouldSkipMacCliProvision(location)
   const readBundleVersion = deps.readBundleVersion ?? (target => readBundleShortVersion(target))
+  const exists = deps.exists ?? fs.existsSync
   const homeDir = deps.homeDir ?? os.homedir()
   let conflict: 'exists' | 'existsAndRunning' | null = null
-  let downgradeBlocked: { runningVersion: string; existingVersion: string } | null = null
+  let blocked: { runningVersion: string; block: InstalledCopyBlock } | null = null
 
   try {
     const moved = deps.app.moveToApplicationsFolder({
@@ -407,18 +473,11 @@ async function attemptMoveToApplications(
         }
 
         const runningVersion = readBundleVersion(bundlePath) ?? deps.app.getVersion()
-        const existingVersion = readInstalledBundleVersion(bundlePath, homeDir, readBundleVersion)
+        const block = installedCopyBlockingMove(bundlePath, runningVersion, homeDir, readBundleVersion, exists)
 
-        const comparison =
-          runningVersion && existingVersion ? compareBundleVersions(runningVersion, existingVersion) : null
+        blocked = block ? { runningVersion, block } : null
 
-        if (comparison !== null && comparison < 0) {
-          downgradeBlocked = { runningVersion, existingVersion }
-
-          return false
-        }
-
-        return true
+        return block === null
       }
     })
 
@@ -428,27 +487,10 @@ async function attemptMoveToApplications(
       return { action: 'relaunching', location, skipCliProvision: true }
     }
 
-    if (downgradeBlocked) {
-      const { runningVersion, existingVersion } = downgradeBlocked
+    if (blocked) {
+      const { runningVersion, block } = blocked
 
-      deps.log(
-        `[install] move to /Applications refused: running ${runningVersion} is older than installed ${existingVersion}`
-      )
-      await deps.dialog.showMessageBox({
-        type: 'info',
-        title: `Newer ${deps.appName} already installed`,
-        message: `A newer version of ${deps.appName} is already in Applications`,
-        detail:
-          `This copy is version ${runningVersion}, while Applications already has version ${existingVersion}. ` +
-          `Open ${deps.appName} from Applications instead to avoid downgrading.`,
-        buttons: ['Continue'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true
-      })
-      noteSkippedCliProvision(deps.log, location, skipCliProvision)
-
-      return { action: 'continue', reason: 'conflict-newer-installed', location, skipCliProvision }
+      return await reportInstalledCopyConflict(deps, location, runningVersion, block)
     }
 
     if (conflict === 'existsAndRunning') {

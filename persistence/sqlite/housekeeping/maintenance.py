@@ -135,6 +135,10 @@ def _not_pinned_sql(alias: str = "s") -> str:
     return f"COALESCE({alias}.pinned, 0) = 0 AND {alias}.id NOT IN ({_PINNED_TAIL_SQL})"
 
 
+# ``min_messages``/``max_messages`` live here but deliberately NOT in ``_PRUNE_FILTERS``: their clause is
+# appended by ``_prune_filter_where`` itself because it depends on ``active_messages_only`` (the stored vs
+# visible count) and must run before the generic loop. They stay accepted names so the kwargs the verbs
+# pass keep validating — re-adding either to ``_PRUNE_FILTERS`` would silently append its bound twice.
 _PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"min_messages", "max_messages", "archived", "include_pinned", "lineage_tips_only"}
 
 

@@ -354,6 +354,8 @@ def test_prune_message_bounds_include_rewound_rows(backend, scope_a, ordinal, ac
     assert store.sessions.get(sid).message_count == active
 
     visible = PruneCriteria(max_messages=active, active_messages_only=True)
+    # The bounds measure the side ``count_basis`` names; the dataclass default is the prune basis.
+    assert (visible.count_basis, PruneCriteria().count_basis) == ("visible", "stored")
     assert store.maintenance.list_prune_candidates(criteria=visible)[0].message_count == active
     with pytest.raises(ValueError, match="all stored messages"):
         store.maintenance.prune_sessions(None, criteria=visible, media_root=MEDIA_ROOT)

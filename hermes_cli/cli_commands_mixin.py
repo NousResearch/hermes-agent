@@ -34,7 +34,8 @@ from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
-    _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
+    _dim_line, _ellipsize, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block,
+    _shlex_args, _summarize_paths, _t, _take_flag, _tn, menu_label)
 from hermes_cli.cli_session_switch import (
     _end_current_session, _sync_agent_to_session)
 from hermes_cli.browser_connect import (
@@ -57,29 +58,6 @@ def _attempt(label: str, errors, fn, *args, **kwargs):
     except errors as exc:
         _cp(f"  {label}: {exc}")
         return _FAILED
-
-
-def _take_flag(parts: list, flag: str):
-    """Pop ``flag VALUE`` out of ``parts``: ``(rest, value, ok)``; ok=False when the value is
-    missing (caller prints usage)."""
-    if flag not in parts:
-        return parts, None, True
-    idx = parts.index(flag)
-    if idx + 1 >= len(parts):
-        return parts, None, False
-    return parts[:idx] + parts[idx + 2:], parts[idx + 1], True
-
-
-def _summarize_paths(paths, limit: int = 5) -> str:
-    """``a, b, c (+N more)`` for a list of paths."""
-    more = _t("shared.more_suffix", count=len(paths) - limit) if len(paths) > limit else ""
-    return ", ".join(paths[:limit]) + more
-
-
-def _ellipsize(text: str, limit: int) -> str:
-    """``text[:limit]`` plus ``...`` when truncated."""
-    return f"{text[:limit]}{'...' if len(text) > limit else ''}"
-
 
 # Small data tables.
 
@@ -746,15 +724,34 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin, CLIHandoffMixin):
         return target_id, session_meta
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
-        an explicit target delegates to /resume so both spellings behave identically."""
+        """Handle /sessions [list|<id_or_title>] — bare opens an arrow-key session picker,
+        ``list`` prints the recent-sessions table, an explicit target delegates to /resume."""
+        if getattr(self, "_agent_running", False):
+            return _cp(f"  {_t('shared.agent_busy', command='/sessions')}")
         arg = _command_arg(cmd_original)
         if arg and arg.lower() not in {"list", "ls", "browse"}:
             self._handle_resume_command(f"/resume {arg}")
-        elif not self._session_db:
-            _cp(_db_unavailable_line())
-        elif not self._show_recent_sessions(reason="sessions"):
-            _cp(f"  {_t('sessions.none_yet')}")
+            return
+        if not self._session_db:
+            return _cp(_db_unavailable_line())
+        sessions = [s for s in self._list_recent_sessions(limit=10)
+                    if isinstance(s, dict) and s.get("id")]
+        if not sessions:
+            return _cp(f"  {_t('sessions.none_yet')}")
+        if arg.lower() in {"list", "ls", "browse"}:
+            self._show_recent_sessions(reason="sessions")
+            return
+        from hermes_cli.curses_ui import curses_single_select
+        from hermes_cli.timefmt import relative_time
+        labels = [
+            f"{menu_label(s.get('title') or s.get('id'), 48):<48}  "
+            f"{menu_label(relative_time(s.get('last_active'), session_id=s.get('id')), 16):<16}  "
+            f"{menu_label(s['id'], 24)}"
+            for s in sessions
+        ]
+        choice = curses_single_select("Select a session", labels, searchable=True)
+        if isinstance(choice, int) and 0 <= choice < len(sessions):
+            self._handle_resume_command(f"/resume {sessions[choice]['id']}")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the

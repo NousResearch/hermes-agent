@@ -198,6 +198,39 @@ class TestPendingResumeNumberedSelection:
 
 
 
+    def test_sessions_bare_opens_picker_and_resumes_selected_id(self):
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {"id": "sess_002", "title": "Coding", "last_active": 1},
+            {"id": "sess_001", "title": "bad\n\x1b[31mtitle", "last_active": 2},
+        ])
+        cli_obj._handle_resume_command = MagicMock()
+
+        with (
+            patch("hermes_cli.curses_ui.curses_single_select", return_value=1) as picker,
+            patch("hermes_cli.timefmt.relative_time", return_value="2h"),
+        ):
+            cli_obj._handle_sessions_command("/sessions")
+
+        labels = picker.call_args.args[1]
+        assert "\n" not in labels[1]
+        assert "\x1b" not in labels[1]
+        assert "[31m" not in labels[1]
+        cli_obj._handle_resume_command.assert_called_once_with("/resume sess_001")
+
+    def test_sessions_list_keeps_read_only_table(self):
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {"id": "sess_001", "title": "Research", "last_active": 2},
+        ])
+        cli_obj._show_recent_sessions = MagicMock(return_value=True)
+
+        with patch("hermes_cli.curses_ui.curses_single_select") as picker:
+            cli_obj._handle_sessions_command("/sessions list")
+
+        cli_obj._show_recent_sessions.assert_called_once_with(reason="sessions")
+        picker.assert_not_called()
+
     def test_pending_disarmed_by_other_command(self):
         cli_obj = _make_cli()
         cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]

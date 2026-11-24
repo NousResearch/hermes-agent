@@ -30,6 +30,7 @@ from persistence.sqlite._state.common import (
     escape_like as _escape_like, fts_rebuild_admission,
 )
 from persistence.sqlite._state.holders import _read_proc_argv
+from persistence.sqlite.conversation._store.sql_common import _non_continuation_child_sql
 from storage_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 from ._schema_ddl import (
@@ -1267,8 +1268,8 @@ def _run_data_migrations(holder: StoreHolder, cursor: sqlite3.Cursor, current_ve
         # carries no durable field a delegate spawn cannot also leave (same parent, created_source and
         # no marker), so following children would adopt a markerless worker it spawned. A tip that
         # compressed before the upgrade, and any /resume, left no record a capture could not also
-        # leave, so neither is backfilled. A row compression closed is not adopted either: recovery
-        # would reopen it and clear the ``end_reason`` that links it to its continuation.
+        # leave, so neither is backfilled. A row compression closed is not adopted while a continuation
+        # still exists: recovery would reopen it and clear the ``end_reason`` that links the two.
         # A missing JSON function or column skips the step; a busy or locked store raises, so the
         # startup retry runs it again instead of recording v34 unrepaired.
         try:
@@ -1276,7 +1277,8 @@ def _run_data_migrations(holder: StoreHolder, cursor: sqlite3.Cursor, current_ve
                 "UPDATE sessions SET model_config = json_set("
                 "COALESCE(model_config, '{}'), '$._chat_adopted', json('true')) "
                 "WHERE handoff_state = 'completed' AND created_source = 'subagent' "
-                "AND COALESCE(end_reason, '') <> 'compression' "
+                "AND NOT (COALESCE(end_reason, '') = 'compression' AND EXISTS (SELECT 1 FROM sessions c "
+                f"WHERE c.parent_session_id = sessions.id {_non_continuation_child_sql('c.', 'sessions.id')})) "
                 "AND json_valid(COALESCE(model_config, '{}')) "
                 f"AND COALESCE({_sql_json_extract('model_config', '$._delegate_from')}, '') = '' "
                 f"AND {_sql_json_extract('model_config', '$._chat_adopted')} IS NULL"

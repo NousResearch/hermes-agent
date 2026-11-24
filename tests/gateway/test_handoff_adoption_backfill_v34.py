@@ -83,19 +83,38 @@ def test_a_handed_off_row_that_compressed_adopts_nothing(tmp_path):
     store, _entry, handed = _old_route_onto_markerless_worker(tmp_path, handed_off=True)
     db = store.persistence
     spawned = seed_session(db, handed + "-spawned", "subagent", parent_session_id=handed)
-    tip = handed + "-tip"
-    assert db.coordination.try_acquire_compression_lock(session_id=handed, holder="fixture")
-    try:
-        db.lineage.publish_compression_child(
-            handed, CompressionChild(session_id=tip, source="subagent"),
-            [NewMessage.from_live({"role": "user", "content": "carried"})], compression_lock_holder="fixture")
-    finally:
-        db.coordination.release_compression_lock(session_id=handed, holder="fixture")
+    tip = _compress(db, handed)
     upgraded = _reopen_after_upgrade(store, tmp_path)
     try:
         sessions = upgraded.persistence.sessions
         assert sessions.get_model_config_value(handed, "_chat_adopted") is None
         assert sessions.get_model_config_value(spawned, "_chat_adopted") is None
         assert sessions.get_model_config_value(tip, "_chat_adopted") is None
+    finally:
+        upgraded.persistence.close()
+
+
+def _compress(db, session_id):
+    tip = session_id + "-tip"
+    assert db.coordination.try_acquire_compression_lock(session_id=session_id, holder="fixture")
+    try:
+        db.lineage.publish_compression_child(
+            session_id, CompressionChild(session_id=tip, source="subagent"),
+            [NewMessage.from_live({"role": "user", "content": "carried"})], compression_lock_holder="fixture")
+    finally:
+        db.coordination.release_compression_lock(session_id=session_id, holder="fixture")
+    return tip
+
+
+def test_a_handed_off_row_whose_continuation_was_deleted_is_adopted(tmp_path):
+    store, _entry, handed = _old_route_onto_markerless_worker(tmp_path, handed_off=True)
+    db = store.persistence
+    tip = _compress(db, handed)
+    raw_holder(db)._execute_write(lambda conn: (
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (tip,)),
+        conn.execute("DELETE FROM sessions WHERE id = ?", (tip,))))
+    upgraded = _reopen_after_upgrade(store, tmp_path)
+    try:
+        assert upgraded.persistence.sessions.get_model_config_value(handed, "_chat_adopted") is True
     finally:
         upgraded.persistence.close()

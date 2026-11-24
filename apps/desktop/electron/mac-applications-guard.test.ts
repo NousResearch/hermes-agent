@@ -346,6 +346,10 @@ describe('guardMacApplicationsLaunch', () => {
       })
     )
     expect(conflictHandler?.('existsAndRunning')).toBe(false)
+    // Light ships no CLI, and a translocated or read-only bundle never links one, so the prompt promises none.
+    expect(dialog.showMessageBox).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: expect.not.stringContaining('command-line') })
+    )
   })
 
   it('still prompts for App Translocation even if isInApplicationsFolder reports true', async () => {

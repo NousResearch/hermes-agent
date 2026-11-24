@@ -60,17 +60,16 @@ export interface MacApplicationsGuardDeps {
 const LOCATION_DETAILS: Readonly<Record<MacUnsafeBundleLocation, (appName: string) => string>> = {
   'app-translocation': appName =>
     `${appName} is running from a temporary macOS App Translocation folder (usually because it was opened from Downloads). ` +
-    'Automatic updates cannot install from here, and command-line links will stop working after restart. ' +
-    `Moving ${appName} to Applications fixes both.`,
+    `Automatic updates cannot install from here. Moving ${appName} to Applications fixes this.`,
   'desktop-folder': appName =>
     `${appName} is running from your Desktop folder. ` +
-    'Moving it to Applications keeps automatic updates and command-line links working reliably.',
+    'Moving it to Applications keeps automatic updates working reliably.',
   'downloads-folder': appName =>
     `${appName} is running from your Downloads folder. ` +
-    'Moving it to Applications keeps automatic updates and command-line links working reliably.',
+    'Moving it to Applications keeps automatic updates working reliably.',
   'read-only-volume': appName =>
     `${appName} is running from a read-only volume (such as a disk image). ` +
-    'Automatic updates cannot install from here, and command-line links will stop working once the volume is ejected. ' +
+    `Automatic updates cannot install from here, and ${appName} stops working once the volume is ejected. ` +
     `Moving ${appName} to Applications fixes both.`
 }
 

@@ -158,6 +158,14 @@
   --portal-sidebar-offer-art-opacity: 0.8;
 }
 
+/* Compact spacing (tokens/space.css): pinned rows 30, an agent's chats 32. */
+@media (hover: hover) and (pointer: fine) {
+  :root[data-shell='portal'][data-portal-density='compact'] {
+    --portal-sidebar-pin-row: 1.875rem;
+    --portal-sidebar-chat-row: 2rem;
+  }
+}
+
 :root[data-shell='portal']:not(.dark) {
   --portal-sidebar-agent-fill: color-mix(
     in srgb,

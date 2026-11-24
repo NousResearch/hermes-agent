@@ -935,7 +935,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-page-title-block` | `4.25rem` | ″ |  |
 | `--portal-page-header-gap` | `1.5rem` | ″ |  |
 | `--portal-page-rhythm` | `2rem` | ″ |  |
-| `--portal-page-tab-height` | `2rem` | ″ | `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
+| `--portal-page-tab-height` | `2rem` | ″ | `(hover: hover) and (pointer: fine)` on `:root[data-shell='portal'][data-portal-density='compact']`: `var(--portal-row-chrome)`; `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
 | `--portal-page-tab-inset` | `0.75rem` | ″ |  |
 | `--portal-panel-title-top` | `1.875rem` | ″ | A page's list panel (Agents, Routines) shares the chat sidebar's and the Settings column's header (Top 16292:15498, 16292:16360): its title 30px in and 30px down on a 36px line, its first control 122px under the panel's top, where New chat and the Settings rows start. |
 | `--portal-panel-title-inset` | `1.875rem` | ″ |  |
@@ -957,7 +957,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-session-tab-inset` | `1.5625rem` | ″ | The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the stage at 400), after the Back/Forward group. |
 | `--portal-band-trail-inset` | `0.8125rem` | ″ | The band's trailing Agent settings ends 15px inside the workspace frame (settings-2 16292:15303): the trailing cluster stands 12px off the window, the frame 10px, so the button steps 13px in. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
-| `--portal-row-panel` | `2.5rem` | ″ | `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
+| `--portal-row-panel` | `2.5rem` | ″ | `(hover: hover) and (pointer: fine)` on `:root[data-shell='portal'][data-portal-density='compact']`: `2rem`; `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
 | `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--page-panel-inset` | `var(--portal-frame-inset)` | ″ |  |
 | `--portal-chrome-button-size` | `var(--portal-row-chrome)` | ″ |  |
@@ -1074,8 +1074,8 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-sidebar-gutter` | `calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed))` | ″ |  |
 | `--portal-sidebar-actions-gap` | `1rem` | ″ |  |
 | `--portal-sidebar-row` | `2rem` | ″ | A caption sits 10px under what precedes it and 16px over its first row's text; rows are 20px of text 16px apart (36 pitch, 04 · Workspace/Agent); an agent's chats are 40px (16292:15602). |
-| `--portal-sidebar-pin-row` | `2.25rem` | ″ |  |
-| `--portal-sidebar-chat-row` | `2.5rem` | ″ |  |
+| `--portal-sidebar-pin-row` | `2.25rem` | ″ | `(hover: hover) and (pointer: fine)` on `:root[data-shell='portal'][data-portal-density='compact']`: `1.875rem`. |
+| `--portal-sidebar-chat-row` | `2.5rem` | ″ | `(hover: hover) and (pointer: fine)` on `:root[data-shell='portal'][data-portal-density='compact']`: `2rem`. |
 | `--portal-sidebar-row-gap` | `0px` | ″ |  |
 | `--portal-sidebar-section-gap` | `0.5rem` | ″ |  |
 | `--portal-sidebar-label-top` | `0.625rem` | ″ |  |

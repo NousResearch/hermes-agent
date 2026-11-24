@@ -49,6 +49,7 @@ import { isTransparentWindow } from './lib/transparent-windows'
 import { startUiPreferencesSync } from './lib/ui-preferences/sync'
 import { installBrowserTabTitle } from './store/browser-tab-title'
 import { installPortalAccentAttribute } from './store/portal-accent'
+import { installPortalDensityAttribute } from './store/portal-density'
 import { installShellAttribute } from './store/shell-variant'
 import { installVisitorAccess } from './store/visitor-access'
 import { ThemeProvider } from './themes/context'
@@ -67,6 +68,7 @@ startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 installShellAttribute()
 // The redesign's accent ("Make it yours"), on <html> before the first paint like the shell.
 installPortalAccentAttribute()
+installPortalDensityAttribute()
 // The launch's artwork (redesign only), on <html> before the first paint so no other art flashes.
 installArtworkAttributes()
 // The web app's own UI scale: the redesign lays out for the room it leaves, as under browser zoom.

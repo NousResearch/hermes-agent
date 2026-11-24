@@ -34,7 +34,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['Vibe hearts', 'Floating hearts when you say thanks.'],
     bubble: ['Message bubble transparency', 'Solid at 0%; outline only at 100%.'],
     collapseThinking: ['Collapse thinking', 'Keep Hermes’s reasoning tucked away until you open it.'],
-    density: ['Sidebar density', 'How much detail shows under each chat title.'],
+    density: ['Spacing', 'How much room rows take in lists and the sidebar.'],
     timeline: ['Thread timeline', 'Navigation bars along the right edge of a conversation.'],
     pricing: ['Model pricing', 'Show per-million-token prices in the model picker.'],
     welcome: ['Welcome screen', 'Wordmark and prompt on an empty chat.']
@@ -63,7 +63,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['Cœurs flottants', 'Des cœurs s’envolent quand vous dites merci.'],
     bubble: ['Transparence des bulles', 'Pleine à 0 % ; contour seul à 100 %.'],
     collapseThinking: ['Replier la réflexion', 'Garde le raisonnement de Hermes replié jusqu’à ce que vous l’ouvriez.'],
-    density: ['Densité de la barre latérale', 'Quantité de détails sous chaque titre de discussion.'],
+    density: ['Espacement', 'La place que prennent les lignes dans les listes et la barre latérale.'],
     timeline: ['Chronologie du fil', 'Barres de navigation le long du bord droit d’une conversation.'],
     pricing: ['Tarifs des modèles', 'Affiche les prix par million de jetons dans le sélecteur de modèle.'],
     welcome: ['Écran d’accueil', 'Logo et invite sur une discussion vide.']
@@ -86,7 +86,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['Vibe-Herzen', 'Schwebende Herzen, wenn du Danke sagst.'],
     bubble: ['Transparenz der Nachrichtenblasen', 'Deckend bei 0 %; nur Umriss bei 100 %.'],
     collapseThinking: ['Denken einklappen', 'Hält Hermes’ Überlegungen eingeklappt, bis du sie öffnest.'],
-    density: ['Seitenleistendichte', 'Wie viele Details unter jedem Chattitel stehen.'],
+    density: ['Abstände', 'Wie viel Platz Zeilen in Listen und in der Seitenleiste einnehmen.'],
     timeline: ['Verlaufsleiste', 'Navigationsbalken am rechten Rand einer Unterhaltung.'],
     pricing: ['Modellpreise', 'Preise pro Million Token in der Modellauswahl anzeigen.'],
     welcome: ['Begrüßungsbildschirm', 'Wortmarke und Eingabe in einem leeren Chat.']
@@ -112,7 +112,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['Corazones flotantes', 'Corazones que flotan cuando das las gracias.'],
     bubble: ['Transparencia de las burbujas', 'Opaca al 0 %; solo contorno al 100 %.'],
     collapseThinking: ['Contraer razonamiento', 'Mantiene el razonamiento de Hermes plegado hasta que lo abras.'],
-    density: ['Densidad de la barra lateral', 'Cuánto detalle aparece bajo cada título de chat.'],
+    density: ['Espaciado', 'Cuánto espacio ocupan las filas en las listas y la barra lateral.'],
     timeline: ['Línea de tiempo del hilo', 'Barras de navegación en el borde derecho de una conversación.'],
     pricing: ['Precios de modelos', 'Muestra precios por millón de tokens en el selector de modelo.'],
     welcome: ['Pantalla de bienvenida', 'Logotipo e indicación en un chat vacío.']
@@ -129,7 +129,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['ハートの演出', 'お礼を言うとハートが浮かびます。'],
     bubble: ['メッセージの吹き出しの透明度', '0% で不透明、100% で枠線のみ。'],
     collapseThinking: ['思考を折りたたむ', 'エージェントの思考を開くまで折りたたんでおきます。'],
-    density: ['サイドバーの密度', '各チャットのタイトルの下に表示する情報量です。'],
+    density: ['間隔', 'リストとサイドバーの行の高さです。'],
     timeline: ['スレッドのタイムライン', '会話の右端に表示されるナビゲーションバーです。'],
     pricing: ['モデルの料金', 'モデル選択に100万トークンあたりの料金を表示します。'],
     welcome: ['ようこそ画面', '空のチャットに表示するロゴと入力の案内です。']
@@ -146,7 +146,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['爱心特效', '道谢时飘出爱心。'],
     bubble: ['消息气泡透明度', '0% 为实心；100% 仅保留轮廓。'],
     collapseThinking: ['折叠思考过程', '在你展开之前，Hermes 的推理保持折叠。'],
-    density: ['侧边栏密度', '每个对话标题下显示多少细节。'],
+    density: ['间距', '列表和侧边栏中每行占用的空间。'],
     timeline: ['对话时间线', '对话右侧边缘的导航条。'],
     pricing: ['模型价格', '在模型选择器中显示每百万 token 的价格。'],
     welcome: ['欢迎界面', '空白对话中的标志和提示。']
@@ -163,7 +163,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['愛心特效', '道謝時飄出愛心。'],
     bubble: ['訊息泡泡透明度', '0% 為實心；100% 只保留外框。'],
     collapseThinking: ['摺疊思考過程', '在你展開之前，Hermes 的推理保持摺疊。'],
-    density: ['側邊欄密度', '每個對話標題下顯示多少細節。'],
+    density: ['間距', '清單和側邊欄中每列佔用的空間。'],
     timeline: ['對話時間軸', '對話右側邊緣的導覽列。'],
     pricing: ['模型價格', '在模型選擇器中顯示每百萬 token 的價格。'],
     welcome: ['歡迎畫面', '空白對話中的標誌與提示。']
@@ -180,7 +180,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['Сердечки', 'Летящие сердечки, когда вы благодарите.'],
     bubble: ['Прозрачность пузырей сообщений', 'Сплошной при 0 %; только контур при 100 %.'],
     collapseThinking: ['Сворачивать размышления', 'Рассуждения Hermes свёрнуты, пока вы их не откроете.'],
-    density: ['Плотность боковой панели', 'Сколько деталей показывать под названием чата.'],
+    density: ['Интервалы', 'Сколько места занимают строки в списках и боковой панели.'],
     timeline: ['Шкала беседы', 'Панели навигации у правого края беседы.'],
     pricing: ['Цены моделей', 'Показывать цены за миллион токенов в выборе модели.'],
     welcome: ['Экран приветствия', 'Логотип и подсказка в пустом чате.']
@@ -197,7 +197,7 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['قلوب عائمة', 'قلوب تطفو عندما تقول شكرًا.'],
     bubble: ['شفافية فقاعات الرسائل', 'مصمتة عند 0٪؛ إطار فقط عند 100٪.'],
     collapseThinking: ['طي التفكير', 'يبقي تفكير Hermes مطويًا حتى تفتحه.'],
-    density: ['كثافة الشريط الجانبي', 'مقدار التفاصيل أسفل عنوان كل محادثة.'],
+    density: ['التباعد', 'المساحة التي تأخذها الصفوف في القوائم والشريط الجانبي.'],
     timeline: ['الخط الزمني للمحادثة', 'أشرطة التنقل على الحافة اليمنى للمحادثة.'],
     pricing: ['أسعار النماذج', 'يعرض الأسعار لكل مليون رمز في منتقي النموذج.'],
     welcome: ['شاشة الترحيب', 'الشعار والتلميح في محادثة فارغة.']

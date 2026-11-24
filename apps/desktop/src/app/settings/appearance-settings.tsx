@@ -26,6 +26,7 @@ import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { $showModelPricing, setShowModelPricing } from '@/store/model-pricing'
 import { notifyError } from '@/store/notifications'
+import { $portalDensity, PORTAL_DENSITIES, setPortalDensity } from '@/store/portal-density'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
@@ -663,6 +664,31 @@ function AppearanceTypographySettings() {
   )
 }
 
+/** The redesign's spacing (store/portal-density.ts), where classic has its sidebar density. */
+function SpacingRow({ copy }: Required<RowProps>) {
+  const a = useI18n().t.settings.appearance
+  const density = useStore($portalDensity)
+  const labels = { comfortable: a.sessionDensityComfortable, compact: a.sessionDensityCompact }
+
+  return (
+    <ListRow
+      action={
+        <SegmentedControl
+          onChange={id => {
+            triggerHaptic('selection')
+            setPortalDensity(id)
+          }}
+          options={PORTAL_DENSITIES.map(id => ({ id, label: labels[id] }))}
+          value={density}
+        />
+      }
+      description={copy[1]}
+      id={settingElementId(ids.sessionDensity)}
+      title={copy[0]}
+    />
+  )
+}
+
 function SessionDensityRow({ copy }: RowProps) {
   const { t } = useI18n()
   const a = t.settings.appearance
@@ -1296,7 +1322,7 @@ export function AppearanceAdvancedSettings() {
         <BubbleRow copy={copy.bubble} />
       </AdvancedGroup>
       <AdvancedGroup title={copy.groups.layout}>
-        <SessionDensityRow copy={copy.density} />
+        <SpacingRow copy={copy.density} />
         <ThreadTimelineRow copy={copy.timeline} />
         <ModelPricingRow copy={copy.pricing} />
         <WelcomeScreenRow copy={copy.welcome} />

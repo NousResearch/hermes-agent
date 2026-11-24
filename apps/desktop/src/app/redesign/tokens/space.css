@@ -199,6 +199,16 @@
   }
 }
 
+/* Compact spacing (Settings › Appearance › Spacing, store/portal-density.ts): shorter rows and
+   nothing else (the sidebar's rows: tokens/sidebar.css). A fine pointer only, so touch keeps its
+   targets (below). */
+@media (hover: hover) and (pointer: fine) {
+  :root[data-shell='portal'][data-portal-density='compact'] {
+    --portal-row-panel: 2rem;
+    --portal-page-tab-height: var(--portal-row-chrome);
+  }
+}
+
 /* A coarse pointer on the browser host: chrome buttons (band, rails, pane headers) and panel rows take
    the touch target. Native Desktop keeps its pointer rhythm on any pointer, as classic does. */
 @media (hover: none), (pointer: coarse) {

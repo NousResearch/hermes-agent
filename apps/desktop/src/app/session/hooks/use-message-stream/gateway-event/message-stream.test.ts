@@ -11,6 +11,7 @@ import type { GatewayEventName } from '@hermes/shared'
 import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile } from '@/store/profile'
+import { clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
 import {
   $lastReadAtBySessionId,
   $messagingSessions,
@@ -211,5 +212,36 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     publishSessionState('rt-tg', { ...createClientSessionState('tg-1'), busy: true })
     publishSessionState('rt-tg', { ...createClientSessionState('tg-1'), busy: false })
     expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+  })
+})
+
+describe('message.complete and open approvals', () => {
+  it('keeps folder and site cards open past the turn and drops command approvals', () => {
+    setApprovalRequest({ command: 'rm -rf build', description: 'd', requestId: 'cmd', sessionId: 's1' })
+    setApprovalRequest({
+      command: '',
+      description: 'Allow C:\\docs',
+      kind: 'access',
+      requestId: 'folder',
+      sessionId: 's1',
+      target: { access: 'read', path: 'C:\\docs' }
+    })
+    setApprovalRequest({
+      command: '',
+      description: 'Allow the sandbox to reach pypi.org',
+      kind: 'network',
+      requestId: 'site',
+      sessionId: 's1',
+      target: { host: 'pypi.org' }
+    })
+
+    expect(handleMessageStreamEvent(context('message.complete'))).toBe(true)
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['folder', 'site'])
+
+    clearAllPrompts()
   })
 })

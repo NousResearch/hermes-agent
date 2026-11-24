@@ -404,10 +404,15 @@ def _port_bind_conflict(host: str, port: int) -> bool:
 
     ``port == 0`` (ephemeral) never conflicts, so it is skipped. Any probe
     error other than address-in-use returns ``False`` so uvicorn surfaces it
-    with its normal diagnostics (bad host, EACCES, …).
+    with its normal diagnostics (bad host, EACCES, …). After a backend
+    migration retired the old backend, this home's gateway on *port* is a
+    conflict whatever the OS would allow (``web_server_port_holder``).
     """
     if not port:
         return False
+    from hermes_cli.web_server_port_holder import gateway_port_after_migration
+    if gateway_port_after_migration(port) is not None:
+        return True
     import socket as _socket
 
     family = _socket.AF_INET6 if ":" in host else _socket.AF_INET
@@ -454,9 +459,24 @@ def _write_machine_sentinel_line(line: str) -> None:
             pass
 
 
-def _report_port_in_use(host: str, port: int) -> None:
-    """Print the machine sentinel + a human hint naming likely holders."""
+def _report_port_in_use(host: str, port: int, *, headless: Optional[bool] = None) -> int:
+    """Print the machine sentinel + a human hint naming the holder; return the exit code.
+
+    The sentinel line is always first. When this home's gateway holds the address (proved by the
+    gateway itself and its live listener, ``web_server_port_holder``) the hint says so and the code is EX_CONFIG: a
+    retry never frees the port, so a supervisor should stop. Anything else keeps the generic
+    hint and :data:`PORT_IN_USE_EXIT_CODE`."""
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_cli.web_server_port_holder import (
+        describe_gateway_holder, gateway_holding_port, gateway_port_after_migration,
+    )
+
     _write_machine_sentinel_line(_PORT_IN_USE_SENTINEL.format(port=port))
+    # After a backend migration the gateway on *port* is the holder for any address of that port.
+    holder = gateway_holding_port(port, host=host) or gateway_port_after_migration(port)
+    if holder is not None:
+        print("\n".join(describe_gateway_holder(holder, host, port, headless=headless)), flush=True)
+        return GATEWAY_FATAL_CONFIG_EXIT_CODE
     print(
         f"  Port {port} on {host} is already in use — likely another "
         "'hermes serve' / 'hermes dashboard' backend or the Hermes gateway. "
@@ -464,6 +484,7 @@ def _report_port_in_use(host: str, port: int) -> None:
         "(--port 0 picks a free ephemeral port).",
         flush=True,
     )
+    return PORT_IN_USE_EXIT_CODE
 
 
 _DEFAULT_DASHBOARD_FORWARDED_ALLOW_IPS = ("127.0.0.1", "::1")

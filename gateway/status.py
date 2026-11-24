@@ -272,18 +272,15 @@ def recorded_gateway_home_conflicts(
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
-# stays import-light (hermes_constants + stdlib only).
-_PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort label: ``<root>/profiles/<name>`` -> name, root home -> "default", else None."""
+    from hermes_constants import PROFILE_ID_RE
+
     try:
         canonical = _canonical_hermes_home(home)
     except Exception:
         return None
-    if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
+    if canonical.parent.name == "profiles" and PROFILE_ID_RE.match(canonical.name):
         return canonical.name
     import hermes_constants
     default_homes = (hermes_constants.get_default_hermes_root, _get_platform_default_hermes_home)
@@ -297,10 +294,12 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
 def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
     """Profile label of a scoped-lock owner (None: PID-only wording): the validated ``profile``
     field stamped by :func:`acquire_scoped_lock`, else inferred from ``hermes_home`` (old locks)."""
+    from hermes_constants import PROFILE_ID_RE
+
     if not isinstance(record, dict):
         return None
     profile = record.get("profile")
-    if isinstance(profile, str) and _PROFILE_LABEL_RE.match(profile.strip()):
+    if isinstance(profile, str) and PROFILE_ID_RE.match(profile.strip()):
         return profile.strip()
     home = record.get("hermes_home")
     return _profile_label_for_home(home) if isinstance(home, str) and home.strip() else None

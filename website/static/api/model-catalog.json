@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-19T11:17:17Z",
+  "updated_at": "2026-11-23T20:38:09Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -138,6 +138,18 @@
         },
         {
           "id": "openai/gpt-5.4-mini",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-neon",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-hydrogen",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-carbon",
           "description": ""
         },
         {
@@ -426,6 +438,15 @@
         },
         {
           "id": "openai/gpt-5.4-mini"
+        },
+        {
+          "id": "google/gemini-4-neon"
+        },
+        {
+          "id": "google/gemini-4-hydrogen"
+        },
+        {
+          "id": "google/gemini-4-carbon"
         },
         {
           "id": "google/gemini-4-argon"

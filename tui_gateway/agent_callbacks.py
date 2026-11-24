@@ -88,7 +88,12 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
             _emit("tool.start", csid, tool)
         else:
             summary = str(payload.get("summary") or payload.get("text") or "")
-            _emit("message.complete", csid, {"text": summary})
+            # A completed child may summarize an HTTP response. Preserve its success
+            # verdict so Desktop does not mistake "HTTP 200 OK" for a provider failure.
+            terminal = {"text": summary}
+            if payload.get("status") == "completed":
+                terminal["status"] = "complete"
+            _emit("message.complete", csid, terminal)
             _child_mirrors.pop(key, None)
 
 

@@ -19,15 +19,24 @@ from persistence.authority.admissions import QueuedReplacement, steer_replayed
 from persistence.authority.vocabulary import STEERING
 from persistence.core.errors import AuthorityRefusal
 
-# A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
-# native envelopes and automation rows are whole turns: neither verb may drop what they carry.
+# A steer carries plain text and its presentation only. Attachments, finite runs, native envelopes
+# and automation rows are whole turns: neither verb may drop what they carry.
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+# ``cli_turn_v1`` is the classic CLI's per-turn input block (``gateway/session_cli_turn.py``). The
+# submitting viewer's clarify-batch preference is a property of that viewer, not of the turn's text, so
+# a transfer keeps it; ``api_text``, ``model_override`` and ``turn_author`` are facts about ONE admitted
+# turn that a text-only transfer would silently drop. A block holding nothing but the preference is
+# therefore still a text-only row.
+_TRANSFERABLE_CLI_TURN = frozenset({'clarify_batch'})
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
-# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
-# cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
-# do not name, so a transfer or replacement would strand them: never offered, refused by name.
-_INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
+# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration);
+# ``local`` is the label a peer refresh writes over such a receipt's own source while keeping its
+# platform (gateway/session_policy's ``STORED_AS_LOCAL`` and ``#148473``), so a Desktop chat carries
+# ``desktop``, ``gui`` or ``local`` for the same surface and all three are the same client class.
+# cron, kanban, a2a and hosted-room (bot_room) producers keep their own labels and read a saved result
+# for every outcome they do not name, so a transfer or replacement would strand them: never offered.
+_INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp', 'local'})
 
 
 def handlers(connection):
@@ -48,12 +57,23 @@ def _interactive(authority, session_id):
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 
+def _text_only(payload):
+    """Whether a transfer keeps everything ``payload`` carries: the text, its presentation, and viewer
+    flags (never a per-turn input block a steer would drop)."""
+    if set(payload) - _TEXT_ONLY - {'cli_turn_v1'}:
+        return False
+    block = payload.get('cli_turn_v1')
+    if block is None:
+        return True
+    return isinstance(block, dict) and not set(block) - _TRANSFERABLE_CLI_TURN
+
+
 def queued_controls(authority, row):
     """The queued-row verbs this owner serves for ``row``: a client shows only these (an older owner
     lists none, so its clients show none)."""
     payload = row.get('payload') or {}
     text = payload.get('text')
-    if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
+    if (row.get('status') != 'queued' or not _text_only(payload) or not isinstance(text, str) or not text.strip()
             or (payload.get('display_v1') or {}).get('kind') == 'hidden'
             or not _interactive(authority, row['target_session_id'])):
         return []

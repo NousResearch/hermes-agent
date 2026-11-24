@@ -7,6 +7,8 @@ import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
+import { useAgentScreen } from '@/app/chat/sidebar/portal/portal-agent-screen'
+import { useBotModeLoaded } from '@/app/chat/sidebar/simplified-bot-chat-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -20,6 +22,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { platformStatusTone } from '@/lib/platform-status'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { asText } from '@/lib/text'
+import { useBots } from '@/plugins/hermes-bots/i18n'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
@@ -207,6 +210,29 @@ function SkeletonRows({ count, subtitle = false }: { count: number; subtitle?: b
   ))
 }
 
+/** The agent's Screen (Bot Mode: its own desktop) and where it stands; it opens the Screen, which
+ *  offers to install or start one that is not running. The Screen is a tab beside the chat, so the
+ *  page steps aside for it. Absent where the agent cannot have one. */
+function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () => void }) {
+  const b = useBots()
+  const { tone, says, open } = useAgentScreen(owner.connectionId, owner.profile)
+
+  if (tone === 'unsupported' || tone === 'unavailable') {
+    return null
+  }
+
+  return (
+    <SettingRow
+      detail={says}
+      onClick={() => {
+        open()
+        onOpened()
+      }}
+      title={b.screen.portalTitle}
+    />
+  )
+}
+
 function SettingRow({
   title,
   detail,
@@ -367,6 +393,7 @@ function AgentSettingsContent({
   const c = useAgentSettingsCopy()
   const navigate = useNavigate()
   const { search } = useLocation()
+  const botMode = useBotModeLoaded()
   const params = new URLSearchParams(search)
   const panel = params.get('panel')
   const profiles = useStore($profiles)
@@ -563,6 +590,7 @@ function AgentSettingsContent({
                   onClick={() => navigate(CRON_ROUTE)}
                   title={t.cron.title}
                 />
+                {botMode && <ScreenRow onOpened={props.onClose} owner={owner} />}
               </Section>
               <AgentRoutines jobs={jobs} owner={owner} />
             </div>

@@ -7,6 +7,8 @@ import { $apiRequestScope } from '@/api/client'
 import { pluginSettingsRouteHref } from '@/contrib/settings-pages'
 import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
+import { botsText } from '@/plugins/hermes-bots/i18n'
+import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import type * as GatewayStore from '@/store/gateway'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -44,6 +46,27 @@ const requestGateway = vi.fn(async (method: string, params?: Record<string, unkn
 
   return {}
 })
+
+const screenPlugin = vi.hoisted(() => ({ tone: 'unknown' as string, open: vi.fn(), route: null as unknown }))
+
+vi.mock('@/app/chat/sidebar/simplified-bot-chat-row', async original => ({
+  ...(await original<object>()),
+  useBotModeLoaded: () => true
+}))
+vi.mock('@/plugins/hermes-bots/i18n', async original => {
+  const module = await original<typeof BotsI18n>()
+
+  return { ...module, useBots: () => module.botsText() }
+})
+vi.mock('@/plugins/hermes-bots/screen-portal', async original => ({
+  ...(await original<object>()),
+  profileScreenCommand: (route: unknown) => {
+    screenPlugin.route = route
+
+    return { label: '', run: screenPlugin.open }
+  },
+  useScreenPortalState: () => ({ lease: null, status: null, tone: screenPlugin.tone })
+}))
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
@@ -139,6 +162,8 @@ beforeAll(async () => {
 }, 60_000)
 
 beforeEach(() => {
+  screenPlugin.tone = 'unknown'
+  screenPlugin.open.mockReset()
   queryClient.clear()
   api.mockClear()
   api.mockImplementation(defaultApi)
@@ -494,6 +519,32 @@ it('opens the Routines page from the Overview’s Routines row, as its neighbour
   fireEvent.click((await screen.findAllByRole('button', { name: new RegExp(`^${en.cron.title}`) }))[0])
 
   expect(screen.getByTestId('location').textContent).toBe('/cron')
+})
+
+it.each([
+  ['missing', botsText().screen.portalNotInstalled],
+  ['off', botsText().screen.portalStopped],
+  ['live', botsText().screen.portalWatching]
+] as const)('says on the Overview where the agent’s Screen stands (%s), and opens it', async (tone, says) => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = tone
+  mount('/settings?agentProfile=default')
+
+  const row = await screen.findByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) })
+  expect(row.textContent).toContain(says)
+
+  fireEvent.click(row)
+  expect(screenPlugin.open).toHaveBeenCalledTimes(1)
+  expect(screenPlugin.route).toMatchObject({ profile: 'default' })
+})
+
+it('leaves Screen off the Overview where an agent cannot have one', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'unsupported'
+  mount('/settings?agentProfile=default')
+
+  await screen.findAllByRole('button', { name: new RegExp(`^${en.cron.title}`) })
+  expect(screen.queryByRole('button', { name: new RegExp(`^${botsText().screen.portalTitle}`) })).toBeNull()
 })
 
 it('says a routine’s schedule in words on the Overview, as the Routines page does', async () => {

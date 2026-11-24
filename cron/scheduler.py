@@ -363,9 +363,9 @@ def _upsert_incident_for_failure(
     """Record a durable failure incident (grouped by job + error signature). Returns
     ``(withheld, incident_id)``; withheld=True when the signature's incident is already ``closed``
     (operator ack), ``alerted`` inside the ``cron.failure_repeat_alert_hours`` cooldown (a ping
-    already went out), or the failure is gateway restart noise inside its grace window
-    (``cron.restart_noise``) -> suppress the per-run ping. Store errors log at debug; the caller
-    delivers as if none existed."""
+    already went out), or the gateway never admitted this fire and the job is inside its restart
+    grace window (``cron.restart_noise``) -> suppress the per-run ping. Store errors log at debug;
+    the caller delivers as if none existed."""
     try:
         from cron.incidents import get_incident, upsert_incident
 
@@ -377,7 +377,7 @@ def _upsert_incident_for_failure(
         if not withheld:
             from cron.restart_noise import withhold_notice
 
-            withheld = withhold_notice(job, str(error or ""))
+            withheld = withhold_notice(job)
         return withheld, incident_id
     except Exception as exc:
         logger.debug(
@@ -2791,6 +2791,9 @@ def run_one_job(
                 # (#123401). Without this the outage is silent — no cron_incidents
                 # row, no ping — while executions.db keeps piling up failed rows.
                 if not post_handoff:
+                    # No worker adopted the execution, so nothing ran (cron/restart_noise.py).
+                    from cron.restart_noise import WORKER_EXIT, mark_not_admitted
+                    mark_not_admitted(job, WORKER_EXIT)
                     # Returns before _run_one_job_body / record_unknown_worker_outcome install the scope; get_secret fails closed without one under multiplex.
                     with _fire_secret_scope():
                         delivery_error, delivery_outcome = _deliver_crash_failure(

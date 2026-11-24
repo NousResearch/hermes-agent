@@ -654,10 +654,13 @@ cron:
 Only the notice is held: `hermes cron runs`, the failure streak and
 `hermes cron incidents` record the failure like any other. A worker that dies
 before taking its run (`Restart-safe cron worker dispatch failed`) is held only
-while some job has reported one of the gateway errors above inside the window,
-because a worker can also die with no restart involved. Any other error alerts
-at once, including a run that had started and was interrupted by the shutdown:
-its work may be half done, and the notice is how you find out.
+while some job has been refused by the gateway inside the window, because a
+worker can also die with no restart involved.
+
+What is held is decided by where the job failed, not by what the error says:
+only a job the gateway never admitted qualifies. A run that had started alerts
+at once, even if it ends with one of the same gateway errors or was interrupted
+by the shutdown: its work may be half done, and the notice is how you find out.
 
 ### Fleet health check: `hermes cron doctor`
 

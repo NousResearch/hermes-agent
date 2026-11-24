@@ -149,6 +149,11 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     except Exception as exc:
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
+        from hermes_cli.gateway_client import GatewayClientError
+        if isinstance(exc, GatewayClientError):
+            # No submit was sent and the gateway could not be dialled: restart noise, not a run.
+            from cron.restart_noise import GATEWAY_UNAVAILABLE, mark_not_admitted
+            mark_not_admitted(job, GATEWAY_UNAVAILABLE)
         error = f'{error_type_name(exc)}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
 
@@ -209,7 +214,8 @@ def reconcile_pending(*, allow_connect=True):
                     journal.unlink(missing_ok=True)
                     continue
                 error = 'Cron admission missing: the owner never admitted this fire'
-                state = {'status': 'terminal', 'job': current,
+                from cron.restart_noise import GATEWAY_UNAVAILABLE, NOT_ADMITTED
+                state = {'status': 'terminal', 'job': current, 'job_flags': {NOT_ADMITTED: GATEWAY_UNAVAILABLE},
                          'result': [False, f'# Cron Job: {params["job_id"]} (FAILED)\n\n{error}\n', '', error]}
             if state['status'] != 'terminal':
                 if state['status'] == 'unknown' and not record.get('pause_recorded'):

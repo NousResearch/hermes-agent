@@ -1,5 +1,7 @@
 import { type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react'
 
+import { browserUiScale } from '@/lib/browser-zoom'
+
 const GROUP = '[data-slot="aui_message-group"]'
 const PROMPT = '[data-slot="aui_user-message-root"]'
 // Registered as a non-inherited <length> in styles.css. That registration is
@@ -61,6 +63,9 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement, ed
 
   const measure = () => {
     frame = 0
+    // Boxes are measured in screen pixels; CSS lengths (a prompt's `top`, the clips written below)
+    // are not, under the web app's own UI scale. One factor converts between them.
+    const scale = browserUiScale()
     const viewportTop = viewport.getBoundingClientRect().top
     const next = new Map<HTMLElement, number>()
     let activePrompt: HTMLElement | null = null
@@ -77,7 +82,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement, ed
       }
 
       const promptRect = prompt.getBoundingClientRect()
-      const stickyTop = Number.parseFloat(getComputedStyle(prompt).top) || 0
+      const stickyTop = (Number.parseFloat(getComputedStyle(prompt).top) || 0) * scale
 
       if (promptRect.top > viewportTop + stickyTop + 1 || promptRect.bottom <= viewportTop) {
         continue
@@ -140,7 +145,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement, ed
     clipped.clear()
 
     for (const [element, inset] of next) {
-      const value = `${inset}px`
+      const value = `${inset / scale}px`
 
       if (element.style.getPropertyValue(CLIP) !== value) {
         element.style.setProperty(CLIP, value)
@@ -153,7 +158,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement, ed
     // Only a prompt at rest has an edge: one being pushed out by the next turn moves every frame.
     // The last position stays written when the edge goes, so the skin can fade it out in place.
     if (edge && next.size && atRest) {
-      const value = `${Math.round(exclusionBottom - viewportTop)}px`
+      const value = `${Math.round((exclusionBottom - viewportTop) / scale)}px`
 
       if (edge.style.getPropertyValue(EDGE) !== value) {
         edge.style.setProperty(EDGE, value)

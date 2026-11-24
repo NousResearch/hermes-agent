@@ -307,6 +307,18 @@
   overflow-y: auto;
 }
 
+/* A dialog is capped at 85% of the window. Under the web app's own UI scale a viewport unit is
+   enlarged with everything else, so the cap came out taller than the window (170% of it at 200%)
+   and a long dialog ran off both edges with no way to reach its buttons. The cap is taken back to
+   the window: at 100% the division is by 1 and nothing changes. */
+:root[data-shell='portal'] [data-slot='dialog-content'] {
+  max-height: calc(85vh / var(--browser-ui-scale, 1));
+}
+
+:root[data-shell='portal'] [data-slot='dialog-banner-body'] {
+  max-height: calc(85vh / var(--browser-ui-scale, 1) - 5rem);
+}
+
 /* Compact (breakpoints.ts: max-width 639.98px): a dialog is the whole window, its actions pinned to
    the bottom edge (the sticky footer above) clear of the home indicator; a focused field scrolls
    into the body's view, above the keyboard where the browser resizes for it. */
@@ -315,7 +327,7 @@
     inset: 0;
     width: 100%;
     max-width: none;
-    height: 100dvh;
+    height: calc(100dvh / var(--browser-ui-scale, 1));
     max-height: none;
     translate: none;
     transform: none;

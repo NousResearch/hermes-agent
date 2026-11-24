@@ -2,6 +2,14 @@ import { readKey, writeKey } from './storage'
 
 type ZoomState = { level: number; percent: number }
 
+/**
+ * The web app's own UI scale as a factor (1 when there is none: 100%, or a native window, whose
+ * zoom is the browser's). Under it a measured box is in screen pixels and a CSS length is not, so
+ * a length written from a measurement is divided by this first.
+ */
+export const browserUiScale = (): number =>
+  Number(document.documentElement.style.getPropertyValue('--browser-ui-scale')) || 1
+
 /** App scale is independent of browser zoom and monitor pixel density. */
 export function createBrowserZoom(basePath: string): NonNullable<Window['hermesDesktop']['zoom']> {
   const storageKey = `hermes:browser:ui-scale:${basePath || '/'}`

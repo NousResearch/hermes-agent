@@ -83,7 +83,7 @@ def test_stderr_dump_carries_the_loop_thread_stack_too(tmp_path, monkeypatch):
     _, stderr = _wedge_loop_behind_fillers(tmp_path, monkeypatch)
     assert "wedged_loop_callback_marker" in stderr, (
         "the stderr copy (journald/launchd) must carry the loop thread's stack, not only the capped dump")
-    assert stderr.index("wedged_loop_callback_marker") < stderr.index("most recent call first")
+    assert stderr.index("wedged_loop_callback_marker") < stderr.index("Python thread stacks (oldest call first)")
 
 
 def test_loop_stack_section_carries_no_frame_locals(tmp_path, monkeypatch):

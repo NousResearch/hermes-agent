@@ -390,7 +390,13 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
         sys.stderr.write(f"Gateway {event.replace('_', ' ')} after {delay_s:.0f}s "
                          f"(pid={os.getpid()}); dumping all thread stacks.\n" + loop_section)
         sys.stderr.flush()
-        faulthandler.dump_traceback(all_threads=True)
+        # faulthandler writes with the GIL held: a full supervisor pipe would freeze even
+        # the watchdog's deadline thread. Python stream I/O releases the GIL while waiting.
+        sys.stderr.write("--- Python thread stacks (oldest call first) ---\n")
+        for ident, frame in sys._current_frames().items():
+            sys.stderr.write(f"\nThread {ident:#x} ({_thread_name(ident)}):\n")
+            traceback.print_stack(frame, file=sys.stderr)
+        sys.stderr.flush()
 
 
 def _format_loop_thread_section(loop_thread_id: int) -> str:

@@ -370,13 +370,14 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script; SIGKILL
-@pytest.mark.parametrize("beside", [None, "_backup", "default", "deleted", "relinked"])
+@pytest.mark.parametrize("beside", [None, "_backup", "default", "deleted", "relinked", "uppercase"])
 def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_the_restarted_host(
         beside, tmp_path, monkeypatch):
     """A rename leaves the kept manager holding a name that leads nowhere. The host restarted after the profile
     was marked under its new name must find that marker, so the profile's own launcher stays unused. Another
     entry leading to the same directory that is not a live profile id (sorted ahead of the new name) is not
-    taken for it, and a name that appears after a lookup found none is still found."""
+    taken for it, a name that appears after a lookup found none is still found, and a new name spelled in
+    capitals is read as the marker lookup reads it."""
     import signal
 
     from hermes_cli import profiles_run_elsewhere as pre
@@ -418,9 +419,10 @@ def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_t
             other.symlink_to(target, target_is_directory=True)
             if beside == "deleted":
                 mark_named_profile_deleted(other)
-        (root / "profiles" / "ops").rename(root / "profiles" / "ops2")
-        pre.mark_profile_run_elsewhere("ops2", "sandbox-plugin", root=root)
-        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops2"))
+        new_name = "Ops2" if beside == "uppercase" else "ops2"
+        (root / "profiles" / "ops").rename(root / "profiles" / new_name)
+        pre.mark_profile_run_elsewhere(new_name, "sandbox-plugin", root=root)
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / new_name))
         os.kill(first, signal.SIGKILL)
         assert json.loads(wait_until(served, timeout=15, what="the restarted host"))["pid"] != first
         assert ran.read_text(encoding="utf-8").count("ran") == 1

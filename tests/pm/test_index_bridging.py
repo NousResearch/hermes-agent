@@ -144,3 +144,5 @@ def test_uv_own_download_timeout_names_the_concurrency_knob():
               "  Caused by: Request failed after 5 retries in 127.8s\n"
               "  Caused by: operation timed out\n")
     assert "UV_CONCURRENT_DOWNLOADS" in classify_uv_failure("sync", 1, output).remedy
+    local_write = "error: Failed to write to the cache\n  Caused by: operation timed out\n"
+    assert "UV_CONCURRENT_DOWNLOADS" not in classify_uv_failure("sync", 1, local_write).remedy

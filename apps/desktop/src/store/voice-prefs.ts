@@ -166,6 +166,13 @@ export function applyVoiceSilenceMsFromConfig(config: ConfigPayload, defaults?: 
   $voiceSilenceMs.set(seconds !== null && seconds !== defaultSeconds ? seconds * 1_000 : DESKTOP_SILENCE_MS_DEFAULT)
 }
 
+/** Parse the dictation owner's cap, never the foreground profile's cache. */
+export function voiceMaxRecordingSecondsFromConfig(config: ConfigPayload): number {
+  const value = voiceValue(config, 'max_recording_seconds')
+
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 120
+}
+
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a
 // voice conversation (default on, matching the backend default).
 export const $thinkingSoundEnabled = atom<boolean>(true)

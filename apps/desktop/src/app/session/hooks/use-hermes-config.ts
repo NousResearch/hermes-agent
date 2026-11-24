@@ -33,12 +33,6 @@ import {
 } from '@/store/voice-prefs'
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
 
-const DEFAULT_VOICE_SECONDS = 120
-
-function recordingLimit(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
-}
-
 /** config.yaml hands back whatever the user wrote — `reasoning_effort: false`
  *  (or `off`/`no`, which YAML also parses to boolean false) means thinking
  *  disabled, and a bare boolean must not throw on `.trim()`. */
@@ -61,7 +55,6 @@ interface HermesConfigOptions {
 }
 
 export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
-  const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
   const profileRefreshEpochRef = useRef(0)
 
@@ -141,7 +134,6 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           return
         }
 
-        setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
 
         if (!canPublish()) {
@@ -181,5 +173,5 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
     [activeSessionIdRef]
   )
 
-  return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
+  return { refreshHermesConfig, sttEnabled }
 }

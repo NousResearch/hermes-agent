@@ -41,7 +41,6 @@ interface UseComposerVoiceArgs {
   disabled: boolean
   focusInput: () => void
   insertText: (text: string) => void
-  maxRecordingSeconds: number
   /** Interrupt the in-flight agent turn (Stop-button seam) — fired when the
    *  user speaks over the model while it is still generating. */
   onInterrupt?: () => Promise<void> | void
@@ -65,7 +64,6 @@ export function useComposerVoice({
   disabled,
   focusInput,
   insertText,
-  maxRecordingSeconds,
   onInterrupt,
   onSubmit,
   onTranscribeAudio,
@@ -114,7 +112,6 @@ export function useComposerVoice({
 
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
     focusInput,
-    maxRecordingSeconds,
     onTranscript: insertText,
     onTranscribeAudio
   })

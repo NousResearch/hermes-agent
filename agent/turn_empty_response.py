@@ -123,10 +123,11 @@ def _retry_empty(
         _empty_guard.record_empty_attempt(
             agent, finish_reason=finish_reason, response=response, observed_generation=observed_generation,
         )
-    budget = (
+    cost_budget = (
         _empty_guard.empty_retry_budget(agent, response)
         if empty_candidate else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
     )
+    budget = cost_budget
     if empty_candidate and observed_generation:
         budget = min(budget, _empty_guard.REASONING_ONLY_RETRY_BUDGET)
     deterministic = empty_candidate and _empty_guard.deterministic_empty(agent)
@@ -142,7 +143,7 @@ def _retry_empty(
     )
     _budget_note = (
         " — high-cost request, reduced retry budget"
-        if budget < _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET else ""
+        if cost_budget < _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET else ""
     )
     agent._buffer_diagnostic_status(
         f"⚠️ Empty response from model — retrying ({n}/{budget}) in {wait_time:.0f}s{_budget_note}"

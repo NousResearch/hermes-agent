@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent import empty_response_guard
 from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _THINKING_ONLY_FINAL_NUDGE
 from agent.turn_empty_response import _retry_empty, recover_empty_response
@@ -110,6 +112,24 @@ def test_truly_empty_retry_keeps_budget_and_reasoning(monkeypatch):
     assert action == "continue"
     assert f"(1/{empty_response_guard.DEFAULT_EMPTY_RETRY_BUDGET})" in agent.statuses[-1]
     assert agent._ephemeral_reasoning_off is False
+
+
+@pytest.mark.parametrize(("observed", "high_cost", "noted"), [
+    (True, False, False),  # the reasoning-only cap is not a cost reduction
+    (False, True, True),
+    (True, True, True),
+])
+def test_reduced_budget_note_names_only_the_cost_cap(monkeypatch, observed, high_cost, noted):
+    agent = _FakeAgent()
+    monkeypatch.setattr("agent.turn_empty_response.interruptible_backoff_sleep", lambda *a, **k: None)
+    if high_cost:
+        monkeypatch.setattr(empty_response_guard, "empty_retry_budget",
+                            lambda agent, response: empty_response_guard.REDUCED_EMPTY_RETRY_BUDGET)
+    _retry_empty(
+        agent, SimpleNamespace(usage=None), "stop", True, messages=[], conversation_history=None,
+        api_call_count=3, observed_generation=observed,
+    )
+    assert ("high-cost request" in agent.statuses[-1]) is noted
 
 
 def test_reasoning_off_override_is_one_shot_on_the_wire():

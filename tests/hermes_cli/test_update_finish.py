@@ -45,7 +45,7 @@ def completion(tmp_path, monkeypatch):
     for path in ROOT.glob("*.py"):
         shutil.copy2(path, source / path.name)
     for name in ("hermes_cli", "hermes_platform", "hermes_agent", "pm", "agent", "gateway", "tools", "cron", "utils",
-                 "persistence", "session_rules"):
+                 "persistence", "session_rules", "hermes_re"):
         shutil.copytree(ROOT / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__", "web_dist", "tui_dist"))
     shutil.copytree(ROOT / "scripts/build", source / "scripts/build",

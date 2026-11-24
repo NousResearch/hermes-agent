@@ -35,6 +35,18 @@ describe('terminal mode reset', () => {
     expect(write).not.toHaveBeenCalled()
   })
 
+  // The kitty keyboard stack is per screen. Popping after `1049l` lands on the
+  // main stack, so the alt screen keeps flags=1 and editors receive CSI-u
+  // fragments like `113;5u` (#56759).
+  it('pops the kitty keyboard stack before leaving the alternate screen', () => {
+    const pop = TERMINAL_MODE_RESET.indexOf('\x1b[<u')
+    const leaveAlt = TERMINAL_MODE_RESET.indexOf('\x1b[?1049l')
+
+    expect(pop).toBeGreaterThanOrEqual(0)
+    expect(leaveAlt).toBeGreaterThanOrEqual(0)
+    expect(pop).toBeLessThan(leaveAlt)
+  })
+
   // entry.tsx installs `process.on('exit', () => resetTerminalModes())` as the
   // final backstop (#28419): /quit, Ctrl+C, Ctrl+D and any process.exit() path
   // must disarm DEC mouse tracking so the parent shell / next TUI doesn't read

@@ -21,6 +21,7 @@ inherits the captured stdout/stderr handles.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -35,7 +36,8 @@ from hermes_cli import version_info
 from hermes_cli.version_info import _git_version_info, _run_git
 
 _BLOCK_SECONDS = 12
-_BOUND_CEILING_S = 6.0  # timeout=3 + the bounded kill/drain budget; well under _BLOCK_SECONDS
+# Allow for native Windows tree-kill/drain overhead on loaded runners; still below the child lifetime.
+_BOUND_CEILING_S = 9.0 if sys.platform == "win32" else 6.0
 
 
 def _cmd_exe() -> Path:
@@ -202,6 +204,71 @@ def test_status_probe_goes_through_the_bounded_runner(tmp_path, monkeypatch):
     # ... and a successful one still reports a dirty tree.
     monkeypatch.setattr(version_info, "bounded_probe_run", real)
     assert _git_version_info(repo).dirty is True
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("consumer", ["nous", "opencode-go"])
+def test_request_version_stamp_bounds_the_live_git_probe(tmp_path, monkeypatch, consumer):
+    """Cold Nous body / OpenCode header resolution must not wedge on #154336's pipe topology."""
+    from providers import get_provider_profile
+    from providers.base import LazyHeaders
+
+    profile = get_provider_profile(consumer)
+    assert profile is not None
+    repo = _git_repo(tmp_path / "checkout")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "source": "git", "updateMechanism": "self", "commit": commit, "baseVersion": "9.8.7",
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
+    monkeypatch.setattr(version_info, "_cached_version_info", None)
+
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    ping = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "ping.exe"
+    _install_cmd_launcher(
+        shim,
+        f'@echo off\necho launched>shim-started.txt\n"{ping}" -n {_BLOCK_SECONDS + 1} 127.0.0.1\n',
+    )
+    popen = subprocess.Popen
+    calls = []
+
+    def launch(argv, *args, **kwargs):
+        # Keep the real version code and both runners intact. Only translate the exact live-Git
+        # invocation into the synthetic launcher, which needs cmd.exe's /c switch.
+        if argv == ["git", "rev-parse", "HEAD"] and kwargs.get("cwd") == str(repo):
+            calls.append(argv)
+            argv = [str(shim / "git.exe"), "/d", "/c", str(shim / "rev-parse.cmd")]
+        return popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    if consumer == "nous":
+        def read_request_version():
+            return profile.build_extra_body()["tags"][1]
+        expected = "client=hermes-client-v9.8.7"
+    else:
+        # Copy the raw mapping without resolving the singleton or warming the version cache.
+        headers = LazyHeaders(dict(dict.items(profile.default_headers)))
+
+        def read_request_version():
+            return headers["User-Agent"]
+        expected = "HermesAgent/9.8.7"
+
+    assert calls == []
+    started = time.monotonic()
+    try:
+        actual = read_request_version()
+        elapsed = time.monotonic() - started
+        assert (repo / "shim-started.txt").is_file(), "the injected launcher never ran"
+        assert elapsed < _BOUND_CEILING_S, f"{consumer} version resolution took {elapsed:.2f}s"
+        assert actual == expected
+        assert _descendants_in(repo) == [], "the timed-out probe left a descendant process behind"
+        info = version_info.get_version_info()
+        assert (info.source, info.commit, info.base_version) == ("git", commit, "9.8.7")
+        assert read_request_version() == expected
+        assert calls == [["git", "rev-parse", "HEAD"]]
+    finally:
+        _reap(repo)
 
 
 @pytest.mark.platforms("linux", "macos")

@@ -23,6 +23,28 @@
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { vi } from 'vitest'
 
+import type { DurableGroupChat } from './types'
+
+export const HELD_GROUP_ROOM: DurableGroupChat = {
+  log: [{ id: 'm1', thread: 't1', at: 1, from: { kind: 'user', name: 'You' }, text: '@alpha stop' }],
+  holdDetection: false,
+  heldMessages: { alpha: ['m1'] },
+  watermarks: { 't1::alpha': 1 },
+  sessions: { alpha: 'sid-alpha' },
+  sessionOwners: { alpha: { name: 'alpha', connectionId: 'owner' } },
+  stranded: { beta: 0 },
+  holds: { alpha: { at: 1 } },
+  externalCursors: { beta: 3 },
+  members: [{ name: 'alpha' }, { name: 'beta' }],
+  roomId: 'room-held',
+  engine: 'desktop',
+  image: 'data:image/png;base64,AA',
+  rosterOrder: 2,
+  pinned: true,
+  sectionId: 'work',
+  syncRevision: 4
+}
+
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
   content: string

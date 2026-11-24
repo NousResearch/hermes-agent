@@ -2,16 +2,16 @@
 import asyncio
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 async def attach_bytes(connection, ref, params):
     if (not isinstance(ref.session_id, str) or not ref.session_id
             or set(params) - {'session_id', 'profile', 'content_base64', 'data', 'filename', 'ext'}
             or any(not isinstance(value, str) for value in params.values())):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if ref.session_id not in connection.subscriptions:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     # The declared ``profile`` selector names this owner's own home or is refused (dokterdok N73).
     from gateway.session_busy_controls import authorize
     authorize(connection, ref, params, 'session:submit')
@@ -28,18 +28,18 @@ def _stage(directory, params):
         data = _decode_attach_base64(params.get('content_base64') or params.get('data') or '',
                                      mime_prefix='image/', max_bytes=_ATTACH_BYTES_MAX_BYTES)
     except OverflowError as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise AuthorityRefusal('invalid_params') from exc
     if not data:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     hint = params.get('ext', '').strip().lower().lstrip('.')
     ext = _sniff_image_ext(data, params.get('filename') or (f'x.{hint}' if hint else ''))
     mime = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
             '.gif': 'image/gif', '.webp': 'image/webp'}.get(ext)
     if mime is None:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     try:
         path = stage_image_bytes(directory, data, ext, prefix='upload')
     except OSError as exc:
-        raise RuntimeStoreError('storage_unavailable') from exc
+        raise AuthorityRefusal('storage_unavailable') from exc
     return {'attached': True, 'path': str(path), 'mime': mime, 'name': path.name,
             'count': 1, 'remainder': '', 'text': f'[User attached image: {path.name}]', 'bytes': len(data)}

@@ -213,6 +213,23 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
     assert "SERVICE_TOKEN" not in env._init_env_values
 
 
+def test_docker_exec_starts_at_root_before_session_workdir_recovery(monkeypatch):
+    """#62169: a deleted docker run -w must not prevent the bash wrapper from starting."""
+    env = _make_execute_only_env()
+    env.cwd = "/tmp/deleted-original-container-workdir"
+    commands = []
+    monkeypatch.setattr(
+        docker_env, "_popen_bash",
+        lambda cmd, stdin_data=None, **kw: commands.append(cmd) or object(),
+    )
+
+    env._run_bash("pwd")
+
+    # Docker exec otherwise inherits the deleted -w and the OCI runtime aborts
+    # before the wrapper can cd to the nearest surviving ancestor.
+    assert commands[0][:5] == ["/usr/bin/docker", "exec", "-w", "/", "test-container"]
+
+
 def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     """Shared Docker containers must refresh and clear profile-scoped values."""
     from agent import secret_scope as ss
@@ -276,7 +293,8 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
         # Name-only -e flags (#96268): values come from the client env kwarg.
         client_env = kwargs.get("env") or os.environ
         child_env = os.environ.copy()
-        index = 2
+        assert cmd[2:4] == ["-w", "/"]
+        index = 4
         while index < container_index:
             assert cmd[index] == "-e"
             key = cmd[index + 1]

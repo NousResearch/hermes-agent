@@ -174,6 +174,54 @@ def web_registry_populated():
     _reset_for_tests()
 
 
+class FakeKeepWarmTimer:
+    """Inert TTS keep-warm ``threading.Timer``: records its interval; ``fire()`` runs the unload."""
+
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval, self.function, self.args = interval, function, tuple(args or ())
+        self.started = self.cancelled = self.daemon = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    @property
+    def pending(self):
+        return self.started and not self.cancelled
+
+    def fire(self):
+        self.function(*self.args)
+
+
+@pytest.fixture
+def tts_keep_warm_timers(monkeypatch):
+    """Every keep-warm timer the TTS lease lifecycle creates, as ``FakeKeepWarmTimer``s."""
+    from tools import tts_tool_lifecycle
+    created: list = []
+
+    def make(*args, **kwargs):
+        created.append(timer := FakeKeepWarmTimer(*args, **kwargs))
+        return timer
+    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", make)
+    return created
+
+
+@pytest.fixture
+def tts_lifecycle_reset():
+    """Empty TTS leases, owners and resident local models around a test; opt in per module."""
+    from tools import tts_tool_lifecycle, tts_tool_local
+
+    def reset():
+        tts_tool_lifecycle._reset_tts_leases_for_tests()
+        for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
+            cache.clear()
+    reset()
+    yield
+    reset()
+
+
 @pytest.fixture
 def disable_lazy_stt_install():
     """Disarm the runtime lazy-install probe so static ``_HAS_FASTER_WHISPER``

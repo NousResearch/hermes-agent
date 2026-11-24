@@ -1,0 +1,29 @@
+name: dynamoi
+title: Dynamoi
+repo: https://github.com/getDynamoi/agent-plugins
+sha: ba3f8cad537a92925aa55bd95c8126b2c7947d47
+description: >-
+  Music promotion for independent artists through Dynamoi's hosted MCP. Make free Smart Links,
+  review Spotify and YouTube campaign results and audience analytics, check platform connections,
+  prepare campaign drafts and apply for optional distribution. Portable Agent Plugins v1 package
+  (plugin.json + mcp.json) with four music-promotion skills; OAuth uses pinned mcp-remote@0.1.49 over
+  npx stdio, so Node.js 20.18.1+ and npm are required. Disclosure: every tool call goes to
+  dynamoi.com, signed in as the user; the first connect opens a browser sign-in and mcp-remote
+  stores the OAuth tokens under ~/.mcp-auth. Tool results enter the session context and so reach the
+  user's model provider. The tool list comes from Dynamoi's server at run time, so the pinned commit
+  doesn't cover it. Write-capable tools can change the signed-in Dynamoi account (Smart Links, team,
+  artist setup, campaign drafts, distribution applications); the server is declared untrusted so
+  Hermes asks before every write-capable call. Campaign launches, budget changes and checkout are not
+  exposed.
+maintainer: Dynamoi
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/getDynamoi/agent-plugins#readme
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

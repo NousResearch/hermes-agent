@@ -21,11 +21,12 @@ from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block, sanitize_context
 from agent.memory_provider import is_trivial_prompt
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
 from agent.plugin_live_notes import pop_plugin_notices
 from agent.skills_index_delta import stage_skills_index_note
 from agent.prompt_refresh import refresh_warm_prompt
+from agent.prompt_cache_lifecycle.tier import maybe_upgrade_cache_tier
 from agent.message_metadata import (
     PERSISTENCE_ONLY_MESSAGE_FIELDS, PRE_LLM_BLOCK_WITHHELD_PROMPT, append_message, stamp_message_timestamp,
     TYPED_ASK, stamp_typed_ask, typed_ask_fields, typed_ask_text, REQUEST_REASONING_TOKENS, stamped_reasoning_tokens,
@@ -145,12 +146,6 @@ def substitute_api_content(api_msg: dict[str, Any]) -> Optional[str]:
     return sidecar
 
 
-def drop_stale_api_content(msg: dict[str, Any]) -> None:
-    """Drop the ``api_content`` sidecar from a message whose content was rewritten
-    (replaying it would resend what the rewrite removed; cost is one cache miss)."""
-    msg.pop("api_content", None)
-
-
 def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     """Extract the ``api_content`` sidecar; ``None`` when absent/non-string."""
     v = msg.get("api_content")
@@ -231,7 +226,8 @@ def _maybe_title_session_at_turn_start(
     if agent_is_oneshot(agent):  # nothing shows a one-shot's title, and the call is a second paid request
         return
     try:
-        from agent.message_content import flatten_message_text
+        from agent.agent_init_session import agent_interface
+        from session_rules.turns import flatten_message_text
         from agent.title_generator import apply_subagent_title, maybe_auto_title
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
@@ -256,8 +252,9 @@ def _maybe_title_session_at_turn_start(
                 ensure()
             if not getattr(agent, "_session_db_created", False):
                 return
+        persistence = agent_interface(agent)
         if platform == "subagent":
-            apply_subagent_title(session_db, session_id, user_text)
+            apply_subagent_title(session_db, session_id, user_text, persistence=persistence)
             return
         # Snapshot runtime identity so the background titler can skip if the user
         # switches models before it fires.
@@ -284,6 +281,7 @@ def _maybe_title_session_at_turn_start(
                 and getattr(agent, "provider", None) == main_runtime["provider"]
             ),
             title_preview=title_preview,
+            persistence=persistence,
         )
         # Unstarted = the title call would share a self-hosted endpoint with this turn's request
         # (#117296); ``finalize_turn`` starts it once the model has answered.
@@ -319,7 +317,7 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
     Compaction handoffs must never become the fallback anchor (#80622) — they are reference-only
     scaffolding, not the active ask.
     """
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
 
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
@@ -401,7 +399,7 @@ def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> 
     row = messages[idx]
     if not (isinstance(row, dict) and row.get("role") == "user"):
         return result
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
 
     live_view = user_originated_turn_view(row)
     if row.get("content") != user_message and not (
@@ -846,7 +844,7 @@ def _emit_reaction(agent: Any, original_user_message: Any, display_kind: Optiona
         return
     with suppress(Exception):
         from agent.reactions import detect_reaction
-        from agent.skill_commands import describe_skill_invocation
+        from session_rules.turns import describe_skill_invocation
 
         if describe_skill_invocation(original_user_message) is not None:
             return
@@ -879,9 +877,10 @@ def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: A
     (the TUI/Desktop submit-time row) is rewritten in place under the persist lock. A row merged with
     an earlier compaction handoff keeps the handoff and an unanswered earlier message merged into the
     row keeps its text; only this turn's ask becomes the placeholder."""
-    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, _handoff_only_content
+    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+    from session_rules.turns import _handoff_only_content, _durable_content
     from agent.message_metadata import WITHHELD_PROMPT
-    from agent.session_persistence import _content_with_turn_override, _durable_content, _persist_lock
+    from agent.session_persistence import _content_with_turn_override, _persist_lock
 
     content = turn_user_msg.get("content")
     if turn_user_msg.get(COMPRESSED_SUMMARY_METADATA_KEY):
@@ -904,10 +903,16 @@ def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: A
         _row_id = turn_user_msg.get("_row_id")
         if _db is None or not isinstance(_row_id, int):
             return
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
+        # A submit-time row is addressed under the session that wrote it (a rotation may follow).
+        _row_session_id = turn_user_msg.get("_submit_row_session_id") or agent.session_id
         try:
-            # A submit-time row is addressed under the session that wrote it (a rotation may follow).
-            _db.set_user_message_content(turn_user_msg.get("_submit_row_session_id") or agent.session_id,
-                                         _row_id, withheld, {**metadata, TYPED_ASK: None})
+            if _store is not None:
+                _store.messages.set_user_message_content(_row_session_id, _row_id, withheld,
+                                                         display_metadata={**metadata, TYPED_ASK: None})
+            else:
+                _db.set_user_message_content(_row_session_id, _row_id, withheld, {**metadata, TYPED_ASK: None})
         except Exception:
             logger.warning("withheld-prompt rewrite failed for session=%s", agent.session_id or "none", exc_info=True)
 
@@ -1150,6 +1155,9 @@ def _stamp_api_content_sidecar(
         _db = getattr(agent, "_session_db", None)
         if _db is None or not (isinstance(_row_id, int) or _in_place_compacted):
             return
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
+        _db = _store.messages if _store is not None else _db
         try:
             if isinstance(_row_id, int):
                 _db.set_message_api_content(agent.session_id, _row_id, durable_content, _api_content)
@@ -1182,13 +1190,17 @@ def _append_multimodal_context(
     appended = append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx)
     if not appended and typed_ask_text(turn_user_msg) is None:
         return
-    from agent.session_persistence import _durable_content, _persist_lock
+    from agent.session_persistence import _persist_lock
+    from session_rules.turns import _durable_content
 
     with _persist_lock(agent):
         _row_id = turn_user_msg.get("_row_id")
         _db = getattr(agent, "_session_db", None)
         if _db is None or not isinstance(_row_id, int):
             return
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
+        _db = _store.messages if _store is not None else _db
         _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
         content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
         try:
@@ -1248,6 +1260,8 @@ def build_turn_context(
     # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
     from agent.bot_chain import on_turn_start as _bot_chain_turn_start
     _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
+    # Set every turn so a cached agent never carries a wake turn's kind into the human turn after it.
+    agent._turn_display_kind = persist_user_display_kind
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.
@@ -1261,6 +1275,13 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    from agent.fallback_notice import fallback_notice_hidden, surface_hidden_fallback
+    surface_hidden_fallback(agent)
+    if getattr(agent, "_pending_fallback_notice", None) and not fallback_notice_hidden(agent):
+        # A switch decided before this turn (primary credentials failed at build) is announced before the
+        # turn starts, like an in-turn switch is announced when it happens: never after the answer. A
+        # background wake turn leaves it pending for the next turn the user is watching.
+        agent._emit_pending_fallback_notice()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 
@@ -1310,6 +1331,8 @@ def build_turn_context(
     agent._persist_user_message_idx = current_turn_user_idx
 
     agent._user_turn_count += 1
+    # cache_ttl auto: a person's chat moves from 5m to 1h once this message ends its first pause past 5m.
+    maybe_upgrade_cache_tier(agent)
     # Turn-initiator state for per-request provider headers: the first API call of this
     # user turn is user-initiated; tool-loop follow-ups are agent-initiated.
     agent._is_user_initiated_turn = True

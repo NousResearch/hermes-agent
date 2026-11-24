@@ -212,6 +212,51 @@ yuanbao_in_use = platform_in_use(
     cred_sets=((("app_id", "YUANBAO_APP_ID", "YUANBAO_APP_KEY"), ("app_secret", "YUANBAO_APP_SECRET")),),
     toolsets=("yuanbao", "hermes-yuanbao"))
 
+# Weixin, read the way core's gateway ran it (hermes-weixin carried only core tools, so no toolset counts):
+# the adapter was created for the platform when enabled, and connected when it had an account and a token.
+# Enabled: ``enabled: true`` in a block, either of WEIXIN_TOKEN / WEIXIN_ACCOUNT_ID in env (the EnvCred row
+# took ANY of them), or account_id + token in the block's extra (the enable pass's is_connected probe saw
+# only extra and env); an ``enabled`` key in config.yaml vetoed the env/probe enables, gateway.json's did not.
+# Token at connect: the block's token, extra, env, else the QR login's weixin/accounts/<account_id>.json.
+_WEIXIN_PLUGIN_KEYS = ("platforms/weixin", "weixin-platform")
+
+
+def _weixin_saved_token(home: Path, account: str) -> str:
+    import json
+    if not account or "/" in account or "\\" in account or account.startswith("."):
+        return ""
+    try:
+        saved = json.loads((home / "weixin" / "accounts" / f"{account}.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return ""
+    return str(saved.get("token") or "").strip() if isinstance(saved, dict) else ""
+
+
+def weixin_in_use(home: Path, *, process_env: bool = False) -> bool:
+    if _plugins_listed(home, _WEIXIN_PLUGIN_KEYS)[1]:
+        return False
+    block = _merged_platform_block(home, "weixin") or {}
+    platform = _platform_config(block)
+    extra = platform.extra
+
+    def env(name: str) -> str:
+        return _home_env(home, name, process_env=process_env)
+    root = _read_config(home).get("weixin")
+    explicit = bool(extra.get("_enabled_explicit")) or (isinstance(root, dict) and "enabled" in root)
+    account = str(extra.get("account_id") or "").strip() or env("WEIXIN_ACCOUNT_ID")
+    token = str(platform.token or extra.get("token") or "").strip() or env("WEIXIN_TOKEN")
+    enabled = platform.enabled or (not explicit and (
+        bool(env("WEIXIN_TOKEN") or env("WEIXIN_ACCOUNT_ID")) or bool(account and str(extra.get("token") or "").strip())))
+    return enabled and bool(account) and bool(token or _weixin_saved_token(home, account))
+
+
+def _weixin_notice(home: Path, *, process_env: bool = False) -> str:
+    # Core's adapter ignored a bare ``weixin`` in plugins.disabled; the catalog plugin does not. The install's
+    # enable purges the entry from the user's list, so this fires only when it survived (a managed overlay pin).
+    if plugin_present("weixin", home) and _plugins_listed(home, ("weixin",))[1]:
+        return "plugins.disabled lists 'weixin', which now turns Weixin off; remove it to keep using Weixin."
+    return ""
+
 
 # ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports
 # hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
@@ -740,6 +785,17 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
+    ),
+    LeftCoreFeature(
+        plugin="weixin", label="Weixin", in_use=weixin_in_use, plugin_key="platforms/weixin",
+        plugin_names=("weixin-platform",),
+        unchanged="WEIXIN_* settings, platforms.weixin, WEIXIN_HOME_CHANNEL, the QR-login account files and "
+                  "`hermes gateway setup` are unchanged",
+        secret_env=("WEIXIN_TOKEN",),
+        private_env=("WEIXIN_ACCOUNT_ID", "WEIXIN_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS", "WEIXIN_BASE_URL",
+                     "WEIXIN_CDN_BASE_URL", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_GROUP_POLICY",
+                     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_SPLIT_MULTILINE_MESSAGES"),
+        platform="weixin", enable_env=("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"), notice=_weixin_notice,
     ),
 )
 

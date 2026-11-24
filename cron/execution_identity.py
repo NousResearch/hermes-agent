@@ -25,34 +25,20 @@ class CronExecution:
     profile: str
 
 
-def _snapshot_firing_job(job: Mapping[str, Any]) -> dict[str, Any]:
-    """Capture the delivery-relevant fields of the firing job so mid-run edits or deletions in the
-    job store never change what hooks see for the run already in flight."""
-    snapshot: dict[str, Any] = {
-        "id": str(job["id"]),
-        "name": str(job.get("name") or job["id"]),
-    }
-    if "deliver" in job:
-        deliver = job["deliver"]
-        snapshot["deliver"] = list(deliver) if isinstance(deliver, (list, tuple)) else deliver
-    if "failure_deliver" in job:
-        failure_deliver = job["failure_deliver"]
-        snapshot["failure_deliver"] = (
-            list(failure_deliver) if isinstance(failure_deliver, (list, tuple)) else failure_deliver
-        )
-    if "origin" in job:
-        origin = job["origin"]
-        snapshot["origin"] = dict(origin) if isinstance(origin, Mapping) else origin
-    return snapshot
+@dataclass(frozen=True)
+class _BoundCronExecution:
+    execution: CronExecution
+    delivery_job: dict[str, Any]
 
 
-_CURRENT: ContextVar[Optional[tuple[CronExecution, dict[str, Any]]]] = ContextVar(
+_CURRENT: ContextVar[Optional[_BoundCronExecution]] = ContextVar(
     "hermes_cron_execution", default=None,
 )
 
 
 def enter_cron_execution(job: Mapping[str, Any], execution_id: str, record: Mapping[str, Any]) -> Token:
     """Bind this fire's identity from *record*, the ledger row of the running transition."""
+    from cron.scheduler_delivery import _snapshot_delivery_job
     from hermes_cli.profiles import current_profile_name
 
     execution = CronExecution(
@@ -64,7 +50,7 @@ def enter_cron_execution(job: Mapping[str, Any], execution_id: str, record: Mapp
         started_at=record.get("started_at"),
         profile=current_profile_name("default") or "default",
     )
-    return _CURRENT.set((execution, _snapshot_firing_job(job)))
+    return _CURRENT.set(_BoundCronExecution(execution, _snapshot_delivery_job(job)))
 
 
 def exit_cron_execution(token: Optional[Token]) -> None:
@@ -72,21 +58,19 @@ def exit_cron_execution(token: Optional[Token]) -> None:
         _CURRENT.reset(token)
 
 
-def current_cron_execution() -> Optional[CronExecution]:
+def _current_bound() -> Optional[_BoundCronExecution]:
     from agent.delegation_context import is_delegated_child_context
 
-    if is_delegated_child_context():
-        return None
-    bound = _CURRENT.get()
-    return bound[0] if bound is not None else None
+    return None if is_delegated_child_context() else _CURRENT.get()
+
+
+def current_cron_execution() -> Optional[CronExecution]:
+    bound = _current_bound()
+    return bound.execution if bound is not None else None
 
 
 def _current_cron_execution_job() -> Optional[dict[str, Any]]:
     """Delivery-relevant snapshot of the firing job bound in this context, or ``None`` outside a
     cron run or inside a delegated child."""
-    from agent.delegation_context import is_delegated_child_context
-
-    if is_delegated_child_context():
-        return None
-    bound = _CURRENT.get()
-    return bound[1] if bound is not None else None
+    bound = _current_bound()
+    return bound.delivery_job if bound is not None else None

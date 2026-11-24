@@ -139,6 +139,15 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    def __reduce__(self):
+        # ``copy``/``pickle`` rebuild a str subclass by calling ``__new__`` with the value alone,
+        # which cannot satisfy the required ``footer`` argument and raises
+        # ``TypeError: FooteredReply.__new__() missing 1 required positional argument: 'footer'``.
+        # Publishing a completion event deepcopies its payload, so that took down every finished
+        # turn whenever ``display.runtime_footer.enabled`` was on. Rebuilding as a plain ``str``
+        # matches this class's contract: any rewrite is already the text with the footer in it.
+        return (str, (str(self),))
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

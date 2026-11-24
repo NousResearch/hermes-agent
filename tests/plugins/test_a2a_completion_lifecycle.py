@@ -238,12 +238,12 @@ def test_subscribers_get_snapshot_and_one_disconnect_is_independent(adapter):
 def test_slow_failing_push_does_not_block_completion_or_gateway(adapter, monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
-    def slow_open(*args, **kwargs):
+    def slow_post(*args, **kwargs):
         entered.set()
         assert release.wait(timeout=5)
         raise OSError("controlled webhook failure")
 
-    monkeypatch.setattr(module.urllib.request, "urlopen", slow_open)
+    monkeypatch.setattr(module.security, "post_callback", slow_post)
     monkeypatch.setattr(module.security, "is_safe_callback_url", lambda *args, **kwargs: True)
     adapter.tasks.create("t", "c", "peer")
     adapter.tasks.set_push_config("t", "http://127.0.0.1/callback")
@@ -372,12 +372,12 @@ def test_forwarded_nonblocking_uses_owner_admission(adapter, monkeypatch: pytest
 def test_completion_io_saturation_preserves_results_and_bounds_workers(adapter, monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
-    def slow_open(*args, **kwargs):
+    def slow_post(*args, **kwargs):
         entered.set()
         assert release.wait(timeout=10)
         raise OSError("controlled failure")
 
-    monkeypatch.setattr(module.urllib.request, "urlopen", slow_open)
+    monkeypatch.setattr(module.security, "post_callback", slow_post)
     monkeypatch.setattr(module.security, "is_safe_callback_url", lambda *args, **kwargs: True)
     before = protocol.metrics.push_failed
     baseline = set(threading.enumerate())

@@ -1209,10 +1209,8 @@ class TestInboundRoundTrip:
         asyncio.run(run())
 
     def test_processing_failure_releases_blocking_request(self, monkeypatch):
-        """A processing callback releases a blocking request without an observation deadline."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
-        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
         adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: setattr(e, "_gateway_accepted", True))
 
         async def run():
@@ -1225,12 +1223,10 @@ class TestInboundRoundTrip:
             tid = next(iter(adapter._pending))
             from gateway.platforms.event import ProcessingOutcome
             await adapter.on_processing_complete(SimpleNamespace(message_id=tid), ProcessingOutcome.FAILURE)
-            resp = await waiting
-            task = resp["result"]
+            task = (await waiting)["result"]
             assert task["status"]["state"] == "TASK_STATE_FAILED"
             assert protocol.metrics.tasks_failed == failed_before + 1
             assert protocol.metrics.tasks_completed == completed_before
-            # The task store agrees.
             rec = adapter.tasks.get(task["id"])
             assert rec["state"] == "TASK_STATE_FAILED"
             await adapter.disconnect()

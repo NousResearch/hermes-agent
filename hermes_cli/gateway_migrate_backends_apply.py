@@ -1596,6 +1596,9 @@ def cmd_backends(args) -> None:
     host = SystemHost(get_hermes_home())
     if getattr(args, "status", False):
         sys.exit(print_status(host, bool(getattr(args, "json", False))))
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    if (elsewhere := run_elsewhere_refusal(host.home)) is not None:
+        sys.exit(_refuse_runs_elsewhere(elsewhere, args))
     if not getattr(args, "dry_run", False):
         if (store := _store_symlinked(host.home)) is not None:  # before the run lock is made in the folder
             sys.exit(_refuse_store_symlinked(store, args))
@@ -1609,6 +1612,20 @@ def cmd_backends(args) -> None:
     if getattr(args, "restore", False):
         sys.exit(cmd_restore(host, args))
     sys.exit(cmd_apply(host, args))
+
+
+def _refuse_runs_elsewhere(elsewhere: str, args) -> int:
+    """Exit 3 for a profile a plugin runs elsewhere, in every form of ``--apply`` and ``--restore``, before
+    the home's record is read or its run lock is made. No move, undo or rollback is run or started for it:
+    each would write the files, or start the backend, of a home another backend runs."""
+    mode = "restore" if getattr(args, "restore", False) else "apply"
+    message = f"{elsewhere} Nothing changed."
+    if getattr(args, "json", False):
+        print(json.dumps({"applied": False, "detached": False, "mode": mode, "outcome": "refused",
+                          "error": "profile_runs_elsewhere", "message": message}))
+    else:
+        print(f"✗ {message}")
+    return EXIT_BLOCKED
 
 
 def _refuse_store_symlinked(reason: str, args) -> int:

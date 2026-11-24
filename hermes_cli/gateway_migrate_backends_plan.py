@@ -995,6 +995,14 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
         return plan
     _select(plan, host.backends(), address, host)
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    if (plan.unsupported or plan.candidates) and (elsewhere := run_elsewhere_refusal(host.home)) is not None:
+        # A plugin runs this profile elsewhere. The gateway a move starts would refuse the profile, and
+        # the backend found for its home may be the one the plugin runs: the plan lists none, to move
+        # here or by hand.
+        plan.blockers.append(f"{elsewhere} Nothing changed.")
+        plan.unsupported, plan.candidates = [], []
+        return plan
     if (plan.unsupported or plan.candidates) and (problem := _owner_problem(host)):
         plan.blockers.append(problem)
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]

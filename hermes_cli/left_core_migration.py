@@ -1075,16 +1075,22 @@ def _installed_for_good(home: Path, plugin: str) -> bool:
     return not _placed(home, plugin).exists() or any(_tree_lists(home, plugin))
 
 
-def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
-    """Whether core resolved *feature*'s toolsets on for a platform selecting *selection*: named
-    directly, or through a ``hermes`` / ``hermes-<platform>`` composite that included them."""
-    def carries(name: str) -> bool:
-        if name in feature.toolsets or name in feature.replaces_toolsets:
-            return True
+def _core_carried(feature: LeftCoreFeature, selection: list) -> set[str]:
+    """Which of *feature*'s toolsets core resolved on for a platform selecting *selection*: one named
+    directly (a ``replaces_toolsets`` name stood for all of them), or all of them through a ``hermes`` /
+    ``hermes-<platform>`` composite that included them."""
+    every = set(feature.toolsets)
+
+    def carries(name: str) -> set[str]:
+        if name in feature.toolsets:
+            return {name}
+        if name in feature.replaces_toolsets:
+            return every
         if name == "hermes":  # the legacy composite: tools_config resolves it as hermes-cli + hermes-api-server
-            return carries("hermes-cli") or carries("hermes-api-server")
-        return name.startswith("hermes-") and name[len("hermes-"):].replace("-", "_") not in feature.off_platforms
-    return any(carries(str(name)) for name in selection)
+            return carries("hermes-cli") | carries("hermes-api-server")
+        on = name.startswith("hermes-") and name[len("hermes-"):].replace("-", "_") not in feature.off_platforms
+        return every if on else set()
+    return set().union(*(carries(str(name)) for name in selection))
 
 
 _SCOPED_KEY = "_left_core_scoped"  # config.yaml: rows whose toolset scope this home already converted
@@ -1207,10 +1213,9 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
         for platform, selection in selections.items():
             if selection is None and platform not in feature.off_platforms:
                 continue  # no (valid) saved list: core's default composite carried the toolsets
-            if selection is not None and _core_carried(feature, selection):
-                continue
+            carried = _core_carried(feature, selection) if selection is not None else set()
             current = known.get(platform) if isinstance(known.get(platform), list) else []
-            if missing := [ts for ts in feature.toolsets if ts not in current]:
+            if missing := [ts for ts in feature.toolsets if ts not in current and ts not in carried]:
                 known[platform] = sorted({*map(str, current), *missing})
         if known:
             config["known_plugin_toolsets"] = known

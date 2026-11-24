@@ -1528,7 +1528,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         # A secondary's port-binding adapter never binds: the default profile owns the one shared
         # listener, which forwards /p/<profile>/<path> to this adapter's app (shared_ingress.py).
         if self._multiplex_on() and platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS \
-                and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
+                and getattr(adapter, "_binds_port", False):
             adapter._shared_listener_profile = profile_name
 
     def _make_profile_fatal_error_handler(
@@ -1860,7 +1860,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         # None (no registered entry) leaves create_adapter / the built-in path to decide as before.
         deps_ok = await self._run_in_executor_with_context(platform_registry.ensure_deps, platform.value)
         with platform_registry.deps_resolved_off_loop(deps_ok):
-            return self._create_adapter(platform, config)
+            adapter = self._create_adapter(platform, config)
+        if adapter is not None:  # decided here, in the caller's (the owning profile's) registry scope
+            adapter._binds_port = _platform_binds_port(platform.value, getattr(config, "extra", None))
+        return adapter
 
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""

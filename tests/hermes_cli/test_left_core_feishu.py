@@ -87,6 +87,21 @@ def test_a_feishu_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
     assert config["agent"]["disabled_toolsets"] == ["hermes-feishu", "feishu_doc", "feishu_drive"]
 
 
+def test_a_platform_keeps_exactly_the_feishu_toolsets_it_selected(tmp_path):
+    """Resolved per toolset: a saved ``feishu_doc`` alone kept the comment tools off; ``hermes-feishu``
+    (or a composite) carried both; a platform with no saved list had neither."""
+    from hermes_cli.tools_config import _enabled_plugin_toolsets
+    selections = {"telegram": ["hermes-telegram", "feishu_doc"], "slack": ["web", "hermes-feishu"],
+                  "discord": ["web"], "feishu": ["hermes-feishu"]}
+    rows = "".join(f"  {p}: [{', '.join(sel)}]\n" for p, sel in selections.items())
+    home = _home(tmp_path, env=_CREDS, config="platform_toolsets:\n" + rows)
+    lcm.migrate_home(home, install=lambda n: {"ok": True}, say=lambda m: None)
+    config = lcm._read_config(home)
+    plugin = {"feishu_doc", "feishu_drive"}
+    enabled = {p: _enabled_plugin_toolsets(config, p, sel, plugin) for p, sel in {**selections, "cli": ["hermes-cli"]}.items()}
+    assert enabled == {"telegram": {"feishu_doc"}, "slack": plugin, "discord": set(), "feishu": plugin, "cli": set()}
+
+
 def test_child_processes_keep_the_feishu_strip_set():
     """Core's blocklist carried every FEISHU_* name it declared; it still does with the adapter gone."""
     from tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _HERMES_PROVIDER_ENV_BLOCKLIST

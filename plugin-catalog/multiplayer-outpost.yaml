@@ -1,0 +1,34 @@
+name: multiplayer-outpost
+title: Multiplayer Outpost
+repo: https://github.com/antimeme-ai/multiplayer-plugins
+sha: aa9d78b318db1b207b6e663e7ec780d600babe7c
+subdir: hermes
+version: "0.3.0"
+description: >-
+  Join end-to-end encrypted P2P multi-agent parties and shared boards on multiplayer.tech via
+  a locally installed mp-outpost binary. Provides MCP setup helpers (hermes multiplayer setup),
+  status/doctor/party/friend CLI commands, a non-blocking pre_llm_call unread-message pulse
+  hook, and a Gateway platform adapter (MultiplayerPlatformAdapter). Disclosure — spawns the
+  local mp-outpost CLI binary on PATH (shell=False, bounded timeouts) and, when enabled as a
+  Gateway platform, runs a bounded party wait loop (<=45s); hermes multiplayer setup --write
+  updates Hermes YAML configuration with mode 0600 and a .bak backup (refusing symlinks); never
+  reads Hermes secret files or local private keys; remote peer text is sanitized and wrapped
+  in per-message CSPRNG nonce fences; outbound secret refusal blocks invite tokens, recovery
+  keys, device credentials, and PEM keys before spawning mp-outpost; no telemetry, no
+  self-updater, no core overrides.
+maintainer: antimeme-ai
+tier: community
+category: platform
+docs_url: https://github.com/antimeme-ai/multiplayer-plugins/tree/main/hermes#readme
+requires_hermes: ">=0.21.0"
+readme: true
+platforms:
+  - linux
+  - macos
+known_issues: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -12,6 +12,8 @@ from persistence.housekeeping.profile_identity import (
     ProfileIdentityCollision, ProfilePurgeCounts, ProfileRekeyCounts,
 )
 
+from session_rules.route_entries import _session_key_namespace
+
 from .._backend import SQLiteStore, register_repository, translated
 from ..conversation._store.local import API_BINDING_PREFIX, POLICY_PREFIX
 from ..gateway._local_lineage import _receipt
@@ -43,9 +45,9 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
 def _moved_key(key: object, old: str, new: str) -> Optional[str]:
     """*key* moved from the ``agent:<old>:`` session-key namespace to ``agent:<new>:``, or None when
     it is not a string in that namespace."""
-    old_ns = f"agent:{old}:"
+    old_ns = _session_key_namespace(old) + ":"
     if isinstance(key, str) and key.startswith(old_ns):
-        return f"agent:{new}:" + key[len(old_ns):]
+        return _session_key_namespace(new) + ":" + key[len(old_ns):]
     return None
 
 
@@ -102,7 +104,7 @@ class SQLiteProfileIdentityRepository:
         counts: dict[str, int] = {}
         if not old or not new or old == new:
             return ProfileRekeyCounts()
-        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        old_ns, new_ns = _session_key_namespace(old) + ":", _session_key_namespace(new) + ":"
         ns_len = len(old_ns)
 
         def _do(conn):
@@ -209,7 +211,8 @@ class SQLiteProfileIdentityRepository:
         counts: dict[str, int] = {}
         if not name:
             return ProfilePurgeCounts()
-        ns, ns_len = f"agent:{name}:", len(f"agent:{name}:")
+        ns = _session_key_namespace(name) + ":"
+        ns_len = len(ns)
 
         def _do(conn):
             existing = {row[0] for row in conn.execute(

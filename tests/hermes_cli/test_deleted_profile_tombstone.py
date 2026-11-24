@@ -91,6 +91,23 @@ class TestDeletedProfileTombstone:
 
         assert not profile_dir.exists()
 
+    def test_plugin_data_write_after_a_real_delete_does_not_recreate_home(self, profile_env):
+        """A session still bound to the profile writes plugin data after ``profile delete``."""
+        from plugins.plugin_storage import plugin_data_dir
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        token = set_hermes_home_override(profile_dir)
+        try:
+            plugin_data_dir("probe")
+            _delete("worker")
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                plugin_data_dir("probe")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not profile_dir.exists()
+        assert "worker" not in _named_homes(profile_env)
+
     def test_atomic_cache_write_allows_live_profile_home(self, profile_env):
         from hermes_cli.models import _write_json_cache
 
@@ -259,7 +276,8 @@ class TestDeletedProfileTombstone:
         leftover_path = profile_dir / leftover
         leftover_path.write_text("keep-me\n", encoding="utf-8")
 
-        with pytest.raises(FileExistsError, match="already exists"):
+        # Tombstoned + identity = a delete that did not finish: name it and the retry (#141466).
+        with pytest.raises(FileExistsError, match="Deletion of profile .worker. did not finish"):
             create_profile("worker", no_alias=True, no_skills=True)
 
         assert leftover_path.read_text(encoding="utf-8") == "keep-me\n"
@@ -322,7 +340,10 @@ class TestNamedProfileHome:
 
 class TestMkdirBoundaryNeverRecreatesNamedHome:
     @staticmethod
-    def _after_liveness_check(monkeypatch, action):
+    def _after_liveness_check(monkeypatch, action, site=None):
+        """Run *action* right after the first liveness check, or the first one *site* makes."""
+        import sys
+
         import hermes_constants
 
         real = hermes_constants.assert_named_profile_home_live
@@ -330,8 +351,8 @@ class TestMkdirBoundaryNeverRecreatesNamedHome:
 
         def check_then_act(path):
             home = real(path)
-            if not fired:
-                fired.append(path)
+            if not fired and site in (None, sys._getframe(1).f_code.co_name):
+                fired.append((path, home))
                 action()
             return home
 
@@ -367,6 +388,38 @@ class TestMkdirBoundaryNeverRecreatesNamedHome:
 
         assert fired and not profile_dir.exists()
         assert "worker" not in _named_homes(profile_env)
+
+    @pytest.mark.parametrize("move", ("rename", "delete"))
+    @pytest.mark.parametrize("site", (
+        pytest.param(None, id="first-check"),
+        # The move lands after mkdir_under_hermes_home classified the home as live, so only its own
+        # missing-home branch keeps the old name from coming back with a SOUL.md.
+        pytest.param("mkdir_under_hermes_home", id="boundary-check"),
+    ))
+    def test_home_initialization_after_a_move_does_not_recreate_the_home(self, profile_env, monkeypatch, site, move):
+        from hermes_cli import config
+        from hermes_cli.config_home import HomeInitializationError
+        from hermes_cli.profiles import rename_profile
+        from hermes_constants import named_profile_is_live
+
+        old = create_profile("before", no_alias=True, no_skills=True)
+        for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service", "_stop_bot_desktop",
+                     "_maybe_register_gateway_service"):
+            monkeypatch.setattr(f"hermes_cli.profiles.{name}", lambda *_a, **_k: None)
+        monkeypatch.setattr("hermes_cli.profiles.check_alias_collision", lambda _name: "skip")
+        monkeypatch.setattr(config, "get_hermes_home", lambda: old)
+        config._HERMES_HOME_ENSURED.difference_update({str(old), str(old.resolve())})
+        action = (lambda: rename_profile("before", "after")) if move == "rename" else (lambda: _delete("before"))
+        fired = self._after_liveness_check(monkeypatch, action, site=site)
+
+        with pytest.raises(HomeInitializationError):
+            config.ensure_hermes_home()
+
+        assert fired == [(old, old)]
+        assert not old.exists() and not named_profile_is_live(old)
+        assert _named_homes(profile_env) == (["after"] if move == "rename" else [])
+        if move == "rename":
+            assert named_profile_is_live(old.with_name("after"))
 
     def test_custom_root_losing_its_marker_mid_call_does_not_recreate_the_home(self, tmp_path, monkeypatch):
         from hermes_constants import mkdir_under_hermes_home

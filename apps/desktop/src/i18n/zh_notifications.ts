@@ -46,6 +46,15 @@ export const zhNotifications = {
       unsupported: '此浏览器无法显示通知。标签页标题仍会闪烁。'
     }
   },
+  phonePresence: {
+    title: '此电脑（手机通知）',
+    description: '此窗口告诉 Hermes 你是否在这里。如何处理由手机通知插件决定。',
+    unsupported: '在此后端上，手机通知不受你的活动影响。',
+    disconnected: '未连接。',
+    watchingComputer: (time: string) => `当此窗口中打开对话时，Hermes 会得知你上次使用这台电脑的时间。上次输入在 ${time} 前。`,
+    watchingWindow: (time: string) => `当此窗口中打开对话时，Hermes 会得知你上次使用此窗口的时间。上次输入在 ${time} 前。`,
+    watchingWindowNoInput: '当此窗口中打开对话时，Hermes 会得知你上次使用此窗口的时间。尚未检测到任何输入。'
+  },
   test: '发送测试通知',
   testTitle: 'Hermes',
   testBody: '通知工作正常。',

@@ -69,7 +69,14 @@ def identity_environment(request: BuildRequest, variant: str, inherited: Mapping
         env.pop("HERMES_PAYLOAD_TAG", None)
         env.pop("GITHUB_REF_NAME", None)
     else:
-        env.pop("HERMES_BUILD_COMMIT", None)
+        from hermes_cli.update_channel import is_commit_tag
+
+        # A commit build's claim tag versions the packages; the commit identity (Commit<sha7>, no
+        # feed, updates refused) still comes from HERMES_BUILD_COMMIT.
+        if is_commit_tag(request.tag):
+            env["HERMES_BUILD_COMMIT"] = request.commit
+        else:
+            env.pop("HERMES_BUILD_COMMIT", None)
         env["HERMES_PAYLOAD_TAG"] = request.tag
         env["GITHUB_REF_NAME"] = request.tag
     return env
@@ -100,7 +107,7 @@ def select_variant(prepared: PreparedDesktop, variant: str | None) -> str:
     variant = variant or request.variant
     if variant != request.variant and not (
         {variant, request.variant} == {"bundled", "store"} and request.tag
-        and channel_for_tag(request.tag) == "stable"
+        and channel_for_tag(request.tag) in ("stable", "canary")
     ):
         raise ValueError("requested variant was not prepared")
     return variant

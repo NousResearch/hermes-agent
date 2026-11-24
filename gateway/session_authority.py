@@ -104,6 +104,7 @@ class LiveSession:
     retire_timer: object = None
     # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
     detaching: int = 0
+    viewer_revision: int = 0  # an attach invalidates startup's prepared close, even after a live handoff
     # Set while a plugin's turn waits for the session's background work (run_plugin_injection
     # ``admission_turn_scope``): a person's input queued behind it sets it and ends that wait.
     background_wait: threading.Event | None = None
@@ -392,6 +393,7 @@ class SessionAuthority:
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
+            live.viewer_revision += 1
             self.pending_closes.pop(ref.session_id, None)
             from gateway.session_viewer_close import cancel_orphan_close
             cancel_orphan_close(self, ref.session_id)
@@ -426,6 +428,8 @@ class SessionAuthority:
         for subscription, member in list(live.subscribers.items()):
             if self.events.get(member.transport_id) is transport:
                 del live.subscribers[subscription]
+        from gateway.session_presence import detached
+        detached(self, transport, session_id)
 
     async def detach(self, actor, subscription_id, *, end_reason=None, orphaned=False):
         for session_id, live in self.sessions.items():
@@ -436,6 +440,8 @@ class SessionAuthority:
                 transport = self.events.get(actor.transport_id)
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
+                    from gateway.session_presence import detached
+                    detached(self, transport, session_id)
                 if not live.subscribers:
                     from gateway.session_local_mcp import release_editor_mcp
                     live.detaching += 1  # unwatched off the loop, its close not yet pending: not retirable
@@ -748,7 +754,8 @@ class SessionAuthority:
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
-                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch',
+                'client'}
                 or not isinstance(request.payload['text'], str)):
             raise AuthorityRefusal('invalid_params')
         from gateway.session_ingress_media import admit_attachments
@@ -1544,10 +1551,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, persistence, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, epoch=epoch,
                                  persistence=persistence)
-    # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
-    # authority is published, so the recovery below only reads.
-    from gateway.session_local_adoption import adopt_local_compressions
-    await adopt_local_compressions(authority)
+    # Prepare while private; publish and register in one loop step, with no intervening await.
+    from gateway.session_local_startup import recover_local_sessions_async
+    await recover_local_sessions_async(authority, initial=True)
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner
@@ -1562,6 +1568,4 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     epochs[store_key] = epoch
     from gateway.session_detached import watch_routes
     watch_routes(runner, store)
-    from gateway.session_local_recovery import recover_local_sessions
-    recover_local_sessions(authority)
     return authority

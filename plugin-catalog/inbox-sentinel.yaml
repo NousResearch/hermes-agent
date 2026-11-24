@@ -1,6 +1,6 @@
 name: inbox-sentinel
 repo: https://github.com/eddwithers/inbox-sentinel
-sha: aac40600d7433895005bc21097543d15255c6a21
+sha: fdcd54b7f791367919ca698bd7e61a2ea112cb14
 version: "0.1.0"
 title: Inbox Sentinel
 description: >-
@@ -8,7 +8,21 @@ description: >-
   IMAP mailbox over TLS, filters routine mail locally, asks your configured model
   whether the rest needs attention, and sends a notification through a configured
   `hermes send` target, with an optional reply draft for review. Never sends,
-  labels, archives or deletes mail. Gate and drafts run in two plugin-owned
+  labels, archives or deletes mail. IS-ScamShield, a deterministic pre-gate check, flags
+  password-protected-PDF and undisclosed-recipients lures as POSSIBLE SCAM
+  warnings and never drafts replies to them; over-warning is intentional, so
+  false positives (e.g. legitimate password-protected statements) are
+  expected. Eight toggleable modules: IS-ScamShield, IS-AttachmentGuard and
+  IS-LinkGuard warn on lure shapes (password-protected PDFs, dangerous
+  attachments, suspicious links); IS-NoiseFilter, IS-SenderLearning and
+  IS-StormShield keep the channel quiet (local drops, learned rules,
+  identical-repeat storm suppression that never hides first arrivals or
+  security warnings); IS-Drafter drafts the optional reply (withhold rules,
+  budgeted through the host's daily draft cap) and IS-AlertShaper formats the
+  EMAIL ALERT text — both post-gate, both degrading to the host's previous
+  behaviour when disabled or failing. Modules get bounded state, config and
+  model-seam access — transport, model budgets and delivery stay host-owned.
+  Gate and drafts run in two plugin-owned
   auxiliary model slots that follow the main model until pinned; daily attempt
   caps bound model calls. Sends one "not watching your inbox" alert a day if
   the mailbox can't be reached. Disclosure — runs a long-lived background poll after a
@@ -18,12 +32,12 @@ description: >-
   configured model provider; alerts run `hermes send` as a child process with
   the text on argv and may be stored by the destination; sender rules and
   counters are kept in profile plugin state; no telemetry.
-image: https://raw.githubusercontent.com/eddwithers/inbox-sentinel/e86dd9286967f5590ccdbf214d0fa0b008eb10cb/docs/media/icon.png
+image: https://raw.githubusercontent.com/eddwithers/inbox-sentinel/fdcd54b7f791367919ca698bd7e61a2ea112cb14/docs/media/icon.png
 maintainer: eddwithers
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/eddwithers/inbox-sentinel/blob/aac40600d7433895005bc21097543d15255c6a21/README.md
+docs_url: https://github.com/eddwithers/inbox-sentinel/blob/fdcd54b7f791367919ca698bd7e61a2ea112cb14/README.md
 platforms: []
 known_issues:
   - "Gmail needs the user's own Google Cloud Desktop OAuth client and a terminal sign-in (`hermes auth add inbox-sentinel:gmail`). In Testing mode Google expires the grant after seven days."

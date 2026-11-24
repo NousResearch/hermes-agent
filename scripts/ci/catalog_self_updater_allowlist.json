@@ -11,7 +11,7 @@
     "sha": "2c07ad28539231defd46bad8d2e6b868a5f909d3",
     "path": "kit/kit.ts",
     "sha256": "f9f2a6623802f7ae6665a86ef87601fd87dcf93a885b8809b339946a27b96c08",
-    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798; 0.3.0 re-pin, PR #157487: same fixed poryscript 3.6.1 download and sha256 check, the delta only adds new subcommands and help text)"
+    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798; 0.3.0 re-pin, PR #157487: the poryscript URL, sha256 check and kit/.cache destination are unchanged; the kit.ts delta adds the pixel, codes and plugin subcommands with their help text, a codes-table header written into the game folder by kit build and a kit note input check; the help and kit status text for the in-game agent link now say 0.3.0 took it out of the player, and kit status prints that only when the built game has the mailbox and no longer reads the hermes_* settings)"
   },
   {
     "repo": "https://github.com/Pukujan/swarm-studio",
@@ -47,5 +47,19 @@
     "path": "tests/godotinstall.test.mjs",
     "sha256": "5ed7b16d794ff07b88270e74de780cde95d180ae9f6fd4bc476d82b2605711bb",
     "why": "unit tests for engine/godotinstall.mjs against an injected fake fetch and temp folders; downloads nothing and writes only test temp files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/Rollstack/skills",
+    "sha": "9aeb65628cb94adf8c709db8aa091a5d81a37bc1",
+    "path": "scripts/build-index.mjs",
+    "sha256": "cd12c6965b0ae35ba0f171a39d7b2ae26e31099456748cd30ddc9f5d6f0f058e",
+    "why": "repo-maintenance script that writes .well-known/agent-skills/index.json from the repo's own skills/*/SKILL.md; the raw.githubusercontent.com string is only the URL it records in that index, it fetches nothing, and Hermes never runs it (PR #157088)"
+  },
+  {
+    "repo": "https://github.com/khaeransori/pstack-hermes",
+    "sha": "a977cb559d72e02528241a5507879a1fe46b5e69",
+    "path": "skills/statechart/scripts/run.ts",
+    "sha256": "fb6ec4a1835a15e6e72df28bb932b8df5a4c04c5de6f9c270fd63ff5cd148dc7",
+    "why": "statechart skill's model-check runner: asks the user's mise to install TLA+ tla2tools v1.7.4 (sha256-pinned in the spec string) and a Temurin JDK into mise's own store, writes only temporary .cfg/.tla files under a mkdtemp dir; never fetches or replaces plugin code (PR #158523)"
   }
 ]

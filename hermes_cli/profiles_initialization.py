@@ -3,6 +3,7 @@ import contextlib
 import errno
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -61,11 +62,11 @@ def prepare_imported_tree(staged: Path) -> None:
     drop_other_access(staged / "config.yaml")
     env = staged / ".env"
     if env.is_symlink():  # import keeps only in-tree links; a real file gets its own 0600 mode
-        staged_env = env.with_name(".env.import")
-        if env.is_file():
-            shutil.copyfile(env, staged_env)
-        else:
-            staged_env.touch()
+        fd, staged_env = tempfile.mkstemp(dir=staged, prefix=".env.")  # fresh, owner-only
+        with os.fdopen(fd, "wb") as dst:
+            if env.is_file():
+                with open(env, "rb") as src:
+                    shutil.copyfileobj(src, dst)
         os.replace(staged_env, env)
     if env.is_file():
         os.chmod(env, 0o600)

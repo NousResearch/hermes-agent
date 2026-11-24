@@ -1,7 +1,9 @@
 """ComfyUI must not replay submissions with an unknown outcome (#146034)."""
 
 import importlib
+import socket
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -26,9 +28,9 @@ def transport(monkeypatch):
 @pytest.mark.parametrize("failure,replayed", [
     # Unknown outcome: the request may have been queued.
     (TimeoutError, False), (ConnectionError, False), (OSError, False),
-    (500, False), (502, False), (504, False), (524, False),
+    (500, False), (502, False), (503, False), (504, False), (522, False), (524, False),
     # Provably not processed: safe to send again.
-    ("RequestNotSent", True), (408, True), (429, True), (503, True), (522, True),
+    ("RequestNotSent", True), (408, True), (429, True),
 ])
 def test_submission_replays_only_when_not_processed(transport, monkeypatch, failure, replayed):
     common, runner, backoff = transport
@@ -82,3 +84,71 @@ def test_only_bodyless_safe_requests_retry(transport, monkeypatch, method, body,
 
     assert send.call_count == (2 if safe else 1)
     assert backoff.call_count == (1 if safe else 0)
+
+
+def _dead_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def submission_server():
+    """Counts POSTs it fully reads; 'drop' then closes, 'redirect' answers 303 to a dead port."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    seen = {"posts": 0, "mode": "drop", "dead": _dead_port()}
+
+    def serve():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            with conn:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    request += conn.recv(65536)
+                head, _, body = request.partition(b"\r\n\r\n")
+                length = int(next(line.split(b":")[1] for line in head.split(b"\r\n")
+                                  if line.lower().startswith(b"content-length")))
+                while len(body) < length:
+                    body += conn.recv(65536)
+                seen["posts"] += 1
+                if seen["mode"] == "redirect":
+                    conn.sendall(b"HTTP/1.1 303 See Other\r\nLocation: http://127.0.0.1:%d/receipt"
+                                 b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" % seen["dead"])
+
+    threading.Thread(target=serve, daemon=True).start()
+    yield f"http://127.0.0.1:{listener.getsockname()[1]}", seen
+    listener.close()
+
+
+@pytest.mark.parametrize("client", ["requests", "stdlib"])
+@pytest.mark.parametrize("scenario", ["drop", "redirect", "refused", "proxy_refused"])
+def test_real_clients_replay_only_unsent_submissions(transport, monkeypatch, submission_server,
+                                                     client, scenario):
+    common, _runner, _backoff = transport
+    if client == "stdlib":
+        monkeypatch.setattr(common, "HAS_REQUESTS", False)
+    elif not common.HAS_REQUESTS:
+        pytest.skip("requests is not installed")
+    base, seen = submission_server
+    attempts = Mock(wraps=common._http_once)
+    monkeypatch.setattr(common, "_http_once", attempts)
+    for key in ("NO_PROXY", "no_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    url = f"{base}/prompt"
+    if scenario == "redirect":
+        seen["mode"] = "redirect"
+    elif scenario == "refused":
+        url = f"http://127.0.0.1:{_dead_port()}/prompt"
+    elif scenario == "proxy_refused":
+        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{_dead_port()}")
+
+    with pytest.raises(OSError) as info:
+        common.http_post(url, json_body={"prompt": {}, "client_id": "c"}, timeout=5)
+
+    never_sent = scenario in {"refused", "proxy_refused"}
+    assert isinstance(info.value, common.RequestNotSent) is never_sent
+    assert attempts.call_count == (common.DEFAULT_RETRIES if never_sent else 1)
+    assert seen["posts"] == (0 if never_sent else 1)

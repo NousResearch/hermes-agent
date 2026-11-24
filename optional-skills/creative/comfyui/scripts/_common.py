@@ -25,7 +25,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
+import urllib.error
 from urllib.parse import urlparse
+import urllib.request
 
 # Optional: prefer `requests` if installed (better redirects, streaming, header handling)
 try:
@@ -34,8 +36,6 @@ try:
     HAS_REQUESTS = True
 except ImportError:  # pragma: no cover - exercised via stdlib fallback
     HAS_REQUESTS = False
-    import urllib.error
-    import urllib.request
 
 
 # =============================================================================
@@ -53,9 +53,9 @@ RETRY_BASE_DELAY = 1.0             # seconds — exponential backoff base
 RETRY_MAX_DELAY = 30.0             # seconds — cap on backoff
 RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504, 522, 524}
 # Answers that say the request was not processed, so even a workflow
-# submission may be sent again. 5xx gateway/origin errors (500, 502, 504, 524)
-# can follow a request the server already queued, so submissions never replay them.
-NOT_PROCESSED_STATUS_CODES = {408, 429, 503, 522}
+# submission may be sent again. Any 5xx can come from a proxy that already
+# forwarded the request to a server that queued it, so submissions never replay them.
+NOT_PROCESSED_STATUS_CODES = {408, 429}
 _REPLAYABLE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 # Streaming download chunk size (bytes)
@@ -454,10 +454,10 @@ def http_request(
       - Bodyless GET/HEAD/OPTIONS retry on connection errors and HTTP statuses
         in RETRY_STATUS_CODES, with exponential backoff + jitter.
       - Other requests (workflow submissions) retry only when the request
-        provably was not processed: RequestNotSent or a status in
-        NOT_PROCESSED_STATUS_CODES. A timeout or dropped connection after
-        sending is an unknown outcome — the job may be queued — so it is
-        raised, never replayed. Multipart uploads never retry: their file
+        provably was not processed: RequestNotSent (the first connection
+        failed) or a status in NOT_PROCESSED_STATUS_CODES. A timeout, a dropped
+        connection, a failed redirect or any 5xx after sending is an unknown
+        outcome — the job may be queued — so it is returned or raised, never replayed. Multipart uploads never retry: their file
         stream is consumed by the first attempt.
       - For cross-host redirects, drops Authorization-style headers (so signed
         URLs don't leak the API key to S3/CloudFront).
@@ -528,7 +528,10 @@ if HAS_REQUESTS:
         critical when ComfyUI Cloud's `/api/view` redirects to a signed S3 URL.
         """
 
+        redirected = False
+
         def rebuild_auth(self, prepared_request, response):  # type: ignore[override]
+            self.redirected = True  # a later connect failure is not "never sent"
             super().rebuild_auth(prepared_request, response)
             try:
                 old_url = response.request.url
@@ -589,17 +592,31 @@ def _http_once(
             except requests.exceptions.RequestException as e:
                 # Convert to TimeoutError / ConnectionError so the retry loop
                 # picks them up uniformly with the stdlib path.
-                if isinstance(e, requests.exceptions.ConnectTimeout) or (
-                    isinstance(e, requests.exceptions.ConnectionError)
-                    and e.args and isinstance(getattr(e.args[0], "reason", None),
-                                              urllib3.exceptions.NewConnectionError)
-                ):
+                if not s.redirected and _requests_never_sent(e):
                     raise RequestNotSent(str(e)) from e
                 if isinstance(e, requests.exceptions.Timeout):
                     raise TimeoutError(str(e)) from e
                 raise ConnectionError(str(e)) from e
 
     # ---------- stdlib fallback ----------
+    return _http_once_stdlib(method=method, url=url, headers=headers, json_body=json_body, data=data,
+                             timeout=timeout, follow_redirects=follow_redirects, stream=stream, sink=sink)
+
+
+def _requests_never_sent(e: Exception) -> bool:
+    """True when requests failed while connecting (to the host or its proxy), before any request byte."""
+    if isinstance(e, requests.exceptions.ConnectTimeout):
+        return True
+    reason = getattr(e.args[0], "reason", None) if e.args else None
+    if isinstance(reason, urllib3.exceptions.ProxyError):
+        reason = reason.original_error
+    return isinstance(reason, urllib3.exceptions.NewConnectionError)
+
+
+def _http_once_stdlib(
+    *, method: str, url: str, headers: dict[str, str], json_body: Any, data: bytes | None,
+    timeout: float, follow_redirects: bool, stream: bool, sink: Path | None,
+) -> HTTPResponse:
     if json_body is not None:
         body_bytes = json.dumps(json_body).encode("utf-8")
         headers.setdefault("Content-Type", "application/json")
@@ -615,9 +632,12 @@ def _http_once(
             self.original_host = original_host
             self.follow = follow
 
+        redirected = False
+
         def redirect_request(self, req2, fp, code, msg, hdrs, newurl):
             if not self.follow:
                 return None
+            self.redirected = True
             new_host = (urlparse(newurl).hostname or "").lower()
             if new_host != self.original_host:
                 # Build a new request with cleaned headers
@@ -630,7 +650,8 @@ def _http_once(
             return super().redirect_request(req2, fp, code, msg, hdrs, newurl)
 
     original_host = (urlparse(url).hostname or "").lower()
-    opener = urllib.request.build_opener(_RedirectHandler(original_host, follow_redirects))
+    redirects = _RedirectHandler(original_host, follow_redirects)
+    opener = urllib.request.build_opener(redirects)
 
     try:
         resp = opener.open(req, timeout=timeout)
@@ -644,7 +665,7 @@ def _http_once(
     except urllib.error.URLError as e:
         # Refused or unresolvable: no byte was sent. A timeout here is ambiguous
         # (connect or read), so it stays a plain unknown-outcome error.
-        if isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
+        if not redirects.redirected and isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
             raise RequestNotSent(str(e)) from e
         raise
 

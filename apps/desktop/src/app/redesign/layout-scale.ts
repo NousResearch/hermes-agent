@@ -87,9 +87,10 @@ export function installLayoutScale(): void {
   // New stylesheets: a <style> or <link> joining <head>, and a <link>'s rules arriving on load.
   const arrivals = new MutationObserver(schedule)
 
-  // `load` does not bubble, so it is caught in capture, where every image and frame passes too.
+  // `load` does not bubble, so it is caught in capture, where every image and frame passes too. A
+  // <style> fires it when an @import of its own lands.
   const onLoad = (event: Event) => {
-    if (event.target instanceof HTMLLinkElement) {
+    if (event.target instanceof HTMLLinkElement || event.target instanceof HTMLStyleElement) {
       schedule()
     }
   }

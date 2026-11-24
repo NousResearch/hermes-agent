@@ -110,6 +110,23 @@ def test_resolve_unknown_name_points_at_tool_search_not_direct_call():
     assert "directly-listed tool" in err and "not a known tool" not in err
 
 
+def test_resolve_mistyped_deferred_name_suggests_but_never_runs_it():
+    # paperclipai/paperclip#22327: a one-letter typo of a deferred name gets the close name back
+    # in the rejection (never resolved by approximation); unrelated names get no guess.
+    from tools.registry import registry
+
+    real = "mcp__blender__render_thumbnail_to_path"
+    registry.register(name=real, toolset="mcp-blender", handler=lambda a, **kw: "{}",
+                      schema={"name": real, "description": "x", "parameters": {"type": "object", "properties": {}}})
+    try:
+        name, _, err = resolve_underlying_call({"name": "mcp__blender__render_thumbnai_to_path", "arguments": {}})
+        _, _, far = resolve_underlying_call({"name": "mcp__other__send_email", "arguments": {}})
+    finally:
+        registry.deregister(real)
+    assert name is None and f"Did you mean '{real}'?" in err
+    assert real not in far and "Use tool_search" in far
+
+
 def test_resolve_legacy_connector_single_shape_routes_to_sentinel():
     name, args, err = resolve_underlying_call(
         {"name": "connectors__gmail__CREATE_EMAIL_DRAFT", "arguments": {}}

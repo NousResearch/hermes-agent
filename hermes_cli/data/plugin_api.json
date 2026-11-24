@@ -281,6 +281,12 @@
         "hermes_cli.profiles_run_elsewhere:clear_profile_run_elsewhere",
         "hermes_cli.profiles_run_elsewhere:run_elsewhere"
       ]
+    },
+    {
+      "source": "plugins/index.md § Schedule a job once and read where cron delivers it",
+      "entries": [
+        "cron.plugin_api"
+      ]
     }
   ]
 }

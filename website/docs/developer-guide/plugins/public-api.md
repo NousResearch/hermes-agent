@@ -203,3 +203,4 @@ with a name allows that one name only.
 | `hermes_cli.profiles_run_elsewhere` | `mark_profile_run_elsewhere` | user-guide/multi-profile-gateways.md § Profiles a plugin runs elsewhere |
 | `hermes_cli.profiles_run_elsewhere` | `clear_profile_run_elsewhere` | user-guide/multi-profile-gateways.md § Profiles a plugin runs elsewhere |
 | `hermes_cli.profiles_run_elsewhere` | `run_elsewhere` | user-guide/multi-profile-gateways.md § Profiles a plugin runs elsewhere |
+| `cron.plugin_api` | whole module | plugins/index.md § Schedule a job once and read where cron delivers it |

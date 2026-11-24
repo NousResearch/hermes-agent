@@ -164,12 +164,13 @@ def _write_config(text: str) -> None:
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(text, encoding="utf-8")
 
 
-def _agent(server: _Endpoint, api_mode: str = _CHAT, toolsets: list[str] | None = None):
+def _agent(server: _Endpoint, api_mode: str = _CHAT, toolsets: list[str] | None = None, max_iterations: int = 6):
     from run_agent import AIAgent
 
     return AIAgent(
         model="fixture-local", provider="custom", base_url=server.url, api_key="fixture", api_mode=api_mode,
-        quiet_mode=True, skip_memory=True, skip_context_files=True, enabled_toolsets=toolsets or [], max_iterations=6,
+        quiet_mode=True, skip_memory=True, skip_context_files=True, enabled_toolsets=toolsets or [],
+        max_iterations=max_iterations,
     )
 
 
@@ -253,6 +254,18 @@ def test_a_model_that_circles_again_ends_the_turn_after_one_recovery(endpoint, g
     assert len(server.bodies) == 2  # the first call and one recovery, never a third
     assert (result["repetition"]["cuts"], result["repetition"]["recoveries"]) == (2, 1)
     assert ("halt", "repetition_recovery_exhausted") in guard_decisions
+
+
+def test_a_cut_on_the_last_allowed_iteration_ends_with_the_repetition_copy(endpoint, guard_decisions):
+    server = endpoint(Reply(reasoning=_restated_plan(80)), Reply(content=_ANSWER))
+
+    result = _run(_agent(server, max_iterations=1))
+
+    assert (result["completed"], result["failure_reason"]) == (False, "truncated")
+    assert "Repetition Detected" in result["final_response"]  # not the iteration-limit summary
+    assert len(server.bodies) == 1
+    assert result["repetition"]["recoveries"] == 0
+    assert ("retry", "repetition_recovery") not in guard_decisions
 
 
 def test_each_user_turn_gets_its_own_recovery(endpoint):

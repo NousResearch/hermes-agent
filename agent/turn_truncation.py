@@ -453,6 +453,14 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     )
 
 
+def _has_iteration_left(agent: Any, api_call_count: int) -> bool:
+    """Whether the turn loop (``conversation_loop``) runs another iteration after this one."""
+    return (
+        (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0)
+        or agent._budget_grace_call
+    )
+
+
 def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
     """Re-issue the call with feedback counting the repeated statements, up to
     ``repetition_guard.recovery.max_attempts`` times per turn; None once they are spent. The cut
@@ -470,6 +478,8 @@ def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional
     # A visible-text cut already reached the user, and append-only streams cannot take it back.
     if turn.recoveries >= limit or (cut is not None and cut.channel != "reasoning"):
         return None
+    if not _has_iteration_left(agent, st.api_call_count):
+        return None  # the loop would end on the iteration-limit summary, not the re-issued call
     turn.recoveries += 1
     record_guardrail_decision(agent, "retry", "repetition_recovery")
     logger.warning("%sRepetition cut: recovering with feedback (attempt %d/%d, %s)", agent.log_prefix,

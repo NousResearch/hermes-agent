@@ -210,14 +210,14 @@ def test_shared_channel_origin_matches_on_the_turn_sender(satellite):
 # Platforms whose thread is a sub-conversation of a chat that keeps its own id: a thread-less target
 # is that chat's top level, not the origin thread (unlike Discord, where the thread's chat id IS it).
 _GROUP_PLUS_THREAD = {
-    "feishu": ("oc_1", "omt_7"),
+    "mattermost": ("chan1", "post7"),
     "google_chat": ("spaces/AAA", "spaces/AAA/threads/T7"),
 }
 
 
 @pytest.mark.parametrize("platform_name", sorted(_GROUP_PLUS_THREAD))
 def test_thread_pinned_origin_does_not_admit_its_groups_top_level(satellite, platform_name):
-    """A route pinned to one Feishu/Google Chat thread dispatches only that thread to ``sec``; its
+    """A route pinned to one Mattermost/Google Chat thread dispatches only that thread to ``sec``; its
     group's top level (a thread-less send) is not ``sec``'s conversation."""
     from gateway.profile_routing import match_profile_route
     from gateway.session_context import clear_session_vars, set_session_vars

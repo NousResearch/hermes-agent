@@ -1,19 +1,19 @@
 name: neural-mesh
 repo: https://github.com/D0xedDevi0/hermes-neural-mesh
-sha: 281b7b381b6869327c2dd77f36335836d127b959
-description: "Bi-temporal long-term memory for Hermes: point-in-time recall (mesh_asof answers what was true on a date, not only what is true now), supersession instead of overwrite so a corrected fact keeps its history, hybrid dense + lexical retrieval, a poisoning quarantine, an injection floor measured on a 15-family ablation, and a tamper-evident provenance ledger (mesh_verify, mesh_provenance) that names what its verdict rests on: which anchor file it was judged against, or plainly that it had none. Disclosure — this is a Hermes MemoryProvider (`memory.provider: neural-mesh`). It stores user turns, pre-compression and session-end message extracts, and mirrored MEMORY.md/USER.md writes in an unencrypted local SQLite file at `<profile>/neural-mesh/mesh.db`, so credentials do not belong in it. The provider makes no network calls and needs no API key. The repo also vendors unused upstream modules with LLM/chain HTTP clients that the provider never calls. It ships no compiled binary (the Rust extension is not vendored, so retrieval runs the pure-Python path)."
+sha: 8196aabb4e8615a9f62032391e8687bfcd5d58ab
+description: "Bi-temporal long-term memory for Hermes: point-in-time recall (mesh_asof answers what was true on a date, not only what is true now), supersession instead of overwrite so a corrected fact keeps its history, hybrid dense + lexical retrieval, a poisoning quarantine, an injection floor measured on a 15-family ablation, and a tamper-evident provenance ledger (mesh_verify, mesh_provenance) that names what its verdict rests on: which anchor file it was judged against, or plainly that it had none. Disclosure — this is a Hermes MemoryProvider (`memory.provider: neural-mesh`). It stores user turns, pre-compression and session-end message extracts, and mirrored MEMORY.md/USER.md writes in an unencrypted local SQLite file at `<profile>/neural-mesh/mesh.db`, so credentials do not belong in it. The provider makes no network calls and needs no API key. The repo also vendors unused upstream modules with LLM/chain HTTP clients that the provider never calls. It ships no compiled binary (the Rust extension is not vendored, so retrieval runs the pure-Python path). Verification also checks entry signatures and identity bindings when the ledger is signing: with a signer injected and an identity registry configured, mesh_verify says how many signatures recovered to the address they claim, how many were signed under a label the registry does not bind, and how many it could not check at all. Signing is off by default -- this provider never sets a signer -- and the signing library is imported lazily, so a default install still needs nothing beyond the standard library."
 maintainer: D0xedDevi0
 tier: community
 category: memory
 docs_url: https://github.com/D0xedDevi0/hermes-neural-mesh
 requires_hermes: ">=0.22.0"
-version: "0.45.0"
-image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/the-difference.png
+version: "0.48.0"
+image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8196aabb4e8615a9f62032391e8687bfcd5d58ab/docs/screenshots/the-difference.png
 screenshots:
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/the-difference.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/cold-recall.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/point-in-time.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/measured.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8196aabb4e8615a9f62032391e8687bfcd5d58ab/docs/screenshots/the-difference.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8196aabb4e8615a9f62032391e8687bfcd5d58ab/docs/screenshots/cold-recall.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8196aabb4e8615a9f62032391e8687bfcd5d58ab/docs/screenshots/point-in-time.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8196aabb4e8615a9f62032391e8687bfcd5d58ab/docs/screenshots/measured.png
 readme: true
 title: "NEURAL_MESH"
 known_issues:
@@ -21,6 +21,7 @@ known_issues:
   - "The upstream Rust resonance extension is not shipped (catalog rule 17), so retrieval uses the pure-Python path; mesh_stats reports resonance_backend: python rather than rust."
   - "Automatic context injection is held to a measured 0.25 score floor, so a weakly-matching memory is deliberately not injected. Use mesh_recall (0.05 floor) when you want a wider net."
   - "Tamper-evidence needs an anchor outside the store. Out of the box the ledger anchor lives in the same SQLite file, so an attacker who can write that file can delete the anchor along with the entries it protects; pass mesh_verify an `anchors` path (or set NEURAL_MESH_ANCHORS) to a file outside the store to make a clean truncation detectable. Until then mesh_verify says so in its verdict rather than implying the stronger guarantee."
+  - "By default the ledger records honest *unsigned* entries: the hash chain proves nothing was rewritten after the fact, but it does not prove which agent wrote an entry. Inject a signer and mesh_verify also checks that each signature recovers to the author it claims; add an identity registry and it also checks that the signing key is bound to the label the entry claims. Until then a signature (if any) proves a key signed, not who it was."
   - "Superseding a memory that does not exist is reported in the tool reply rather than failing the write, so a correction naming a bad id is stored as a new fact — and the reply says so instead of silently leaving two contradictory values current."
 capabilities:
   provides_tools:

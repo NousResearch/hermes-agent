@@ -1001,13 +1001,18 @@ def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_p
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script; SIGKILL
+@pytest.mark.parametrize("env_file, tag", [
+    ("RUNNER_TAG=from-env-file\n", "from-env-file"),
+    ("RUNNER_TAG=${LAUNCH_ONLY_TAG:-not-the-launch-env}\n", "from-launch-env"),  # a template of an env-only key
+], ids=["plain_value", "template_of_an_env_only_key"])
 def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env_only_launcher_keys(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, env_file, tag):
     """The process keeps naming its own profile by the path it started with. After that link is renamed the
     manager answers to the new name, and a crash restart under multiplexing still expands the launcher from both
     of the launch profile's sources: its env-only keys (systemd ``Environment=``) and its ``.env``, read through
-    the name that now leads to it. A start inside a launch-profile body bound since (its scope read through the old
-    name, so without the ``.env``) builds that scope again through the new name rather than borrowing the body's."""
+    the name that now leads to it, its templates resolved as the process's own against those env-only keys. A
+    start inside a launch-profile body bound since (its scope read through the old name, so without the ``.env``)
+    builds that scope again through the new name rather than borrowing the body's."""
     import signal
 
     from agent import secret_scope as ss
@@ -1021,19 +1026,20 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
     (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
         "enabled": ["hostprobe"], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}", "${RUNNER_TAG}"]}}}),
         encoding="utf-8")
-    (outside / ".env").write_text("RUNNER_TAG=from-env-file\n", encoding="utf-8")
+    (outside / ".env").write_text(env_file, encoding="utf-8")
     profiles = tmp_path / "root" / "profiles"
     profiles.mkdir(parents=True)
     (profiles / "ops").symlink_to(outside, target_is_directory=True)
     monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
     monkeypatch.setenv("PLUGIN_RUNNER", str(runner))
+    monkeypatch.setenv("LAUNCH_ONLY_TAG", "from-launch-env")
     ss.set_multiplex_active(True)
     plugins_mod._reset_plugin_managers_for_tests()
     manager = plugins_mod.get_plugin_manager()
     try:
         manager.discover_and_load()
         first = manager._plugins["hostprobe"]
-        assert first.error is None and ran.read_text(encoding="utf-8").split() == ["from-env-file"]
+        assert first.error is None and ran.read_text(encoding="utf-8").split() == [tag]
         (profiles / "ops").rename(profiles / "ops2")
         os.kill(manager._plugin_host().pid, signal.SIGKILL)
         def reloaded():
@@ -1042,12 +1048,12 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
 
         after = wait_until(reloaded, timeout=15, what="the crashed host's restart")
         assert after is not None and after.error is None
-        assert ran.read_text(encoding="utf-8").split() == ["from-env-file", "from-env-file"]
+        assert ran.read_text(encoding="utf-8").split() == [tag, tag]
         manager._plugin_host().shutdown()
         with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
             assert ss.get_secret("RUNNER_TAG") is None
             manager._plugin_host().ensure_started()
-        assert ran.read_text(encoding="utf-8").split() == ["from-env-file"] * 3
+        assert ran.read_text(encoding="utf-8").split() == [tag] * 3
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

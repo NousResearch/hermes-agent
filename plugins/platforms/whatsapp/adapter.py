@@ -1397,6 +1397,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return MessageType.TEXT
         return next((kind for needle, kind in _MEDIA_NEEDLES if needle in media_type), MessageType.DOCUMENT)
 
+    def _is_unaddressed_group_message(self, data: dict[str, Any]) -> bool:
+        """A group message nobody addressed to the bot: no mention, not a reply to it, not a command."""
+        if not data.get("isGroup", False):
+            return False
+        return not (
+            str(data.get("body") or "").strip().startswith("/")
+            or self._message_is_reply_to_bot(data)
+            or self._message_mentions_bot(data)
+            or self._message_matches_mention_patterns(data)
+        )
+
     async def _collect_bridge_media(self, data: dict[str, Any], msg_type: MessageType) -> tuple[list, list]:
         """``mediaUrls`` → ``(cached_urls, media_types)``: remote image/audio cached locally; absolute paths only inside a cache dir."""
         accepted: list[tuple] = []  # (url_or_path, mime)
@@ -1528,7 +1539,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
-                reply_expected=True if clips else None,  # a spoken wake word addressed the bot
+                # A spoken wake word addressed the bot. A group message nobody addressed to it (read because
+                # require_mention is off or the chat is free-response) may go unanswered, as on Slack and Telegram.
+                reply_expected=True if clips else (False if self._is_unaddressed_group_message(data) else None),
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

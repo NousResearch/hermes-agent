@@ -383,7 +383,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             return True
         try:
             from hermes_cli.config import load_config
-            with _facade()._plugin_home_scope(self._manager.home_path):
+            with _facade()._plugin_home_scope(self._manager.owner_home):
                 cfg = load_config() or {}
         except Exception:
             return False  # fail closed: better to break the override than silently grant it
@@ -446,7 +446,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         """Return whether this plugin may trigger gateway session turns (read from the plugin's
         own profile config, never the calling thread's ambient home)."""
         try:
-            with _facade()._plugin_home_scope(self._manager.home_path):
+            with _facade()._plugin_home_scope(self._manager.owner_home):
                 cfg = _facade().load_config_readonly() or {}
         except Exception:
             return False

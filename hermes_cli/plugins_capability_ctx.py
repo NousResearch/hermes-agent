@@ -91,7 +91,7 @@ class PluginCapabilityCtxMixin:
         where the active profile may be the launch profile's."""
         try:
             from hermes_cli.config import load_config
-            with _plugin_home_scope(self._manager.home_path):
+            with _plugin_home_scope(self._manager.owner_home):
                 cfg = load_config() or {}
         except Exception:  # health: allow BLE001 -- fail closed: unreadable consent state never grants
             return False

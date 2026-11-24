@@ -229,7 +229,7 @@ def _hosted(engine, home):
     def call(method, params, timeout=None):
         return getattr(runtime, f"op_{method}")(params)
 
-    host = PluginHost(SimpleNamespace(home_path=home, _plugins={}))
+    host = PluginHost(SimpleNamespace(home_path=home, owner_home=home, _plugins={}))
     host._channel = cast(Any, SimpleNamespace(call=call, closed_reason=None))
     return host._object_proxy(ref, ContextEngine)
 

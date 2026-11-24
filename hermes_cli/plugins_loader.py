@@ -371,7 +371,7 @@ class PluginLoaderMixin:
         this a load that raised or overran its deadline at startup stays down until a forced re-discovery
         (#126356). True when a loader was re-armed."""
         from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.owner_home):
             failed = next((p.manifest for p in self._plugins.values()
                            if p.error and not p.enabled and p.manifest.kind == "platform"
                            and self._platform_name_from_manifest(p.manifest) == platform_name), None)
@@ -398,7 +398,7 @@ class PluginLoaderMixin:
             def _loader(_manifest: PluginManifest = manifest) -> None:
                 # Lock before checking cancellation: if an unload won the race it restored the predecessor
                 # and this loader must publish nothing; if loading won, unload waits and disposes the set.
-                with self._discovery_lock, _plugin_home_scope(self.home_path):
+                with self._discovery_lock, _plugin_home_scope(self.owner_home):
                     if platform_registry.is_deferred_load_cancelled(platform_name, scope=scope):
                         return
                     self._load_plugin_scoped(_manifest)
@@ -558,7 +558,7 @@ class PluginLoaderMixin:
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.owner_home):
             self._load_plugin_scoped(manifest)
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:

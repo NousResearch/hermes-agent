@@ -274,7 +274,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
         # The home as the profile was named, before resolving: a marked profile whose directory is a link
-        # out of the Hermes root is found by that name only (``plugin_isolation.host_launcher``).
+        # out of the Hermes root is found by that name only, so code runs under it (discovery, a plugin's
+        # calls, the plugin host) and ``home_path`` stays the registries' key.
         self.owner_home = Path(owner_home) if owner_home is not None else self.home_path
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
@@ -407,7 +408,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
             # whole sweep, so return where the locked re-entry used to. Every other caller still waits.
             return
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.owner_home):
             if self._discovered and not force:
                 return
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before

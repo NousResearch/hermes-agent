@@ -244,6 +244,123 @@ def _handle_names_path(handle, lock_path) -> bool:
     return fd_stat.st_dev == path_stat.st_dev and fd_stat.st_ino == path_stat.st_ino
 
 
+def _break_claim_path(lock_path: str) -> str:
+    return f"{lock_path}.breaking"
+
+
+def _release_break_claim(claim) -> None:
+    """Drop the exclusive break claim. The flock, not this file, is what excludes other acquirers."""
+    if claim is None:
+        return
+    path = getattr(claim, "name", None)
+    with contextlib.suppress(OSError):
+        claim.close()
+    if path:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def _reopen_lock_handle(handle, lock_path):
+    """Close *handle* and open *lock_path* again. None when either call fails."""
+    try:
+        handle.close()
+        return open(lock_path, "a+b")
+    except OSError:
+        return None
+
+
+def _break_claim_record() -> bytes:
+    record = {"pid": os.getpid(), "pidns": pid_namespace_id(),
+              "start_ticks": _proc_start_ticks(os.getpid())}
+    return json.dumps(record, sort_keys=True).encode("utf-8")
+
+
+def _read_break_claim(path: str):
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(4096)
+        record = json.loads(raw.decode("utf-8", "replace")) if raw else None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _steal_dead_break_claim(path: str) -> bool:
+    """Unlink a claim whose recorded pid is provably dead. False when the owner may still be breaking."""
+    if not _lock_holder_provably_dead(_read_break_claim(path)):
+        return False
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_break_claim(lock_path: str):
+    """Exclusive right to unlink *lock_path*. None when a live breaker already holds that right."""
+    path = _break_claim_path(lock_path)
+    for _ in range(3):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
+        except FileExistsError:
+            if not _steal_dead_break_claim(path):
+                return None
+            continue
+        except OSError:
+            return None
+        try:
+            os.write(fd, _break_claim_record())
+            return os.fdopen(fd, "a+b")
+        except OSError:
+            os.close(fd)
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            return None
+    return None
+
+
+def _take_break_or_wait(lock_path, handle, description, record):
+    """Decide the orphan break. Returns ``(handle, claim, action)``.
+
+    ``retry``: this caller unlinked the orphan and still holds *claim* across the fresh flock.
+    ``wait``: another breaker owns the replacement, or the path was already replaced. Reopen and
+    flock that file. ``fail``: the reopen or the unlink failed.
+    """
+    if not _handle_names_path(handle, lock_path):
+        reopened = _reopen_lock_handle(handle, lock_path)
+        if reopened is None:
+            return handle, None, "fail"
+        return reopened, None, "wait"
+    claim = _acquire_break_claim(lock_path)
+    if claim is None:
+        reopened = _reopen_lock_handle(handle, lock_path)
+        if reopened is None:
+            return handle, None, "fail"
+        return reopened, None, "wait"
+    if not _handle_names_path(handle, lock_path):
+        _release_break_claim(claim)
+        reopened = _reopen_lock_handle(handle, lock_path)
+        if reopened is None:
+            return handle, None, "fail"
+        return reopened, None, "wait"
+    logger.warning("%s %s is held by an orphaned file descriptor (recorded holder pid %s is dead — a "
+                   "forked child inherited the lock fd); breaking the stale lock and retaking it on a "
+                   "fresh file.", description, lock_path, (record or {}).get("pid"))
+    try:
+        os.unlink(lock_path)
+    except OSError as exc:
+        logger.warning("Could not break stale %s %s (%s) — deferring.", description, lock_path, exc)
+        _release_break_claim(claim)
+        return handle, None, "fail"
+    reopened = _reopen_lock_handle(handle, lock_path)
+    if reopened is None:
+        _release_break_claim(claim)
+        return handle, None, "fail"
+    return reopened, claim, "retry"
+
+
 def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, description):
     """Bounded POSIX flock acquire with orphaned-holder break.  Returns ``(acquired, handle)``; *handle* may
     have been re-opened and the caller closes whichever comes back.  *acquired*: True, False (a holder kept
@@ -253,6 +370,10 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
     provably dead the file is unlinked and retaken on a fresh inode (the orphan's flock excludes nobody).
     Every acquire verifies its handle still names *lock_path*, so a racer on a dead inode retries, and a
     second contender on the orphaned inode joins the queue for the file a first breaker already retook.
+    Two contenders that both still name the orphan take one exclusive claim file before either unlinks.
+    Only the claim holder unlinks, and only after another same-inode check while it holds the claim.
+    The other reopens the path and waits on the new flock. A claim whose recorded pid is provably dead
+    can be taken over.
 
     A holder that forks (multiprocessing worker, daemonized helper) and then dies leaves the flock held by a
     child that will never release it — the kernel's holder-death release never triggers, and every contender
@@ -261,11 +382,13 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
     import fcntl
     deadline = time.monotonic() + timeout_seconds
     broke_lock = False
+    break_claim = None
     while True:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError) as exc:
             if not is_advisory_lock_contention(exc):
+                _release_break_claim(break_claim)
                 logger.warning("Could not acquire %s %s (%s) — deferring rather than "
                                "waiting out the %.0fs holder timeout on a non-contention error.",
                                description, lock_path, exc, timeout_seconds)
@@ -274,43 +397,30 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
                 time.sleep(poll_seconds)
                 continue
             if broke_lock:
+                _release_break_claim(break_claim)
                 return False, handle
             record = _read_lock_holder_record(handle)
             if not _lock_holder_provably_dead(record):
+                _release_break_claim(break_claim)
                 return False, handle
-            if not _handle_names_path(handle, lock_path):
-                # Another breaker already retaking the lock replaced the file. The dead record belongs to
-                # the orphaned inode this handle still sits on; unlinking by name here would remove the
-                # successor's live lock and admit this contender beside it.
-                try:
-                    handle.close()
-                    handle = open(lock_path, "a+b")
-                except OSError:
-                    return False, handle
-                deadline = time.monotonic() + _LOCK_BREAK_REACQUIRE_SECONDS
-                continue
-            logger.warning("%s %s is held by an orphaned file descriptor (recorded holder pid %s is dead — a "
-                           "forked child inherited the lock fd); breaking the stale lock and retaking it on a "
-                           "fresh file.", description, lock_path, (record or {}).get("pid"))
-            try:
-                os.unlink(lock_path)
-                handle.close()
-                handle = open(lock_path, "a+b")
-            except OSError as exc:
-                logger.warning("Could not break stale %s %s (%s) — deferring.", description, lock_path, exc)
+            handle, break_claim, action = _take_break_or_wait(lock_path, handle, description, record)
+            if action == "fail":
                 return False, handle
-            broke_lock = True
+            if action == "retry":
+                broke_lock = True
             deadline = time.monotonic() + _LOCK_BREAK_REACQUIRE_SECONDS
             continue
         # A breaker may have replaced the file while we waited; a lock on a dead inode excludes nobody.
         if _handle_names_path(handle, lock_path):
             _write_lock_holder_record(handle)
+            _release_break_claim(break_claim)
             return True, handle
-        try:
-            handle.close()
-            handle = open(lock_path, "a+b")
-        except OSError:
+        _release_break_claim(break_claim)
+        break_claim = None
+        reopened = _reopen_lock_handle(handle, lock_path)
+        if reopened is None:
             return False, handle
+        handle = reopened
         if time.monotonic() >= deadline:
             return False, handle
 

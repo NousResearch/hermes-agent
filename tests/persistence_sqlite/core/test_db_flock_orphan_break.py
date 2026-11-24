@@ -104,3 +104,50 @@ def test_a_later_contender_does_not_unlink_the_first_breakers_live_lock(orphaned
     finally:
         for result in results:
             result[1].close()
+
+
+@pytest.mark.platforms("posix")
+def test_simultaneous_breakers_unlink_the_orphan_once(orphaned_lock, monkeypatch):
+    """Both contenders pass the inode check before either unlinks. A second unlink would remove
+    the first breaker's live lock. The exclusive claim lets only one of them unlink."""
+    monkeypatch.setattr(state_common, "_LOCK_BREAK_REACQUIRE_SECONDS", 0.2)
+    entered = threading.Barrier(2)
+    seen = {"n": 0}
+    seen_lock = threading.Lock()
+    real_names = state_common._handle_names_path
+
+    def gated(handle, lock_path):
+        ok = real_names(handle, lock_path)
+        if ok:
+            with seen_lock:
+                n = seen["n"]
+                seen["n"] += 1
+            if n < 2:
+                entered.wait(timeout=10)
+        return ok
+
+    monkeypatch.setattr(state_common, "_handle_names_path", gated)
+    unlinked = []
+    real_unlink = state_common.os.unlink
+
+    def counting(path, *args, **kwargs):
+        unlinked.append(os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(state_common.os, "unlink", counting)
+    first, first_outcome = _contend(orphaned_lock, timeout_seconds=0.4)
+    later, later_outcome = _contend(orphaned_lock, timeout_seconds=0.4)
+    first.join(timeout=30)
+    later.join(timeout=30)
+    results = [first_outcome["result"], later_outcome["result"]]
+    try:
+        acquired = [result[0] for result in results]
+        assert None not in acquired, results
+        assert acquired.count(True) == 1, acquired
+        inodes = {os.fstat(result[1].fileno()).st_ino for result in results}
+        assert inodes == {os.stat(orphaned_lock).st_ino}
+        assert unlinked.count(os.fspath(orphaned_lock)) == 1
+        assert not os.path.exists(f"{orphaned_lock}.breaking")
+    finally:
+        for result in results:
+            result[1].close()

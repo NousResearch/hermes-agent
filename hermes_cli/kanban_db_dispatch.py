@@ -2639,9 +2639,15 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
-    """The profile owner executes; this subprocess only waits for its receipt."""
+    """The profile owner executes; this subprocess only waits for its receipt.
+
+    ``-P`` keeps the task workspace (the child's cwd) off ``sys.path``: ``-m`` otherwise puts the
+    cwd first, so a task whose workspace is a hermes-agent checkout imported that checkout's
+    ``hermes_cli`` and died on ``No module named hermes_cli.kanban_worker_client``. The flag is not
+    inherited by the gateway the client may start, unlike ``PYTHONSAFEPATH``.
+    """
     import sys
-    return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    return [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

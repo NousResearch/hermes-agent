@@ -209,7 +209,7 @@ Clicking a button resolves the approval inline and replaces the card with the de
 
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 
-When the [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) catalog plugin is installed (`hermes plugins install teams-pipeline`; see [Teams Meetings](./teams-meetings.md)), this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
+When the [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) catalog plugin is installed (`hermes plugins install teams-pipeline --enable`; see [Teams Meetings](./teams-meetings.md)), this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
 
 Pipeline summary delivery is configured under the `teams` platform entry alongside the bot config:
 

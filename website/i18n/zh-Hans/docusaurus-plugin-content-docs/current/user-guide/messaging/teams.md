@@ -170,7 +170,7 @@ platforms:
 
 ### 会议摘要投递（Teams 会议 Pipeline）
 
-安装官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 后（`hermes plugins install teams-pipeline`；参见 [Teams 会议](./teams-meetings.md)），此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
+安装官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 后（`hermes plugins install teams-pipeline --enable`；参见 [Teams 会议](./teams-meetings.md)），此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
 
 Pipeline 摘要投递在 `teams` 平台条目下与机器人配置并列配置：
 

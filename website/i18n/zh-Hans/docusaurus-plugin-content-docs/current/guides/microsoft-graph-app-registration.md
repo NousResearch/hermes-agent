@@ -140,7 +140,7 @@ chmod 600 ~/.hermes/.env
 Graph 身份验证冒烟测试随官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 提供。安装该插件后，强制获取一次令牌：
 
 ```bash
-hermes plugins install teams-pipeline
+hermes plugins install teams-pipeline --enable
 hermes teams-pipeline token-health --force-refresh
 ```
 

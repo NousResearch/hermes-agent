@@ -5,7 +5,7 @@ description: "Microsoft Teams 会议流水线的运行手册、上线检查清�
 
 # 操作 Teams 会议流水线
 
-本指南适用于已安装 `teams-pipeline` 目录插件（`hermes plugins install teams-pipeline`）并通过 [Teams Meetings](../user-guide/messaging/teams-meetings.md) 启用该功能之后的操作阶段。
+本指南适用于已安装 `teams-pipeline` 目录插件（`hermes plugins install teams-pipeline --enable`）并通过 [Teams Meetings](../user-guide/messaging/teams-meetings.md) 启用该功能之后的操作阶段。
 
 本页内容：
 - 操作员 CLI 流程

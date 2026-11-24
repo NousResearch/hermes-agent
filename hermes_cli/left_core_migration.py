@@ -274,9 +274,10 @@ def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
 
 
 def google_meet_in_use(home: Path, *, process_env: bool = False) -> bool:
-    """What made core run Google Meet for *home*: the bundled ``google_meet`` selected
-    (:func:`_bundled_plugin_selected`). The plugin was opt-in, so its keys or a saved login alone are not use."""
-    return _bundled_plugin_selected(home, "google-meet")
+    """What made core run Google Meet for *home*: ``google_meet`` (the bundled key and manifest name, the
+    only spellings core's loader matched) in ``plugins.enabled``, with no spelling of it in
+    ``plugins.disabled``. The plugin was opt-in, so its keys or a saved login alone are not use."""
+    return _plugins_listed(home, ("google_meet",))[0] and not _plugin_lists(home, "google-meet")[1]
 
 
 def teams_pipeline_in_use(home: Path, *, process_env: bool = False) -> bool:

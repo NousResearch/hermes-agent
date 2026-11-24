@@ -140,7 +140,7 @@ chmod 600 ~/.hermes/.env
 The Graph auth smoke-test ships with the official [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) catalog plugin. Install it, then force a token acquisition:
 
 ```bash
-hermes plugins install teams-pipeline
+hermes plugins install teams-pipeline --enable
 hermes teams-pipeline token-health --force-refresh
 ```
 

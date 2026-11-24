@@ -213,3 +213,15 @@ def test_read_parses_config_once_per_home(homes, monkeypatch):
     monkeypatch.setattr(utils, "fast_safe_load", counting)
     pstate.enabled_plugins_ordered()
     assert len(calls) == 2  # one per home, not one per query
+
+
+def test_a_bundled_key_that_left_core_keeps_its_catalog_plugin_a_member(homes):
+    """``plugins.enabled: [google_meet]`` (core's key, kept as an alias) still selects ``plugins/google-meet``,
+    so a sync keeps Playwright for the plugin the loader loads under that key."""
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    plugin = home / "plugins" / "google-meet"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text('[project]\ndependencies = ["playwright==1.64.0"]\n')
+    _write_config(home, ["google_meet"])
+    assert enabled_member_dirs() == [plugin]

@@ -917,7 +917,7 @@ requirements can still fail that resolution. The table lists common groups;
 
 Memory providers that live in the [plugin catalog](../user-guide/features/plugins.md) rather than in the Hermes tree (e.g. Hindsight) are not extras. Install them like any catalog plugin with `hermes plugins install hindsight`, or declaratively via [`extraPlugins`](#directory-plugins-extraplugins) pointing at the plugin's source tree.
 
-The same goes for Google Meet: the `google-meet` extra no longer exists, so drop it from `extraDependencyGroups`. Meet support is the [`google-meet`](https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet) catalog plugin, which brings its own Python dependencies (Playwright, `websockets`).
+The same goes for Google Meet: the `google-meet` extra no longer exists, so drop it from `extraDependencyGroups`. Meet support is the [`google-meet`](https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet) catalog plugin, which brings its own Python dependencies (Playwright, `websockets`). On Nix the plugin source alone does not bring them: add the plugin through [`extraPlugins`](#directory-plugins-extraplugins) and its Python dependencies through `extraPythonPackages`, e.g. `extraPythonPackages = with config.services.hermes-agent.package.python.pkgs; [ playwright websockets ];`.
 
 Or use the pre-built `#messaging` or `#full` flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
 

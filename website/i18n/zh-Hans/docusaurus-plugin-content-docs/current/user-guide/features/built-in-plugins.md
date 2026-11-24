@@ -132,8 +132,8 @@ Google Meet 参与者和 Microsoft Teams 会议流水线不再随 Hermes 内置�
 两者仍需手动选择启用——只安装你需要的那个：
 
 ```bash
-hermes plugins install google-meet      # meet_join / meet_status / meet_transcript / meet_leave / meet_say
-hermes plugins install teams-pipeline   # 基于 Graph 的 Teams 会议摘要
+hermes plugins install google-meet --enable      # meet_join / meet_status / meet_transcript / meet_leave / meet_say
+hermes plugins install teams-pipeline --enable   # 基于 Graph 的 Teams 会议摘要
 ```
 
 已启用 `google_meet` 或 `teams_pipeline` 的配置文件会在 `hermes update`（或下一次 agent / gateway 启动）时
@@ -142,7 +142,7 @@ hermes plugins install teams-pipeline   # 基于 Graph 的 Teams 会议摘要
 `MSGRAPH_*` 环境变量、`platforms.teams.extra.meeting_pipeline` 配置以及已存储的数据
 （`workspace/meetings/`、`teams_pipeline_store.json`）均保持不变。
 
-`hermes-agent[google-meet]` extra 已移除：`hermes plugins install google-meet` 会自行安装 Playwright 和
+`hermes-agent[google-meet]` extra 已移除：`hermes plugins install google-meet --enable` 会自行安装 Playwright 和
 `websockets`，`hermes meet install` 仍负责安装 Chromium 和音频工具。
 [Microsoft Graph webhook 适配器](../messaging/msgraph-webhook.md)和 [Teams](../messaging/teams.md) 聊天平台仍保留在核心中；
 流水线设置参见 [Teams 会议](../messaging/teams-meetings.md)。

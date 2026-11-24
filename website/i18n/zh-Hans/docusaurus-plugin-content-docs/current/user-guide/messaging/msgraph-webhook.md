@@ -8,7 +8,7 @@ description: "在 Hermes 中接收 Microsoft Graph 变更通知（会议、日�
 
 `msgraph_webhook` gateway 平台是一个入站事件监听器。它是 Hermes 接收来自 Microsoft Graph 的**变更通知**的方式——"一个 Teams 会议已结束"、"此聊天中收到了一条新消息"、"此日历事件已更新"。与 `teams` 平台（用户向其发送消息的聊天机器人）不同——此平台是 M365 告知 Hermes 某事已发生，而非来自用户的消息。
 
-目前主要的消费者是 Teams 会议摘要流水线，它作为官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 提供（`hermes plugins install teams-pipeline`）：Graph 在会议产生转录文本时发出通知，流水线获取该内容，Hermes 将摘要发回 Teams。监听器本身保留在核心中；插件通过插件平台处理器 API（`ctx.register_platform_handler("msgraph_webhook", ...)`）绑定到它。其他 Graph 资源（`/chats/.../messages`、`/users/.../events`）使用同一监听器——流水线消费者通过各自的 PR 接入。
+目前主要的消费者是 Teams 会议摘要流水线，它作为官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 提供（`hermes plugins install teams-pipeline --enable`）：Graph 在会议产生转录文本时发出通知，流水线获取该内容，Hermes 将摘要发回 Teams。监听器本身保留在核心中；插件通过插件平台处理器 API（`ctx.register_platform_handler("msgraph_webhook", ...)`）绑定到它。其他 Graph 资源（`/chats/.../messages`、`/users/.../events`）使用同一监听器——流水线消费者通过各自的 PR 接入。
 
 ## 前提条件
 

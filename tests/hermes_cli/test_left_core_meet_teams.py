@@ -32,6 +32,7 @@ def _home(tmp_path: Path, *, env: str = "", config: str = "") -> Path:
     ("plugins:\n  enabled: [google_meet]\n  disabled: [google_meet]\n", False),   # disabled wins
     ("plugins:\n  enabled: [google_meet]\n  disabled: [google-meet]\n", False),   # under the new name too
     ("plugins:\n  enabled: [other]\n", False),
+    ("plugins:\n  enabled: [google-meet]\n", False),                   # core's loader never matched it
     ("", False),                                                          # keys alone: it was opt-in
 ])
 def test_google_meet_in_use_is_the_bundled_plugin_enabled(tmp_path, config, in_use):
@@ -62,3 +63,12 @@ def test_old_keys_stay_aliases_of_the_catalog_plugins():
     assert lcm.legacy_plugin_alias("google_meet") == "google-meet"
     assert lcm.legacy_plugin_alias("teams_pipeline") == "teams-pipeline"
     assert "teams_pipeline" in lcm.legacy_plugin_keys("teams-pipeline")
+
+
+def test_installing_by_the_old_bundled_name_resolves_the_catalog_plugin(monkeypatch):
+    from hermes_cli import plugins_cmd_catalog as catalog
+
+    entries = {"google-meet": object(), "teams-pipeline": object()}
+    monkeypatch.setattr(catalog, "get_live_catalog_entry", lambda name: entries.get(name))
+    assert catalog.resolve_catalog_name("google_meet", console=None) is entries["google-meet"]
+    assert catalog.resolve_catalog_name("teams_pipeline", console=None) is entries["teams-pipeline"]

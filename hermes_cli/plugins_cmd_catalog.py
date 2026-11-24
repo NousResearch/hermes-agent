@@ -55,7 +55,9 @@ def raise_if_removed(*candidates: str) -> None:
 def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
     """Bare name → live catalog entry, or exit 1 with a pointer to ``search``."""
     from hermes_cli.plugins_cmd import _fail
-    entry = get_live_catalog_entry(identifier)
+    from hermes_cli.left_core_migration import legacy_plugin_alias
+    # A bundled name that left core (``google_meet``) installs its catalog plugin (``google-meet``).
+    entry = get_live_catalog_entry(identifier) or get_live_catalog_entry(legacy_plugin_alias(identifier) or identifier)
     if entry is None:
         _fail(console, (
             f"[red]Error:[/red] '{identifier}' is not in the Hermes plugin catalog and is not a Git URL or "

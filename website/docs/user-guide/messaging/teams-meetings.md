@@ -32,7 +32,7 @@ The pipeline:
 The pipeline ships as the official [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) catalog plugin (opt-in, not installed by default). Install it first; it registers the `teams-pipeline` CLI and binds itself to the core `msgraph_webhook` adapter:
 
 ```bash
-hermes plugins install teams-pipeline
+hermes plugins install teams-pipeline --enable
 ```
 
 Profiles that already had the formerly bundled `teams_pipeline` plugin enabled get the catalog plugin installed and enabled automatically by `hermes update` (or on the next agent or gateway start); `teams_pipeline` keeps working as an alias in `plugins.enabled` / `plugins.disabled`.

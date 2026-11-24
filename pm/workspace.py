@@ -372,6 +372,12 @@ def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None
         return plugin_dir
     if not _is_directory(plugin_dir):
         plugin_dir = paths.repo_root() / "plugins" / relative
+    if not _is_directory(plugin_dir):
+        # A bundled key that left core (``google_meet``) still selects its catalog plugin's tree
+        # (``google-meet``), as the loader's gate reads it, so the sync keeps that plugin's dependencies.
+        from hermes_cli.left_core_migration import legacy_plugin_alias
+        alias = legacy_plugin_alias(name)
+        plugin_dir = plugins_dir / alias if alias else plugin_dir
     return plugin_dir if _is_directory(plugin_dir) else None
 
 

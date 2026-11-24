@@ -160,8 +160,8 @@ and [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/t
 catalog plugins. Both stay opt-in — install only the one you want:
 
 ```bash
-hermes plugins install google-meet      # meet_join / meet_status / meet_transcript / meet_leave / meet_say
-hermes plugins install teams-pipeline   # Graph-backed Teams meeting summaries
+hermes plugins install google-meet --enable      # meet_join / meet_status / meet_transcript / meet_leave / meet_say
+hermes plugins install teams-pipeline --enable   # Graph-backed Teams meeting summaries
 ```
 
 Profiles that had `google_meet` or `teams_pipeline` enabled get the matching

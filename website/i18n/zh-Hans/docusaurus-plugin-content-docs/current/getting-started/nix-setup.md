@@ -665,7 +665,7 @@ services.hermes-agent.extraPythonPackages = [
 services.hermes-agent.extraDependencyGroups = [ "mistral" ];
 ```
 
-这由 uv 与核心依赖在单次解析中完成——不需要 PYTHONPATH 补丁，没有冲突风险。可用的组与 `pyproject.toml` 中 `[project.optional-dependencies]` 的键对应（例如 `"voice"`、`"matrix"`、`"mistral"`、`"bedrock"`）。`google-meet` extra 已不存在，请将其从 `extraDependencyGroups` 中移除；Meet 支持由目录插件 [`google-meet`](https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet) 提供，它会自行安装所需的 Python 依赖（Playwright、`websockets`）。
+这由 uv 与核心依赖在单次解析中完成——不需要 PYTHONPATH 补丁，没有冲突风险。可用的组与 `pyproject.toml` 中 `[project.optional-dependencies]` 的键对应（例如 `"voice"`、`"matrix"`、`"mistral"`、`"bedrock"`）。`google-meet` extra 已不存在，请将其从 `extraDependencyGroups` 中移除；Meet 支持由目录插件 [`google-meet`](https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet) 提供，它会自行安装所需的 Python 依赖（Playwright、`websockets`）。在 Nix 上仅有插件源码并不会带来这些依赖：请通过 [`extraPlugins`](#directory-plugins-extraplugins) 添加插件，并通过 `extraPythonPackages` 添加其 Python 依赖，例如 `extraPythonPackages = with config.services.hermes-agent.package.python.pkgs; [ playwright websockets ];`。
 
 `extraDependencyGroups` 和 `extraPythonPackages` 是在所选包已附带的组之上**追加**，从不替换它们。`default` 包已附带 `messaging`、`voice`、`exa` 等组，因此再写这些组不会有任何变化；`pkgs.hermes-agent.override { extraDependencyGroups = [ ... ]; }` 同理。如需更小的构建，请从更小的包开始：`package = inputs.hermes-agent.packages.${system}.minimal;`（或 `#messaging`），或使用 `.override { defaultDependencyGroups = [ ]; }` 去掉附带的组，只列出你需要的组。
 

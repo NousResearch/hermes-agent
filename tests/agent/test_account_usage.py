@@ -398,3 +398,25 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     assert snapshot is not None
     assert refresh_hints == ["pool-B-revoked"]
     assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]
+
+
+@pytest.mark.parametrize("utilization", [0, 0.5, 1, 1.0, 2, 23, 100])
+def test_anthropic_utilization_is_already_a_percentage(monkeypatch, utilization):
+    """Anthropic's /api/oauth/usage sends ``utilization`` as 0-100. A week at 1% must read 1%,
+    not 100% (a reading <= 1 used to be scaled as a fraction and showed the account at its cap)."""
+    reset = "2026-11-30T20:00:00+00:00"
+    payload = {"five_hour": {"utilization": 7.0, "resets_at": reset},
+               "seven_day": {"utilization": utilization, "resets_at": reset},
+               "seven_day_opus": {"utilization": utilization, "resets_at": reset}}
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat01-test")
+    monkeypatch.setattr(account_usage, "_is_oauth_token", lambda token: True)
+    monkeypatch.setattr(account_usage, "_get_json", lambda url, headers, timeout=15.0: payload)
+
+    snapshot = account_usage._fetch_anthropic_account_usage()
+
+    by_label = {w.label: w for w in snapshot.windows}
+    assert by_label["Current session"].used_percent == 7.0
+    assert by_label["Current week"].used_percent == float(utilization)
+    assert by_label["Current week"].scope == "account"
+    assert by_label["Opus week"].used_percent == float(utilization)
+    assert by_label["Opus week"].scope == "model"

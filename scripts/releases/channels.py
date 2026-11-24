@@ -356,6 +356,52 @@ class ChannelPublisher:
             self._write(channel_key(record["name"]), record)
         return record
 
+    def require_protected_successor(self, request: dict, *, policy: str) -> None:
+        """Refuse a protected release that ``_promote`` would refuse against the live head.
+
+        Publication runs this before it moves anything the head update does not own (feeds,
+        aliases, the retention pointer). A head that already names this build passes, so a retry
+        after the head advanced converges.
+        """
+        current = self._read(request["channel"])
+        if current is None:
+            raise ChannelNotFound("Publication channel not found")
+        record = current[0]
+        if record["head"] is None or record["head"]["buildId"] != request["buildId"]:
+            self._require_successor(record, request, policy)
+
+    def _require_successor(self, record: dict, request: dict, policy: str | None) -> None:
+        live = record["head"]
+        if live is None:
+            return
+        if live["sequence"] >= request["sequence"]:
+            raise ChannelError("A newer build is published; stale completion refused")
+        if policy is not None:
+            self._require_newer_versions(record, request, policy)
+
+    def _require_newer_versions(self, record: dict, request: dict, policy: str) -> None:
+        from scripts.releases.semver import compare
+        from scripts.releases.stable import windows_version
+        from hermes_cli.update_channel import published_canary_timestamp as canary_timestamp
+        previous_head = record["head"]
+        previous = self.store.get(previous_head["manifestKey"])
+        if previous is None or hashlib.sha256(previous[0]).hexdigest() != previous_head["sha256"]:
+            raise ChannelError("Previous protected manifest is unavailable or changed")
+        previous_request = validate_manifest(decode_json(previous[0]), record, self.public_base)["request"]
+        if policy == "canary-release":
+            current_stamp = canary_timestamp(request["releaseTag"])
+            previous_stamp = canary_timestamp(previous_request["releaseTag"])
+            source_increases = (
+                current_stamp is not None
+                and previous_stamp is not None
+                and current_stamp > previous_stamp
+            )
+        else:
+            source_increases = compare(request["version"], previous_request["version"]) > 0
+        if (not source_increases
+                or windows_version(request["windowsVersion"]) <= windows_version(previous_request["windowsVersion"])):
+            raise ChannelError("Protected native versions must increase; stale completion refused")
+
     def promote(self, build_id: str) -> dict:
         return self._promote(build_id)
 
@@ -387,33 +433,10 @@ class ChannelPublisher:
                 raise ChannelError("Request channel identity or allocation mismatch")
             candidate = {**record, "head": head, "revision": record["revision"] + 1}
             validate_manifest(manifest, candidate, self.public_base)
-            if record["head"] is not None and record["head"]["sequence"] >= request["sequence"]:
-                if record["head"] == head:
-                    self.reader.read_bytes(key, head["sha256"])
-                    return record
-                raise ChannelError("A newer build is published; stale completion refused")
-            if policy is not None and record["head"] is not None:
-                from scripts.releases.semver import compare
-                from scripts.releases.stable import windows_version
-                from hermes_cli.update_channel import published_canary_timestamp as canary_timestamp
-                previous_head = record["head"]
-                previous = self.store.get(previous_head["manifestKey"])
-                if previous is None or hashlib.sha256(previous[0]).hexdigest() != previous_head["sha256"]:
-                    raise ChannelError("Previous protected manifest is unavailable or changed")
-                previous_request = validate_manifest(decode_json(previous[0]), record, self.public_base)["request"]
-                if policy == "canary-release":
-                    current_stamp = canary_timestamp(request["releaseTag"])
-                    previous_stamp = canary_timestamp(previous_request["releaseTag"])
-                    source_increases = (
-                        current_stamp is not None
-                        and previous_stamp is not None
-                        and current_stamp > previous_stamp
-                    )
-                else:
-                    source_increases = compare(request["version"], previous_request["version"]) > 0
-                if (not source_increases
-                        or windows_version(request["windowsVersion"]) <= windows_version(previous_request["windowsVersion"])):
-                    raise ChannelError("Protected native versions must increase; stale completion refused")
+            if record["head"] == head:
+                self.reader.read_bytes(key, head["sha256"])
+                return record
+            self._require_successor(record, request, policy)
             if self.verify_build is None or self.verify_build(request, manifest) is not True:
                 raise ChannelError("Publication requires complete native build qualification")
             self.reader.read_bytes(key, head["sha256"])

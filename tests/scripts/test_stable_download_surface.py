@@ -1,12 +1,14 @@
 """Behavior contracts for the stable macOS DMG URL and releases/stable/index.html."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import urllib.request
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -304,7 +306,10 @@ def test_stable_promotion_fails_closed_when_dmg_missing_from_manifest_or_r2(
     r2_server.store[source_dmg_key] = saved
 
 
-def test_stale_stable_channel_publish_stops_before_feed_promotion(tmp_path, monkeypatch):
+@contextlib.contextmanager
+def _stable_channel_controller(tmp_path, monkeypatch):
+    """Run publish_release against a real ChannelPublisher over an object server;
+    promote_stable_feeds only records the feed promotion, or fails it on request."""
     from scripts.releases.channels import preview_identity
     from tests.scripts.test_release_channels import _stage_accepted_native
 
@@ -391,10 +396,9 @@ def test_stale_stable_channel_publish_stops_before_feed_promotion(tmp_path, monk
                 ],
             }
 
-        newer_accepted = setup_release("2.1.0", "rc.1-v2.1.0", "2026.5761.200.0")
-        older_accepted = setup_release("2.0.0", "rc.1-v2.0.0", "2026.5761.100.0")
-        current = {"tag": "rc.1-v2.1.0", "accepted": newer_accepted}
-        promoted = []
+        staged: dict[str, dict] = {}
+        current: dict = {}
+        promoted: list[str] = []
 
         monkeypatch.setattr(
             channel_releases, "admit_transaction", lambda policy, env, **_kw: (current["tag"], commit)
@@ -405,19 +409,48 @@ def test_stale_stable_channel_publish_stops_before_feed_promotion(tmp_path, monk
             lambda _env: (current["tag"], commit, {"claim_epoch": BASE_EPOCH, "lanes": lane_set.DEFAULT}),
         )
         monkeypatch.setattr(channel_releases, "accepted_stable", lambda *args, **kwargs: current["accepted"])
-        monkeypatch.setattr(
-            channel_releases, "promote_stable_feeds", lambda candidate, *_args: promoted.append(candidate["tag"])
-        )
+
+        def promote_feeds(candidate, *_args):
+            if current["fail_feeds"]:
+                raise RuntimeError("feed promotion failed")
+            promoted.append(candidate["tag"])
+
+        monkeypatch.setattr(channel_releases, "promote_stable_feeds", promote_feeds)
         monkeypatch.setattr(channel_releases, "product_identity", lambda _tag: dict(identity))
         env = {"GITHUB_REPOSITORY": pub.repository}
 
-        channel_releases.publish_release("stable-release", env, tmp_path / "pub-newer")
-        assert promoted == ["v2.1.0"]
+        def publish(attempt: str, version: str, win_ver: str, *, fail_feeds: bool = False) -> None:
+            if attempt not in staged:
+                staged[attempt] = setup_release(version, attempt, win_ver)
+            current.update(tag=attempt, accepted=staged[attempt], fail_feeds=fail_feeds)
+            root = tmp_path / f"pub-{len(promoted)}-{attempt}-{fail_feeds}"
+            channel_releases.publish_release("stable-release", env, root)
 
-        current.update(tag="rc.1-v2.0.0", accepted=older_accepted)
+        yield SimpleNamespace(publish=publish, promoted=promoted)
+
+
+def test_stale_stable_channel_publish_stops_before_feed_promotion(tmp_path, monkeypatch):
+    with _stable_channel_controller(tmp_path, monkeypatch) as channel:
+        channel.publish("rc.1-v2.1.0", "2.1.0", "2026.5761.200.0")
+        assert channel.promoted == ["v2.1.0"]
+
         with pytest.raises(ChannelError, match="stale"):
-            channel_releases.publish_release("stable-release", env, tmp_path / "pub-older")
-        assert promoted == ["v2.1.0"]
+            channel.publish("rc.1-v2.0.0", "2.0.0", "2026.5761.100.0")
+        assert channel.promoted == ["v2.1.0"]
+
+
+def test_out_of_order_stable_retry_stops_before_feed_promotion(tmp_path, monkeypatch):
+    """A release allocated before an older one published keeps its lower sequence on retry.
+    The head update refuses it on that sequence, so its feeds must not move either."""
+    with _stable_channel_controller(tmp_path, monkeypatch) as channel:
+        with pytest.raises(RuntimeError, match="feed promotion failed"):
+            channel.publish("rc.1-v2.2.0", "2.2.0", "2026.5761.300.0", fail_feeds=True)
+        channel.publish("rc.1-v2.1.0", "2.1.0", "2026.5761.200.0")
+        assert channel.promoted == ["v2.1.0"]
+
+        with pytest.raises(ChannelError, match="stale"):
+            channel.publish("rc.1-v2.2.0", "2.2.0", "2026.5761.300.0")
+        assert channel.promoted == ["v2.1.0"]
 
 
 @pytest.mark.parametrize("lanes", [["windows-store"], ["windows"], ["macos-arm64"]])

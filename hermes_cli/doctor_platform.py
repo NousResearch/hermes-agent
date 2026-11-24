@@ -614,10 +614,15 @@ _PATH_SETTERS = {
 }
 # Stands in for an expansion doctor can't know (another variable, PATH's old value): it names no directory.
 _UNKNOWN = "\0"
-# A builtin whose NAME=value arguments set shell variables; otherwise a leading assignment only
-# reaches the command that follows it (PATH=x cmd).
-_DECLARATION = re.compile(r"(?:^|[\s;&|()])(?:export|declare|typeset|readonly)\s[^;&|]*$")
+# A setter changes PATH only as a command of its own: after other assignments, after a builtin whose
+# NAME=value arguments set shell variables, or after a reserved word that starts a command. As anything
+# else's argument (env PATH=..., echo export PATH=...) it changes nothing.
+_COMMAND_SEPARATOR = re.compile(r"[;&|(){}`]")
+_RESERVED_WORDS = frozenset({"!", "{", "if", "elif", "then", "else", "do", "while", "until", "time",
+                             "and", "or", "not", "begin"})
+_DECLARATIONS = frozenset({"export", "declare", "typeset", "readonly"})
 _ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+_DECLARATION_ARGUMENT = re.compile(r"-\S*|[A-Za-z_]\w*(?:\+?=.*)?")  # an option, a name, or NAME=value
 # A redirection (2>/dev/null, > file) is no command word; its target is attached or the next word.
 _REDIRECTION = re.compile(r"\d*[<>]+(.*)")
 # The & and | inside >&, <&, >| and &> belong to the redirection, not a command separator: split them off.
@@ -742,10 +747,29 @@ def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]
     return [*words, word] if started else words
 
 
+def _words_before(code: str, pos: int, variables: dict[str, str]) -> list[str]:
+    """The words of the setter's own command that come before ``code[pos]``, reserved words dropped."""
+    starts = [m.end() for m in _COMMAND_SEPARATOR.finditer(code, 0, pos) if not _open_quote(code, m.start())]
+    words = _setter_words(code[starts[-1] if starts else 0 : pos], "", variables)
+    while words and words[0] in _RESERVED_WORDS:
+        words.pop(0)
+    return words
+
+
+def _setter_counts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
+    if _open_quote(code, found.start()):
+        return False  # inside a string: an alias body or an echo
+    before = _words_before(code, found.start(), variables)
+    declared = bool(before) and before[0] in _DECLARATIONS
+    others = before[1:] if declared else before
+    allowed = _DECLARATION_ARGUMENT.fullmatch if declared else _ASSIGNMENT_WORD.match
+    if not all(allowed(word) for word in others):
+        return False
+    return declared or "append" not in found.groupdict() or _assignment_lasts(code, found, variables)
+
+
 def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
     """False for PATH=x cmd, which sets PATH for that one command only."""
-    if _DECLARATION.search(code[: found.start()]):
-        return True
     command = _REDIRECTION_OPERATOR.sub(" ", code[found.end() :])
     _value, *rest = _setter_words(command, ";&|", variables) or [""]
     words = iter(rest)
@@ -762,9 +786,7 @@ def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], targ
     code = line.split("#", 1)[0]
     for setter, stops in setters:
         for found in setter.finditer(code):
-            if _open_quote(code, found.start()):
-                continue  # inside a string: an alias body or an echo, not a PATH change
-            if "append" in found.groupdict() and not _assignment_lasts(code, found, variables):
+            if not _setter_counts(code, found, variables):
                 continue
             entries = [entry for word in _setter_words(code[found.end() :], stops, variables) for entry in word.split(":")]
             if found.groupdict().get("append"):

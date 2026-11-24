@@ -1196,7 +1196,16 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
-                agent._memory_manager = _MemoryManager()
+                # memory.external_prefetch_timeout_s: how long a turn waits for a provider's
+                # prefetch. A synchronous provider (recall_sync) can only inject memory if the
+                # recall finishes inside this budget, so it has to be tunable per backend.
+                try:
+                    _prefetch_timeout = float(mem_config.get("external_prefetch_timeout_s") or 8.0)
+                except (TypeError, ValueError):
+                    _prefetch_timeout = 8.0
+                if _prefetch_timeout <= 0:  # a bad value must not kill the provider
+                    _prefetch_timeout = 8.0
+                agent._memory_manager = _MemoryManager(external_prefetch_timeout=_prefetch_timeout)
                 _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
                 if _mp is not None:
                     agent._memory_manager.add_provider(_mp)

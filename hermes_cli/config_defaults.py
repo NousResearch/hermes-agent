@@ -1262,6 +1262,10 @@ DEFAULT_CONFIG = {
         "memory_enabled": True,
         "user_profile_enabled": True,
         "prefetch_spill_enabled": False,  # External recall opt-in to hooks.output_spill.
+        # Seconds a turn waits for an external provider's prefetch (recall). Raise it when the
+        # provider recalls synchronously (Hindsight recall_sync) and its backend needs more than
+        # the default 8s — otherwise a slow recall is discarded and the turn gets no memory.
+        "external_prefetch_timeout_s": 8.0,
         # Approval gate for memory writes on BOTH foreground turns and the background review fork.
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.

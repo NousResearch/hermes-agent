@@ -189,6 +189,17 @@ def local_model_provider_used(config: dict[str, Any]) -> str:
     return "yes" if any(_slot_is_local(slot) for slot in slots) else "no"
 
 
+def install_hosting() -> str:
+    """``nous_cloud`` when the hosting platform says so (``HERMES_HOSTING``), else ``self_hosted``.
+    The variable's raw value is never recorded."""
+    import os
+
+    # Set by the hosting platform as container env (like HERMES_ENVIRONMENT_HINT): a fact about the
+    # machine, not a user setting, and config.yaml travels with a profile when it moves hosts.
+    value = _norm(os.environ.get("HERMES_HOSTING"))  # health: allow HX002 -- host-set machine fact, see above
+    return value if value in contract.HOSTINGS else "self_hosted"
+
+
 def install_v4_snapshot_fields(config: dict[str, Any]) -> dict[str, str]:
     """The version-lag, channel and hardware dimensions of the daily snapshot."""
     fields = {

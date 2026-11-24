@@ -25,6 +25,15 @@ APPLY_STEPS = ("preflight", "manifest", "webapp_bundle", "write_config", "gatewa
 _NEVER_TOUCHED = frozenset({"desktop-ssh", "desktop-local"})
 _AUTH_PREFIX = "HERMES_DASHBOARD_"
 _SECRET_KEY = "HERMES_DASHBOARD_BASIC_AUTH_SECRET"
+# The HERMES_DASHBOARD_* names the bundled sign-in providers read when they register: the ``_settings`` of
+# plugins/dashboard_auth/{basic,self_hosted,nous,drain,session_token} (basic's secret via ``_resolve_secret``).
+_SIGN_IN_KEYS = frozenset({
+    "HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+    "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+    "HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", "HERMES_DASHBOARD_OAUTH_CLIENT_ID", "HERMES_DASHBOARD_PORTAL_URL",
+    "HERMES_DASHBOARD_OIDC_ISSUER", "HERMES_DASHBOARD_OIDC_CLIENT_ID", "HERMES_DASHBOARD_OIDC_SCOPES",
+    "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET", "HERMES_DASHBOARD_SESSION_TOKEN",
+})
 
 # Supervisors this command cannot drive itself: what the operator does instead.
 _UNSUPPORTED = {
@@ -81,6 +90,10 @@ class BackendPlan:
     running_turns: Optional[int] = None  # None: the old backend's activity has not been read or cannot be read
     turns_unknown: str = ""  # why running_turns is None, for the blocker text (not in the JSON)
     blockers: list[str] = field(default_factory=list)
+    forceable: list[str] = field(default_factory=list)  # the blockers --force-interrupt clears (each in blockers)
+    takes_over: list[str] = field(default_factory=list)  # what the move stops or replaces besides the old backend
+    stray_gateway: Optional[dict] = None  # with --force-interrupt: a gateway outside its service, stopped too
+    legacy_units: list[dict] = field(default_factory=list)  # pre-rename hermes.service units the move replaces
     unsupported: list[tuple[Optional[BackendItem], str, list[str]]] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
 
@@ -119,8 +132,10 @@ class BackendPlan:
             "manifest": "record the current state in backend_migration.json (backups of config.yaml and .env)",
             "webapp_bundle": "build the Webapp bundle" if self.bundle_missing else "check the Webapp bundle (built)",
             "write_config": "write .env and webapp.* (" + ", ".join(self.config_writes()) + ")",
-            "gateway_service": "make sure the gateway runs as a user service",
-            "stop_old_backend": "stop the old backend" + ("" if manual else " and disable it (its unit file is kept)"),
+            "gateway_service": "make sure the gateway runs as a user service" + "".join(
+                f" (replacing {u['unit']}; a copy is kept for --restore)" for u in self.legacy_units),
+            "stop_old_backend": "stop the old backend" + ("" if manual else " and disable it (its unit file is kept)")
+                                + (", then the gateway running outside its service" if self.stray_gateway else ""),
             "start_gateway": "start or restart the gateway",
             "verify": "verify " + " and ".join(format_address(h, self.new_port) for h in self.verify_hosts)
                       + ": /api/status 200 from the gateway and the Webapp page served, within 90 s",
@@ -148,6 +163,7 @@ class BackendPlan:
             "public_url": self.public_url, "auth_before": self.auth_before, "gateway": self.gateway,
             "linger": self.linger, "webapp_bundle_missing": self.bundle_missing,
             "running_turns": self.running_turns, "blockers": list(self.blockers),
+            "forceable_blockers": list(self.forceable), "takes_over": list(self.takes_over),
             "unsupported": [{"supervisor": i.supervisor if i else None, "unit": i.unit if i else None,
                              "pid": i.pid if i else None, "instructions": t, "steps": list(s)}
                             for i, t, s in self.unsupported],
@@ -314,7 +330,8 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
     (``User=``; root when unset, a user unit runs as the caller) and the environment systemd would give it
     (``host.unit_environment``: the manager's environment, ``Environment=``, then every ``EnvironmentFile=``,
     later wins), not by the report's ``this_home`` or the shell's own HERMES_HOME. When that cannot be
-    told (an unreadable environment, a profile chosen on its command line) the plan is blocked."""
+    told (an unreadable environment, an ``env`` launcher that may set its home: :func:`env_line`, a profile
+    chosen on its command line) the plan is blocked."""
     if not item.running and item.unit and item.scope and item.supervisor in ("systemd", "nix-systemd"):
         if item.scope != "user":
             user = host.unit_props(item.unit, item.scope).get("User") or "root"
@@ -324,6 +341,14 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
                                         f"its HERMES_HOME is that account's.")
                 return False
         env, problem = host.unit_environment(item.unit, item.scope)
+        if problem is None and (launcher := env_line(host, item.unit, item.scope)[0]):
+            if plan is not None:
+                user = "--user " if item.scope == "user" else ""
+                plan.blockers.append(f"Cannot tell which Hermes home {item.unit} serves: its ExecStart starts it "
+                                     f"through env, {launcher}. Put HERMES_HOME in the unit's Environment= rather "
+                                     f"than on the env line, or stop and disable that unit by hand (systemctl "
+                                     f"{user}disable --now {item.unit}), then re-run. Nothing changed.")
+            return False
         if problem is None and _profile_flag(_argv_of(item, host)):
             problem = "its command line picks a profile (-p/--profile), which moves it to that profile's home"
         if problem:
@@ -345,6 +370,79 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
     if item.this_home is not None:
         return item.this_home
     return not item.running and item.hermes_home is None and host.default_home()
+
+
+_PAIR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")  # a token that may be env(1)'s NAME=value
+# env(1) options that leave the environment alone; ``-C``/``--chdir`` also takes the next argument.
+_ENV_INERT = frozenset({"-0", "--null", "-v", "--debug", "--list-signal-handling"})
+_ENV_SIGNALS = ("--block-signal", "--default-signal", "--ignore-signal")
+
+
+def env_line(host, unit: str, scope: str) -> tuple[Optional[str], frozenset[str], frozenset[str]]:
+    """Read a leading ``env`` launcher in *unit*'s ExecStart: ``(why the unit's home cannot be told from its
+    environment, or None; the names its NAME=VALUE pairs set; its -u/-C/-S options)``. ``systemctl show``
+    joins the arguments with spaces and systemd expands ``$`` in them when it runs the command, so this reads only what that line
+    cannot hide: a home variable (``HERMES_HOME``, ``HOME``, ...) set or unset there, an option that changes
+    the environment as a whole (``-i``, ``-S``) or one not read here, or a ``$`` anywhere but inside the value
+    of a NAME=value pair (an option, its operand, a name: systemd may expand it to a home variable). Without
+    those, the home is the unit environment's, as when there is no launcher. Nothing is expanded. Which
+    other variables a -u/-C/-S option leaves set cannot be told (``-C "/srv/b -u AUX"`` shows as
+    ``-C /srv/b -u AUX``), so the template check treats every outside variable as unknown then."""
+    from hermes_cli.gateway_migrate_backends_host import _HOME_KEYS
+    value = host.unit_props(unit, scope).get("ExecStart", "")
+    # systemd prints the arguments unquoted, so whitespace is the only split that hides nothing
+    shown = value.split("argv[]=", 1)[1].split(" ;", 1)[0].split() if "argv[]=" in value else []
+    names: set[str] = set()
+    opaque: set[str] = set()
+    if not (shown and os.path.basename(shown[0]) == "env"):
+        return None, frozenset(), frozenset()
+    for tok in shown:
+        if tok.split("=", 1)[0] in _HOME_KEYS and "=" in tok:
+            return f"which sets {tok.split('=', 1)[0]} on that line", frozenset(names), frozenset(opaque)
+    rest = list(shown)
+    problem = None
+    while rest and os.path.basename(rest[0]) == "env" and problem is None:
+        rest, problem = _env_line_args(rest[1:], names, opaque)
+    if problem is None and rest and "$" in rest[0]:
+        problem = "whose command is a $ substitution that could hold an assignment"
+    # The pairs end at the first other token, but a quoted value with a space ("NOTE=two words") ends them
+    # early in the joined line: a NAME= token anywhere after it may still be a pair, so it counts as set.
+    names.update(t.split("=", 1)[0] for t in rest if _PAIR.match(t))
+    return problem, frozenset(names), frozenset(opaque)
+
+
+def _env_line_args(args: list[str], names: set[str], opaque: set[str]) -> tuple[list[str], Optional[str]]:
+    """One ``env`` invocation's options and pairs (*args*, without ``env`` itself): ``(the command after them,
+    why the home cannot be told or None)``; the names its pairs set go into *names*, its -u/-C/-S options
+    into *opaque*."""
+    from hermes_cli.gateway_migrate_backends_host import _HOME_KEYS
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        arg = args[i]
+        if arg == "--":
+            i += 1
+            break
+        if arg.startswith(("-u", "--unset", "-C", "--chdir", "-S", "--split-string")):
+            opaque.add(arg)
+        value = arg[2:] if arg.startswith("-u") and arg != "-u" else (
+            arg.split("=", 1)[1] if arg.startswith("--unset=") else None)
+        if arg in ("-u", "--unset", "-C", "--chdir"):
+            value, i = (args[i + 1] if i + 1 < len(args) else ""), i + 1
+        if "$" in arg or "$" in (value or ""):
+            return [], f"with a $ substitution in an option ({arg} {value or ''}), which may name any variable"
+        if arg.startswith(("-u", "--unset")) and value in _HOME_KEYS:
+            return [], f"which unsets {value} there (-u)"
+        if not (value is not None or arg.startswith(("-C", "--chdir=")) or arg in _ENV_INERT
+                or arg.startswith(_ENV_SIGNALS)):
+            return [], f"with {arg}, which changes the environment as a whole or is not read here"
+        i += 1
+    while i < len(args) and "=" in args[i] and not args[i].startswith("="):
+        name = args[i].split("=", 1)[0]
+        if "$" in name:
+            return [], "with a $ substitution that could hold an assignment"
+        names.add(name)
+        i += 1
+    return args[i:], None
 
 
 def _profile_flag(argv: list[str]) -> bool:
@@ -500,13 +598,16 @@ def _manual_launcher_env(item: Optional[BackendItem], kind: str, host) -> dict:
 
 def _manual_public_url(plan: BackendPlan, host) -> None:
     """A by-hand plan copies the old backend's public URL too: one the gateway refuses blocks it, with
-    the automatic plan's words, until webapp.public_url is set to an accepted one."""
+    the automatic plan's words, until webapp.public_url is set to an accepted one. Its steps copy no key the
+    ``.env`` sets either, so a ``.env`` template the move would resolve differently blocks it the same way."""
     item = plan.unsupported[0][0]
     if item is None:
         return
     env = _manual_launcher_env(item, _supervisor_kind(item, host), host)
     if problem := resolve_public_url(host.effective_config(), backend_url_env(host, env))[1]:
         plan.blockers.append(_url_blocker(problem))
+    if blocker := launcher_template_blocker(host, env or None, *_env_line_names(item, host, from_unit=True)):
+        plan.blockers.append(blocker)
 
 
 def _select(plan: BackendPlan, items: list[BackendItem], address, host) -> None:
@@ -589,6 +690,83 @@ def _credentials(plan: BackendPlan, env: Optional[dict], host, cfg: dict) -> Non
     has_secret = bool(launcher.get(_SECRET_KEY) or dotenv.get(_SECRET_KEY) or os.environ.get(_SECRET_KEY)
                       or (isinstance(basic, dict) and basic.get("secret")))
     plan.generate_secret = not has_secret
+    item = plan.item
+    from_unit = not (item.pid and host.process_env(item.pid) is not None)  # as _record reads it
+    if blocker := launcher_template_blocker(host, env, *_env_line_names(item, host, from_unit=from_unit)):
+        plan.blockers.append(blocker)
+
+
+def _env_line_names(item: Optional[BackendItem], host, *, from_unit: bool) -> tuple[frozenset, frozenset]:
+    """``(the names an env launcher in item's systemd unit sets, its -u/-C/-S options)`` (:func:`env_line`),
+    when the plan read its launch environment from the unit (*from_unit*) rather than from its running
+    process, which already reflects them."""
+    if not from_unit or item is None or item.supervisor != "systemd" or not (item.unit and item.scope):
+        return frozenset(), frozenset()
+    return env_line(host, item.unit, item.scope)[1:]
+
+
+def launcher_template_blocker(host, launcher: Optional[dict], env_line_names: frozenset = frozenset(),
+                              env_line_opaque: frozenset = frozenset()) -> Optional[str]:
+    """Why the move would change a sign-in setting (:data:`_SIGN_IN_KEYS`) that the home's ``.env`` sets as a
+    ``${VAR}`` template, or None. The ``.env`` loads over the launch environment with ``${VAR}`` read from that
+    environment (``env_loader``), so the old backend resolved it against its launcher's (*launcher*; None
+    when unreadable) and the gateway resolves it against its service's (``host.gateway_environment``). Only a
+    value that depends on a variable from outside the ``.env`` (:func:`_outside_reads`) can differ; an unknown
+    environment refuses only such a value. A key the managed ``.env`` sets is not the home ``.env``'s. Since
+    the plan copies no key the ``.env`` sets, a template that resolves differently (a blank password: the
+    Webapp's sign-in no longer accepts the old credential) refuses the move. A variable the old unit's ``env``
+    launcher sets (*env_line_names*) has a value not read here, so a template reading one is refused too, and
+    one with a -u/-C/-S option (*env_line_opaque*) leaves no outside variable knowable, so every such
+    template is refused."""
+    from hermes_cli.env_loader import _parse_dotenv_file, _resolve_dotenv_assignments
+    try:
+        assignments = _parse_dotenv_file(host.home / ".env")
+    except OSError:
+        return None
+    managed = host.managed_env()
+    outside = _outside_reads(assignments)
+    reads = {name: outside[name] for name, _value in assignments
+             if name in _SIGN_IN_KEYS and name not in managed and outside[name]}
+    if not reads:
+        return None
+    gateway_env, why = host.gateway_environment()
+    old = _resolve_dotenv_assignments(assignments, launcher, override=True) if launcher is not None else {}
+    new = _resolve_dotenv_assignments(assignments, gateway_env, override=True)
+    keys = sorted(k for k in reads if launcher is None or why is not None or env_line_opaque
+                  or reads[k] & env_line_names or old.get(k) != new.get(k))
+    if not keys:
+        return None
+    variables = sorted({v for k in keys for v in reads[k]})
+    on_line = sorted(set(variables) & env_line_names)
+    unknown = ("the old backend's launch environment cannot be read" if launcher is None
+               else f"the env line of the old backend's ExecStart ({', '.join(sorted(env_line_opaque))}) changes "
+                    f"the environment in a way this check cannot read" if env_line_opaque
+               else f"{', '.join(on_line)} is set on the env line of the old backend's ExecStart, whose value is "
+                    f"not read here" if on_line
+               else f"{why}, so its value there cannot be told" if why else "")
+    reason = f" ({unknown})" if unknown else ""
+    env_file = host.home / ".env"
+    return (f"{', '.join(keys)} in {env_file} is a ${{...}} template that reads {', '.join(variables)} from the "
+            f"environment the backend starts with, and the gateway would not start with the old backend's value"
+            f"{reason}: after the move it would resolve differently, and the Webapp's sign-in would not take the "
+            f"old credential. Put the literal value in {env_file} (chmod 600), or set {', '.join(variables)} where "
+            f"the gateway runs (its service's environment), then re-run. Nothing changed.")
+
+
+def _outside_reads(assignments: list) -> dict[str, set[str]]:
+    """For each name the ``.env`` *assignments* set, the variables from outside the file its final value reads,
+    followed the way the loader resolves them (``env_loader._resolve_dotenv_assignments`` with override): a
+    line sees the lines before it, which win over the environment, so ``${VAR}`` or ``${VAR:-default}`` of a
+    name set earlier reads only what that line read; any other name comes from the environment."""
+    from dotenv.variables import Variable, parse_variables
+    outside: dict[str, set[str]] = {}
+    for name, value in assignments:
+        reads: set[str] = set()
+        for atom in parse_variables(value or ""):
+            if isinstance(atom, Variable):
+                reads |= outside.get(atom.name, {atom.name})
+        outside[name] = reads
+    return outside
 
 
 def resolve_public_url(cfg: dict, env: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
@@ -786,19 +964,89 @@ def _manual_target(plan: BackendPlan, host, keep_webapp: bool) -> None:
         plan.unsupported[0] = (item, why, [])  # no steps that would set a refused or conflicting address
 
 
-def _gateway(plan: BackendPlan, host) -> None:
+def _gateway(plan: BackendPlan, host, force_interrupt: bool) -> None:
     gs = host.gateway_state()
     plan.gateway, plan.linger = gs, host.linger()
     if gs["kind"] is None:
         plan.no_service = True  # its by-hand steps are built once every check has run (build_plan)
         return
+    _legacy(plan, host)
     if gs["running_pid"] and not gs["active"]:
-        plan.blockers.append(
-            f"A gateway for this home runs outside its service (pid {gs['running_pid']}). Stop it "
-            f"({hermes_command(plan.home, powershell=plan.powershell)} gateway stop) so the migration can run it "
-            f"as a service, then re-run.")
+        _stray_gateway(plan, host, gs["running_pid"], force_interrupt)
     if reason := host.gateway_preflight():
         plan.blockers.append(f"The gateway's user service cannot be driven from this shell: {reason}")
+
+
+def _forceable(plan: BackendPlan, blocker: str, consent: str, force_interrupt: bool) -> None:
+    """Something the move may stop only with the user's consent: *consent* says what (the dashboard's Move asks
+    once for all of it), and without --force-interrupt *blocker* holds the move."""
+    plan.takes_over.append(consent)
+    if not force_interrupt:
+        plan.blockers.append(blocker)
+        plan.forceable.append(blocker)
+
+
+def _stray_gateway(plan: BackendPlan, host, pid: int, force_interrupt: bool) -> None:
+    """A gateway of this home running outside its service: one the dashboard's chat started (it ends itself
+    when idle) or one started by hand, which may run messaging bots. With consent the move stops it right after
+    the old backend, so the gateway service can take over; a legacy ``hermes.service`` is replaced instead."""
+    stray = host.stray_gateway(pid)
+    if any(u.get("main_pid") == pid or u["unit"] == stray.get("unit") for u in plan.legacy_units):
+        return  # the legacy unit's own gateway: replaced, not stopped by hand
+    what = ("started by a chat window; it ends by itself when idle" if stray["idle_exit"]
+            else "started by hand or by another program")
+    chats = {None: "; its chats cannot be read", 0: ""}.get(stray["chats"], f"; {stray['chats']} chat(s) running on it")
+    stop = f"{hermes_command(plan.home, powershell=plan.powershell)} gateway stop"
+    _forceable(plan, f"A gateway for this home runs outside its service (pid {pid}, {what}{chats}). The move stops "
+                     f"it and runs the gateway as a service in its place; re-run with --force-interrupt to allow that "
+                     f"(or stop it first: {stop}).",
+               f"Stops the gateway running outside its service (pid {pid}, {what}{chats}); the gateway service "
+               f"takes over its chats and messaging bots.", force_interrupt)
+    if force_interrupt:
+        plan.stray_gateway = stray
+
+
+_LEGACY_ENV_DROPIN = "hermes-legacy-environment.conf"
+
+
+def _legacy(plan: BackendPlan, host) -> None:
+    """A pre-rename ``hermes.service`` gateway unit: the move replaces it with the gateway service, keeping its
+    extra ``Environment=``/``EnvironmentFile=`` lines in a drop-in and its unit file for a rollback or --restore.
+    Bot tokens and pairings live in this home, so nothing signs in again. One it cannot replace blocks."""
+    for unit in host.legacy_unit_records():
+        if unit["system"]:
+            plan.blockers.append(
+                f"A legacy system-wide gateway unit is installed ({unit['path']}), and this command changes no system "
+                f"unit. Remove it as root (sudo systemctl disable --now {unit['unit']}; sudo rm {unit['path']}; sudo "
+                f"systemctl daemon-reload), then run this again; your bots keep their logins (they are in this home). "
+                f"Nothing changed.")
+        elif (problem := _legacy_home_problem(unit, host)) is not None:
+            plan.blockers.append(f"A legacy gateway unit ({unit['unit']}) is installed, but {problem}, so the move "
+                                 f"cannot replace it. Remove it from the home it serves (hermes gateway migrate-legacy "
+                                 f"there), then run this again. Nothing changed.")
+        elif os.path.lexists(dropin := host.gateway_env_dropin_path(_LEGACY_ENV_DROPIN)):
+            plan.blockers.append(f"{dropin} already exists; move it aside before migrating. Nothing changed.")
+        else:
+            plan.legacy_units.append(unit)
+            plan.takes_over.append(f"Replaces the old {unit['unit']} with the gateway service, which keeps its "
+                                   f"environment settings; its messaging bots keep their logins.")
+
+
+def _legacy_home_problem(unit: dict, host) -> Optional[str]:
+    """Why *unit* may serve another Hermes home (``hermes gateway install`` deletes it whichever home it serves),
+    else None: read the way the old backend's unit is (:func:`_for_this_home`)."""
+    from hermes_cli.gateway_migrate_backends_host import exec_start_argv
+    env, problem = host.unit_environment(unit["unit"], "user")
+    if problem is None and _profile_flag(exec_start_argv(host.unit_props(unit["unit"], "user").get("ExecStart", ""))):
+        problem = "its command line picks a profile (-p/--profile)"
+    if problem:
+        return f"which Hermes home it serves cannot be told ({problem})"
+    if env.get("HERMES_HOME"):
+        return None if host.same_home(env["HERMES_HOME"]) else f"it serves another Hermes home ({env['HERMES_HOME']})"
+    mine = host.default_home(env)  # a unit that pins no HERMES_HOME runs its own default home
+    if mine is None:
+        return "which Hermes home it serves cannot be told (its HOME is not a plain absolute path)"
+    return None if mine else "it serves another Hermes home (the default one)"
 
 
 def _restart_hint(plan: BackendPlan) -> str:
@@ -823,16 +1071,16 @@ def _turns_before_restart(host, pid: Optional[int], start_time) -> Optional[int]
 
 
 def _turns_blocker(plan: BackendPlan, force_interrupt: bool) -> None:
-    if force_interrupt:
-        return
     if plan.running_turns is None:
         why = plan.turns_unknown or "its turn activity could not be read"
-        plan.blockers.append(f"Cannot tell whether turns are running on the old backend: {why}. To move it, "
-                             f"confirm it is idle, then re-run with --force-interrupt (any running turn is "
-                             f"interrupted).")
+        _forceable(plan, f"Cannot tell whether turns are running on the old backend: {why}. To move it, confirm it "
+                         f"is idle, then re-run with --force-interrupt (any running turn is interrupted).",
+                   "Cuts off any reply being written on the old backend (its chat activity cannot be read).",
+                   force_interrupt)
     elif plan.running_turns > 0:
-        plan.blockers.append(f"{plan.running_turns} turn(s) are running on the old backend. Wait for them to "
-                             f"finish, or re-run with --force-interrupt (they are interrupted).")
+        _forceable(plan, f"{plan.running_turns} turn(s) are running on the old backend. Wait for them to finish, or "
+                         f"re-run with --force-interrupt (they are interrupted).",
+                   f"Cuts off the {plan.running_turns} reply(ies) being written on the old backend.", force_interrupt)
 
 
 def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
@@ -918,6 +1166,14 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
         return plan
     _select(plan, host.backends(), address, host)
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    if (plan.unsupported or plan.candidates) and (elsewhere := run_elsewhere_refusal(host.home)) is not None:
+        # A plugin runs this profile elsewhere. The gateway a move starts would refuse the profile, and
+        # the backend found for its home may be the one the plugin runs: the plan lists none, to move
+        # here or by hand.
+        plan.blockers.append(f"{elsewhere} Nothing changed.")
+        plan.unsupported, plan.candidates = [], []
+        return plan
     if (plan.unsupported or plan.candidates) and (problem := _owner_problem(host)):
         plan.blockers.append(problem)
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
@@ -945,7 +1201,7 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
     _public_url(plan, cfg, backend_url_env(host, env))
     if plan.new_host is not None:
         _proposed_webapp(plan, host)
-    _gateway(plan, host)
+    _gateway(plan, host, force_interrupt)
     _auth_and_turns(plan, host, force_interrupt)
     plan.bundle_missing = host.bundle_missing()
     if plan.rec["supervisor"] == "systemd" and _own_cgroup_inside(plan):
@@ -981,6 +1237,8 @@ def format_plan(plan: BackendPlan, *, dry_run: bool) -> list[str]:
         lines += [f"      {s}" for s in steps]
     if plan.rec:
         lines += _plan_body(plan)
+    if plan.takes_over:
+        lines += ["", "  The move also:", *[f"    • {t}" for t in plan.takes_over]]
     if plan.blockers:
         lines += ["", "  ✗ Blockers (nothing will be changed):", *[f"    • {b}" for b in plan.blockers]]
     if plan.notices:

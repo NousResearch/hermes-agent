@@ -381,7 +381,8 @@ class GatewayProfileReconcileMixin:
             launch = get_process_hermes_home().resolve()
             if launch != get_default_hermes_root().resolve():
                 return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
-            if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
+            # A parked or run-elsewhere profile can come back without a host restart: count it.
+            if len(profiles_to_serve(multiplex=True, include_parked=True, include_run_elsewhere=True)) < 2:
                 return False
             blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
             if blocker is not None:

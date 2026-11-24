@@ -5,15 +5,25 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 
 import pytest
 
-from scripts.bundles.payload import relativize_links, snapshot
+from scripts.bundles.payload import INERT_SNAPSHOT_DIRS, relativize_links, snapshot
 from scripts.build.inputs import project_entries
 from scripts.build.agent import plant_surfaces
 from scripts.build.launchers import posix_launcher
 from scripts.bundles.desktop import release_version
+
+
+def test_sealed_snapshot_keeps_the_whatsapp_bridge(tmp_path):
+    """Desktop and Store payloads exclude scripts/ but still run the WhatsApp bridge."""
+    root = Path(__file__).resolve().parents[2]
+    destination = tmp_path / "agent"
+    snapshot(root, "HEAD", destination, exclude=INERT_SNAPSHOT_DIRS)
+    assert (destination / "scripts/whatsapp-bridge/bridge.js").is_file()
+    assert not (destination / "scripts/bundles/payload.py").exists()
 
 
 def test_release_version_comes_from_the_release_identity_not_the_checkout(tmp_path):

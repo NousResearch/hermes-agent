@@ -55,8 +55,9 @@ function SelectContent({
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
   // Portal into the enclosing dialog (if any) so the dropdown is a DOM
   // descendant of the dialog — keeps focus inside and stops the dialog closing
-  // when the dropdown is dismissed. Falls back to document.body outside a dialog.
-  const container = usePopoverPortalContainer()
+  // when the dropdown is dismissed. Falls back to the browser portal host on
+  // the Webapp and document.body on native Desktop.
+  const container = usePopoverPortalContainer(undefined, 'select')
 
   return (
     <SelectPrimitive.Portal container={container}>

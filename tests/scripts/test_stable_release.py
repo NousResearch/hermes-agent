@@ -548,13 +548,15 @@ def test_a_default_claim_builds_no_termux_and_lanes_restore_it(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    # A stable release never runs the canary's publication job.
-    off = {"candidates-termux", "termux-checks", "candidates-linux-x64", "candidates-linux-arm64", "publish-canary"}
+    # A stable release never runs the canary or commit publication jobs.
+    off = {"candidates-termux", "termux-checks", "candidates-linux-x64", "candidates-linux-arm64",
+           "publish-canary", "publish-commit"}
     required = ["admit", *lane_set.JOB_LANES]
     default = stable.gate_expectations(required, lane_set.DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off
     everything = stable.gate_expectations(required, lane_set.NAMES)
-    assert {name for name, result in everything.items() if result == "skipped"} == {"publish-canary"}
+    assert {name for name, result in everything.items() if result == "skipped"} == {
+        "publish-canary", "publish-commit"}
     # A lane that is off removes its jobs even when its test lane is on.
     assert stable.gate_expectations(["candidates-termux", "termux-checks"],
                                     lane_set.select(without=["termux"])) == \

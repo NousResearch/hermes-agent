@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
+import { zhApproval } from './zh_approval'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
@@ -277,6 +278,14 @@ export const zhOverrides = {
       approvalTitleNamed: session => `需要批准 — ${session}`,
       approveAction: '批准',
       rejectAction: '拒绝',
+      accessTitle: '需要文件夹访问权限',
+      accessTitleNamed: session => `需要文件夹访问权限 — ${session}`,
+      accessReadBody: folder => `只读：${folder}`,
+      accessReadWriteBody: folder => `读写：${folder}`,
+      networkTitle: '需要网站访问权限',
+      networkTitleNamed: session => `需要网站访问权限 — ${session}`,
+      allowAction: '允许',
+      denyAction: '拒绝',
       inputTitle: '需要输入',
       inputTitleNamed: session => `需要输入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回应。',
@@ -2776,6 +2785,8 @@ export const zhOverrides = {
     remoteOverride: {
       menuItem: '连接到远程主机…',
       badge: (host: string) => `运行于 ${host}`,
+      runHere: '在此电脑上运行…',
+      sandboxed: '已沙盒化',
       title: (profile: string) => `将 ${profile} 连接到远程主机`,
       description: '此配置档案中的会话将在你指定的远程 Hermes 上运行，而不是这台电脑。',
       urlLabel: '远程地址',
@@ -4454,21 +4465,7 @@ export const zhOverrides = {
       sendEdited: '发送编辑后的消息',
       attachingFile: '正在附加…'
     },
-    approval: {
-      gatewayDisconnected: 'Hermes 网关未连接',
-      sendFailed: '无法发送审批响应',
-      run: '运行',
-      command: '命令',
-      moreOptions: '更多审批选项',
-      allowSession: '允许本会话',
-      alwaysAllowMenu: '始终允许…',
-      jumpToApproval: '需要审批',
-      reject: '拒绝',
-      alwaysTitle: '始终允许此命令？',
-      alwaysDescription: pattern =>
-        `这会将“${pattern}”模式加入永久允许列表 (~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
-      alwaysAllow: '始终允许'
-    },
+    approval: zhApproval,
     clarify: zhClarify,
     themePicker: zhThemePicker,
     catalogInstall: {

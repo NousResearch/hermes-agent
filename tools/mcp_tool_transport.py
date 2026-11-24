@@ -4,9 +4,12 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 
 import logging
 import asyncio
+from collections.abc import Callable, Mapping
 import os
+from pathlib import Path
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
@@ -15,12 +18,21 @@ from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
-from tools.mcp_tool_common import _core
+from hermes_platform.host import facts
+from tools.mcp_tool_common import (
+    _ancestor_cgroup_memory_max_bytes,
+    _core,
+    _get_lifecycle_memory_max_mb,
+    _sanitize_mcp_unit_component,
+    resolve_mcp_memory_max_bytes,
+    should_isolate_mcp_stdio_in_scope,
+)
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_events as _events
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
+from tools import process_registry as _pr
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -96,7 +108,6 @@ class LiveEndpointUnavailable(ConnectionError):
 def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
     from agent.redact import register_vault_redaction_value
     from hermes_platform import declaration
-    from hermes_platform.host import facts
     from hermes_platform.resolver.app import AppResolver
     from tools.mcp_liveness import liveness_for
 
@@ -161,6 +172,93 @@ def _sdk_unavailable_error(server_name: str) -> ImportError:
                            "run `hermes pm repair`.")
     return ImportError(f"MCP server '{server_name}' requires the 'mcp' Python SDK, but it is not "
                        "installed. Run `hermes setup` to install MCP support, then retry.")
+
+
+_mcp_scope_degraded_warned = False
+
+
+def _warn_mcp_scope_degraded_once(detail: str) -> None:
+    global _mcp_scope_degraded_warned
+    if _mcp_scope_degraded_warned:
+        return
+    _mcp_scope_degraded_warned = True
+    logger.warning(
+        "Stdio MCP servers cannot be isolated in transient systemd scopes (%s); "
+        "children remain in this unit's cgroup. Give the gateway user a lingering "
+        "session bus (`loginctl enable-linger <user>`) to isolate them.",
+        detail,
+    )
+
+
+def _read_self_cgroup_text() -> Optional[str]:
+    try:
+        return Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _prepare_stdio_systemd_scope(
+    server_name: str,
+    command: str,
+    args: list,
+    safe_env: dict,
+    config: dict,
+    *,
+    is_linux: Optional[bool] = None,
+    environ: Optional[Mapping[str, str]] = None,
+    is_supervised_gateway: Optional[bool] = None,
+    scope_available: Optional[Callable[[], bool]] = None,
+    enclosing_memory_max: Optional[Callable[[], Optional[int]]] = None,
+    build_scope_argv: Optional[Callable[..., list[str]]] = None,
+    user_bus_env: Optional[Callable[[dict], dict]] = None,
+) -> tuple[str, list, Optional[dict], Optional[str]]:
+    """Wrap a stdio MCP command in its own transient systemd scope when running inside a
+    supervised gateway tree on Linux (#159117). Synchronous (may read ``/proc/self/cgroup`` and
+    probe ``systemd-run`` on cache miss), so callers on an event loop run it via
+    ``asyncio.to_thread``."""
+    explicit_mb = _get_lifecycle_memory_max_mb(config)
+    linux_host = facts.os_family().startswith("linux") if is_linux is None else is_linux
+    env_map = os.environ if environ is None else environ
+    if not linux_host or env_map.get("INVOCATION_ID", "").strip() == "":
+        return command, list(args), safe_env or None, None
+
+    supervised_gw = _pr._is_supervised_gateway_process() if is_supervised_gateway is None else is_supervised_gateway
+    if not should_isolate_mcp_stdio_in_scope(
+        is_linux=linux_host,
+        environ=env_map,
+        is_supervised_gateway=supervised_gw,
+    ):
+        return command, list(args), safe_env or None, None
+
+    check_available = _pr._systemd_run_user_scope_available if scope_available is None else scope_available
+    if not check_available():
+        _warn_mcp_scope_degraded_once("systemd-run --user --scope unavailable")
+        return command, list(args), safe_env or None, None
+
+    enclosing_fn = (
+        (lambda: _ancestor_cgroup_memory_max_bytes(_read_self_cgroup_text()))
+        if enclosing_memory_max is None else enclosing_memory_max
+    )
+    build_fn = _pr._build_systemd_scope_argv if build_scope_argv is None else build_scope_argv
+    bus_env_fn = _pr.systemd_user_bus_env if user_bus_env is None else user_bus_env
+
+    safe_name = _sanitize_mcp_unit_component(server_name)
+    suffix = f"{safe_name}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    memory_max_bytes = (
+        resolve_mcp_memory_max_bytes(explicit_mb, enclosing_fn())
+        if explicit_mb is not None else None
+    )
+    raw_argv = [command, *args]
+    scoped_argv = build_fn(
+        raw_argv, suffix, unit_prefix="hermes-mcp", memory_max_bytes=memory_max_bytes,
+    )
+    if scoped_argv == raw_argv:
+        _warn_mcp_scope_degraded_once("systemd-run disappeared after availability probe")
+        return command, list(args), safe_env or None, None
+
+    scope_unit = f"hermes-mcp-{suffix}.scope"
+    spawn_env = bus_env_fn(safe_env)
+    return scoped_argv[0], scoped_argv[1:], spawn_env, scope_unit
 
 
 class MCPServerTransportMixin:
@@ -390,8 +488,11 @@ class MCPServerTransportMixin:
         command, safe_env, stdio_cwd = inputs
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
+        spawn_cmd, spawn_args, spawn_env, scope_unit = await asyncio.to_thread(
+            _prepare_stdio_systemd_scope, self.name, command, args, safe_env, config,
+        )
         server_params = _core.StdioServerParameters(
-            command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
+            command=spawn_cmd, args=spawn_args, env=spawn_env, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
         # Windows has no POSIX parent-death supervisor / killpg safety net (#61059): when this
@@ -421,7 +522,10 @@ class MCPServerTransportMixin:
         # Subprocess stderr goes to ~/.hermes/logs/mcp-stderr.log so banners can't corrupt the TUI.
         _config._write_stderr_log_header(self.name)
         stderr = _config._StderrTee(_config._get_mcp_stderr_log())
+        self.session = None
         try:
+            if scope_unit is not None:
+                _lifecycle._track_stdio_unit(scope_unit, self.name)
             async with _core.stdio_client(server_params, errlog=stderr.sink) as (read_stream, write_stream):
                 # New PIDs for force-kill cleanup, minus non-MCP children (slash_worker, LSP) racing
                 # into the window: they share the TUI's pgid — leaking them would killpg() the TUI.
@@ -433,8 +537,17 @@ class MCPServerTransportMixin:
                     # Bound the handshake here (``connect_timeout`` only bounds the caller's ``.result()``):
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.
                     connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
-                    return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
+                    outcome = await self._serve_session(session, connect_timeout, mark_lifecycle=True)
+            # Parent exited cleanly via stdio_client.__aexit__; now reap any setsid()-escaped
+            # descendants inside the transient systemd scope before returning (#159117).
+            if scope_unit is not None and await asyncio.to_thread(_pr._stop_systemd_unit, scope_unit):
+                with _core._lock:
+                    _lifecycle._stdio_units.pop(scope_unit, None)
+                scope_unit = None
+            return outcome
         except Exception as exc:
+            if scope_unit is not None and spawn_env and self.session is None:
+                await asyncio.to_thread(_pr.scoped_spawn_lost_user_bus, spawn_env)
             # The SDK only sees "Connection closed"; the child's stderr says why (#124264).
             abi_error = node_abi_error(self.name, await asyncio.to_thread(stderr.close))
             if abi_error is not None:
@@ -444,6 +557,10 @@ class MCPServerTransportMixin:
             stderr.close(timeout=0)
             if new_pids:
                 self._release_spawned_children(new_pids)
+            if scope_unit is not None:
+                with _core._lock:
+                    _lifecycle._stdio_units.pop(scope_unit, None)
+                    _lifecycle._orphan_stdio_units[scope_unit] = self.name
 
     # ------------------------------------------------------------------- HTTP
 

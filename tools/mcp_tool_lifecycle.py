@@ -1,6 +1,7 @@
 """MCP process lifecycle: stdio child PID tracking and orphan cleanup, graceful
 server shutdown and draining of the background MCP loop."""
 
+import atexit
 import logging
 import asyncio
 import os
@@ -9,6 +10,7 @@ from typing import Dict, Optional
 from hermes_cli.process_identity import is_owner_death_supervisor, release_process_groups
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
+from tools import process_registry as _pr
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -34,6 +36,43 @@ _stdio_pgids: dict[int, int] = {}
 # never killed.  None entries are dropped: a capture that raced the child's exit keeps
 # the legacy best-effort behaviour.
 _stdio_starttimes: dict[int, int] = {}  # pid -> leader start ticks
+# Live and orphaned transient systemd scope units (unit_name -> server_name) for stdio MCP
+# servers isolated outside the gateway unit's cgroup (#159117). Stopped after PID/pgid teardown
+# so setsid()-escaped descendants inside the scope cannot outlive the server.
+_stdio_units: dict[str, str] = {}
+_orphan_stdio_units: dict[str, str] = {}
+_atexit_units_registered = False
+
+
+def _track_stdio_unit(unit_name: str, server_name: str) -> None:
+    """Record a live transient systemd scope unit and arm the process-exit reaper once."""
+    global _atexit_units_registered
+    register_now = False
+    with _core._lock:
+        _stdio_units[unit_name] = server_name
+        if not _atexit_units_registered:
+            _atexit_units_registered = True
+            register_now = True
+    if register_now:
+        atexit.register(_atexit_reap_mcp_units)
+
+
+def _atexit_reap_mcp_units() -> None:
+    """Ensure worker subprocesses (``agent.managed_worker``, external cron/Kanban workers) that
+    exit without calling ``shutdown_mcp_servers()`` still close stdio sessions and stop their
+    ``hermes-mcp-*.scope`` units so ``setsid()``-escaped descendants cannot leak."""
+    with _core._lock:
+        has_units = bool(_stdio_units or _orphan_stdio_units)
+    if not has_units:
+        return
+    try:
+        shutdown_mcp_servers(timeout=3.0)
+    except Exception:
+        logger.debug("MCP atexit shutdown failed", exc_info=True)
+    with _core._lock:
+        has_survivors = bool(_stdio_units or _orphan_stdio_units)
+    if has_survivors:
+        _kill_orphaned_mcp_children(include_active=True)
 
 
 def _leader_start_time(pid: int) -> Optional[int]:
@@ -238,11 +277,46 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             clear_selected_status()
         _clear_connect_cooldowns(None if wildcard else selected_status)
     _loop._stop_mcp_loop(only_if_idle=not wildcard)
+    with _core._lock:
+        has_orphans = bool(_orphan_stdio_pids or _orphan_stdio_units)
+    if has_orphans:
+        _kill_orphaned_mcp_children()
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.
     if names is None:
         from tools.mcp_tool_config import _close_mcp_stderr_logs
         _close_mcp_stderr_logs(scope=scope)
+
+
+def _take_reapable_units(include_active: bool, server_name: Optional[str]) -> dict[str, str]:
+    """Pop transient systemd scope units queued for cleanup (plus active ones on final shutdown)."""
+    def _owned(entries: dict[str, str]) -> dict[str, str]:
+        return {unit: owner for unit, owner in entries.items() if server_name is None or owner == server_name}
+
+    with _core._lock:
+        units = _owned(_orphan_stdio_units)
+        for unit in units:
+            _orphan_stdio_units.pop(unit, None)
+        if include_active:
+            active = _owned(_stdio_units)
+            units.update(active)
+            for unit in active:
+                _stdio_units.pop(unit, None)
+    return units
+
+
+def _reap_systemd_units(units: dict[str, str]) -> None:
+    """Stop transient systemd scopes after child/pgid teardown; re-queue any failed stop for retry."""
+    if not units:
+        return
+    failed: dict[str, str] = {}
+    for unit_name, owner in units.items():
+        if not _pr._stop_systemd_unit(unit_name):
+            failed[unit_name] = owner
+    if failed:
+        with _core._lock:
+            for unit_name, owner in failed.items():
+                _orphan_stdio_units.setdefault(unit_name, owner)
 
 
 def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[dict[int, str], dict[int, int], dict[int, int]]:
@@ -369,27 +443,30 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
     server (stdio reconnects cleaning up their old transport)."""
     import signal as _signal
     pids, pgids, starts = _take_reapable_pids(include_active, server_name)
-    if not pids:  # skip the 2s sleep every MCP-free shutdown would otherwise pay
+    units = _take_reapable_units(include_active, server_name)
+    if not pids and not units:  # skip the 2s sleep every MCP-free shutdown would otherwise pay
         return
 
-    try:  # our own pgid, so we never killpg() the gateway itself
-        my_pgid = os.getpgrp()
-    except (AttributeError, OSError):
-        my_pgid = None  # Windows or restricted environment
+    if pids:
+        try:  # our own pgid, so we never killpg() the gateway itself
+            my_pgid = os.getpgrp()
+        except (AttributeError, OSError):
+            my_pgid = None  # Windows or restricted environment
 
-    for pid, owner in pids.items():
-        _signal_mcp_process(pid, _signal.SIGTERM, owner, pgids.get(pid), my_pgid, starts.get(pid))
-        logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, owner)
-    time.sleep(2)
-    sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
-    from gateway.status import _pid_exists  # ``os.kill(pid, 0)`` is NOT a no-op on Windows
-    for pid, owner in pids.items():
-        if _pid_exists(pid) or _group_alive(pgids.get(pid), my_pgid):  # leader or descendants survived SIGTERM
-            _signal_mcp_process(pid, sigkill, owner, pgids.get(pid), my_pgid, starts.get(pid))
-            logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)
-    # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL
-    # dance still leaves the supervisor holding them.
-    release_process_groups(pgids.values())
+        for pid, owner in pids.items():
+            _signal_mcp_process(pid, _signal.SIGTERM, owner, pgids.get(pid), my_pgid, starts.get(pid))
+            logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, owner)
+        time.sleep(2)
+        sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+        from gateway.status import _pid_exists  # ``os.kill(pid, 0)`` is NOT a no-op on Windows
+        for pid, owner in pids.items():
+            if _pid_exists(pid) or _group_alive(pgids.get(pid), my_pgid):  # leader or descendants survived SIGTERM
+                _signal_mcp_process(pid, sigkill, owner, pgids.get(pid), my_pgid, starts.get(pid))
+                logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)
+        # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL
+        # dance still leaves the supervisor holding them.
+        release_process_groups(pgids.values())
+    _reap_systemd_units(units)
 
 
 def _stop_mcp_loop_if_idle() -> bool:

@@ -28,14 +28,18 @@ _COSTLY = frozenset("wWdD")  # the shorthands whose Unicode class is large
 _IS = {"w": lambda ch: ch.isalnum() or ch == "_", "d": str.isdecimal, "s": str.isspace}
 
 
-def _flag_nodes(branches, top=True):
-    """Every node that sets or clears IGNORECASE inline, as ``(node, is a top-level (?i))``."""
-    for index, seq in enumerate(branches):
-        for position, node in enumerate(seq):
-            if "i" in node.flags[0] or "i" in node.flags[1]:
-                yield node, top and index == 0 and position == 0 and node.kind == "flags" and "i" in node.flags[0]
-            if node.branches:
-                yield from _flag_nodes(node.branches, False)
+def _flag_nodes(branches):
+    """Every node that sets or clears IGNORECASE inline, as ``(node, is a top-level (?i))``, in
+    pattern order (an explicit stack: the groups can nest as deep as stdlib accepts)."""
+    todo = [(node, index == 0 and position == 0) for index, seq in enumerate(branches)
+            for position, node in enumerate(seq)]
+    todo.reverse()
+    while todo:
+        node, first = todo.pop()
+        if "i" in node.flags[0] or "i" in node.flags[1]:
+            yield node, first and node.kind == "flags" and "i" in node.flags[0]
+        if node.branches:
+            todo.extend(reversed([(inner, False) for seq in node.branches for inner in seq]))
 
 
 def setting(branches, flags: int):

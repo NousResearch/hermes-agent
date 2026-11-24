@@ -7,6 +7,8 @@ Stdlib only, no `re`.
 """
 from __future__ import annotations
 
+from ._edge_parse import drive
+
 W, N, U = "W", "N", "U"   # definitely word | definitely non-word | unknown or mixed
 _C_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "f": "\f", "v": "\v", "a": "\a", "b": "\b"}
 _HEX = {"x": 2, "u": 4, "U": 8}
@@ -104,13 +106,18 @@ def edge(pattern, nodes, icase, backwards=False):
 
     An end anchor ahead (`$`, `\\Z`) means the next character is a newline or the end of the
     text, both non-word; likewise a start anchor behind."""
+    return drive(_edge(pattern, nodes, icase, backwards))
+
+
+def _edge(pattern, nodes, icase, backwards):
+    """``edge`` as a walk for ``drive``: it yields the walks of the groups it descends into."""
     found = set()
     stop = "^A" if backwards else "$Zz"
     for node in (reversed(nodes) if backwards else nodes):
         kind = node.kind
         if kind == "look" and node.sub == ("<=" if backwards else "=") and node.end == node.aend:
             for branch in node.branches:  # a positive lookaround describes the neighbour itself
-                values, nothing = edge(pattern, branch, icase, backwards)
+                values, nothing = yield _edge(pattern, branch, icase, backwards)
                 found |= values | ({U} if nothing else set())
             return found, False
         if kind in ("look", "flags"):
@@ -129,7 +136,7 @@ def edge(pattern, nodes, icase, backwards=False):
         empty = False
         if kind == "group":
             for branch in node.branches:
-                values, nothing = edge(pattern, branch, icase, backwards)
+                values, nothing = yield _edge(pattern, branch, icase, backwards)
                 found |= values
                 empty = empty or nothing
         else:
@@ -153,13 +160,10 @@ def is_boundary(node) -> bool:
 
 def inline_flags(branches) -> set:
     """Every flag letter some inline group turns on."""
-    found = set()
-
-    def walk(seqs):
-        for seq in seqs:
-            for node in seq:
-                found.update(node.flags[0])
-                if node.branches:
-                    walk(node.branches)
-    walk(branches)
+    found, todo = set(), [node for seq in branches for node in seq]
+    while todo:
+        node = todo.pop()
+        found.update(node.flags[0])
+        if node.branches:
+            todo.extend(inner for seq in node.branches for inner in seq)
     return found

@@ -18,7 +18,7 @@ the sources to compile and the bookkeeping needed to report the user's own match
 from __future__ import annotations
 
 from ._edge_guard import approx, setting
-from ._edge_parse import Unsupported, parse
+from ._edge_parse import Unsupported, drive, parse
 
 ANY = "(?s:.)"                   # the character an unguarded alternative steps over
 DEAD = r"[^\s\S]"  # never matches, keeps the group numbering; valid in str and bytes patterns alike
@@ -101,7 +101,7 @@ class _Emitter:
         self.alive = False   # start flavour: some alternative can match at the start of text
 
     def top(self, branches):
-        return "|".join(self.seq(b, self.lead is not None, self.trail, self.ml) for b in branches)
+        return "|".join(drive(self.seq(b, self.lead is not None, self.trail, self.ml)) for b in branches)
 
     def marker(self):
         """The hidden empty group whose offset is where the user's match ends."""
@@ -130,7 +130,8 @@ class _Emitter:
 
     def seq(self, nodes, lead, trail, ml):
         """One alternative. ``lead`` / ``trail``: it sits at the leading / trailing edge of the
-        pattern. ``ml``: the MULTILINE state at this point."""
+        pattern. ``ml``: the MULTILINE state at this point. A walk for ``drive``: it yields the
+        walks of the edge groups it descends into."""
         out = []
         first = next((k for k, n in enumerate(nodes) if n.kind != "flags"), None) if lead else None
         if lead and first is None:  # empty alternative (or only inline flags)
@@ -152,7 +153,7 @@ class _Emitter:
                     out.append(text + (self.tail if k == last else ""))
                     continue
                 if node.kind == "group" and plain:
-                    out.append(self.group(node, True, k == last, ml))
+                    out.append((yield self.group(node, True, k == last, ml)))
                     continue
                 self.unguarded(out)
             if k == last:
@@ -163,7 +164,7 @@ class _Emitter:
                 elif _is_dollar(node, ml):  # `$` is the trailing guard (?=\n?\Z)
                     out.append(self.marker() + DOLLAR)
                 elif node.kind == "group" and self.p[node.aend:node.end] in _ONCE:
-                    out.append(self.group(node, False, True, ml))
+                    out.append((yield self.group(node, False, True, ml)))
                 else:
                     out.append(self.verbatim(node) + self.tail)
                 continue
@@ -176,7 +177,10 @@ class _Emitter:
         if node.cap:
             self.count(1, lead, trail)
         ml = _scoped(node, ml)
-        text = node.open + "|".join(self.seq(b, lead, trail, ml) for b in node.branches) + ")"
+        bodies = []
+        for branch in node.branches:
+            bodies.append((yield self.seq(branch, lead, trail, ml)))
+        text = node.open + "|".join(bodies) + ")"
         quant = _ONCE[self.p[node.aend:node.end]]
         if quant == "?":   # X? is (?:X|): spell it out so the tail lands on both paths
             return "(?:" + text + "|" + self.tail + ")"
@@ -220,7 +224,8 @@ class _Emitter:
 
     def consumed(self, branches, ml):
         """The body of a positive trailing lookahead as consumed text: verbatim, except that a
-        non-multiline `$` ending it becomes the optional final newline it stands before."""
+        non-multiline `$` ending it becomes the optional final newline it stands before. A walk
+        for ``drive``."""
         parts = []
         for nodes in branches:
             last = nodes[-1] if nodes else None
@@ -230,7 +235,7 @@ class _Emitter:
             elif _is_dollar(last, ml):
                 parts.append(head + DOLLAR)
             elif last.kind == "group" and self.p[last.aend:last.end] in _ONCE:
-                inner = self.consumed(last.branches, _scoped(last, ml))
+                inner = yield self.consumed(last.branches, _scoped(last, ml))
                 parts.append(head + last.open + inner + ")" + self.p[last.aend:last.end])
             else:
                 parts.append(head + self.p[last.start:last.end])
@@ -244,7 +249,7 @@ class _Emitter:
         if node.sub == "=":
             if items or node.branches != [[]]:  # (?=Y) at the trailing edge with any RE2-compatible Y
                 return (items and self.cheap(items, False, self.trail_tests)) or (
-                    "(?:" + self.consumed(node.branches, ml) + ")")
+                    "(?:" + drive(self.consumed(node.branches, ml)) + ")")
             return None
         if not items:
             return None
@@ -276,15 +281,24 @@ def _multiline(branches, flags) -> bool:
 
 
 def _fixed(pattern: str, node) -> bool:
-    """Whether ``node`` matches the same number of characters on every path."""
-    quant = pattern[node.aend:node.end]
-    if node.kind in ("char", "set"):
-        return not quant or (quant[0] == "{" and quant[-1] == "}" and "," not in quant)
-    if quant:
-        return False
-    if node.kind in ("anchor", "flags"):
-        return True
-    return node.kind == "group" and len(node.branches) == 1 and all(_fixed(pattern, n) for n in node.branches[0])
+    """Whether ``node`` matches the same number of characters on every path (an explicit
+    stack: the groups can nest as deep as stdlib accepts)."""
+    todo = [node]
+    while todo:
+        node = todo.pop()
+        quant = pattern[node.aend:node.end]
+        if node.kind in ("char", "set"):
+            if quant and not (quant[0] == "{" and quant[-1] == "}" and "," not in quant):
+                return False
+            continue
+        if quant:
+            return False
+        if node.kind in ("anchor", "flags"):
+            continue
+        if node.kind != "group" or len(node.branches) != 1:
+            return False
+        todo.extend(node.branches[0])
+    return True
 
 
 def _simple(pattern: str, branches, ml: bool) -> bool:

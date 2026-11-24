@@ -69,6 +69,8 @@ class Node:
     set    sub = ("pos" | "neg", member text): a shorthand, a bracket class or a dot
     anchor sub = one of ^ $ A Z z b B
     group  open = text up to the body, cap = capturing?, flags = (on, off) letters
+    (``open`` is non-empty exactly for the nodes with a body: groups, lookarounds, atomic groups
+    and conditionals)
     look   sub = "=", "!", "<=" or "<!"
     Source spans: start..aend is the atom, aend..end its quantifier.
     """
@@ -85,25 +87,40 @@ class Parser:
         self.p, self.i, self.n = pattern, 0, len(pattern)
 
     def parse(self):
-        branches, ncap = self.alternation()
-        if self.i != self.n:
-            raise Unsupported("unbalanced parenthesis")
-        return branches, ncap
-
-    def alternation(self):
-        branches, ncap = [], 0
+        """Read the whole pattern with an explicit stack of open groups (no recursion per group:
+        stdlib compiles nesting far deeper than the interpreter's recursion limit would allow)."""
+        p, n = self.p, self.n
+        stack = []  # per open group: (group node, then the enclosing branches, sequence, capture count)
+        branches, seq, ncap = [], [], 0
         while True:
-            seq = []
-            while self.i < self.n and self.p[self.i] not in "|)":
+            if self.i < n and p[self.i] not in "|)":
                 node = self.atom()
+                if node.open:  # a group whose body follows: read it before the group's quantifier
+                    stack.append((node, branches, seq, ncap))
+                    branches, seq, ncap = [], [], 0
+                    continue
                 self.quantifier(node)
                 ncap += node.ncap
                 seq.append(node)
+                continue
             branches.append(seq)
-            if self.i < self.n and self.p[self.i] == "|":
+            seq = []
+            if self.i < n and p[self.i] == "|":
                 self.i += 1
                 continue
-            return branches, ncap
+            if not stack:
+                if self.i != n:
+                    raise Unsupported("unbalanced parenthesis")
+                return branches, ncap
+            if self.i >= n:
+                raise Unsupported("unbalanced parenthesis")
+            self.i += 1  # the group's ")"
+            node, branches_out, seq, ncap_out = stack.pop()
+            node.branches = branches
+            node.ncap = ncap + (1 if node.cap and node.kind == "group" else 0)
+            self.quantifier(node)
+            branches, ncap = branches_out, ncap_out + node.ncap
+            seq.append(node)
 
     def quantifier(self, node):
         p, i = self.p, self.i
@@ -225,14 +242,29 @@ class Parser:
                 self.i = j + 1
                 return node
             i = j + 1
-        node.open = p[start:i]
+        node.open = p[start:i]  # non-empty: ``parse`` reads the body and the closing ")"
         self.i = i
-        node.branches, inner = self.alternation()
-        if self.i >= self.n or p[self.i] != ")":
-            raise Unsupported("unbalanced parenthesis")
-        self.i += 1
-        node.ncap = inner + (1 if node.cap and node.kind == "group" else 0)
         return node
+
+
+def drive(walk):
+    """Run a recursive generator walk with an explicit stack instead of the interpreter's.
+
+    ``walk`` yields the sub-walk it would have called and receives its return value; the
+    nesting depth of a pattern then costs heap, not frames (stdlib compiles 495 nested groups
+    from a fresh interpreter, which recursive helpers here would exceed)."""
+    stack, value = [walk], None
+    while True:
+        try:
+            sub = stack[-1].send(value)
+        except StopIteration as done:
+            stack.pop()
+            if not stack:
+                return done.value
+            value = done.value
+            continue
+        stack.append(sub)
+        value = None
 
 
 def parse(pattern: str):

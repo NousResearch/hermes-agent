@@ -2,15 +2,20 @@
 
 Negative ``count`` / ``maxsplit``, a ``repl`` callback returning ``None``, an escaped `)` inside a
 `(?#...)` comment, out-of-range escapes in classes and templates, ``lastindex`` with a group inside
-a trailing lookahead; and the registry behind ``build_all`` / the fork clean-up, which must hold
-every live Pattern even when two are equal.
+a trailing lookahead; group nesting as deep as stdlib's parser takes, and the refusal past it; and
+the registry behind ``build_all`` / the fork clean-up, which must hold every live Pattern even when two are equal.
 """
+import contextlib
 import gc
 import re as std
+import sys
 import time
 
+import pytest
+
 import hermes_re as hre
-from tests.hermes_re._support import outcome, view
+from hermes_re._validate import MAX_NESTING
+from tests.hermes_re._support import fresh_interpreter, outcome, view
 
 
 def test_a_negative_count_or_maxsplit_changes_nothing_as_in_stdlib():
@@ -89,6 +94,80 @@ def test_a_deeply_nested_repeat_compiles_where_stdlib_compiles():
     source = "(" * 400 + "(a)" + ")" * 400 + "*b"
     assert hre.compile(source).groups == std.compile(source).groups == 401
     assert view(hre.search(source, "aab")) == view(std.search(source, "aab"))
+
+
+# Nesting shapes: each takes the TOTAL group depth `d` (lookarounds count) and gives (pattern, subjects).
+_NESTED = {
+    "plain": lambda d: ("(" * d + "a" + ")" * d, ["a", "ba"]),
+    "dollar": lambda d: ("(" * d + "a" + ")" * d + "$", ["a", "a\n", "ab"]),
+    "caret": lambda d: ("^" + "(" * d + "a" + ")" * d, ["a", "ba"]),
+    "lookahead_end": lambda d: ("(" * d + "a" + ")" * d + "(?=b)", ["ab", "a"]),
+    "negative_lookahead_end": lambda d: ("(" * d + "a" + ")" * d + "(?!b)", ["ab", "a"]),
+    "lookbehind_start": lambda d: ("(?<=b)" + "(" * d + "a" + ")" * d, ["ba", "a"]),
+    "negative_lookbehind_start": lambda d: ("(?<!b)" + "(" * d + "a" + ")" * d, ["ba", "ca"]),
+    "both_guards": lambda d: ("(?<!b)" + "(" * d + "a" + ")" * d + "(?!b)", ["a", "ab", "ca"]),
+    "alternation": lambda d: ("(?:x|" * d + "a" + ")" * d + "$", ["a", "x", "b"]),
+    "quantified": lambda d: ("(" * d + "a" + ")+" * d + "$", ["aa", "a\n"]),
+    "noncapturing": lambda d: ("(?:" * d + "a" + ")" * d + "$", ["a"]),
+    "named": lambda d: ("".join(f"(?P<g{k}>" for k in range(d)) + "a" + ")" * d + "$", ["a"]),
+    "scoped_flags": lambda d: ("(?<=x)" + "(?i:" * d + "a" + ")" * d, ["xA", "A"]),
+    "word_boundaries": lambda d: ("(" * d + "\\ba\\b" + ")" * d, [" a ", "ba"]),
+    "guard_inside": lambda d: ("(" * (d - 1) + "a(?=b)" + ")" * (d - 1), ["ab", "a"]),
+    "deep_lookahead_body": lambda d: ("a(?=" + "(" * (d - 1) + "b" + ")" * (d - 1) + ")", ["ab"]),
+}
+
+
+@contextlib.contextmanager
+def _recursion_limit(limit):
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(limit)
+    try:
+        yield
+    finally:
+        sys.setrecursionlimit(old)
+
+
+def _frames():
+    frame, count = sys._getframe(), 0
+    while frame is not None:
+        frame, count = frame.f_back, count + 1
+    return count
+
+
+def _results(module, pattern, subjects):
+    compiled = module.compile(pattern)
+    return [(view(compiled.search(s)), view(compiled.match(s)), view(compiled.fullmatch(s)),
+             [view(m) for m in compiled.finditer(s)], compiled.sub("<\\g<0>>", s)) for s in subjects]
+
+
+@pytest.mark.parametrize("shape", sorted(_NESTED))
+def test_nesting_as_deep_as_stdlib_compiles_gives_stdlibs_answers_on_a_shallow_stack(shape):
+    pattern, subjects = _NESTED[shape](MAX_NESTING)
+    with _recursion_limit(10_000):  # stdlib's parser recurses per group; the reference needs the room
+        expected = _results(std, pattern, subjects)
+    hre.purge()
+    with _recursion_limit(_frames() + 60):  # the facade must not: a caller deep in its own stack still compiles
+        got = _results(hre, pattern, subjects)
+    assert got == expected
+
+
+def test_nesting_beyond_stdlibs_limit_is_refused_at_compile_with_error():
+    patterns = {shape: build(MAX_NESTING + 1)[0] for shape, build in _NESTED.items()}
+    for shape, pattern in patterns.items():
+        assert outcome(lambda: hre.compile(pattern)) == "raises error", shape
+        assert outcome(lambda: hre.compile(pattern.encode())) == "raises error", shape
+    # stdlib, from a fresh interpreter at the default recursion limit: depth MAX_NESTING compiles,
+    # one more does not (it raises RecursionError, which the facade answers with ``error``)
+    code = ("import re, sys\n"
+            f"for d in ({MAX_NESTING}, {MAX_NESTING + 1}):\n"
+            "    try:\n"
+            "        re.compile('(' * d + 'a' + ')' * d + '$')\n"
+            "        print(d, 'ok')\n"
+            "    except RecursionError:\n"
+            "        print(d, 'RecursionError')\n"
+            "import hermes_re\n"
+            f"print(hermes_re.compile('(' * {MAX_NESTING} + 'a' + ')' * {MAX_NESTING} + '$').search('a\\n').span())\n")
+    assert fresh_interpreter(code) == [str(MAX_NESTING), "ok", str(MAX_NESTING + 1), "RecursionError", "(0,", "1)"]
 
 
 def test_build_all_reaches_every_live_pattern_even_equal_ones():

@@ -27,6 +27,11 @@ from ._errors import error
 from ._translate_scan import has_surrogate, octal_end, property_end, repeat_end
 
 MAX_REPEAT = 1000  # RE2's limit for one repeat count and for the product of nested counts
+# stdlib's parser recurses once per group: from a fresh interpreter at the default recursion limit
+# it compiles 495 nested groups and raises RecursionError at 496 (measured on 3.11 and 3.14). The
+# facade's own walks use explicit stacks, so this is the only depth limit, and it refuses with
+# ``error`` where stdlib would crash.
+MAX_NESTING = 495
 _NOTHING, _ATOM, _ANCHOR = 0, 1, 2  # what a quantifier would apply to at the scan position
 _HEX = frozenset("0123456789abcdefABCDEF")
 _WIDTH = {"x": 2, "u": 4, "U": 8}
@@ -362,10 +367,13 @@ def stdlib_syntax(text: str, latin1: bool, original) -> None:
     """Raise ``error`` (carrying ``original``) for syntax in ``text`` (Python dialect, comment
     groups removed) that stdlib refuses and RE2 would run. Everything else is left to ``check``."""
     i, n, lead = 0, len(text), True  # lead: nothing but global flag groups read so far
+    depth = 0  # groups open at ``i``
 
     def fail(message):
         return error(f"{message} (position {i})", original)
     while i < n:
+        if depth > MAX_NESTING:  # checked as the next character is read: one past the deepest "("
+            raise fail(f"more than {MAX_NESTING} nested groups (stdlib exceeds its recursion limit)")
         ch = text[i]
         if ch == "\\":
             if text[i + 1:i + 2] in _STD_ESCAPES:
@@ -381,8 +389,10 @@ def stdlib_syntax(text: str, latin1: bool, original) -> None:
             end, is_global = _std_extension(text, i, latin1, fail)
             if is_global and not lead:
                 raise fail("global flags not at the start of the expression")
+            depth += not is_global  # a global flag group is closed already
             i, lead = end, lead and is_global
             continue
         else:
+            depth += (ch == "(") - (ch == ")")
             i += 1
         lead = False

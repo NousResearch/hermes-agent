@@ -15,7 +15,7 @@ The lookarounds it writes are exactly the shapes ``_edge_plan`` emulates, at pos
 """
 from __future__ import annotations
 
-from ._edge_parse import Node, Unsupported, parse
+from ._edge_parse import Node, Unsupported, drive, parse
 from ._edge_plan import DEAD
 from ._edge_word import N, W, definite, edge, inline_flags, is_boundary
 
@@ -71,13 +71,13 @@ def rewrite(pattern: str, flags: int):
             last = len(seq) - 1 if trail else None
             for k, node in enumerate(seq):
                 if node.kind == "look":  # inside a lookaround: decide only what is local to it
-                    walk(node.branches, [unknown], [unknown], False, False)
+                    yield walk(node.branches, [unknown], [unknown], False, False)
                     continue
                 if node.kind == "group":
                     quant = pattern[node.aend:node.end]
                     loop = [] if quant in _ONCE else [unknown]
-                    walk(node.branches, before + seq[:k] + loop, loop + seq[k + 1:] + after,
-                         k == first and not quant, k == last and quant in _ONCE)
+                    yield walk(node.branches, before + seq[:k] + loop, loop + seq[k + 1:] + after,
+                               k == first and not quant, k == last and quant in _ONCE)
                     continue
                 if not is_boundary(node):
                     if node.kind == "anchor" and node.sub == "B":
@@ -111,7 +111,7 @@ def rewrite(pattern: str, flags: int):
                 else:
                     stats.kept += 1
                     stats.kept_at.append((node.start, left, right, k == first, k == last))
-    walk(branches, [], [], True, True)
+    drive(walk(branches, [], [], True, True))  # a walk per group, on an explicit stack
     for start, end, text in sorted(edits, reverse=True):
         pattern = pattern[:start] + text + pattern[end:]
     return pattern, stats

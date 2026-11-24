@@ -42,6 +42,7 @@ another engine.
 | Two capture groups in one repeat that can both match empty, one at the start and one at the end of an iteration | `(?:(?P<y>)b\|a(?P<x>))+` | Give one of them text to match, or move it out of the repeat: which one closed last (`lastindex`, `lastgroup`) cannot be told from RE2's spans. |
 | `VERBOSE`, `LOCALE`, `DEBUG`; inline `(?x)`, `(?a)`, `(?u)`, `(?L)` | `re.compile(p, re.X)` | Build the pattern from commented string pieces; pass `re.ASCII` as a flag. These raise `ValueError`. |
 | Named character | `\N{EM DASH}` | `\u2014`. |
+| More than 495 nested groups | `"(" * 496 + "a" + ")" * 496` | Flatten the nesting. Stdlib's parser recurses once per group and raises `RecursionError` past this depth (from a fresh interpreter at the default recursion limit); the facade refuses at `compile()` instead and handles every depth up to it without recursing. |
 | A non-multiline `$` with something to match after it | `x$y`, `(x$)+` | `\Z`, or `(?m)` if "end of line" is meant. |
 | Repeat count over 1000 (also as a product of nested counts) | `a{1001}`, `(?:a{501}){2}` | A smaller bound, or `*` / `+` and a length check in Python. |
 | A lone surrogate outside a bracket class | `"\ud800"` | See *Lone surrogates* below. |

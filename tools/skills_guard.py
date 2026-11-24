@@ -19,11 +19,13 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
-from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
+from tools.skills_guard_credentials import (
+    LONE_SURROGATE_RE, SKILL_ONLY_PATTERNS, code_views, lexable_text, raise_provider_key_reads,
+)
 from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 
 
-SCANNER_VERSION = "skills-guard-v16"
+SCANNER_VERSION = "skills-guard-v17"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -638,6 +640,13 @@ def _unicode_char_name(char: str) -> str:
     return _INVISIBLE_CHAR_NAMES.get(char, f"U+{ord(char):04X}")
 
 
+def _printable(text: str) -> str:
+    """*text* with lone surrogates replaced by U+FFFD before it is stored on a finding. Findings are printed
+    to stdout (whose ``surrogateescape`` only round-trips U+DC80-U+DCFF) and serialized by the hub, so no
+    finding may carry a character that the encoder there cannot spell."""
+    return LONE_SURROGATE_RE.sub("\ufffd", text) if LONE_SURROGATE_RE.search(text) else text
+
+
 # A STRING token opens a triple-quoted block after at most a two-char prefix (r/b/f combos).
 _TRIPLE_QUOTE_OPEN_RE = re.compile(r'^[A-Za-z]{0,2}(?:"""|\'\'\')')
 # 3.12+ splits f-strings into FSTRING_START/MIDDLE/END tokens; only the quote delimiters are prose.
@@ -651,12 +660,14 @@ def _compute_docstring_lines(lines: list) -> set:
     one-line docstrings), so ``os.environ`` in prose is not scored. Computed structurally from Python-lexer
     tokens rather than quote counting: one unbalanced triple quote used to toggle the counter and let a
     bundle author mark arbitrary payload lines as prose. Any lexer failure fails closed — no line is
-    exempted, so every pattern still runs. Callers scope the skip to ``_DOCSTRING_EXEMPT_PATTERN_IDS``."""
+    exempted, so every pattern still runs. Callers scope the skip to ``_DOCSTRING_EXEMPT_PATTERN_IDS``.
+    A lone surrogate is substituted before lexing (``lexable_text``) so one stray character does not cost
+    the whole file its prose exemption."""
     doc_lines: set = set()
     fstrings: list = []  # open f-strings (3.12+), True when triple-quoted
     expr_lines: set = set()  # lines holding a ``{...}`` expression: code, never prose
     try:
-        for tok in tokenize.generate_tokens(io.StringIO('\n'.join(lines)).readline):
+        for tok in tokenize.generate_tokens(io.StringIO(lexable_text(lines)).readline):
             if tok.type == _FSTRING_START:
                 fstrings.append(bool(_TRIPLE_QUOTE_OPEN_RE.match(tok.string)))
             elif tok.type == _FSTRING_END and fstrings:
@@ -666,7 +677,7 @@ def _compute_docstring_lines(lines: list) -> set:
                 doc_lines.update(range(tok.start[0], tok.end[0] + 1))
             elif fstrings and tok.type not in _FSTRING_BOUNDARY_TYPES and tok.type != _FSTRING_MIDDLE:
                 expr_lines.update(range(tok.start[0], tok.end[0] + 1))
-    except (tokenize.TokenError, SyntaxError):  # unparsable input must never silence the pattern passes
+    except (tokenize.TokenError, SyntaxError, UnicodeError):  # unparsable input must never silence the pattern passes
         return set()
     return doc_lines - expr_lines
 
@@ -760,7 +771,13 @@ def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], l
         texts = [raw.decode('utf-8-sig', errors='replace')]
         bad_line = _line_at(exc.object[:exc.start].decode('latin-1'))  # offsets index the BOM-stripped bytes
         findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
-                            "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
+                            "invalid UTF-8 (decoded lossily; possible encoding-obfuscated payload)")]
+        with suppress(UnicodeDecodeError):
+            # WTF-8 is the one invalid-UTF-8 form with a faithful decoding: bytes that spell a lone UTF-16
+            # surrogate. Keep the character (and so every column) instead of a U+FFFD that hides it; the
+            # pattern passes read it and ``_lone_surrogate_findings`` names it. Only a file whose *whole* text
+            # is valid WTF-8 survives here — one orphaned sequence and the replacement view above stands.
+            texts = [raw.decode('utf-8-sig', errors='surrogatepass')]
     if suffix == ".py":
         # An unusable cookie (incl. 'undefined', whose codec raises UnicodeError) makes CPython refuse the file.
         with suppress(SyntaxError, LookupError, UnicodeError):
@@ -788,7 +805,9 @@ def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], l
 def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Finding]:
     lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')  # read_bytes skips newline translation
     findings: list[Finding] = []
-    docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
+    # Prose exemption is `.py`-only (the one exempt pattern skips other suffixes), so no other file pays a
+    # full tokenizer pass over its whole text.
+    docstring_lines = _compute_docstring_lines(lines) if suffix == ".py" else set()
     traversal_lines = _mask_prose_link_destinations(lines) if suffix == ".md" else lines
     owners = _statement_owners(lines)  # per-file context for the demotion
     patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
@@ -809,13 +828,14 @@ def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Findi
                 scan_line = (traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS
                              else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
             if pattern.search(scan_line):
-                text = line.strip()
+                text = _printable(line.strip())
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
     if skill:
         raise_provider_key_reads(findings, lines, views[1] if views else None)
+    findings.extend(_lone_surrogate_findings(lines, rel_path))  # not valid UTF-8: flag, like a NUL
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)
@@ -838,26 +858,47 @@ _PADDED_CODE_EXEMPT_SUFFIXES = {".md", ".txt", ".html", ".xml", ".tex", ".css"}
 _CODE_WORD = re.compile(r"[A-Za-z_$][\w$]{2,}")
 
 
+def _lone_surrogate_findings(lines: list[str], rel_path: str) -> list[Finding]:
+    """One finding for the file's FIRST lone UTF-16 surrogate (U+D800-U+DFFF) — like ``nul_byte``, because a
+    file can carry one per line and a row each buries the rest of the report. A lone surrogate is not valid
+    UTF-8, so CPython's tokenizer and ``ast`` refuse the text outright: the file must have been decoded from
+    another encoding (utf-7, ``surrogateescape``). The lexers keep working around it (``lexable_text``), but
+    it still marks text a plain UTF-8 reader cannot see through. ``high``, never ``critical``: a surrogate only
+    splits tokens, so ``--force`` must stay usable when it broke a ``critical`` pattern."""
+    for i, line in enumerate(lines, start=1):
+        if (m := LONE_SURROGATE_RE.search(line)) is not None:
+            return [Finding("lone_surrogate", "high", "obfuscation", rel_path, i, f"U+{ord(m.group()):04X}",
+                            "UTF-16 surrogate code unit in UTF-8 bytes (a lone surrogate or a CESU-8 pair — "
+                            "neither is valid UTF-8; possible pattern-splitting obfuscation; first occurrence)")]
+    return []
+
+
 def _padded_code_findings(lines: list[str], rel_path: str) -> list[Finding]:
     out = []
     for i, line in enumerate(lines, start=1):
         if (m := _PADDED_CODE.search(line)) is not None and _CODE_WORD.search(hidden := line[m.end():]):
             out.append(Finding("hidden_padded_code", "critical", "obfuscation", rel_path, i,
-                               f"{m.end() - m.start()} blank chars then: {hidden[:80]}",
+                               _printable(f"{m.end() - m.start()} blank chars then: {hidden[:80]}"),
                                "code hidden after a long run of whitespace (off-screen in editors and diffs)"))
     return out
 
 
 def _unscanned_text_padded_code(file_path: Path, rel_path: str) -> list[Finding]:
     """Files outside SCANNABLE_EXTENSIONS (extensionless ``init``, ``.mjs``/``.cjs``/``.tsx``) get only the
-    padded-code check: the other rules were never tuned for them, so turning those on would move verdicts."""
+    padded-code check and the lone-surrogate signal: the other rules were never tuned for them, so turning
+    those on would move verdicts. ``init`` is the documented malware target, though, and a WTF-8 byte there
+    used to report nothing at all."""
     if file_path.suffix.lower() in _PADDED_CODE_EXEMPT_SUFFIXES or file_path.stat().st_size > 2_000_000:
         return []
     try:
         data = file_path.read_bytes()
         if b"\0" in data[:8192]:
             return []  # binary
-        return _padded_code_findings(data.decode("utf-8-sig", errors="replace").split("\n"), rel_path)
+        text = data.decode("utf-8-sig", errors="replace")
+        with suppress(UnicodeDecodeError):
+            text = data.decode("utf-8-sig", errors="surrogatepass")  # valid WTF-8 (see _decoded_views)
+        lines = text.split("\n")
+        return _padded_code_findings(lines, rel_path) + _lone_surrogate_findings(lines, rel_path)
     except OSError:
         return []
 
@@ -943,7 +984,10 @@ def _content_digest(skill_path: Path) -> str:
         return hashlib.sha256(skill_path.read_bytes()).hexdigest()
     h = hashlib.sha256()
     for rel, p in sorted((p.relative_to(skill_path).as_posix(), p) for p in skill_path.rglob("*") if p.is_file()):
-        h.update(rel.encode("utf-8") + b"\x00")
+        # surrogatepass: a POSIX filename that is not valid UTF-8 reaches the str as a lone surrogate (APFS
+        # hides it by refusing the name), and plain encode() raises. Mirrored in
+        # ``skills_hub_install.bundle_content_hash`` — change both at once.
+        h.update(rel.encode("utf-8", "surrogatepass") + b"\x00")
         h.update(p.read_bytes())
     return h.hexdigest()
 

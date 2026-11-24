@@ -275,14 +275,16 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     path is hashed too so swapping contents between two files changes the hash.
 
     That function keys files by ``relative_to(...).as_posix()`` — forward slashes on every OS. See #62310.
+    Encoding is ``surrogatepass`` on both sides there and here: a path or a content string carrying a lone
+    surrogate (a non-UTF-8 filename, a utf-7 source) is not encodable as plain UTF-8.
     """
     h = hashlib.sha256()
     normalized = {rel_path.replace("\\", "/"): content for rel_path, content in bundle.files.items()}
     for rel_path in sorted(normalized):
-        h.update(rel_path.encode("utf-8"))
+        h.update(rel_path.encode("utf-8", "surrogatepass"))
         h.update(b"\x00")
         content = normalized[rel_path]
-        h.update(content if isinstance(content, bytes) else content.encode("utf-8"))
+        h.update(content if isinstance(content, bytes) else content.encode("utf-8", "surrogatepass"))
     return f"sha256:{h.hexdigest()[:16]}"
 
 

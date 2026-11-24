@@ -169,6 +169,7 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
                 plan = next(s for s in body["steps"] if s.get("id") == "plan")
                 entry["outputs"] = workflow_steps.outputs(plan, ctx, _REPO)
                 assert json.loads(entry["outputs"]["shards"]), "upgrade plan selected no shards"
+                assert json.loads(entry["outputs"]["cells"]), "upgrade plan selected no jobs"
             uses = body.get("uses")
             if isinstance(uses, str) and uses.startswith("./.github/workflows/"):
                 called = uses[2:]
@@ -193,15 +194,22 @@ def _reached(run: dict, *path: str) -> dict | None:
     return node
 
 
+def _matrix_cells(node: dict) -> list[dict]:
+    """Every cell of the job's matrix: the product of its rendered axes, or its ``include`` rows."""
+    matrix = node["body"].get("strategy", {}).get("matrix", {})
+    axes = [k for k in matrix if k not in ("include", "exclude")]
+    if not axes:
+        include = matrix.get("include", [{}])
+        return gha.render(include, node["ctx"]) if isinstance(include, str) else include
+    values = [gha.render(matrix[k], node["ctx"]) for k in axes]
+    return [dict(zip(axes, cell)) for cell in itertools.product(*values)]
+
+
 def _selected_test_files(node: dict, name: str, *, windows_only: bool = False) -> set[str]:
     body, ctx = node["body"], node["ctx"]
     steps = [s for s in body["steps"] if s.get("name", "").startswith(name)]
     assert len(steps) == 1, f"missing/ambiguous required step: {name}"
-    matrix = body.get("strategy", {}).get("matrix", {})
-    if "shard" in matrix:
-        cells = [{"shard": s} for s in gha.render(matrix["shard"], ctx)]
-    else:
-        cells = matrix.get("include", [{}])
+    cells = _matrix_cells(node)
     if windows_only:
         cells = [cell for cell in cells if cell.get("marker") == "windows"]
     assert cells, f"{name}: empty matrix"
@@ -856,6 +864,45 @@ def test_windows_install_update_dispatch_alone_sets_strict():
                        ".github/workflows/windows-install-update-e2e.yml", "install-update",
                        "Run Windows install + update E2E") == "upd-txn"
     assert "workflow_dispatch" in _on(_yaml(".github/workflows/windows-install-update-e2e.yml"))
+
+
+# -- upgrade rehearsal: one dispatch names every start version of the upgrade shards ---------------
+
+
+def _upgrade_dispatch(value: str) -> dict:
+    return _run_workflow(".github/workflows/ci.yaml", inputs={"release": False, "upgrade_base": value},
+                         detect=_detect_outputs(cc.classify([])), event_name="workflow_dispatch")
+
+
+# hosts has no start version; network and pm install a fixed updater generation (upgrade_base(<gen>)).
+_FIXED_START_SHARDS = {"hosts", "network", "pm"}
+
+
+@pytest.mark.parametrize("value, bases", [
+    ("", [""]),
+    ("v0.23.0", ["v0.23.0"]),
+    ("v0.21.6,v0.22.7, v0.23.0 v0.23.3,v0.23.0", ["v0.21.6", "v0.22.7", "v0.23.0", "v0.23.3"]),
+])
+def test_upgrade_base_dispatch_runs_every_shard_from_each_start(value, bases):
+    """`gh workflow run ci.yaml -f upgrade_base=v0.21.6,...` (the RE2 rehearsal gate): every shard whose
+    start follows the base runs once per named start with HERMES_E2E_UPGRADE_BASE set to it; a shard
+    with no start or a fixed updater generation runs once; empty keeps one default-start set."""
+    run = _upgrade_dispatch(value)
+    shards = json.loads(_reached(run, "tests", "e2e-upgrade-plan")["outputs"]["shards"])
+    node = _reached(run, "tests", "e2e-upgrade")
+    step = next(s for s in node["body"]["steps"] if s.get("name", "").startswith("Run upgrade e2e tests"))
+    got = sorted((cell["shard"], gha.to_string(gha.render(step["env"]["HERMES_E2E_UPGRADE_BASE"],
+                                                         {**node["ctx"], "matrix": cell})))
+                 for cell in _matrix_cells(node))
+    assert got == sorted((shard, base) for shard in shards
+                         for base in ([""] if shard in _FIXED_START_SHARDS else bases))
+    assert {"core", "git", "handoff"} <= set(shards)
+    assert _selected_test_files(node, "Run upgrade e2e tests")
+
+
+def test_upgrade_base_that_is_not_a_ref_name_stops_the_plan():
+    with pytest.raises(AssertionError, match="upgrade_base: not a tag"):
+        _upgrade_dispatch("v0.23.0;touch x")
 
 
 def test_run_tests_forwards_the_strict_switch():

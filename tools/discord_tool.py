@@ -393,10 +393,9 @@ def _create_thread(
 
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
-    path_id_fields = re.findall(r"\{(\w+)\}", path)
-
     def _action(token: str, **kw: Any) -> str:
-        for field in path_id_fields:
+        # Matched per call, not once in _mutation: that runs at import, which must not need the regex engine.
+        for field in re.findall(r"\{(\w+)\}", path):
             _validate_snowflake(kw[field], field)
         _discord_request(method, path.format(**kw), token)
         return json.dumps({"success": True, "message": message.format(**kw)})

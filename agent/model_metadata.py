@@ -1685,7 +1685,7 @@ CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent 
 # dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
 _CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
 _CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra", "gpt-6.1-sol"})
-_CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CODEX_900K_SNAPSHOT_SHAPE = "0000-00-00"  # a snapshot date with each digit as 0; no regex: the catalog asks at import
 
 
 def _bare_codex_slug(model: Optional[str]) -> str:
@@ -1703,9 +1703,9 @@ def is_codex_900k_base(model: Optional[str]) -> bool:
     if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
         return False
     # Dated snapshots of the routable tier bases (gpt-5.6-sol-2026-07-09, gpt-6-sol-2026-09-22) also qualify.
-    return slug in _CODEX_900K_ELIGIBLE_BASES or any(
-        slug.startswith(base + "-") and _CODEX_900K_SNAPSHOT_RE.match(slug[len(base) + 1:]) for base in _CODEX_900K_SNAPSHOT_BASES
-    )
+    tails = (slug[len(base) + 1:] for base in _CODEX_900K_SNAPSHOT_BASES if slug.startswith(base + "-"))
+    shapes = ("".join("0" if char.isdecimal() else char for char in tail) for tail in tails)
+    return slug in _CODEX_900K_ELIGIBLE_BASES or _CODEX_900K_SNAPSHOT_SHAPE in shapes
 
 
 def _codex_variant_base(model: Optional[str]) -> Optional[str]:

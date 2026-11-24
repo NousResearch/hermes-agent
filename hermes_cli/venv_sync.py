@@ -7,9 +7,11 @@ remain build-owned. ``--check`` is passive and never provisions tools.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from hermes_cli.steward import UPDATE_MECHANISMS
@@ -538,6 +540,83 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
               file=sys.stderr, flush=True)
     return None
+
+
+#: True once product code matches through ``hermes_re``, whose engine is the third-party
+#: ``google-re2``. Until then a launch on dependencies without it runs as it always did.
+REGEX_ENGINE_REQUIRED = False
+
+REGEX_ENGINE_MISSING = "the dependencies this process runs on lack google-re2, the regex engine this Hermes needs"
+#: The install that needs no regex (works where no launch retries the sync: ZIP install, lazy installs off).
+REGEX_ENGINE_REPAIR = "run `hermes pm install` to install them (or `hermes update`, whose launch retries the install)"
+
+#: Runnable without the engine: the package manager, the diagnostics of a stuck install, and the
+#: commands that stop a gateway its service manager keeps restarting into the refusal.
+_ENGINE_FREE_COMMANDS = (["pm"], ["doctor"], ["gateway", "status"], ["gateway", "stop"], ["gateway", "uninstall"])
+
+
+def regex_engine_missing() -> bool:
+    """Whether this tree needs google-re2 and the active ``sys.path`` has no usable one.
+
+    Locates the package without importing it (tens of microseconds on every launch; the import
+    costs milliseconds and runs the extension). A build that is present but cannot load is the
+    facade's error at the first match. Never imports ``hermes_re``. A finder that refuses the
+    package or a stub without a spec counts as missing instead of raising: this runs before the
+    ``update`` exemption, and the import-health probe reads any exception as a broken checkout.
+    """
+    if not REGEX_ENGINE_REQUIRED:
+        return False
+    try:
+        spec = importlib.util.find_spec("re2")
+    except (ImportError, ValueError):  # a meta-path finder refusing re2; a re2 module whose __spec__ is None
+        return True
+    return spec is None or spec.origin is None  # origin None: a bare re2/ directory (namespace portion)
+
+
+def guard_regex_engine(project_root: Path, argv: list[str]) -> None:
+    """Refuse a launch that would run this tree without its regex engine (exit 1).
+
+    ``hermes_bootstrap`` calls this after activation. A failed dependency sync leaves the previous
+    generation selected (the degraded launch above); from the first release that matches through
+    ``hermes_re`` every match there raises, so the CLI, gateways and workers stop here instead of
+    failing turn by turn. Exit 1, not EX_CONFIG: the cause is temporary, and every supervisor
+    Hermes generates restarts on 1, so a refused gateway runs again once the dependencies are
+    installed (while its supervisor still retries); ``gateway stop`` / ``uninstall`` end those
+    retries. ``update`` always passes: it can be the repair (a self-managed checkout's launch
+    retries the sync), it refuses its own run (:func:`refuse_update_without_regex_engine`), and the
+    import-health probe of every shipped updater imports the CLI as ``['hermes', 'update']`` and
+    reads any exit as a broken checkout. The completion tails are update machinery too.
+    """
+    if not regex_engine_missing():
+        return
+    from hermes_cli._parser import command_argv
+
+    command = command_argv(argv)
+    if command[:1] == ["update"] or _is_tail_script(Path(project_root).resolve(), sys.argv[0]):
+        return
+    if any(command[:len(free)] == free for free in _ENGINE_FREE_COMMANDS) or _METADATA_FLAGS & set(argv):
+        print(f"hermes: warning: {REGEX_ENGINE_MISSING}; anything that matches text fails until they are "
+              f"installed: {REGEX_ENGINE_REPAIR}", file=sys.stderr, flush=True)
+        return
+    print(f"hermes: cannot start: {REGEX_ENGINE_MISSING}; {REGEX_ENGINE_REPAIR}", file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+def refuse_update_without_regex_engine() -> None:
+    """Stop ``hermes update`` before its first step when the regex engine is missing (exit 1).
+
+    The update's own steps match text (proxy settings, the pulled tree's checks, unit repair,
+    redaction), so on these dependencies it would stop half-way with gateways paused. Where its
+    launch retries the dependency sync (a self-managed git checkout) a successful sync relaunches
+    the command on the new generation and it never gets here; elsewhere (a ZIP install,
+    ``HERMES_DISABLE_LAZY_INSTALLS``) nothing at launch syncs, so the stop names
+    ``hermes pm install``, which installs them without matching any text.
+    """
+    if regex_engine_missing():
+        print(f"✗ Cannot update: {REGEX_ENGINE_MISSING}, and installing them did not finish.")
+        print("  Fix the cause (network access; a C++ compiler where google-re2 has no prebuilt wheel), "
+              "run `hermes pm install` to install them, then re-run `hermes update`.")
+        sys.exit(1)
 
 
 def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path | None:

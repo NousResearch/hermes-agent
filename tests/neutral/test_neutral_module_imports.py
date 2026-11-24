@@ -35,8 +35,9 @@ NEUTRAL_MODULES = (
 )
 
 # Non-application modules the neutral modules import at load (``session_rescue``, ``session_retention``,
-# ``sqlite_support`` and every module importing one of them).
-ALLOWED_AT_LOAD = ("hermes_constants", "hermes_dir_acl", "hermes_startup_watchdog")
+# ``sqlite_support`` and every module importing one of them), and ``hermes_re``, the regex facade: a
+# standard-library-only package at import (it loads its engine on the first match, not at load).
+ALLOWED_AT_LOAD = ("hermes_constants", "hermes_dir_acl", "hermes_startup_watchdog", "hermes_re")
 
 # Runs in the fresh interpreter: refuse and record every import outside the allowed roots, and a database driver
 # when argv[1] is a session_rules module, then import argv[1].

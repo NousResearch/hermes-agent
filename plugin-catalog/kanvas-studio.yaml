@@ -1,6 +1,6 @@
 name: kanvas-studio
 repo: https://github.com/ranggaoscar/kanvas-studio
-sha: a553af3de749d4ce92839f1d106e74ec65500e3e
+sha: 7d0ac18861d40f7ed0d2607f557d655fa0aec5e1
 title: Kanvas Studio
 description: "Free, local visual design engine driven by AI agents over MCP: pitch decks, A4/A2 posters, logos, and social graphics with live agent cursor choreography, Figma-style auto-layout and reusable components, pen vector tool, 2,100+ bundled Lucide icons, any Google Font, canvas comment pins, and PNG/JPG/SVG/PDF export. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/kanvas-studio + desktop/plugin.js) with zero Python dependencies and zero npm runtime dependencies. The skill tells the agent to treat design files and canvas comments strictly as design content, never over the user's instructions or Hermes approvals. Disclosure: runs a local Node.js 18+ stdio MCP server (bin/kanvas.js mcp) that starts an on-demand loopback-only HTTP server on 127.0.0.1 (Host/Origin/X-Kanvas gated) and spawns your locally installed Google Chrome or Microsoft Edge in headless mode for kanvas_view and kanvas_export (PNG/JPG/PDF) rendering; spawned browser processes run with a minimal environment so Hermes API keys and tokens (GH_TOKEN, GITHUB_TOKEN, model keys) are never passed on; in headless render mode external image URLs are restricted to public https:// hosts (private, loopback, and cloud-metadata addresses are refused); network access is only used to load Google Fonts stylesheets and explicitly placed public https:// images; designs, icons, and templates live locally in Hermes's plugin data folder (plugin-files/data/kanvas-studio); kanvas_import_image and kanvas_export read/write only paths explicitly passed in tool calls; no accounts, no cloud uploads, no telemetry."
 maintainer: ranggaoscar
@@ -10,12 +10,12 @@ platforms: [windows, macos, linux]
 requires_hermes: ">=0.23.3"
 docs_url: https://github.com/ranggaoscar/kanvas-studio#readme
 version: "0.2.0"
-image: https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/a553af3de749d4ce92839f1d106e74ec65500e3e/assets/banner.png
+image: https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/a553af3de749d4ce92839f1d106e74ec65500e3e/assets/screenshot-home.png
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/a553af3de749d4ce92839f1d106e74ec65500e3e/assets/screenshot-canvas.png
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/a553af3de749d4ce92839f1d106e74ec65500e3e/assets/screenshot-editor.png
-  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/a553af3de749d4ce92839f1d106e74ec65500e3e/assets/screenshot-comments.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-home.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-canvas.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-editor.png
+  - https://raw.githubusercontent.com/ranggaoscar/kanvas-studio/7d0ac18861d40f7ed0d2607f557d655fa0aec5e1/assets/screenshot-comments.png
 readme: true
 known_issues:
   - "Requires Node.js 18+ on PATH for the bundled local stdio MCP server."

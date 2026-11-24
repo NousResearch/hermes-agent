@@ -15,7 +15,8 @@ from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import (
-    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal, is_rate_limited)
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal, is_rate_limited,
+    is_user_decline)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -216,7 +217,7 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     # ``"error"`` for the model's benefit -- exactly what the substring test below keys
     # on -- but nothing failed; counting it lets the cheap refusal feed the streak that
     # fires the next, harder one. Mirrored in ``agent.display._detect_tool_failure``.
-    if is_guardrail_refusal(result):
+    if is_guardrail_refusal(result) or is_user_decline(result):
         return False, ""
 
     if tool_name == "terminal":

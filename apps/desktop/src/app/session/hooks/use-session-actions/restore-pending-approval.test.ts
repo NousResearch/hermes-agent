@@ -72,4 +72,14 @@ describe('restorePendingApproval', () => {
       expect.objectContaining({ command: 'rm -rf build', requestId: 'apr-1' })
     ])
   })
+
+  // A job card names no folder or site and is still a card: its turn's tool call waits on it.
+  it('restores a new-job card and says that the turn waits on it', () => {
+    const pending = { description: 'Every day at 9am: summarise my inbox', kind: 'schedule', request_id: 'apr-2' }
+
+    expect(restorePendingApproval(resumed(pending), 's1')).toBe(true)
+    expect(sessionApprovalRequests('s1').get()).toEqual([
+      expect.objectContaining({ kind: 'schedule', requestId: 'apr-2' })
+    ])
+  })
 })

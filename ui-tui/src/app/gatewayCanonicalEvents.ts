@@ -150,6 +150,7 @@ export function openCanonicalApproval(
       choices: shared.choices,
       command: String(shared.command ?? ''),
       description: String(shared.description ?? 'dangerous command'),
+      kind: shared.approval_kind ?? undefined,
       requestId: shared.prompt_id,
       sharedControl,
       smartDenied: shared.smart_denied === true

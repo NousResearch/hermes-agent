@@ -44,6 +44,15 @@ import type { GatewayEventContext } from './types'
 /** Settings → Safety, where `approvals.timeout` lives (settings/constants.ts). */
 const SAFETY_SETTINGS_ROUTE = '/settings?tab=config:safety'
 
+// A timed-out new-job card says the job was not created, not that a command did not run.
+const TIMED_OUT_LINE_KEYS: Partial<Record<string, string>> = {
+  schedule: 'assistant.approval.schedule.timedOutSystemLine',
+  schedule_edit: 'assistant.approval.schedule.editTimedOutSystemLine'
+}
+
+const timedOutLine = (kind?: string): string =>
+  translateNow((kind && TIMED_OUT_LINE_KEYS[kind]) || 'assistant.approval.timedOutSystemLine')
+
 type ConnectionRequestEvent = GatewayEvent<'connection.request'> & { payload: ConnectionRequestPayload }
 type ConnectionUpdateEvent = GatewayEvent<'connection.update'> & { payload: ConnectionUpdatePayload }
 
@@ -118,7 +127,7 @@ function approvalTimeoutNotice(approval: ApprovalRequest) {
           label: translateNow('assistant.approval.openSafetySettings'),
           onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
         },
-    line: notGranted ?? translateNow('assistant.approval.timedOutSystemLine')
+    line: notGranted ?? timedOutLine(approval.kind)
   }
 }
 

@@ -524,6 +524,10 @@ export interface Translations extends NoticeTranslations {
       accessReadWriteBody: (folder: string) => string
       networkTitle: string
       networkTitleNamed: (session: string) => string
+      scheduleTitle: string
+      scheduleTitleNamed: (session: string) => string
+      scheduleEditTitle: string
+      scheduleEditTitleNamed: (session: string) => string
       allowAction: string
       denyAction: string
       inputTitle: string

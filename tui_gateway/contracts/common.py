@@ -219,6 +219,7 @@ class PendingApproval(OpenModel):
     smart_denied: bool | None = None
     choices: list[str] | None = None
     tool_name: str | None = None
+    kind: str | None = None  # ApprovalKind value; absent = command
 
 
 class MessageReaction(OpenModel):

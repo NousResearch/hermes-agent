@@ -21,7 +21,7 @@ from agent.delegation_context import owned_kanban_task
 from agent.prompt_cache_scope import conversation_id
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE, CRON_PROACTIVE_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
@@ -309,8 +309,36 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         SESSION_SEARCH_GUIDANCE if "session_search" in names else None,
         SKILLS_GUIDANCE if "skill_manage" in names else None,
         _kanban_guidance,
+        _cron_guidance(agent),
     ]
     return " ".join(g for g in tool_guidance if g) or None
+
+
+def _cron_guidance(agent: Any) -> Optional[str]:
+    """Proactive-scheduling line when the session can create jobs (directly or through the tool_call bridge)
+    AND a new job would be shown on a "Schedule this job?" card first. Withheld wherever the gate would save
+    unseen (``tools.approval.schedule_card_skip_reason``: approvals off or already granted, cron runs,
+    ``-q`` one-shots, kanban workers, unattended platforms), so nothing urges a job nobody reviews. The
+    bridged case reads the toolset selection and the tool's own check, never the built definitions: building
+    them runs dynamic schema hooks that load plugins, which a safe-mode worker must never read."""
+    from agent.oneshot_footprint import agent_is_oneshot
+    from tools.approval import schedule_card_skip_reason
+    # A side agent (a /background task) runs outside the turn wiring that binds an approval notifier.
+    if agent_is_oneshot(agent) or getattr(agent, "side_agent", False) or schedule_card_skip_reason(
+            platform=getattr(agent, "platform", None), session_key=""):
+        return None
+    names = agent.valid_tool_names
+    if "cronjob_manage" not in names:
+        if "tool_call" not in names:
+            return None
+        import model_tools
+        from tools import registry as _registry
+        selected = model_tools._select_tool_names(
+            getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None), True)
+        entry = _registry.registry.get_entry("cronjob_manage") if "cronjob_manage" in selected else None
+        if entry is None or (entry.check_fn is not None and not _registry._check_fn_cached(entry.check_fn)):
+            return None
+    return CRON_PROACTIVE_GUIDANCE
 
 
 def _skills_prompt(agent: Any) -> str:

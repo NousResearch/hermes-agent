@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 import copy
@@ -42,6 +43,7 @@ from cron.jobs import (
     resume_job,
     trigger_job,
     update_job)
+from cron import jobs as cron_jobs
 from cron.prompt_scan import _scan_cron_prompt
 from cron.job_args import (
     _apply_continuity,
@@ -708,7 +710,6 @@ def _action_create(a: dict[str, Any]) -> str:
     context_from = a["context_from"]
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
-
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
         job = create_job_with_scheduler_registration(
@@ -732,11 +733,15 @@ def _action_create(a: dict[str, Any]) -> str:
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             catch_up=a["catch_up"], wrap_response=_wrap_response_override(a["wrap_response"]),
+            # A model-initiated create asks inside create_job, once the record is final and valid.
+            approve=_approve_new_job if a["approve"] else None,
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
+    except _ScheduleDeclined as declined:
+        return declined.args[0]
     _create_message = " ".join(filter(None, (f"Cron job '{job['name']}' created.",
         "Created PAUSED — resume to schedule, or explicitly run now." if not job.get("enabled", True) else None,
         _local_delivery_notice(job, deliver))))
@@ -971,10 +976,10 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         updates["no_agent"] = target_no_agent
     if a["repeat"] is not None:
         # Shared chokepoint coerces string forms ('forever'/'once'/'3') and 0/negative.
+        # Only the run limit: update_job keeps the stored completed count, read under the jobs lock at
+        # save time, so a run finishing while an edit card waits is never rolled back.
         from cron.jobs import normalize_repeat_value
-        repeat_state = dict(job.get("repeat") or {})
-        repeat_state["times"] = normalize_repeat_value(a["repeat"])
-        updates["repeat"] = repeat_state
+        updates["repeat"] = normalize_repeat_value(a["repeat"])
     if a["timezone"] is not None:
         # '' clears the pin (the job inherits the profile timezone); update_job validates the key.
         updates["timezone"] = _normalize_optional_job_value(a["timezone"]) or ""
@@ -989,6 +994,10 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
                 return "grace_minutes only applies to cron schedules."
     if a["schedule"] is not None:
         parsed_schedule = parse_schedule(a["schedule"])
+        if a["approve"] and job.get("enabled", True) and _schedule_key(parsed_schedule) == _schedule_key(job.get("schedule")):
+            # A model re-sending the schedule a job already has ("every 1d" for "every 24h") changes nothing,
+            # so it must not re-anchor the next run unasked: the stored schedule and run stay.
+            return None
         updates["schedule"] = parsed_schedule
         updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
         if job.get("state") != "paused":
@@ -1008,8 +1017,19 @@ def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
         if error:
             return tool_error(error, success=False)
     if not updates:
+        if a["approve"] and a["schedule"] is not None:
+            return _dumps({"success": True, "job": _format_job(job),
+                           "message": "The job already has this schedule; nothing changed and its next run stays."})
         return tool_error("No updates provided.", success=False)
-    updated = update_job(job["id"], updates)
+    if a["approve"]:
+        try:
+            _approve_job_edit(job, updates)
+        except _ScheduleDeclined as declined:
+            return declined.args[0]
+    with cron_jobs._jobs_lock():  # the job checked is the job saved: no pause or delete slips in between
+        updated, refused = _save_edit(job, updates, asked=a["approve"])
+    if refused:
+        return tool_error(refused, success=False)
     _notify_provider_jobs_changed_safe()
     # An update can switch modes or delivery — echo the same guidance as create.
     return _dumps(_with_guidance(
@@ -1090,8 +1110,10 @@ def cronjob(
     pinned: Optional[bool] = None,
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
-    grace_minutes: Optional[int | str] = None) -> str:
-    """Unified cron job management tool."""
+    grace_minutes: Optional[int | str] = None,
+    approve: bool = False) -> str:
+    """Unified cron job management tool. ``approve`` (model-tool dispatch only) shows a model-initiated
+    create or update on a schedule card first; CLI, dashboard and Desktop callers never pass it."""
     a = dict(locals())
     try:
         normalized = (action or "").strip().lower()
@@ -1130,7 +1152,18 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Schedule recurring or one-off agent tasks (cron jobs): create, list, edit, run. action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
+    "description": """Schedule reminders, follow-ups and checks: once, a few times, or recurring.
+
+Good uses, each at the moment the help is needed:
+- Appointments and events: a heads-up with enough lead time to get there (the day before for a morning slot, a leave-by time with the route).
+- Trips: online check-in when it opens (about 24h before departure), leave for the airport, arrival paperwork the destination needs, getting from the airport to the hotel, the return flight. A few one-shots at those moments beat one recurring job; use each moment's local zone.
+- Deadlines and things owed: a morning-of nudge for a deadline, a reply or document the user said they still owe, something they promised to send.
+- Habits and goals: a handful of runs at sensible times (`repeat`), not a forever schedule.
+- Things to re-check until they change: a price, a restock, a flight's status, a flaky site, a deploy. Use `monitor` for a URL so unchanged ticks cost nothing; otherwise a few runs whose prompt says to answer [SILENT] when nothing changed.
+- After an event: check how it went, or offer the next step.
+Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs over an open-ended schedule, waking-hours times, and the least frequent cadence that helps unless the user gave one. A job drafts, reminds and checks; it never sends, buys or submits on the user's behalf. A new job or an edit may be shown to the user for approval before it is saved; a declined one is their answer: never retry it.
+
+Cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless the user pins one. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -1165,7 +1198,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "repeat": {
                 "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "description": "Optional number of runs, after which the job completes (e.g. 'every day at 8am' + repeat=3 = the next three mornings). Omit for defaults (once for one-shot, forever for recurring)."
             },
             "deliver": {
                 "type": "string",
@@ -1259,9 +1292,249 @@ _HANDLER_FORWARDED_ARGS = (
     "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
 
 
+class _ScheduleDeclined(Exception):
+    """A model-initiated create or update the user did not approve; ``args[0]`` is the tool result."""
+
+
+def _approval_when(job: dict[str, Any]) -> str:
+    """When the saved job will actually run: a one-shot's own instant, else the schedule's wording (with
+    its pinned zone) plus the first run, both in the profile's clock with the zone named. A one-shot's
+    instant is absolute once parsed, so a ``timezone`` pin never moves it and is not shown beside it."""
+    from hermes_time import now as hermes_now
+    local = lambda iso: datetime.fromisoformat(iso).astimezone(hermes_now().tzinfo).strftime("%a %b %d %H:%M %Z")
+    schedule = job.get("schedule") or {}
+    if not job.get("enabled", True):
+        return f"{job.get('schedule_display', '')}, created paused: it will not run until resumed"
+    if schedule.get("kind") == "once" and job.get("next_run_at"):
+        return f"once, {local(job['next_run_at'])}"
+    zone = f" {job['timezone']}" if job.get("timezone") else ""
+    first = f", first run {local(job['next_run_at'])}" if job.get("next_run_at") else ""
+    return f"{job.get('schedule_display', '')}{zone}{first}"
+
+
+def _approval_task(job: dict[str, Any]) -> str:
+    """What the saved job will actually run: the script alone for a no-agent job, else the prompt or
+    skills plus any attached script, and whatever runs or goes out beside it (a monitor checked first
+    each tick, a delivery target other than this chat), so the card never hides work that will happen."""
+    script = job.get("script") or ""
+    if job.get("no_agent"):
+        task = f"runs script {script}"
+    else:
+        skills = ", ".join(job.get("skills") or [])
+        task = job.get("prompt") or ""  # whole: it is what the user consents to; surfaces page it
+        task = f"{task} (skills: {skills})" if task and skills else task or f"skills: {skills}"
+        task = f"{task} (after running script {script})" if script else task
+    extras = [f"checks {label} {job[key]} first each run" for key, label in
+              (("monitor_script", "script"), ("monitor_url", "URL")) if job.get(key)]
+    extras += [text for text in (
+        job.get("workdir") and f"runs in {job['workdir']}",
+        job.get("context_from") and f"reads output of {', '.join(job['context_from'])}",
+        job.get("enabled_toolsets") is not None and f"toolsets: {', '.join(job['enabled_toolsets']) or 'none'}",
+        job.get("attach_to_session") and "copied into the chat's history") if text]
+    extras.append(f"results go to {_audience(job, job.get('deliver'))}")
+    if job.get("failure_deliver") and job["failure_deliver"] != job.get("deliver"):
+        extras.append(f"failure notices go to {_audience(job, job['failure_deliver'])}")
+    return "; ".join([task, *extras])
+
+
+_NOWHERE = "nowhere (saved to the job's history only)"
+
+
+def _target_label(job: dict[str, Any], part: str, target: dict[str, Any]) -> str:
+    origin = job.get("origin") if isinstance(job.get("origin"), dict) else {}
+    if target.get("_resolved_from") == "origin" or (
+            origin and str(origin.get("platform")) == str(target["platform"])
+            and str(origin.get("chat_id")) == str(target["chat_id"])):
+        return "this chat"
+    if target.get("_resolved_from") in ("origin_fallback", "home") or part.lower() == "all":
+        return f"the {target['platform']} home channel"
+    return part
+
+
+def _token_audience(job: dict[str, Any], part: str) -> str:
+    """Where one deliver token lands for this job, by the scheduler's own resolver (the one a run uses)."""
+    from cron.scheduler import _resolve_delivery_targets
+    if part.lower() == "local":
+        return _NOWHERE
+    targets = _resolve_delivery_targets({**job, "deliver": part, "failure_deliver": None})
+    if not targets:
+        return _NOWHERE if part.lower() == "origin" else (
+            f"nowhere ({part} has no destination configured; saved to the job's history only)")
+    return ", ".join(_target_label(job, part, target) for target in targets)
+
+
+def _audience(job: dict[str, Any], deliver: Any) -> str:
+    """The card's plain answer to "who sees this": each token of ``deliver`` resolved the way a run resolves
+    it, so the card never names a recipient the scheduler does not have."""
+    parts = [p.strip() for p in str(deliver or "origin").split(",") if p.strip()]
+    return ", ".join(_token_audience(job, p) for p in parts)
+
+
+def _delivery_shown(job: dict[str, Any], key: str) -> str:
+    """An edit card's delivery line: the stored token and who it reaches, so a change of either asks."""
+    raw = job.get(key) or ""
+    return f"{raw} ({_audience(job, raw)})" if raw else ""
+
+
+def _ask_schedule_card(*, pattern_key_action: str, name: str, description: str, display_target: str,
+                       kind: str = "schedule", once_only: bool = False,
+                       pattern_key: str = "cron_create") -> bool:
+    """Show one schedule card through the shared gate; return on approval, raise ``_ScheduleDeclined``
+    otherwise. True when the user answered a card; a context where no card would be shown
+    (``schedule_card_skip_reason``) returns False at once and says why in the log, as it did before cards
+    existed. ``once_only`` (an edit) offers allow/deny only:
+    each change is its own consent, and "allow new jobs" grants never cover one."""
+    from tools.approval import _run_approval_gate, schedule_card_skip_reason
+    from tools.approval_context import get_current_session_key
+
+    reason = schedule_card_skip_reason(session_key=get_current_session_key(), live=True, pattern_key=pattern_key)
+    if reason:
+        logger.info("cronjob %s %r applied without a card: %s", pattern_key_action, name, reason)
+        return False
+    result = _run_approval_gate(
+        pattern_key=pattern_key, description=description, display_target=display_target,
+        subject="Scheduling a job requires the user's approval", noun="scheduled jobs",
+        advice="Tell the user what you wanted to schedule; do not retry.",
+        autoapprove_log_prefix=f"cronjob {pattern_key_action}", kind=kind, once_only=once_only)
+    if result.get("approved"):
+        return True
+    outcome = result.get("outcome")
+    message = {
+        "denied": "The user declined this on the schedule card; nothing was saved. Tell them in one line "
+                  "what you wanted to schedule, and do not retry it.",
+        "timeout": "The user did not answer the schedule card in time; nothing was saved. Do not retry it.",
+    }.get(outcome, "The schedule card was not approved; nothing was saved. Do not retry it.")
+    reason = result.get("deny_reason")
+    if reason:  # ``/deny <reason>``: the user's own words, so the model can adapt instead of guessing
+        message += f' Reason given by the user: "{reason}".'
+    raise _ScheduleDeclined(tool_error(message, success=False, declined=True,
+                                       **({"deny_reason": reason} if reason else {}),
+                                       **({"user_summary": result["user_summary"]} if result.get("user_summary") else {})))
+
+
+def _approve_new_job(job: dict[str, Any]) -> None:
+    """``create_job``'s ``approve`` hook for a model-initiated create: the card describes the finished,
+    validated record (its saved name, when it actually runs, paused, monitor, delivery), so every rule
+    create enforces has passed before the user is asked. A card answered after the first run it showed
+    has gone by is stale: nothing is saved, rather than a different time than the one approved."""
+    times = (job.get("repeat") or {}).get("times")
+    runs = f", {times} runs" if times and times > 1 else ""
+    asked_at = cron_jobs._hermes_now()
+    shown = _ask_schedule_card(
+        pattern_key_action="create", name=job["name"],
+        description=f"Schedule \"{job['name']}\" ({_approval_when(job)}{runs}): {_approval_task(job)}",
+        display_target=f"<cronjob_manage> (schedule \"{job['name']}\")")
+    # Stale only when the first run was still ahead as the card appeared and has passed since: with no card,
+    # or a one-shot already due inside create's grace window, the job saves as it always did.
+    first = cron_jobs._parse_aware(job["next_run_at"]) if job.get("next_run_at") else None
+    if shown and first is not None and asked_at < first <= cron_jobs._hermes_now():
+        raise _ScheduleDeclined(tool_error(
+            "The schedule card was answered after the first run it showed had passed; nothing was saved. "
+            "Offer the job again with a later time if it is still wanted.", success=False, declined=True))
+
+
+# Fields a "Change this job?" card lists, old -> new, each as the user reads it: every field that changes
+# when the job runs, what runs, or who sees it. Cosmetic ones (name, the response wrapper) are not asked.
+_EDIT_CARD_FIELDS = (
+    ("prompt", "prompt", lambda j: j.get("prompt") or ""),
+    ("no_agent", "what runs", lambda j: "script only" if j.get("no_agent") else "agent task"),
+    ("skills", "skills", lambda j: ", ".join(j.get("skills") or [])),
+    ("context_from", "reads output of", lambda j: ", ".join(j.get("context_from") or [])),
+    ("schedule", "schedule", lambda j: _schedule_shown(j)),
+    ("timezone", "timezone", lambda j: j.get("timezone") or "profile default"),
+    ("grace_minutes", "catch-up window (minutes)", lambda j: "" if j.get("grace_minutes") is None
+     else str(j["grace_minutes"])),
+    ("catch_up", "catch up missed runs", lambda j: "" if j.get("catch_up") is None else str(j["catch_up"])),
+    ("repeat", "runs", lambda j: str((j.get("repeat") or {}).get("times") or "forever")),
+    ("deliver", "delivers to", lambda j: _delivery_shown(j, "deliver")),
+    ("failure_deliver", "failure notices to", lambda j: _delivery_shown(j, "failure_deliver")),
+    ("attach_to_session", "copied into the chat's history", lambda j: "" if j.get("attach_to_session") is None
+     else str(j["attach_to_session"])),
+    ("monitor", "monitor", lambda j: j.get("monitor_script") or j.get("monitor_url") or ""),
+    ("script", "script", lambda j: j.get("script") or ""),
+    ("enabled_toolsets", "toolsets", lambda j: "" if j.get("enabled_toolsets") is None else
+     ", ".join(j["enabled_toolsets"]) or "none"),
+    ("workdir", "workdir", lambda j: j.get("workdir") or ""),
+    ("model", "model", lambda j: "/".join(p for p in (j.get("provider"), j.get("model")) if p)),
+)
+
+
+def _schedule_shown(job: dict[str, Any]) -> str:
+    """The schedule as an edit card lists it: a one-shot by its instant in the profile's clock, since two
+    instants in different zones share one display text; anything else by its display text."""
+    schedule = job.get("schedule") or {}
+    if schedule.get("kind") == "once" and schedule.get("run_at"):
+        from hermes_time import now as hermes_now
+        run_at = cron_jobs._parse_aware(schedule["run_at"])
+        if run_at is not None:
+            fmt = "%a %b %d %H:%M:%S %Z" if run_at.second else "%a %b %d %H:%M %Z"
+            return f"once, {run_at.astimezone(hermes_now().tzinfo).strftime(fmt)}"
+    return job.get("schedule_display") or ""
+
+
+def _schedule_key(schedule: Any) -> tuple:
+    """What a schedule means, not how it reads: kind plus its interval, expression or instant, so
+    "every 1d" equals "every 24h" and two instants a few seconds apart never compare equal."""
+    schedule = schedule if isinstance(schedule, dict) else {}
+    run_at = cron_jobs._parse_aware(schedule["run_at"]) if schedule.get("run_at") else None
+    return (schedule.get("kind"), schedule.get("minutes"), schedule.get("expr"),
+            run_at.timestamp() if run_at is not None else None)
+
+
+def _edit_fingerprint(job: dict[str, Any]) -> tuple:
+    """What an edit card was built from and the user can change while it waits: every listed field and
+    whether the job is paused. Run bookkeeping (completed count, next run) is left out: a run that
+    finishes meanwhile is kept, not a reason to refuse."""
+    return (*(show(job) for _key, _label, show in _EDIT_CARD_FIELDS), _schedule_key(job.get("schedule")),
+            bool(job.get("enabled", True)), cron_jobs.effective_job_state(job) == "paused")
+
+
+def _save_edit(job: dict[str, Any], updates: dict[str, Any], *, asked: bool) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Save an edit unless the job is gone, or (``asked``: a card may have waited) was changed since it was
+    read (paused, resumed, edited elsewhere): ``(saved job, None)`` or ``(None, why nothing was saved)``.
+    Caller holds the jobs lock."""
+    current = get_job(job["id"])
+    if current is None:
+        return None, "That job was removed before this change was saved; nothing was saved."
+    if asked and _edit_fingerprint(current) != _edit_fingerprint(job):
+        return None, ("That job was changed while this card waited (paused, resumed or edited elsewhere); "
+                      "nothing was saved. Look at the job again before offering the change.")
+    return update_job(job["id"], updates), None
+
+
+def _approve_job_edit(job: dict[str, Any], updates: dict[str, Any]) -> None:
+    """Show a model-initiated update on a "Change this job?" card before it is saved: each changed field
+    as old -> new, computed from the merged record update_job would store (so an invalid edit fails
+    first, unasked). Raises ``_ScheduleDeclined`` when the user does not approve; nothing changes."""
+    from cron.jobs import merge_job_update
+    after = merge_job_update(copy.deepcopy(job), copy.deepcopy(updates))
+    changes = [f"{label}: {show(job) or '(none)'} -> {show(after) or '(none)'}"
+               for _key, label, show in _EDIT_CARD_FIELDS if show(job) != show(after)]
+    done = (job.get("repeat") or {}).get("completed") or 0
+    if "repeat" in updates and done:  # "runs: 5 -> 2" with 3 done leaves none: say so
+        changes.append(f"{done} runs already done")
+    if not changes:
+        return  # only fields the card does not list (name, response wrapper): nothing new to consent to
+    name = job.get("name") or job["id"]
+    asked_at = cron_jobs._hermes_now()
+    # Its own key, never persisted (once_only): an "Always allow new jobs" grant does not cover an edit.
+    shown = _ask_schedule_card(pattern_key_action="update", name=name, kind="schedule_edit", once_only=True,
+                               pattern_key="cron_update",
+                               description=f"Change \"{name}\": " + "; ".join(changes),
+                               display_target=f"<cronjob_manage> (change \"{name}\")")
+    # A one-shot whose new instant passed while the card waited would fail after consent: decline instead.
+    first = cron_jobs._parse_aware(after["next_run_at"]) if "schedule" in updates and after.get("next_run_at") else None
+    if shown and first is not None and (after.get("schedule") or {}).get("kind") == "once" \
+            and asked_at < first <= cron_jobs._hermes_now():
+        raise _ScheduleDeclined(tool_error(
+            "The change card was answered after the new run time it showed had passed; nothing was saved. "
+            "Offer the change again with a later time if it is still wanted.", success=False, declined=True))
+
+
 def _cronjob_handler(args, **kw):
     """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
-    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted)."""
+    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted). A model-initiated
+    create or update waits for the user's approval first."""
     _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
     return cronjob(
         action=args.get("action", ""),
@@ -1270,6 +1543,7 @@ def _cronjob_handler(args, **kw):
         monitor_url=_mon_url,
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),
+        approve=True,
         **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},
     )
 

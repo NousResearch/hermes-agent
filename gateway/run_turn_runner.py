@@ -25,7 +25,7 @@ from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.platforms.base_exec_approval import approval_kind_scope, ea_default_reason_text, with_approval_kind
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
@@ -800,7 +800,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _interim_metadata, _redact_approval_command
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
-        from gateway.run_turn_runner_approval_text import approval_text_prompt
+        from gateway.run_turn_runner_approval_text import approval_text_prompt, kind_and_body
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -813,15 +813,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = _redact_approval_command(approval_data.get("description")) or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+        kind, cmd = kind_and_body(approval_data, cmd, desc)  # a schedule card shows the job, not a command
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
-                    adapter.send_exec_approval(
+                    with_approval_kind(kind, adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
                         description=desc, metadata=ctx._status_thread_metadata,
                         request_id=approval_data.get("request_id"), **flags,
-                    ),
+                    )),
                     "send_exec_approval scheduling error",
                 )
                 if fut is None:
@@ -884,8 +885,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = approval_text_prompt(adapter, ctx._status_chat_id, ctx.session_key or "", approval_data.get("request_id"),
-                                   cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        with approval_kind_scope(kind):
+            msg = approval_text_prompt(adapter, ctx._status_chat_id, ctx.session_key or "", approval_data.get("request_id"),
+                                       cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
             # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
             # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.

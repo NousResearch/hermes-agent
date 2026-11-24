@@ -45,6 +45,8 @@ import {
   type ApprovalRequest,
   clearApprovalRequest,
   isCommandApproval,
+  isScheduleApproval,
+  isTurnApproval,
   networkTarget,
   networkTargetName,
   replayPendingApproval,
@@ -88,8 +90,8 @@ export const PendingApprovalStack: FC = () => {
       initial={false}
       transition={reduced || requests.length ? { duration: 0 } : { duration: 0.22, ease: 'easeInOut' }}
     >
-      {/* The run summary explains a command approval; a folder or site card is not about the turn's tools. */}
-      <ApprovalActivity floating={placement === 'floating'} visible={requests.some(isCommandApproval)} />
+      {/* The run summary explains a command or new-job approval; a folder or site card is not about the turn's tools. */}
+      <ApprovalActivity floating={placement === 'floating'} visible={requests.some(isTurnApproval)} />
       <ApprovalQueue floating={placement === 'floating'} requests={requests} total={total} />
     </motion.section>
   )
@@ -298,11 +300,11 @@ function ApprovalTargetLines({ request }: { request: ApprovalRequest }) {
 }
 
 const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
-  if (!isCommandApproval(request)) {
+  if (!isScheduleApproval(request) && !isCommandApproval(request)) {
     return <AccessApprovalCard position={position} request={request} stack={stack} total={total} />
   }
 
-  return <CommandApprovalCard position={position} request={request} stack={stack} total={total} />
+  return <TurnApprovalCard position={position} request={request} stack={stack} total={total} />
 }
 
 /** Focus, submit and gateway handling shared by every approval card. */
@@ -558,39 +560,99 @@ function DenyReasonForm({
   )
 }
 
-const CommandApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
+type ApprovalCopy = ReturnType<typeof useI18n>['t']['assistant']['approval']
+
+// A plugin `approve` rule escalates through the same gate with a synthetic display target
+// (`<tool> (plugin approval rule)`) while the real command / change lives in `description`.
+const SYNTHETIC_COMMAND_RE = /^<[^>]+> \(/
+
+interface TurnCardView {
+  icon: string
+  title: string
+  body: string
+  /** Monospace, scroll-capped: a command. A job reads as prose and is never cut. */
+  code: boolean
+  deny: string
+  primary: string
+  menuLabel?: string
+  allowSession: string
+  alwaysMenu: string
+  alwaysTitle: string
+  alwaysDescription: string
+  alwaysPreview: string
+  denyInMenu: boolean
+}
+
+// One card for the turn's own approvals; each kind supplies only its words and body.
+const TURN_CARD_VIEWS: Record<'command' | 'schedule', (request: ApprovalRequest, copy: ApprovalCopy) => TurnCardView> = {
+  command: (request, copy) => {
+    const command = request.command.trim()
+    const showsDescription = !command || SYNTHETIC_COMMAND_RE.test(command)
+
+    return {
+      icon: 'terminal',
+      title: showsDescription ? copy.commandDetails : copy.command,
+      body: showsDescription ? request.description.trim() : command,
+      code: true,
+      deny: copy.reject,
+      primary: copy.run,
+      menuLabel: copy.alwaysAllowMenu,
+      allowSession: copy.allowSession,
+      alwaysMenu: copy.alwaysAllowMenu,
+      alwaysTitle: copy.alwaysTitle,
+      alwaysDescription: copy.alwaysDescription(request.description),
+      alwaysPreview: command,
+      denyInMenu: true
+    }
+  },
+  // A new scheduled job (or a change to one): its description says what runs and when; its command is a placeholder.
+  schedule: (request, copy) => ({
+    icon: 'watch',
+    title: request.kind === 'schedule_edit' ? copy.schedule.editTitle : copy.schedule.title,
+    body: request.description.trim(),
+    code: false,
+    deny: copy.deny,
+    primary: copy.allow,
+    allowSession: copy.schedule.allowSession,
+    alwaysMenu: copy.schedule.alwaysAllowMenu,
+    alwaysTitle: copy.schedule.alwaysTitle,
+    alwaysDescription: copy.schedule.alwaysDescription,
+    alwaysPreview: '',
+    denyInMenu: false
+  })
+}
+
+/** Which extra answers the backend offers; `allowPermanent: false` hides "Always allow". */
+function turnCardChoices(request: ApprovalRequest) {
+  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
+
+  return {
+    allowAlways: choices ? choices.includes('always') : request.allowPermanent !== false,
+    allowSession: choices ? choices.includes('session') : true
+  }
+}
+
+const TurnApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
+  const kind = isScheduleApproval(request) ? 'schedule' : 'command'
+  const view = TURN_CARD_VIEWS[kind](request, copy)
   const { cardRef, rememberFocusOrigin, respond, submitting } = useApprovalResponder(request, stack)
-  // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
-  // it goes through a confirm step rather than firing straight from the menu.
+  // "Always allow" persists to config.yaml permanently, so it goes through a confirm step rather
+  // than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
 
   const present = stack.active
   const busy = submitting !== null || !present || stack.busy
 
-  // false when the backend won't honor a permanent allow → hide "Always allow".
-  const allowPermanent = request.allowPermanent !== false
-  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
-  const allowSession = choices ? choices.includes('session') : true
-  const allowAlways = choices ? choices.includes('always') : allowPermanent
+  const { allowAlways, allowSession } = turnCardChoices(request)
   const hasMoreOptions = allowSession || allowAlways
-  const hasCommand = request.command.trim().length > 0
-  // A plugin `approve` rule escalates through the same gate with a synthetic
-  // display target (`<tool> (plugin approval rule)`) while the real command /
-  // change lives in `description` — the user approves a label they cannot act
-  // on otherwise. Show the description whenever the command is missing or one
-  // of these synthetic labels; a real command keeps rendering as the command.
-  const SYNTHETIC_COMMAND_RE = /^<[^>]+> \(/
-
-  const showsDescription = !hasCommand || SYNTHETIC_COMMAND_RE.test(request.command.trim())
-
-  const details = showsDescription ? request.description.trim() : request.command.trim()
 
   return (
     <article
       aria-hidden={!present || undefined}
       className="min-w-0"
+      data-approval-kind={kind === 'schedule' ? 'schedule' : undefined}
       data-request-id={request.requestId}
       data-slot="tool-approval-card"
       inert={!present}
@@ -598,34 +660,42 @@ const CommandApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, 
       ref={cardRef}
     >
       <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
-        <Codicon name="terminal" size="0.875rem" />
-        <span>{showsDescription ? copy.commandDetails : copy.command}</span>
+        <Codicon name={view.icon} size="0.875rem" />
+        <span>{view.title}</span>
         {total > 1 && (
           <span className="ml-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
             {position} / {total}
           </span>
         )}
       </div>
-      {details.length > 0 && (
-        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
-          {details}
-        </pre>
-      )}
+      {view.body.length > 0 &&
+        (view.code ? (
+          <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
+            {view.body}
+          </pre>
+        ) : (
+          <p
+            className="m-0 min-w-0 whitespace-pre-wrap px-2.5 py-2 text-xs leading-relaxed text-(--ui-text-primary) [overflow-wrap:anywhere]"
+            data-slot="tool-approval-target"
+          >
+            {view.body}
+          </p>
+        ))}
       <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
         <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
-          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
+          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : view.deny}
         </Button>
         {hasMoreOptions && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button aria-label={copy.moreOptions} disabled={busy} size="sm" variant="secondary">
-                {copy.alwaysAllowMenu}
+                {view.menuLabel}
                 <ChevronDown className="size-3" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-44">
               {allowSession && (
-                <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void respond('session')}>{view.allowSession}</DropdownMenuItem>
               )}
               {allowAlways && (
                 <DropdownMenuItem
@@ -636,17 +706,19 @@ const CommandApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, 
                     setTimeout(() => setConfirmAlways(true), 0)
                   }}
                 >
-                  {copy.alwaysAllowMenu}
+                  {view.alwaysMenu}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-                {copy.reject}
-              </DropdownMenuItem>
+              {view.denyInMenu && (
+                <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
+                  {view.deny}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
         <Button data-approval-run="" disabled={busy} onClick={() => void respond('once')} size="sm">
-          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
+          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : view.primary}
           <span className="opacity-60">↵</span>
         </Button>
       </div>
@@ -654,13 +726,13 @@ const CommandApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{copy.alwaysTitle}</DialogTitle>
-            <DialogDescription>{copy.alwaysDescription(request.description)}</DialogDescription>
+            <DialogTitle>{view.alwaysTitle}</DialogTitle>
+            <DialogDescription>{view.alwaysDescription}</DialogDescription>
           </DialogHeader>
 
-          {request.command.trim() && (
+          {view.alwaysPreview && (
             <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
-              {request.command.trim()}
+              {view.alwaysPreview}
             </pre>
           )}
 

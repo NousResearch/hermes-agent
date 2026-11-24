@@ -102,7 +102,13 @@ export interface ApprovalRequest extends KeyedPrompt {
 // A sandbox asks for a folder (`access`) or a site (`network`) through the same
 // `approval` request and answer as a command. These cards can outlive the turn
 // that raised them: the sandbox, not the agent loop, waits on the answer.
-export type ApprovalKind = 'command' | 'access' | 'network'
+// A new scheduled job (`schedule`) is asked from inside the turn, like a command.
+export type ApprovalKind = 'command' | 'access' | 'network' | 'schedule' | 'schedule_edit'
+
+const SCHEDULE_KINDS: ReadonlySet<unknown> = new Set(['schedule', 'schedule_edit'])
+
+/** A new scheduled job or a change to one: the card's body is the job description. */
+export const isScheduleApproval = (request: Pick<ApprovalRequest, 'kind'>): boolean => SCHEDULE_KINDS.has(request.kind)
 export type ApprovalAccessLevel = 'read' | 'read_write'
 
 export interface ApprovalAccessTarget {
@@ -166,12 +172,16 @@ export const withSpaceRuns = (name: string): string =>
  *  `approval.pending` entries, resume snapshots). Missing or unknown kinds read
  *  as a command, so an older or newer backend never gets a blank card. */
 export function approvalKindFields(raw: Record<string, unknown> | null | undefined): ApprovalKindFields {
-  if (!raw || (raw.kind !== 'access' && raw.kind !== 'network')) {
+  if (!raw || (raw.kind !== 'access' && raw.kind !== 'network' && !SCHEDULE_KINDS.has(raw.kind))) {
     return {}
   }
 
   const risk = wireText(raw.risk)
-  const fields: ApprovalKindFields = { kind: raw.kind, ...(risk ? { risk } : {}) }
+  const fields: ApprovalKindFields = { kind: raw.kind as ApprovalKind, ...(risk ? { risk } : {}) }
+
+  if (SCHEDULE_KINDS.has(raw.kind)) {
+    return fields
+  }
 
   if (raw.kind === 'access') {
     const path = nameText(raw.path)
@@ -192,7 +202,12 @@ export const isCommandApproval = (request: Pick<ApprovalRequest, 'kind'>): boole
 /** A folder or site request that names no folder or site. It is refused and never parked:
  *  its card would offer Allow for something the user cannot read. */
 export const approvalNamesNothing = (request: Pick<ApprovalRequest, 'kind' | 'target'>): boolean =>
-  !isCommandApproval(request) && !request.target
+  (request.kind === 'access' || request.kind === 'network') && !request.target
+
+/** A command or a new scheduled job: the turn's own tool call waits on it, so
+ *  it ends with the turn and stands in for the turn's tool rows. */
+export const isTurnApproval = (request: Pick<ApprovalRequest, 'kind'>): boolean =>
+  isCommandApproval(request) || isScheduleApproval(request)
 
 export const accessTarget = (request: ApprovalRequest): ApprovalAccessTarget | null =>
   request.kind === 'access' && request.target && 'path' in request.target && !('host' in request.target)
@@ -257,7 +272,7 @@ const $approvalQueues = atom<Record<string, ApprovalRequest[]>>({})
 $approvalQueues.listen(queues => {
   setSessionsWaitingOnCard(
     Object.entries(queues)
-      .filter(([sessionId, queue]) => sessionId && queue.some(request => !isCommandApproval(request)))
+      .filter(([sessionId, queue]) => sessionId && queue.some(request => !isTurnApproval(request)))
       .map(([sessionId]) => sessionId)
   )
 })
@@ -567,10 +582,10 @@ export const sessionApprovalRequests = (sessionId: string | null) =>
   computed($approvalQueues, all => all[keyFor(sessionId)] ?? EMPTY_APPROVALS)
 export const sessionApprovalRequest = (sessionId: string | null) =>
   computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
-/** True while the session holds a command approval. Folder and site cards are
- *  not about the turn's tool rows, so they never stand in for them. */
+/** True while the session holds a command (or new-job) approval. Folder and site
+ *  cards are not about the turn's tool rows, so they never stand in for them. */
 export const sessionCommandApprovalPending = (sessionId: string | null) =>
-  computed($approvalQueues, all => (all[keyFor(sessionId)] ?? EMPTY_APPROVALS).some(isCommandApproval))
+  computed($approvalQueues, all => (all[keyFor(sessionId)] ?? EMPTY_APPROVALS).some(isTurnApproval))
 /** A session's sudo card, else the app-level one (a Bot Screen package install is raised with no
  *  session: it belongs to the connection, not to a turn, so whichever chat is focused shows it). */
 export const sessionSudoRequest = (sessionId: string | null) =>
@@ -695,7 +710,7 @@ export function clearAllPrompts(sessionId?: string | null, mode: ClearPromptsMod
     return
   }
 
-  approval.clear(sessionId, undefined, mode === 'turn-end' ? isCommandApproval : undefined)
+  approval.clear(sessionId, undefined, mode === 'turn-end' ? isTurnApproval : undefined)
   sudo.clear(sessionId)
   secret.clear(sessionId)
   vaultUnlock.clear(sessionId)

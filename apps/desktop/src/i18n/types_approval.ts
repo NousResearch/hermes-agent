@@ -34,4 +34,14 @@ export interface ApprovalCopy {
     alwaysTitle: string
     alwaysDescription: string
   }
+  schedule: {
+    title: string
+    allowSession: string
+    alwaysAllowMenu: string
+    alwaysTitle: string
+    alwaysDescription: string
+    timedOutSystemLine: string
+    editTitle: string
+    editTimedOutSystemLine: string
+  }
 }

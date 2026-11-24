@@ -52,6 +52,8 @@ export interface CanonicalSharedPrompt {
 
 export interface CanonicalApprovalPrompt extends CanonicalSharedPrompt {
   allow_permanent?: boolean
+  /** The card to draw (`gateway/session_pending_controls.py` copies the approval `kind`); absent = command. */
+  approval_kind?: string
   choices?: string[]
   command?: string
   description?: string

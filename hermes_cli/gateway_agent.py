@@ -1106,15 +1106,19 @@ class GatewayAgent:
         (self._print_fn or print)(text)
 
     def _on_approval(self, payload, stream_callback, starts):
+        from tools.approval_prompt import callback_accepts
         from tools.terminal_tool import _get_approval_callback
         callback = _get_approval_callback()
         choices = list(payload.get("choices") or [])
         choice = "deny"
         if callback is not None:
+            # The card kind (``schedule`` = a new cron job) picks the panel copy; command cards omit it.
+            kind = payload.get("approval_kind")
+            extra = {"kind": kind} if kind and callback_accepts(callback, "kind") else {}
             try:
                 choice = callback(payload.get("command") or "", payload.get("description") or "",
                                   allow_permanent="always" in choices, allow_session="session" in choices,
-                                  smart_denied=False)
+                                  smart_denied=False, **extra)
             except TypeError:
                 choice = callback(payload.get("command") or "", payload.get("description") or "")
         if choice not in choices:

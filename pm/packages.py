@@ -591,6 +591,47 @@ class Venv(StatePackage):
         return {"environment": candidate, "resolved_lock": resolved_lock}
 
 
+def _termux_nodejs_deb_url(version: str) -> str:
+    """Resolve the termux-main nodejs .deb for an upstream Node version (#159592).
+
+    Termux sometimes ships ``nodejs_$ver-1_aarch64.deb`` and sometimes
+    ``nodejs_$ver_aarch64.deb`` (no debian revision). Probe both shapes and
+    prefer the one that exists; fall back to the historic ``-1`` filename when
+    neither can be probed (offline / lock-agreement paths).
+    """
+    base = "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/"
+    bare = f"{base}nodejs_{version}_aarch64.deb"
+    rev1 = f"{base}nodejs_{version}-1_aarch64.deb"
+    for url in (bare, rev1):
+        if _http_url_exists(url):
+            return url
+    return rev1
+
+
+def _http_url_exists(url: str) -> bool:
+    """True when a HEAD/range probe says the archive is present. Fail closed."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        from hermes_cli.urllib_security import open_credentialed_url
+
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "hermes-pm"})
+        with open_credentialed_url(req, timeout=20) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            return 200 <= int(code) < 400
+    except Exception:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "hermes-pm", "Range": "bytes=0-0"}
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                code = getattr(resp, "status", None) or resp.getcode()
+                return 200 <= int(code) < 400
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, TimeoutError, ValueError):
+            return False
+
+
 @register
 class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
     """nodejs.org tarballs for glibc/mac/win, unofficial-builds for musl;
@@ -608,8 +649,8 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
-            # termux's deb carries a -1 revision after the upstream version
-            return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
+            # Termux revision suffix is not always ``-1`` (#159592).
+            return _termux_nodejs_deb_url(version)
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
         base = (
@@ -934,6 +975,9 @@ class Gh(BinaryPackage):
     name = "gh"
     optional = True
     binary_rel = {"win32": "bin/gh.exe", "posix": "bin/gh"}
+    # cli/cli does not publish an Android/bionic build; probing that target
+    # used to crash in fetch_url on the three-segment name (#159592).
+    gaps = {"linux-arm64-bionic": "gh does not publish an Android build"}
 
     def fetch_url(self, version: str, target: str) -> str:
         # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,

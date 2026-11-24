@@ -1,13 +1,13 @@
 name: free-model-radar
 repo: https://github.com/jh4184591-lgtm/free-model-radar
-sha: 6ba813528256aae9c449f2c02b4cbc9620a3f2f1
+sha: 312cef0ff5828d7a9e4ad12f252c5d1a77b0713c
 subdir: ""
 description: "Watch Nous + OpenRouter (+ optional Groq) free-tier windows. Drift detection with fallback suggestions, newest-free switch recommendations, API-published retire dates and an .ics calendar export. Hourly watchdog; provider outages never count as drift. 17 unit tests. Keyless by default, $0."
 maintainer: Joshua Harrison
 tier: community
 category: models
 requires_hermes: ">=0.22.2"
-version: "0.5.0"
+version: "0.6.0"
 docs_url: ""
 image: ""
 screenshots: []
@@ -24,6 +24,7 @@ capabilities:
     - free_model_radar_recommend
     - free_model_radar_retire
     - free_model_radar_calendar
+  - free_model_radar_auto_switch
   provides_hooks: []
   provides_middleware: []
   requires_env: []

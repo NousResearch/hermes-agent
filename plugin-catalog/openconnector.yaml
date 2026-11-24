@@ -1,0 +1,44 @@
+name: openconnector
+title: OpenConnector
+repo: https://github.com/ericnunes30/hermes-openconnector
+sha: 15b467da4a44eb1621e975984fa3542ca664905f
+description: >-
+  Turns a self-hosted OpenConnector runtime into Hermes connector tools: typed
+  tools named connectors__<service>__<action> built from the runtime's own input
+  schemas, plus oc_* discovery tools (list providers, list connected accounts,
+  search actions, read an action's guide, run any action by id, refresh the
+  cache). Credentials stay on the user's server. Disclosure: every tool call goes
+  to the OpenConnector runtime the user configures (base_url), over plain HTTP by
+  default with no TLS, authenticated with a runtime token the user supplies; the
+  plugin never talks to a vendor cloud and holds no credential store of its own.
+  Write-capable actions change the external system immediately (create issue,
+  send message); tools whose action is typed write or delete say so in their
+  description. oc_sync_actions downloads the runtime's full action catalogue,
+  a single document of roughly 55 MB, and caches only the actions the user listed
+  in the `actions` setting under ~/.hermes/cache/openconnector-actions.json, so it
+  is heavy and rate-relevant to the user's own server, not to a third party. The
+  tool list the runtime exposes is read at run time, so the pinned commit does not
+  cover it. No shell commands, no background processes, no telemetry.
+maintainer: ericnunes30
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/ericnunes30/hermes-openconnector#readme
+version: "1.0.0"
+platforms: []
+known_issues:
+  - "Install and run the OpenConnector backend yourself first: the plugin only points at it and does not start containers."
+  - "OAuth providers (Gmail, Slack, Notion) need your own OAuth app registered with the provider; GitHub and other API-key providers work immediately."
+  - "Typed connectors__* tools appear only after oc_sync_actions fills the cache and the gateway restarts."
+capabilities:
+  provides_tools:
+    - oc_status
+    - oc_list_apps
+    - oc_list_connections
+    - oc_search_actions
+    - oc_action_guide
+    - oc_execute_action
+    - oc_sync_actions
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

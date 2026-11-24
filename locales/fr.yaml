@@ -1626,20 +1626,6 @@ platform:
     reaction:
       unauthorized: "Seul un utilisateur Matrix autorisé peut utiliser ces contrôles."
       not_requester: "Seul l'utilisateur à l'origine de cette action peut utiliser ces contrôles."
-
-
-        Par défaut : `{default}`
-      answer_yes: "✓ Oui"
-      answer_no: "✗ Non"
-      word_yes: "Oui"
-      word_no: "Non"
-      answered_title: "{icon} Réponse à la question de mise à jour : {answer}"
-      answered_by: "Réponse de **{user}**"
-    media:
-      gif_downgraded: "[GIF converti en fichier]"
-      gif_downgraded_caption: |-
-        [GIF converti en fichier]
-        {caption}
   google_chat:
     clarify:
       other_button: "Autre / saisir une réponse"

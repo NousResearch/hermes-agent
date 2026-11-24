@@ -59,3 +59,36 @@ describe('inline-code MEDIA paths', () => {
     expect(renderMediaTags('MEDIA:/tmp/a.png')).toBe('[Image: a.png](#media:%2Ftmp%2Fa.png)')
   })
 })
+
+describe('CJK full-width terminators', () => {
+  const card = (path: string) => `[File: ${path.split(/[/\\]/).pop()}](#media:${encodeURIComponent(path)})`
+
+  it('stops a bare path at full-width punctuation', () => {
+    expect(renderMediaTags('MEDIA:C:/x/a.sql（1 条）')).toBe(`${card('C:/x/a.sql')}（1 条）`)
+    expect(
+      mediaTagValues(
+        '原始 INSERT：MEDIA:C:/Users/Administrator/Desktop/tmp/op-history-retry-raw.sql（1 条 ieai_sysm_button）'
+      )
+    ).toEqual(['C:/Users/Administrator/Desktop/tmp/op-history-retry-raw.sql'])
+  })
+
+  it('stops an anchored path at full-width punctuation', () => {
+    expect(renderMediaTags('MEDIA:/tmp/a.pdf。')).toBe(`${card('/tmp/a.pdf')}。`)
+    expect(renderMediaTags('MEDIA:/tmp/a.pdf，然后')).toBe(`${card('/tmp/a.pdf')}，然后`)
+    expect(renderMediaTags('MEDIA:/tmp/a.pdf：内容')).toBe(`${card('/tmp/a.pdf')}：内容`)
+    expect(mediaTagValues('MEDIA:/tmp/a.tar.gz（1）')).toEqual(['/tmp/a.tar.gz'])
+    expect(mediaTagValues('MEDIA:/tmp/a.pdf and MEDIA:/tmp/b.log。')).toEqual(['/tmp/a.pdf', '/tmp/b.log'])
+  })
+
+  it('keeps full-width chars inside known-extension and quoted paths', () => {
+    expect(mediaTagValues('MEDIA:/tmp/report（final）.pdf')).toEqual(['/tmp/report（final）.pdf'])
+    expect(renderMediaTags("MEDIA:'/tmp/报告（终稿）.sql'")).toBe(card('/tmp/报告（终稿）.sql'))
+    expect(mediaTagValues("MEDIA:'/tmp/报告（终稿）.sql'")).toEqual(["'/tmp/报告（终稿）.sql'"])
+    expect(mediaTagValues('MEDIA:/tmp/a.pdf.')).toEqual(['/tmp/a.pdf'])
+  })
+
+  it('renders no link when the value starts with a terminator', () => {
+    expect(renderMediaTags('MEDIA:（说明）')).toBe('MEDIA:（说明）')
+    expect(mediaTagValues('MEDIA:（说明）')).toEqual([])
+  })
+})

@@ -459,6 +459,9 @@ def _set_event(agent: Any, event: Optional[CacheEvent], *, mark: Optional[int] =
     if event is None:
         by_route.clear()
         return
+    # Assignment leaves an existing key where it was inserted. Pop first so a route the
+    # session just used is the newest, and pruning drops the least recently used one.
+    by_route.pop(event.route, None)
     by_route[event.route] = (agent._prompt_cache_compression_mark, event)
     others = [route for route in by_route if route != event.route]
     for route in others[:-(_ROUTES_REMEMBERED - 1)]:

@@ -443,9 +443,11 @@ def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugin
         tmp_path, monkeypatch):
     """A process keeps one manager per directory, so a linked profile renamed while it runs keeps the manager
     it was opened by under the old name. The host restarted after a crash must find the profile, not the
-    link that is gone."""
+    link that is gone, and a reloaded plugin is told the profile of the home that host runs under."""
     import signal
 
+    from hermes_cli.plugins_loader import _plugin_home_scope
+    from hermes_cli.profiles import get_active_profile_name
     from tests.waiting import wait_until
     from tools.registry import registry
 
@@ -453,7 +455,7 @@ def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugin
         "import json, os\ndef register(ctx):\n"
         "    ctx.register_tool(name='whereprobe_pid', toolset='whereprobe', schema={'name': 'whereprobe_pid',\n"
         "        'description': 'd', 'parameters': {'type': 'object', 'properties': {}}},\n"
-        "        handler=lambda args, **kw: json.dumps({'pid': os.getpid()}))\n")})
+        "        handler=lambda args, **kw: json.dumps({'pid': os.getpid(), 'profile': ctx.profile_name}))\n")})
     profiles = tmp_path / "root" / "profiles"
     profiles.mkdir(parents=True)
     (profiles / "ops").symlink_to(target, target_is_directory=True)
@@ -471,6 +473,8 @@ def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugin
             registry.dispatch("whereprobe_pid", {}, scope=manager.scope_key)), timeout=15,
             what="the restarted host to serve the plugin's tool")
         assert json.loads(result)["pid"] not in {first, os.getpid()}
+        with _plugin_home_scope(manager.owner_home):
+            assert json.loads(result)["profile"] == get_active_profile_name()
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

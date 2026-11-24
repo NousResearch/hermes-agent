@@ -437,6 +437,7 @@ def _fs_backend(profile: Optional[str] = None):
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError, get_ssh_workspace_fs
     from tools.terminal_tool_config import coerce_ssh_remote_cwd
 
+    _fs_profile_home(profile)  # 409 for a profile a plugin runs elsewhere, before its config names a machine to dial
     with _profile_scope(profile):
         terminal = dict(load_config().get("terminal") or {})
         profile_env = load_env()

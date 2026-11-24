@@ -1,0 +1,31 @@
+name: taskaid
+title: Taskaid
+repo: https://github.com/satriahq/taskaid-plugins
+sha: ddc36c4034b871d864502ddb99784e7f0213eb08
+subdir: hermes
+description: >-
+  Manage Taskaid tasks, lists and daily plans that you and your agents share, through Taskaid's
+  hosted MCP server (Streamable HTTP at https://taskaid.ai/mcp, OAuth sign-in in the browser, no
+  API key). Portable Agent Plugins v1 package (plugin.json + mcp.json), configuration only.
+  Disclosure — hosted-only connector with no local code: every tool call goes to taskaid.ai,
+  signed in as the user, and Hermes stores the OAuth tokens. Taskaid is a paid service: signing up
+  starts a 15-day trial with a card on file, then $10 a month. Tasks, notes, lists and plans a call
+  reads enter the session context, so they reach the user's model provider. The save_task,
+  save_list and save_plan tools create and update the user's tasks, lists and plans. The tool list
+  comes from Taskaid's server at run time, so the pinned commit doesn't cover it. The bundled
+  mcp.json alone gets 401; sign in with
+  `hermes mcp add taskaid --url https://taskaid.ai/mcp --auth oauth --connect-timeout 300`.
+maintainer: Satria Technologies Private Limited
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://taskaid.ai/integrations/hermes
+version: "0.1.0"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add taskaid --url https://taskaid.ai/mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

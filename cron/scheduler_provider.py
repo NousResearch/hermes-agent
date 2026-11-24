@@ -199,9 +199,15 @@ class CronScheduler(ABC):
 
     def claim_fire(self, job_id: str, *, force: bool = False, manual: bool = False) -> dict | None:
         """Durably claim one fire + create its audit attempt. Transports call this synchronously
-        before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread."""
+        before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread. Nothing
+        is claimed for a profile a plugin runs elsewhere (``hermes_cli.profiles_run_elsewhere``)."""
         from cron.executions import create_execution, finish_execution, set_execution_occurrence
         from cron.jobs import claim_job_for_fire
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+        from hermes_constants import get_hermes_home
+
+        if run_elsewhere_for_home(get_hermes_home()) is not None:
+            return None
 
         execution = create_execution(job_id, source=self.name)
         claim_kwargs = {"return_job": True}

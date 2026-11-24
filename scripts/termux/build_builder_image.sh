@@ -6,8 +6,16 @@
 # Pushes to GHCR with the repo's CI identity (GITHUB_TOKEN); idempotent --
 # an existing identical tag is left alone.
 #
-# Usage: build_builder_image.sh            (build + push if missing)
+# Usage: build_builder_image.sh [--no-push]   (uses the published image, else builds + pushes it; with --no-push or TERMUX_BUILDER_NO_PUSH=1 a miss falls back to the digest-pinned base image)
 set -euo pipefail
+
+NO_PUSH="${TERMUX_BUILDER_NO_PUSH:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --no-push) NO_PUSH=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -31,6 +39,16 @@ IMAGE="${REGISTRY}/${OWNER}/hermes-termux-builder:${SHORT}"
 if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
     echo "builder image already published: $IMAGE"
     echo "$IMAGE"
+    exit 0
+fi
+
+if [ "$NO_PUSH" = "1" ]; then
+    # termux_build.sh pulls the image and reads RepoDigests[0]; a job-local tag
+    # has neither. Falling back to the digest-pinned base image works on both
+    # current and pre-claim checkouts because termux_build.sh provisions the
+    # toolchain inside the container when clang/git are absent.
+    echo "builder image not published (push disabled); falling back to base: $BASE"
+    echo "$BASE"
     exit 0
 fi
 

@@ -497,6 +497,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/main_install",
         # The old-backend notice (hermes_cli/update_backend_notice.py) reads the backend-migration marker.
         "hermes_cli/backend_migration_marker.py",
+        # The same notice asks whether a plugin runs the profile elsewhere, and prints nothing when one does.
+        "hermes_cli/profiles_run_elsewhere.py",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
         *_UPDATE_DEPENDENCIES,

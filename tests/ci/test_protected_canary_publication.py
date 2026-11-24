@@ -99,6 +99,7 @@ def canary(tmp_path, r2_server, monkeypatch):
     base = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
     env = {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
            "FIXTURE_RELEASE": str(release_state), "FIXTURE_WINDOWS_VERSION": windows_version, "GITHUB_ACTIONS": "true",
+           "GITHUB_WORKSPACE": str(clone),
            "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REPOSITORY": "NousResearch/hermes-agent",
            "GITHUB_WORKFLOW_REF": "NousResearch/hermes-agent/.github/workflows/desktop-bundled-release.yml@refs/heads/main",
            "RELEASE_TAG": tag, "TAG": tag, "HERMES_PAYLOAD_TAG": tag,

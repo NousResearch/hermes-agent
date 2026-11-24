@@ -527,6 +527,7 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin+tools:$PATH"'),
     ("zsh", ".zprofile", 'export PATH="/opt/team/.local/bin:$PATH"'),
     ("zsh", ".zprofile", 'export PYTHONPATH="$HOME/.local/bin:$PYTHONPATH"'),
+    ("zsh", ".zprofile", 'export PATH+="$HOME/.local/bin"'),  # appends without a colon: glued to the last entry
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin-tools"'),
     ("fish", ".config/fish/config.fish", "fish_add_path /opt/team/.local/bin"),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin/scripts"'),

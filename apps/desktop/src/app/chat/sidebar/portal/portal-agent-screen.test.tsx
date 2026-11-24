@@ -1,10 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $lastRoster } from '@/plugins/hermes-bots/data'
 import { botsText } from '@/plugins/hermes-bots/i18n'
 import type * as ScreenPortal from '@/plugins/hermes-bots/screen-portal'
-import { $gatewayState } from '@/store/session'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
@@ -30,7 +29,6 @@ beforeEach(() => plugin.open.mockReset())
 afterEach(() => {
   cleanup()
   $lastRoster.set([])
-  $gatewayState.set('idle')
 })
 
 it.each([
@@ -64,26 +62,24 @@ it('opens that agent’s Screen', () => {
   expect(plugin.open).toHaveBeenCalledTimes(1)
 })
 
-it('keeps reading one row for its agent when the roster is published again', () => {
+it('stands on the agent’s own roster row, not on an alias that serves the same profile', () => {
   plugin.tone = 'unknown'
+  // "nightly" is an alias served from ops, listed first; ops itself follows.
+  $lastRoster.set([
+    { connectionId: 'lab', name: 'nightly', sourceScoped: true, targetProfile: 'ops' },
+    { connectionId: 'lab', name: 'ops', sourceScoped: true }
+  ] as never)
   plugin.bots.length = 0
   render(<AgentScreenRow agent={OPS} />)
 
-  act(() => $lastRoster.set([{ connectionId: 'lab', name: 'ops' }] as never))
-  act(() => $lastRoster.set([{ connectionId: 'lab', name: 'ops' }] as never))
-
-  // The plugin's hook re-reads an unsettled status whenever the row object it is given changes.
-  expect(new Set(plugin.bots.slice(-2)).size).toBe(1)
+  expect(plugin.bots.at(-1)).toMatchObject({ name: 'ops' })
 })
 
-it('asks again when the gateway’s state changes: a read made before it opened has failed', () => {
+it('falls back to the alias that serves the profile when it has no row of its own', () => {
   plugin.tone = 'unknown'
-  $gatewayState.set('connecting')
+  $lastRoster.set([{ connectionId: 'lab', name: 'nightly', sourceScoped: true, targetProfile: 'ops' }] as never)
   plugin.bots.length = 0
   render(<AgentScreenRow agent={OPS} />)
-  const before = plugin.bots.at(-1)
 
-  act(() => $gatewayState.set('open'))
-
-  expect(plugin.bots.at(-1)).not.toBe(before)
+  expect(plugin.bots.at(-1)).toMatchObject({ name: 'nightly' })
 })

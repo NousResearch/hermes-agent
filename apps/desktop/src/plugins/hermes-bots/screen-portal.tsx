@@ -97,7 +97,9 @@ const TONE_DOT: Record<PortalTone, string> = {
 }
 
 /** Where a screen stands, in words: the long phrase a surface with room says, and for a running
- *  screen the short word for who holds it. None where the state is not one a surface names. */
+ *  screen the short word for who holds it. None where the state is not one a surface names.
+ *  The redesign's surfaces read this; ScreenPortal and ScreenHero keep the maps they had on main
+ *  until they can take it. */
 export function screenTonePhrase(t: BotsText, tone: PortalTone): { phrase?: string; holder?: string } {
   const phrases: Partial<Record<PortalTone, { phrase: string; holder?: string }>> = {
     live: { phrase: t.screen.portalWatching, holder: t.screen.holderAgent },

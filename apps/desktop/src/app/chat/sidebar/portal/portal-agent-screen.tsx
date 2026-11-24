@@ -1,8 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useMemo } from 'react'
 
 import { RowButton } from '@/components/ui/row-button'
-import { $lastRoster, botSelectionKey } from '@/plugins/hermes-bots/data'
+import { $lastRoster } from '@/plugins/hermes-bots/data'
 import { botsText, useBots } from '@/plugins/hermes-bots/i18n'
 import {
   type PortalTone,
@@ -14,7 +14,6 @@ import {
 } from '@/plugins/hermes-bots/screen-portal'
 import type { RosterRow } from '@/plugins/hermes-bots/types'
 import { notifyError } from '@/store/notifications'
-import { $gatewayState } from '@/store/session'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
@@ -43,23 +42,19 @@ export async function openAgentScreen(connectionId: null | string, profile: stri
   }
 }
 
-/** The roster row that owns an agent's Screen: the one the plugin's Open Screen action resolves
- *  (its own matcher), so what a surface says about the Screen is about the one it opens.
- *
- *  The plugin's status hook reads once for the row object it is given and again whenever that
- *  object changes. The roster is republished often, so the object holds while it stands for the
- *  same bot; it is renewed when the gateway's state changes, because a read made before the
- *  gateway was open fails and nothing else would ask again. */
+/** The roster row an agent's Screen surfaces stand on: its own row, else the alias that serves
+ *  its profile (an alias's screen is its profile's), else a row made up for a machine and profile
+ *  the roster does not list. Rebuilt with the roster, as classic's own Screen box does: the plugin's
+ *  status hook then asks again for an agent whose status has not settled, which is what recovers a
+ *  read made too early. */
 export function useScreenBot(connectionId: null | string, profile: string): RosterRow {
-  const resolved = screenBotForRoute({ connectionId, profile }, useStore($lastRoster), servesProfile)
-  const gateway = useStore($gatewayState)
-  const [held, setHeld] = useState({ bot: resolved, gateway })
+  const roster = useStore($lastRoster)
 
-  if (botSelectionKey(held.bot) !== botSelectionKey(resolved) || held.gateway !== gateway) {
-    setHeld({ bot: resolved, gateway })
-  }
+  return useMemo(() => {
+    const own = screenBotForRoute({ connectionId, profile }, roster, (route, name) => route.profile === name)
 
-  return held.bot
+    return roster.includes(own) ? own : screenBotForRoute({ connectionId, profile }, roster, servesProfile)
+  }, [connectionId, profile, roster])
 }
 
 /** One agent's Screen (Bot Mode: its own desktop), from the plugin's state for it. Mounting this

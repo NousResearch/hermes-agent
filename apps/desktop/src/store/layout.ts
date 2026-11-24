@@ -1,6 +1,6 @@
 import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores'
 
-import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { togglePaneReveal } from '@/components/pane-shell'
 import { allPaneIds, type GroupNode } from '@/components/pane-shell/tree/model'
 import {
   $collapsedTreeSides,
@@ -571,7 +571,7 @@ function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolea
     return false
   }
 
-  window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode } }))
+  togglePaneReveal(id, mode)
 
   return true
 }

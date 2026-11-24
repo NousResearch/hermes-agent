@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { $widthClass } from '@/app/redesign/breakpoints'
-import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { togglePaneReveal } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { CHAT_SIDEBAR_PANE_ID } from '@/store/layout'
 import { $portalShell } from '@/store/shell-variant'
@@ -56,7 +56,7 @@ export function closeOpenSheet(): void {
   const [id] = $narrowOverlayPaneIds.get()
 
   if (id && typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: 'close' } }))
+    togglePaneReveal(id, 'close')
   }
 }
 

@@ -7,7 +7,7 @@ import { hudTargetSessionId } from '@/app/hud/handoff'
 import { $widthClass } from '@/app/redesign/breakpoints'
 import { $developerToolShown, toggleDeveloperToolPanel } from '@/app/redesign/developer-tool-panel'
 import { PortalBandAgentSettings } from '@/app/redesign/portal-agent-settings'
-import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { togglePaneReveal } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
@@ -199,7 +199,7 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
       open,
       expanded: browserHost ? open : undefined,
       toggle: overlayChrome
-        ? () => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: revealMode } }))
+        ? () => togglePaneReveal(id, revealMode)
         : toggleDocked
     }
   }

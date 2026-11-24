@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { togglePaneReveal } from '@/components/pane-shell'
 import { isNarrowViewport, isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
@@ -401,7 +401,7 @@ export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main
       openReview(scopeCwd, target)
     }
 
-    window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: REVIEW_PANE_ID } }))
+    togglePaneReveal(REVIEW_PANE_ID)
 
     return
   }
@@ -441,7 +441,7 @@ export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main
     // The reveal pin is a toggle, so only fire it when the overlay isn't
     // already slid in — otherwise "show me the diff" would hide the pane.
     if (!wasOpen) {
-      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: REVIEW_PANE_ID } }))
+      togglePaneReveal(REVIEW_PANE_ID)
     }
 
     return

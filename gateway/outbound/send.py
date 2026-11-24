@@ -7,7 +7,6 @@ import logging
 import os
 import re
 
-from agent.secret_scope import get_secret
 
 # Pinned name: these lines stay under `hermes logs --component tools`.
 logger = logging.getLogger("tools.send_message_tool")
@@ -254,7 +253,7 @@ def _platform_enum(platform_name):
 
 def _resolve_platform_config(platform_name, config):
     """``(platform, pconfig, registry_entry, error)``. Plugin platforms must be registered;
-    disabled/missing platforms error, except Weixin, which may be configured purely via .env."""
+    disabled/missing platforms error."""
     from gateway.config import Platform
     from gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
@@ -265,8 +264,6 @@ def _resolve_platform_config(platform_name, config):
         return None, None, None, err
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
-    if pconfig is None:
         return None, None, None, _not_configured_error(platform_name, platform, entry)
     return platform, pconfig, entry, None
 
@@ -342,15 +339,10 @@ def _secret_sources_state(user_config):
 
 def _home_chat_id(config, platform, platform_name):
     """``(home chat_id, home thread_id, None)`` or ``(None, None, actionable error)``; the thread is
-    where /sethome ran (a Telegram topic). Weixin also honours WEIXIN_HOME_CHANNEL."""
+    where /sethome ran (a Telegram topic)."""
     home = config.get_home_channel(platform)
     if home:
         return home.chat_id, getattr(home, "thread_id", None) or None, None
-    # Home channel is a per-profile target like the token beside it: a raw environ read would post a
-    # multiplexed secondary's message into the default profile's Weixin chat.
-    wx_home = (get_secret("WEIXIN_HOME_CHANNEL", "") or "").strip() if platform_name == "weixin" else ""
-    if wx_home:
-        return wx_home, None, None
     home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(platform_name, f"{platform_name.upper()}_HOME_CHANNEL")
     return None, None, (f"No home channel set for {platform_name} to determine where to send the message. "
                   f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
@@ -378,18 +370,6 @@ def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
             user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None))
     except Exception:
         return False
-
-
-def _weixin_env_pconfig():
-    """Synthesize a Weixin PlatformConfig from .env secrets, or None."""
-    wx_token = get_secret("WEIXIN_TOKEN", "").strip()
-    wx_account = get_secret("WEIXIN_ACCOUNT_ID", "").strip()
-    if not (wx_token and wx_account):
-        return None
-    from gateway.config import PlatformConfig
-    return PlatformConfig(enabled=True, token=wx_token, extra={
-        "account_id": wx_account, "base_url": get_secret("WEIXIN_BASE_URL", "").strip(),
-        "cdn_base_url": get_secret("WEIXIN_CDN_BASE_URL", "").strip()})
 
 
 def _describe_media_for_mirror(media_files):
@@ -674,14 +654,10 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, what
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
                             force_document=False, mentions=None, args=None, notify=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
-    Weixin first (its native helper must not be blocked by unrelated optional imports such as
-    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
+    Telegram (chunks itself), plugin standalone sends, native chunked, generic text."""
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
-    if platform_name == "weixin":  # plugin standalone sender only: no other plugin's import can block it
-        return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, [message], media_files,
-                                             thread_id=thread_id, max_len=None, force_document=force_document)
     # Telegram's plugin sender chunks internally on the *formatted* text (escaping inflates length).
     if platform == Platform.TELEGRAM:
         sender, err = _plugin_standalone_sender(platform_name)

@@ -10,15 +10,15 @@ from gateway.run import GatewayRunner
 async def test_unrelated_allow_all_does_not_bypass_own_policy_open_gate(
     monkeypatch, tmp_path,
 ):
-    """TELEGRAM_ALLOW_ALL_USERS must not satisfy Weixin's open-policy opt-in."""
+    """TELEGRAM_ALLOW_ALL_USERS must not satisfy WeCom's open-policy opt-in."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("WEIXIN_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("WECOM_ALLOW_ALL_USERS", raising=False)
     monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
 
     config = GatewayConfig(
         platforms={
-            Platform.WEIXIN: PlatformConfig(
+            Platform.WECOM: PlatformConfig(
                 enabled=True,
                 extra={"dm_policy": "open"},
             ),
@@ -31,6 +31,6 @@ async def test_unrelated_allow_all_does_not_bypass_own_policy_open_gate(
 
     assert ok is True
     assert runner.should_exit_cleanly is True
-    assert "weixin" in (runner.exit_reason or "").lower()
+    assert "wecom" in (runner.exit_reason or "").lower()
 
 

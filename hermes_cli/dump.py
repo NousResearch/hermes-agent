@@ -143,7 +143,7 @@ _PLATFORM_ENV_VARS = {
     "whatsapp": "WHATSAPP_ENABLED", "signal": "SIGNAL_HTTP_URL", "email": "EMAIL_ADDRESS",
     "sms": "TWILIO_ACCOUNT_SID", "matrix": "MATRIX_HOMESERVER_URL", "mattermost": "MATTERMOST_URL",
     "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
-    "wecom": "WECOM_BOT_ID", "wecom_callback": "WECOM_CALLBACK_CORP_ID", "weixin": "WEIXIN_ACCOUNT_ID",
+    "wecom": "WECOM_BOT_ID", "wecom_callback": "WECOM_CALLBACK_CORP_ID",
     "qqbot": "QQ_APP_ID",
 }
 

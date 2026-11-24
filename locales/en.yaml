@@ -1068,8 +1068,6 @@ platform:
       file_failed: "⚠️ Couldn't deliver the file attachment ({name})."
       attachment_failed: "⚠️ Couldn't deliver the attachment."
 
-  weixin:
-    voice_as_attachment: "[voice message as attachment]"
   signal:
     batch_pacing_notice: "(More images coming — pausing ~{wait} for Signal rate limit, batch {batch}/{total}.)"
     wait_seconds: "{count}s"

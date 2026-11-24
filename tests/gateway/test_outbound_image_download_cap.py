@@ -150,21 +150,6 @@ def _mattermost(uploaded):
     return a
 
 
-def _weixin(uploaded):
-    import aiohttp
-    from plugins.platforms.weixin.adapter import WeixinAdapter
-    a = WeixinAdapter(PlatformConfig(enabled=True, token="t", extra={"account_id": "acct"}))
-    a._send_session = aiohttp.ClientSession()
-    a.send = _ok
-
-    async def send_document(_chat_id, file_path, **_kwargs):
-        uploaded.append(Path(file_path).stat().st_size)
-        return SendResult(success=True, message_id="1")
-
-    a.send_document = send_document
-    return a
-
-
 # path id -> (adapter factory, how the reply's image URL reaches the adapter)
 SENDS = {
     "slack-send_image": (_slack, lambda a, url: a.send_image("C1", url)),
@@ -174,7 +159,6 @@ SENDS = {
     "mattermost-send_image": (_mattermost, lambda a, url: a.send_image("ch", url)),
     "mattermost-send_multiple_images": (
         _mattermost, lambda a, url: a.send_multiple_images("ch", [(url, "")])),
-    "weixin-send_multiple_images": (_weixin, lambda a, url: a.send_multiple_images("wx", [(url, "")])),
 }
 
 

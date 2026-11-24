@@ -1,10 +1,10 @@
 """Config-driven DM / group intake policy shared by the adapters that gate access themselves
-(Weixin, WeCom, QQBot, WhatsApp; plugin adapters such as Yuanbao's ``AccessPolicy`` use it too).
+(WeCom, QQBot, WhatsApp; plugin adapters such as Weixin and Yuanbao's ``AccessPolicy`` use it too).
 
 Host contract — the adapter sets these on ``self`` before any predicate runs: ``_dm_policy`` /
 ``_group_policy`` (``open`` | ``allowlist`` | ``disabled`` | ``pairing``), ``_allow_from`` /
 ``_group_allow_from`` (iterable of allowlist entries), and ``ALLOW_ALL_ENV_PREFIX`` (class
-attribute, e.g. ``"WEIXIN"``). Platform-specific allowlist matching goes through
+attribute, e.g. ``"WECOM"``). Platform-specific allowlist matching goes through
 ``_entry_matches``; env-seeded allowlists that must be re-read live go through
 ``_live_dm_allow_from``.
 

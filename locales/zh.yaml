@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ 无法发送视频附件。"
       file_failed: "⚠️ 无法发送文件附件（{name}）。"
       attachment_failed: "⚠️ 无法发送附件。"
-  weixin:
-    voice_as_attachment: "[语音消息作为附件]"
   signal:
     batch_pacing_notice: "（还有更多图片——因 Signal 速率限制暂停约 {wait}，批次 {batch}/{total}。）"
     wait_seconds: "{count} 秒"

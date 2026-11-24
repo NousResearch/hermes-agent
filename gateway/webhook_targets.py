@@ -5,7 +5,7 @@ from contextlib import suppress
 
 BUILTIN_DELIVER_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix", "mattermost",
-    "email", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin",
+    "email", "dingtalk", "feishu", "wecom", "wecom_callback",
     "bluebubbles", "qqbot"})
 _NON_PLATFORM_TARGETS = frozenset({"log", "github_comment"})
 

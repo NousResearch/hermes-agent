@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ 動画の添付ファイルを送信できませんでした。"
       file_failed: "⚠️ 添付ファイル（{name}）を送信できませんでした。"
       attachment_failed: "⚠️ 添付ファイルを送信できませんでした。"
-  weixin:
-    voice_as_attachment: "[音声メッセージを添付ファイルとして送信]"
   signal:
     batch_pacing_notice: "（まだ画像があります — Signal のレート制限のため約 {wait} 待機します。バッチ {batch}/{total}）"
     wait_seconds: "{count} 秒"

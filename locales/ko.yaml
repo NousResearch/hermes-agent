@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ 동영상 첨부 파일을 전송할 수 없었어요."
       file_failed: "⚠️ 첨부 파일({name})을 전송할 수 없었어요."
       attachment_failed: "⚠️ 첨부 파일을 전송할 수 없었어요."
-  weixin:
-    voice_as_attachment: "[음성 메시지 첨부]"
   signal:
     batch_pacing_notice: "(이미지가 더 있어요 — Signal 요청 제한으로 약 {wait} 대기 중, 배치 {batch}/{total}.)"
     wait_seconds: "{count}초"

@@ -326,7 +326,7 @@ def _discover_repos_payload(
 # Messaging would hide its rows from the sidebar entirely.
 _MESSAGING_SESSION_SOURCES = (
     "telegram", "discord", "slack", "mattermost", "matrix", "signal", "whatsapp", "bluebubbles",
-    "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",
+    "photon", "homeassistant", "email", "sms", "webhook", "api_server", "wecom", "qqbot",
     "yuanbao", "dingtalk", "feishu",
 )
 _PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", *_MESSAGING_SESSION_SOURCES]

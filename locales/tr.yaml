@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ Video eki iletilemedi."
       file_failed: "⚠️ Dosya eki iletilemedi ({name})."
       attachment_failed: "⚠️ Ek iletilemedi."
-  weixin:
-    voice_as_attachment: "[ek olarak sesli mesaj]"
   signal:
     batch_pacing_notice: "(Daha fazla görsel geliyor — Signal hız sınırı için ~{wait} bekleniyor, grup {batch}/{total}.)"
     wait_seconds: "{count} sn"

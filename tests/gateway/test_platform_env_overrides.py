@@ -38,5 +38,5 @@ def test_env_override_secrets_stay_in_terminal_secret_blocklist():
 
     secrets = {name.upper() for name in config_env_table_keys(_entries())
                if name.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES)}
-    assert "WEIXIN_TOKEN" in secrets  # the rows were actually read
+    assert "MATTERMOST_TOKEN" in secrets  # the rows were actually read
     assert sorted(secrets - _ADAPTER_SECRET_ENV) == []

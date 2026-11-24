@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ Не вдалося доставити вкладене відео."
       file_failed: "⚠️ Не вдалося доставити вкладений файл ({name})."
       attachment_failed: "⚠️ Не вдалося доставити вкладення."
-  weixin:
-    voice_as_attachment: "[голосове повідомлення як вкладення]"
   signal:
     batch_pacing_notice: "(Надходять ще зображення — пауза ~{wait} через ліміт частоти Signal, пакет {batch}/{total}.)"
     wait_seconds: "{count} с"

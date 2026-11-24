@@ -25,7 +25,7 @@ def test_registered_entries_carry_exactly_the_file_declaration():
 
     discover_plugins()
     names = _bundled_with_authz()
-    assert {"telegram", "weixin", "wecom_callback", "qqbot"} <= set(names)
+    assert {"telegram", "wecom", "wecom_callback", "qqbot"} <= set(names)
     for name in names:
         entry = platform_registry.get(name)
         declared = bundled_authz(name)
@@ -33,7 +33,7 @@ def test_registered_entries_carry_exactly_the_file_declaration():
         assert {f: getattr(entry, f) for f in declared} == declared, name
 
 
-@pytest.mark.parametrize("name", ["telegram", "weixin"])
+@pytest.mark.parametrize("name", ["telegram", "wecom"])
 def test_override_without_fields_still_gates_on_bundled_names(name, monkeypatch):
     from gateway import pairing, run_startup
     from gateway.platform_registry import platform_registry

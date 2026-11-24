@@ -29,7 +29,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
-| Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Weixin（插件） | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao（Labs 插件） | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
@@ -60,7 +60,7 @@ flowchart TB
     fs[Feishu/Lark]
     wc[WeCom]
     wcb[WeCom Callback]
-    wx[Weixin]
+    wx["Weixin (plugin)"]
     bb[BlueBubbles]
     qq[QQ]
     yb["Yuanbao (plugin)"]
@@ -441,7 +441,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Feishu/Lark | `hermes-feishu` | 完整工具，包括终端 |
 | WeCom | `hermes-wecom` | 完整工具，包括终端 |
 | WeCom Callback | `hermes-wecom-callback` | 完整工具，包括终端 |
-| Weixin | `hermes-weixin` | 完整工具，包括终端 |
+| Weixin（插件） | `hermes-weixin` | 完整工具，包括终端，由官方 `weixin` 插件提供（默认安装） |
 | BlueBubbles | `hermes-bluebubbles` | 完整工具，包括终端 |
 | QQBot | `hermes-qqbot` | 完整工具，包括终端 |
 | Yuanbao（Labs 插件） | `hermes-yuanbao` | 完整工具，外加 `yuanbao` Hermes Labs 插件提供的 `yb_*` 群组/私聊/贴纸工具 |
@@ -565,7 +565,7 @@ display:
 - [Feishu/Lark 配置](feishu.md)
 - [WeCom 配置](wecom.md)
 - [WeCom Callback 配置](wecom-callback.md)
-- [Weixin 配置（微信）](weixin.md)
+- [Weixin（微信）](weixin.md)（官方插件，默认安装）
 - [BlueBubbles 配置（iMessage）](bluebubbles.md)
 - [QQBot 配置](qqbot.md)
 - [Yuanbao](yuanbao.md)（Hermes Labs 插件）

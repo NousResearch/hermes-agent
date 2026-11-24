@@ -48,7 +48,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
-| Weixin | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| Weixin (plugin) | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
@@ -88,7 +88,7 @@ flowchart TB
     fs[Feishu/Lark]
     wc[WeCom]
     wcb[WeCom Callback]
-    wx[Weixin]
+    wx["Weixin (plugin)"]
     bb[BlueBubbles]
     qq[QQ]
     yb["Yuanbao (plugin)"]
@@ -845,7 +845,7 @@ Each platform has its own toolset:
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
 | WeCom | `hermes-wecom` | Full tools including terminal |
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
-| Weixin | `hermes-weixin` | Full tools including terminal |
+| Weixin (plugin) | `hermes-weixin` | Full tools including terminal, from the official `weixin` plugin (installed by default) |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao (Labs plugin) | `hermes-yuanbao` | Full tools + the `yb_*` group/DM/sticker tools from the `yuanbao` Hermes Labs plugin |
@@ -1103,7 +1103,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Feishu/Lark Setup](feishu.md)
 - [WeCom Setup](wecom.md)
 - [WeCom Callback Setup](wecom-callback.md)
-- [Weixin Setup (WeChat)](weixin.md)
+- [Weixin (WeChat)](weixin.md) (official plugin, installed by default)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Photon Setup (iMessage)](photon.md)
 - [QQBot Setup](qqbot.md)

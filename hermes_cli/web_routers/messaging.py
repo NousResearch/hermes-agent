@@ -97,9 +97,6 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         ("WECOM_CALLBACK_AGENT_ID", "WeCom app agent ID", "WeCom Agent ID", {}),
         ("WECOM_CALLBACK_TOKEN", "WeCom callback verification token", "WeCom Token", {}),
         ("WECOM_CALLBACK_ENCODING_AES_KEY", "WeCom callback AES encoding key", "WeCom AES Key", {"password": True}),
-        ("WEIXIN_ACCOUNT_ID", "iLink Bot account ID obtained through QR login in hermes gateway setup", "iLink Bot account ID", {}),
-        ("WEIXIN_TOKEN", "iLink Bot token obtained through QR login in hermes gateway setup", "iLink Bot token", {"password": True}),
-        ("WEIXIN_BASE_URL", "iLink API base URL saved by QR login (default: https://ilinkai.weixin.qq.com)", "iLink API base URL", {}),
         ("FEISHU_APP_ID", "Feishu / Lark app ID", "App ID", {}),
         ("FEISHU_APP_SECRET", "Feishu / Lark app secret", "App secret", {"password": True}),
         ("FEISHU_ENCRYPT_KEY", "Feishu / Lark encrypt key", "Encrypt key", {"password": True}),
@@ -1276,7 +1273,7 @@ def _messaging_platform_posture(
     - pairing grants: approved users in the profile's pairing store (the gateway honors
       the store as a UNION with the allowlists)
     - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
-      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp) gate at intake
+      the own-policy adapters (WeCom, QQBot, WhatsApp, plugins such as Weixin) gate at intake
 
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".

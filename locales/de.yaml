@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ Der Videoanhang konnte nicht zugestellt werden."
       file_failed: "⚠️ Der Dateianhang konnte nicht zugestellt werden ({name})."
       attachment_failed: "⚠️ Der Anhang konnte nicht zugestellt werden."
-  weixin:
-    voice_as_attachment: "[Sprachnachricht als Anhang]"
   signal:
     batch_pacing_notice: "(Weitere Bilder folgen — Pause von ~{wait} wegen Signal-Ratenlimit, Stapel {batch}/{total}.)"
     wait_seconds: "{count}s"

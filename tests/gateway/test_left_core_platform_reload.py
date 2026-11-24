@@ -20,7 +20,7 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
     def load_config():
         platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True)}
         if plugin_installed:
-            platforms[Platform.WEIXIN] = PlatformConfig(enabled=True)  # the platform the plugin ships
+            platforms[Platform.QQBOT] = PlatformConfig(enabled=True)  # the platform the plugin ships
         return GatewayConfig(platforms=platforms)
 
     def recover_at_startup(*, say=None, gateway_start=False):
@@ -47,7 +47,7 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
     with pytest.raises(SystemExit):
         await gateway_run.start_gateway(replace=False, verbosity=None)
 
-    assert seen["platforms"] == {Platform.TELEGRAM, Platform.WEIXIN}
+    assert seen["platforms"] == {Platform.TELEGRAM, Platform.QQBOT}
 
 
 @pytest.mark.asyncio

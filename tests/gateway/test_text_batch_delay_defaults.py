@@ -1,20 +1,19 @@
 """Text-batch debounce defaults must not exceed Telegram's cadence (#44883, #25056).
 
-WhatsApp (5s/10s) and Weixin (3s/5s) used to hold every reply for seconds
+WhatsApp (5s/10s) and Weixin (3s/5s, now a plugin) used to hold every reply for seconds
 before dispatching; Telegram waits 0.3s (1.0s near a split chunk).
 """
 
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.weixin.adapter import WeixinAdapter
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
 
 
 @pytest.mark.parametrize(
-    "adapter_cls", [WhatsAppAdapter, WeixinAdapter], ids=["whatsapp", "weixin"],
+    "adapter_cls", [WhatsAppAdapter], ids=["whatsapp"],
 )
 def test_text_batch_delays_clamped_to_shared_ceilings(adapter_cls, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

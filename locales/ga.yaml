@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ Níorbh fhéidir an ceangaltán físe a sheachadadh."
       file_failed: "⚠️ Níorbh fhéidir an ceangaltán comhaid a sheachadadh ({name})."
       attachment_failed: "⚠️ Níorbh fhéidir an ceangaltán a sheachadadh."
-  weixin:
-    voice_as_attachment: "[teachtaireacht ghutha mar cheangaltán]"
   signal:
     batch_pacing_notice: "(Tuilleadh íomhánna ag teacht — ag stad ~{wait} de bharr teorainn ráta Signal, baisc {batch}/{total}.)"
     wait_seconds: "{count}s"

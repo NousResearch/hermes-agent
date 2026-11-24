@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ Kon nie die video-aanhegsel aflewer nie."
       file_failed: "⚠️ Kon nie die lêeraanhegsel aflewer nie ({name})."
       attachment_failed: "⚠️ Kon nie die aanhegsel aflewer nie."
-  weixin:
-    voice_as_attachment: "[stemboodskap as aanhegsel]"
   signal:
     batch_pacing_notice: "(Nog beelde op pad — wag ~{wait} vir Signal se tarieflimiet, bondel {batch}/{total}.)"
     wait_seconds: "{count}s"

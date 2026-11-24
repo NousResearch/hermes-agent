@@ -600,8 +600,9 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
-_POSIX_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*\.local/bin\b")
-_FISH_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)[^#\n]*\.local/bin\b")
+# A PATH entry ends at the directory name: ~/.local/bin-tools is not ~/.local/bin.
+_POSIX_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*\.local/bin(?![\w.-])")
+_FISH_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)[^#\n]*\.local/bin(?![\w.-])")
 
 
 def _expand_user_path(raw: str, home: Path) -> Path:
@@ -658,7 +659,7 @@ def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
 def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
     if termux:
         pattern = re.compile(
-            rf"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*(?:\$PREFIX/bin|\$\{{PREFIX\}}/bin|{re.escape(str(link_dir))})\b"
+            rf"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*(?:\$PREFIX/bin|\$\{{PREFIX\}}/bin|{re.escape(str(link_dir))})(?![\w.-])"
         )
     elif shell == "fish":
         pattern = _FISH_LOCAL_BIN_PATH_RE

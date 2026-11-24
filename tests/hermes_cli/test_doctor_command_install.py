@@ -514,6 +514,24 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("shell, rc_file, line", [
+    ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin-tools:$PATH"'),
+    ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin-tools"'),
+])
+def test_path_check_does_not_take_a_sibling_dir_for_local_bin(tmp_path, monkeypatch, capsys, shell, rc_file, line):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    monkeypatch.setenv("SHELL", f"/bin/{shell}")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    (Path.home() / rc_file).parent.mkdir(parents=True, exist_ok=True)
+    (Path.home() / rc_file).write_text(line + "\n", encoding="utf-8")
+
+    assert doctor.run_doctor(Namespace(fix=False)) == 1
+
+    assert "~/.local/bin is not on your PATH" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
 def test_bash_path_check_passes_over_a_login_file_bash_cannot_read(tmp_path, monkeypatch, capsys):
     if os.geteuid() == 0:
         pytest.skip("root reads a file without read permission")

@@ -70,6 +70,8 @@ After fetching the transcript, format it based on what the user asks for:
 - **Blog post**: Full article with title, sections, and key takeaways
 - **Quotes**: Notable quotes with timestamps
 
+Worked examples for each format live in `references/output-formats.md`.
+
 ### Example — Chapters Output
 
 ```

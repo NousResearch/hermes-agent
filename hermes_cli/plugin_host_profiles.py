@@ -121,7 +121,7 @@ def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
                **{HOST_PROCESS_ENV: "1"})
     # -P and a trusted cwd: ``-m`` otherwise puts the launch directory ahead of PYTHONPATH, so a
     # ``hermes_cli/`` package in the directory Hermes was started from would run instead of ours.
-    argv = [*extraction_launcher(get_hermes_home()), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child",
+    argv = [*extraction_launcher(Path(home)), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child",
             "--extract-profiles", str(plugin_dir.resolve()), module_name]
     try:
         done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,

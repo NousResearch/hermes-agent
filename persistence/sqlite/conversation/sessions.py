@@ -866,6 +866,7 @@ class SQLiteSessionRepository:
                 compact_rows=compact_rows, include_pinned=query.include_pinned, session_key=query.session_key,
                 include_hidden=query.include_hidden, include_subagents=query.include_subagents,
                 local_created_sources=_optional_list(query.local_created_sources), workspace_key=query.workspace_key,
+                wait_for_usage=query.wait_for_usage,
             )
         return tuple(_list_entry(holder, row, compact=compact_rows) for row in rows)
 

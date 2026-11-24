@@ -516,6 +516,8 @@ class SessionQuery:
     local_created_sources: Optional[tuple[str, ...]] = None
     #: Only rows in this workspace (``hermes -c``'s rule): the git repo root equals it, or a row without one has its cwd at or under it.
     workspace_key: Optional[str] = None
+    #: False for navigation-only reads: list committed rows without awaiting pending usage (including its missing-row backfill).
+    wait_for_usage: bool = True
 
 
 @dataclass(frozen=True, slots=True)

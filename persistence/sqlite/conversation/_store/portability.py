@@ -155,7 +155,7 @@ def _get_session_rich_row(holder: StoreHolder, session_id: str, compact_rows: bo
 get_session_rich_row = _get_session_rich_row
 
 
-def _get_session_rich_rows_batch(holder: StoreHolder, session_ids, compact_rows: bool = False) -> dict[str, dict[str, Any]]:
+def _get_session_rich_rows_batch(holder: StoreHolder, session_ids, compact_rows: bool = False, *, wait_for_usage: bool = True) -> dict[str, dict[str, Any]]:
     """Enriched rows for many sessions in one query, keyed by id; missing ids are absent
     (a page of compression tips resolves in one round trip)."""
     ids = [sid for sid in session_ids if sid]
@@ -167,10 +167,11 @@ def _get_session_rich_rows_batch(holder: StoreHolder, session_ids, compact_rows:
     if len(ids) > _CHUNK:
         result: dict[str, dict[str, Any]] = {}
         for start in range(0, len(ids), _CHUNK):
-            result.update(_get_session_rich_rows_batch(holder, ids[start:start + _CHUNK], compact_rows=compact_rows))
+            result.update(_get_session_rich_rows_batch(holder, ids[start:start + _CHUNK], compact_rows=compact_rows, wait_for_usage=wait_for_usage))
         return result
     # Same read-your-writes guarantee as list_sessions_rich.
-    holder.flush_token_counts()
+    if wait_for_usage:
+        holder.flush_token_counts()
     query = _rich_select(
         _compact_session_cols(holder.db_path.parent) if compact_rows else "s.*", f"s.id IN ({','.join('?' for _ in ids)})",
         prompt_select=None if compact_rows else f", {_PROMPT_RESOLVED_SQL}",

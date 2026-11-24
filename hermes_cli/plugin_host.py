@@ -53,21 +53,30 @@ _RESTART_BUDGET = 3
 _RESTART_WINDOW_SECS = 600.0
 
 
-def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
+def _hosted_ambient_credentials(home: Path, own: Optional[bool] = None) -> dict[str, str]:
     """``env_vars`` of this home's hosted ``ambient_credentials`` providers (``GH_TOKEN``-style names the
     child-env scrub always strips), read the way that provider reads them in-process: ``get_secret``
-    under the home's scope, so the launch home keeps its shell value and a routed home never gets it."""
-    from agent.secret_scope import build_profile_secret_scope, get_secret, reset_secret_scope, set_secret_scope
+    under the home's scope, so the launch home keeps its shell value and a routed home never gets it.
+    *own* is ``build_profile_secret_scope``'s *process_home*."""
+    from agent.runtime_scope import bind_state, scope_for_profile
+    from agent.secret_scope import build_profile_secret_scope, get_secret
     from hermes_cli.plugin_host_profiles import is_hosted_profile
     from providers import list_providers
     names = {name for p in list_providers() if p.ambient_credentials and is_hosted_profile(p) for name in p.env_vars}
     if not names:
         return {}
-    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
-    try:
+    with bind_state(scope_for_profile(home), secrets=build_profile_secret_scope(home, process_home=own),
+                    home_override=False, terminal=False):
         return {name: value for name in sorted(names) if (value := get_secret(name))}
-    finally:
-        reset_secret_scope(token)
+
+
+def _is_launch_home(home: Path) -> bool:
+    """Is *home* the launch profile's? The one answer a host start uses for its launcher and its child's env:
+    by the key the process remembered for its own path, as ``serves_routed_profile`` asks, not by where that
+    path leads now. After that link is renamed *home* is the new name and the old one leads to no files; after
+    it is repointed at another profile's directory, that profile is still another's."""
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    return hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
 
 
 def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
@@ -85,17 +94,16 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     multiplexing uses the process env, so a restart reads what the process loaded; under multiplexing it uses the
     launch scope too. The process env holds the launch profile's values, so any other profile's launcher expands
     through its own files (``build_profile_secret_scope``), multiplexing or not: a desktop backend's cron ticker
-    serves a sibling under task-local multiplexing, which a fresh context does not carry. The launch profile is
-    the one whose directory the process's own path keys, as ``serves_routed_profile`` asks, by the key the
-    process remembered for that path: after that link is renamed, *home* is the new name, which
-    ``owner_secret_scope`` would take for another profile, and the old name leads to no files; after it is
-    repointed at another profile's directory, ``owner_secret_scope`` would hand that profile the launch env. No
-    terminal policy: the launcher is only read here."""
+    serves a sibling under task-local multiplexing, which a fresh context does not carry. Which home is the
+    launch profile's is ``_is_launch_home``'s answer, the one the host child's env takes too (where
+    ``owner_secret_scope``, asking where the process's own name leads now, would take a renamed launch profile
+    for another and hand a profile its link was repointed at the launch env). No terminal policy: the launcher
+    is only read here."""
     from agent.secret_scope import (current_secret_scope, current_secret_scope_home, is_multiplex_active,
                                     set_multiplex_context)
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     launch_key = hermes_home_key(get_routing_process_hermes_home())
-    own = launch_key == hermes_home_key(home)
+    own = _is_launch_home(home)
     stamp = current_secret_scope_home()
     launch_body = current_secret_scope() is not None and (stamp is None or hermes_home_key(stamp) == launch_key)
     multiplexed = is_multiplex_active()
@@ -188,8 +196,10 @@ class PluginHost:
 
     def _env(self) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
-        env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True)
-        env.update(self._base_context.run(_hosted_ambient_credentials, self._home))
+        own = _is_launch_home(self._home)  # as the launcher decided it: a renamed link's old name leads nowhere
+        env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True,
+                                     own_profile=own)
+        env.update(self._base_context.run(_hosted_ambient_credentials, self._home, own))
         repo_root = project_root_str()
         # Absolute entries only: the host starts in the profile home, where an empty or relative entry
         # (``PYTHONPATH=:/x``) would put that home back on the import path that -P keeps it off.

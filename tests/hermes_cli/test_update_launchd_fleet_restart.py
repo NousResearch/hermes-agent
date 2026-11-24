@@ -23,6 +23,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import psutil
 import pytest
 
 import hermes_cli.gateway as gw
@@ -36,6 +37,7 @@ from hermes_cli.update_cmd import (
     _restart_macos_launchd_gateways,
     _warn_incomplete_gateway_fleet_restart,
 )
+from tests.waiting import wait_until
 
 
 pytestmark = pytest.mark.platforms("macos")  # launchd fleet restart is macOS-only; helpers use POSIX os.getuid
@@ -220,6 +222,39 @@ class TestGetServicePidsScoping:
         self._wire(monkeypatch)
         assert gw._get_service_pids() == {100}
 
+    def test_the_gateway_under_an_osascript_job_is_a_service_pid(self, monkeypatch, tmp_path):
+        """launchd reports the osascript Local Network wrapper (#71206) as the job's PID; the
+        gateway below it is what the update sweep would otherwise stop as a manual gateway and
+        record as an unmapped stop no restart can settle (#135171). Its own children (tool
+        subprocesses) are not gateways: ``find_gateway_pids`` stops every service PID."""
+        self._wire(monkeypatch)
+        hermes = tmp_path / "hermes"  # `cat` waits on stdin, so each tree stays up until the pipe closes
+        hermes.write_text("#!/bin/sh\n/bin/cat\n")
+        hermes.chmod(0o755)
+        job = subprocess.Popen(["/usr/bin/osascript", "-l", "JavaScript", "-e",
+                                f'ObjC.import("stdlib"); $.system("{hermes} gateway run; :")'], stdin=subprocess.PIPE)
+        shell = subprocess.Popen(["/bin/sh", "-c", f"{hermes} gateway run; :"], stdin=subprocess.PIPE)
+        try:
+            def tree(proc):
+                kids = psutil.Process(proc.pid).children(recursive=True)
+                gateway = [k.pid for k in kids if k.cmdline()[1:] == [str(hermes), "gateway", "run"]]
+                tool = [k.pid for k in kids if k.name() == "cat"]
+                return (gateway[0], tool[0]) if gateway and tool else None
+
+            job_gateway, job_tool = wait_until(lambda: tree(job), what="the osascript job's gateway")
+            shell_gateway, _ = wait_until(lambda: tree(shell), what="the shell's gateway")
+            located = {"ai.hermes.gateway": (f"gui/{UID}", job.pid), "ai.hermes.gateway-a": (f"gui/{UID}", shell.pid),
+                       "ai.hermes.gateway-b": (None, None)}
+            monkeypatch.setattr(gw, "_locate_launchd_gateway_service", lambda label: located[label])
+
+            pids = gw._get_service_pids(all_profiles=True)
+            assert job_gateway in pids
+            assert job_tool not in pids
+            assert shell_gateway not in pids  # only an osascript job's gateway is its own
+        finally:
+            for proc in (job, shell):
+                proc.stdin.close()
+                proc.wait(timeout=10)
 
 
 def _fleet(monkeypatch, tmp_path, *, current, labels, located,

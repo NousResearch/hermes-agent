@@ -255,6 +255,44 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     return ["/usr/bin/osascript", "-l", "JavaScript", "-e", javascript]
 
 
+def launchd_wrapped_command(argv: list[str]) -> list[str] | None:
+    """The command a ``launchd_program_arguments`` wrapper runs, or None when *argv* is not one.
+
+    Accepted only when the installer rebuilds *argv* byte for byte from the recovered command and
+    its two log paths, so no shell operator, substitution, extra JXA or foreign osascript rides along.
+    """
+    if argv[:1] != ["/usr/bin/osascript"]:
+        return None
+    script, opener = argv[-1], "$.system("
+    try:
+        shell = json.JSONDecoder().raw_decode(script, script.index(opener) + len(opener))[0]
+        tokens = shlex.split(shell) if isinstance(shell, str) else []
+    except ValueError:
+        return None
+    if len(tokens) < 6 or tokens[0] != "exec" or tokens[-4] != ">>" or tokens[-2] != "2>>":
+        return None
+    command = tokens[1:-4]
+    return command if launchd_program_arguments(command, Path(tokens[-3]), Path(tokens[-1])) == argv else None
+
+
+def osascript_job_gateways(pids: set[int]) -> set[int]:
+    """The ``gateway run`` processes below each *pids* entry that is an osascript launchd job: launchd
+    reports the Local Network wrapper (#71206), and the gateway and its stderr-timestamp launcher run
+    beneath it. Only gateway command lines count (``find_gateway_pids`` stops these PIDs, so the
+    gateway's own tool subprocesses must never join them); other PIDs add nothing."""
+    import psutil
+
+    from gateway.status import _looks_like_gateway_process
+    found: set[int] = set()
+    for pid in pids:
+        with contextlib.suppress(psutil.Error):
+            proc = psutil.Process(pid)
+            if proc.name() == "osascript":
+                found.update(child.pid for child in proc.children(recursive=True)
+                             if _looks_like_gateway_process(child.pid))
+    return found
+
+
 def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor: bool = False) -> list[str]:
     """Wrap gateway run so raw stderr lines are timestamped before file write. ``external_supervisor``
     (launchd ProgramArguments only) adds ``--external-supervisor`` so ``hermes update`` hands back to

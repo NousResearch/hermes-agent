@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import VALID_CAPABILITY_IDS
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
@@ -187,6 +187,31 @@ def scan_directory(
     return manifests
 
 
+def _shared_plugins_dir() -> Optional[Path]:
+    """The main home's ``plugins/`` when this profile should also discover it, else None. ``plugins.shared_discovery``
+    (default on; absent from DEFAULT_CONFIG like plugins.enabled) turns it off; the main home itself already scans that directory as its user source."""
+    from hermes_cli.config import load_config
+    if not cfg_get(load_config(), "plugins", "shared_discovery", default=True):
+        return None
+    shared = get_default_hermes_root() / "plugins"
+    if shared.resolve(strict=False) == (get_hermes_home() / "plugins").resolve(strict=False):
+        return None
+    return shared
+
+
+def _scan_shared(shared: Path) -> list[PluginManifest]:
+    """Manifests under the main home's plugins/, minus any whose real path leaves it (a symlink must not
+    pull outside code into every profile)."""
+    root = shared.resolve(strict=False)
+    inside = []
+    for manifest in scan_directory(shared, "shared"):
+        if manifest.path and Path(manifest.path).resolve(strict=False).is_relative_to(root):
+            inside.append(manifest)
+        else:
+            logger.warning("Ignoring shared plugin '%s': %s resolves outside %s", manifest_key(manifest), manifest.path, root)
+    return inside
+
+
 def collect_directory_manifests() -> list[PluginManifest]:
     """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, user, opt-in
     project) without loading or mutating anything, so startup probes share the exact precedence/containment
@@ -207,6 +232,10 @@ def collect_directory_manifests() -> list[PluginManifest]:
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
           {"memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends"})
+    shared_dir = _shared_plugins_dir()
+    if shared_dir is not None:
+        logger.debug("Scanning shared plugins: %s", shared_dir)
+        manifests.extend(_scan_shared(shared_dir))
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
@@ -220,7 +249,7 @@ def collect_directory_manifests() -> list[PluginManifest]:
 
 
 def resolve_manifest_winners(manifests: list[PluginManifest]) -> dict[str, PluginManifest]:
-    """Later sources win on key collision (project > user > bundled): a same-named copy under
+    """Later sources win on key collision (project > user > shared > bundled; shared never wins over bundled): a same-named copy under
     ``~/.hermes/plugins/<name>`` is the documented way to override a bundled plugin, and is logged. A flat
     user/project manifest that claims a bundled key from a *differently named* directory is an impostor, not
     an override (``impostor_dir/plugin.yaml`` with ``name: kanban``): it is skipped with a warning so
@@ -229,6 +258,12 @@ def resolve_manifest_winners(manifests: list[PluginManifest]) -> dict[str, Plugi
     for manifest in manifests:
         key = manifest_key(manifest)
         shadowed = winners.get(key)
+        if shadowed is not None and shadowed.source == "bundled" and manifest.source == "shared":
+            # plugins.enabled names a plugin, not a copy: a main-home plugin must not swap code in under a
+            # name the profile enabled for the bundled one. A profile overrides a bundled plugin with its own copy.
+            logger.warning("Ignoring shared plugin '%s' at %s: it would shadow the bundled copy at %s; "
+                           "install it in this profile's plugins/ to override", key, manifest.path, shadowed.path)
+            continue
         if shadowed is not None and shadowed.source == "bundled" and manifest.source in {"user", "project"}:
             own_dir = Path(manifest.path).name if manifest.path else ""
             bundled_dir = Path(shadowed.path).name if shadowed.path else ""

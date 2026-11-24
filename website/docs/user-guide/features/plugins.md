@@ -148,11 +148,20 @@ See [Register slash commands](../../developer-guide/plugins/index.md#register-sl
 |--------|------|----------|
 | Bundled | `<repo>/plugins/` | Ships with Hermes — see [Built-in Plugins](./built-in-plugins.md) |
 | User | `~/.hermes/plugins/` | Personal plugins |
+| Shared | `~/.hermes/plugins/` (the main home), seen from a named profile | Install once, use in every profile — see [Shared plugins](#shared-plugins) |
 | Project | `.hermes/plugins/` | Not loaded by the gateway that runs sessions; see [Project-local plugins](#project-local-plugins) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
 | Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](../../getting-started/nix-setup.md#plugins) |
 
 Later sources override earlier ones on name collision, so a user plugin with the same name as a bundled plugin replaces it.
+
+### Shared plugins {#shared-plugins}
+
+A named profile (`~/.hermes/profiles/<name>/`) also discovers the plugins installed in the main home's `plugins/`, so one `hermes plugins install` serves every profile. Discovery only makes the plugin visible: each profile still turns it on or off in its own `plugins.enabled` / `plugins.disabled`.
+
+- A profile's own `plugins/<name>` wins over a main-home plugin of the same name.
+- A main-home plugin never replaces a bundled plugin of the same name (it is ignored with a warning). To override a bundled plugin, install your copy in the profile's own `plugins/`.
+- `plugins.shared_discovery: false` in a profile's `config.yaml` limits that profile to its own `plugins/`.
 
 ### Plugin sub-categories
 
@@ -204,6 +213,9 @@ plugins:
   # stuck thread is abandoned. Default 10; set 0 to disable; values above 600
   # are clamped.
   load_timeout_seconds: 10
+  # Optional: named profiles also discover plugins installed in the main home's
+  # plugins/ (see "Shared plugins"). Default true; false limits a profile to its own.
+  shared_discovery: true
 ```
 
 Three ways to flip state:

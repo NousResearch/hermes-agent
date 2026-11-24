@@ -7,8 +7,9 @@ structured CLI-agent protocol (tab status + notification mailbox).
 Inside the running CLI, ``HermesCLI._ring_bell`` sends ``notification_sequence()`` through the
 prompt_toolkit output on the app loop (a second writer on the tty would splice into an in-flight kitty
 pet frame). ``write_tty`` is the no-app path: ``/dev/tty`` because ``patch_stdout``'s wrapper strips raw
-escapes, falling back to ``sys.stdout`` when ``/dev/tty`` can't be opened (Windows, no controlling
-terminal). Never raises.
+escapes. When ``/dev/tty`` is absent (Windows), prefer ``WriteConsoleW`` / ``sys.__stdout__`` over
+``sys.stdout`` — under ``patch_stdout`` the latter is a ``StdoutProxy`` that replaces ESC with ``?``
+(#159589). If only a proxy remains, stay silent. Never raises.
 """
 
 from __future__ import annotations
@@ -31,20 +32,69 @@ _PROGRAM_MESSAGE_LIMIT = 2048
 _PROGRAM_MSG_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 
 
+def _is_stdout_proxy(stream) -> bool:
+    """True for prompt_toolkit's StdoutProxy (ESC → '?'); name-check avoids a hard import."""
+    return type(stream).__name__ == "StdoutProxy"
+
+
+def _write_windows_console(seq: str) -> bool:
+    """Write *seq* via WriteConsoleW on a real console handle. True on success. Never raises."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        import msvcrt
+
+        stream = getattr(sys, "__stdout__", None) or sys.stdout
+        try:
+            fd = stream.fileno()
+        except Exception:
+            return False
+        handle = msvcrt.get_osfhandle(fd)
+        if not handle or handle == -1:
+            return False
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        mode = ctypes.c_uint()
+        # GetConsoleMode fails for pipes/files — those must not get WriteConsoleW.
+        if not kernel32.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(mode)):
+            return False
+        written = ctypes.c_ulong(0)
+        buf = ctypes.create_unicode_buffer(seq)
+        ok = kernel32.WriteConsoleW(
+            ctypes.c_void_p(handle),
+            buf,
+            len(seq),
+            ctypes.byref(written),
+            None,
+        )
+        return bool(ok)
+    except Exception:
+        return False
+
+
 def write_tty(seq: str) -> None:
-    """Write raw escapes to /dev/tty, falling back to sys.stdout. Never raises."""
+    """Write raw escapes to /dev/tty, then a Windows console / real stdout. Never raises."""
     try:
         with open("/dev/tty", "w", encoding="utf-8") as tty:
             tty.write(seq)
+            tty.flush()
         return
     except OSError:
         pass
-    try:
-        sys.stdout.write(seq)
-        sys.stdout.flush()
-    except Exception:
-        pass
-
+    # Windows has no /dev/tty; WriteConsoleW keeps ESC intact under patch_stdout (#159589).
+    if _write_windows_console(seq):
+        return
+    # Prefer the process's real stdout over patch_stdout's StdoutProxy (ESC → '?').
+    for stream in (getattr(sys, "__stdout__", None), sys.stdout):
+        if stream is None or _is_stdout_proxy(stream):
+            continue
+        try:
+            stream.write(seq)
+            stream.flush()
+            return
+        except Exception:
+            continue
+    # Only a StdoutProxy left: silence beats visible ``?]7501;…?\`` garbage.
 
 def osc9(body: str) -> str:
     """OSC 9 sequence with C0 controls and DEL stripped from the body."""

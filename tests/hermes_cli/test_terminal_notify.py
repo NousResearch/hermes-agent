@@ -1,11 +1,82 @@
 """display.bell_on_prompt / bell_on_complete also drive OSC 9 + Warp OSC 777 via _ring_bell."""
 
+import builtins
 import json
+import sys
 
 import pytest
 
 from cli import HermesCLI
 from hermes_cli import terminal_notify
+
+_OSC_IDLE = "\x1b]7501;state=idle:app=hermes\x1b\\"
+
+
+class StdoutProxy:
+    """Mirrors prompt_toolkit's StdoutProxy ESC→'?' sanitizer (#159589 / #2262).
+
+    The class *name* must be ``StdoutProxy`` — ``write_tty`` detects the proxy by
+    ``type(stream).__name__`` to avoid a hard prompt_toolkit import.
+    """
+
+    def __init__(self):
+        self.buf = []
+
+    def write(self, data):
+        self.buf.append(data.replace("\x1b", "?"))
+
+    def flush(self):
+        pass
+
+    def fileno(self):
+        raise OSError("no fd")
+
+
+class _RealOut:
+    def __init__(self):
+        self.buf = []
+
+    def write(self, data):
+        self.buf.append(data)
+
+    def flush(self):
+        pass
+
+    def fileno(self):
+        raise OSError("no fd")
+
+
+def _force_no_dev_tty(monkeypatch):
+    real_open = builtins.open
+
+    def fake_open(path, *a, **k):
+        if path == "/dev/tty":
+            raise OSError(2, "No such file or directory", "/dev/tty")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    monkeypatch.setattr(terminal_notify, "_write_windows_console", lambda _seq: False)
+
+
+def test_write_tty_prefers_real_stdout_over_stdout_proxy(monkeypatch):
+    """Under patch_stdout, sys.stdout is StdoutProxy; OSC must go to the real stream (#159589)."""
+    _force_no_dev_tty(monkeypatch)
+    real, proxy = _RealOut(), StdoutProxy()
+    monkeypatch.setattr(sys, "__stdout__", real)
+    monkeypatch.setattr(sys, "stdout", proxy)
+    terminal_notify.write_tty(_OSC_IDLE)
+    assert real.buf == [_OSC_IDLE]
+    assert proxy.buf == []
+
+
+def test_write_tty_stays_silent_when_only_stdout_proxy_remains(monkeypatch):
+    """Silence beats visible ``?]7501;…?\\`` when every stream is a StdoutProxy (#159589)."""
+    _force_no_dev_tty(monkeypatch)
+    proxy = StdoutProxy()
+    monkeypatch.setattr(sys, "__stdout__", proxy)
+    monkeypatch.setattr(sys, "stdout", proxy)
+    terminal_notify.write_tty(_OSC_IDLE)
+    assert proxy.buf == []
 
 _WARP_OK = {
     "TERM_PROGRAM": "WarpTerminal",

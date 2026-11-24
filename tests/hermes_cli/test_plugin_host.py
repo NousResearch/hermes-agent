@@ -650,19 +650,22 @@ def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_p
 def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env_only_launcher_keys(
         tmp_path, monkeypatch):
     """The process keeps naming its own profile by the path it started with. After that link is renamed the
-    manager answers to the new name, and a crash restart under multiplexing still expands the launcher from the
-    launch profile's env-only keys (systemd ``Environment=``), not from that profile's files alone."""
+    manager answers to the new name, and a crash restart under multiplexing still expands the launcher from both
+    of the launch profile's sources: its env-only keys (systemd ``Environment=``) and its ``.env``, read through
+    the name that now leads to it."""
     import signal
 
     from agent import secret_scope as ss
     from tests.waiting import wait_until
 
     ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
-    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.write_text(f'#!/bin/sh\necho "$1" >> "{ran}"\nshift\nexec "$@"\n', encoding="utf-8")
     runner.chmod(0o755)
     outside = _home_with_plugins(tmp_path / "outside", monkeypatch, {"hostprobe": PROBE_PLUGIN})
     (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
-        "enabled": ["hostprobe"], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+        "enabled": ["hostprobe"], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}", "${RUNNER_TAG}"]}}}),
+        encoding="utf-8")
+    (outside / ".env").write_text("RUNNER_TAG=from-env-file\n", encoding="utf-8")
     profiles = tmp_path / "root" / "profiles"
     profiles.mkdir(parents=True)
     (profiles / "ops").symlink_to(outside, target_is_directory=True)
@@ -674,7 +677,7 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
     try:
         manager.discover_and_load()
         first = manager._plugins["hostprobe"]
-        assert first.error is None and ran.read_text(encoding="utf-8").count("ran") == 1
+        assert first.error is None and ran.read_text(encoding="utf-8").split() == ["from-env-file"]
         (profiles / "ops").rename(profiles / "ops2")
         os.kill(manager._plugin_host().pid, signal.SIGKILL)
         def reloaded():
@@ -683,7 +686,7 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
 
         after = wait_until(reloaded, timeout=15, what="the crashed host's restart")
         assert after is not None and after.error is None
-        assert ran.read_text(encoding="utf-8").count("ran") == 2
+        assert ran.read_text(encoding="utf-8").split() == ["from-env-file", "from-env-file"]
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

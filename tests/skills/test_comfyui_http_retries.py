@@ -23,10 +23,18 @@ def transport(monkeypatch):
         sys.modules.pop(name, None)
 
 
-@pytest.mark.parametrize("failure", [TimeoutError, ConnectionError, OSError, 429, 503])
-def test_submission_does_not_replay_after_response_failure(transport, monkeypatch, failure):
+@pytest.mark.parametrize("failure,replayed", [
+    # Unknown outcome: the request may have been queued.
+    (TimeoutError, False), (ConnectionError, False), (OSError, False),
+    (500, False), (502, False), (504, False), (524, False),
+    # Provably not processed: safe to send again.
+    ("RequestNotSent", True), (408, True), (429, True), (503, True), (522, True),
+])
+def test_submission_replays_only_when_not_processed(transport, monkeypatch, failure, replayed):
     common, runner, backoff = transport
-    response = common.HTTPResponse(200, {}, b'{"prompt_id":"duplicate"}', "http://localhost/prompt")
+    if failure == "RequestNotSent":
+        failure = common.RequestNotSent
+    response = common.HTTPResponse(200, {}, b'{"prompt_id":"once"}', "http://localhost/prompt")
     first = (failure("response lost") if isinstance(failure, type)
              else common.HTTPResponse(failure, {}, b'{}', response.url))
     send = Mock(side_effect=[first, response])
@@ -34,15 +42,17 @@ def test_submission_does_not_replay_after_response_failure(transport, monkeypatc
     client = runner.ComfyRunner(host="http://localhost", client_id="test-client")
     workflow = {"1": {"class_type": "Example", "inputs": {}}}
 
-    if isinstance(failure, type):
+    if replayed:
+        assert client.submit(workflow)["prompt_id"] == "once"
+    elif isinstance(failure, type):
         with pytest.raises(failure, match="response lost"):
             client.submit(workflow)
     else:
         assert client.submit(workflow)["_http_error"] == failure
 
-    assert send.call_count == 1
+    assert send.call_count == (2 if replayed else 1)
     assert send.call_args.kwargs["json_body"] == {"prompt": workflow, "client_id": "test-client"}
-    backoff.assert_not_called()
+    assert backoff.call_count == (1 if replayed else 0)
 
 
 @pytest.mark.parametrize("method,body", [
@@ -51,7 +61,7 @@ def test_submission_does_not_replay_after_response_failure(transport, monkeypatc
     ("GET", {"files": {}}), ("GET", {"form": {}}),
     ("POST", {}), ("PUT", {}), ("DELETE", {}),
 ])
-@pytest.mark.parametrize("failure", [TimeoutError, 503])
+@pytest.mark.parametrize("failure", [TimeoutError, 502])
 def test_only_bodyless_safe_requests_retry(transport, monkeypatch, method, body, failure):
     common, _runner, backoff = transport
     # Multipart validation is independent of the retry loop tested here.

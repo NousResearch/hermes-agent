@@ -504,9 +504,12 @@ def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugin
         monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
         assert plugins_mod.get_plugin_manager() is manager
         os.kill(first, signal.SIGKILL)
-        result = wait_until(lambda: (lambda out: out if '"pid"' in out else None)(
-            registry.dispatch("whereprobe_pid", {}, scope=manager.scope_key)), timeout=15,
-            what="the restarted host to serve the plugin's tool")
+
+        def served():
+            out = registry.dispatch("whereprobe_pid", {}, scope=manager.scope_key)
+            return out if '"pid"' in out else None
+
+        result = wait_until(served, timeout=15, what="the restarted host to serve the plugin's tool")
         assert json.loads(result)["pid"] not in {first, os.getpid()}
         with _plugin_home_scope(manager.owner_home):
             assert json.loads(result)["profile"] == get_active_profile_name()

@@ -1,12 +1,16 @@
 """Native artifact metadata stays bound to tagged or tagless package inputs."""
 from __future__ import annotations
 
+import base64
+import gzip
+import hashlib
 import json
 import plistlib
 import stat
 import subprocess
 import zipfile
 
+import hermes_yaml
 import pytest
 
 from scripts.bundles import release_artifacts
@@ -142,3 +146,112 @@ def test_macos_record_refuses_an_update_zip_squirrel_cannot_download(tmp_path, m
 def test_macos_record_accepts_an_update_zip_just_under_one_gib(tmp_path, monkeypatch):
     out = record_mac_update(tmp_path, monkeypatch, size=release_artifacts.SQUIRREL_ZIP_LIMIT - 1)
     assert json.loads(out.read_text(encoding="utf-8"))["version"] == "1.2.3"
+
+
+def _write_blockmap(path, total_size: int) -> None:
+    payload = {"version": "2", "files": [{"name": "file", "offset": 0, "checksums": ["abc"], "sizes": [total_size]}]}
+    path.write_bytes(gzip.compress(json.dumps(payload).encode("utf-8")))
+
+
+def _write_mac_feed(path, version: str, zip_path, dmg_path, *, dmg_size: int | None = None, dmg_sha512: str | None = None) -> None:
+    zip_bytes = zip_path.read_bytes()
+    dmg_bytes = dmg_path.read_bytes()
+    zip_sha = base64.b64encode(hashlib.sha512(zip_bytes).digest()).decode("ascii")
+    actual_dmg_sha = base64.b64encode(hashlib.sha512(dmg_bytes).digest()).decode("ascii")
+    feed = {
+        "version": version,
+        "files": [
+            {"url": zip_path.name, "sha512": zip_sha, "size": len(zip_bytes)},
+            {"url": dmg_path.name, "sha512": dmg_sha512 or actual_dmg_sha, "size": len(dmg_bytes) if dmg_size is None else dmg_size},
+        ],
+        "path": zip_path.name,
+        "sha512": zip_sha,
+    }
+    path.write_text(hermes_yaml.safe_dump(feed, sort_keys=False), encoding="utf-8")
+
+
+def test_macos_record_verifies_outer_dmg_signature_blockmap_and_feed_consistency(tmp_path, monkeypatch):
+    commit, root = "a" * 40, tmp_path / "release"
+    (root / "mac" / "Product.app").mkdir(parents=True)
+    package = root / "Product-1.2.3-mac-arm64.zip"
+    dmg = root / "Product-1.2.3-mac-arm64.dmg"
+    blockmap = root / "Product-1.2.3-mac-arm64.dmg.blockmap"
+    feed = root / "arm64-stable-mac.yml"
+    out = root / "metadata-macos-arm64.json"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Product.app/Contents/Info.plist", plistlib.dumps({
+            "CFBundleIdentifier": "ai.hermes.test", "CFBundleShortVersionString": "1.2.3",
+        }))
+        archive.writestr("Product.app/Contents/Resources/install-stamp.json",
+                         json.dumps({"commit": commit, "tag": "v1.2.3", "baseVersion": "1.2.3"}))
+
+    pre_staple = b"udif-dmg-unsigned-bytes"
+    post_staple = pre_staple + b"-codesign-cms-and-stapled-ticket"
+    dmg.write_bytes(post_staple)
+    _write_blockmap(blockmap, len(post_staple))
+    _write_mac_feed(feed, "1.2.3", package, dmg)
+
+    calls: list[list[str]] = []
+    teams = {"app": "ABCDEFGHIJ", "dmg": "ABCDEFGHIJ"}
+
+    def fake_codesign(argv, **kwargs):
+        calls.append(list(argv))
+        assert argv[0] == "codesign"
+        target = argv[-1]
+        team_id = teams["dmg"] if target.endswith(".dmg") else teams["app"]
+        return subprocess.CompletedProcess(argv, 0, stderr=f"TeamIdentifier={team_id}\n")
+
+    monkeypatch.setattr(release_artifacts.subprocess, "run", fake_codesign)
+    release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+    assert ["codesign", "--verify", "--verbose=2", str(dmg)] in calls
+    assert ["codesign", "-dv", "--verbose=4", str(dmg)] in calls
+
+    _write_blockmap(blockmap, len(pre_staple))
+    with pytest.raises(ValueError, match="blockmap"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+    _write_blockmap(blockmap, len(post_staple))
+
+    _write_mac_feed(feed, "1.2.3", package, dmg, dmg_size=len(pre_staple))
+    with pytest.raises(ValueError, match="feed"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+
+    pre_sha = base64.b64encode(hashlib.sha512(pre_staple).digest()).decode("ascii")
+    _write_mac_feed(feed, "1.2.3", package, dmg, dmg_size=len(post_staple), dmg_sha512=pre_sha)
+    with pytest.raises(ValueError, match="feed"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+    _write_mac_feed(feed, "1.2.3", package, dmg)
+
+    teams["dmg"] = "ZZZZZZZZZZ"
+    with pytest.raises(ValueError, match="team"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+    teams["dmg"] = "ABCDEFGHIJ"
+
+    wrong_dmg = root / "Product-9.9.9-mac-arm64.dmg"
+    dmg.rename(wrong_dmg)
+    with pytest.raises(ValueError, match="filename"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+
+
+def test_macos_record_skips_outer_dmg_verification_for_legacy_commit_builds(tmp_path, monkeypatch):
+    commit, root = "a" * 40, tmp_path / "release"
+    (root / "mac" / "Product.app").mkdir(parents=True)
+    package = root / "Product-1.2.3-mac-arm64.zip"
+    dmg = root / "Product-1.2.3-mac-arm64.dmg"
+    out = root / "metadata-macos-arm64.json"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Product.app/Contents/Info.plist", plistlib.dumps({
+            "CFBundleIdentifier": "ai.hermes.test", "CFBundleShortVersionString": "1.2.3",
+        }))
+        archive.writestr("Product.app/Contents/Resources/install-stamp.json",
+                         json.dumps({"source": "commit-build", "commit": commit, "tag": None, "baseVersion": "1.2.3"}))
+    dmg.write_bytes(b"unsigned-legacy-dmg")
+
+    def codesign(argv, **kwargs):
+        assert not argv[-1].endswith(".dmg")
+        return subprocess.CompletedProcess(argv, 0, stderr="TeamIdentifier=ABCDEFGHIJ\n")
+
+    monkeypatch.setattr(release_artifacts.subprocess, "run", codesign)
+    release_artifacts.record(
+        "macos", "arm64", root, "commit.20261120T000000Z-v1.2.3", commit, out, legacy_commit_build=True,
+    )
+    assert json.loads(out.read_text(encoding="utf-8"))["legacyCommitBuild"] is True

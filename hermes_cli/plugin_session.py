@@ -91,6 +91,39 @@ def session_viewers() -> list[dict]:
     return viewers(authority, session_id)
 
 
+def session_source() -> str:
+    """The label the calling session was created with: its launch policy's ``source``. ``cli``,
+    ``tui``, ``gui``, ``acp``, ``tool`` or ``oneshot`` for a chat a person started; any other
+    non-empty value is the label of a session Hermes started itself. ``""`` says only that no launch
+    policy is bound: outside a session, for a person's messaging chat turn and for a cron run
+    (``current_cron_execution`` names that one). A delegated child runs in its parent turn's context
+    and reads the parent session's label. Never read from ``os.environ``."""
+    policy = _active_policy()
+    return policy.source if policy is not None else ""
+
+
+def in_delegated_child(*, include_subprocesses: bool = False) -> bool:
+    """``True`` while the calling code runs for a ``delegate_task`` child. With
+    ``include_subprocesses=True``, also ``True`` in a process a delegated child started (Hermes marks
+    that process's environment)."""
+    from agent.delegation_context import is_delegated_child_context, is_delegated_child_process_context
+    return is_delegated_child_process_context() if include_subprocesses else is_delegated_child_context()
+
+
+# The write origins a regular agent runs under: the ContextVar's default and the one every agent's
+# tool loop binds unless it is a detached fork.
+_REGULAR_WRITE_ORIGINS = frozenset({"foreground", "assistant_tool"})
+
+
+def fork_origin() -> str:
+    """``""`` for a session's own agent and every other regular agent (CLI, gateway, cron, subagent).
+    For a detached fork Hermes runs beside a turn, the fork's label: ``"background_review"``,
+    ``"side_question"``, or ``"plugin_fork:<plugin id>"`` for a plugin's own session fork."""
+    from tools.skill_provenance import get_current_write_origin
+    origin = get_current_write_origin()
+    return "" if origin in _REGULAR_WRITE_ORIGINS else origin
+
+
 def _in_delegated_child():
     """A delegated child runs in a copy of its parent turn's context (stamp and session vars
     included), yet no admission of its own executes there: the turn's facts are not the child's."""

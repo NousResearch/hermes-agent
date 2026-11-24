@@ -67,20 +67,6 @@ def uses_interactions(model: str, base_url: str) -> bool:
 class GeminiClient(GeminiNativeClient):
     """``GeminiNativeClient`` (generateContent) plus the Interactions wire, chosen per call by model."""
 
-    # Seams for a subclass that speaks only the stateless Interactions wire (an OAuth bearer on the
-    # per-user-quota method, which rejects stored interactions): the defaults are this provider's behavior.
-    LONG_DECODE = True  # False: one request capped at SINGLE_REQUEST_OUTPUT_CAP, never stored, never continued
-    SAMPLING_PARAMS = True  # False: temperature/top_p never sent (models that reject them)
-    # True: a stream that ends with no ``interaction.completed`` and nothing to resume from raises instead of
-    # returning the partial turn as if it had finished.
-    REQUIRE_COMPLETED_STREAM = False
-
-    def _uses_interactions(self, model: str) -> bool:
-        return uses_interactions(model, self.base_url)
-
-    def _interactions_url(self) -> str:
-        return f"{self.base_url}/interactions"
-
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
         request = getattr(response, "_request", None)  # set for every real response; absent on bare test doubles
         if request is not None and request.url.path.endswith("/interactions"):
@@ -88,7 +74,7 @@ class GeminiClient(GeminiNativeClient):
         return super()._http_error(response, body_text)
 
     def _create_chat_completion(self, *, model: str = "gemini-3.8-flash", **kwargs: Any) -> Any:
-        if not self._uses_interactions(model):
+        if not uses_interactions(model, self.base_url):
             return super()._create_chat_completion(model=model, **kwargs)
         return self._interactions_completion(model=model, **kwargs)
 
@@ -100,19 +86,8 @@ class GeminiClient(GeminiNativeClient):
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         budget = extra.get("max_output_tokens")
-        if not self.LONG_DECODE:
-            # One request: a larger cap would set ``store: true`` for continuation hops this endpoint rejects.
-            # Compared as the number the request builder will use, so a quoted override is capped too.
-            try:
-                requested = int(max_tokens or 0)
-            except (TypeError, ValueError):
-                requested = 0
-            if requested > wire.SINGLE_REQUEST_OUTPUT_CAP:
-                max_tokens = wire.SINGLE_REQUEST_OUTPUT_CAP
-        elif isinstance(budget, int) and budget > int(max_tokens or 0):
+        if isinstance(budget, int) and budget > int(max_tokens or 0):
             max_tokens = budget  # long decode: a larger total budget than one request's cap
-        if not self.SAMPLING_PARAMS:
-            temperature = top_p = None
         model = bare_gemini_model_id(model)
         request = wire.build_interactions_request(
             model=model, messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature,
@@ -120,8 +95,8 @@ class GeminiClient(GeminiNativeClient):
             thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
             response_format=response_format or extra.get("response_format"),
         )
-        url = self._interactions_url()
-        max_hops = long_decode_hops(request["generation_config"]["max_output_tokens"]) + 1 if self.LONG_DECODE else 1
+        url = f"{self.base_url}/interactions"
+        max_hops = long_decode_hops(request["generation_config"]["max_output_tokens"]) + 1
         if stream:
             return self._interactions_stream(model, url, request, timeout, max_hops)
         hops = [self._generate(url, request, timeout)]
@@ -153,7 +128,7 @@ class GeminiClient(GeminiNativeClient):
                         chunks = wire.translate_stream_event(event, model, state)
                         if chunks:
                             resume = None
-                        elif self.LONG_DECODE and (token := wire.event_token(event)) and state.interaction_id:
+                        elif (token := wire.event_token(event)) and state.interaction_id:
                             resume, sends = (state.interaction_id, token), 0
                         yield from chunks
             except httpx.HTTPError as exc:
@@ -165,10 +140,6 @@ class GeminiClient(GeminiNativeClient):
                     yield wire.finish_ceiling(model, state)  # nothing to continue from, or the hop ceiling: cut short
                 elif dropped is not None:  # nothing committed to resume from: the turn is retried from the start
                     raise GeminiAPIError(f"Gemini streaming request failed: {dropped}", code="gemini_stream_error") from dropped
-                elif self.REQUIRE_COMPLETED_STREAM:  # closed cleanly mid-turn: the partial turn must not stand
-                    raise GeminiAPIError(
-                        f"Gemini stream ended before interaction.completed (status {state.status or 'unknown'})",
-                        code="gemini_stream_error")
                 return
             if not state.hop_done:
                 logger.warning("Gemini stream dropped (%s); resuming from its last checkpoint", dropped or "ended early")

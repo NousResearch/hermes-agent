@@ -1,25 +1,26 @@
 """Solstice inference transport: the gemini plugin's Interactions wire on the per-user-quota method
 (``POST <host>/v1beta/interactions:createPerUserQuota``), with the user's OAuth access token as a Bearer.
 
-That method takes only stateless requests (``store: false``; a stored interaction is a 400), so the
-client runs the wire with long decode off: one request per turn, no continuation hops, and a stream that
-ends before ``interaction.completed`` is an error rather than a finished turn. Request building, thought
-signature replay, stream translation and error mapping are the gemini plugin's, so a fix there reaches
-this provider too.
+That method takes only stateless requests (``store: false``; a stored interaction is a 400), so every turn
+is one request: the output budget is capped at one request's, the request is never stored, and a stream
+that ends before ``interaction.completed`` is an error rather than a finished turn. There is no
+continuation, checkpoint or resume handling here; that belongs to the gemini provider's long decode.
+Request building, thought signature replay, stream translation and error mapping are the shared wire's,
+so a fix there reaches this provider too.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Iterator, Optional
 
 import httpx
 
-from agent.gemini_native_adapter import GeminiAPIError
+from agent.bounded_response import read_streaming_error_body
+from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, _iter_sse_events, bare_gemini_model_id
 from hermes_cli.version_info import hermes_user_agent
 
 from ..gemini import interactions as wire
-from ..gemini.client import GeminiClient
 from . import INFERENCE_BASE_URL
 
 INTERACTIONS_METHOD = "interactions:createPerUserQuota"
@@ -38,13 +39,18 @@ def interactions_url(base_url: Any) -> str:
     return f"{root}/{_API_VERSION}/{INTERACTIONS_METHOD}"
 
 
-class SolsticeClient(GeminiClient):
-    """``GeminiClient`` pinned to the stateless Interactions wire on ``interactions:createPerUserQuota``."""
+def single_request(request: dict[str, Any]) -> dict[str, Any]:
+    """*request* as one stateless call: the final output budget capped at one request's (the builder raises
+    it for long decode and then sets ``store: true``) and ``store`` forced off."""
+    generation = request["generation_config"]
+    budget = min(int(generation["max_output_tokens"]), wire.SINGLE_REQUEST_OUTPUT_CAP)
+    return {**request, "store": False, "generation_config": {**generation, "max_output_tokens": budget}}
+
+
+class SolsticeClient(GeminiNativeClient):
+    """One stateless Interactions request per call, on ``interactions:createPerUserQuota``."""
 
     MISSING_KEY_ERROR = "Solstice needs a signed-in account. Run `hermes auth add solstice`."
-    LONG_DECODE = False  # stored interactions (continuation hops) are a 400 on this method
-    SAMPLING_PARAMS = False  # Gemini 4 / 3.5 reject temperature and top_p
-    REQUIRE_COMPLETED_STREAM = True  # nothing is stored, so an interrupted stream can never be resumed
 
     def __init__(self, *, base_url: Any = None, timeout: Any = None, **kwargs: Any) -> None:
         # No base means this endpoint, never the generic Gemini default (a different API surface).
@@ -52,19 +58,45 @@ class SolsticeClient(GeminiClient):
         # Per request, not only on the httpx client: an injected keepalive client brings its own default.
         self._request_timeout = timeout or DEFAULT_TIMEOUT
 
-    def _uses_interactions(self, model: str) -> bool:
-        return True  # the only wire this method speaks, whatever the model or ``providers.gemini`` config
-
-    def _interactions_url(self) -> str:
-        return interactions_url(self.base_url)
-
-    def _create_chat_completion(self, *, timeout: Any = None, **kwargs: Any) -> Any:
+    def _create_chat_completion(
+        self, *, model: str = "gemini-3.8-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
+        tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None, stop: Any = None, response_format: Any = None,
+        extra_body: Optional[dict[str, Any]] = None, timeout: Any = None, **_: Any,
+    ) -> Any:
+        # ``temperature``/``top_p`` are never sent: Gemini 4 / 3.5 reject them. A long-decode budget in
+        # ``extra_body`` is ignored: this method cannot continue a turn past one request.
+        extra = extra_body if isinstance(extra_body, dict) else {}
+        model = bare_gemini_model_id(model)
+        request = single_request(wire.build_interactions_request(
+            model=model, messages=messages or [], tools=tools, tool_choice=tool_choice, max_tokens=max_tokens,
+            stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
+            response_format=response_format or extra.get("response_format"),
+        ))
         # An explicit per-call timeout (the agent's configured / stale-matched budget) wins; else 3600 s read.
-        return super()._create_chat_completion(timeout=timeout or self._request_timeout, **kwargs)
-
-    def _generate(self, url: str, request: dict[str, Any], timeout: Any) -> dict[str, Any]:
+        timeout = timeout or self._request_timeout
+        url = interactions_url(self.base_url)
+        if stream:
+            return self._stream(model, url, request, timeout)
         # The unary call: the method takes both modes, so the flag is always named.
-        return super()._generate(url, {**request, "stream": False}, timeout)
+        return wire.translate_interaction([self._generate(url, {**request, "stream": False}, timeout)], model)
+
+    def _stream(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[Any]:
+        state = wire.StreamState()
+        headers = {**self._headers(), "Accept": "text/event-stream"}
+        try:
+            with self._http.stream("POST", url, json={**request, "stream": True}, headers=headers, timeout=timeout) as response:
+                if response.status_code != 200:
+                    raise self._http_error(response, read_streaming_error_body(response))
+                for event in wire.iter_events(_iter_sse_events(response)):
+                    yield from wire.translate_stream_event(event, model, state)
+        except httpx.HTTPError as exc:  # nothing is stored to resume from: the turn is retried from the start
+            raise GeminiAPIError(f"Gemini streaming request failed: {exc}", code="gemini_stream_error") from exc
+        if not state.hop_done:  # closed cleanly mid-turn: the partial turn must not stand
+            raise GeminiAPIError(f"Gemini stream ended before interaction.completed (status {state.status or 'unknown'})",
+                                 code="gemini_stream_error")
+        if state.status == "requires_continuation":  # never continued here: the output was cut short
+            yield wire.finish_ceiling(model, state)
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
@@ -76,7 +108,7 @@ class SolsticeClient(GeminiClient):
                 "User-Agent": hermes_user_agent("hermes-agent")}
 
     def _http_error(self, response: Any, body_text: Any = None) -> GeminiAPIError:
-        # Every request is an Interactions one (the base mapper matches only a ``/interactions`` path). The
-        # API-key remedies (free tier, Standard key, wrong key surface) do not apply to a bearer.
+        # The Interactions mapper (snake_case error codes), without the API-key remedies (free tier,
+        # Standard key, wrong key surface): they do not apply to a bearer.
         return wire.http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url,
                                key_guidance=False)

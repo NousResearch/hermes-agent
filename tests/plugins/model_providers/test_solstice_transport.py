@@ -6,6 +6,7 @@ httpx transport that records what went on the wire."""
 
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 import sys
@@ -73,6 +74,24 @@ def test_every_request_is_stateless_single_request_interactions_on_the_per_user_
     generation = body["generation_config"]
     assert "temperature" not in generation and "top_p" not in generation
     assert 0 < generation["max_output_tokens"] <= 65_536
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_request_the_shared_builder_would_store_still_goes_out_stateless_at_one_requests_cap(stream):
+    seen, handler = _recorder()
+    client = _client(handler)
+    thinking = {"includeThoughts": True, "thinkingLevel": "xhigh"}
+    # The shared builder stores a long-decode request (continuation hops resume only from a stored one).
+    wire = importlib.import_module("plugins.model_providers.gemini.interactions")
+    assert wire.build_interactions_request(model="gemini-4-hydrogen", messages=USER, max_tokens=262_144,
+                                           thinking_config=thinking)["store"] is True
+
+    _call(client, stream=stream, max_tokens=262_144, extra_body={"max_output_tokens": 1_048_576, "thinking_config": thinking})
+
+    assert len(seen) == 1
+    body = json.loads(seen[0].content)
+    assert body["store"] is False
+    assert body["generation_config"]["max_output_tokens"] == 65_536
 
 
 @pytest.mark.parametrize("stream", [False, True])

@@ -137,6 +137,19 @@ class TestGenerateTitle:
 
         assert captured_kwargs.get("reasoning_config") == {"enabled": False}
 
+    def test_output_cap_spent_on_thinking_is_logged(self, caplog):
+        """An empty reply cut at the cap (thinking spent it all) keeps the derived title, but says so."""
+        resp = MagicMock()
+        resp.choices = [MagicMock(finish_reason="length")]
+        resp.choices[0].message.content = ""
+        resp.choices[0].message.reasoning_content = None
+        resp.choices[0].message.reasoning = None
+
+        with patch("agent.title_generator.call_llm", return_value=resp), caplog.at_level("WARNING", "agent.title_generator"):
+            assert generate_title("rebase PR 158676 and track it in Linear") is None
+
+        assert any("output cap before writing a title" in r.getMessage() for r in caplog.records)
+
     @pytest.mark.parametrize(
         ("content", "expected"),
         [

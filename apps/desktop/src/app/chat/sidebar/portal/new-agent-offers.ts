@@ -8,8 +8,34 @@ import { $fleetRoster } from '@/store/fleet-roster'
 import { $profiles } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 
-import { type MachineState, machineState, useMachineStatusText } from '../simplified-gateway-header'
 import type { useSimplifiedAgents } from '../use-simplified-agents'
+
+export type MachineState = 'open' | 'connecting' | 'idle' | 'closed' | 'error'
+
+/** A machine's state as the app knows it: the gateway's own for the window's machine, the roster's
+ *  reach for another. */
+export function machineState(
+  connectionId: null | string,
+  selected: boolean,
+  gatewayState: MachineState,
+  roster: null | { sources: readonly { connectionId: null | string; reachable?: boolean }[] }
+): MachineState {
+  const source = roster?.sources.find(source => source.connectionId === connectionId)
+
+  return selected ? gatewayState : source ? (source.reachable ? 'open' : 'closed') : 'idle'
+}
+
+export function useMachineStatusText(): Record<MachineState, string> {
+  const { t } = useI18n()
+
+  return {
+    open: t.shell.gatewayMenu.connected,
+    connecting: t.shell.gatewayMenu.connecting,
+    idle: t.common.loading,
+    closed: t.shell.gatewayMenu.offline,
+    error: t.shell.gatewayMenu.offline
+  }
+}
 
 interface Machine {
   connectionId: null | string

@@ -13,9 +13,7 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 
 import { ActiveMachineStatusPanel, MachineStatusPanel } from '../../redesign/portal-gateway-menu-panel'
 
-import type { NewAgentOffer } from './portal/new-agent-offers'
-
-export type MachineState = 'open' | 'connecting' | 'idle' | 'closed' | 'error'
+import { type MachineState, type NewAgentOffer, useMachineStatusText } from './portal/new-agent-offers'
 
 /** Figma's three machine tones: green online, orange in transition, grey offline. */
 const TONE: Record<MachineState, 'online' | 'pending' | 'offline'> = {
@@ -33,31 +31,6 @@ interface SimplifiedGatewayHeaderProps {
   /** Absent while a search holds the machine open: the row then stands as a disabled disclosure. */
   onToggle?: () => void
   onNewAgent: (owner: AgentSettingsOwner) => void
-}
-
-/** A machine's state as the app knows it: the gateway's own for the window's machine, the roster's
- *  reach for another. */
-export function machineState(
-  connectionId: null | string,
-  selected: boolean,
-  gatewayState: MachineState,
-  roster: null | { sources: readonly { connectionId: null | string; reachable?: boolean }[] }
-): MachineState {
-  const source = roster?.sources.find(source => source.connectionId === connectionId)
-
-  return selected ? gatewayState : source ? (source.reachable ? 'open' : 'closed') : 'idle'
-}
-
-export function useMachineStatusText(): Record<MachineState, string> {
-  const { t } = useI18n()
-
-  return {
-    open: t.shell.gatewayMenu.connected,
-    connecting: t.shell.gatewayMenu.connecting,
-    idle: t.common.loading,
-    closed: t.shell.gatewayMenu.offline,
-    error: t.shell.gatewayMenu.offline
-  }
 }
 
 /** A machine row (Figma 147:7470): name with its organisation as a quiet inline tag, the status at

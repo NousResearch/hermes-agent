@@ -100,15 +100,18 @@ it('offers New agent in the Agents header only while no machine row is there to 
   expect(fallback()).toBeNull()
 })
 
-it('with one machine that cannot take an agent, waits in place and says why', () => {
+it('with one machine that cannot take an agent, waits in place and says why', async () => {
   $gatewayState.set('closed')
   $portalAgentsSectionOpen.set(false)
   mount([STUDIO])
 
   const button = screen.getByRole('button', { name: `${en.profiles.newProfile} · ${en.shell.gatewayMenu.offline}` })
   fireEvent.click(button)
+  // The dialog loads lazily: give an opened one the time the others need to appear.
+  await act(() => new Promise(resolve => setTimeout(resolve, 50)))
 
   expect(button.getAttribute('aria-disabled')).toBe('true')
+  expect(dialog.owner).toBeNull()
   expect(screen.queryByRole('dialog')).toBeNull()
 })
 

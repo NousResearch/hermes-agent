@@ -74,6 +74,13 @@ class TestParentValidation:
                 seen.add(node["id"])
                 node = by_id[node["parent"]]
 
+    def test_duplicate_placeholder_ids_cannot_hide_a_cycle(self):
+        # Two items both normalised to id "?" (one from a bare string): the cycle
+        # a <-> "?" must still break, or injection recurses forever.
+        store = TodoStore()
+        store.write([_item("?", parent="a"), _item("a", parent="?"), "bare"])  # type: ignore[list-item]
+        assert "task a" in (store.format_for_injection() or "")
+
 
 class TestRestoreSanitize:
     def test_restore_drops_dangling_parent(self):

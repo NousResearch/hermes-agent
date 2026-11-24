@@ -1,9 +1,10 @@
 """Initial profile files, written on the staging tree before publication."""
 import contextlib
+import errno
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 def clone_staging_dir(profile_dir: Path) -> Path:
@@ -16,6 +17,23 @@ def clone_staging_dir(profile_dir: Path) -> Path:
     elif staging.is_dir():
         shutil.rmtree(staging, ignore_errors=True)
     return staging
+
+
+def publish_staging(staging: Path, profile_dir: Path, exists_error: Callable[[], Exception]) -> None:
+    """Rename ``staging`` onto ``profile_dir`` (create, import and rename publish a name this way). A
+    create, import or rename that also passed the exists check and published first leaves a non-empty
+    destination: the loser raises ``exists_error()`` (the usual "already exists"), not a raw ENOTEMPTY
+    (Windows: FileExistsError, or PermissionError while the destination exists). Any other failure stays
+    raw; what happens to ``staging`` then is the caller's."""
+    try:
+        staging.rename(profile_dir)
+    except OSError as exc:
+        from hermes_platform.host.facts import os_family
+        lost = isinstance(exc, FileExistsError) or exc.errno in (errno.ENOTEMPTY, errno.EEXIST) or (
+            isinstance(exc, PermissionError) and os_family() == "win32" and os.path.exists(profile_dir))
+        if not lost:
+            raise
+        raise exists_error() from exc
 
 
 def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
@@ -46,12 +64,21 @@ def prepare_imported_tree(staged: Path) -> None:
         os.chmod(env, 0o600)
 
 
+def _seed_file_if_missing(path: Path, text: str, mode: Optional[int] = None) -> None:
+    """Best-effort: write *text* to *path* unless it already exists; never raises."""
+    if path.exists():
+        return
+    with contextlib.suppress(OSError):
+        path.write_text(text, encoding="utf-8")
+        if mode is not None:
+            os.chmod(str(path), mode)
+
+
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
                            description: Optional[str], soul: Optional[str] = None) -> None:
     """Seed files a fresh profile owns from day one; runs on the staging tree before publish."""
     from hermes_cli.profiles import (
-        _seed_file_if_missing, _PLACEHOLDER_ENV, NO_BUNDLED_SKILLS_MARKER,
-        _migrate_profile_config_if_outdated, write_profile_meta,
+        _PLACEHOLDER_ENV, NO_BUNDLED_SKILLS_MARKER, _migrate_profile_config_if_outdated, write_profile_meta,
     )
     if soul is not None:
         (profile_dir / "SOUL.md").write_text(soul, encoding="utf-8")

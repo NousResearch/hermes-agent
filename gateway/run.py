@@ -1559,10 +1559,10 @@ from hermes_constants import get_hermes_home, get_hermes_home_override, get_proc
 _hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
-from hermes_cli.env_loader import bridge_config_scalars, load_hermes_dotenv
+from hermes_cli.env_loader import bridge_config_scalars, load_hermes_dotenv, load_launch_home_dotenv
 from hermes_cli._startup_fast import project_root_str
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
+_home_elsewhere = load_launch_home_dotenv(_hermes_home, Path(project_root_str()) / '.env')
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -2090,7 +2090,7 @@ def _load_bridge_config(config_path: Path) -> dict:
 
 _config_path = _hermes_home / 'config.yaml'
 _cfg: dict = {}
-if config_exists(_config_path):
+if config_exists(_config_path) and not _home_elsewhere:  # elsewhere: that backend writes this file; nothing of it is exported
     try:
         _cfg = _load_bridge_config(_config_path)
         _bridge_config_to_env(_cfg)
@@ -2901,9 +2901,6 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
-_PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _parse_session_key(session_key: str) -> dict | None:
     """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
 
@@ -2914,11 +2911,13 @@ def _parse_session_key(session_key: str) -> dict | None:
     is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
     shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
     """
+    from hermes_constants import PROFILE_ID_RE
+
     parts = session_key.split(":")
     if (
         len(parts) >= 5
         and parts[0] == "agent"
-        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
+        and (parts[1] in ("main", "main~") or PROFILE_ID_RE.match(parts[1]))
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":

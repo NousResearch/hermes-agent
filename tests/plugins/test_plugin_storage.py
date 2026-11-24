@@ -12,6 +12,7 @@ import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.plugin_storage import plugin_data_dir, plugin_db
+from tests.fixtures.dead_profile_home import MOVES, dead_named_home
 
 
 @pytest.fixture
@@ -63,3 +64,15 @@ def test_plugin_db_rejects_path_shaped_filenames(hermes_home):
         plugin_db("board", filename="../outside.db")
     with pytest.raises(ValueError):
         plugin_db("board", filename="")
+
+
+@pytest.mark.parametrize("move", MOVES)
+def test_data_dir_refuses_a_deleted_or_renamed_profile_home(tmp_path, move):
+    home = dead_named_home(tmp_path, move)
+    token = set_hermes_home_override(str(home))
+    try:
+        with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+            plugin_data_dir("my-plugin")
+    finally:
+        reset_hermes_home_override(token)
+    assert not home.exists()

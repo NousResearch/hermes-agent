@@ -212,4 +212,29 @@ describe('agent terminal retention is bounded', () => {
     stop()
     expect(screen).toContain('recovered output')
   })
+  it('keeps only the newest cap when one chunk alone exceeds it', () => {
+    const proc = 'oversized-chunk'
+    writeAgentTerminalChunk(proc, 'a'.repeat(300_000))
+    writeAgentTerminalChunk(proc, 'TAIL\n')
+
+    const retained = replay(proc)
+
+    expect(retained).toHaveLength(256_000)
+    expect(retained.endsWith('TAIL\n')).toBe(true)
+  })
+
+  it('trims the oldest chunk overhang so the cap stays exact across chunk sizes', () => {
+    const proc = 'chunk-overhang'
+
+    for (let i = 0; i < 4; i += 1) {
+      writeAgentTerminalChunk(proc, CHUNK)
+    }
+
+    writeAgentTerminalChunk(proc, 'TAIL\n')
+
+    const retained = replay(proc)
+
+    expect(retained).toHaveLength(256_000)
+    expect(retained.endsWith('TAIL\n')).toBe(true)
+  })
 })

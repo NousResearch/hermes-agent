@@ -1,4 +1,4 @@
-import { JSON_RPC_INTERNAL_ERROR, type SetupBeat } from '@hermes/shared'
+import type { SetupBeat } from '@hermes/shared'
 
 import {
   hasLivePreviewSurface,
@@ -25,7 +25,6 @@ import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import type { PreviewOwner } from '@/store/preview-ownership'
 import {
-  receiveApprovalRequest,
   setSecretRequest,
   setSudoRequest,
   setVaultCodeRequest,
@@ -45,7 +44,14 @@ import { parkThemePick } from '@/store/theme-pick'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
-import type { GatewayEventDeps } from './types'
+import { approval } from './approval-request'
+import {
+  declineIfSessionStopped,
+  type Handler,
+  markNeedsInput,
+  type ServerRequestContext,
+  str
+} from './server-request-context'
 
 /** The preview engine, loaded on demand so ~25KB of page-injectable source stays
  *  off the boot path (dev: a fresh copy per action so edits reach the guest — see
@@ -66,8 +72,6 @@ const loadPreviewEngine = () => {
 // requests. Keep its module instance stable even in dev HMR; the page script
 // itself remains request data and is never cached here.
 const loadPreviewVault = () => import('@/app/chat/right-rail/preview-vault')
-
-const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
 /** Whose preview tabs a scoped agent request may see: the requesting
  *  runtime's stored id plus the tabs that runtime opened before the id bound,
@@ -90,20 +94,6 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : und
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
 const answerValue = (request: ScopedServerRequest, result: unknown) =>
   request.respond({ value: result ? JSON.stringify(result) : '' })
-
-export interface ServerRequestContext {
-  deps: Pick<
-    GatewayEventDeps,
-    'activeSessionIdRef' | 'sessionInterrupted' | 'sessionStateByRuntimeIdRef' | 'updateSessionState' | 'upsertToolCall'
-  >
-  request: ScopedServerRequest
-  /** The session the request names ('' when unscoped). */
-  sessionId: string
-  /** The named session is the one on screen. */
-  isActiveSession: boolean
-}
-
-type Handler = (ctx: ServerRequestContext) => void
 
 type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
 
@@ -267,32 +257,6 @@ export function previewSessionRoute({
   return replayed && !activeSessionId ? 'retry' : 'ignore'
 }
 
-const markNeedsInput = (ctx: ServerRequestContext) => {
-  if (ctx.sessionId) {
-    ctx.deps.updateSessionState(ctx.sessionId, state => ({ ...state, needsInput: true }))
-  }
-}
-
-/**
- * A blocking-input card must not park for a session whose runtime is already
- * interrupted — the user hit Stop, or `removeSession` marked the doomed runtime
- * interrupted before it deletes the row. A frame still in flight would otherwise
- * re-create an overlay (and native notification) for a turn that is gone
- * (#75587). Answer it rather than drop it: the backend blocks on this frame, and
- * an error reply is the same "unanswered" its own `request.cancel` produces, so
- * the tool returns now instead of waiting out its deadline. Sessionless requests
- * (app-level Bot Screen install) are never gated.
- */
-const declineIfSessionStopped = (ctx: ServerRequestContext): boolean => {
-  if (!ctx.sessionId || !ctx.deps.sessionInterrupted(ctx.sessionId)) {
-    return false
-  }
-
-  ctx.request.fail(JSON_RPC_INTERNAL_ERROR, 'session interrupted')
-
-  return true
-}
-
 const notifyInput = (ctx: ServerRequestContext, body: string) => {
   if (!ctx.request.replayed) {
     dispatchNativeNotification({
@@ -383,53 +347,6 @@ const clarify: Handler = ctx => {
     requestId: request.id,
     sessionId: sessionId || null
   })
-}
-
-const approval: Handler = ctx => {
-  const { request, sessionId } = ctx
-  const p = request.params
-  const command = str(p.command)
-  const description = str(p.description) || 'dangerous command'
-
-  if (declineIfSessionStopped(ctx)) {
-    return
-  }
-
-  rememberServerRequest(request)
-  void receiveApprovalRequest(null, {
-    // false only when the backend forbids a permanent allow; it omits the field otherwise.
-    allowPermanent: p.allow_permanent !== false,
-    choices: Array.isArray(p.choices)
-      ? p.choices.filter((choice): choice is string => typeof choice === 'string')
-      : undefined,
-    command,
-    description,
-    // The approval queue's own id — `approval.pending` / `approval.received` / `approval.respond` key on it.
-    requestId: str(p.request_id) || undefined,
-    serverRequestId: request.id,
-    sessionId: sessionId || null,
-    smartDenied: p.smart_denied === true
-  }).catch(() => undefined)
-  markNeedsInput(ctx)
-
-  if (!request.replayed) {
-    dispatchNativeNotification({
-      actions: [
-        {
-          id: str(p.request_id) ? `approve:${str(p.request_id)}` : 'approve',
-          text: translateNow('notifications.native.approveAction')
-        },
-        {
-          id: str(p.request_id) ? `reject:${str(p.request_id)}` : 'reject',
-          text: translateNow('notifications.native.rejectAction')
-        }
-      ],
-      body: command || description,
-      kind: 'approval',
-      sessionId: sessionId || null,
-      title: translateNow('notifications.native.approvalTitle')
-    })
-  }
 }
 
 const sudo: Handler = ctx => {

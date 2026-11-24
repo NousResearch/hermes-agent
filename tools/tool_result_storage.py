@@ -15,7 +15,7 @@ import shlex
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from session_rules.media import PRUNED_SUBDIR, SPILLOVER_SUBDIR, archive_refs_in_text
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
@@ -281,22 +281,47 @@ def _safe_result_filename(tool_use_id: str, ext: str = "txt") -> str:
     return f"{safe_stem}.{ext}"
 
 
-def _backend_reads_host_files() -> bool:
-    """True only on the ``local`` terminal backend outside a hosted scope: the one place ``read_file`` opens
-    host paths. Every other backend (docker, modal, ssh, daytona, vercel_sandbox, plugins, unknown names)
-    reads its own filesystem, and the prune holds no environment to copy an archive into, so a stub would
-    name a file the model cannot open. Decided on the backend, never on whether a path translates
-    (``cache/pruned`` is mounted nowhere, so a translation check passed everywhere). An unresolvable
-    policy (refusal scope) answers False: fail closed, keep the result whole."""
+# Built-in backends that publish ``cache/pruned`` (``tools.credential_files._CACHE_DIRS``): docker bind-mounts
+# it, modal/ssh/daytona/vercel_sandbox file-sync it, at the path ``to_agent_visible_cache_path`` names.
+_ARCHIVE_PUBLISHING_BACKENDS = frozenset({"docker", "modal", "ssh", "daytona", "vercel_sandbox"})
+
+
+def _archive_backend() -> str | None:
+    """The active terminal backend when ``read_file`` there can open a ``cache/pruned`` archive: ``"local"``
+    (host paths) or a backend that publishes the folder. None keeps every result whole: a plugin or unknown
+    backend (nothing says it mounts the folder), a hosted scope (its own sandbox, no host cache), or an
+    unresolvable policy (refusal scope). Decided on the backend: the prune holds no environment to probe."""
     from tools.environments.sandbox_scope import hosted_scope
     from tools.terminal_scope import TerminalPolicyUnavailable, terminal_env
 
     if hosted_scope() is not None:
-        return False
+        return None
     try:
-        return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+        backend = terminal_env("TERMINAL_ENV", "local").strip().lower() or "local"
     except TerminalPolicyUnavailable:
-        return False
+        return None
+    return backend if backend == "local" or backend in _ARCHIVE_PUBLISHING_BACKENDS else None
+
+
+def _backend_reads_host_files() -> bool:
+    """True only on the ``local`` backend (outside a hosted scope): the one place a host path is the model's."""
+    return _archive_backend() == "local"
+
+
+def _archive_stub_path(host_path: str) -> str:
+    """Where the model's ``read_file`` finds the archive at *host_path*: the ``~/``-relative display path on
+    the local backend, else the mounted/synced path (``/root/.hermes/...`` or ``~/.hermes/...``). Always
+    ``/``-separated, so the reference scan finds ``cache/pruned/<name>`` in either form."""
+    from pathlib import Path, PurePath
+
+    from hermes_constants import display_hermes_home, get_hermes_home
+
+    if _archive_backend() != "local":
+        from tools.credential_files import to_agent_visible_cache_path
+
+        return to_agent_visible_cache_path(host_path)
+    rel = Path(host_path).relative_to(get_hermes_home())
+    return f"{PurePath(display_hermes_home()).as_posix()}/{rel.as_posix()}"
 
 
 def write_pruned_original(content: str, session_id: str, tool_name: str, tool_call_id: str) -> tuple[str, str] | None:
@@ -305,18 +330,17 @@ def write_pruned_original(content: str, session_id: str, tool_name: str, tool_ca
     Writes ``$HERMES_HOME/cache/pruned/<session>_<UTC stamp>_<tool>_<short id>.<json|txt>`` (``.json``
     when the body parses as JSON), read back and compared byte-for-byte like a spill. Returns
     ``(host path, stub path)``; the stub path is the ``~/``-relative display path, always ``/``-separated so
-    the reference scan finds ``cache/pruned/<name>``. None when the backend cannot read host files or the
-    write failed: the caller then must keep that result unpruned.
+    the reference scan finds ``cache/pruned/<name>``; on a sandboxed backend it is the path the sandbox reads
+    (:func:`_archive_stub_path`). None when the backend cannot open the archive or the write failed: the
+    caller then must keep that result unpruned.
     """
     try:
         json.loads(content)
         ext = "json"
     except ValueError:
         ext = "txt"
-    from pathlib import PurePath
-
-    from hermes_constants import display_hermes_home, get_hermes_home
-    if not _backend_reads_host_files():
+    from hermes_constants import get_hermes_home
+    if _archive_backend() is None:
         return None
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     short_id = hashlib.sha256(str(tool_call_id or "").encode("utf-8")).hexdigest()[:8]
@@ -329,7 +353,7 @@ def write_pruned_original(content: str, session_id: str, tool_name: str, tool_ca
     host_path = str(archive_dir / filename)
     if _write_to_spillover(content, filename, PRUNED_SUBDIR, exclusive=True) is None:
         return None
-    return host_path, f"{PurePath(display_hermes_home()).as_posix()}/{PRUNED_SUBDIR}/{filename}"
+    return host_path, _archive_stub_path(host_path)
 
 
 # ── Archive-before-stub: compaction / proactive-prune originals under cache/pruned/ ──
@@ -444,11 +468,11 @@ def archive_compaction_drops(
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """:func:`archive_pruned_originals` for a compaction's tool-result drops (window prune, lean tail).
 
-    A compaction must still reclaim where ``read_file`` cannot open host paths (sandboxed backends), so
-    there the plain stubs stand and nothing is written; on the local backend a result whose write fails
+    A compaction must still reclaim where ``read_file`` cannot open an archive (plugin backends, a hosted
+    scope), so there the plain stubs stand and nothing is written; elsewhere a result whose write fails
     keeps its original, and the compaction proceeds with the rest.
     """
-    if not _backend_reads_host_files():
+    if _archive_backend() is None:
         return dropped, [], 0
     return archive_pruned_originals(messages, dropped, session_id)
 
@@ -471,15 +495,14 @@ def archive_list_for_summary(named: set[str], kept: list[dict[str, Any]]) -> str
     deterministic list to append to the committed summary; ``""`` when none. The generated summary may drop
     a pointer: this list keeps the model's recovery path, and the reference the retention sweep reads,
     whatever the summarizer wrote."""
-    from pathlib import PurePath
-
-    from hermes_constants import display_hermes_home
+    from hermes_constants import get_hermes_home
 
     missing = named - pruned_archive_refs(kept)
     if not missing:
         return ""
-    home = PurePath(display_hermes_home()).as_posix()
-    return "\n\n" + ARCHIVE_LIST_HEADING + "".join(f"\n- {home}/{ref}" for ref in sorted(missing))
+    home = get_hermes_home()
+    return "\n\n" + ARCHIVE_LIST_HEADING + "".join(
+        f"\n- {_archive_stub_path(str(home / ref))}" for ref in sorted(missing))
 
 
 def discard_archives(paths: list[str]) -> None:
@@ -499,31 +522,45 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+class _Pageable(NamedTuple):
+    """A spill file laid out as ``lead + text + trail``; only ``text`` is the result's own text."""
+
+    text: str
+    lead: str = ""
+    trail: str = ""
+    command_output: bool = False
+
+    @property
+    def content(self) -> str:
+        return f"{self.lead}{self.text}{self.trail}"
+
+
 def _tool_metadata_block(fields: dict) -> str:
     metadata = json.dumps(fields, ensure_ascii=False, indent=1, sort_keys=True, default=str)
     return f"{_TOOL_METADATA_TAG}\n{metadata}\n{_TOOL_METADATA_CLOSING_TAG}"
 
 
-def _pageable_tool_json(content: str, payload: dict) -> str:
+def _pageable_tool_json(content: str, payload: dict) -> _Pageable:
     strings = [(key, value) for key, value in payload.items() if isinstance(value, str)]
     if not strings:
-        return content
+        return _Pageable(content)
     key, text = strings[0]
     for name, value in strings[1:]:
         if len(value) > len(text):
             key, text = name, value
     if "\n" not in text or "\x00" in text or len(text) < len(content) / 2:
-        return content
+        return _Pageable(content)
     header, trailer = {"text_field": key}, {}
     for name, value in payload.items():
         if name != key:
             (trailer if isinstance(value, (dict, list)) else header)[name] = value
-    pageable = f"{_tool_metadata_block(header)}\n\n{text}"
-    return f"{pageable}\n\n{_tool_metadata_block(trailer)}\n" if trailer else pageable
+    trail = f"\n\n{_tool_metadata_block(trailer)}\n" if trailer else ""
+    return _Pageable(text, lead=f"{_tool_metadata_block(header)}\n\n", trail=trail,
+                     command_output="exit_code" in payload)
 
 
-def _pageable_text(content: str) -> str:
-    """Rewrite a JSON tool result into the text it wraps, else return *content*.
+def _pageable_text(content: str) -> _Pageable:
+    """Split a JSON tool result into the text it wraps and its metadata, else keep *content* whole.
 
     Persisting a JSON result verbatim put the whole document on ONE line with escaped newlines,
     so the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
@@ -547,22 +584,23 @@ def _pageable_text(content: str) -> str:
     try:
         payload = json.loads(content)
     except (TypeError, ValueError):
-        return content
+        return _Pageable(content)
     if not isinstance(payload, dict) or not payload:
-        return content
+        return _Pageable(content)
     if "result" not in payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
         return _pageable_tool_json(content, payload)
     text = payload.get("result")
     if not isinstance(text, str) or not text:
-        return content
+        return _Pageable(content)
     extras = {key: value for key, value in payload.items() if key != "result"}
     if not extras:
-        return text
+        return _Pageable(text)
     try:
         metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
     except (TypeError, ValueError):
-        return text
-    return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
+        return _Pageable(text)
+    return _Pageable(
+        text, trail=f"\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n")
 
 
 _PRUNED_ARCHIVE_RE = re.compile(r"(?:^|[/\\])cache[/\\]pruned[/\\][^/\\]+\.(?:json|txt)$")
@@ -582,7 +620,7 @@ def _json_archive_text(raw: str) -> str:
             payload = None
         if isinstance(payload, list):
             return json.dumps(payload, ensure_ascii=False, indent=2)
-    return _pageable_text(raw)
+    return _pageable_text(raw).content
 
 
 def pageable_archive_text(raw: str, path: str, max_line_length: int) -> tuple[str, bool]:
@@ -599,6 +637,40 @@ def pageable_archive_text(raw: str, path: str, max_line_length: int) -> tuple[st
     return "\n".join(
         chunk for line in lines for chunk in ([line[i:i + width] for i in range(0, len(line), width)] or [""])
     ), True
+
+
+_PREVIEW_TAIL_CHARS = 400
+_PREVIEW_MARKER_SLACK = 96
+
+
+def _head_tail_preview(page: _Pageable, max_chars: int):
+    """Lead + head + elision marker + tail preview for command output (a result with ``exit_code``).
+
+    ``generate_preview`` is a head truncation: even with ``exit_code``/``error`` in the lead, a
+    failing build's error line sits at the END of a large output and still needed ``read_file``
+    (#126444). Compose the preview within *max_chars* so it also carries a tail window of the
+    text, never of the metadata block after it; the spillover file keeps the full output -- the
+    elision is preview-only. ``None`` when *page* is not command output, fits whole, or has no
+    room for a meaningful tail."""
+    if not page.command_output:
+        return None
+    lead, output = page.lead, page.text
+    if len(output) <= max_chars - len(lead):
+        return None
+    tail = output[-min(len(output), max(_PREVIEW_TAIL_CHARS, (max_chars - len(lead)) // 5)):]
+    if "\n" in tail[:-1]:
+        tail = tail[tail.index("\n") + 1:]
+    head_budget = max_chars - len(lead) - len(tail) - _PREVIEW_MARKER_SLACK
+    if head_budget <= 0 or len(output) - len(tail) <= head_budget:
+        return None
+    head = output[:head_budget]
+    last_nl = head.rfind("\n")
+    if last_nl > head_budget // 2:
+        head = head[:last_nl + 1]
+    hidden = len(output) - len(head) - len(tail)
+    # Neutral on purpose: the inline fallback for a failed save reuses this preview.
+    marker = f"\n[... {hidden:,} chars elided ...]\n"
+    return f"{lead}{head}{marker}{tail}", True
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -685,9 +757,11 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         return content
     # The size decision above stays on the raw inline result (that is what cost context); the file
     # and the preview carry the pageable text inside an MCP envelope (#90426).
-    persisted_content = _pageable_text(content)
+    page = _pageable_text(content)
+    persisted_content = page.content
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+    preview, has_more = _head_tail_preview(page, config.preview_size) or generate_preview(
+        persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",

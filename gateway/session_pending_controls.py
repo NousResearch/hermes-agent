@@ -5,6 +5,7 @@ Secret/sudo prompts remain native; no response is published or journaled here.
 """
 from copy import deepcopy
 
+from gateway.session_prompt_hooks import PromptTable
 from persistence.core.errors import AuthorityRefusal
 from tools.approval import list_gateway_approvals, resolve_gateway_approval
 
@@ -12,7 +13,7 @@ from tools.approval import list_gateway_approvals, resolve_gateway_approval
 class PendingControls:
     def __init__(self, events):
         self.events = events
-        self.pending = {}
+        self.pending = PromptTable()  # a prompt leaving it is settled for observers
         self.remote_responders = {}
 
     def register(self, session_id, route, generation, data, *, timeout_s=None):
@@ -49,6 +50,15 @@ class PendingControls:
                 prompt["timeout_s"] = timeout_s
             self.pending[entry.clarify_id] = (entry, prompt)
             self.events.publish(session_id, prompt, event_type="clarify.request")
+
+    def waiting_kinds(self):
+        """Kinds of the prompts still parked on the user, without pruning or publishing (the
+        teammate-wait strip polls this from another bot's chat; ``snapshot`` stays the viewer's)."""
+        with self.events.lock:
+            return sorted({prompt['kind'] for prompt_id, (route, prompt) in self.pending.items()
+                           if prompt_id in self.remote_responders or (
+                               not route.event.is_set() if prompt['kind'] == 'clarify' else
+                               any(p['request_id'] == prompt_id for p in list_gateway_approvals(route)))})
 
     def snapshot(self, session_id, generation):
         with self.events.lock:

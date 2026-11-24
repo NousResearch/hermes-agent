@@ -13,7 +13,7 @@ from dataclasses import fields
 from typing import Any, Mapping
 
 from persistence.authority.admissions import AdmissionRecord, ClaimedAdmission
-from persistence.authority.vocabulary import STEERING, admission_fingerprint
+from persistence.authority.vocabulary import STEERING, admission_fingerprint, retry_input
 from persistence.core.canonical import canonical_json
 from persistence.core.errors import AuthorityRefusal, FenceStale, StaleFenceKind, UnknownExecution
 
@@ -80,8 +80,8 @@ def encode(value: Any) -> Any:
 
 
 def digest(session_id: str, payload: Any, intent: str) -> str:
-    """The admission digest stored on the row: target, payload and intent."""
-    return admission_fingerprint(canonical_target=session_id, payload={"input": payload, "intent": intent})
+    """The admission digest stored on the row: target, payload (without the owner's client stamp) and intent."""
+    return admission_fingerprint(canonical_target=session_id, payload={"input": retry_input(payload), "intent": intent})
 
 
 def stale(entity: str, entity_id: Any) -> FenceStale:

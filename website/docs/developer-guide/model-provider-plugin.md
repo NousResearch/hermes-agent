@@ -18,7 +18,7 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
 2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in a directory; a running process picks it up on its next provider lookup (no restart)
-3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager
+3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager. `model-providers` is the folder from step 2, so `hermes plugins install` refuses a plugin whose own name is `model-providers` (in any letter case), except a re-install of an existing install of that name from its recorded source
 4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
 
 Steps 2 and 3 are **per profile home**: one process that serves several profiles (the multiplex gateway a local Desktop attaches to, a `hermes serve` backend) resolves the plugins of whichever profile's `$HERMES_HOME` is bound at lookup time, and a plugin installed in one profile is not visible from another. Install the plugin in every profile that should use it (`hermes -p <profile> plugins install ...`).
@@ -704,13 +704,19 @@ for p in list_providers():
 
 ## Testing your plugin
 
-Point `HERMES_HOME` at a temp directory so you don't pollute your real config, then
+Point `HERMES_HOME` at a throwaway directory so you don't pollute your real config, then
 write `$HERMES_HOME/plugins/model-providers/my-provider/__init__.py` (an agent uses
 `write_file`, which creates the directory):
 
 ```bash
-export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-plugin-test
+export HERMES_HOME=$HOME/hermes-plugin-test
 ```
+
+Keep that directory out of `~/.hermes/cache/scratch` and other temp directories that are
+cleaned by age: a running Hermes imports your plugin from a copy under the Hermes root's
+`runtime/provider-plugins/` (`$HERMES_HOME` itself, or the root above `profiles/` for a named
+profile), and a cleaner that deletes it makes the plugin's later imports fail until the
+process restarts.
 
 ```python
 from providers import register_provider

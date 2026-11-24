@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ def _load_pairing_approved() -> set:
 
 def _save_pairing(data: dict) -> None:
     pairing_file = _pairing_file()
-    pairing_file.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(pairing_file.parent)  # a dead profile home raises instead of coming back
     with open(pairing_file.with_suffix(".tmp"), "w", encoding="utf-8") as f:  # windows-footgun: ok (write/append mode, not a read)
         json.dump(data, f, indent=2, ensure_ascii=False)
     pairing_file.with_suffix(".tmp").replace(pairing_file)

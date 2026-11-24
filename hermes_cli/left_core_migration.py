@@ -207,6 +207,15 @@ yuanbao_in_use = platform_in_use(
     toolsets=("yuanbao", "hermes-yuanbao"))
 
 
+# DingTalk: core's ``_is_connected`` / env gate needed Client ID + Client Secret (block ``extra`` or env). Its
+# ``hermes-dingtalk`` bundle carried only core tools; a platform that selected it keeps resolving it once the
+# plugin registers the platform. A bare ``dingtalk`` in plugins.disabled did not stop core's adapter.
+dingtalk_in_use = platform_in_use(
+    "dingtalk", plugin_keys=("platforms/dingtalk", "dingtalk-platform"),
+    cred_sets=((("client_id", "DINGTALK_CLIENT_ID"), ("client_secret", "DINGTALK_CLIENT_SECRET")),),
+    toolsets=("hermes-dingtalk",))
+
+
 # ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports
 # hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
 _GATEWAY_ONLY_PLATFORMS = ("msgraph_webhook", "relay")
@@ -238,6 +247,18 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
     # Core's adapter ignored a bare ``yuanbao`` in plugins.disabled; the catalog plugin does not, and the
     # automatic install keeps the entry: its kept-off notice (_install_locked) names the enable command.
     return _YUANBAO_NOTICE
+
+
+_DINGTALK_NOTICE = ("DingTalk is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
+                    "maintained going forward. Fixes from the community are welcome.")
+
+
+def _dingtalk_notice(home: Path, *, process_env: bool = False) -> str:
+    # As for Yuanbao: a bare ``dingtalk`` that survived the install's enable (a managed overlay pin) now turns it off.
+    if plugin_present("dingtalk", home) and _plugins_listed(home, ("dingtalk",))[1]:
+        return (f"{_DINGTALK_NOTICE} plugins.disabled lists 'dingtalk', which now turns DingTalk off; "
+                "remove it to keep using DingTalk.")
+    return _DINGTALK_NOTICE
 
 
 def _auth_store(home: Path) -> dict:
@@ -734,6 +755,16 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
+    ),
+    LeftCoreFeature(
+        # The strip set is core's: CLIENT_SECRET as a secret, the rest as provider env (Tier 2), as on main.
+        plugin="dingtalk", label="DingTalk", in_use=dingtalk_in_use, plugin_key="platforms/dingtalk",
+        plugin_names=("dingtalk-platform",),
+        unchanged="DINGTALK_* settings, platforms.dingtalk and DINGTALK_HOME_CHANNEL are unchanged",
+        secret_env=("DINGTALK_CLIENT_SECRET",),
+        private_env=("DINGTALK_CLIENT_ID", "DINGTALK_ALLOWED_USERS", "DINGTALK_HOME_CHANNEL",
+                     "DINGTALK_HOME_CHANNEL_NAME", "DINGTALK_WEBHOOK_URL"),
+        platform="dingtalk", enable_env=("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"), notice=_dingtalk_notice,
     ),
 )
 

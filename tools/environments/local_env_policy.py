@@ -146,6 +146,8 @@ def _build_adapter_secret_env() -> frozenset:
                  and meta.get("category") == "messaging" and meta.get("password"))
     names |= platform_manifest_secret_envs(source="bundled", strict=True)
     names.update(n.upper() for n in config_env_table_keys() if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
+    # A platform that left core: its manifest secrets stay adapter secrets while the plugin is absent.
+    names |= _left_core_env(secrets_only=True)
     return frozenset(names)
 
 
@@ -579,6 +581,8 @@ def _static_gate_env_prefixes() -> frozenset:
     try:
         from gateway.config import Platform
         names.update(m.value for m in Platform.__members__.values())
+        from hermes_cli.left_core_migration import LEFT_CORE  # platforms that left core keep their gates
+        names.update(f.platform for f in LEFT_CORE if f.platform)
         bundled, aliases = Platform._scan_bundled_plugin_platforms()
         names.update(bundled)
         names.update(aliases)

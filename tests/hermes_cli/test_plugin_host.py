@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import hermes_yaml as yaml
 import pytest
@@ -527,14 +528,13 @@ def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_n
         plugins_mod._reset_plugin_managers_for_tests()
 
 
-@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
-def test_a_caller_bound_to_a_repointed_profile_link_lends_nothing_to_the_old_directorys_host(tmp_path, monkeypatch):
-    """After a profile's link is repointed, the host of the manager opened by that name starts in the old directory.
-    A caller bound to the name since reads the new directory's ``.env`` under the old directory's remembered key;
-    that scope is not the old directory's, so its launcher expands from the old directory's own files."""
+@pytest.fixture
+def repointed_profile_link(tmp_path, monkeypatch):
+    """Two profile directories, each with a ``${PLUGIN_RUNNER}`` launcher its own ``.env`` names, a profile link
+    ``ops`` that can be pointed at either, and a separate launch home. Yields ``point(dir)``, ``host_for(home)``
+    and which runner ran, multiplexing for the test's sake (a caller can then bind any of them)."""
     from agent import secret_scope as ss
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tui_gateway import server
 
     def runner(name):
         ran, script = tmp_path / f"{name}.ran", tmp_path / name
@@ -542,83 +542,65 @@ def test_a_caller_bound_to_a_repointed_profile_link_lends_nothing_to_the_old_dir
         script.chmod(0o755)
         return ran
 
-    old_ran, new_ran = runner("old-runner"), runner("new-runner")
-    old = _home_with_plugins(tmp_path / "old", monkeypatch, {})
-    new = _home_with_plugins(tmp_path / "new", monkeypatch, {})
+    runs = {"old": runner("old-runner"), "new": runner("new-runner")}
+    dirs = {name: _home_with_plugins(tmp_path / name, monkeypatch, {}) for name in runs}
     _home_with_plugins(tmp_path / "launch", monkeypatch, {})
     launcher = yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}})
-    for home, name in ((old, "old-runner"), (new, "new-runner")):
+    for name, home in dirs.items():
         (home / "config.yaml").write_text(launcher, encoding="utf-8")
-        (home / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / name}\n", encoding="utf-8")
+        (home / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / f'{name}-runner'}\n", encoding="utf-8")
     monkeypatch.delenv("PLUGIN_RUNNER", raising=False)
     link = tmp_path / "root" / "profiles" / "ops"
     link.parent.mkdir(parents=True)
-    link.symlink_to(old, target_is_directory=True)
-    plugins_mod._reset_plugin_managers_for_tests()
-    home_token = set_hermes_home_override(link)
-    try:
-        host = plugins_mod.get_plugin_manager()._plugin_host()
-    finally:
-        reset_hermes_home_override(home_token)
-    link.unlink()
-    link.symlink_to(new, target_is_directory=True)
-    context_token = ss.set_multiplex_context(True)
-    try:
-        with server._session_profile_runtime_scope({"profile_home": str(link)}, hydrate_secrets=False):
-            assert ss.get_secret("PLUGIN_RUNNER") == str(tmp_path / "new-runner")
-            host.ensure_started()
-        assert (old_ran.exists(), new_ran.exists()) == (True, False)
-    finally:
-        host.shutdown()
-        ss.reset_multiplex_context(context_token)
-        plugins_mod._reset_plugin_managers_for_tests()
+    hosts = []
 
-
-@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
-def test_a_caller_bound_before_its_profile_link_was_repointed_lends_nothing_to_the_new_directorys_host(
-        tmp_path, monkeypatch):
-    """A caller bound to a profile's link holds the values it read from the old directory. Once the link is repointed
-    at another profile's directory, that profile's host started inside the caller expands from its own files."""
-    from agent import secret_scope as ss
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tui_gateway import server
-
-    def runner(name):
-        ran, script = tmp_path / f"{name}.ran", tmp_path / name
-        script.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
-        script.chmod(0o755)
-        return ran
-
-    old_ran, new_ran = runner("old-runner"), runner("new-runner")
-    old = _home_with_plugins(tmp_path / "old", monkeypatch, {})
-    new = _home_with_plugins(tmp_path / "new", monkeypatch, {})
-    _home_with_plugins(tmp_path / "launch", monkeypatch, {})
-    launcher = yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}})
-    for home, name in ((old, "old-runner"), (new, "new-runner")):
-        (home / "config.yaml").write_text(launcher, encoding="utf-8")
-        (home / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / name}\n", encoding="utf-8")
-    monkeypatch.delenv("PLUGIN_RUNNER", raising=False)
-    link = tmp_path / "root" / "profiles" / "ops"
-    link.parent.mkdir(parents=True)
-    link.symlink_to(old, target_is_directory=True)
-    plugins_mod._reset_plugin_managers_for_tests()
-    home_token = set_hermes_home_override(new)
-    try:
-        host = plugins_mod.get_plugin_manager()._plugin_host()
-    finally:
-        reset_hermes_home_override(home_token)
-    context_token = ss.set_multiplex_context(True)
-    try:
-        with server._session_profile_runtime_scope({"profile_home": str(link)}, hydrate_secrets=False):
+    def point(name):
+        if link.is_symlink():
             link.unlink()
-            link.symlink_to(new, target_is_directory=True)
-            assert ss.get_secret("PLUGIN_RUNNER") == str(tmp_path / "old-runner")
-            host.ensure_started()
-        assert (old_ran.exists(), new_ran.exists()) == (False, True)
+        link.symlink_to(dirs[name], target_is_directory=True)
+
+    def host_for(home):
+        token = set_hermes_home_override(home)
+        try:
+            hosts.append(plugins_mod.get_plugin_manager()._plugin_host())
+        finally:
+            reset_hermes_home_override(token)
+        return hosts[-1]
+
+    plugins_mod._reset_plugin_managers_for_tests()
+    context_token = ss.set_multiplex_context(True)
+    try:
+        yield SimpleNamespace(link=link, dirs=dirs, point=point, host_for=host_for,
+                              ran=lambda: sorted(name for name, path in runs.items() if path.exists()))
     finally:
-        host.shutdown()
+        for host in hosts:
+            host.shutdown()
         ss.reset_multiplex_context(context_token)
         plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
+@pytest.mark.parametrize("moves", [
+    # (where the link points when the host is opened by it, when the caller binds, when the host starts)
+    ("old", "new", "new"),  # bound after the repoint: holds the new directory's values, the host is the old one's
+    (None, "old", "new"),   # bound before the repoint: holds the old directory's values, the host is the new one's
+], ids=["bound_after_the_repoint", "bound_before_the_repoint"])
+def test_a_caller_bound_through_a_moving_profile_link_lends_its_values_to_no_host(repointed_profile_link, moves):
+    """A caller bound through a profile's link holds what the link's directory held when it bound. However the
+    link moved around that bind, the host that starts expands its launcher from the files of its own directory."""
+    from agent import secret_scope as ss
+    from tui_gateway import server
+
+    env = repointed_profile_link
+    opened_by, bound, started = moves
+    env.point(opened_by or "old")
+    host = env.host_for(env.link if opened_by else env.dirs["new"])
+    env.point(bound)
+    with server._session_profile_runtime_scope({"profile_home": str(env.link)}, hydrate_secrets=False):
+        assert ss.get_secret("PLUGIN_RUNNER").endswith(f"{bound}-runner")
+        env.point(started)
+        host.ensure_started()
+    assert env.ran() == ["old" if opened_by else "new"]
 
 
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts

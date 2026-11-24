@@ -572,6 +572,25 @@ describe('the redesign’s right sidebar button', () => {
     expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
   })
 
+  // Browser tabs the user tiled into a zone of their own are theirs, not "the side": the button
+  // neither counts them nor hides them.
+  it('leaves a zone of Browser tabs alone', () => {
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { id: 'main' }),
+        group(['files', 'review', 'terminal'], { active: 'terminal', id: 'tools' }),
+        group(['preview-tile:a', 'preview-tile:b'], { active: 'preview-tile:a', id: 'browsers' })
+      ])
+    )
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+    expect(isPaneVisible('terminal')).toBe(false)
+    expect(isPaneVisible('preview-tile:a')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+  })
+
   it('shows Files in the panel when nothing is open', () => {
     $hiddenTreePanes.set(new Set(['files', 'review', 'terminal', 'chat-items']))
     renderControls('/')

@@ -194,10 +194,18 @@ function hideTool(id: string): void {
   }
 }
 
+// The side's tools on screen: the built-in ones wherever they stand, and the Browser tabs in the
+// panel. Browser tabs the user tiled into a zone of their own are theirs, not the side.
 const shownTools = (): string[] => {
   const tree = $layoutTree.get()
 
-  return tree ? allPaneIds(tree).filter(isTool).filter(isPaneVisible) : []
+  if (!tree) {
+    return []
+  }
+
+  const panel = toolPanel(tree)
+
+  return allPaneIds(tree).filter(id => (STORE_BOUND.includes(id) || panel?.panes.includes(id)) && isPaneVisible(id))
 }
 
 /** Whether a tool is on screen beside the chat: what the band's right sidebar button says and flips

@@ -84,15 +84,16 @@ describe('⌘J (view.toggleRightSidebar)', () => {
     expect(toggleTerminalPane).not.toHaveBeenCalled()
   })
 
-  // The redesign's right side is its tool panel: the Browser hides, and its tab is not closed.
-  it('hides a lone Browser in the redesign, keeping its tab', () => {
+  // The redesign's right side is its tool panel. A Browser tab tiled into a zone of its own is the
+  // user's, not the side: the key leaves it where it is, shown.
+  it('leaves a Browser zone of its own alone in the redesign', () => {
     $shellChoice.set(true)
     $layoutTree.set(split('row', [group(['sessions']), group(['workspace']), group([BROWSER])]))
 
     pressToggle()
 
-    expect($hiddenTreePanes.get().has(BROWSER)).toBe(true)
-    expect(findGroupOfPane($layoutTree.get() as LayoutNode, BROWSER)).not.toBeNull()
+    expect($hiddenTreePanes.get().has(BROWSER)).toBe(false)
+    expect(findGroupOfPane($layoutTree.get() as LayoutNode, BROWSER)?.minimized).toBeFalsy()
     expect(toggleTerminalPane).not.toHaveBeenCalled()
   })
 })

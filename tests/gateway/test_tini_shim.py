@@ -38,6 +38,7 @@ def _run_shim(
     env["HERMES_TINI_SHIM_WRAPPER"] = str(wrapper)
     return subprocess.run(
         ["sh", str(SHIM), *args],
+        stdin=subprocess.DEVNULL,  # the no-command branch reads whether stdin is a terminal
         capture_output=True,
         text=True,
         timeout=10,

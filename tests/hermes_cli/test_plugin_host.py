@@ -346,6 +346,33 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_recall_matched_by_the_recorded_repo_refuses_a_linked_profiles_plugin(tmp_path, monkeypatch):
+    """Discovery records a linked profile's plugins under its directory while code runs under its name; the
+    installer's record is still found, so a kill-list entry matching only the recorded repo refuses the load."""
+    from hermes_cli import plugins_cmd_catalog
+    from hermes_cli.plugin_catalog import RemovedEntry
+
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {"recalled": "def register(ctx):\n    pass\n"},
+                                isolation="in_process")
+    (target / "plugins" / ".install-metadata.json").write_text(
+        json.dumps({"recalled": {"source": "https://github.com/example/recalled"}}), encoding="utf-8")
+    monkeypatch.setattr(plugins_cmd_catalog, "cached_removed_entries", lambda: [RemovedEntry(
+        name="another-name", repo="https://github.com/example/recalled", reason="backdoor")])
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        assert "backdoor" in (manager._plugins["recalled"].error or "")
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
 def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugins_back_after_a_crash(
         tmp_path, monkeypatch):

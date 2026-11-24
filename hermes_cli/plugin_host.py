@@ -142,11 +142,13 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list],
 
 def extraction_launcher(home: Path) -> list:
     """The launcher a provider-extraction child for *home* runs under: the one the host start for *home* in progress
-    chose (``_START_LAUNCHER``), else the one a host start for *home* would choose (``_launcher_for``, with
-    ``_is_launch_home``'s answer), whichever context the extraction runs in. Only the launcher: that child's env
-    carries no credentials."""
+    chose (``_START_LAUNCHER``) while *home* still runs here, else the one a host start for *home* would choose
+    (``_launcher_for``, with ``_is_launch_home``'s answer), whichever context the extraction runs in. A profile
+    marked to run elsewhere since its start chose so takes a marked profile's launcher. Only the launcher: that
+    child's env carries no credentials."""
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     lent = _START_LAUNCHER.get()
-    if lent is not None:
+    if lent is not None and run_elsewhere_refusal(home) is None:
         return list(lent)
     from hermes_cli.plugin_isolation import host_launcher
     return _launcher_for(home, host_launcher, _is_launch_home(home))[0]

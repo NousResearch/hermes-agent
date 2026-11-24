@@ -1328,6 +1328,43 @@ def test_a_launch_body_starts_provider_extraction_under_the_launcher_it_chose_fo
 
 
 @pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_profile_marked_after_its_start_chose_does_not_lend_that_launcher_to_its_extraction(tmp_path, monkeypatch):
+    """A host start lends the launcher it chose to the provider extraction it runs. When the profile is marked to
+    run elsewhere between that choice and the extraction, the extraction takes the launcher a marked profile takes
+    (the managed overlay's, here none), not the profile's own."""
+    from hermes_cli import plugin_host as ph
+    from hermes_cli import profiles_run_elsewhere as pre
+    import tools.environments.local  # loaded, as in a running process: its import lists the providers
+
+    seen, runner = tmp_path / "seen", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho "$*" >> "{seen}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {
+        "launcher": [str(runner)]}}}), encoding="utf-8")
+    _hosted_model_provider(home)
+    choose = ph._launcher_for
+
+    def chosen_then_marked(*args, **kwargs):
+        choice = choose(*args, **kwargs)
+        if pre.run_elsewhere_refusal(home) is None:
+            pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+        return choice
+
+    monkeypatch.setattr(ph, "_launcher_for", chosen_then_marked)
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        host.ensure_started()
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+    assert list((home / "cache" / "plugin_host" / "model-providers").glob("hostmodel-*.json"))  # it extracted
+    ran = seen.read_text(encoding="utf-8").splitlines() if seen.exists() else []
+    assert not [line for line in ran if "--extract-profiles" in line]
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
 def test_a_managed_launcher_that_expands_to_nothing_is_not_replaced_by_a_profiles_env_file_value(tmp_path, monkeypatch):
     """A managed launcher whose ``${VAR}`` the process env sets empty is still the administrator's: the host starts
     with no launcher rather than expanding the same reference again against the profile's ``.env``."""

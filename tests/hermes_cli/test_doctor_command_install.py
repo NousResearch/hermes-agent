@@ -387,29 +387,58 @@ def test_command_installation_warns_when_local_bin_missing_from_path(tmp_path, m
     assert 'export PATH="$HOME/.local/bin:$PATH"' in out
 
 
-def _startup_path(project: Path, inherited: str) -> str:
-    """PATH after the real startup activation of *project*, run in a child so it can't touch this process."""
+_DOCTOR_AFTER_STARTUP = """
+import os, sys
+from argparse import Namespace
+from pathlib import Path
+from pm.environments import activate_dependencies
+
+project = Path(sys.argv[1])
+activate_dependencies(project)
+print("startup PATH=" + os.environ["PATH"], file=sys.stderr)
+from hermes_cli import doctor, doctor_platform
+doctor.PROJECT_ROOT = project
+doctor.HERMES_HOME = Path(os.environ["HERMES_HOME"])
+doctor.DOCTOR_CHECKS = ((None, doctor_platform._check_command_installation),)
+sys.exit(doctor.run_doctor(Namespace(fix=False)))
+"""
+
+
+def _doctor_after_startup(project: Path, inherited: str) -> subprocess.CompletedProcess:
+    """Doctor's command check in a child that boots like `hermes doctor`: real activation first."""
     repo = Path(__file__).resolve().parents[2]
-    code = ("import os, sys; from pathlib import Path; from pm.environments import activate_dependencies; "
-            "activate_dependencies(Path(sys.argv[1])); print(os.environ['PATH'])")
-    done = subprocess.run([sys.executable, "-c", code, str(project)], cwd=repo, capture_output=True, text=True,
-                          env={**os.environ, "PATH": inherited, "PYTHONPATH": str(repo)}, check=True)
-    return done.stdout.strip()
+    # The payload venv stands in for the bundle's own dependencies.
+    (site_packages(project.parent / "venv") / "test-deps.pth").write_text(
+        "\n".join(entry for entry in sys.path if entry.endswith("site-packages")) + "\n", encoding="utf-8"
+    )
+    env = {**os.environ, "PATH": inherited, "HOME": str(Path.home()), "PYTHONPATH": str(repo)}
+    return subprocess.run([sys.executable, "-c", _DOCTOR_AFTER_STARTUP, str(project)],
+                          cwd=repo, env=env, capture_output=True, text=True, check=False)
 
 
 @pytest.mark.platforms("posix")
-def test_path_check_ignores_the_launcher_dir_startup_puts_on_path(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("inherited, rc", [
+    ("system", 1),  # startup's own <payload>/bin must not hide the missing ~/.local/bin
+    ("payload_bin", 0),  # the user put the bundle's bin dir on PATH themselves
+    ("other_link", 0),  # another PATH dir links to the launcher; the venv's own hermes must not shadow it
+])
+def test_path_check_judges_the_path_doctor_inherited(tmp_path, monkeypatch, inherited, rc):
     project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
     (link_dir / "hermes").symlink_to(launcher)
-    startup_path = _startup_path(project, "/usr/local/bin:/usr/bin:/bin")
-    assert Path(startup_path.split(os.pathsep)[0]).resolve() == launcher.parent.resolve()
-    monkeypatch.setenv("PATH", startup_path)
+    venv_hermes = project.parent / "venv" / "bin" / "hermes"
+    venv_hermes.parent.mkdir(parents=True)
+    venv_hermes.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    venv_hermes.chmod(0o755)
+    other_bin = tmp_path / "other-bin"
+    other_bin.mkdir()
+    (other_bin / "hermes").symlink_to(launcher)
+    first = {"system": [], "payload_bin": [str(launcher.parent)], "other_link": [str(other_bin)]}[inherited]
 
-    rc = doctor.run_doctor(Namespace(fix=False))
+    done = _doctor_after_startup(project, os.pathsep.join([*first, "/usr/bin", "/bin"]))
 
-    out = capsys.readouterr().out
-    assert rc == 1
-    assert "~/.local/bin is not on your PATH" in out
+    assert f"startup PATH={launcher.parent}{os.pathsep}{venv_hermes.parent}{os.pathsep}" in done.stderr
+    assert done.returncode == rc, done.stdout + done.stderr
+    assert ("~/.local/bin is not on your PATH" in done.stdout) == (rc == 1)
 
 
 @pytest.mark.platforms("posix")

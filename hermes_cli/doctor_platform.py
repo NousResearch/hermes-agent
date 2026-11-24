@@ -685,13 +685,10 @@ def _display_rc_path(rc_path: Path) -> str:
 def _check_link_dir_on_path(
     link_dir: Path, display: str, cmd_name: str, entry_point: Path, termux: bool, f: Finding
 ) -> None:
-    # Startup puts the entry point's own directory first on PATH (pm.environments.activate_dependencies),
-    # and a new terminal won't have it, so neither lookup may count it.
-    home, own_dir = Path.home(), entry_point.parent.resolve()
-    terminal_path = os.pathsep.join(
-        entry for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if entry and _resolved_path_entry(entry, home) != own_dir
-    )
+    from pm.environments import inherited_path
+
+    # Startup put Hermes's own command dirs first on this PATH; a new terminal won't have them.
+    terminal_path = inherited_path()
     if _dir_on_path(link_dir, terminal_path):
         return
     found = shutil.which(cmd_name, path=terminal_path)

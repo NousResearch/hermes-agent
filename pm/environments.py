@@ -524,7 +524,21 @@ def activate_dependencies(project_root: Path) -> None:
         directories.append(venv_bin_dir(environment))
     prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
+        if not _startup_path_prefix:
+            _startup_path_prefix[:] = prefix
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
+
+
+# The directories this process's first activate_dependencies() put ahead of the PATH it inherited.
+_startup_path_prefix: list[str] = []
+
+
+def inherited_path() -> str:
+    """PATH as this process inherited it: without the command directories startup put first,
+    while they still lead it. A new terminal starts from this PATH, not from the led one."""
+    path = os.environ.get("PATH", "")
+    lead = os.pathsep.join(_startup_path_prefix) + os.pathsep
+    return path[len(lead):] if _startup_path_prefix and path.startswith(lead) else path
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

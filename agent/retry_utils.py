@@ -74,7 +74,10 @@ _RESETS_IN_RE = re.compile(
     r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
 )
-_RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
+# "retry after 42 s", "retry 42 seconds", and OpenCode Go's capacity 429 "retry shortly (after 42 s)".
+_RETRY_AFTER_SECONDS_RE = re.compile(
+    r"\bretry\s+(?:shortly\s*\(?\s*)?(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b", re.IGNORECASE,
+)
 # The plan usage-limit body field as it appears once stringified: ``'resets_in_seconds': 30995``.
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
 
@@ -184,7 +187,9 @@ RETRY_AFTER_CAP_S = 600.0
 
 def provider_retry_after_seconds(error: Any) -> Optional[float]:
     """Provider-declared cooldown: the ``Retry-After`` header, else a ``retry_after`` body field
-    (top level or nested under ``error``). None when absent, unparseable or zero: a zero or expired
+    (top level or nested under ``error``), else an explicit "retry [shortly] (after) N s" in the
+    error text (OpenCode Go puts its capacity wait only there, #145899). A "resets in" quota window
+    is not a retry request and stays out. None when absent, unparseable or zero: a zero or expired
     cooldown carries no usable wait, and treating it as one would hot-loop the provider."""
     value = parse_retry_after_seconds(getattr(getattr(error, "response", None), "headers", None))
     if value is None:
@@ -192,4 +197,6 @@ def provider_retry_after_seconds(error: Any) -> Optional[float]:
         if isinstance(body, dict):
             nested = body.get("error")
             value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
+    if value is None and (hint := _RETRY_AFTER_SECONDS_RE.search(_error_text(error))):
+        value = float(hint.group(1))
     return value if value is not None and value > 0 else None

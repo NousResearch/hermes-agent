@@ -146,10 +146,21 @@ const REDESIGN_SINGLE_PAGES: ReadonlySet<string> = new Set([
   'gateway'
 ])
 
-function withoutOwnSubpages(group: OverlayNavGroup): OverlayNavGroup {
+/** Pages under Advanced that the redesign draws whole on every subpage (Safety,
+ *  portal-safety-fields.tsx): one row and one heading, whichever subpage a link names. */
+const REDESIGN_WHOLE_PAGES: ReadonlySet<string> = new Set(['config:safety'])
+
+function withoutOwnSubpages<Link extends OverlayNavLink>(group: Link): Link {
   const children = group.children?.filter(child => !child.id.startsWith(`${group.id}:`))
 
   return { ...group, children: children?.length ? children : undefined }
+}
+
+function withWholePages(group: OverlayNavGroup): OverlayNavGroup {
+  return {
+    ...group,
+    children: group.children?.map(child => (REDESIGN_WHOLE_PAGES.has(child.id) ? withoutOwnSubpages(child) : child))
+  }
 }
 
 export function settingsNavigationPresentation(
@@ -175,7 +186,7 @@ export function settingsNavigationPresentation(
       ? { ...group, children: undefined }
       : REDESIGN_SINGLE_PAGES.has(group.id)
         ? withoutOwnSubpages(group)
-        : group
+        : withWholePages(group)
   )
 
   const headerGroup = redesigned.find(group => group.id === activeGroup?.id) ?? activeGroup
@@ -183,6 +194,6 @@ export function settingsNavigationPresentation(
   return {
     groups: redesigned,
     headerGroup,
-    headerChild: overviewLanding ? undefined : activeChild
+    headerChild: overviewLanding || REDESIGN_WHOLE_PAGES.has(view) ? undefined : activeChild
   }
 }

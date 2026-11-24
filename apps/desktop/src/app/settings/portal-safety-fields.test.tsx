@@ -2,9 +2,16 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import type * as GatewayStore from '@/store/gateway'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { PortalSafetyFields, PortalSafetySettings } from './portal-safety-fields'
+
+// The usage-stats switch asks the agent's backend for its answer; none is running here.
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<typeof GatewayStore>()),
+  requestGatewayForAgent: vi.fn(async () => ({ enabled: false, send: false, decided: true }))
+}))
 
 // The redesign is the only shell that renders these fields.
 beforeEach(() => $shellChoice.set(true))
@@ -63,4 +70,24 @@ it('keeps advanced deep links visible and preserves profile scope when opening p
   fireEvent.click(screen.getByRole('button', { name: /Manage: Passwords/i }))
   const query = new URLSearchParams(screen.getByLabelText('Location').textContent!)
   expect(Object.fromEntries(query)).toEqual({ tab: 'vault', profile: 'research' })
+})
+
+it('carries the usage-stats switch on the one Safety page only where its host asks for it', async () => {
+  const props = { config: {}, fields: [], onChange: vi.fn() }
+
+  const global = render(
+    <MemoryRouter initialEntries={['/?tab=config:safety&page=approvals']}>
+      <PortalSafetySettings {...props} subpage="approvals" usageStats />
+    </MemoryRouter>
+  )
+
+  expect(await screen.findByRole('switch', { name: /Share usage stats with Nous/ })).toBeTruthy()
+  global.unmount()
+
+  render(
+    <MemoryRouter>
+      <PortalSafetySettings {...props} />
+    </MemoryRouter>
+  )
+  expect(screen.queryByRole('switch', { name: /Share usage stats with Nous/ })).toBeNull()
 })

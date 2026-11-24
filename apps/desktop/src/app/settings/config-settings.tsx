@@ -140,7 +140,10 @@ function useConfigSectionVisibility({
     showDesktopSettings: !hasOwner && activeSectionId === 'advanced' && includesSubpage('desktop'),
     showAttachments: !hasOwner && activeSectionId === 'chat' && includesSubpage('attachments'),
     portalSafety,
-    showSharedMetrics: !hasOwner && activeSectionId === 'safety' && subpage === 'privacy'
+    // Classic's Privacy subpage carries the usage-stats switch; the redesign draws Safety as one page
+    // for every subpage of global Settings, so the switch shows on each. An agent's page has none.
+    showSharedMetrics:
+      !hasOwner && activeSectionId === 'safety' && (portalSafety ? subpage !== undefined : subpage === 'privacy')
   }
 }
 
@@ -600,6 +603,7 @@ function ConfigSettingsInner({
         fields={sectionFields.get('safety')}
         onChange={updateConfig}
         subpage={subpage}
+        usageStats={showSharedMetrics}
       />
     )
   }

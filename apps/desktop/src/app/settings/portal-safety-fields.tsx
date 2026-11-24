@@ -131,12 +131,15 @@ export function PortalSafetySettings({
   config,
   fields = [],
   onChange,
-  subpage
+  subpage,
+  usageStats = false
 }: {
   config: HermesConfigRecord
   fields?: [string, ConfigFieldSchema][]
   onChange: (config: HermesConfigRecord) => void
   subpage?: string
+  /** Global Settings' usage-stats switch: this one page carries it for every subpage. */
+  usageStats?: boolean
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const targetField = searchParams.get('field')
@@ -162,7 +165,7 @@ export function PortalSafetySettings({
           })
         }
       />
-      {subpage === 'privacy' && <SharedMetricsSettings />}
+      {usageStats && <SharedMetricsSettings />}
     </>
   )
 }

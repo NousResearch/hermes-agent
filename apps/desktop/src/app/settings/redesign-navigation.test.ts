@@ -157,3 +157,23 @@ it('draws one-page destinations without their own subpage rows but keeps related
   const classic = settingsNavigationPresentation([gateway, webAccess, about], false, 'gateway', 'connection')
   expect(classic.groups.find(item => item.id === 'about')?.children).toHaveLength(2)
 })
+
+it('draws Safety as one page under Advanced, whichever subpage a link names', () => {
+  const approvals = group('config:safety:approvals')
+  const checkpoints = group('config:safety:checkpoints', undefined, true)
+  const safety = group('config:safety', [approvals, checkpoints], true)
+  const source = [safety, group('vault'), group('config:advanced')]
+
+  const redesigned = settingsNavigationPresentation(source, true, 'config:safety', 'checkpoints')
+  const advanced = redesigned.groups.find(item => item.id === 'config:advanced')
+  const row = advanced?.children?.find(item => item.id === 'config:safety')
+  expect(row?.active).toBe(true)
+  expect(row?.children).toBeUndefined()
+  expect(advanced?.children?.map(item => item.id)).toEqual(['config:safety', 'vault'])
+  expect(redesigned.headerGroup).toBe(safety)
+  expect(redesigned.headerChild).toBeUndefined()
+
+  const classic = settingsNavigationPresentation(source, false, 'config:safety', 'checkpoints')
+  expect(classic.groups[0].children).toEqual([approvals, checkpoints])
+  expect(classic.headerChild).toBe(checkpoints)
+})

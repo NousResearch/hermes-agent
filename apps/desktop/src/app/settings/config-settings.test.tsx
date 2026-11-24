@@ -117,6 +117,9 @@ function renderConfigSettings(activeSectionId = 'safety', onConfigSaved?: () => 
   return { importInputRef }
 }
 
+// The redesign's one Safety page also carries the usage-stats switch, so the checkpoints row is named.
+const CHECKPOINTS = { name: 'File Checkpoints' }
+
 describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simplified => {
   beforeEach(() => $shellChoice.set(simplified))
 
@@ -130,7 +133,7 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
     // Classic keeps main's "Refresh skills" label on this button; the redesign names the action.
     fireEvent.click(await screen.findByRole('button', { name: simplified ? 'Retry' : 'Refresh skills' }))
 
-    expect((await screen.findByRole('switch')).getAttribute('aria-checked')).toBe('false')
+    expect((await screen.findByRole('switch', CHECKPOINTS)).getAttribute('aria-checked')).toBe('false')
     expect(failedRequest).toHaveBeenCalledTimes(2)
     expect(getHermesConfigRecord.mock.calls.every(([profile]) => profile === 'research')).toBe(true)
     expect(saveHermesConfig).not.toHaveBeenCalled()
@@ -145,7 +148,7 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
 
     try {
       renderConfigSettings()
-      const toggle = await screen.findByRole('switch')
+      const toggle = await screen.findByRole('switch', CHECKPOINTS)
       fireEvent.click(toggle)
       await vi.advanceTimersByTimeAsync(700)
       await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith(failure, expect.any(String)))
@@ -174,7 +177,7 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
 
     try {
       renderConfigSettings('safety', saved)
-      const toggle = await screen.findByRole('switch')
+      const toggle = await screen.findByRole('switch', CHECKPOINTS)
       fireEvent.click(toggle)
       await vi.advanceTimersByTimeAsync(700)
       expect(saveHermesConfig).toHaveBeenCalledTimes(1)
@@ -201,7 +204,7 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
     try {
       renderConfigSettings()
 
-      const toggle = await screen.findByRole('switch')
+      const toggle = await screen.findByRole('switch', CHECKPOINTS)
 
       // Edit: flip checkpoints.enabled on, let the debounced autosave fire.
       toggle.click()
@@ -240,7 +243,7 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
 
       await vi.waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalledWith('nash'))
 
-      ;(await screen.findByRole('switch')).click()
+      ;(await screen.findByRole('switch', CHECKPOINTS)).click()
       await vi.advanceTimersByTimeAsync(700)
 
       await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, 'nash'))

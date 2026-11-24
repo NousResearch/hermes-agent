@@ -15,10 +15,13 @@ import {
   installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
   isDebouncedReassertEvent,
+  LEGACY_DEFAULT_ZOOM_LEVEL,
+  normalizePersistedZoom,
   percentToZoomLevel,
   ZOOM_REASSERT_MAX_SETTLE_CHECKS,
   ZOOM_REASSERT_SETTLE_DELAY_MS,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
+  ZOOM_STATE_VERSION,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomReassertWindowEvents,
@@ -59,6 +62,42 @@ test('preset percentages roundtrip within rounding', () => {
   for (const percent of [90, 100, 110, 125, 150, 175]) {
     assert.equal(zoomLevelToPercent(percentToZoomLevel(percent)), percent)
   }
+})
+
+test('legacy 90% default is migrated once, but explicit 90% is preserved', () => {
+  assert.equal(LEGACY_DEFAULT_ZOOM_LEVEL, Math.log(0.9) / Math.log(1.2))
+  assert.equal(zoomLevelToPercent(LEGACY_DEFAULT_ZOOM_LEVEL), 90)
+
+  // The exact value written by the 90%-default builds, with no version marker.
+  assert.deepEqual(normalizePersistedZoom({ zoomLevel: LEGACY_DEFAULT_ZOOM_LEVEL }), {
+    level: DEFAULT_ZOOM_LEVEL,
+    migrated: true
+  })
+
+  // Pre-JSON installs held the same value as a string in localStorage.
+  assert.deepEqual(normalizePersistedZoom({ zoomLevel: String(LEGACY_DEFAULT_ZOOM_LEVEL) }), {
+    level: DEFAULT_ZOOM_LEVEL,
+    migrated: true
+  })
+
+  // After migration the state is versioned: a user-chosen 90% sticks.
+  assert.deepEqual(
+    normalizePersistedZoom({
+      zoomLevel: LEGACY_DEFAULT_ZOOM_LEVEL,
+      zoomStateVersion: ZOOM_STATE_VERSION
+    }),
+    { level: LEGACY_DEFAULT_ZOOM_LEVEL, migrated: false }
+  )
+})
+
+test('normalizePersistedZoom leaves other levels and invalid state alone', () => {
+  const chosen = percentToZoomLevel(125)
+
+  assert.deepEqual(normalizePersistedZoom({ zoomLevel: chosen }), { level: chosen, migrated: false })
+  assert.deepEqual(normalizePersistedZoom({ zoomLevel: String(chosen) }), { level: chosen, migrated: false })
+  assert.equal(normalizePersistedZoom(null), null)
+  assert.equal(normalizePersistedZoom({}), null)
+  assert.equal(normalizePersistedZoom({ zoomLevel: 'garbage' }), null)
 })
 
 test('conversion is monotonic across the preset range', () => {

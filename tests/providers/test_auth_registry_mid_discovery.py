@@ -112,8 +112,12 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
     assert probe.returncode == 0, probe.stdout + probe.stderr
 
 
-def test_overlapping_profile_scans_both_publish_to_the_picker(tmp_path):
+@pytest.mark.parametrize("reverse_homes", [False, True], ids=["a-enters-first", "b-enters-first"])
+@pytest.mark.parametrize("nested", [False, True], ids=["first-exits-first", "second-exits-first"])
+def test_overlapping_profile_scans_both_publish_to_the_picker(tmp_path, reverse_homes, nested):
     names = ("parallel-probe-a", "parallel-probe-b")
+    if reverse_homes:
+        names = names[::-1]
     for name in names:
         _write_plugin(
             tmp_path / name, name,
@@ -148,21 +152,23 @@ def test_overlapping_profile_scans_both_publish_to_the_picker(tmp_path):
             finally:
                 reset_hermes_home_override(token)
 
+        discover("empty-home")
         with ThreadPoolExecutor(max_workers=2) as pool:
-            a = pool.submit(discover, first)
+            futures = {{first: pool.submit(discover, first)}}
             try:
                 assert entered[first].wait(10)
-                b = pool.submit(discover, second)
+                futures[second] = pool.submit(discover, second)
                 assert entered[second].wait(10)
-                release[first].set()
-                assert first in a.result(timeout=10)
+                for name in ((second, first) if {nested!r} else (first, second)):
+                    release[name].set()
+                    assert name in futures[name].result(timeout=10)
             finally:
                 release[first].set()
                 release[second].set()
-            assert second in b.result(timeout=10)
 
         slugs = {{entry.slug for entry in CANONICAL_PROVIDERS}}
-        assert {{first, second}} <= slugs, {{first, second}} - slugs
+        missing = {{first, second}} - slugs
+        assert not missing and not providers._discovering, (missing, providers._discovering)
     """))
     assert probe.returncode == 0, probe.stdout + probe.stderr
 

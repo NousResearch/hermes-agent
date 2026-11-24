@@ -83,7 +83,7 @@ def _retire_donor_segment(store, donor, seg_id: str) -> bool:
             )
             return False
         # The first end reason wins; reopen so the adoption boundary is stamped even on an ended segment.
-        donor.sessions.reopen(seg_id)
+        donor.sessions.reopen(seg_id, drop_compression_boundary=True)
         donor.sessions.end(seg_id, END_REASON_ADOPTED)
         # The session lives on in the adopting profile: not a delete for plugins.
         donor.sessions.set_archived(seg_id, True, notify=False)

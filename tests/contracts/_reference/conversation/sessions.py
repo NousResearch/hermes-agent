@@ -508,7 +508,7 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
         row["end_reason"] = reason
         advance_conversation_generation(self._backend, scope, str(session_id), reason)
 
-    def reopen(self, session_id: SessionId) -> None:
+    def reopen(self, session_id: SessionId, *, drop_compression_boundary: bool = False) -> None:
         from .transcript_store import RESET_END_REASONS
 
         scope = self._backend.scope
@@ -522,8 +522,9 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
                 if _legacy_reset_child(row, child):
                     child["model_config"]["_reset_from"] = row["session_id"]
                     sync_lineage_markers(child)
-        row["ended_at"] = None
-        row["end_reason"] = None
+        if drop_compression_boundary or row["end_reason"] != END_REASON_COMPRESSION or not self._has_continuation_child(table, str(session_id)):
+            row["ended_at"] = None
+            row["end_reason"] = None
         self._unarchive_auto_archived_lineage(table, str(session_id))
 
     def retire_undrained_queue_rows(self, session_id: SessionId) -> int:

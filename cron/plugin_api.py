@@ -55,8 +55,8 @@ def ensure_named_job(
 
     Every job counts, disabled ones included. Two or more with that name raise
     ``AmbiguousJobReference`` and create nothing. An existing enabled job has its trigger registered
-    with the active scheduler provider again and is returned as stored: its prompt and schedule are
-    not updated. A new job is created and registered the way ``hermes cron add`` does it; errors from
+    with the active scheduler provider again and is returned as stored, in the shape a new job has:
+    its prompt and schedule are not updated. A new job is created and registered the way ``hermes cron add`` does it; errors from
     either step propagate unchanged.
 
     ``name`` must be a non-empty ``str`` with no leading or trailing whitespace, since cron could
@@ -69,7 +69,7 @@ def ensure_named_job(
     cannot act for a profile, binding one is refused. The lookup and the create are not atomic
     across processes: a caller that can race with itself serializes its own calls.
     """
-    from cron.jobs import list_jobs
+    from cron.jobs import _normalize_job_record, load_jobs
     from cron.scheduler import create_job_with_scheduler_registration
     from cron.scheduler_provider import resolve_cron_scheduler
 
@@ -80,7 +80,7 @@ def ensure_named_job(
     if home is not None and not home.is_dir():
         raise FileNotFoundError(f"Hermes home does not exist: {home}")
     with _home_scope(home):
-        matches = [job for job in list_jobs(include_disabled=True) if job.get("name") == name]
+        matches = [job for job in map(_normalize_job_record, load_jobs()) if job.get("name") == name]
         if len(matches) > 1:
             raise AmbiguousJobReference(name, matches)
         if matches:
@@ -98,8 +98,11 @@ def delivery_platforms(
 ) -> _Optional[tuple[str, ...]]:
     """The platforms cron would deliver a job's output to right now, lower-cased, in order.
 
-    ``job_id=None`` answers for the cron run executing in this context, and returns ``None`` outside
-    one. ``None`` also when no stored job has that id. ``()`` for a job that delivers nowhere. The
+    ``job_id=None`` answers for the cron run bound in this process's calling context, and returns
+    ``None`` outside one: a hook in a plugin host has no such binding, so it passes
+    ``ctx.current_cron_execution().job_id``. ``None`` also when no stored job has that id. ``()`` for
+    a job that delivers nowhere. The answer is the stored job's: an edit saved while a run is in
+    flight shows here, though that run delivers with the settings it started with. The
     targets come from cron's own resolver, so ``all``, the ``origin`` fallback, home channels and
     Bot Chat tokens follow cron's rules. Only platform names are returned, never chat or thread ids.
     ``home`` runs the call against that profile's home, cron store and secrets; ``None`` when it

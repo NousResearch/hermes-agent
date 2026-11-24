@@ -108,6 +108,19 @@ def test_existing_disabled_job_is_returned_without_registering(registered):
     assert registered == []
 
 
+def test_an_existing_job_comes_back_in_a_new_jobs_shape_without_reading_run_history(monkeypatch, registered):
+    ledger_reads: list[str] = []
+    monkeypatch.setattr("cron.executions.latest_executions", lambda ids: ledger_reads.append("latest") or {})
+    monkeypatch.setattr("cron.executions.live_executions", lambda ids: ledger_reads.append("live") or {})
+
+    created = ensure_named_job("follow-up", prompt="check in", schedule="every 1h")
+    found = ensure_named_job("follow-up", prompt="check in", schedule="every 1h")
+
+    assert found["id"] == created["id"]
+    assert set(found) == set(created)
+    assert ledger_reads == []
+
+
 def test_two_jobs_with_the_name_raise_and_create_nothing(registered):
     jobs.create_job(prompt="a", schedule="every 1h", name="follow-up")
     jobs.create_job(prompt="b", schedule="every 1h", name="follow-up", paused=True)
@@ -278,6 +291,38 @@ def test_no_job_id_inside_a_cron_run_answers_for_that_run(home_channels):
     finally:
         exit_cron_execution(token)
     assert delivery_platforms() is None
+
+
+HOSTED_HOOK_PLUGIN = '''
+from cron.plugin_api import delivery_platforms
+
+
+def register(ctx):
+    def hook(**kwargs):
+        run = ctx.current_cron_execution()
+        return {"no_id": delivery_platforms(), "by_id": delivery_platforms(run.job_id)}
+    ctx.register_hook("post_llm_call", hook)
+'''
+
+
+@pytest.mark.platforms("any")  # the host is a child process
+def test_a_hook_in_a_plugin_host_names_the_running_job_through_ctx(tmp_path, monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    from tests.hermes_cli.test_plugin_host import _home_with_plugins
+
+    _home_with_plugins(tmp_path / "plugins", monkeypatch, {"hostedcron": HOSTED_HOOK_PLUGIN}, isolation="host")
+    job = jobs.create_job(prompt="p", schedule="every 1h", name="run", deliver="local", paused=True)
+    manager = PluginManager()
+    manager.discover_and_load()
+    token = enter_cron_execution(job, "exec-1", {"source": "direct"})
+    try:
+        assert manager._plugins["hostedcron"].error is None
+        # The host process has no run bound; the ctx call is answered by this process, which has.
+        assert manager.invoke_hook("post_llm_call", session_id="s") == [{"no_id": None, "by_id": []}]
+    finally:
+        exit_cron_execution(token)
+        manager.unload()
+        manager._plugin_host().shutdown()
 
 
 def test_one_platform_is_lower_cased_and_local_delivers_nowhere(home_channels):

@@ -345,40 +345,87 @@ class SettingsModal(discord.ui.Modal):
                                                 view=_build_view(self.panel))
 
 
-class ModelModal(discord.ui.Modal):
-    model = discord.ui.TextInput(label="Worker model (exact spec)",
-                                 placeholder="hermes:openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
-                                 max_length=200)
+# Provider-curated worker models (user spec 2026-11-24: ONLY Nvidia Free,
+# OpenCode Free and Nous — pick from a dropdown, never type a spec).
+MODEL_CHOICES: list[tuple[str, str, str]] = [
+    # (label, full spec, provider group shown in description)
+    ("Nemotron 3 Ultra 550B (free)", "hermes:openrouter:nvidia/nemotron-3-ultra-550b-a55b:free", "Nvidia Free"),
+    ("Beam Reflection 501B (free)", "hermes:nous:reflection/beam-1.0-501b-a23b:free", "Nous"),
+    ("Code Supernova", "hermes:opencode-zen:code-supernova", "OpenCode Free"),
+    ("Grok Code", "hermes:opencode-zen:grok-code", "OpenCode Free"),
+    ("Kimi K3 (OpenCode Free)", "hermes:opencode-zen:kimi-k3", "OpenCode Free"),
+    ("GLM 5.3 Flash", "hermes:z-ai:glm-5.3-flash", "Nvidia Free"),
+    ("DeepSeek V4 Pro", "hermes:openrouter:deepseek/deepseek-v4-pro", "Nvidia Free"),
+    ("Inkling (Thinking Machines, free)", "hermes:openrouter:thinkingmachines/inkling:free", "Nvidia Free"),
+]
 
+
+def _model_select(label_text: str, current: str) -> discord.ui.Label:
+    opts = [discord.SelectOption(label=label[:100], value=spec,
+                                 description=f"{group} · {spec.split(':')[-1]}"[:100])
+            for label, spec, group in MODEL_CHOICES]
+    sel = discord.ui.Select(placeholder=label_text, min_values=1, max_values=1, options=opts)
+    for o in sel.options:
+        if o.value == current:
+            o.default = True
+    return discord.ui.Label(text=label_text, component=sel)
+
+
+def _make_fallback_select(current: str) -> discord.ui.Select:
+    NONE_OPT = discord.SelectOption(label="— none —", value="__none__")
+    sel = discord.ui.Select(placeholder="Pick a fallback model",
+                            min_values=1, max_values=1,
+                            options=[NONE_OPT]
+                            + [discord.SelectOption(label=label[:100], value=spec,
+                                                    description=group[:100])
+                               for label, spec, group in MODEL_CHOICES])
+    if current:
+        for o in sel.options:
+            if o.value == current:
+                o.default = True
+    return sel
+
+
+class ModelModal(discord.ui.Modal):
     def __init__(self, panel: SeshPanel) -> None:
-        super().__init__(title="🤖 worker model")
+        super().__init__(title="🤖 default model (/sesh)")
         self.panel = panel
-        self.model.default = _load_settings().get("worker_default", "")
+        current = _load_settings().get("worker_default", "")
+        self.model_label = _model_select("Default model (Nvidia Free / OpenCode Free / Nous)", current)
+        self.add_item(self.model_label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        val = self.model.value.strip()
         s = _load_settings()
-        if val:
-            s["worker_default"] = val
+        s["worker_default"] = self.model_label.component.values[0]
         _save_settings(s)
         await interaction.response.edit_message(embed=self.panel.build_embed(),
                                                 view=_build_view(self.panel))
 
 
 class FallbacksModal(discord.ui.Modal):
-    fallbacks = discord.ui.TextInput(label="Fallback models (comma separated)",
-                                     placeholder="hermes:nous:reflection/beam-1.0-501b-a23b:free, ...",
-                                     max_length=600, style=discord.TextStyle.paragraph)
+    """Exactly 3 fallback slots, picked from dropdowns (sesh ignores Hermes'
+    own default fallbacks — these are the only ones the runner uses)."""
 
     def __init__(self, panel: SeshPanel) -> None:
-        super().__init__(title="🔁 fallback models")
+        super().__init__(title="🔁 fallback models (max 3)")
         self.panel = panel
-        self.fallbacks.default = ", ".join(_load_settings().get("worker_fallbacks") or [])
+        current = list(_load_settings().get("worker_fallbacks") or [])[:3]
+        self.slots: list[discord.ui.Label] = []
+        for i in range(3):
+            cur = current[i] if i < len(current) else ""
+            label = discord.ui.Label(text=f"Fallback {i + 1}",
+                                     component=_make_fallback_select(cur))
+            self.slots.append(label)
+            self.add_item(label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        items = [x.strip() for x in self.fallbacks.value.replace(";", ",").split(",") if x.strip()]
+        picked: list[str] = []
+        for slot in self.slots:
+            val = slot.component.values[0]
+            if val != "__none__":
+                picked.append(val)
         s = _load_settings()
-        s["worker_fallbacks"] = items
+        s["worker_fallbacks"] = picked[:3]
         _save_settings(s)
         await interaction.response.edit_message(embed=self.panel.build_embed(),
                                                 view=_build_view(self.panel))

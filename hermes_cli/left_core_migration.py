@@ -213,6 +213,33 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
     return _YUANBAO_NOTICE
 
 
+# Feishu: core ran the adapter on FEISHU_APP_ID + FEISHU_APP_SECRET in env (its EnvCred row), or on a
+# ``platforms.feishu`` block whose extra carried ``app_id`` (its ``is_connected``). The feishu_doc /
+# feishu_drive tools are use wherever they were selected outside Feishu's own row.
+# The non-secret FEISHU_* names core's blocklist held (its manifest's optional_env + the enable pair).
+FEISHU_PRIVATE_ENV = ("FEISHU_APP_ID", "FEISHU_DOMAIN", "FEISHU_ALLOWED_USERS", "FEISHU_ALLOW_ALL_USERS",
+                      "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME")
+
+feishu_in_use = platform_in_use(
+    "feishu", plugin_keys=("platforms/feishu", "feishu-platform"),
+    cred_sets=((("", "FEISHU_APP_ID"), ("", "FEISHU_APP_SECRET")), (("app_id",),)),
+    toolsets=("feishu_doc", "feishu_drive", "hermes-feishu"))
+
+# Core put the feishu_* tools in ``hermes-feishu`` only (and ``hermes-gateway``, which included it).
+_FEISHU_OFF_PLATFORMS = _core_platforms_except("feishu", "homeassistant", "yuanbao")
+
+_FEISHU_NOTICE = ("Feishu / Lark is now a Hermes Labs plugin: built by Nous Research, not supported. "
+                  "Fixes from the community are welcome.")
+
+
+def _feishu_notice(home: Path, *, process_env: bool = False) -> str:
+    # Core's adapter ignored a bare ``feishu`` in plugins.disabled; the catalog plugin does not (see _yuanbao_notice).
+    if plugin_present("feishu", home) and _plugins_listed(home, ("feishu",))[1]:
+        return (f"{_FEISHU_NOTICE} plugins.disabled lists 'feishu', which now turns Feishu off; "
+                "remove it to keep using Feishu.")
+    return _FEISHU_NOTICE
+
+
 def _auth_store(home: Path) -> dict:
     """*home*'s ``auth.json``; ``{}`` when missing, unreadable or invalid (no login we can see)."""
     from utils import read_json_or_empty
@@ -713,6 +740,18 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
+    ),
+    LeftCoreFeature(
+        # FEISHU_ENCRYPT_KEY / FEISHU_VERIFICATION_TOKEN stay on local_env_policy's own short list, as core had them.
+        plugin="feishu", label="Feishu / Lark", in_use=feishu_in_use, plugin_key="platforms/feishu",
+        plugin_names=("feishu-platform",),
+        unchanged=("FEISHU_* settings, platforms.feishu, FEISHU_HOME_CHANNEL and the feishu_doc_read / "
+                   "feishu_drive_* tool names are unchanged"),
+        secret_env=("FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN"),
+        private_env=FEISHU_PRIVATE_ENV,
+        toolsets=("feishu_doc", "feishu_drive"), off_platforms=_FEISHU_OFF_PLATFORMS,
+        legacy_toolsets=("hermes-feishu", "hermes-gateway"),
+        platform="feishu", enable_env=("FEISHU_APP_ID", "FEISHU_APP_SECRET"), notice=_feishu_notice,
     ),
 )
 

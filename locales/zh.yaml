@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "只有已授权的 Matrix 用户才能使用这些控件。"
       not_requester: "只有发起此操作的用户才能使用这些控件。"
-  feishu:
-    clarify:
-      title: "Hermes 需要你的输入"
-      other: "✏️ 其他（输入回答）"
-      awaiting_typed: "等待 {user} 输入回答…"
-    picker:
-      apply_error: "应用所选项时出错：{error}"
-    approval:
-      action_session: "本会话"
-      action_always: "始终"
-      resolved_once: "已批准一次"
-      resolved_session: "已批准本会话"
-      resolved_always: "已永久批准"
-      resolved_deny: "已拒绝"
-      resolved_fallback: "已处理"
-      resolved_by_user: "{icon} **{label}**（由 {user}）"
-    update_prompt:
-      title: "☤ 更新需要你的输入"
-      default_hint: "\n\n默认值：`{default}`"
-      answer_yes: "✓ 是"
-      answer_no: "✗ 否"
-      word_yes: "是"
-      word_no: "否"
-      answered_title: "{icon} 更新提示已回答：{answer}"
-      answered_by: "由 **{user}** 回答"
-    media:
-      gif_downgraded: "[GIF 已降级为文件]"
-      gif_downgraded_caption: "[GIF 已降级为文件]\n{caption}"
   google_chat:
     clarify:
       other_button: "其他 / 输入答案"

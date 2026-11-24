@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.helpers import reply_file_off
+from gateway.platform_registry import registered_trait
 from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_span
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -547,7 +548,8 @@ class StreamFallbackMixin:
             # thread_id metadata and reply_to on every commentary is spam.
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
-            _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
+            _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost") or bool(
+                registered_trait(_platform_name, "thread_reply_anchor", False))
             with reply_file_off(False):  # a complete message: past the cap it goes out as one file (#152012)
                 result = await self.adapter.send(
                     chat_id=self.chat_id, content=text,

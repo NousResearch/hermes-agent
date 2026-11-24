@@ -16,7 +16,6 @@ GATEWAY_DIR = REPO_ROOT / current_path("gateway")
 UPDATE_RESPONSE_FILES = (
     REPO_ROOT / current_path("plugins/platforms/discord/adapter.py"),
     REPO_ROOT / current_path("plugins/platforms/telegram/adapter.py"),
-    REPO_ROOT / current_path("plugins/platforms/feishu/adapter.py"),
     REPO_ROOT / current_path("plugins/platforms/whatsapp/adapter.py"),
     REPO_ROOT / current_path("plugins/platforms/google_chat/adapter.py"),
     REPO_ROOT / current_path("plugins/platforms/google_chat/oauth.py"),

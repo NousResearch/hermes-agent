@@ -41,7 +41,7 @@ _NON_PUSH_ORIGIN_PLATFORMS = frozenset({"api_server"})
 # entries in name order, so this is the order they had when they trailed a static table).
 _HOME_TARGET_PRIORITY = (
     "matrix", "telegram", "discord", "slack", "signal", "mattermost", "sms", "email", "dingtalk",
-    "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "whatsapp", "whatsapp_cloud",
+    "wecom", "weixin", "bluebubbles", "qqbot", "whatsapp", "whatsapp_cloud",
 )
 
 # Back-compat: primary env var -> previous name, consulted when the primary is unset.

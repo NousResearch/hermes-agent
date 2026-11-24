@@ -8,7 +8,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
-**当前注册表快速统计：** 约 63 个工具 —— 4 个浏览器工具（`browser_exec`、`browser_cdp`、`browser_dialog`、`browser_vault`）、4 个文件工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`todo`、`computer_use`、`process`）。
+**当前注册表快速统计：** 约 63 个工具 —— 4 个浏览器工具（`browser_exec`、`browser_cdp`、`browser_dialog`、`browser_vault`）、4 个文件工具、2 个终端工具、2 个 Web 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`todo`、`computer_use`、`process`）。
 
 :::tip MCP 工具
 除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](../user-guide/features/mcp.md)。
@@ -48,25 +48,6 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
 | `delegate_task` | 生成一个或多个子 agent，在隔离上下文中处理任务。每个子 agent 拥有独立的对话、终端会话和工具集。仅返回最终摘要——中间工具结果不会进入你的上下文窗口。两种… | — |
-
-## `feishu_doc` 工具集
-
-仅限飞书文档评论智能回复处理器（`gateway/platforms/feishu_comment.py`）使用。不在 `hermes-cli` 或常规飞书聊天适配器中暴露。
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `feishu_doc_read` | 根据 `file_type` 和 token 读取飞书/Lark 文档（Docx、Doc 或 Sheet）的完整文本内容。 | 飞书应用凭据 |
-
-## `feishu_drive` 工具集
-
-仅限飞书文档评论处理器使用。驱动云盘文件的评论读写操作。
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `feishu_drive_add_comment` | 在飞书/Lark 文档或文件上添加顶级评论。 | 飞书应用凭据 |
-| `feishu_drive_list_comments` | 列出飞书/Lark 文件的全文档评论，最新的排在最前。 | 飞书应用凭据 |
-| `feishu_drive_list_comment_replies` | 列出特定飞书评论线程（全文档或局部选区）的回复。 | 飞书应用凭据 |
-| `feishu_drive_reply_comment` | 在飞书评论线程上发布回复，支持可选的 `@` 提及。 | 飞书应用凭据 |
 
 ## `file` 工具集
 

@@ -180,9 +180,8 @@ def _reply_anchor_for_event(event) -> str | None:
         if getattr(source, "chat_type", None) != "dm":
             return None
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
-    return getattr(event, "message_id", None)
+    anchored = thread_id and getattr(event, "reply_to_message_id", None) and _registered_trait(platform, "thread_reply_anchor", False)
+    return getattr(event, "reply_to_message_id" if anchored else "message_id", None)
 
 
 _MEDIA_KIND_KEYS = frozenset({"audio", "video", "file", "image"})
@@ -220,8 +219,8 @@ def build_auto_tts_output_path(platform) -> str:
     (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every provider, including MP3-only
     backends like Edge TTS. Everything else keeps the MP3 default. See #36685, #57049.
     """
-    from tools.tts_tool import OPUS_VOICE_PLATFORMS
-    ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
+    from tools.tts_tool import wants_opus_voice
+    ext = "ogg" if wants_opus_voice(_platform_name(platform)) else "mp3"
     audio_path = os.path.join(
         tempfile.gettempdir(), "hermes_voice", f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)
@@ -436,6 +435,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
+from gateway.platform_registry import registered_trait as _registered_trait
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (

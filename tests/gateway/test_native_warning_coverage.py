@@ -26,7 +26,7 @@ def policy(request, tmp_path, monkeypatch):
         if setting == "override":
             display["platforms"] = {
                 name: {"suppress_warning_notifications": True}
-                for name in ("matrix", "google_chat", "discord", "wecom", "buzz", "mattermost", "feishu", "telegram")
+                for name in ("matrix", "google_chat", "discord", "wecom", "buzz", "mattermost", "telegram")
             }
         (tmp_path / "config.yaml").write_text(json.dumps({"display": display}))
     return setting is True or setting == "override"
@@ -271,32 +271,6 @@ async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog)
         expected = "⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n" + expected
     assert frames[1]["message"] == expected
     assert "falling back to flat channel" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_feishu_downgrade_keeps_attachment_and_caption(policy, tmp_path):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    adapter = FeishuAdapter(PlatformConfig())
-    frames = []
-    path = tmp_path / "animation.gif"
-    path.write_bytes(b"fixture")
-    adapter._download_remote_document = AsyncMock(return_value=(str(path), path.name))
-
-    def upload(request):
-        return SimpleNamespace(success=lambda: True, code=0, data=SimpleNamespace(file_key="file-key"))
-
-    async def send_raw(**kwargs):
-        frames.append(kwargs)
-        return SimpleNamespace(success=lambda: True, code=0, data=SimpleNamespace(message_id="sent"))
-
-    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(file=SimpleNamespace(create=upload))))
-    adapter._send_raw_message = send_raw
-    result = await adapter.send_animation("chat", "https://example.invalid/animation.gif", caption="Warning: requested caption")
-    assert result.success
-    assert "file-key" in frames[0]["payload"]
-    assert "Warning: requested caption" in frames[0]["payload"]
-    assert ("GIF downgraded to file" in frames[0]["payload"]) is (not policy)
 
 
 @pytest.mark.asyncio

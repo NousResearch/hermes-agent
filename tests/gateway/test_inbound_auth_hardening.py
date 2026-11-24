@@ -38,19 +38,7 @@ def _wecom_accepts(timestamp: str, presented_signature=None) -> bool:
     return True
 
 
-def _feishu_accepts(timestamp: str) -> bool:
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-    env = {"FEISHU_APP_ID": "cli", "FEISHU_APP_SECRET": "sec", "FEISHU_ENCRYPT_KEY": SECRET,
-           "HERMES_HOME": os.environ["HERMES_HOME"]}
-    with patch.dict(os.environ, env, clear=True):
-        adapter = FeishuAdapter(PlatformConfig())
-    body = b'{"type":"event"}'
-    sig = hashlib.sha256(f"{timestamp}n{SECRET}".encode() + body).hexdigest()
-    headers = {"x-lark-request-timestamp": timestamp, "x-lark-request-nonce": "n", "x-lark-signature": sig}
-    return adapter._is_webhook_signature_valid(headers, body)
-
-
-@pytest.mark.parametrize("accepts", [_wecom_accepts, _feishu_accepts], ids=["wecom", "feishu"])
+@pytest.mark.parametrize("accepts", [_wecom_accepts], ids=["wecom"])
 def test_validly_signed_request_outside_replay_window_is_refused(accepts):
     now = int(time.time())
     assert accepts(str(now))

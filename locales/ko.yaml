@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "권한이 있는 Matrix 사용자만 이 컨트롤을 사용할 수 있어요."
       not_requester: "이 작업을 요청한 사용자만 이 컨트롤을 사용할 수 있어요."
-  feishu:
-    clarify:
-      title: "Hermes가 입력을 기다리고 있어요"
-      other: "✏️ 기타 (직접 입력)"
-      awaiting_typed: "{user}의 직접 입력을 기다리고 있어요…"
-    picker:
-      apply_error: "선택 적용 오류: {error}"
-    approval:
-      action_session: "세션"
-      action_always: "항상"
-      resolved_once: "한 번 승인됨"
-      resolved_session: "세션 동안 승인됨"
-      resolved_always: "영구 승인됨"
-      resolved_deny: "거부됨"
-      resolved_fallback: "처리됨"
-      resolved_by_user: "{icon} **{label}** — {user}"
-    update_prompt:
-      title: "☤ 업데이트에 입력이 필요해요"
-      default_hint: "\n\n기본값: `{default}`"
-      answer_yes: "✓ 예"
-      answer_no: "✗ 아니요"
-      word_yes: "예"
-      word_no: "아니요"
-      answered_title: "{icon} 업데이트 질문에 답변됨: {answer}"
-      answered_by: "**{user}**님이 답변했어요"
-    media:
-      gif_downgraded: "[GIF를 파일로 전환했어요]"
-      gif_downgraded_caption: "[GIF를 파일로 전환했어요]\n{caption}"
   google_chat:
     clarify:
       other_button: "기타 / 직접 입력"

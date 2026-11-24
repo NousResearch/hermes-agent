@@ -363,25 +363,25 @@ class TestDisabledToolsetsPlatformBundle:
     must not remove core tools from other enabled toolsets."""
 
     def test_disabling_platform_bundle_preserves_core_tools(self):
-        """Disabling hermes-feishu should not strip core tools from hermes-telegram."""
+        """Disabling hermes-dingtalk should not strip core tools from hermes-telegram."""
         from model_tools import get_tool_definitions
 
         tools_telegram = get_tool_definitions(
             enabled_toolsets=["hermes-telegram"],
             quiet_mode=True,
         )
-        tools_telegram_no_feishu = get_tool_definitions(
+        tools_telegram_no_dingtalk = get_tool_definitions(
             enabled_toolsets=["hermes-telegram"],
-            disabled_toolsets=["hermes-feishu"],
+            disabled_toolsets=["hermes-dingtalk"],
             quiet_mode=True,
         )
         names_telegram = {t["function"]["name"] for t in tools_telegram}
-        names_no_feishu = {t["function"]["name"] for t in tools_telegram_no_feishu}
+        names_no_dingtalk = {t["function"]["name"] for t in tools_telegram_no_dingtalk}
 
         # Disabling a *different* platform bundle must not remove any tools
-        assert names_telegram == names_no_feishu, (
-            f"Tools lost after disabling hermes-feishu: "
-            f"{names_telegram - names_no_feishu}"
+        assert names_telegram == names_no_dingtalk, (
+            f"Tools lost after disabling hermes-dingtalk: "
+            f"{names_telegram - names_no_dingtalk}"
         )
 
     def test_disabling_platform_bundle_removes_own_tools(self):

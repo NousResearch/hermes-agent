@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "Solo un utente Matrix autorizzato può usare questi controlli."
       not_requester: "Solo l'utente che ha richiesto questa azione può usare questi controlli."
-  feishu:
-    clarify:
-      title: "Hermes ha bisogno del tuo contributo"
-      other: "✏️ Altro (digita)"
-      awaiting_typed: "In attesa della risposta digitata da {user}…"
-    picker:
-      apply_error: "Errore nell'applicare la selezione: {error}"
-    approval:
-      action_session: "Sessione"
-      action_always: "Sempre"
-      resolved_once: "Approvato una volta"
-      resolved_session: "Approvato per la sessione"
-      resolved_always: "Approvato in modo permanente"
-      resolved_deny: "Negato"
-      resolved_fallback: "Risolto"
-      resolved_by_user: "{icon} **{label}** da {user}"
-    update_prompt:
-      title: "☤ L'aggiornamento richiede il tuo input"
-      default_hint: "\n\nPredefinito: `{default}`"
-      answer_yes: "✓ Sì"
-      answer_no: "✗ No"
-      word_yes: "Sì"
-      word_no: "No"
-      answered_title: "{icon} Risposta alla richiesta di aggiornamento: {answer}"
-      answered_by: "Risposta di **{user}**"
-    media:
-      gif_downgraded: "[GIF convertita in file]"
-      gif_downgraded_caption: "[GIF convertita in file]\n{caption}"
   google_chat:
     clarify:
       other_button: "Altro / digita la risposta"

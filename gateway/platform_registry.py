@@ -183,6 +183,24 @@ class PlatformEntry:
     # ``hermes_cli.profile_channels`` as the platform's credential set; () = none declared.
     env_enable_credentials: tuple = ()
 
+    # --- transport traits core keyed by platform name before the adapter left core ---
+    # ``extra -> bool``: the adapter binds a host TCP port for this config (a webhook mode); None = never.
+    binds_port_fn: Optional[Callable[[dict], bool]] = None
+    # ``(config port key, default port)`` the dashboard topology readout shows when it binds; () = none.
+    listen_port: tuple = ()
+    # Thread replies and interim/status sends anchor on the triggering message id (reply-in-thread APIs).
+    thread_reply_anchor: bool = False
+    # Native voice bubbles need Ogg/Opus: auto-TTS writes ``.ogg`` and send_voice gets Opus.
+    opus_voice: bool = False
+
+
+def registered_trait(platform, field_name: str, default: Any = None) -> Any:
+    """*field_name* of the registered entry for *platform* (a ``Platform`` or its value), else *default*
+    (a platform no plugin registered)."""
+    name = str(getattr(platform, "value", platform) or "").strip().lower()
+    entry = platform_registry.get(name) if name else None
+    return getattr(entry, field_name, default) if entry is not None else default
+
 
 def core_ships_platform(name: str) -> bool:
     """*name* is a platform core ships an adapter for: a static ``Platform`` member or a bundled

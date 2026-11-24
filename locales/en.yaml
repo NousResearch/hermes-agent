@@ -1469,35 +1469,6 @@ platform:
       unauthorized: "Only an authorized Matrix user can use these controls."
       not_requester: "Only the user who requested this action can use these controls."
 
-  feishu:
-    clarify:
-      title: "Hermes needs your input"
-      other: "✏️ Other (type answer)"
-      awaiting_typed: "Awaiting typed response from {user}…"
-    picker:
-      apply_error: "Error applying selection: {error}"
-    approval:
-      # Feishu keeps shorter button words than the shared card (emoji prefixes are added in code).
-      action_session: "Session"
-      action_always: "Always"
-      resolved_once: "Approved once"
-      resolved_session: "Approved for session"
-      resolved_always: "Approved permanently"
-      resolved_deny: "Denied"
-      resolved_fallback: "Resolved"
-      resolved_by_user: "{icon} **{label}** by {user}"
-    update_prompt:
-      title: "☤ Update Needs Your Input"
-      default_hint: "\n\nDefault: `{default}`"
-      answer_yes: "✓ Yes"
-      answer_no: "✗ No"
-      word_yes: "Yes"
-      word_no: "No"
-      answered_title: "{icon} Update prompt answered: {answer}"
-      answered_by: "Answered by **{user}**"
-    media:
-      gif_downgraded: "[GIF downgraded to file]"
-      gif_downgraded_caption: "[GIF downgraded to file]\n{caption}"
 
   google_chat:
     clarify:

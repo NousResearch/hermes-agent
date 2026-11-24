@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "Этими элементами управления может пользоваться только авторизованный пользователь Matrix."
       not_requester: "Этими элементами управления может пользоваться только тот, кто запросил это действие."
-  feishu:
-    clarify:
-      title: "Hermes нужен ваш ответ"
-      other: "✏️ Другое (ввести ответ)"
-      awaiting_typed: "Ожидаю текстовый ответ от {user}…"
-    picker:
-      apply_error: "Ошибка применения выбора: {error}"
-    approval:
-      action_session: "На сеанс"
-      action_always: "Всегда"
-      resolved_once: "Одобрено однократно"
-      resolved_session: "Одобрено на сеанс"
-      resolved_always: "Одобрено навсегда"
-      resolved_deny: "Отклонено"
-      resolved_fallback: "Решено"
-      resolved_by_user: "{icon} **{label}**: {user}"
-    update_prompt:
-      title: "☤ Обновлению нужен ваш ответ"
-      default_hint: "\n\nПо умолчанию: `{default}`"
-      answer_yes: "✓ Да"
-      answer_no: "✗ Нет"
-      word_yes: "Да"
-      word_no: "Нет"
-      answered_title: "{icon} Ответ на запрос обновления: {answer}"
-      answered_by: "Ответил(а) **{user}**"
-    media:
-      gif_downgraded: "[GIF отправлен как файл]"
-      gif_downgraded_caption: "[GIF отправлен как файл]\n{caption}"
   google_chat:
     clarify:
       other_button: "Другое / ввести ответ"

@@ -711,7 +711,7 @@ def toolsets_partially_stripped(config: dict, enabled_toolsets: set[str]) -> dic
 
 
 def _recover_platform_native_toolsets(enabled_toolsets: set[str], platform: str, *, skip: set[str]) -> None:
-    """Add non-configurable platform toolsets (discord, feishu_*) in place: in the default composite but not in
+    """Add non-configurable platform toolsets (discord, a plugin platform's own) in place: in the default composite but not in
     CONFIGURABLE_TOOLSETS, so never in a checklist or saved list. Runs for BOTH ``_get_platform_tools`` branches."""
     from toolsets import resolve_toolset, TOOLSETS
 

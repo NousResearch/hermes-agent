@@ -69,10 +69,20 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
 # DEFAULT_WEBHOOK_PORT. Display-only data for the topology readout, not a bind source.
 _PORT_BINDING_PLATFORM_PORTS: dict[str, tuple[str, int]] = {
     "webhook": ("port", 8644), "api_server": ("port", 8642), "msgraph_webhook": ("port", 8646),
-    "feishu": ("webhook_port", 8765), "wecom_callback": ("port", 8645), "bluebubbles": ("webhook_port", 8645),
+    "wecom_callback": ("port", 8645), "bluebubbles": ("webhook_port", 8645),
     "sms": ("webhook_port", 8080), "whatsapp_cloud": ("webhook_port", 8090), "line": ("port", 8646),
     "teams": ("port", 3978),
 }
+
+
+def _port_spec(name: str) -> tuple:
+    """``(config port key, default port)`` for a port-binding platform: core's table, else the plugin
+    entry's ``listen_port``; () when the platform binds no port."""
+    if name in _PORT_BINDING_PLATFORM_PORTS:
+        return _PORT_BINDING_PLATFORM_PORTS[name]
+    from gateway.platform_registry import registered_trait
+    return tuple(registered_trait(name, "listen_port", ()) or ())
+
 
 # Platform states that mean the adapter is NOT serving its port right now.
 _PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
@@ -88,7 +98,7 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
     platforms = (runtime or {}).get("platforms") or {}
     active = [
         name for name, state in platforms.items()
-        if name in _PORT_BINDING_PLATFORM_PORTS
+        if _port_spec(name)
         and isinstance(state, dict)
         and state.get("state") not in _PLATFORM_DEAD_STATES]
     if not active:
@@ -111,7 +121,7 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
 
     ports: dict[str, int] = {}
     for name in active:
-        port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[name]
+        port_key, default_port = _port_spec(name)
         block = blocks.get(name) or {}
         extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
         raw = block.get(port_key, (extra or {}).get(port_key, default_port))

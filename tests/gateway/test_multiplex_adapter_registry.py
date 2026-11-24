@@ -768,9 +768,7 @@ class TestSecondaryProfileConfigHandling:
 
         reviewer_cfg = GatewayConfig(multiplex_profiles=True)
         reviewer_cfg.platforms = {
-            # connection_mode=webhook: with #52563's conditional check merged,
-            # default (websocket) Feishu does not bind a port.
-            Platform.FEISHU: PlatformConfig(enabled=True, extra={"connection_mode": "webhook"}),
+            Platform.SMS: PlatformConfig(enabled=True, extra={"webhook_port": 8080}),
             Platform.WEBHOOK: PlatformConfig(enabled=True, extra={"port": 8644}),
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
         }
@@ -791,8 +789,8 @@ class TestSecondaryProfileConfigHandling:
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
 
         assert connected == 2
-        assert set(created) == {Platform.FEISHU, Platform.TELEGRAM}  # webhook is a default-listener mirror
-        assert created[Platform.FEISHU]._shared_listener_profile == "reviewer"
+        assert set(created) == {Platform.SMS, Platform.TELEGRAM}  # webhook is a default-listener mirror
+        assert created[Platform.SMS]._shared_listener_profile == "reviewer"
         assert getattr(created[Platform.TELEGRAM], "_shared_listener_profile", None) is None
 
     def test_configured_secondary_adapter_namespaces_runtime_status(self):
@@ -1208,31 +1206,28 @@ class TestSecondaryProfileHookRegistration:
         assert ("webhook", profile_cfg) in seen
 
 
-class TestFeishuPortBindingConditional:
-    """Feishu websocket mode does NOT bind a port; only webhook mode does (#52563)."""
+class TestPluginPortBindingConditional:
+    """A plugin platform that binds a port only in one connection mode declares it on its PlatformEntry
+    (``binds_port_fn``); core keeps no per-name table (#52563's websocket-vs-webhook rule)."""
 
-    @pytest.mark.asyncio
-    async def test_feishu_websocket_mode_not_rejected(self, monkeypatch):
-        """Feishu in websocket mode (the default) should NOT raise MultiplexConfigError."""
-        from gateway.run import MultiplexConfigError
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+    def test_binds_port_fn_decides_per_config(self):
+        from gateway.config import platform_binds_port
+        from gateway.platform_registry import PlatformEntry, platform_registry
 
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = GatewayConfig(multiplex_profiles=True)
-        runner._profile_adapters = {}
+        def webhook_only(extra):
+            return str(extra.get("connection_mode", "websocket")) == "webhook"
 
-        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
-        reviewer_cfg.platforms = {
-            Platform.FEISHU: PlatformConfig(
-                enabled=True,
-                extra={"app_id": "cli_xxx", "app_secret": "sec", "connection_mode": "websocket"},
-            ),
-        }
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
-        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: None)
-
-        connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
-        assert connected == 0  # no error, just nothing connected
+        platform_registry.register(PlatformEntry(
+            name="modebinder", label="Mode binder", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            binds_port_fn=webhook_only))
+        try:
+            assert platform_binds_port("modebinder", {"connection_mode": "webhook"}) is True
+            assert platform_binds_port("modebinder", {"connection_mode": "websocket"}) is False
+            assert platform_binds_port("modebinder", None) is False
+            assert platform_binds_port("unregistered-platform", {"connection_mode": "webhook"}) is False
+            assert platform_binds_port("sms", None) is True  # core's own port-binders need no entry
+        finally:
+            platform_registry.unregister("modebinder")
 
 
 class TestSecondarySkipsCredentiallessPlatforms:

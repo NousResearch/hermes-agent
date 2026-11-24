@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "Nur ein autorisierter Matrix-Benutzer kann diese Steuerelemente verwenden."
       not_requester: "Nur der Benutzer, der diese Aktion angefordert hat, kann diese Steuerelemente verwenden."
-  feishu:
-    clarify:
-      title: "Hermes benötigt Ihre Eingabe"
-      other: "✏️ Eigene Antwort"
-      awaiting_typed: "Warte auf eingegebene Antwort von {user}…"
-    picker:
-      apply_error: "Fehler beim Anwenden der Auswahl: {error}"
-    approval:
-      action_session: "Sitzung"
-      action_always: "Dauerhaft"
-      resolved_once: "Einmalig genehmigt"
-      resolved_session: "Für diese Sitzung genehmigt"
-      resolved_always: "Dauerhaft genehmigt"
-      resolved_deny: "Abgelehnt"
-      resolved_fallback: "Beantwortet"
-      resolved_by_user: "{icon} **{label}** von {user}"
-    update_prompt:
-      title: "☤ Update benötigt Ihre Eingabe"
-      default_hint: "\n\nStandard: `{default}`"
-      answer_yes: "✓ Ja"
-      answer_no: "✗ Nein"
-      word_yes: "Ja"
-      word_no: "Nein"
-      answered_title: "{icon} Update-Abfrage beantwortet: {answer}"
-      answered_by: "Beantwortet von **{user}**"
-    media:
-      gif_downgraded: "[GIF als Datei gesendet]"
-      gif_downgraded_caption: "[GIF als Datei gesendet]\n{caption}"
   google_chat:
     clarify:
       other_button: "Sonstiges / Antwort eingeben"

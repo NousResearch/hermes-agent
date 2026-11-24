@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "Slegs 'n gemagtigde Matrix-gebruiker kan hierdie kontroles gebruik."
       not_requester: "Slegs die gebruiker wat hierdie aksie aangevra het, kan hierdie kontroles gebruik."
-  feishu:
-    clarify:
-      title: "Hermes het jou insette nodig"
-      other: "✏️ Ander (tik antwoord)"
-      awaiting_typed: "Wag vir getikte antwoord van {user}…"
-    picker:
-      apply_error: "Fout met toepassing van keuse: {error}"
-    approval:
-      action_session: "Sessie"
-      action_always: "Altyd"
-      resolved_once: "Eenmalig goedgekeur"
-      resolved_session: "Vir sessie goedgekeur"
-      resolved_always: "Permanent goedgekeur"
-      resolved_deny: "Geweier"
-      resolved_fallback: "Afgehandel"
-      resolved_by_user: "{icon} **{label}** deur {user}"
-    update_prompt:
-      title: "☤ Opdatering het jou insette nodig"
-      default_hint: "\n\nVerstek: `{default}`"
-      answer_yes: "✓ Ja"
-      answer_no: "✗ Nee"
-      word_yes: "Ja"
-      word_no: "Nee"
-      answered_title: "{icon} Opdateringsprompt beantwoord: {answer}"
-      answered_by: "Beantwoord deur **{user}**"
-    media:
-      gif_downgraded: "[GIF as lêer gestuur]"
-      gif_downgraded_caption: "[GIF as lêer gestuur]\n{caption}"
   google_chat:
     clarify:
       other_button: "Ander / tik antwoord"

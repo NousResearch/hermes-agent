@@ -18,7 +18,7 @@ class TestAutoVoiceReplyFormat:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "platform",
-        [Platform.MATRIX, Platform.FEISHU, Platform.WHATSAPP, Platform.SIGNAL],
+        [Platform.MATRIX, Platform.WHATSAPP, Platform.SIGNAL],
     )
     async def test_opus_platform_auto_voice_reply_requests_ogg(self, platform):
         """Every OPUS_VOICE_PLATFORMS member gets an explicit .ogg output path.

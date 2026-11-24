@@ -27,7 +27,7 @@
 name: hermes-anilist
 repo: https://github.com/BatataBF/hermes-anilist
 sha: "1b3549d3027e4cdc417283325ae2816098c50a9a"
-description: "AniList tracker for Hermes Desktop — airing countdowns, a season browser, a local or account-backed watchlist, episode alerts and a daily digest, plus agent tools that read and update your own list and answer about a single show. Disclosure — stores your pasted AniList token in the active profile .env (sent only to graphql.anilist.co); alerts and the daily digest are Hermes cron jobs it creates on the host you pick, and the digest job asks that host's agent to query the public AniList API itself; the agent tools anilist_mark and anilist_remove edit your AniList list only when you ask, and removal needs an explicit confirmation."
+description: "AniList tracker for Hermes Desktop — airing countdowns, a season browser, a local or account-backed watchlist, episode alerts and a daily digest, plus agent tools that read and update your own list and answer about a single show. Disclosure — stores your pasted AniList token in the active profile .env (sent only to graphql.anilist.co); alerts and the daily digest are Hermes cron jobs it creates on the host you pick, and the digest job asks that host's agent to query the public AniList API itself; the agent tools anilist_mark and anilist_remove can change or delete entries on your AniList list (instructed to act only when you ask, and to ask before removing)."
 maintainer: BatataBF
 tier: community
 category: desktop

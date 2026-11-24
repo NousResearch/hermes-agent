@@ -369,6 +369,41 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_host_whose_new_home_failed_to_bind_binds_it_on_the_next_start(tmp_path, monkeypatch):
+    """A start that moves the host to the manager's current home and fails to build that home's context leaves
+    the next start to build it again, instead of starting under the context of the home it left."""
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_constants import get_hermes_home
+
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    host = manager._plugin_host()
+    (profiles / "ops").rename(profiles / "ops2")
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
+    build, failures = PluginHost._build_base_context, [RuntimeError("profile secrets unreadable")]
+
+    def flaky(self):
+        if failures:
+            raise failures.pop()
+        return build(self)
+
+    monkeypatch.setattr(PluginHost, "_build_base_context", flaky)
+    try:
+        with pytest.raises(RuntimeError):
+            host.ensure_started()
+        host.ensure_started()
+        assert host._base_context.run(get_hermes_home) == host.home == manager.owner_home
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
 def test_a_hosted_model_provider_of_a_renamed_linked_profile_still_runs_after_a_host_crash(tmp_path, monkeypatch):
     """A hosted provider's overrides run in the host, addressed by the plugin's directory. That address must

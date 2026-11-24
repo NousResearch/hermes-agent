@@ -153,8 +153,12 @@ class PluginHost:
             self._stopping = False
             home = Path(self._manager.owner_home)  # at each start: a renamed link's old name leads nowhere
             if home != self._home:
-                self._home = home
-                self._base_context = self._build_base_context()
+                previous, self._home = self._home, home
+                try:
+                    self._base_context = self._build_base_context()
+                except BaseException:
+                    self._home = previous  # so the next start builds the context for the new home again
+                    raise
             argv = self._argv()
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=self._env(), cwd=str(self._home),

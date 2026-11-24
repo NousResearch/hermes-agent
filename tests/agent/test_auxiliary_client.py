@@ -2714,6 +2714,25 @@ class TestAnthropicCompatImageConversion:
         assert vid_block["type"] == "video"
         assert vid_block["source"] == {"type": "url", "url": "https://example.com/clip.mp4"}
 
+    def test_a_fallback_request_converts_images_for_an_anthropic_destination_only(self):
+        """An auto vision request can now reach a configured fallback (#159354), so the fallback request must
+        convert image blocks for an anthropic-messages destination and leave an OpenAI one alone."""
+        from agent.auxiliary_client import _FallbackDestination, _fallback_request_kwargs
+
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}]
+        kwargs = dict(task="vision", tools=None, temperature=None, max_tokens=None, effective_timeout=30.0,
+                      effective_extra_body={}, reasoning_config=None, fallback_entry={}, task_config={},
+                      apply_fast_lane=False)
+        anthropic = _FallbackDestination("minimax", "https://api.minimax.io/anthropic", None, "m")
+        openai = _FallbackDestination("openai-codex", "https://api.openai.com/v1", None, "m")
+
+        converted = _fallback_request_kwargs(anthropic, messages=messages, **kwargs)["messages"][0]["content"]
+        assert [block["type"] for block in converted] == ["text", "image"]
+        kept = _fallback_request_kwargs(openai, messages=messages, **kwargs)["messages"][0]["content"]
+        assert [block["type"] for block in kept] == ["text", "image_url"]
+
 
 class _AuxAuth401(Exception):
     status_code = 401

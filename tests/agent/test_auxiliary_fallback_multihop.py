@@ -137,3 +137,56 @@ def test_candidate_quarantine_ttl_is_short_for_transient_429_and_long_for_paymen
     assert _quarantine_remaining("http://127.0.0.1:3/v1") > 60
     marks = [r.getMessage() for r in caplog.records if "marking local/custom unhealthy" in r.getMessage()]
     assert marks and "payment" not in marks[0] and "rate limit" in marks[0]
+
+
+# ── Vision keeps the auto opt-in through resolution (#159354) ──────────────────────
+
+
+def _connection_error() -> Exception:
+    import httpx
+    import openai
+
+    return openai.APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions"))
+
+
+def _vision_call(primary, lane_b, *, requested_provider, main_agent_model=None):
+    """``call_llm`` on the vision task whose chain resolved *requested_provider* to *primary*."""
+    with patch("agent.auxiliary_client._resolve_task_provider_model",
+               return_value=(requested_provider, None, None, None, None)), \
+            patch("agent.auxiliary_client.resolve_vision_provider_client",
+                  return_value=("claude-subscription-directsdk-experimental", primary, "vision-model")), \
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")), \
+            patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                  return_value=main_agent_model or (None, None, "")):
+        return call_llm(task="vision", messages=[{"role": "user", "content": "what is this?"}])
+
+
+def test_vision_auto_route_still_reaches_the_configured_main_fallback_chain():
+    """Vision resolution replaces the ``auto`` label with the provider it picked, which used to flip the
+    ladder's ``is_auto`` gate off: a failing auto vision call then retried the same provider and gave up
+    without ever consulting ``fallback_providers``. An auto *request* stays auto past resolution."""
+    primary = _client("http://127.0.0.1:1/v1", MagicMock(side_effect=_connection_error()))
+    lane_b = _client("http://127.0.0.1:2/v1", MagicMock(return_value=_ok_response("OK")))
+
+    with patch("agent.auxiliary_client._try_main_fallback_chain",
+               return_value=(lane_b, "modelB", "fallback_providers[0](openai-codex)")) as main_chain:
+        result = _vision_call(primary, lane_b, requested_provider="auto")
+
+    assert result.choices[0].message.content == "OK"
+    assert main_chain.call_count == 1
+    assert lane_b.chat.completions.create.call_count == 1
+
+
+def test_vision_explicit_provider_stays_on_the_main_agent_model_net():
+    """The control: an explicitly pinned vision provider must not start spending the auto-only main
+    fallback chain; its own net is the main agent model."""
+    primary = _client("http://127.0.0.1:1/v1", MagicMock(side_effect=_connection_error()))
+    lane_b = _client("http://127.0.0.1:2/v1", MagicMock(return_value=_ok_response("OK")))
+
+    with patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")) as main_chain:
+        result = _vision_call(primary, lane_b, requested_provider="claude-subscription-directsdk-experimental",
+                              main_agent_model=(lane_b, "modelB", "openai-codex"))
+
+    assert result.choices[0].message.content == "OK"
+    assert main_chain.call_count == 0
+    assert lane_b.chat.completions.create.call_count == 1

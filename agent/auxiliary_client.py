@@ -3830,6 +3830,11 @@ def _fallback_request_kwargs(
             leak_guard_config=task_config, max_tokens=max_tokens, extra_body=effective_extra_body,
         )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(messages, tools, destination=destination)
+    # An anthropic-messages fallback (claude-direct, minimax, any /anthropic endpoint) rejects OpenAI
+    # image_url/video_url blocks. The primary path and the same-provider retry both convert; an auto vision
+    # request only became able to reach a fallback here, so this path needs it too (#159354).
+    if _is_anthropic_compat_endpoint(destination.provider, destination.base_url or ""):
+        fallback_messages = _convert_openai_images_to_anthropic(fallback_messages)
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
@@ -7273,6 +7278,11 @@ class _PreparedAuxRequest(NamedTuple):
     effective_timeout: float
     effective_extra_body: dict[str, Any]
     base_info: str
+    # The route was left on ``auto``, before the vision chain resolved it to a concrete backend (which then
+    # replaces ``resolved_provider``). The fallback ladder keys its "the user opted into discovery" gate on
+    # this, not on the resolved label, or an auto vision call looks like an explicit provider pin and never
+    # reaches ``fallback_providers`` (#159354).
+    requested_auto: bool = False
 
 
 def _prepare_aux_request(
@@ -7288,6 +7298,9 @@ def _prepare_aux_request(
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    # Captured before resolution: a vision ``auto`` route is resolved to a concrete backend below and loses
+    # the label the fallback ladder needs to know the user opted into discovery (#159354).
+    requested_auto = resolved_provider in {"auto", "", None}
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7340,7 +7353,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, requested_auto)
 
 
 def _outcome(call: Callable[..., Any], *args: Any, **kwargs: Any) -> tuple[Any, Optional[Exception]]:
@@ -7424,6 +7437,9 @@ class _LadderRoute(NamedTuple):
     main_runtime: Optional[dict[str, Any]]
     route_info: Optional[dict[str, str]]
     timeout: Optional[float]
+    # The caller left the route on ``auto`` and only resolution made it concrete: the ladder's discovery gate
+    # reads this instead of the resolved label (#159354).
+    requested_auto: bool = False
 
 
 def _without_temperature(kwargs: dict) -> Optional[dict]:
@@ -7680,7 +7696,9 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     this request regardless of user intent. An auth error from an explicit provider may only use the
     task's own configured fallback_chain; it never implies an unconfigured provider hop."""
     task, tag, resolved_provider, first_err = route.task, route.tag, route.resolved_provider, failure.error
-    is_auto = resolved_provider in {"auto", "", None}
+    # ``requested_auto``: an auto route the vision chain resolved to a concrete backend still counts as auto,
+    # so its main fallback chain is reachable (#159354). An explicit pin stays explicit.
+    is_auto = route.requested_auto or resolved_provider in {"auto", "", None}
     reason = aux_errors.fallback_label(failure, rung_spent=rung_spent)
     is_capacity_error = reason not in (None, aux_errors.AUTH_ERROR)
     task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
@@ -7772,6 +7790,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[dict[str, Any]], route_info: Optional[dict[str, str]],
+    requested_auto: bool = False,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7781,7 +7800,7 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
-        kwargs.get("timeout"))
+        kwargs.get("timeout"), requested_auto)
     resp, first_err, kwargs, repairs = yield from _ladder_parameter_rungs(
         _failure(route, first_err), route, kwargs, max_tokens)
     if first_err is None:
@@ -7991,7 +8010,8 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info,
+        requested_auto=req.requested_auto)
 
 
 def _call_llm_impl(

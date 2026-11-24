@@ -853,7 +853,7 @@ def test_a_launch_launchers_env_file_template_resolves_as_the_process_loaded_the
 @pytest.mark.parametrize("caller", ["launch", "secondary"])
 def test_a_caller_bound_to_another_profile_lends_its_scope_to_no_other_profiles_launcher(
         tmp_path, monkeypatch, caller):
-    """Only a caller bound to the started profile's own secrets lends them to its launcher. A body bound to the
+    """A caller bound to one profile gives another profile's launcher none of its values. A body bound to the
     launch profile that starts a secondary's host leaves the secondary on its own ``.env``, and a body bound to a
     secondary that starts the launch profile's host leaves it on the env the process loaded, not on a launch
     ``.env`` edited since."""

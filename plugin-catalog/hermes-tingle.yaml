@@ -1,6 +1,6 @@
 name: hermes-tingle
 repo: https://github.com/marcodallagatta/hermes-tingle
-sha: a893493fd9b6840d061fc7366c4c0f1b64b5316a
+sha: 99b39f242d48b95dcc9cd10e956f9b689d4b9923
 description: "Profile-scoped commitment tracking and follow-up with owner-controlled source review. Disclosure — with owner consent, bounded Gmail/Calendar/chat content may reach the configured model, Hermes session history and messaging destination; optional default-off private evaluation makes raw model requests whose buffered EUR 5/month cap is an estimate, not an invoice; installs create no jobs until separately approved setup, which creates two recurring Hermes Cron jobs; local SQLite stores tracked items; Google helpers use an existing Workspace OAuth token; no Tingle-operated telemetry."
 maintainer: marcodallagatta
 tier: community
@@ -8,7 +8,7 @@ category: automation
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/marcodallagatta/hermes-tingle
 version: "0.9.19"
-image: https://raw.githubusercontent.com/marcodallagatta/hermes-tingle/a893493fd9b6840d061fc7366c4c0f1b64b5316a/docs/images/tingle-banner-1200x600.png
+image: https://raw.githubusercontent.com/marcodallagatta/hermes-tingle/99b39f242d48b95dcc9cd10e956f9b689d4b9923/docs/images/tingle-banner-1200x600.png
 readme: true
 platforms: []
 title: Hermes Tingle

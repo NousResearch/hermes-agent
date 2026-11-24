@@ -202,6 +202,44 @@ def test_a_sealed_install_with_a_named_state_folder_still_runs_on_the_environmen
     assert process.stdout.splitlines() == ["shipped"]
 
 
+def test_an_env_file_cannot_move_the_named_state_folder(tmp_path, monkeypatch):
+    """The launcher's value holds for the life of the process. A ``.env`` the process can write, read after
+    start-up took its first lock, would send every later lock and marker somewhere else."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text(f"HERMES_INSTALL_STATE_DIR={tmp_path / 'elsewhere'}\nNAMED_STATE_CONTROL=loaded\n",
+                               encoding="utf-8")
+    named = tmp_path / "named"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+    monkeypatch.setenv("NAMED_STATE_CONTROL", "before")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ["NAMED_STATE_CONTROL"] == "loaded"  # control: the file was read, and it overrides
+    assert os.environ["HERMES_INSTALL_STATE_DIR"] == str(named)
+
+
+def test_a_worker_for_another_profile_keeps_the_folder_an_env_file_also_names(tmp_path, monkeypatch):
+    """A worker started for another profile is not handed what the launch profile's ``.env`` defines. The named
+    folder is the launcher's, so a line in that file does not take it from the worker."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_cli.kanban_worker_env import worker_client_env
+
+    home = tmp_path / "home"
+    other = home / "profiles" / "other"
+    other.mkdir(parents=True)
+    (home / ".env").write_text(f"HERMES_INSTALL_STATE_DIR={tmp_path / 'elsewhere'}\n", encoding="utf-8")
+    named = tmp_path / "named"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+    load_hermes_dotenv(hermes_home=home)
+
+    assert worker_client_env(dict(os.environ), other).get("HERMES_INSTALL_STATE_DIR") == str(named)
+
+
 def test_a_kanban_worker_keeps_the_named_state_folder(tmp_path):
     """The worker client is started from an allowlisted environment, inside the same sandbox as its parent."""
     from hermes_cli.kanban_worker_env import worker_client_env

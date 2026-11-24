@@ -43,7 +43,8 @@ def named_install_state_dir() -> Path | None:
     Such a process and its children keep their locks and markers in the named folder. Start-up reads
     nothing from it: the process is not restarted (``prepare_launch``), repairs nothing
     (``recover_if_needed``) and selects no recorded environment (``activate_dependencies``). A value
-    that is not an absolute path names nothing.
+    that is not an absolute path names nothing; no ``.env`` or secret source can set it
+    (``LAUNCH_ONLY_ENV_KEYS``).
     """
     # health: allow HX002 -- a launcher's fact about one process tree, read at start before any config loads
     value = os.environ.get("HERMES_INSTALL_STATE_DIR", "").strip()

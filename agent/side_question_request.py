@@ -268,7 +268,7 @@ def ask_text_only(
             audit.outcome = "refused:runtime_changed"
             return None
         # Plugin side questions skip run_conversation(), but still fire auxiliary hooks.
-        with bind_detached_fork_origin(fork):
+        with bind_detached_fork_origin(SIDE_QUESTION_ORIGIN):
             assistant_message = _send(fork, capture, prompt, audit)
         if assistant_message is None:
             return None

@@ -1268,6 +1268,12 @@ button.portal-section-title:hover {
   height: 100%;
 }
 
+/* A setting among the agent menu's actions: no icon of its own, its text starting where theirs
+   does (a menu row's inset, a 1rem icon and the row's gap: portal-floating.css). */
+:root[data-shell='portal'] [data-slot='dropdown-menu-checkbox-item'].portal-agent-menu-setting {
+  padding-inline-start: calc(0.625rem + 1rem + 0.625rem);
+}
+
 .portal-agent-menu .portal-hide-info {
   opacity: 0;
 }

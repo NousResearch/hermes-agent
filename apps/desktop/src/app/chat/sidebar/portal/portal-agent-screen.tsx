@@ -103,7 +103,11 @@ export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
             </span>
           </span>
           {/* The mark says agent or person; the meta names which, in a word. The phrase is the name. */}
-          <RowButton aria-label={`${b.screen.portalTitle}: ${says}`} className="portal-session-open" onClick={() => void open()}>
+          <RowButton
+            aria-label={`${b.screen.portalTitle}: ${says}`}
+            className="portal-session-open"
+            onClick={() => void open()}
+          >
             <span className="portal-session-title">{b.screen.portalTitle}</span>
           </RowButton>
           <span aria-hidden className="portal-session-meta">

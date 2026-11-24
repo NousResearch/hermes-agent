@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { Tip } from '@/components/ui/tooltip'
-import { Check, Eye, EyeOff, Info, Monitor, MonitorPlay, MoreVertical } from '@/lib/icons'
+import { Check, Eye, EyeOff, Info, Monitor, MoreVertical } from '@/lib/icons'
 import { $botMeta } from '@/plugins/hermes-bots/data'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import { botRosterMeta } from '@/plugins/hermes-bots/routing'
@@ -59,11 +59,12 @@ function ScreenItems({ agent }: { agent: SimplifiedAgent }) {
         <Monitor aria-hidden />
         {b.screen.menu}
       </DropdownMenuItem>
+      {/* A setting, not a second way to open: no icon of its own, its text under the action's. */}
       <DropdownMenuCheckboxItem
         checked={Boolean(botRosterMeta(bot, meta)?.screenAutoOpen)}
+        className="portal-agent-menu-setting"
         onSelect={() => void toggleBotScreenAutoOpen(bot)}
       >
-        <MonitorPlay aria-hidden />
         {b.screen.autoOpenMenu}
       </DropdownMenuCheckboxItem>
     </>

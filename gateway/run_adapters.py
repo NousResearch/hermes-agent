@@ -1861,8 +1861,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         deps_ok = await self._run_in_executor_with_context(platform_registry.ensure_deps, platform.value)
         with platform_registry.deps_resolved_off_loop(deps_ok):
             adapter = self._create_adapter(platform, config)
-        if adapter is not None:  # decided here, in the caller's (the owning profile's) registry scope
-            adapter._binds_port = _platform_binds_port(platform.value, getattr(config, "extra", None))
+        if adapter is not None and self._multiplex_on():  # decided in the caller's (owning profile's) registry
+            # scope; the lookup may run a deferred plugin load, so off the loop like ensure_deps
+            adapter._binds_port = await self._run_in_executor_with_context(
+                _platform_binds_port, platform.value, getattr(config, "extra", None))
         return adapter
 
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:

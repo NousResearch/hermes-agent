@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 import providers
+from providers.base import ProviderProfile
 from agent.gemini_native_adapter import _FREE_TIER_GUIDANCE, _STANDARD_KEY_GUIDANCE, GeminiAPIError
 
 URL = "https://generativelanguage.googleapis.com/v1beta/interactions:createPerUserQuota"
@@ -226,3 +227,25 @@ def test_profile_imports_without_httpx_and_loads_the_transport_only_in_create_cl
     )
     result = subprocess.run([sys.executable, "-c", code], check=False, cwd=root, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0 and result.stdout.strip() == "ok", result.stderr[-2000:]
+
+
+class _ReplacementGeminiProfile(ProviderProfile):
+    """A gemini profile from a package with no ``interactions`` module (a replacement plugin)."""
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("gemini", ["absent", "replaced"])
+def test_without_the_gemini_plugins_wire_a_call_raises_a_clear_error_and_sends_nothing(monkeypatch, gemini, stream):
+    providers.get_provider_profile("gemini")  # discovery has run, so the registry entry exists to remove
+    if gemini == "absent":
+        monkeypatch.delitem(providers._REGISTRY, "gemini")
+    else:
+        monkeypatch.setitem(providers._REGISTRY, "gemini", _ReplacementGeminiProfile(name="gemini"))
+    seen, handler = _recorder()
+    client = _client(handler)  # creating the client must not fail: that would fall back to the generic client
+    with pytest.raises(GeminiAPIError) as raised:
+        _call(client, stream=stream)
+    assert raised.value.code == "gemini_wire_unavailable"
+    assert "Solstice sends its requests through the gemini provider plugin's Interactions wire" in str(raised.value)
+    assert ("no gemini provider plugin is loaded" if gemini == "absent" else "has no interactions module") in str(raised.value)
+    assert seen == []

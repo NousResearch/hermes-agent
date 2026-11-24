@@ -6,12 +6,17 @@ is one request: the output budget is capped at one request's, the request is nev
 that ends before ``interaction.completed`` is an error rather than a finished turn. There is no
 continuation, checkpoint or resume handling here; that belongs to the gemini provider's long decode.
 Request building, thought signature replay, stream translation and error mapping are the shared wire's,
-so a fix there reaches this provider too.
+so a fix there reaches this provider too. That wire is the gemini provider plugin's ``interactions`` module,
+found through provider discovery (``interactions_wire``), not a relative import: a copy of this plugin in a
+profile's own ``plugins/model-providers/`` loads under a top-level module name, with no sibling package.
 """
 
 from __future__ import annotations
 
+import importlib
 import re
+import sys
+from types import ModuleType
 from typing import Any, Iterator, Optional
 
 import httpx
@@ -20,7 +25,6 @@ from agent.bounded_response import read_streaming_error_body
 from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, _iter_sse_events, bare_gemini_model_id
 from hermes_cli.version_info import hermes_user_agent
 
-from ..gemini import interactions as wire
 from . import INFERENCE_BASE_URL
 
 INTERACTIONS_METHOD = "interactions:createPerUserQuota"
@@ -39,11 +43,36 @@ def interactions_url(base_url: Any) -> str:
     return f"{root}/{_API_VERSION}/{INTERACTIONS_METHOD}"
 
 
-def single_request(request: dict[str, Any]) -> dict[str, Any]:
-    """*request* as one stateless call: the final output budget capped at one request's (the builder raises
-    it for long decode and then sets ``store: true``) and ``store`` forced off."""
+_WIRE_MISSING = ("Solstice sends its requests through the gemini provider plugin's Interactions wire, but {why}. "
+                 "Reinstall Hermes, or remove a gemini provider plugin that replaces the bundled one.")
+
+
+def interactions_wire() -> ModuleType:
+    """The gemini provider plugin's ``interactions`` module: the ``interactions`` submodule of the package the
+    registered ``gemini`` profile was loaded from. Raises ``GeminiAPIError`` when there is none."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("gemini")
+    if profile is None:
+        raise GeminiAPIError(_WIRE_MISSING.format(why="no gemini provider plugin is loaded"),
+                             code="gemini_wire_unavailable")
+    module = type(profile).__module__
+    package = getattr(sys.modules.get(module), "__package__", None)
+    try:
+        if not package:
+            raise ImportError(f"{module} is not part of a package")
+        return importlib.import_module(f"{package}.interactions")
+    except ImportError as exc:
+        raise GeminiAPIError(_WIRE_MISSING.format(why=f"the loaded gemini provider plugin ({package or module}) "
+                                                      f"has no interactions module: {exc}"),
+                             code="gemini_wire_unavailable") from exc
+
+
+def single_request(request: dict[str, Any], cap: int) -> dict[str, Any]:
+    """*request* as one stateless call: the final output budget capped at *cap*, one request's (the builder
+    raises it for long decode and then sets ``store: true``), and ``store`` forced off."""
     generation = request["generation_config"]
-    budget = min(int(generation["max_output_tokens"]), wire.SINGLE_REQUEST_OUTPUT_CAP)
+    budget = min(int(generation["max_output_tokens"]), cap)
     return {**request, "store": False, "generation_config": {**generation, "max_output_tokens": budget}}
 
 
@@ -57,6 +86,12 @@ class SolsticeClient(GeminiNativeClient):
         super().__init__(base_url=base_url or INFERENCE_BASE_URL, timeout=timeout, **kwargs)
         # Per request, not only on the httpx client: an injected keepalive client brings its own default.
         self._request_timeout = timeout or DEFAULT_TIMEOUT
+        # Found once, here. When it is missing, each call looks again and raises the reason: a create_client
+        # error would instead send this provider down the generic OpenAI client path.
+        try:
+            self._wire: Optional[ModuleType] = interactions_wire()
+        except GeminiAPIError:
+            self._wire = None
 
     def _create_chat_completion(
         self, *, model: str = "gemini-3.8-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
@@ -66,13 +101,14 @@ class SolsticeClient(GeminiNativeClient):
     ) -> Any:
         # ``temperature``/``top_p`` are never sent: Gemini 4 / 3.5 reject them. A long-decode budget in
         # ``extra_body`` is ignored: this method cannot continue a turn past one request.
+        wire = self._wire = self._wire or interactions_wire()
         extra = extra_body if isinstance(extra_body, dict) else {}
         model = bare_gemini_model_id(model)
         request = single_request(wire.build_interactions_request(
             model=model, messages=messages or [], tools=tools, tool_choice=tool_choice, max_tokens=max_tokens,
             stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
             response_format=response_format or extra.get("response_format"),
-        ))
+        ), wire.SINGLE_REQUEST_OUTPUT_CAP)
         # An explicit per-call timeout (the agent's configured / stale-matched budget) wins; else 3600 s read.
         timeout = timeout or self._request_timeout
         url = interactions_url(self.base_url)
@@ -82,6 +118,7 @@ class SolsticeClient(GeminiNativeClient):
         return wire.translate_interaction([self._generate(url, {**request, "stream": False}, timeout)], model)
 
     def _stream(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[Any]:
+        wire = self._wire
         state = wire.StreamState()
         headers = {**self._headers(), "Accept": "text/event-stream"}
         try:
@@ -110,5 +147,5 @@ class SolsticeClient(GeminiNativeClient):
     def _http_error(self, response: Any, body_text: Any = None) -> GeminiAPIError:
         # The Interactions mapper (snake_case error codes), without the API-key remedies (free tier,
         # Standard key, wrong key surface): they do not apply to a bearer.
-        return wire.http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url,
-                               key_guidance=False)
+        return (self._wire or interactions_wire()).http_error(
+            response, body_text=body_text, api_key=self.api_key, base_url=self.base_url, key_guidance=False)

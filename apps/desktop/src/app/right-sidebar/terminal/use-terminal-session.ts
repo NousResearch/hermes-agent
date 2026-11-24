@@ -16,6 +16,7 @@ import { $terminalInjection } from '../store'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection } from './clipboard'
 import { trackTerminalCwd } from './cwd-tracking'
+import { registerTerminalFileLinks } from './file-links'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import { PTY_TERMINAL_LINE_OPTIONS } from './pty-output'
 import { createReviveHistory } from './revive-history'
@@ -30,10 +31,11 @@ import {
 import { createSnapshotPersister } from './snapshot-persister'
 import { bindTerminalDrop } from './terminal-drop'
 import { prepareTerminalFontFamily } from './terminal-font'
+import { runsOverSsh, terminalGatewayOf } from './terminal-gateway'
 import { bindTerminalActivity, bindTerminalClipboard } from './terminal-input-bindings'
 import { createSessionAttemptController } from './terminal-session-attempt'
 import type { TerminalStatus } from './terminal-session-attempt'
-import { redrawAllTerminals, registerWebglRefresh } from './terminals'
+import { $terminals, redrawAllTerminals, registerWebglRefresh } from './terminals'
 import { useTerminalFontController } from './use-terminal-font'
 
 // ⌘/Ctrl+L is a global shortcut, so a text selection in the file preview pane
@@ -307,6 +309,14 @@ export function useTerminalSession({
     })
 
     cleanup.push(cwdTracker.dispose)
+
+    // Paths an SSH shell prints live on that host, not this one.
+    cleanup.push(
+      registerTerminalFileLinks(term, {
+        isLocal: () => !runsOverSsh(terminalGatewayOf($terminals.get().find(entry => entry.id === id))),
+        resolveCwd: () => lastObservedCwdRef.current || initialRestoreCwdRef.current || cwd
+      })
+    )
 
     const snapshots = createSnapshotPersister(id, {
       hasSessionActivity: () => hasSessionActivityRef.current,

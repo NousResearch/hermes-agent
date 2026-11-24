@@ -7,6 +7,7 @@ import { $portalPinnedSectionOpen } from '@/store/agent-sidebar-preferences'
 import { recordIaAction } from '@/store/ia-metrics'
 
 import { PortalSectionHeader } from './portal/portal-section-header'
+import { sessionPinDropProps } from './session-pin-drag'
 import { SimplifiedSessionList } from './simplified-session-list'
 
 interface SimplifiedPinnedSessionsProps extends ComponentProps<typeof SimplifiedSessionList> {
@@ -18,7 +19,13 @@ export function SimplifiedPinnedSessions({ emptyState, ...props }: SimplifiedPin
   const pinsOpen = useStore($portalPinnedSectionOpen)
 
   return (
-    <section aria-label={t.sidebar.pinned} className="portal-section" data-open={pinsOpen} data-slot="pinned-section">
+    <section
+      aria-label={t.sidebar.pinned}
+      className="portal-section"
+      data-open={pinsOpen}
+      data-slot="pinned-section"
+      {...sessionPinDropProps}
+    >
       <PortalSectionHeader
         label={t.sidebar.pinned}
         onToggle={() => {

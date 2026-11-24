@@ -380,6 +380,14 @@
   min-height: 6rem;
 }
 
+/* A chat held over Pinned (session-pin-drag.ts): the section wears the focus ring, inset so the
+   sidebar's own clip keeps it whole. */
+.portal-section[data-session-drop-hover='true'] {
+  border-radius: var(--portal-radius-control);
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
 .portal-section-body {
   display: flex;
   flex: 1;

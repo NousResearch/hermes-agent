@@ -1,7 +1,7 @@
 import { PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
-import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
 import { openSession } from '@/app/open-session'
@@ -32,6 +32,7 @@ import { mergeVisibleReorder } from './order'
 import { capAgentChats } from './portal/agent-chat-cap'
 import { ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { startSessionPinDrag } from './session-pin-drag'
 import { SessionRowSlot } from './session-row-slots'
 import { sessionRowKey } from './simplified-session-identity'
 
@@ -122,6 +123,8 @@ interface SessionRowProps extends Omit<
   /** Drag bindings and the keyboard move, when the list can be reordered. */
   sortable?: ReturnType<typeof useSortableBindings>
   onMove?: (step: -1 | 1) => void
+  /** The row's drag was settled some other way than by the list's reorder: a drop on Pinned, or Esc. */
+  onDragSettled: () => void
 }
 
 const MOVE_STEP: Record<string, -1 | 1> = { ArrowUp: -1, ArrowDown: 1 }
@@ -131,7 +134,7 @@ function SortableSessionRow(props: SessionRowProps) {
   return <SessionRow {...props} sortable={useSortableBindings(sessionRowKey(props.row))} />
 }
 
-function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }: SessionRowProps) {
+function SessionRow({ row, selected, surface, meta, sortable, onMove, onDragSettled, ...props }: SessionRowProps) {
   const { t } = useI18n()
   const navigate = useStableNavigate()
   const title = sessionTitle(row)
@@ -156,6 +159,8 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }
     title,
     unread: row.unread === true
   }
+
+  const pinnable = !ambiguous && !pinned && Boolean(actions.onPin)
 
   // The row is the click target (a modified click opens a tab or window), its title the one
   // focusable button, as in the classic sidebar: plugin decorations (`sessionRow.*`) sit in the row
@@ -195,14 +200,25 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }
       }
       // The row is the drag handle; a press that started in its menu or a dialog is not a grab, and
       // a finger scrolls the list.
-      onPointerDown={
-        sortable &&
-        (event => {
-          if (shellOwnsPress(event) && event.pointerType !== 'touch') {
-            sortable.dragHandleProps.onPointerDown?.(event)
-          }
-        })
-      }
+      onPointerDown={event => {
+        if (!shellOwnsPress(event) || event.pointerType === 'touch') {
+          return
+        }
+
+        // Carried onto Pinned, a chat is pinned: offered to the rows whose menu offers "Pin".
+        if (pinnable) {
+          startSessionPinDrag(event, {
+            label: title,
+            onAbort: onDragSettled,
+            onPin: () => {
+              onDragSettled()
+              props.onUpdate(row, 'pinned', true)
+            }
+          })
+        }
+
+        sortable?.dragHandleProps.onPointerDown?.(event)
+      }}
     >
       <SessionRowMark row={row} />
       {/* Wrappers with no box: a row no plugin decorates (or one it declines) keeps its geometry. */}
@@ -351,6 +367,11 @@ export function SimplifiedSessionList({
   // A search is a result list, never an arrangement.
   const reorder = props.searching ? undefined : onReorder
 
+  // The row is the handle of two drags at once: the list's reorder and the carry onto Pinned. A
+  // release on Pinned ends both, the pin first, and must not also rearrange the list it left; Esc
+  // calls the carry off and never reaches the reorder, whose release must then move nothing either.
+  const dragSettled = useRef(false)
+
   // Rows past the cap and in the other partition keep their places: only the moved ones trade slots.
   const commit = (keys: string[]) => {
     const byKey = new Map(ordered.map(row => [sessionRowKey(row), row]))
@@ -385,6 +406,9 @@ export function SimplifiedSessionList({
         {...props}
         key={keys[index]}
         meta={metaFor(row)}
+        onDragSettled={() => {
+          dragSettled.current = true
+        }}
         onMove={sortable ? step => move(keys, index, step, document.activeElement as HTMLElement) : undefined}
         row={row}
         selected={isSelected(row)}
@@ -396,7 +420,7 @@ export function SimplifiedSessionList({
     return (
       <Fragment key={part}>
         {sortable ? (
-          <ReorderableList ids={keys} onReorder={commit} sensors={sensors}>
+          <ReorderableList ids={keys} onReorder={next => !dragSettled.current && commit(next)} sensors={sensors}>
             {list}
           </ReorderableList>
         ) : (
@@ -407,7 +431,13 @@ export function SimplifiedSessionList({
   })
 
   return (
-    <div className="portal-session-list">
+    <div
+      className="portal-session-list"
+      // Every drag starts with a press here.
+      onPointerDownCapture={() => {
+        dragSettled.current = false
+      }}
+    >
       {lists}
       {foldable && (
         <RowButton aria-expanded={cap.showAll} className="portal-session-more" onClick={cap.onToggle}>

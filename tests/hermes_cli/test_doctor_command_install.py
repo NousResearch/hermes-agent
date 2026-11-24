@@ -546,6 +546,18 @@ def test_path_check_needs_a_line_that_puts_local_bin_on_path(tmp_path, monkeypat
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("line", ['export PATH+=":$HOME/.local/bin"', "PATH+=:~/.local/bin"])
+def test_path_check_counts_an_append_that_starts_a_new_entry(tmp_path, monkeypatch, capsys, line):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    (Path.home() / ".zprofile").write_text(line + "\n", encoding="utf-8")
+
+    assert doctor.run_doctor(Namespace(fix=False)) == 0
+
+    assert "configured in ~/.zprofile" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
 def test_fish_path_check_reads_the_config_under_xdg_config_home(tmp_path, monkeypatch, capsys):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
     (link_dir / "hermes").symlink_to(launcher)

@@ -74,27 +74,29 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home*: a start can come from a
     caller bound to another profile, or from a crash restart's thread, which has no binding at all.
 
-    Its ``${VAR}``s expand against the process env, as ``host_launcher`` documents (a profile a plugin runs
-    elsewhere takes the managed overlay's launcher, expanded the same way). Under multiplexing that env is the
-    launch profile's, so for a profile run here they expand through its own secrets instead
-    (``owner_secret_scope``: the launch profile's env and files, any other profile's own files), never another
-    profile's values. The launch profile is the one whose directory the process's own path keys, as
-    ``serves_routed_profile`` asks: after that link is renamed, *home* is the new name, which
-    ``owner_secret_scope`` would take for another profile. No terminal policy: the launcher is only read here."""
+    Its ``${VAR}``s expand against the process env, as ``host_launcher`` documents, for a profile a plugin runs
+    elsewhere (the managed overlay's launcher) and for the launch profile outside multiplexing. That env holds
+    the launch profile's values, so any other profile's launcher expands through its own secrets
+    (``owner_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a sibling under
+    task-local multiplexing, which a fresh context does not carry. Under multiplexing the launch profile's
+    expands through its own scope too (its env-only keys and files). The launch profile is the one whose
+    directory the process's own path keys, as ``serves_routed_profile`` asks: after that link is renamed,
+    *home* is the new name, which ``owner_secret_scope`` would take for another profile. No terminal policy:
+    the launcher is only read here."""
 
     def choose() -> list:
         from agent.secret_scope import is_multiplex_active
         from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
-        if not is_multiplex_active() or run_elsewhere_refusal(home) is not None:
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        launch = get_routing_process_hermes_home()
+        own = hermes_home_key(launch) == hermes_home_key(home)
+        if run_elsewhere_refusal(home) is not None or (own and not is_multiplex_active()):
             from hermes_cli.plugins_loader import _plugin_home_scope
             with _plugin_home_scope(home):
                 return host_launcher(home=home)
         from agent.runtime_scope import bind_state, scope_for_profile
-        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
         from tui_gateway.launch_profile_policy import owner_secret_scope
-        launch = get_routing_process_hermes_home()
-        secrets = owner_secret_scope(launch if hermes_home_key(launch) == hermes_home_key(home) else home)
-        with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
+        with bind_state(scope_for_profile(home), secrets=owner_secret_scope(launch if own else home), terminal=False):
             return host_launcher(home=home)
 
     return contextvars.Context().run(choose)

@@ -553,6 +553,45 @@ def test_a_single_profile_launcher_expands_against_the_process_env_not_a_later_e
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
+def test_a_secondary_profiles_launcher_under_task_local_multiplexing_expands_from_its_own_env_file(
+        tmp_path, monkeypatch):
+    """A process that is not a multiplexer still serves another profile in a task (the desktop backend's cron
+    ticker firing a sibling's job): that profile's launcher expands from its own ``.env``, never the launch
+    profile's value for the name, whichever context the host start runs in."""
+    from agent import secret_scope as ss
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tui_gateway.launch_profile_policy import owner_secret_scope
+
+    def runner(name):
+        ran, script = tmp_path / f"{name}.ran", tmp_path / name
+        script.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+        script.chmod(0o755)
+        return ran
+
+    own_ran, launch_ran = runner("own-runner"), runner("launch-runner")
+    ops = _home_with_plugins(tmp_path / "ops", monkeypatch, {})
+    _home_with_plugins(tmp_path, monkeypatch, {})
+    (ops / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+    (ops / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / 'own-runner'}\n", encoding="utf-8")
+    monkeypatch.setenv("PLUGIN_RUNNER", str(tmp_path / "launch-runner"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    context_token = ss.set_multiplex_context(True)
+    home_token = set_hermes_home_override(ops)
+    scope_token = ss.set_secret_scope(owner_secret_scope(ops), profile_home=str(ops))
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        host.ensure_started()
+        assert own_ran.exists() and not launch_ran.exists()
+    finally:
+        host.shutdown()
+        ss.reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+        ss.reset_multiplex_context(context_token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts; SIGKILL
 @pytest.mark.parametrize("crashed", ["secondary", "launch"])
 def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_path, monkeypatch, crashed):

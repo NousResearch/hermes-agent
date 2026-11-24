@@ -27,7 +27,7 @@ All of this is available to Hermes itself through the `cronjob_manage` tool, so 
 
 When Hermes changes an existing job's prompt, schedule, runs, delivery, monitor, script, toolsets, working directory or model, the same prompt asks **Change this job?** and lists each change as old → new. An edit offers only **Allow** and **Deny** (each change is its own decision); **Deny** leaves the job exactly as it was. Pausing, resuming, running and removing a job never ask.
 
-No card is shown for a new job or an edit, and Hermes is not told to create jobs unasked, where approvals are off (`approvals.mode: off` or yolo), where you already chose **Always allow new jobs**, and where nobody can answer a prompt (a cron run that may schedule, `hermes chat -q`, kanban workers, the API server and other unattended platforms). There, jobs and edits are saved at once, as before. Jobs created from the CLI, the dashboard or Desktop's Scheduled Jobs page never ask, because you're the one creating them.
+No card is shown for a new job or an edit, and Hermes is not told to create jobs unasked, where approvals are off (`approvals.mode: off` or yolo) and where nobody can answer a prompt (a cron run that may schedule, `hermes chat -q`, kanban workers, the API server and other unattended platforms). There, jobs and edits are saved at once, as before. After **Always allow new jobs** (or **Allow for this chat**), new jobs save without a card, but every edit still asks **Change this job?**. Jobs created from the CLI, the dashboard or Desktop's Scheduled Jobs page never ask, because you're the one creating them.
 
 :::tip
 **Which model does a cron job run on?** Resolution at fire time is: per-job pin → `cron.model` in `config.yaml` → the main agent model from `hermes model`.

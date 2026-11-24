@@ -336,3 +336,54 @@ def test_a_job_with_no_chat_to_return_to_names_where_its_results_go(cron_store, 
     result = json.loads(registry.dispatch("cronjob_manage", {**_CREATE, "deliver": "origin"}))
     assert result.get("declined") is True, result
     assert shown in asked[0][1] and "this chat" not in asked[0][1]
+
+
+# --- The card and the save agree, however long the card waits -------------------------------------
+
+def test_a_job_removed_while_its_edit_card_waits_saves_nothing(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def callback(*_a, **_k):
+        cron_store.remove_job(job["id"])  # deleted from another surface while the card is open
+        return "once"
+    terminal_tool.set_approval_callback(callback)
+    result = json.loads(registry.dispatch("cronjob_manage", {"action": "update", "job_id": job["id"], "repeat": 5}))
+    assert result["success"] is False and "removed" in result["error"], result
+    assert cron_store.get_job(job["id"]) is None
+
+
+def test_a_pause_made_while_the_edit_card_waits_is_not_undone(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def callback(*_a, **_k):
+        cron_store.pause_job(job["id"])  # the user pauses it from Scheduled Jobs while the card is open
+        return "once"
+    terminal_tool.set_approval_callback(callback)
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "schedule": "every day at 9am"}))
+    assert result["success"] is False, result
+    after = cron_store.get_job(job["id"])
+    assert after["enabled"] is False and after["state"] == "paused" and after["schedule_display"] == "every day at 8am"
+
+
+def test_moving_a_one_shot_to_another_zone_asks(cron_store, monkeypatch):
+    """Same wall-clock text, different instant: the card lists the move instead of saving it unasked."""
+    job = cron_store.create_job(prompt="Call the dentist.", schedule="2099-12-01T09:00:00+00:00", name="Dentist")
+    asked = _asking(monkeypatch, "deny")
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "schedule": "2099-12-01T09:00:00+09:00"}))
+    assert result.get("declined") is True, result
+    assert len(asked) == 1 and "schedule: once, " in asked[0][1]
+    assert cron_store.get_job(job["id"])["schedule"]["run_at"] == "2099-12-01T09:00:00+00:00"
+
+
+def test_a_one_shot_due_now_saves_where_no_card_is_shown(cron_store, monkeypatch):
+    """Create's grace window keeps a just-past one-shot; with no card shown nothing can be stale."""
+    _mode_off(monkeypatch)
+    now = cron_store._hermes_now()
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "create", "name": "Now", "prompt": "Ping the user.",
+        "schedule": (now - timedelta(seconds=30)).isoformat()}))
+    assert result["success"] is True, result

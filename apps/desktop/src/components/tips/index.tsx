@@ -20,7 +20,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { hasTipAnchor, resolveTipAnchor } from '@/lib/tips/anchor'
+import { tipAnchorState } from '@/lib/tips/anchor'
 import { recordFriction } from '@/store/desktop-metrics'
 import { $activeTip, dismissTip, retireActiveTip } from '@/store/tips'
 
@@ -46,16 +46,14 @@ export function TipHost() {
     }
 
     const sync = () => {
-      const found = resolveTipAnchor(document, tip.targets)
+      const state = tipAnchorState(document, tip.targets)
 
-      if (found) {
-        setAnchor(previous => (previous === found ? previous : found))
-      } else if (hasTipAnchor(document, tip.targets)) {
-        // Still there, with something over it (a menu, a dialog, a toast): step back until it clears.
-        setAnchor(null)
-      } else {
+      if (state === 'gone') {
         // Whatever it was about is gone; so is the reason to point at it.
         dismissTip()
+      } else {
+        // Covered (a menu, a dialog, a toast): step back until it clears.
+        setAnchor(state === 'covered' ? null : state)
       }
     }
 

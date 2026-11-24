@@ -19,56 +19,55 @@
  *
  * Covered is not gone. A menu, a dialog or a toast passes over an anchor for a moment; a pane that
  * closes takes it away. A tip that is already up waits out the first and ends on the second
- * (`hasTipAnchor`), so opening a menu does not spend a tip the user was about to read.
+ * (`tipAnchorState`), so opening a menu does not spend a tip the user was about to read.
  */
 
-/** The first target that resolves to a visible, on-screen element. */
-export function resolveTipAnchor(doc: Document, targets: readonly string[]): HTMLElement | null {
+/** The first target that can be pointed at now; else whether any is still there under a cover (or
+ *  off screen), or all are gone. */
+export function tipAnchorState(doc: Document, targets: readonly string[]): 'covered' | 'gone' | HTMLElement {
+  let state: 'covered' | 'gone' = 'gone'
+
   for (const selector of targets) {
     const element = doc.querySelector<HTMLElement>(selector)
+    const standing = element ? anchorStanding(element) : 'gone'
 
-    if (element && isTipAnchorVisible(element)) {
-      return element
+    if (standing === 'visible') {
+      return element!
+    }
+
+    if (standing === 'covered') {
+      state = 'covered'
     }
   }
 
-  return null
+  return state
 }
 
-/** Whether a tip's subject is still there: one of its targets laid out in a pane that is shown,
- *  whatever stands over it for now. */
-export function hasTipAnchor(doc: Document, targets: readonly string[]): boolean {
-  return targets.some(selector => {
-    const element = doc.querySelector<HTMLElement>(selector)
+/** The first target that resolves to a visible, on-screen element. */
+export function resolveTipAnchor(doc: Document, targets: readonly string[]): HTMLElement | null {
+  const state = tipAnchorState(doc, targets)
 
-    return element !== null && isTipAnchorPresent(element)
-  })
+  return typeof state === 'string' ? null : state
 }
 
-function isTipAnchorPresent(element: HTMLElement): boolean {
-  if (element.closest('[data-pane-hidden]')) {
-    return false
-  }
-
+function anchorStanding(element: HTMLElement): 'covered' | 'gone' | 'visible' {
   const rect = element.getBoundingClientRect()
 
-  return rect.width >= 8 && rect.height >= 8
-}
-
-function isTipAnchorVisible(element: HTMLElement): boolean {
-  if (!isTipAnchorPresent(element) || element.closest('[inert], [aria-hidden="true"]')) {
-    return false
+  if (element.closest('[data-pane-hidden]') || rect.width < 8 || rect.height < 8) {
+    return 'gone'
   }
 
-  const rect = element.getBoundingClientRect()
   const view = element.ownerDocument.defaultView
 
   if (!view) {
-    return true
+    return 'visible'
   }
 
-  if (!(rect.bottom > 0 && rect.top < view.innerHeight && rect.right > 0 && rect.left < view.innerWidth)) {
-    return false
+  if (
+    element.closest('[inert], [aria-hidden="true"]') ||
+    !(rect.bottom > 0 && rect.top < view.innerHeight && rect.right > 0 && rect.left < view.innerWidth)
+  ) {
+    return 'covered'
   }
 
   // The middle of what is on screen of it: an anchor half off the window's edge is still hit there.
@@ -77,5 +76,5 @@ function isTipAnchorVisible(element: HTMLElement): boolean {
   const hit = element.ownerDocument.elementFromPoint(x, y)
 
   // A pointer-transparent anchor is hit through to what is under it: its own container still counts.
-  return hit !== null && (element.contains(hit) || hit.contains(element))
+  return hit !== null && (element.contains(hit) || hit.contains(element)) ? 'visible' : 'covered'
 }

@@ -171,6 +171,38 @@ def _rotating_override_source(launch_home, fetch_prelude: str = "") -> None:
     (launch_home / "vault.txt").write_text("v1", encoding="utf-8")
 
 
+def test_the_launch_launchers_env_file_template_follows_the_frozen_env_through_a_rotation_and_removal(launch_home):
+    """The plugin host's launcher builds the launch scope again at a start, its ``.env`` templates resolved
+    against the frozen launch env. A template naming a source's value follows that env as it follows the
+    source: the rotated value after a rotation, the template's default after the source is removed, as a
+    launch-profile body reads it."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+
+    _rotating_override_source(launch_home)
+    (launch_home / ".env").write_text("RUNNER_TAG=${VAULT_ONLY_KEY:-none}/tag\n", encoding="utf-8")
+    config = launch_home / "config.yaml"
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the source writes v1
+    activate_multi_profile_hosting()
+    try:
+        seen = []
+        (launch_home / "vault.txt").write_text("v2", encoding="utf-8")
+        for change in ("rotate", "remove"):
+            if change == "remove":
+                config.write_text(config.read_text(encoding="utf-8").replace(
+                    "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+            with _profile_runtime_scope(launch_home):
+                manager.discover_and_load(force=True)
+            seen.append((launch_secret_scope(launch_home, frozen_templates=True)["RUNNER_TAG"],
+                         launch_secret_scope(launch_home)["RUNNER_TAG"]))
+        assert seen == [("v2/tag", "v2/tag"), ("none/tag", "none/tag")]
+    finally:
+        set_multiplex_active(False)
+
+
 def test_a_concurrent_write_during_the_fetch_never_enters_the_frozen_launch_env(launch_home):
     """Another thread writes the source's name into os.environ while the vault fetch runs (stood in
     for by the fetch itself, once foreign.txt exists); the source re-applies its unchanged value.

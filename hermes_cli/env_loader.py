@@ -434,12 +434,17 @@ def _peel_dotenv_output(env: dict[str, str], published: dict[str, tuple[str | No
     return env
 
 
-def dotenv_lookup_from(env: dict[str, str]) -> dict[str, str]:
-    """What ``${VAR}`` resolves against in *env*, a copy of ``os.environ`` just taken: this process's dotenv
-    output peeled back by the publication record of that moment, which a later reload replaces. For
-    ``launch_profile_policy``'s capture, under its own lock: the record is copied without the dotenv lock,
-    whose holders take that one."""
-    return _peel_dotenv_output(dict(env), dict(_DOTENV_PUBLISHED), None)
+def dotenv_publication_record() -> dict[str, tuple[str | None, str, int]]:
+    """A copy of this process's dotenv publication record (``_DOTENV_PUBLISHED``), for
+    ``launch_profile_policy``'s capture, under its own lock: copied without the dotenv lock, whose
+    holders take that one."""
+    return dict(_DOTENV_PUBLISHED)
+
+
+def dotenv_lookup_from(env: dict[str, str], record: dict[str, tuple[str | None, str, int]]) -> dict[str, str]:
+    """What ``${VAR}`` resolves against in *env*, a copy of ``os.environ`` taken with *record*: this
+    process's dotenv output peeled back by that record (a later reload's record no longer matches it)."""
+    return _peel_dotenv_output(dict(env), record, None)
 
 
 def _resolve_dotenv_assignments(

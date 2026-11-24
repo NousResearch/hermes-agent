@@ -59,3 +59,33 @@ def test_models_prefix_is_mapped_on_the_id_the_client_sends():
 
     assert body["model"] == "models/gemini-4-neon"
     assert "thinking_level" not in body["generation_config"]
+
+
+@pytest.mark.parametrize("model", ["gemini/gemini-4-carbon", "google/gemini-4-carbon", "GEMINI/gemini-4-carbon"])
+def test_prefixed_listed_model_gets_its_own_unset_default(model):
+    """No effort set: a prefixed Carbon id gets Carbon's default level with thoughts on, like the bare id,
+    through the profile and on the posted request."""
+    profile = providers.get_provider_profile("solstice")
+
+    assert profile.build_extra_body(model=model, reasoning_config=None, base_url=_BASE) == {
+        "thinking_config": {"includeThoughts": True, "thinkingLevel": "medium"},
+    }
+    body = _send(model, None)
+    assert body["model"] == "gemini-4-carbon"
+    assert (body["generation_config"]["thinking_level"], body["generation_config"]["thinking_summaries"]) == (
+        "medium", "auto")
+
+
+@pytest.mark.parametrize("model", ["gemini/gemini-4-carbon", "google/gemini-4-carbon", "GEMINI/gemini-4-carbon"])
+def test_setup_effort_picker_offers_carbons_levels_for_a_prefixed_id(model):
+    from hermes_cli.main_provider_setup import _main_model_reasoning_efforts
+
+    assert _main_model_reasoning_efforts(model, "solstice") == ["low", "medium", "high"]
+
+
+def test_models_prefix_is_not_a_listed_model_for_the_setup_picker_either():
+    """Same rule as the client, which sends ``models/...`` as typed: not the listed model's table."""
+    from hermes_cli.main_provider_setup import _main_model_reasoning_efforts
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    assert _main_model_reasoning_efforts("models/gemini-4-carbon", "solstice") == list(VALID_REASONING_EFFORTS)

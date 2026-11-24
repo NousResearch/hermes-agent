@@ -44,8 +44,12 @@ _THINKING_LEVELS: dict[str, tuple[tuple[str, ...], str]] = {
 
 
 def _thinking_levels(model: str | None) -> tuple[tuple[str, ...], str] | None:
-    """The listed model's (levels, default), or None for an id typed outside the list."""
-    return _THINKING_LEVELS.get((model or "").strip().lower().removeprefix("google/"))
+    """The listed model's (levels, default), or None for an id typed outside the list. Keyed on the id the
+    client sends (``bare_gemini_model_id``: ``gemini/`` and ``google/`` stripped), so a prefixed listed
+    model gets its own levels and default."""
+    from agent.reasoning_effort import bare_gemini_model_id
+
+    return _THINKING_LEVELS.get(bare_gemini_model_id(model).lower())
 
 
 def _setup_efforts(model: str) -> tuple[str, ...] | None:

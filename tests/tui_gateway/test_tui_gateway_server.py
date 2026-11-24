@@ -12074,6 +12074,25 @@ def test_plugin_slash_command_runs_under_the_session_env(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") in ("", None)
 
 
+def test_command_dispatch_null_arg_behaves_like_bare_command(monkeypatch):
+    # command.dispatch declares ``arg: str | None = None``, so an explicit null is legal on the wire
+    # and must behave like a bare ``/name``. ``params.get("arg", "")`` answers None when the key is
+    # PRESENT with a null value; the None reached the handler, crashed the realistic ``arg.strip()``
+    # below, and the caller's suppression turned it into the routing refusal 4018 for a command
+    # that exists.
+    def handler(arg):
+        return f"got[{arg.strip()}]"
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler",
+                        lambda name: handler if name == "nullarg" else None)
+    monkeypatch.setattr(server, "_sessions", {"sid-n": {"session_key": "agent:tui:key-n", "cwd": ""}})
+
+    res = server._methods["command.dispatch"]("d", {"name": "nullarg", "arg": None, "session_id": "sid-n"})
+
+    assert "error" not in res, res
+    assert res["result"] == {"type": "plugin", "output": "got[]"}
+
+
 def test_session_status_reads_live_gateway_agent(monkeypatch):
     agent = types.SimpleNamespace(
         model="live-model",

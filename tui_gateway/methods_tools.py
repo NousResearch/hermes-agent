@@ -987,7 +987,11 @@ _SLASH_BUILTINS = {
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
-    name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
+    # ``arg`` is declared ``str | None = None`` on the wire, so an explicit null is legal and must
+    # behave like a bare ``/name``: ``params.get("arg", "")`` answers None when the key is PRESENT
+    # with a null value, and the None then crashed handlers that split/strip it — a suppressed
+    # plugin crash fell through to the bogus routing refusal 4018.
+    name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg") or ""
     session = _sessions.get(params.get("session_id", ""))
 
     # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding

@@ -206,3 +206,23 @@ def test_a_newer_yaml_disable_under_the_old_key_beats_a_gateway_json_enable(tmp_
     home = _home(tmp_path, env=_CREDS, config="platforms:\n  qqbot-platform:\n    enabled: false\n")
     (home / "gateway.json").write_text(json.dumps({"platforms": {"qqbot": {"enabled": True}}}), encoding="utf-8")
     assert _qqbot_in_use(home) is False
+
+
+@pytest.mark.parametrize("collision", [False, True])
+def test_saved_qqbot_preset_still_selects_core_tools_at_runtime(monkeypatch, collision):
+    from cron.scheduler import _resolve_cron_enabled_toolsets
+    from model_tools import _select_tool_names
+    from tools.registry import ToolRegistry
+    from toolsets import _resolve_toolset_memo
+
+    registry = ToolRegistry()
+    monkeypatch.setattr("tools.registry.registry", registry)
+    _resolve_toolset_memo.clear()
+    if collision:
+        registry.register("mcp_fixture_echo", "mcp-hermes-qqbot", {"name": "mcp_fixture_echo"}, lambda *_: "")
+        registry.register_toolset_alias("hermes-qqbot", "mcp-hermes-qqbot")
+
+    picks = _resolve_cron_enabled_toolsets({"enabled_toolsets": ["hermes-qqbot", "file"]}, {})
+    tools = _select_tool_names(picks, None, quiet_mode=True)
+    assert {"terminal", "web_search"} <= tools
+    assert ("mcp_fixture_echo" in tools) is collision

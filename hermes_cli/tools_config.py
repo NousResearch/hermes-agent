@@ -483,10 +483,10 @@ def _configurable_keys() -> set[str]:
 
 
 def _left_core_core_bundles() -> set[str]:
-    """``hermes-<platform>`` of platforms that left core and whose plugin registers no toolset (QQ Bot): core's
-    bundle carried only core tools, so it still reads as them and the picker still treats it as a preset."""
-    from hermes_cli.left_core_migration import LEFT_CORE
-    return {f"hermes-{f.platform}" for f in LEFT_CORE if f.platform and not f.toolsets}
+    """``toolsets.RETIRED_CORE_BUNDLES`` (``hermes-qqbot``): core's bundle carried only core tools, so it still
+    reads as them and the picker still treats it as a preset."""
+    from toolsets import RETIRED_CORE_BUNDLES
+    return set(RETIRED_CORE_BUNDLES)
 
 
 def _resolve_preset(name: str) -> list[str]:

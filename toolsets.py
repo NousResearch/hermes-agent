@@ -231,6 +231,12 @@ TOOLSETS = {
     ),
 }
 
+# Core-tools-only ``hermes-<platform>`` bundles of platforms that left core (their plugin registers no toolset).
+# A saved selection naming one (a cron job's ``enabled_toolsets``, a ``platform_toolsets`` row, delegation) still
+# resolves to the core tools it carried; they stay out of TOOLSETS, ``hermes-gateway`` and every listing so no
+# surface advertises an adapter core no longer ships.
+RETIRED_CORE_BUNDLES = {"hermes-qqbot": _bundle("QQ Bot toolset (retired; QQ Bot is the qqbot plugin)")}
+
 # Toolset -> the session platforms it exists for, from the specs that carry ``platforms``.
 TOOLSET_SESSION_PLATFORMS = {name: spec["platforms"] for name, spec in TOOLSETS.items() if "platforms" in spec}
 
@@ -275,7 +281,7 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[st
     ``_get_platform_tools`` uses False so that a tool registered into a toolset but absent from a platform's
     static composite does not drop the whole toolset from inference. See issue #49622.
     """
-    toolset = TOOLSETS.get(name)
+    toolset = TOOLSETS.get(name) or RETIRED_CORE_BUNDLES.get(name)
     if not include_registry:
         return {**toolset, "tools": list(toolset.get("tools", [])), "includes": list(toolset.get("includes", []))} if toolset else None
 
@@ -483,7 +489,7 @@ def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str
 
 
 def validate_toolset(name: str) -> bool:
-    return (name in {"all", "*"} or name in TOOLSETS
+    return (name in {"all", "*"} or name in TOOLSETS or name in RETIRED_CORE_BUNDLES
             or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
 
 

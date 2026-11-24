@@ -184,6 +184,7 @@ def install_from_quarantine(
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
+    from tools.skills_sync import _rmtree_writable
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -196,7 +197,21 @@ def install_from_quarantine(
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
     if install_dir.exists():
-        shutil.rmtree(install_dir)
+        # The installed tree may carry read-only directories: Nix/deb/rpm copies keep r-x, and Windows keeps
+        # FILE_ATTRIBUTE_READONLY, which plain rmtree cannot clear — the update then dies halfway through the
+        # removal (#159440). Same helper the bundled sync uses, with this module's own skills root.
+        try:
+            _rmtree_writable(install_dir, root=_skills_dir())
+        except ValueError as exc:  # the guard refused a target _check_install_target had accepted
+            exc.add_note("nothing was removed; the install path resolved under a different skills root")
+            raise
+        except OSError as exc:
+            # Depth-first deletion means the destination may already be emptied at this point; say so rather than
+            # leaving a bare PermissionError to be read as "the update did nothing".
+            exc.add_note(f"removal may have stopped part way, so {install_dir} can now be incomplete — re-run the "
+                         "update, and clear the read-only attribute on it first if it recurs (a file another "
+                         "process holds open looks the same)")
+            raise
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -245,7 +260,8 @@ def install_from_quarantine(
 
 def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
-    from tools.skills_hub import HubLockFile, append_audit_log
+    from tools.skills_hub import HubLockFile, _skills_dir, append_audit_log
+    from tools.skills_sync import _rmtree_writable
     lock = HubLockFile()
     entry = lock.get_installed(skill_name)
     if not entry:
@@ -257,7 +273,10 @@ def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     except ValueError as exc:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
     if install_path.exists():
-        shutil.rmtree(install_path)
+        try:
+            _rmtree_writable(install_path, root=_skills_dir())  # read-only dirs: see install_from_quarantine
+        except (OSError, ValueError) as exc:  # ValueError: the guard refused a path the lock already accepted
+            return False, f"Could not remove {install_path} (it may be incomplete now): {exc}"
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
     from hermes_cli.observability.shared_metrics_disabled import record_skill_removed

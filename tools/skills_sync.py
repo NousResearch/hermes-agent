@@ -459,27 +459,42 @@ def sync_skills(quiet: bool = False) -> dict:
         "skipped_opt_out": essential_only}  # lets callers report "opted out", not a normal sync
 
 
-def _rmtree_writable(path: Path) -> None:
-    """rmtree that first makes read-only entries writable (Nix/deb/rpm keep r-x dirs; unlinking
-    a child needs a writable parent, so chmod both). Scope guard: refuses anything not a STRICT
-    child of the active skills root (bad join / missing HERMES_HOME / malicious manifest entry).
+def _rmtree_writable(path: Path, *, root: Path | None = None) -> None:
+    """rmtree that first makes read-only entries writable (Nix/deb/rpm keep r-x dirs; Windows keeps
+    directories with FILE_ATTRIBUTE_READONLY; unlinking a child needs a writable parent, so chmod both).
+    Scope guard: refuses anything not a STRICT child of *root* — the active skills root by default — so a
+    bad join / missing HERMES_HOME / malicious manifest entry cannot reach outside it. Callers that already
+    validated a target against their own root (the hub install path) pass that root in: any incidental
+    ancestor would satisfy the guard, so it has to be the same value the caller resolved the target against.
 
     Handles immutable package sources (Nix store, deb/rpm installs) that preserve read-only permissions on
-    copied files *and* directories (``r-xr-xr-x``). Removing a child requires write permission on its parent
-    directory, so the retry handler makes the failing path **and its parent** writable before re-attempting.
-    See #34860, #34972.
+    copied files *and* directories (``r-xr-xr-x``) and Windows trees carrying the read-only attribute, which
+    ``shutil.rmtree`` never clears (#159440). Removing a child needs write permission on its parent directory,
+    so the retry handler makes the failing path **and its parent** writable before re-attempting. See #34860,
+    #34972.
     """
     target = Path(path).resolve()
-    skills_root = _skills_dir().resolve()
+    skills_root = (root or _skills_dir()).resolve()
     if skills_root not in target.parents:
         raise ValueError(f"refusing to rmtree {target!r}: not strictly under {skills_root!r} (scope guard — see #48200)")
 
-    def _on_error(func, fpath, exc_info):
+    def _on_error(func, fpath, _exc):
         for p in (os.path.dirname(fpath), fpath):
             with suppress(OSError):
-                os.chmod(p, stat.S_IRWXU)
-        func(fpath)
-    shutil.rmtree(path, onerror=_on_error)
+                os.chmod(p, os.stat(p).st_mode | stat.S_IWUSR | stat.S_IXUSR)  # keep the bits it was shared with
+        # The retry re-opens what it failed on: ``os.open`` hands back a descriptor and ``os.scandir`` an iterator,
+        # and rmtree never sees either. ``type(...) is int``, not isinstance: ``os.path.islink`` answers True, and a
+        # bool IS an int, so isinstance would close fd 1 (stdout) for a symlinked target.
+        opened = func(fpath)
+        if type(opened) is int:
+            with suppress(OSError):
+                os.close(opened)
+        elif (close := getattr(opened, "close", None)) is not None:  # os.scandir's iterator, not an fd
+            close()
+    if sys.version_info >= (3, 12):  # ``onerror`` is deprecated there; the callback signature is the same
+        shutil.rmtree(path, onexc=_on_error)
+    else:
+        shutil.rmtree(path, onerror=_on_error)
 
 
 if __name__ == "__main__":

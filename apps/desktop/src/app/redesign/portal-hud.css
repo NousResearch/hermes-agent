@@ -34,3 +34,9 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* The HUD has no stage header row: its transcript keeps the HUD's own fade from the top
+   (styles.css), which the stage's header-row mask would otherwise replace. */
+:root[data-shell='portal'] [data-hud-shell] [data-chat-surface] [data-slot='aui_thread-viewport'] {
+  mask-image: linear-gradient(to bottom, transparent 0, var(--portal-raw-black) var(--hud-top-fade, 3.5rem));
+}

@@ -34,11 +34,14 @@
 
 /* Lines scrolling up fade out beneath the stage header row, and are gone by the time they reach
    its text (the machine // agent line, centred in the row): the fade runs over the row's lower
-   third. A static mask on the scroller: no repaint per scroll frame. */
+   third, most of it in the first half so a line does not look sliced. That third clears the text
+   only while it is one centred line no taller than a third of the row. A static mask on the
+   scroller: no repaint per scroll frame. */
 :root[data-shell='portal'] [data-chat-surface] [data-slot='aui_thread-viewport'] {
   mask-image: linear-gradient(
     to bottom,
     transparent calc(var(--portal-stage-header-height) * 2 / 3),
+    color-mix(in srgb, var(--portal-raw-black) 65%, transparent) calc(var(--portal-stage-header-height) * 5 / 6),
     var(--portal-raw-black) var(--portal-stage-header-height)
   );
 }

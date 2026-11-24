@@ -176,7 +176,10 @@
         "hermes_cli.setup:prompt",
         "hermes_cli.setup:prompt_choice",
         "hermes_cli.setup:prompt_yes_no",
-        "hermes_cli.cli_output"
+        "hermes_cli.cli_output",
+        "gateway.response_filters:is_autonomous_silence_response",
+        "gateway.response_filters:is_intentional_silence_response",
+        "gateway.response_filters:strip_trailing_silence_marker"
       ]
     },
     {

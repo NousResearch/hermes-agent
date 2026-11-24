@@ -362,6 +362,7 @@ import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPat
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
+import { guardMacApplicationsLaunch, resolveMacAppBundle } from './mac-applications-guard'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -3653,7 +3654,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
         log
       })
     },
-    runningAppBundle,
+    runningAppBundle: () => resolveMacAppBundle(app.getPath('exe'), process.platform),
     markQuittingForHandoff: () => {
       isQuittingForHandoff = true
     },
@@ -4471,22 +4472,6 @@ async function handOffWindowsBootstrapRecovery(reason) {
   )
 
   return true
-}
-
-// The running app's .app bundle (packaged macOS): execPath is
-// <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
-function runningAppBundle() {
-  if (!IS_MAC) {
-    return null
-  }
-
-  let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
-
-  for (let i = 0; i < 2; i++) {
-    dir = path.dirname(dir)
-  } // -> .../X.app
-
-  return dir.endsWith('.app') ? dir : null
 }
 
 // macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
@@ -17320,7 +17305,20 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  const macGuard = await guardMacApplicationsLaunch({
+    app,
+    dialog,
+    appName: APP_NAME,
+    isPackaged: IS_PACKAGED,
+    installStamp: INSTALL_STAMP,
+    log: rememberLog
+  })
+
+  if (macGuard.action === 'relaunching') {
+    return
+  }
+
   if (NVIDIA_DRIVER_MAJOR !== null) {
     rememberLog(nvidiaEglRecovery.startupMessage)
   }

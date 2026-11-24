@@ -51,6 +51,10 @@ _SHUTDOWN_GRACE_SECS = 3.0
 # that kills the host while loading is not reloaded, so one bad plugin cannot crash-loop the rest.
 _RESTART_BUDGET = 3
 _RESTART_WINDOW_SECS = 600.0
+# The launcher a host start in progress chose, lent to a provider extraction that start runs (a cold one, while it
+# builds the child's env, in the host's context, so for the same home) so it does not choose again.
+_START_LAUNCHER: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "plugin_host_start_launcher", default=None)
 
 
 def _hosted_ambient_credentials(home: Path, own: Optional[bool] = None,
@@ -137,9 +141,13 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list],
 
 
 def extraction_launcher(home: Path) -> list:
-    """The launcher a provider-extraction child for *home* runs under: the one a host start for *home* chooses
-    (``_launcher_for``, with ``_is_launch_home``'s answer), whichever context the extraction runs in. Only the
-    launcher: that child's env carries no credentials."""
+    """The launcher a provider-extraction child for *home* runs under: the one the host start for *home* in progress
+    chose (``_START_LAUNCHER``), else the one a host start for *home* would choose (``_launcher_for``, with
+    ``_is_launch_home``'s answer), whichever context the extraction runs in. Only the launcher: that child's env
+    carries no credentials."""
+    lent = _START_LAUNCHER.get()
+    if lent is not None:
+        return list(lent)
     from hermes_cli.plugin_isolation import host_launcher
     return _launcher_for(home, host_launcher, _is_launch_home(home))[0]
 
@@ -199,22 +207,27 @@ class PluginHost:
         context.run(bind)
         return context
 
-    def _argv(self, own: bool) -> tuple[list, Optional[dict[str, str]]]:
-        """The host's argv, and the env its launcher's ``.env`` templates resolved against (``_launcher_for``)."""
+    def _launcher(self, own: bool) -> tuple[list, Optional[dict[str, str]]]:
+        """The host's launcher, and the env its ``.env`` templates resolved against (``_launcher_for``)."""
         from hermes_cli.plugin_isolation import host_launcher
-        # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
-        # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
         # For the home this start took (``_home``), not ``owner_home`` read again nor the caller's binding, either
         # of which can name a link renamed since. Not in the host's context either: its secret scope holds only
         # the profile's files, without the launch profile's env-only keys.
-        launcher, templates = _launcher_for(self._home, host_launcher, own)
-        return [*launcher, sys.executable, "-P", "-m", _HOST_MODULE], templates
+        return _launcher_for(self._home, host_launcher, own)
 
-    def _env(self, own: bool, templates: Optional[dict[str, str]]) -> dict[str, str]:
+    def _env(self, own: bool, templates: Optional[dict[str, str]], launcher: list) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True,
                                      own_profile=own, template_env=templates)
-        env.update(self._base_context.run(_hosted_ambient_credentials, self._home, own, templates))
+
+        def ambient() -> dict[str, str]:  # a cold provider extraction here runs under this start's launcher
+            token = _START_LAUNCHER.set(launcher)
+            try:
+                return _hosted_ambient_credentials(self._home, own, templates)
+            finally:
+                _START_LAUNCHER.reset(token)
+
+        env.update(self._base_context.run(ambient))
         repo_root = project_root_str()
         # Absolute entries only: the host starts in the profile home, where an empty or relative entry
         # (``PYTHONPATH=:/x``) would put that home back on the import path that -P keeps it off.
@@ -240,9 +253,12 @@ class PluginHost:
                     self._home = previous  # so the next start builds the context for the new home again
                     raise
             own = _is_launch_home(self._home)  # one answer for the launcher and the child's env
-            argv, templates = self._argv(own)  # the launcher's .env, resolved once for the child's env too
-            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=self._env(own, templates), cwd=str(self._home),
+            launcher, templates = self._launcher(own)  # the launcher's .env, resolved once for the child's env too
+            # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
+            # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
+            argv = [*launcher, sys.executable, "-P", "-m", _HOST_MODULE]
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    env=self._env(own, templates, launcher), cwd=str(self._home),
                                     bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()

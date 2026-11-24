@@ -179,6 +179,14 @@ yuanbao_in_use = platform_in_use(
     cred_sets=((("app_id", "YUANBAO_APP_ID", "YUANBAO_APP_KEY"), ("app_secret", "YUANBAO_APP_SECRET")),),
     toolsets=("yuanbao", "hermes-yuanbao"))
 
+# QQ Bot: core's is_connected took app_id + client_secret from the block's extra, else QQ_APP_ID + QQ_CLIENT_SECRET.
+# ``hermes-qqbot`` carried only core tools; selected for another platform it is still use, as hermes-homeassistant
+# was: it resolves again once the plugin registers the platform.
+qqbot_in_use = platform_in_use(
+    "qqbot", plugin_keys=("platforms/qqbot", "qqbot-platform"),
+    cred_sets=((("app_id", "QQ_APP_ID"), ("client_secret", "QQ_CLIENT_SECRET")),),
+    toolsets=("hermes-qqbot",))
+
 
 # ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports
 # hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
@@ -201,7 +209,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
 
 # Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
 # platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
-_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant")
+_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant", "qqbot")
 
 _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
                    "maintained going forward. Fixes from the community are welcome.")
@@ -211,6 +219,20 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
     # Core's adapter ignored a bare ``yuanbao`` in plugins.disabled; the catalog plugin does not, and the
     # automatic install keeps the entry: its kept-off notice (_install_locked) names the enable command.
     return _YUANBAO_NOTICE
+
+
+def _labs_notice(plugin: str, label: str) -> Callable[..., str]:
+    """A Labs plugin's migration notice, plus the sentence for a bare *plugin* left in ``plugins.disabled``
+    after the install (core's adapter ignored that name; the catalog plugin does not), as Yuanbao's."""
+    base = (f"{label} is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
+            "maintained going forward. Fixes from the community are welcome.")
+
+    def notice(home: Path, *, process_env: bool = False) -> str:
+        if plugin_present(plugin, home) and _plugins_listed(home, (plugin,))[1]:
+            return (f"{base} plugins.disabled lists '{plugin}', which now turns {label} off; "
+                    f"remove it to keep using {label}.")
+        return base
+    return notice
 
 
 def _auth_store(home: Path) -> dict:
@@ -713,6 +735,18 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
+    ),
+    LeftCoreFeature(
+        # QQ_STT_API_KEY stays on local_env_policy's own short list, as core had it. QQ_* channel ownership
+        # stays profile_channels' ``qqbot`` alias prefix: no tool shares it.
+        plugin="qqbot", label="QQ Bot", in_use=qqbot_in_use, plugin_key="platforms/qqbot",
+        plugin_names=("qqbot-platform",),
+        unchanged="QQ_*/QQBOT_* settings, platforms.qqbot and QQBOT_HOME_CHANNEL are unchanged",
+        secret_env=("QQ_CLIENT_SECRET",),
+        private_env=("QQ_APP_ID", "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS",
+                     "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME", "QQBOT_HOME_CHANNEL_THREAD_ID",
+                     "QQ_MARKDOWN_SUPPORT", "QQ_SANDBOX", "QQ_PORTAL_HOST", "QQ_STT_BASE_URL", "QQ_STT_MODEL"),
+        platform="qqbot", enable_env=("QQ_APP_ID", "QQ_CLIENT_SECRET"), notice=_labs_notice("qqbot", "QQ Bot"),
     ),
 )
 

@@ -136,10 +136,11 @@ def _build_adapter_secret_env() -> frozenset:
     from hermes_cli.profile_channels import config_env_table_keys
     # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
     # clientState, the QQ bot's speech-to-text key, and secrets only a plugin's ``env_overrides``
-    # reads (Feishu webhook keys; Yuanbao's legacy app key, kept while the plugin is absent). Those rows live on the adapter's
+    # reads (Feishu webhook keys; Yuanbao's legacy app key and the QQ bot's client secret, kept while their
+    # Labs plugins are absent: gateway_restart_env reads this set too). Those rows live on the adapter's
     # PlatformEntry, which this import-time policy cannot load without importing every adapter;
     # tests/gateway/test_platform_env_overrides.py pins that every such secret is listed here.
-    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY",
+    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY", "QQ_CLIENT_SECRET",
                        "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN", "YUANBAO_APP_KEY"}
     names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
                  if name in CORE_DECLARED_ENV_NAMES
@@ -573,9 +574,11 @@ _EXTRA_GATE_ENV_PREFIXES = frozenset({"GATEWAY", "QQ"})
 
 @functools.lru_cache(maxsize=1)
 def _static_gate_env_prefixes() -> frozenset:
-    """Built-in ``Platform`` values plus bundled platform plugins (directory names and manifest
+    """Built-in ``Platform`` values, platforms that left core (their ``LEFT_CORE`` row: gates owned while the
+    plugin is absent, as when core shipped them) plus bundled platform plugins (directory names and manifest
     aliases) — fixed for the life of the process, so scanned once."""
-    names = set(_EXTRA_GATE_ENV_PREFIXES)
+    from hermes_cli.left_core_migration import LEFT_CORE
+    names = set(_EXTRA_GATE_ENV_PREFIXES) | {feature.platform for feature in LEFT_CORE if feature.platform}
     try:
         from gateway.config import Platform
         names.update(m.value for m in Platform.__members__.values())

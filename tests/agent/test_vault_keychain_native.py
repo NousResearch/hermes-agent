@@ -17,15 +17,28 @@ from agent import vault_keychain as kc
 from agent.vault_store import VaultStore
 
 _LOGIN = {"identifier_type": "email", "identifier": "ci@example.com", "password": "dummy-pw-not-real-42"}
+_NO_SUCH_LOGON_SESSION = 1312
 
 
 @pytest.fixture
 def os_keychain():
-    """The real backend keyring resolves to; skip where the host has none (not a failure)."""
+    """The real backend keyring resolves to; skip where the host has none (not a failure).
+
+    A Windows runner whose job session has no logon session (``ERROR_NO_SUCH_LOGON_SESSION``, 1312) has a
+    Credential Manager backend that refuses every write: a property of that runner's session, not of
+    Hermes, so it skips too. Any other refusal still fails."""
     try:
         kc.os_keyring()
     except kc.KeychainUnavailable as exc:
         pytest.skip(f"no OS keychain on this host: {exc}")
+    probe = {"storage": "keychain", "service": kc.SERVICE, "account": f"hermes-ci-probe-{uuid.uuid4().hex}"}
+    try:
+        kc.store_key(probe, Fernet.generate_key())
+    except kc.KeychainUnavailable as exc:
+        if getattr(exc.__cause__, "winerror", None) == _NO_SUCH_LOGON_SESSION:
+            pytest.skip(f"this runner's session has no logon session for Credential Manager: {exc.__cause__}")
+        raise
+    kc.delete_key(probe)
     made: list[dict] = []
     yield made
     for ref in made:

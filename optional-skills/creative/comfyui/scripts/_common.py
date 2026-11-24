@@ -527,8 +527,6 @@ def http_request(
             if attempt + 1 < retries and _may_resend(e, trace, replayable):
                 _sleep_backoff(attempt)
                 continue
-            if isinstance(e, RequestNotSent) and trace.redirected:
-                raise ConnectionError(str(e)) from e  # the original request was delivered
             raise
 
     # Should not reach here unless retries was 0
@@ -617,7 +615,8 @@ def _http_once(
             except requests.exceptions.RequestException as e:
                 # Convert to TimeoutError / ConnectionError so the retry loop
                 # picks them up uniformly with the stdlib path.
-                if _requests_never_sent(e):
+                # After a redirect the original request was delivered, so nothing is "not sent".
+                if not trace.redirected and _requests_never_sent(e):
                     raise RequestNotSent(str(e)) from e
                 if isinstance(e, requests.exceptions.Timeout):
                     raise TimeoutError(str(e)) from e
@@ -689,7 +688,7 @@ def _http_once_stdlib(
     except urllib.error.URLError as e:
         # Refused or unresolvable: no byte was sent. A timeout here is ambiguous
         # (connect or read), so it stays a plain unknown-outcome error.
-        if isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
+        if not trace.redirected and isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
             raise RequestNotSent(str(e)) from e
         raise
 

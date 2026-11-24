@@ -4720,7 +4720,7 @@ class TestNativeTaskCardProgress:
 
     @pytest.mark.asyncio
     async def test_native_updates_are_serialized_and_workspace_scoped(self, adapter):
-        team_client = AsyncMock()
+        team_client = AsyncMock(users_info=AsyncMock(return_value={"user": {"team_id": "T1"}}))
         start_count = 0
 
         async def api_call(method, *, json):

@@ -47,6 +47,11 @@ _CARD_DESTINATION_REFUSALS = {
     "No Slack thread target",
     "slack task_card requires a thread anchor",
     "slack task_card requires a thread anchor (Slack streams are thread replies)",
+    # Slack adapter _RECIPIENT_TEAM_UNKNOWN / _RECIPIENT_PAIR_REFUSED (#159617).
+    "slack task_card recipient user's home team unknown (users.info lookup "
+    "failed) — cannot build a valid recipient team/user pair",
+    "slack task_card recipient user not in recipient team (user_not_found) "
+    "— the author's home team is not addressable by this app",
 }
 
 

@@ -131,7 +131,8 @@ def _toolset_listed(config: dict, names: frozenset[str], *, own_platform: str = 
     rows = config.get("platform_toolsets")
     selections = [sel for platform, sel in rows.items() if platform != own_platform] if isinstance(rows, dict) else []
     selections.append(config.get("toolsets"))
-    return any(isinstance(sel, list) and any(str(item) in names for item in sel) for sel in selections)
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value  # older builds saved '["a", "b"]'
+    return any(any(str(item) in names for item in parse_platform_toolsets_value(sel) or ()) for sel in selections)
 
 
 def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
@@ -237,7 +238,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
 
 # Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
 # platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
-_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant")
+_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant", "dingtalk")
 
 _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
                    "maintained going forward. Fixes from the community are welcome.")

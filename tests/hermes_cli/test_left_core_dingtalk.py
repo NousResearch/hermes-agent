@@ -55,6 +55,8 @@ def _dingtalk():
     (_CREDS, "platforms:\n  dingtalk:\n    enabled: false\n", False),
     (_CREDS, "dingtalk:\n  enabled: false\n", False),
     ("", "platform_toolsets:\n  dingtalk: [hermes-dingtalk]\n", False),  # its own row scoped its own sessions
+    # Older ``hermes config set`` builds saved a bare list argument as a string; the runtime still parses it.
+    ("", "platform_toolsets:\n  telegram: '[\"hermes-dingtalk\"]'\n", True),
 ])
 def test_dingtalk_in_use_matches_what_core_ran(tmp_path, env, config, in_use):
     assert lcm.dingtalk_in_use(_home(tmp_path, env=env, config=config)) is in_use
@@ -120,3 +122,30 @@ def test_child_processes_keep_the_dingtalk_strip_set_core_had():
     assert "DINGTALK_CLIENT_SECRET" in policy._ADAPTER_SECRET_ENV
     assert policy.is_profile_gate_env("DINGTALK_ALLOWED_USERS")
     assert policy.is_profile_gate_env("DINGTALK_ALLOW_ALL_USERS")
+
+
+def test_yuanbao_tools_stay_off_in_dingtalk_sessions():
+    """A home upgrading across both removals: core never carried the yb_* tools in hermes-dingtalk."""
+    yuanbao = next(f for f in lcm.LEFT_CORE if f.plugin == "yuanbao")
+    assert "dingtalk" in yuanbao.off_platforms
+
+
+def test_a_restart_keeps_non_platform_left_core_secrets():
+    """Only platform rows' secrets are adapter secrets (a supervised restart strips those); a service unit's
+    CAMOFOX_API_KEY / HERMES_LANGFUSE_SECRET_KEY still reaches the restarted gateway."""
+    from tools.environments import local_env_policy as policy
+    assert "DINGTALK_CLIENT_SECRET" in policy._ADAPTER_SECRET_ENV
+    assert not {"CAMOFOX_API_KEY", "HERMES_LANGFUSE_SECRET_KEY"} & policy._ADAPTER_SECRET_ENV
+
+
+def test_the_plugin_platform_keeps_its_cron_home_target_slot(monkeypatch):
+    """``deliver=origin`` with no origin picks the first platform with a home chat: DingTalk ranked ahead of
+    Feishu in core, and the plugin platform keeps that slot."""
+    from types import SimpleNamespace
+
+    import cron.scheduler_delivery as delivery
+    from gateway.platform_registry import platform_registry
+    entries = [SimpleNamespace(name=n, cron_deliver_env_var=f"{n.upper()}_HOME_CHANNEL") for n in ("feishu", "dingtalk")]
+    monkeypatch.setattr(platform_registry, "plugin_entries", lambda: entries)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *a, **k: None)
+    assert list(delivery._iter_home_target_platforms()) == ["dingtalk", "feishu"]

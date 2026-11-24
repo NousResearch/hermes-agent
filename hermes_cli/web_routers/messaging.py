@@ -104,6 +104,8 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         ("FEISHU_APP_SECRET", "Feishu / Lark app secret", "App secret", {"password": True}),
         ("FEISHU_ENCRYPT_KEY", "Feishu / Lark encrypt key", "Encrypt key", {"password": True}),
         ("FEISHU_VERIFICATION_TOKEN", "Feishu / Lark verification token", "Verification token", {"password": True}),
+        ("DINGTALK_CLIENT_ID", "DingTalk client ID (App key)", "Client ID", {}),
+        ("DINGTALK_CLIENT_SECRET", "DingTalk client secret (App secret)", "Client secret", {"password": True}),
     )
 }
 

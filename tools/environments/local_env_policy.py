@@ -147,7 +147,8 @@ def _build_adapter_secret_env() -> frozenset:
     names |= platform_manifest_secret_envs(source="bundled", strict=True)
     names.update(n.upper() for n in config_env_table_keys() if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
     # A platform that left core: its manifest secrets stay adapter secrets while the plugin is absent.
-    names |= _left_core_env(secrets_only=True)
+    from hermes_cli.left_core_migration import LEFT_CORE
+    names.update(name for feature in LEFT_CORE if feature.platform for name in feature.secret_env)
     return frozenset(names)
 
 

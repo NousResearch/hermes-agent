@@ -9,10 +9,12 @@ import { saveHermesConfig } from '@/hermes'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 
 import {
+  $bargeInEnabled,
   $bargeInThresholdMultiplier,
   $voiceSilenceMs,
   $voiceStopPhrase,
   $voiceStopPhraseConfig,
+  applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
@@ -73,6 +75,26 @@ it('migrates the legacy preference once, not on every refresh', async () => {
       }
     }
   }
+})
+
+it('turning read-aloud off in another window stops this one (Discord: the off toggle did nothing)', async () => {
+  localStorage.clear()
+  vi.resetModules()
+  const prefs = await import('./voice-prefs')
+
+  await prefs.setAutoSpeakReplies(true)
+  expect(prefs.$autoSpeakReplies.get()).toBe(true)
+
+  // The preference sync writes the other window's value, then announces it.
+  localStorage.setItem('hermes.desktop.autoSpeakReplies', 'false')
+  window.dispatchEvent(
+    new StorageEvent('storage', { key: 'hermes.desktop.autoSpeakReplies', newValue: 'false', oldValue: 'true' })
+  )
+  expect(prefs.$autoSpeakReplies.get()).toBe(false)
+
+  // ...and a later config refresh still does not turn it back on.
+  prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: true } })
+  expect(prefs.$autoSpeakReplies.get()).toBe(false)
 })
 
 describe('applyVoiceStopPhraseFromConfig', () => {
@@ -171,6 +193,30 @@ describe('applyBargeInThresholdFromConfig', () => {
 
     applyBargeInThresholdFromConfig(null)
     expect($bargeInThresholdMultiplier.get()).toBeNull()
+  })
+})
+
+// `voice.barge_in` mirrors the gateway's `_arm_barge_listener_if_enabled`
+// (tui_gateway/methods_voice.py): the listener is armed unless the key is
+// explicitly false.
+describe('applyBargeInEnabledFromConfig', () => {
+  it('disarms only an explicit false', () => {
+    applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+    expect($bargeInEnabled.get()).toBe(false)
+
+    applyBargeInEnabledFromConfig({ voice: { barge_in: true } })
+    expect($bargeInEnabled.get()).toBe(true)
+  })
+
+  it('absent, null, or malformed values keep barge-in enabled', () => {
+    for (const voice of [undefined, {}, { barge_in: null }, { barge_in: 'nope' }, { barge_in: 0 }]) {
+      applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+      applyBargeInEnabledFromConfig({ voice })
+      expect($bargeInEnabled.get()).toBe(true)
+    }
+
+    applyBargeInEnabledFromConfig(null)
+    expect($bargeInEnabled.get()).toBe(true)
   })
 })
 

@@ -10,10 +10,12 @@ state; when the messaging gateway owns the session (the TUI is a viewer), both a
 """
 
 import contextlib
+import dataclasses
 import threading
 
 import pytest
 
+from persistence.conversation.sessions import SessionRecord
 from tools import approval, code_kernel
 from tui_gateway import server
 
@@ -33,24 +35,33 @@ def live_kernel(monkeypatch):
     approval.enable_session_yolo(SESSION_KEY)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     yield kernel
     approval.clear_session(SESSION_KEY)
 
 
 def _stored_source(monkeypatch, source):
-    class _FakeDB:
-        def get_session(self, target):
-            return None if source is None else {"id": target, "source": source}
+    record = None if source is None else SessionRecord(
+        **{f.name: None for f in dataclasses.fields(SessionRecord)} | {"source": source})
 
-        def end_session(self, *_a, **_k):
-            pass
+    class _Sessions:
+        def get(self, target):
+            return record
+
+    class _Runtime:
+        def end_unless_ledger_busy(self, *_a, **_k):
+            return True
+
+    class _Handle:
+        sessions = _Sessions()
+        runtime = _Runtime()
 
     @contextlib.contextmanager
     def _profile_db(_session):
-        yield _FakeDB()
+        yield object()
 
     monkeypatch.setattr(server, "_session_db", _profile_db)
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(_Handle()))
 
 
 @pytest.mark.parametrize("source, end_reason", [

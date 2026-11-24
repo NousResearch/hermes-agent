@@ -1,13 +1,9 @@
+import { messages } from '../i18n/runtime.js'
 import { pick } from '../lib/text.js'
 
-export const PLACEHOLDERS = [
-  'Ask me anything…',
-  'Try "explain this codebase"',
-  'Try "write a test for…"',
-  'Try "refactor the auth module"',
-  'Try "/help" for commands',
-  'Try "fix the lint errors"',
-  'Try "how does the config loader work?"'
-]
+export const placeholders = (): string[] => Object.values(messages().composer.placeholders)
 
-export const PLACEHOLDER = pick(PLACEHOLDERS)
+// Picked once per launch by index so the same slot survives a language switch.
+const slot = Math.floor(Math.random() * placeholders().length)
+
+export const placeholder = (): string => placeholders()[slot] ?? pick(placeholders())

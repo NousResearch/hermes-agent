@@ -15,8 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway import run_notifications
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from tests.module_clock import install_module_clock
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -35,7 +37,7 @@ def isolated_registry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import tools.process_registry as pr_module
 
-    monkeypatch.setattr(pr_module, "CHECKPOINT_PATH", tmp_path / "processes.json")
+    monkeypatch.setattr(pr_module, "_checkpoint_path", lambda: tmp_path / "processes.json")
     registry = pr_module.ProcessRegistry()
     monkeypatch.setattr(pr_module, "process_registry", registry)
     return registry
@@ -93,12 +95,16 @@ def _completion_event(*, started_at, session_id="proc_reused"):
     }
 
 
-def _stop_after_sleeps(monkeypatch, runner, count):
+def _stop_after_sleeps(monkeypatch, runner, count, *, minutes_apart=False):
+    """``minutes_apart``: each watcher tick is a minute later, so a refused retry's backoff is due."""
     sleep_calls = 0
+    clock = install_module_clock(monkeypatch, run_notifications) if minutes_apart else None
 
     async def _bounded_sleep(_delay):
         nonlocal sleep_calls
         sleep_calls += 1
+        if clock is not None:
+            clock.now += 60
         if sleep_calls >= count:
             runner._running = False
 
@@ -177,7 +183,7 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
         handle_message=AdmittingHandler(side_effect=[RuntimeError("temporary"), None])
     )
     runner = _runner(adapter)
-    _stop_after_sleeps(monkeypatch, runner, count=3)
+    _stop_after_sleeps(monkeypatch, runner, count=3, minutes_apart=True)
 
     from tools import async_delegation
 
@@ -850,7 +856,7 @@ def test_failed_coalesced_async_batch_releases_claims_and_retries(
         handle_message=AdmittingHandler(side_effect=[RuntimeError("temporary"), None])
     )
     runner = _runner(adapter)
-    _stop_after_sleeps(monkeypatch, runner, count=3)
+    _stop_after_sleeps(monkeypatch, runner, count=3, minutes_apart=True)
 
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
@@ -898,7 +904,8 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):
     """Unavailable owners/transports cannot consume any sibling's durable attempts."""
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_session
     from tools import async_delegation
 
     events = [_async_event(f"deleg_unavailable_{i}") for i in range(batch_size)]
@@ -911,7 +918,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
         _persist_pending_completion(event)
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
-    api = SimpleNamespace(supports_async_delivery=False, _ensure_session_db=lambda: None)
+    api = SimpleNamespace(supports_async_delivery=False, _ensure_store=lambda: None)
     for _restart in range(3):
         runner = _runner(adapter)
         runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
@@ -922,28 +929,31 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
             row = async_delegation.get_durable_delegation(event["delegation_id"])
             assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
 
+    from persistence_assembly import open_persistence, profile_scope
     runner = _runner(adapter)
-    db = SessionDB(tmp_path / "owner.db")
+    store = open_persistence(profile_scope(home=tmp_path / "owner"))
     try:
         if raw:
-            db.create_session("opaque-client-session", "api_server")
-            api._ensure_session_db = lambda: db
+            seed_session(store, "opaque-client-session", "api_server")
+            api._ensure_store, api._store_beside = (lambda: store), (lambda _db: store)
             runner.adapters = {Platform.API_SERVER: api}
         if unavailable == "owner_db":
-            runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value={"ended_at": None}))
+            live = SimpleNamespace(ended_at=None, end_reason=None, source=None, model_config={})
+            runner.session_store.persistence = SimpleNamespace(
+                aio=SimpleNamespace(sessions=SimpleNamespace(get=AsyncMock(return_value=live))))
         assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
         for event in events:
             row = async_delegation.get_durable_delegation(event["delegation_id"])
             assert (row["delivery_state"], row["delivery_attempts"]) == ("delivered", 1)
         if raw:
-            rows = db.get_messages("opaque-client-session")
+            rows = transcript_rows(store, "opaque-client-session")
             assert len(rows) == 1
             assert rows[0]["display_kind"] == "async_delegation_complete"
             adapter.handle_message.assert_not_awaited()
         else:
             adapter.handle_message.assert_awaited_once()
     finally:
-        db.close()
+        store.close()
 
 
 @pytest.mark.parametrize("available", [False, True])
@@ -986,6 +996,14 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
     isolated_registry.completion_queue.put(evt)
     _stop_after_sleeps(monkeypatch, runner, count=3)
+    # The refused event backs off (#140899): each watcher tick is a minute later, so the retry is due.
+    clock = install_module_clock(monkeypatch, run_notifications)
+    bounded_sleep = asyncio.sleep
+
+    async def minute_later(delay):
+        clock.now += 60
+        await bounded_sleep(delay)
+    monkeypatch.setattr(asyncio, "sleep", minute_later)
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()

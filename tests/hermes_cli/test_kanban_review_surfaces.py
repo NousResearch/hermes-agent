@@ -93,7 +93,7 @@ def test_review_tools_redact_handoff_and_route_changes(
 def test_review_tools_are_gated_and_visible_to_kanban_workers(
     review_worker: str,
 ) -> None:
-    import tools.kanban_tools  # noqa: F401 - registers the tools
+    import tools.kanban_tools
     from tools.registry import invalidate_check_fn_cache, registry
     from toolsets import resolve_toolset
 
@@ -323,7 +323,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
 
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
     from hermes_cli import goals
 
     monkeypatch.setattr(

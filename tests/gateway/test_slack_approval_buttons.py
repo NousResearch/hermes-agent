@@ -496,7 +496,7 @@ def test_thread_suspension_requires_a_fresh_context(tmp_path):
         store.suspend_session(entry.session_key)
         assert not adapter._has_active_session_for_thread("C1", "1000.0", "U123")
     finally:
-        store._db.close()
+        store.close_all_db_handles()
 
 
 class TestSessionKeyChatType:
@@ -816,7 +816,6 @@ class TestSlackReactionAuthorizationGate:
 
             async def handle(self, event):
                 self.handled.append(event)
-                return None
 
             def _is_user_authorized(self, source):
                 self.auth_checked.append(source.user_id)

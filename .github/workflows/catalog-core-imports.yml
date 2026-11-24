@@ -1,0 +1,88 @@
+name: Catalog core imports index
+
+# Daily: refresh scripts/ci/catalog_core_imports/, the index of every Hermes import each pinned
+# plugin-catalog entry makes, for the entries whose pin changed since the last run (new entries and
+# repins). The PR check in repo-guards.yml reads that index to tell a core PR which catalog plugins it
+# breaks; it never fetches a plugin itself.
+#
+# Fetching runs no plugin code: `build` checks out only the *.py files at each pin and parses them.
+# Changes land as ONE PR on the bot/catalog-core-imports branch for a maintainer to merge; nothing
+# auto-merges.
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+    inputs:
+      all:
+        description: Re-index every entry, not only the changed pins.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalog-core-imports
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    environment: trusted-automation
+    permissions:
+      contents: write # push bot/catalog-core-imports
+      pull-requests: write # open or update its PR
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install ruamel.yaml
+        uses: ./.github/actions/retry
+        with:
+          command: pip install ruamel.yaml==0.18.17
+
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Re-index the changed pins
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+          ALL: ${{ inputs.all && '--all' || '' }}
+        # $ALL is empty or the one flag above, never PR input.
+        run: python3 scripts/ci/catalog_core_imports.py build $ALL
+
+      - name: Open or update the index PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BOT_BRANCH: bot/catalog-core-imports
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- scripts/ci/catalog_core_imports/)" ]; then
+            echo "The index matches every catalog pin."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A scripts/ci/catalog_core_imports/
+          git commit -q -m "chore(catalog): refresh the core-imports index for changed pins"
+          # Bot-only branch, rebuilt from main every run.
+          git push --force origin HEAD:"$BOT_BRANCH"
+          printf '%s\n' "Refreshes \`scripts/ci/catalog_core_imports/\` for catalog entries added or repinned since the last run, so the PR check that names the catalog plugins a core change breaks reads their current imports." > "$RUNNER_TEMP/body.md"
+          pr=$(gh pr list --head "$BOT_BRANCH" --state open --json number --jq '.[0].number')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --head "$BOT_BRANCH" --base main \
+              --title "Catalog: refresh the core-imports index for changed pins" \
+              --body-file "$RUNNER_TEMP/body.md"
+          fi

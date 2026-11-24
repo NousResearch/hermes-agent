@@ -1,4 +1,10 @@
+import type { BrowserWindow } from 'electron'
+
 export const OVERLAY_FALLBACK_WIDTH = 144
+
+export function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+}
 
 interface TitleBarOverlayOptionsInput {
   platform?: 'linux' | 'mac' | 'windows' | 'wslg'
@@ -7,6 +13,8 @@ interface TitleBarOverlayOptionsInput {
   color?: string
   foreground?: string | null
   dark?: boolean
+  /** Current webContents zoom factor (1 = 100%); scales the overlay height. */
+  zoomFactor?: number
 }
 
 /**
@@ -43,7 +51,8 @@ export function titleBarOverlayOptions({
   titlebarHeight = 0,
   color,
   foreground,
-  dark = false
+  dark = false,
+  zoomFactor = 1
 }: TitleBarOverlayOptionsInput = {}) {
   // Electron's Linux overlay keeps a narrow, unscaled three-button cluster
   // under WSLg. The renderer owns larger Windows-shaped controls there while
@@ -58,9 +67,43 @@ export function titleBarOverlayOptions({
 
   return {
     color,
-    height: titlebarHeight,
+    height: scaledOverlayHeight(titlebarHeight, zoomFactor),
     symbolColor: foreground || (dark ? '#f7f7f7' : '#242424')
   }
+}
+
+/** Apply refreshed options, tolerating platforms/builds without native overlays. */
+export function applyTitleBarOverlay(
+  win: BrowserWindow | null | undefined,
+  options: ReturnType<typeof titleBarOverlayOptions>
+) {
+  if (!options || typeof options !== 'object') {
+    return
+  }
+
+  try {
+    win?.setTitleBarOverlay?.(options)
+  } catch {
+    // Overlay not supported on this platform/build — leave the frameless
+    // titlebar as-is.
+  }
+}
+
+/**
+ * Scale the native window-controls overlay height with the webContents zoom
+ * factor. Chromium scales the page (including the renderer's titlebar) but
+ * not the native WCO buttons, so at any zoom other than 100% the fixed-height
+ * overlay mismatches the titlebar it sits inside (#81086). Rounds to whole
+ * pixels (the overlay API is integer-based) and never returns less than 1.
+ */
+export function scaledOverlayHeight(titlebarHeight: number, zoomFactor: number): number {
+  if (!Number.isFinite(titlebarHeight) || titlebarHeight <= 0) {
+    return titlebarHeight
+  }
+
+  const factor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1
+
+  return Math.max(1, Math.round(titlebarHeight * factor))
 }
 
 // macOS Tahoe ships as Darwin 25 (Sequoia is 24); the Darwin number is truthful,

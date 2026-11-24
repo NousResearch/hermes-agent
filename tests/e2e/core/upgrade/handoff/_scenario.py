@@ -34,7 +34,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 CRON_DUE_S = 65  # after the update starts: the checkout holds the new code, the old gateway still ticks
 _TASK_RE = re.compile(r"work kanban task (t_[0-9a-f]+)")
-_PORT_IN_USE = re.compile(r"address already in use|port \d+ is (already )?in use|errno 98", re.I)
+_PORT_IN_USE = re.compile(r"address already in use|port \d+ is (already )?in use|errno 98", re.IGNORECASE)
 REPLY = "handoff reply"
 _IMPORT_ERR = re.compile(r"ModuleNotFoundError|ImportError|No module named|cannot import name")
 
@@ -183,6 +183,31 @@ def cron_outputs(inst: X.Install, job_id: str) -> list[str]:
     return sorted(p.name for p in d.iterdir()) if d.is_dir() else []
 
 
+def held_session(inst: X.Install, tid: str) -> str | None:
+    """The managed session the gateway admitted the card's current run into (its ``owner_admitted`` receipt)."""
+    rows = _kanban(inst, "SELECT e.payload FROM task_events e JOIN tasks t ON t.id = e.task_id AND "
+                         "t.current_run_id = e.run_id WHERE e.task_id = ? AND e.kind = 'owner_admitted' "
+                         "ORDER BY e.id DESC LIMIT 1", (tid,))
+    try:
+        return json.loads(rows[0]["payload"])["session_id"] if rows else None
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def gateway_boot_time(inst: X.Install, pid: int) -> float | None:
+    """Epoch seconds of gateway ``pid``'s ``gateway.start`` record in ``logs/gateway-exit-diag.log``."""
+    p = inst.hermes_home / "logs" / "gateway-exit-diag.log"
+    boot = None
+    for line in (p.read_text(errors="replace").splitlines() if p.exists() else []):
+        try:
+            rec = json.loads(line)
+            if rec.get("tag") == "gateway.start" and int(rec.get("pid") or 0) == pid:
+                boot = dt.datetime.fromisoformat(rec["ts"]).timestamp()
+        except (ValueError, KeyError, TypeError):
+            continue
+    return boot
+
+
 def worker_logs(inst: X.Install) -> str:
     return "\n".join(f"--- {p.relative_to(inst.hermes_home)} ---\n{p.read_text(errors='replace')[-2500:]}"
                      for p in sorted(inst.hermes_home.rglob("t_*.log")))
@@ -250,7 +275,7 @@ class WorkerSampler:
                 pass
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "WorkerSampler":
+    def __enter__(self) -> WorkerSampler:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
@@ -299,8 +324,9 @@ def run(column: str, root: Path) -> SimpleNamespace:
                 f"{worker_logs(inst)}\n{inst.diagnostics()}")
 
             o.boots = len(X.gateway_starts(inst))
+            o.held_session = held_session(inst, o.card1)
             o.target = X.publish_target(inst)
-            due = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) + dt.timedelta(seconds=CRON_DUE_S + 5)
+            due = dt.datetime.now(dt.UTC).replace(microsecond=0) + dt.timedelta(seconds=CRON_DUE_S + 5)
             cp = inst.cli("cron", "create", due.isoformat(), f"Reply with the word done. {model.cron_marker}",
                           "--name", model.cron_marker)
             assert cp.returncode == 0, "premise: cron create failed\n" + H.describe(cp)
@@ -310,10 +336,17 @@ def run(column: str, root: Path) -> SimpleNamespace:
             assert not model.cron_calls, "premise: the job ran before it was due"
 
             o.up = inst.update()
+            # Still mid-turn here: the gateway must be the one that started it, its restart pending.
+            o.old_alive_after_update = inst.host.alive(o.old_pid)
             o.sha_after = inst.sha()
+            o.layout_after = {rel: (inst.checkout / rel).is_file() for rel in X.NEXT_MOVE}
 
-            o.ident = X.settle_gateway(inst, o.old_pid)
+            # The held worker has now spanned the whole update. A non-forced update never interrupts
+            # live work (#155532): the gateway stays up with its restart pending and relaunches on
+            # the new commit once that worker finishes, so let it finish before looking for the
+            # relaunched gateway.
             model.release.set()
+            o.ident = X.settle_gateway(inst, o.old_pid)
             o.chat_after = X.chat(inst.port, "hello after the update") if o.ident else (0, "")
             o.card2 = create_card(inst, "created after the update")
 
@@ -333,7 +366,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
             o.dash_new = back if back and back > 0 else None
 
             if o.ident:  # the cron ticker and the kanban dispatcher live in the gateway
-                _quiet_wait(lambda: dt.datetime.now(dt.timezone.utc) > due + dt.timedelta(seconds=5), timeout=600,
+                _quiet_wait(lambda: dt.datetime.now(dt.UTC) > due + dt.timedelta(seconds=5), timeout=600,
                             what="the cron due time")
                 _quiet_wait(lambda: model.cron_calls, timeout=240, what="the cron job's provider call")
                 _quiet_wait(lambda: card_status(inst, o.card1) == "done" and card_status(inst, o.card2) == "done",
@@ -350,6 +383,8 @@ def run(column: str, root: Path) -> SimpleNamespace:
             time.sleep(2)  # let the pid-file watch see what the status probes did
         o.pid_history = watch.history
         o.relaunch = X.relaunch_verdict(inst, o.old_pid, o.boots, o.ident, o.up)
+        o.restart_pending = X.restart_pending_verdict(o.up.stdout + o.up.stderr, o.old_pid, o.held_session or "?")
+        o.relaunch_boot = gateway_boot_time(inst, o.ident["pid"]) if o.ident else None
         o.pid_file = X.pid_file_verdict(inst, o.ident["pid"], watch.history) if o.ident else "no gateway"
         o.dash_listener = listener_pid(inst, o.dash_port)
         o.dash_roots = dashboards(inst)
@@ -406,6 +441,30 @@ class HandoffProperties:
 
     def test_update_moves_the_checkout(self, fleet):
         assert fleet.sha_after == fleet.target, f"the update did not move the checkout\n{fleet.diag}"
+        if fleet.column == "head":
+            old, new = X.NEXT_MOVE
+            assert fleet.layout_after == {old: False, new: True}, (
+                f"NEXT moved {old} to {new}; the checkout has {fleet.layout_after}\n{fleet.diag}")
+
+    def test_update_leaves_busy_gateway_pending_and_relaunches_after_the_work(self, fleet):
+        """#155532: a normal update never stops live work on a timer. While the held kanban worker runs,
+        ``hermes update`` leaves the gateway running, reports its restart as pending and names the
+        worker's managed session as what it waits on; once that worker finishes, the gateway
+        relaunches on the new commit."""
+        o = fleet
+        if not X.restarts_when_idle(o.column):
+            pytest.skip(f"the {o.column} gateway predates restart-when-idle (#155532): its own cap stops the wait")
+        assert o.held_session, f"premise: no owner_admitted session for the held card {o.card1}\n{o.diag}"
+        assert o.old_alive_after_update, (f"the update stopped gateway PID {o.old_pid} while its kanban worker was "
+                                          f"still mid-turn\n{o.diag}")
+        assert not o.restart_pending, f"{o.restart_pending}\n{o.diag}"
+        self._relaunched(o)
+        done = [r for r in o.runs[o.card1] if r["outcome"] == "completed"]
+        assert len(o.runs[o.card1]) == 1 and done, (f"the held worker was interrupted instead of waited for: runs "
+                                                    f"{o.runs[o.card1]}\n{o.diag}")
+        assert o.relaunch_boot is not None and o.relaunch_boot >= done[0]["ended_at"] - 1, (
+            f"the gateway relaunched (boot {o.relaunch_boot}) before the held worker finished "
+            f"(ended {done[0]['ended_at']})\n{o.diag}")
 
     def test_gateway_is_relaunched_once_on_the_new_commit(self, fleet):
         o = fleet
@@ -476,7 +535,7 @@ class HandoffProperties:
 
 def dashboard_verdict(o) -> str:
     """Why no new dashboard serves its port, in words a gate can key on."""
-    if re.search(r"^SyntaxError", o.dash_restarts, re.M) and "restarted:" in o.up.stdout:
+    if re.search(r"^SyntaxError", o.dash_restarts, re.MULTILINE) and "restarted:" in o.up.stdout:
         return (f"the respawned dashboard died parsing its launcher: the update replayed the pre-update argv and "
                 f"Python read a shell script (SyntaxError in logs/dashboard-restart.log); port {o.dash_port} is dark")
     # The sandbox runs no Hermes unit, so any unit the dashboard stop restarts is the one the test runner

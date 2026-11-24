@@ -1,0 +1,21 @@
+name: scar
+repo: https://github.com/TakeshiTGAL/hermes-plugin-scar
+sha: fd87a37f895dd557d9d9efc8ce6fc5e4d8ce3735
+description: 'scar keeps the tool-call shape you denied on a Hermes approval card and stops that shape before it runs. scar does not call a model. hermes chat --cli stores only the choice id deny. The shape is the tool, the argument keys that held an rm command, and the danger tokens, including an rm inside a shell -c body and an rm after env flags, so rm -rf and rm -fr are one scar. Only a tool that has a scar is compared, and only under the argument keys that scar kept, so read_file, write_file, web_search, a sentence, and a touch of nine files are not stopped. A bare rm that dropped a token is not this scar. A path is not part of the match. The block line names the scar, the weekday, the numeric offset, and the words you pressed deny, and it tells the agent not to paraphrase the command and not to run it again. Disclosure — A deny is written only under this profile plugin-data/scar/ledger.json after secret-shaped text is removed by the plugin patterns and then by the Hermes redactor. A secret shape that neither knows can stay in the preview. The ledger is read on every foreign tool call, up to 800KB and 200 scars. An unreadable file stops only a terminal command that carries an rm danger token, and it is left in place. On a tool that has a scar, a kept value over 200,000 characters, a shell nested past 8 levels, or more than 8 wrapper words is not compared and is not run. The block applies on every surface, including yolo, cron, the gateway, and approvals off, once a scar exists. A scar stays until scar_forget removes it or the plugin is disabled. scar_forget asks on the Hermes approval card when it fits in 7 lines of 63 columns. A longer question is not sent, and the scar stays. Each forget asks again. Its rule key changes on every call, so always does not cover the next forget. Yolo and approvals off skip that card when it fits, so that scar can be forgotten with no second prompt. Cron, a single query, a webhook, msgraph_webhook, api_server, and a plugin host do not forget a scar: the hook blocks scar_forget before Hermes''s gate, including after always and including when yolo is on. Hermes checks a permanent allowlist before its own cron deny. Those sessions do not store a new scar. scar_list returns each scar, including the redacted preview, on any platform that can call the tool. hermes tools disable scar --platform <platform> hides the tools on that platform and does not stop the block. Disable the plugin to stop the block. A running gateway keeps the hook until it restarts. The plugin registers scar:keep-a-scar. A skills-tool session adds one system prompt skills index line. -t terminal,scar adds none. Nothing is sent off the computer. Yolo and approvals off skip the Hermes prompt, and this plugin does not add a second prompt. Setting isolation to host blocks new scars. This plugin creates no cron job. The install scan is safe, with 15 medium findings, all in the test tree.'
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: '>=0.21.6'
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-scar#readme
+version: '0.2.4'
+platforms: []
+capabilities:
+  provides_tools:
+  - scar_check
+  - scar_list
+  - scar_forget
+  provides_hooks:
+  - pre_tool_call
+  - post_approval_response
+  provides_middleware: []
+  requires_env: []

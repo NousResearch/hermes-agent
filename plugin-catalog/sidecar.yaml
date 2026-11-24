@@ -1,0 +1,37 @@
+name: sidecar
+title: Sidecar
+repo: https://github.com/rkfshakti/hermes-sidecar
+sha: "33351728ae27beeea6643155e7fc56bc56878a86"
+version: "1.1.0"
+description: >-
+  Remote brain, local hands: a paired execution backend that lets a remote Hermes run
+  terminal, file, patch, search and execute_code commands on the user's local machine.
+  A local daemon applies a workspace boundary and a hard deny list (privilege escalation,
+  recursive root deletes, download-to-shell, Apple Events, keychain access, outbound
+  network shells), and by default asks the person at the keyboard before anything that is
+  not a side-effect-free read-only command. The pairing token is 32 random bytes, stored
+  mode 0600 and compared in constant time; the daemon binds to loopback by default and
+  warns otherwise. Commands run as the local user with a sanitized environment (no
+  provider keys or SSH agent socket), a timeout and a process-group kill; every decision
+  is written to a local JSONL audit log with command text redacted for common secret
+  shapes and no command output stored. The remote plugin makes no network calls of its own
+  beyond the configured daemon URL, has no Python dependencies, no telemetry and no
+  self-updater. Not a sandbox: an approved command runs with the user's privileges; pair
+  with Glassbox for kernel enforcement. macOS and Linux only.
+maintainer: rkfshakti
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/rkfshakti/hermes-sidecar
+readme: true
+image: https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/33351728ae27beeea6643155e7fc56bc56878a86/video/slides/01-title.png
+screenshots:
+  - https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/33351728ae27beeea6643155e7fc56bc56878a86/demo/demo.gif
+platforms: [linux, macos]
+known_issues:
+  - "Under plugins.isolation: host, Hermes skips plugin CLI subcommands and hands the provider an opaque placeholder; run Sidecar in the default in-process plugin isolation."
+capabilities:
+  provides_tools: [sidecar_status, sidecar_audit]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

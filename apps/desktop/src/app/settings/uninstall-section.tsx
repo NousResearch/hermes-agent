@@ -85,8 +85,33 @@ export function UninstallSection(): ReactElement | null {
 
   const bridge: Window['hermesDesktop']['uninstall'] | undefined = window.hermesDesktop?.uninstall
 
-  if (!bridge || summary?.code_removal_allowed !== true) {
+  if (!bridge || !summary) {
     return null
+  }
+
+  if (!summary.code_removal_allowed) {
+    // The OS or package manager owns removal; show how, never a destructive fallback.
+    if (!summary.native_removal_instructions) {
+      return null
+    }
+
+    return (
+      <div className={cn('mx-auto w-full max-w-2xl', !hasBreadcrumb && 'mt-8')}>
+        <SectionHeading icon={AlertTriangle} page title={u.uninstallHermes} />
+        <div className="flex flex-col gap-2 rounded-xl border border-border/60 bg-background/40 px-4 py-3">
+          <p className="text-xs text-muted-foreground">{u.managedBody}</p>
+          <p className="text-sm font-medium">{summary.native_removal_instructions}</p>
+          <p className="text-xs text-muted-foreground">{u.dataKept(summary.hermes_home)}</p>
+          {summary.platform === 'win32' && (
+            <div className="mt-1">
+              <Button onClick={(): void => void bridge.openAppsSettings()} size="sm" variant="outline">
+                {u.openAppsSettings}
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    )
   }
 
   // An owned GUI can remain after its local agent has been removed.

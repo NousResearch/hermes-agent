@@ -109,6 +109,7 @@ const {
   BACKGROUND_UPDATE_CHECK_MS
 } = await import('./updates')
 
+const { CANONICAL_GATEWAY_PROTOCOL } = await import('@/api/canonical-protocol')
 const { setConnection } = await import('./session')
 
 const registryOf = (ids: string[]) => ({
@@ -310,6 +311,18 @@ describe('reportBackendContract', () => {
     reportBackendContract(REQUIRED_BACKEND_CONTRACT)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('accepts only the matching canonical gateway protocol without claiming the legacy contract', () => {
+    reportBackendContract(undefined, CANONICAL_GATEWAY_PROTOCOL)
+    expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    reportBackendContract(undefined, 'hermes-gateway-v0')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+
+    reportBackendContract(Number.MAX_SAFE_INTEGER, 'hermes-gateway-v0')
+    expect(notifySpy).toHaveBeenCalledTimes(2)
   })
 
   it('warns when the backend is behind (or reports no contract)', () => {
@@ -1487,6 +1500,100 @@ describe('applyBackendUpdate recovery', () => {
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
   }, 10000)
+
+  it('reports a committed update with owed follow-ups as success plus an owed-step warning', async () => {
+    updateHermesSpy.mockResolvedValue({ action_id: 'e'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: ['Update complete!'],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: 'e'.repeat(32),
+        outcome: 'success',
+        followups: [{ step: 'dependencies', reason: 'sync failed' }],
+        user_action: null
+      }
+    })
+    notifySpy.mockClear()
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result).toMatchObject({ ok: true })
+    expect(result.message).toContain('dependencies (sync failed)')
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'warning', message: expect.stringContaining('dependencies (sync failed)') })
+    )
+  })
+
+  it("names a partial update's owed user action verbatim, only from this action's own receipt", async () => {
+    const instruction = 'Your local changes are parked in stash@{0}; run `git stash pop` in ~/.hermes/hermes-agent.'
+
+    const status = (actionId: string) => ({
+      exit_code: 1,
+      lines: ['update parked local changes'],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: actionId,
+        outcome: 'partial',
+        followups: [],
+        user_action: { step: 'local_changes', reason: instruction }
+      }
+    })
+
+    updateHermesSpy.mockResolvedValue({ action_id: 'c'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue(status('c'.repeat(32)))
+    const own = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await own
+
+    // exit 1 stays a failed apply, but the committed run's debt is named, never as "re-run hermes update".
+    expect(result).toMatchObject({ ok: false, error: 'apply-failed' })
+    expect(result.message).toContain(`local_changes: ${instruction}`)
+    expect(result.message).not.toMatch(/Re-run `hermes update`/)
+    expect($backendUpdateApply.get()).toMatchObject({ stage: 'error', message: result.message })
+
+    // The status route attaches the latest receipt when this action has none: another run's debt is not ours.
+    getActionStatusSpy.mockResolvedValue(status('d'.repeat(32)))
+    const foreign = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+
+    expect((await foreign).message).not.toContain('local_changes')
+  })
+
+  it("never lets another action's receipt certify this update", async () => {
+    const receipt = (actionId: string) => ({
+      exit_code: null,
+      lines: [],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: actionId,
+        outcome: 'success',
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+        followups: [],
+        user_action: null
+      }
+    })
+
+    updateHermesSpy.mockResolvedValue({ action_id: 'b'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue(receipt('a'.repeat(32)))
+    const foreign = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 1500)
+    await expect(foreign).resolves.toMatchObject({ ok: false })
+
+    getActionStatusSpy.mockResolvedValue(receipt('b'.repeat(32)))
+    const own = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    await expect(own).resolves.toMatchObject({ ok: true })
+  })
 })
 
 describe('startUpdatePoller', () => {

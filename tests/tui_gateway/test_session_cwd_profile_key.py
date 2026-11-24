@@ -8,8 +8,8 @@ key and ``get_session_cwd`` misses until the first ``cd``.
 
 from __future__ import annotations
 
-import tools.terminal_tool as terminal_tool
-import tui_gateway.server as server
+from tools import terminal_tool
+from tui_gateway import server
 
 
 def test_secondary_profile_session_cwd_is_found_inside_its_scope(monkeypatch, tmp_path):

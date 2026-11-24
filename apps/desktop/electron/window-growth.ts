@@ -1,50 +1,109 @@
-import type { Rectangle } from 'electron'
+import { type BrowserWindow, ipcMain, type IpcMainEvent, type Rectangle, screen } from 'electron'
 
-export interface GrowRequest {
-  bottom?: number
-  left?: number
-  minWidth?: number
-  right?: number
-  top?: number
+import type { WindowSizeMode } from './window-size-types'
+import { windowSize } from './window-state'
+
+type SizeRequestListener = (event: Pick<IpcMainEvent, 'sender'>, mode: WindowSizeMode) => void
+
+/** The Electron surface window sizing uses: the size IPC and the display under a window. */
+export interface WindowSizingHost {
+  onSizeRequest: (listener: SizeRequestListener) => void
+  workAreaOf: (bounds: Rectangle) => Rectangle
 }
 
-export interface GrowInputs {
-  bounds: { height: number; width: number }
-  frameWidth?: number
-  workArea: { height: number; width: number; x: number; y: number }
-  zoom?: number
+const electronHost: WindowSizingHost = {
+  onSizeRequest: listener => ipcMain.on('hermes:window:size', listener),
+  workAreaOf: bounds => screen.getDisplayMatching(bounds).workArea
 }
 
-const MAX_DELTA_PX = 4000
-
-const MAX_WORK_AREA = 0.92
-
-export function growWindowBounds(
-  request: GrowRequest | null | undefined,
-  { bounds, frameWidth = 0, workArea, zoom = 1 }: GrowInputs
-) {
-  const dip = (value: number | undefined, round: (n: number) => number) =>
-    Math.max(0, Math.min(MAX_DELTA_PX, round((Number(value) || 0) * zoom)))
-
-  const toDip = (value?: number) => dip(value, Math.round)
-
-  const requestedMin = dip(request?.minWidth, Math.ceil)
-  const grown = bounds.width + toDip(request?.left) + toDip(request?.right)
-
-  const width = Math.min(
-    Math.max(grown, requestedMin ? requestedMin + frameWidth : 0),
-    Math.round(workArea.width * MAX_WORK_AREA)
-  )
-
-  const height = Math.min(
-    bounds.height + toDip(request?.top) + toDip(request?.bottom),
-    Math.round(workArea.height * MAX_WORK_AREA)
-  )
-
-  return centeredBounds(workArea, width, height)
+interface WindowSizingOptions {
+  host?: WindowSizingHost
+  mainWindow: () => BrowserWindow | null
 }
 
-export function centeredBounds(workArea: Rectangle, width: number, height: number): Rectangle {
+// The bounds this module last gave each window. window-state.json skips a
+// window still at them: app-chosen bounds are not where the user left the
+// window, and a saved onboarding size reopened the app as a 602x642 chat. A
+// user move or resize leaves them, so that placement is saved.
+type PlacedWindow = Pick<BrowserWindow, 'getNormalBounds' | 'isMaximized'>
+
+const appSized = new WeakMap<PlacedWindow, Rectangle>()
+
+export function markAppSized(win: PlacedWindow, bounds: Rectangle): void {
+  appSized.set(win, bounds)
+}
+
+export function isAppSized(win: PlacedWindow): boolean {
+  const given = appSized.get(win)
+
+  if (!given || win.isMaximized()) {
+    return false
+  }
+
+  const bounds = win.getNormalBounds()
+
+  return (['x', 'y', 'width', 'height'] as const).every(key => Math.abs(bounds[key] - given[key]) <= 1)
+}
+
+// Onboarding sets the chat size outright. Normal grows each axis to the normal
+// size and never shrinks one the user already made bigger.
+function sizedBounds(mode: WindowSizeMode, bounds: Rectangle, workArea: Rectangle): Rectangle | null {
+  const target = windowSize(mode, workArea)
+
+  if (mode === 'onboarding') {
+    return centeredBounds(workArea, target.width, target.height)
+  }
+
+  const width = Math.max(bounds.width, target.width)
+  const height = Math.max(bounds.height, target.height)
+
+  return width === bounds.width && height === bounds.height ? null : centeredBounds(workArea, width, height)
+}
+
+// The bounds each window had when onboarding sized it. Normal puts them back, so an intro replayed
+// from Settings leaves an existing user's window where it was.
+const beforeOnboarding = new WeakMap<BrowserWindow, Rectangle>()
+
+export function registerWindowSizing({ host = electronHost, mainWindow }: WindowSizingOptions): void {
+  host.onSizeRequest((event, mode) => {
+    const win = mainWindow()
+
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) {
+      return
+    }
+
+    if (mode !== 'normal' && mode !== 'onboarding') {
+      return
+    }
+
+    const before = beforeOnboarding.get(win)
+    beforeOnboarding.delete(win)
+
+    if (win.isMaximized() || win.isFullScreen()) {
+      return
+    }
+
+    const bounds = win.getBounds()
+
+    if (mode === 'onboarding') {
+      beforeOnboarding.set(win, bounds)
+    } else if (before) {
+      // The user's own placement, not one this module chose: window-state.json saves it.
+      win.setBounds(before, true)
+
+      return
+    }
+
+    const next = sizedBounds(mode, bounds, host.workAreaOf(bounds))
+
+    if (next) {
+      markAppSized(win, next)
+      win.setBounds(next, true)
+    }
+  })
+}
+
+function centeredBounds(workArea: Rectangle, width: number, height: number): Rectangle {
   return {
     height,
     width,

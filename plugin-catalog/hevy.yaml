@@ -1,0 +1,37 @@
+name: hevy
+title: "Hevy (unofficial)"
+repo: https://github.com/adrianlaborda/hermes-hevy
+sha: "6aba642f9c90b3bee151b2d53029bb0e431ec064"
+version: "0.1.0"
+description: "Unofficial community plugin for Hevy strength training through Hevy's official public API: workouts, exercise progress with estimated 1RM, personal records, weekly sets per muscle group against your own baseline (hevy_training_load), consistency, routines and body measurements. Hermes can also log workouts, build routines and record measurements, each one approved by you first (Hermes' approval gate; the ask-before-writing setting can turn it off). Needs Hevy Pro. Fifteen tools: nine read-only, six that write. The key is entered in Hermes Desktop under Settings > Plugins > hevy (or with hermes config set), stored in the profile's .env as HEVY_API_KEY and read through Hermes's secret route. Disclosure: unofficial, not affiliated with Hevy. Contacts only api.hevyapp.com, over HTTPS, with the key in the api-key header. Workouts and exercise templates are cached under the profile's plugin-data folder (the cache includes workout notes). No background threads, telemetry or self-update."
+maintainer: adrianlaborda
+tier: community
+category: tools
+docs_url: https://github.com/adrianlaborda/hermes-hevy#readme
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+known_issues:
+  - "Hevy's API is available only with Hevy Pro."
+capabilities:
+  provides_tools:
+    - hevy_workouts
+    - hevy_workout
+    - hevy_exercises
+    - hevy_exercise_progress
+    - hevy_records
+    - hevy_training_load
+    - hevy_consistency
+    - hevy_routines
+    - hevy_body_measurements
+    - hevy_log_workout
+    - hevy_update_workout
+    - hevy_save_routine
+    - hevy_create_routine_folder
+    - hevy_create_exercise
+    - hevy_log_body_measurement
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - HEVY_API_KEY

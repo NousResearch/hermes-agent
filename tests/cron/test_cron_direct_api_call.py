@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 
 from agent.chat_completion_helpers import (
     direct_api_call,
-    should_use_direct_api_call,
 )
 
 
@@ -27,26 +26,6 @@ def _make_agent(*, platform="cron"):
     agent._create_request_openai_client = MagicMock()
     agent._close_request_openai_client = MagicMock()
     return agent
-
-
-def test_should_use_direct_api_call_only_for_cron_openai_wire():
-    assert should_use_direct_api_call(_make_agent(platform="cron")) is True
-    assert should_use_direct_api_call(_make_agent(platform="cli")) is False
-    assert should_use_direct_api_call(_make_agent(platform="telegram")) is False
-    assert should_use_direct_api_call(_make_agent(platform=None)) is False
-
-    codex = _make_agent(platform="cron")
-    codex.api_mode = "codex_responses"
-    assert should_use_direct_api_call(codex) is True  # #69734
-
-    for api_mode in ("anthropic_messages", "bedrock_converse"):
-        agent = _make_agent(platform="cron")
-        agent.api_mode = api_mode
-        assert should_use_direct_api_call(agent) is False
-
-    moa = _make_agent(platform="cron")
-    moa.provider = "moa"
-    assert should_use_direct_api_call(moa) is False
 
 
 

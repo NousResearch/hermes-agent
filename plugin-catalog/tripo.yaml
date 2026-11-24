@@ -1,0 +1,42 @@
+name: tripo
+title: Tripo3D
+repo: https://github.com/Tripo-Developer/tripo-hermes-plugin
+sha: f758f554c99acb86f7b1ad2700619f1dcf00264a
+version: "0.1.0"
+description: >-
+  Tripo's official plugin, made by VAST, the company behind Tripo. Tripo's own tripo-cli (pinned
+  tripo-cli@0.11.1) runs locally as an MCP server with 26 tools for text, image and multiview to 3D,
+  concept and multiview images, texturing, rigging and animation, retopology, segmentation, Gaussian
+  splats, format conversion (GLB, FBX, OBJ, STL, USDZ, 3MF) and downloads, plus the tripo-3d and
+  tripo-game-asset workflow skills; Game Studio turns a rigged, animated model into a character you
+  play in Hermes Desktop, a three.js web prototype, Godot, Unity or Unreal. In Hermes Desktop: inline 3D
+  cards with Next and Download menus and a Play mode, a gallery of recent generations and a credit chip.
+  Every call that is not read-only goes through Hermes's approval prompt, local-file uploads included;
+  no per-tool costs or spend limit are declared. Needs TRIPO_API_KEY from an international Tripo
+  account. Disclosure — first start downloads the pinned tripo-cli from npm through npx, which Hermes
+  runs on its managed Node.js as a local child process; it sends prompts and the local images (up to
+  20 MB) or models (up to 150 MB) you or the agent name to Tripo's API (openapi.tripo3d.ai) under your
+  key, gets only TRIPO_API_KEY from your profile, and sends no analytics. Downloads go to the plugin's
+  data folder or a folder the agent names, replacing files of the same name there; tripo-cli keeps a
+  task history (prompts included) and the Desktop half a record of which chat made each task, both in
+  the plugin's data folder. The Desktop backend reads your balance and recent tasks from Tripo's API,
+  serves models only from the plugin's data folder or your home folder, and downloads results only
+  from Tripo's result storage; the Desktop renderer shows task previews from Tripo's short-lived result
+  links. Through Hermes's terminal tool the skills run `hermes config path`, file-size checks and
+  background sleep timers on chat apps, and, when asked, a preview-video renderer (headless Chromium
+  and ffmpeg already on the machine; its first run downloads three.js 0.180.0 from npm,
+  integrity-checked), Python's http.server on 127.0.0.1 for the web prototype (which loads three.js
+  from cdn.jsdelivr.net) and your own Blender for an optimized copy. No telemetry.
+maintainer: Tripo-Developer
+tier: verified
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/Tripo-Developer/tripo-hermes-plugin#readme
+image: https://raw.githubusercontent.com/Tripo-Developer/tripo-hermes-plugin/3163c3c5598792dff3a1bfc3a05cfe905bda4c94/assets/catalog-banner.jpg
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TRIPO_API_KEY

@@ -1,0 +1,27 @@
+name: uk-companies
+repo: https://github.com/TakeshiTGAL/hermes-plugin-uk-companies
+sha: e620676d9a1140322ce5efc8741cd8fc6d97f3c9
+description: UK Companies returns one sheet. Disclosure — Names and numbers to api.company-information.service.gov.uk as HTTP Basic with COMPANIES_HOUSE_API_KEY when set. Registered name to www.thegazette.co.uk, no key. A double quote is not sent. Charity names and numbers to api.charitycommission.gov.uk with CHARITY_COMMISSION_API_KEY when set. Postcode to landregistry.data.gov.uk, no key. Lookups stop after 60 seconds. Requests wait at most 20 seconds. Morning job sends watched numbers to Companies House only. Remove leaves plugin-data/uk-companies/watch.json, scripts/uk-companies-watch.py, and the morning job. Stop it with hermes cron remove <job id>. About 680 KB with .git. Empty allowlist keeps tools enabled. hermes tools disable uk_companies --platform telegram. Contains HM Land Registry data © Crown copyright and database right 2021. Licensed under the Open Government Licence v3.0.
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-uk-companies#readme
+version: 0.1.0
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-uk-companies/e620676d9a1140322ce5efc8741cd8fc6d97f3c9/assets/catalog-banner.png
+requires_hermes: '>=0.21.4'
+platforms:
+- linux
+- macos
+title: UK Companies
+capabilities:
+  provides_tools:
+  - uk_check
+  - uk_search
+  - uk_officers
+  - uk_psc
+  - uk_filings
+  - uk_charity
+  - uk_vat
+  - uk_land
+  provides_hooks: []
+  requires_env: []

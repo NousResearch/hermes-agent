@@ -6,18 +6,15 @@ markdown pipe table to ``msg_type=text``, so Feishu clients rendered the raw
 pipe-and-dash source instead of a table.  Empirically current Feishu clients
 render ``post``+``md`` tables natively, so the downgrade branch must be removed.
 
-These tests guard the fix.  They invoke the real adapter via the project's
-plugin-loader helper so that no ``sys.path`` / ``sys.modules`` games are
-needed.
+These tests guard the fix.  They import the real adapter in its package so
+relative imports resolve.
 """
 
 from __future__ import annotations
 
 import json
 
-from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-
-_adapter = load_plugin_adapter("feishu")
+from plugins.platforms.feishu import adapter as _adapter
 
 
 def _call_build_outbound_payload(content: str) -> tuple[str, str]:

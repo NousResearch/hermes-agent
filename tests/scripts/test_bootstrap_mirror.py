@@ -64,7 +64,7 @@ def test_windows_download_uses_only_verified_candidates(tmp_path, server, mode):
         encoding="utf-8",
     )
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     if mode in ("primary", "missing"):
         assert result.returncode == 0, result.stdout + result.stderr
         assert destination.read_bytes() == body
@@ -91,7 +91,7 @@ def test_windows_bootstrap_rejects_corrupt_bytes_before_extract(tmp_path, server
         encoding="utf-8",
     )
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode != 0
     assert "digest mismatch" in result.stdout + result.stderr
     assert server[0].requests == ["/primary"]
@@ -121,7 +121,7 @@ uv_bootstrap_pin() {{ UV_PIN_VERSION=fixture; UV_PIN_URL='{primary}'; UV_PIN_MIR
 ensure_uv
 """
     env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"), "HOME": str(tmp_path / "home"), "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
-    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60, check=False)
     assert (result.returncode == 0) == (mode in ("primary", "missing")), result.stdout + result.stderr
     if mode == "corrupt":
         assert "digest mismatch" in result.stderr
@@ -139,7 +139,7 @@ def test_generated_windows_pins_match_the_shared_authority(tmp_path):
         "@{uv=$script:UvPinFiles; git=$script:GitPinFiles} | ConvertTo-Json -Depth 5 -Compress\n",
         encoding="utf-8",
     )
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(script)], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(script)], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     emitted = json.loads(result.stdout)
     lock = json.loads((ROOT / "pm/lock.json").read_text(encoding="utf-8"))["packages"]
@@ -166,6 +166,6 @@ def test_dev_setup_reaches_the_same_mirror_without_python(tmp_path, server):
         "python": {"version": "3.14.7"},
     }}, indent=2, sort_keys=True), encoding="utf-8")
     env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"), "HOME": str(tmp_path / "home"), "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
-    result = subprocess.run(["bash", str(repo / "setup-hermes.sh")], cwd=repo, env=env, text=True, capture_output=True, timeout=60)
+    result = subprocess.run(["bash", str(repo / "setup-hermes.sh")], cwd=repo, env=env, text=True, capture_output=True, timeout=60, check=False)
     assert result.returncode == 73, result.stdout + result.stderr  # stop at the bootstrap interpreter boundary
     assert http.requests == ["/missing.tar.gz", "/archive/" + digest]

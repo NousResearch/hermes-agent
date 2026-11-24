@@ -11,6 +11,7 @@ only HERMES_HOME. And the launch-profile asymmetry: a default-member hosted-room
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from pathlib import Path
@@ -18,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
 A_VAL = "a-only-secret-0001"
@@ -78,7 +79,7 @@ def _probe(profile: str | None) -> dict:
 def test_config_get_for_secondary_resolves_only_its_own_secrets_and_flips_fail_closed(two_homes):
     from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
 
-    root, _b = two_homes
+    _root, _b = two_homes
     assert not is_multiplex_active()  # single-profile so far
 
     probe_b = _probe("b")
@@ -113,7 +114,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     """The scope must wrap the body of every credential-reading RPC, not only config.get."""
     from agent.secret_scope import get_secret
 
-    root, b = two_homes
+    _root, b = two_homes
     seen = {}
 
     def fake_oneshot(**kwargs):
@@ -378,7 +379,7 @@ def _prompt_building_session(profile_home, key):
     from types import SimpleNamespace
     agent = SimpleNamespace(
         _memory_manager=_MemoryManager(), _cached_system_prompt="", session_id=key, model="m", tools=[],
-        _session_db=SimpleNamespace(update_system_prompt=lambda sid, prompt: None))
+        _session_db=SimpleNamespace())
     agent._build_system_prompt = lambda system_message=None: agent._memory_manager.build_system_prompt()
     return {"agent": agent, "history": [], "history_lock": threading.Lock(), "history_version": 0,
             "running": False, "session_key": key, "profile_home": profile_home, "cwd": os.getcwd()}
@@ -389,7 +390,7 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
     provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
     hosted a second home — and for a secondary they resolved the launch profile's credential/home."""
-    import agent.system_prompt as system_prompt
+    from agent import system_prompt
 
     root, b = two_homes
     (root / ".env").write_text((root / ".env").read_text() + "MEM_PROVIDER_KEY=launch-mem-key\n")
@@ -400,6 +401,8 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     monkeypatch.setattr("agent.context_file_sources.context_file_sources_for_agent", lambda agent: [])
     sessions = {"sa": _prompt_building_session(None, "sess-a"), "sb": _prompt_building_session(str(b), "sess-b")}
     monkeypatch.setattr(server, "_sessions", sessions)
+    persistence = SimpleNamespace(sessions=SimpleNamespace(update_system_prompt=lambda sid, prompt: None))
+    monkeypatch.setattr(server, "_persistence_for", lambda db: contextlib.nullcontext(persistence))
     assert _probe("b")["b_ref"] == B_VAL  # flips the process to fail-closed multi-profile hosting
 
     for sid, home, key in (("sa", root, "launch-mem-key"), ("sb", b, "b-mem-key"), ("sa", root, "launch-mem-key")):

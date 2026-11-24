@@ -673,7 +673,7 @@ ROA = 净利润 / 总资产
 - **否则**，回退到：
   - 针对 SEC EDGAR（`https://www.sec.gov/cgi-bin/browse-edgar`）使用 `web_search` / `web_extract` 获取美国文件
   - 公司投资者关系页面获取新闻稿、财报演示文稿
-  - 使用 `browser_navigate` 访问交互式数据门户
+  - 使用 `browser_exec` 访问交互式数据门户
   - 用户提供的数据（当上下文中没有时，明确询问）
 - **绝不捏造数据**。如果某个倍数、先例或文件数字无法溯源，将该单元格标记为 `[UNSOURCED]` 并向用户说明。
 

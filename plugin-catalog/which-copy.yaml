@@ -1,0 +1,62 @@
+name: which-copy
+repo: https://github.com/Hazem-Samak/hermes-which-copy
+sha: b67367e09371d658647166057cc3d161a1050c5b
+description: >-
+  Answers the question that silently decides everything else: which copy of a
+  command is the Hermes process actually going to run? On a Mac the same tool can
+  exist five times over — a Homebrew formula, an npm global install, a pyenv
+  shim, a standalone download, and Hermes's own bundled copy — and the name
+  resolves to whichever one PATH reaches first, with no warning when that is the
+  wrong one. which_copy resolves one name against the PATH of the running Hermes
+  process and, separately, against the PATH your own login shell builds for a
+  terminal (that shell is started from the system default PATH, not Hermes's, so
+  the entries it reports are its own), and says so when the two disagree. It also
+  states, in every report, that Hermes's terminal tool runs commands in a login
+  shell whose PATH gains directories Hermes adds — so it never claims the process
+  PATH is the PATH a terminal command gets. It lists every copy it can find, on
+  PATH and in the usual off-PATH install locations, with the evidence for where
+  each came from (a Homebrew Cellar directory names the formula, a node_modules
+  tree names the npm package including its scope, pyenv versions, uv tools, pipx
+  venvs, nvm, Hermes's own directories, a plain folder, the macOS system), the
+  version it reports, and whether it can even execute here — an Intel-only binary
+  on Apple silicon is named as needing Rosetta to run. Then it gives a verdict in
+  plain language: an older copy shadowing a newer one, a dead symlink earlier in
+  PATH that the shell silently skips, Hermes preferring its own bundle to yours,
+  several copies whose versions were measured (the same version, the winner being
+  the newest, versions that cannot honestly be ordered, copies that reported no
+  version, copies the sweep did not ask, or copies it did not run), or nothing
+  wrong at all.
+  which_copy_scan sweeps the usual AI tools — python, python3, node, npm, npx,
+  bun, pnpm, uv, pip3, pipx, git, gh, brew, hermes, claude, codex, opencode,
+  gemini, grok, aider, cursor-agent, rustc, go, ruby, java — in about a second,
+  one line per tool, worst first. It diagnoses and stops: no installs, no PATH
+  edits, no relinking, no "fix" that hides the problem. Versions are asked with
+  an argv-only probe (three-second deadline, own process group, 8 KB output cap,
+  cwd at the filesystem root, and a stripped environment so a shadowing binary
+  never sees Hermes's API keys), and only for copies this machine put there: an
+  absolute entry on Hermes's PATH, an absolute entry on the login shell's PATH,
+  or one of the fixed install directories. Nothing named in a tool call is ever
+  executed — a file passed as a path, a copy found only in a PATH string the call
+  supplies, and a copy behind a relative or empty PATH entry are described with
+  their version left unchecked — so a prompt-injected repository cannot get its
+  own script run. For a call that supplies `path`, every version probe still runs
+  with Hermes's own process PATH, never the raw supplied string. probe_versions
+  false skips every probe, and the login-shell
+  check is separate, so pair it with check_login_shell false for a call that
+  starts no process at all. When two version strings were never meant to be
+  compared, it says it cannot order them instead of guessing.
+maintainer: Hazem-Samak
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Hazem-Samak/hermes-which-copy#readme
+version: "1.2.3"
+title: Which Copy
+platforms: [macos, linux]
+capabilities:
+  provides_tools:
+    - which_copy
+    - which_copy_scan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,19 @@
+name: pareto
+title: Pareto Inference
+repo: https://github.com/pareto-inference/hermes-pareto-provider
+sha: 647bd6f8b71aee079eec2b0e954cfb18b4eb6e2a
+description: "Pareto Inference as a Hermes model provider (`--provider pareto`): GLM 5.3 Flash, DeepSeek V4.1 Flash and MiMo V2.6 Flash over OpenAI-compatible Chat Completions, pay per token, with /reasoning mapped to Pareto's reasoning_effort levels and context windows from models.dev. Disclosure — model provider; registers one provider profile at import and nothing else (no tools, hooks, commands or threads). Hermes sends prompts, tool results and a GET /v1/models catalog request to api.paretoinference.com with PARETO_API_KEY, which Hermes reads; the plugin itself opens no connections, reads or writes no files and adds no telemetry."
+maintainer: pareto-inference
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/pareto-inference/hermes-pareto-provider#readme
+version: "1.0.0"
+known_issues:
+  - "Pareto serves streamed requests only. Add api.paretoinference.com to auxiliary.stream_only_base_urls so auxiliary tasks (titles, compression, vision) stream too."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PARETO_API_KEY

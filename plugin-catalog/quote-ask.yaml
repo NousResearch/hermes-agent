@@ -1,0 +1,17 @@
+name: quote-ask
+repo: https://github.com/freefate258/quote-ask
+sha: 194f1715a623f2ca185469047452365e36cb8972
+title: "Quote & Ask"
+description: 'Codex-style ask-about-selection for Hermes Desktop: select text anywhere in a conversation, and a small pill appears above the selection offering Quote & ask — the selection lands in the message composer as a Markdown quote with the caret on the line below, ready for your question — or Copy, which puts the same Markdown quote on the clipboard. A command-palette entry does the same without the pill. Desktop-only (desktop/plugin.js inside the plugin SDK surface): no agent tools, hooks, middleware or env vars, nothing written to disk, nothing persisted. Disclosure — reads window.getSelection() and the selection rectangle; serializes the selection to Markdown (fenced code with its language, nested lists, bold/italic, links), cut at 4000 characters; writes the draft through host.composer (getDraft/setDraft, falling back to insertText, then ctx.os.writeClipboard) and focuses the composer; ignores selections made inside the composer itself and hides on collapse, scroll or Escape. No network calls, no credentials, no telemetry.'
+maintainer: freefate258
+tier: community
+category: desktop
+version: "0.1.0"
+docs_url: https://github.com/freefate258/quote-ask#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.5"

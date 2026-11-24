@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 from agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.sqlite_util import write_txn
@@ -70,7 +70,7 @@ MAX_OBS_ADVANCE_SECONDS = 30 * 24 * 3600
 
 def _parse_stamp(value: str) -> datetime:
     """Parse a stamp this module itself wrote (Z-suffixed ISO-8601, UTC)."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(value).astimezone(UTC)
 
 
 @dataclass
@@ -403,7 +403,7 @@ class SharedMetricsSender:
             package_id,
             token=token,
             send_state="pending",
-            next_attempt_at=_isoformat(datetime.fromtimestamp(retry_at, tz=timezone.utc)),
+            next_attempt_at=_isoformat(datetime.fromtimestamp(retry_at, tz=UTC)),
             last_error=reason[:500],
         )
 

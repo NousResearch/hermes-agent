@@ -1,4 +1,4 @@
-"""Regression tests for ``_normalize_main_model_assignment`` (POST /api/model/set).
+"""Regression tests for ``normalize_main_model_assignment`` (POST /api/model/set).
 
 Named custom providers are represented as ``custom:<name>`` slugs everywhere
 else in the codebase (``runtime_provider.py``, ``model_switch.py``), but
@@ -22,7 +22,7 @@ prefix and reassigned to openrouter, even though it isn't in
 
 from unittest.mock import patch
 
-from hermes_cli.web_server_config import _normalize_main_model_assignment
+from hermes_cli.model_assignment import normalize_main_model_assignment
 
 
 def _no_custom_providers_configured():
@@ -41,7 +41,7 @@ class TestUnresolvedNamedCustomProviderIsNotTreatedAsStrayVendorPrefix:
 
     def test_unresolved_named_custom_provider_slug_is_preserved(self):
         with _no_custom_providers_configured():
-            assert _normalize_main_model_assignment("custom:litellm", "ollama/glm-5.2") == (
+            assert normalize_main_model_assignment("custom:litellm", "ollama/glm-5.2") == (
                 "custom:litellm",
                 "ollama/glm-5.2",
             )
@@ -61,6 +61,6 @@ class TestStrayVendorPrefixFallbackStillWorks:
     """
 
     def test_known_native_provider_still_normalizes_model(self):
-        assert _normalize_main_model_assignment(
+        assert normalize_main_model_assignment(
             "anthropic", "anthropic/claude-opus-4.6"
         ) == ("anthropic", "claude-opus-4-6")

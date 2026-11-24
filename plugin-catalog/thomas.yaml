@@ -1,6 +1,6 @@
 name: thomas
 repo: https://github.com/keppy/hermes-plugin-thomas
-sha: 5596d500c2bf2dee886a1641710479bb7c0d1ed5
+sha: 7302ab947f99e3adb16e78e139794fe1696134f8
 description: >-
   Fine-tune a small calibrated encoder classifier on Modal and rate it with gonogo. Every GPU launch
   goes through the human approval gate with the exact config shown; data checks and evaluation run
@@ -15,7 +15,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21"
 platforms: [linux, macos]
-version: "0.1.1"
+version: "0.1.3"
 docs_url: https://github.com/keppy/hermes-plugin-thomas#readme
 capabilities:
   provides_tools:

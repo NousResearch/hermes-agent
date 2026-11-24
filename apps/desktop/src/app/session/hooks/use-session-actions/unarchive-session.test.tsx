@@ -9,7 +9,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type SessionInfo, setSessionArchived } from '@/hermes'
+import { getSession, type SessionInfo, setSessionArchived } from '@/hermes'
 import { $sessions, setSessions } from '@/store/session'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
@@ -69,6 +69,7 @@ function Harness({ onReady }: { onReady: (handle: Handle) => void }) {
     navigate: vi.fn() as never,
     requestGateway: vi.fn().mockResolvedValue(undefined),
     resetViewSync: vi.fn(),
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
@@ -140,6 +141,36 @@ describe('unarchiveSession', () => {
     await act(() => handle.unarchiveSession('arch-1'))
 
     expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, 'sage')
+  })
+
+  // An archived search hit is in no cache until the Archived view loads; the
+  // clicked row must still restore it rather than leave the RPC unsent.
+  it('restores a search-only hit from the clicked row when the archive cache is cold', async () => {
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() =>
+      handle.unarchiveSession('hit-1', archivedSession({ id: 'hit-1', profile: 'sage' } as Partial<SessionInfo>))
+    )
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('hit-1', false, 'sage')
+    expect($sessions.get().map(session => session.id)).toEqual(['hit-1'])
+    expect($sessions.get()[0]?.archived).toBe(false)
+  })
+
+  // Synthesized search rows carry no profile; the restored row must take the
+  // resolved owner, or a named-profile sidebar filters it out as `default`'s.
+  it('stamps the resolved owner on a restored search row that carried no profile', async () => {
+    vi.mocked(getSession).mockResolvedValue(archivedSession({ id: 'hit-2', profile: 'sage' } as Partial<SessionInfo>))
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() => handle.unarchiveSession('hit-2', archivedSession({ id: 'hit-2' })))
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('hit-2', false, 'sage')
+    expect($sessions.get()[0]?.profile).toBe('sage')
   })
 
   it('keeps the archived row when the restore RPC fails', async () => {

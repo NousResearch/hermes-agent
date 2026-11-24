@@ -25,9 +25,9 @@ export interface SettingDefinition {
   subpage?: string
 }
 
-// A control whose only effect is in the native app. The redesign leaves a dead one out of the Webapp,
-// on the page and in search alike; classic keeps every row it has always drawn.
-const nativeControl = (works: () => boolean) => () => !$portalShell.get() || works()
+// A control whose only effect is in the native app. The redesign (`portal`) leaves a dead one out of
+// the Webapp, on the page and in search alike; classic keeps every row it has always drawn.
+const nativeControl = (works: () => boolean) => (portal: boolean) => !portal || works()
 
 export const NATIVE_CONTROL_OFFERED = {
   /** Links leave a browser tab for another tab whatever this says; only the app has a pane to keep them in. */
@@ -180,13 +180,13 @@ export const SETTINGS_MANIFEST = {
     keepAwake: {
       subpage: 'desktop',
       keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power', 'while working', 'turn'],
-      available: NATIVE_CONTROL_OFFERED.keepAwake,
+      available: () => NATIVE_CONTROL_OFFERED.keepAwake($portalShell.get()),
       copy: t => ({ label: t.settings.config.keepAwakeTitle, description: t.settings.config.keepAwakeDesc })
     },
     disableF12: {
       subpage: 'desktop',
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
-      available: NATIVE_CONTROL_OFFERED.disableF12,
+      available: () => NATIVE_CONTROL_OFFERED.disableF12($portalShell.get()),
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
     },
     quickEntry: {

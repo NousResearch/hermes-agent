@@ -758,7 +758,7 @@ function DesktopDeviceSettings() {
 
   const rows = (
     <>
-      {NATIVE_CONTROL_OFFERED.keepAwake() && (
+      {NATIVE_CONTROL_OFFERED.keepAwake(redesign) && (
         <ListRow
           action={
             <SegmentedControl
@@ -775,7 +775,7 @@ function DesktopDeviceSettings() {
           title={c.keepAwakeTitle}
         />
       )}
-      {NATIVE_CONTROL_OFFERED.disableF12() && (
+      {NATIVE_CONTROL_OFFERED.disableF12(redesign) && (
         <ToggleRow
           checked={disableF12}
           description={c.disableF12Desc}
@@ -784,7 +784,7 @@ function DesktopDeviceSettings() {
           onChange={setDisableF12}
         />
       )}
-      {NATIVE_CONTROL_OFFERED.alwaysExternalLinks() && (
+      {NATIVE_CONTROL_OFFERED.alwaysExternalLinks(redesign) && (
         <ToggleRow
           checked={alwaysExternalLinks}
           description={c.alwaysExternalLinksDesc}

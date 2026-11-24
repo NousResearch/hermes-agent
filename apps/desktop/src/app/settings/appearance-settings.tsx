@@ -485,7 +485,7 @@ function AppearanceThemeSettings({ compact, query, setQuery }: AppearanceThemeSe
           {/* One search box: filters your installed themes (the grid)
               and live-searches the VS Code Marketplace below. The redesigned
               Webapp cannot reach the Marketplace the box names, so it has none. */}
-          {NATIVE_CONTROL_OFFERED.themeMarketplace() && (
+          {NATIVE_CONTROL_OFFERED.themeMarketplace(redesign) && (
             <SearchField
               containerClassName="mt-3 w-full"
               inputClassName="flex-1"

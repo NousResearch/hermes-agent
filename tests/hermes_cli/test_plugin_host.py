@@ -1144,6 +1144,49 @@ def test_a_marked_profiles_managed_launcher_expands_against_the_process_env_unde
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+@pytest.mark.parametrize("caller", ["none", "bound_to_the_secondary"])
+def test_a_secondary_profiles_managed_launcher_expands_against_the_process_env_under_multiplexing(
+        tmp_path, monkeypatch, caller):
+    """The managed overlay's ``${VAR}``s expand against the process env, so a user's ``.env`` cannot stand in for
+    an administrator's value. A secondary profile's launcher is read inside that profile's own secret scope, but
+    a managed launcher still takes a name only the process env holds (systemd ``Environment=``)."""
+    import contextlib
+
+    from agent import secret_scope as ss
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tui_gateway import server
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    launch = _home_with_plugins(tmp_path, monkeypatch, {})
+    ops = launch / "profiles" / "ops"
+    ops.mkdir(parents=True)
+    (ops / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host"}}), encoding="utf-8")
+    (ops / ".env").write_text("PLUGIN_RUNNER=/not/the/operators/runner\n", encoding="utf-8")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": ["${SANDBOX_RUNNER}"]}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("SANDBOX_RUNNER", str(runner))
+    ss.set_multiplex_active(True)
+    plugins_mod._reset_plugin_managers_for_tests()
+    token = set_hermes_home_override(ops)
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    body = (server._session_profile_runtime_scope({"profile_home": str(ops)}, hydrate_secrets=False)
+            if caller == "bound_to_the_secondary" else contextlib.nullcontext())
+    try:
+        with body:
+            host.ensure_started()
+        assert ran.read_text(encoding="utf-8").count("ran") == 1
+    finally:
+        host.shutdown()
+        reset_hermes_home_override(token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
 def test_a_host_started_by_a_caller_bound_to_a_since_renamed_link_runs_the_profiles_launcher(tmp_path, monkeypatch):
     """The launcher comes from the config of the home the host starts in, not from the caller's binding: a load

@@ -302,6 +302,26 @@ def test_nonzero_exit_without_this_runs_committed_receipt_still_fails(tmp_path, 
     assert (outcome["ok"], outcome["exit_code"]) == (False, 130), outcome
 
 
+@pytest.mark.parametrize("output", ["", "sweeping the venv\n\nERROR: the autostash cannot be re-applied"],
+                         ids=["no-output", "names-the-failing-layer"])
+def test_failed_update_carries_the_updaters_own_output(tmp_path, output):
+    """The generic failure copy is the only thing the shim and the next-boot result dialog can
+    show the user; without the updater's tail the exit code names nothing (#137327). Empty
+    updater output keeps the original copy byte-identical."""
+    home, install = _install(tmp_path)
+
+    result = _run(tmp_path, home, install, HANDOFF_EXIT="1", HANDOFF_OUTPUT=output)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    outcome = json.loads((home / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert (outcome["ok"], outcome["exit_code"]) == (False, 1), outcome
+    assert outcome["message"].startswith("Update failed (exit 1). Run hermes debug share"), outcome
+    if output:
+        assert "Last output: sweeping the venv ERROR: the autostash cannot be re-applied" in outcome["message"], outcome
+    else:
+        assert "Last output:" not in outcome["message"], outcome
+
+
 def test_interrupted_app_swap_is_rolled_back_at_the_next_run(tmp_path):
     home, install = _install(tmp_path)
     app = tmp_path / "Applications" / "Hermes.app"

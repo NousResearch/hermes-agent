@@ -88,6 +88,10 @@ class PickerUsage:
     # Window only: model ids that draw on nothing (the gateway's ``free`` word or a free catalog row). A full
     # allowance never blocks them. Empty until applied.
     free_ids: frozenset[str] = frozenset()
+    # Window only: model ids the gateway bills to a subscription the account holds (``billing_mode:
+    # subscription``). They stay in ``free_ids`` (they draw on nothing, so nothing dims them); this set only
+    # keeps the word "Free" off them, since that subscription pays. Empty until applied.
+    subscription_ids: frozenset[str] = frozenset()
     # Window only: past a full allowance, does the turn bill top-up credits (pay as you go)? True: "Keep
     # going on credits" is on and there is a top-up balance. False: it stops. None: unknown (older portal).
     credits_pay: Optional[bool] = None
@@ -106,8 +110,9 @@ class PickerUsage:
         levels = usage_levels(list(pricing), pricing)  # same rule as the tags and agent.plan_limits.is_top_tier
         free = frozenset(m for m, level in levels.items() if level == "free")
         marked = frozenset(m for m, level in levels.items() if level == "top_tier")
+        subscribed = frozenset(m for m in pricing if is_subscription_billed_row(pricing.get(m)))
         from dataclasses import replace
-        return replace(self, top_tier_ids=marked, free_ids=free)
+        return replace(self, top_tier_ids=marked, free_ids=free, subscription_ids=subscribed)
 
     def exhausted_gauge(self, model_id: str) -> Optional[UsageGauge]:
         """Window only: the spent allowance that stops this model (an all-scope one, or the top-tier one for a
@@ -187,6 +192,9 @@ class PickerUsage:
             ],
             # The gateway's marks (what the desktop's used-up notes read).
             "top_tier_model_ids": sorted(self.top_tier_ids),
+            # Subscription-billed: still ``free`` in ``usage_levels`` (never dimmed), but
+            # pickers show no "Free" tag on them (``plan-usage.ts`` ``usageTag``).
+            "subscription_model_ids": sorted(self.subscription_ids),
             "featured_model_ids": list(self.featured_model_ids),
             "paused_reason": self.paused_reason,
             "credits_pay": self.credits_pay,
@@ -258,6 +266,21 @@ def usage_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any
         elif row.get("top_tier") is True:
             out[mid] = "top_tier"
     return out
+
+
+def is_subscription_billed_row(pricing_row: Any) -> bool:
+    """The gateway bills this catalog row to a subscription the account holds (``billing_mode: subscription``)."""
+    from hermes_cli.models import _is_subscription_billed
+    return _is_subscription_billed(pricing_row)
+
+
+def usage_tag_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any]]]) -> dict[str, str]:
+    """The levels a picker row shows a tag for: :func:`usage_levels` without the subscription-billed rows.
+    Those still draw nothing from the window (``usage_levels`` keeps them ``free``, which is what keeps a full
+    allowance from dimming them), but "Free" would read as free of charge when that subscription pays. The
+    gateway gives them no plan label either. Display only."""
+    levels = usage_levels(model_ids, pricing)
+    return {m: lv for m, lv in levels.items() if not is_subscription_billed_row((pricing or {}).get(m))}
 
 
 def is_free_model(pricing_row: Optional[dict[str, Any]]) -> bool:
@@ -448,7 +471,11 @@ def window_row_labels(provider_row: Any, model_ids: list) -> list[str]:
     ids = [str(m) for m in model_ids]
     plan = provider_row.get("plan_usage") if isinstance(provider_row, dict) else None
     levels = provider_row.get("usage_levels") if isinstance(plan, dict) and plan.get("kind") == "usage_window" else None
-    tags = [usage_level_label(levels.get(m)) for m in ids] if isinstance(levels, dict) else []
+    # Subscription-billed rows keep their ``free`` level but carry no tag.
+    subscribed = (set(plan.get("subscription_model_ids") or ())
+                  if isinstance(plan, dict) and isinstance(levels, dict) else set())
+    tags = ([usage_level_label(None if m in subscribed else levels.get(m)) for m in ids]
+            if isinstance(levels, dict) else [])
     if not any(tags):
         return ids
     width = min(max(len(m) for m in ids), 48)

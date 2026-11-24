@@ -22,9 +22,16 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 class RuntimeStartError(RuntimeError):
-    def __init__(self, reason: str, state: RuntimeState = "inaccessible"):
+    def __init__(self, reason: str, state: RuntimeState = "inaccessible", *, detail: str | None = None):
+        # ``reason`` is the stable code callers match on; ``detail`` is what the user reads.
         super().__init__(reason)
         self.reason, self.state = reason, state
+        # One line, bounded: Desktop prints the first line of ``detail`` after the reason code. It echoes
+        # service definitions and child output that users paste into reports, so redact before truncating.
+        if detail:
+            from agent.redact import redact_sensitive_text
+            detail = " ".join(redact_sensitive_text(detail, force=True, redact_url_credentials=True).split())[:500]
+        self.detail = detail or None
 
 
 def remaining(deadline: float) -> float:
@@ -76,9 +83,18 @@ def _verify_binding(verify, *args, **kwargs):
         return verify(*args, **kwargs)
     except (ValueError, TypeError, KeyError, AttributeError, ExpatError) as exc:
         reason = str(exc)
-        raise RuntimeStartError(reason if reason in {
-            "profile_mismatch", "service_account_mismatch", "service_disabled"
-        } else "service_identity_unverified") from None
+        if reason in {"profile_mismatch", "service_account_mismatch", "service_disabled"}:
+            raise RuntimeStartError(reason) from None
+        raise RuntimeStartError("service_identity_unverified", detail=_unverified_detail(exc)) from None
+
+
+def _unverified_detail(exc: Exception) -> str:
+    return getattr(exc, "check", None) or f"{type(exc).__name__} while reading the service definition: {exc}"
+
+
+def _child_failure(argv: list[str] | tuple[str, ...], code: int, output: str) -> str:
+    first = next((line.strip() for line in (output or "").splitlines() if line.strip()), "no output")
+    return f"{' '.join(argv)} exited {code}: {first}"
 
 
 def _exists(path: Path) -> bool:
@@ -129,7 +145,8 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_failed")
         environment = _run([*command, "show-environment"], deadline)
         if environment.returncode:
-            raise RuntimeStartError("service_identity_unverified")
+            raise RuntimeStartError("service_identity_unverified", detail=_child_failure(
+                [*command, "show-environment"], environment.returncode, environment.stderr or environment.stdout))
         try:
             verify_systemd(props, environment.stdout, home, system=system)
         except ForeignRoot:
@@ -139,9 +156,9 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
             continue
         except ValueError as exc:
             reason = str(exc)
-            raise RuntimeStartError(reason if reason in {
-                "profile_mismatch", "service_account_mismatch"
-            } else "service_identity_unverified") from None
+            if reason in {"profile_mismatch", "service_account_mismatch"}:
+                raise RuntimeStartError(reason) from None
+            raise RuntimeStartError("service_identity_unverified", detail=_unverified_detail(exc)) from None
         found.append(ExistingService("systemd", tuple([*command, "--no-ask-password", "start", unit]),
                                      state != "inactive"))
     if len(found) > 1:
@@ -163,10 +180,11 @@ def _s6(home: Path, deadline: float) -> ExistingService | None:
     # client may have selected a named profile or a different install root.
     try:
         container_home = Path("/run/s6/container_environment/HERMES_HOME").read_text(encoding="utf-8-sig").strip()
-    except (OSError, UnicodeError):
-        raise RuntimeStartError("service_identity_unverified") from None
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeStartError("service_identity_unverified",
+                                detail=f"cannot read the container's HERMES_HOME: {exc}") from None
     if not container_home:
-        raise RuntimeStartError("service_identity_unverified")
+        raise RuntimeStartError("service_identity_unverified", detail="the container's HERMES_HOME is empty")
     root = Path(container_home).resolve()
     home = home.resolve()
     if home != root and home.parent != root / "profiles":
@@ -218,29 +236,50 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
     return None
 
 
-def _windows(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli.gateway_windows import _decode_schtasks_output
+def _windows_task_name(home: Path) -> str:
     suffix = service_suffix(home)
-    name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"
+    return f"Hermes_Gateway{'_' + suffix if suffix else ''}"
+
+
+def refresh_ready_owner_launcher(home: Path, observed) -> None:
+    """Repair a ready owner's logon launcher (``refresh_dead_launcher``). Ensure returns a ready owner
+    before discovery, yet one can run on the new payload while its launcher still names the deleted
+    interpreter: started by ``hermes gateway start``, or the old payload removed once it outlived it."""
+    if observed.state != "ready" or sys.platform != "win32":
+        return
+    from hermes_cli.gateway_runtime import control_home_for
+    from hermes_cli.gateway_windows import refresh_dead_launcher
+    owner = control_home_for(home, observed.endpoint)
+    refresh_dead_launcher(owner, _windows_task_name(owner))
+
+
+def _windows(home: Path, deadline: float) -> ExistingService | None:
+    from hermes_cli.gateway_windows import _decode_schtasks_output, refresh_dead_launcher
+    name = _windows_task_name(home)
+    # Before the task runs it, and for the next logon: a Store update deletes the launcher's interpreter.
+    refresh_dead_launcher(home, name)
 
     def query(refusal: str, *argv: str) -> str:
         # schtasks/whoami write the console code page, and /XML declares UTF-16 over those bytes:
         # decode like the drift check does (#116193) instead of the locale codec or raw bytes (#139083).
         result = _run(list(argv), deadline, encoding=None)
         if result.returncode:
-            raise RuntimeStartError(refusal)
+            output = _decode_schtasks_output(result.stderr or result.stdout or b"")
+            raise RuntimeStartError(refusal, detail=_child_failure(argv, result.returncode, output))
         return _decode_schtasks_output(result.stdout or b"")
 
-    rows = list(csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH"))))
-    if any(len(row) != 3 for row in rows if row):
-        raise RuntimeStartError("service_state_unknown")
-    if any(row and row[0].lstrip("\\") == name for row in rows):
+    rows = csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH")))
+    # Orphaned TaskCache entries print localized one-field diagnostics among the rows (#142140). Only a
+    # well-formed row can name our task, so skipping the rest can only fall through to the unmanaged path.
+    if any(len(row) == 3 and row[0].lstrip("\\") == name for row in rows):
         from hermes_cli.gateway_runtime_service_identity import verify_windows_task
         unverified = "service_identity_unverified"
         definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")
         accounts = list(csv.reader(io.StringIO(query(unverified, "whoami.exe", "/USER", "/FO", "CSV", "/NH"))))
         if len(accounts) != 1 or len(accounts[0]) != 2:
-            raise RuntimeStartError("service_identity_unverified")
+            raise RuntimeStartError("service_identity_unverified", detail=(
+                f"whoami.exe /USER printed {len(accounts)} row(s) of {[len(row) for row in accounts]} field(s), "
+                "expected one account and SID"))
         _verify_binding(verify_windows_task, definition, home, *accounts[0])
         return ExistingService("windows", ("schtasks.exe", "/Run", "/TN", name))
     # A Startup-folder entry (the fallback when Scheduled Task install was declined/blocked) is login

@@ -27,6 +27,7 @@ from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
 )
 from agent.errors import EmptyStreamError
+from agent.tool_history_as_text import tool_history_for_request
 
 from hermes_cli.version_info import get_version_info
 
@@ -100,7 +101,7 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-opus-5-5", "claude-opus-5.5")
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-mythos", "claude-opus-5-5", "claude-opus-5.5")
 # Families whose documented "off" is ``thinking: {"type": "between_tools"}`` (no up-front thinking,
 # short notes between tool calls): ``disabled`` 400s there with a message pointing at it.
 _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS = ("claude-sonnet-5-5", "claude-sonnet-5.5")
@@ -520,13 +521,14 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
-def build_anthropic_bedrock_client(region: str):
+def build_anthropic_bedrock_client(region: str, timeout: float | None = None):
     """AnthropicBedrock client for Bedrock Claude models (boto3 default credential chain). The
     SDK's native Bedrock adapter gives full Claude feature parity (prompt caching, thinking
     budgets, adaptive thinking, fast mode) that Converse lacks. The common betas plus
     ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
     A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
-    (primary, auxiliary, per-request rebuild) enforces it."""
+    (primary, auxiliary, per-request rebuild) enforces it. ``timeout`` is the resolved
+    ``providers.bedrock`` request timeout; None keeps the 900s read / 10s connect default."""
     from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
@@ -537,7 +539,7 @@ def build_anthropic_bedrock_client(region: str):
     aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
                   "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
     return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(None), **{k: v for k, v in aws_kwargs.items() if v},
+        aws_region=region, timeout=_client_timeout(timeout), **{k: v for k, v in aws_kwargs.items() if v},
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
         default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
@@ -660,6 +662,8 @@ def build_anthropic_kwargs(
     ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
     dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
+    # tool_use/tool_result blocks without ``tools`` are a hard 400: a tools-free request sends that history as text.
+    messages = tool_history_for_request(messages, tools, tool_choice)
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would

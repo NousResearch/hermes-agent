@@ -10,23 +10,30 @@ import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 import type { AppTourTranslations } from './types_app_tour'
+import type { ApprovalCopy } from './types_approval'
+import type { BackupTransferTranslations } from './types_backup_transfer'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { CronControlCopy } from './types_cron_control'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
+import type { GatewayHostTranslations } from './types_gateway_host'
+import type { MemoryLayersTranslations } from './types_memory_layers'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
 import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
-import type { PluginUpdateTranslations } from './types_plugin_update'
+import type { PluginUpdateAllTranslations, PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { RightSidebarTranslations } from './types_right_sidebar'
+import type { SandboxCopy } from './types_sandbox'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -44,8 +51,11 @@ export type Locale = string
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
 export interface ErrorCardCopy {
-  title: string | ((provider: string) => string)
-  body: string | ((provider: string) => string)
+  title: string | ((provider: string, model: string) => string)
+  body: string | ((provider: string, model: string) => string)
+  /** Body when the failure says a retry will not help (`retryable: false`), for a code whose body
+   *  otherwise tells the user to retry. */
+  bodyNoRetry?: string | ((provider: string, model: string) => string)
 }
 
 export type ToolTitleKey =
@@ -87,6 +97,8 @@ interface ModeOptionCopy {
 export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
+  /** A profile a plugin runs in a sandbox: its planned start, restart and stop. */
+  sandbox: SandboxCopy
   appTour: AppTourTranslations
   firstRun: FirstRunCopy
   externalOpenFailed: ExternalOpenFailedCopy
@@ -95,7 +107,7 @@ export interface Translations extends NoticeTranslations {
     custom: (label: string) => string[]
   }
   connectors: ConnectorCardTranslations
-catalog: CatalogTranslations
+  catalog: CatalogTranslations
   connectorsPage: {
     title: string
     searchPlaceholder: (count: number) => string
@@ -479,6 +491,7 @@ catalog: CatalogTranslations
       microphoneConstraintsUnsupported: string
       microphoneFailed: string
       microphoneInUse: string
+      microphoneNeedsHttps: string
       microphonePermissionDenied: string
       microphoneStartFailed: string
       microphoneUnsupported: string
@@ -505,6 +518,14 @@ catalog: CatalogTranslations
       approvalTitleNamed: (session: string) => string
       approveAction: string
       rejectAction: string
+      accessTitle: string
+      accessTitleNamed: (session: string) => string
+      accessReadBody: (folder: string) => string
+      accessReadWriteBody: (folder: string) => string
+      networkTitle: string
+      networkTitleNamed: (session: string) => string
+      allowAction: string
+      denyAction: string
       inputTitle: string
       inputTitleNamed: (session: string) => string
       inputBody: string
@@ -617,6 +638,8 @@ catalog: CatalogTranslations
       mcp: string
       archivedChats: string
       sessions: string
+      backup: string
+      backupOnly: string
       about: string
       billing: string
       notifications: string
@@ -628,8 +651,6 @@ catalog: CatalogTranslations
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
       installModal: {
@@ -648,6 +669,10 @@ catalog: CatalogTranslations
         versionLabel: string
         reviewedPin: (sha: string) => string
         latestCommit: string
+        sourceMoved: (sha: string) => string
+        legacyBackendConfirm: string
+        installAnyway: string
+        partialInstall: (sha: string) => string
         nothingToInstall: string
         includesHeading: string
         agentLabel: string
@@ -912,6 +937,8 @@ catalog: CatalogTranslations
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
+    backup: BackupTransferTranslations
+    memoryLayers: MemoryLayersTranslations
     customEndpoints: {
       active: string
       apiKeySet: string
@@ -994,6 +1021,8 @@ catalog: CatalogTranslations
       attachmentSizeLabel: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      desktopReadAloudTitle: string
+      desktopReadAloudDesc: string
       showOptions: string
     }
     hudModifier: {
@@ -1129,10 +1158,8 @@ catalog: CatalogTranslations
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
-    gateway: {
+    gateway: GatewayHostTranslations & {
       loading: string
-      unavailableTitle: string
-      unavailableDesc: string
       title: string
       envOverride: string
       intro: string
@@ -1372,6 +1399,7 @@ catalog: CatalogTranslations
       activePill: string
       updateTitle: string
       updateDetail: (next: string, current: string) => string
+      updateSameBuildDetail: (tag: string) => string
       updateAction: string
       updating: string
       upToDateTitle: string
@@ -1715,7 +1743,7 @@ catalog: CatalogTranslations
       autoArchiveFailed: string
       defaultDirTitle: string
       defaultDirDesc: string
-      defaultDirUpdated: string
+      defaultDirUpdated: (shortcut: null | string) => string
       defaultsTo: (label: string) => string
       change: string
       choose: string
@@ -1823,6 +1851,11 @@ catalog: CatalogTranslations
         disabledTitle: string
         disabledMessage: string
         failedSave: string
+        reimportSignins: string
+        signinsImportedTitle: string
+        signinsImported: (count: number) => string
+        signinsRemote: string
+        signinsFailed: string
         prompt: {
           title: string
           body: string
@@ -1887,77 +1920,82 @@ catalog: CatalogTranslations
     edit: string
     archive: string
     skillArchivedTitle: string
+    lock: string
+    locked: string
+    lockHint: string
+    unlockedHint: string
     skillArchivedMessage: string
     tabPlugins: string
     plugins: PluginUpdateTranslations &
+      PluginUpdateAllTranslations &
       PluginPreviewAccessTranslations & {
-      agentTitle: string
-      agentBlurb: string
-      pageBlurb: string
-      halfDesktop: string
-      halfDesktopHint: string
-      halfAgent: string
-      halfAgentIn: (profile: string) => string
-      defaultProfile: string
-      kindAgent: string
-      kindDesktop: string
-      kindBoth: string
-      installAgentHere: string
-      installAgentHereTip: (profile: string) => string
-      installAgentHereNoOrigin: string
-      desktopHalfPending: string
-      desktopHalfPendingTip: string
-      desktopHalfRemote: string
-      desktopHalfRemoteTip: string
-      emptyAll: string
-      empty: string
-      emptyHint: string
-      loadFailed: string
-      toggleFailed: (name: string) => string
-      toolsetOn: (name: string, profile: string) => string
-      toolsetOff: (name: string, profile: string) => string
-      toolsetToggleFailed: (name: string) => string
-      legacyBackend: string
-      portableBadge: string
-      serverStates: {
-        connected: string
-        app_not_running: string
-        hermes_not_connected: string
-        endpoint_unavailable: string
-        no_interactive_session: string
-        version_too_old: string
-        missing_app: string
-        unsupported_gpu: string
-        unknown: string
+        agentTitle: string
+        agentBlurb: string
+        pageBlurb: string
+        halfDesktop: string
+        halfDesktopHint: string
+        halfAgent: string
+        halfAgentIn: (profile: string) => string
+        defaultProfile: string
+        kindAgent: string
+        kindDesktop: string
+        kindBoth: string
+        installAgentHere: string
+        installAgentHereTip: (profile: string) => string
+        installAgentHereNoOrigin: string
+        desktopHalfPending: string
+        desktopHalfPendingTip: string
+        desktopHalfRemote: string
+        desktopHalfRemoteTip: string
+        emptyAll: string
+        empty: string
+        emptyHint: string
+        loadFailed: string
+        toggleFailed: (name: string) => string
+        toolsetOn: (name: string, profile: string) => string
+        toolsetOff: (name: string, profile: string) => string
+        toolsetToggleFailed: (name: string) => string
+        legacyBackend: string
+        portableBadge: string
+        serverStates: {
+          connected: string
+          app_not_running: string
+          hermes_not_connected: string
+          endpoint_unavailable: string
+          no_interactive_session: string
+          version_too_old: string
+          missing_app: string
+          unsupported_gpu: string
+          unknown: string
+        }
+        alreadyInstalled: (name: string) => string
+        catalogProvenance: (sha: string) => string
+        pinnedProvenance: (sha: string) => string
+        pinnedBadge: (sha: string) => string
+        uninstall: string
+        uninstallTip: (name: string, profile: string) => string
+        uninstallConfirmTitle: (name: string) => string
+        uninstallConfirmBody: (name: string, profile: string) => string
+        uninstallFailed: (name: string) => string
+        uninstalled: (name: string) => string
+        uninstallDesktopTip: (name: string) => string
+        uninstallDesktopConfirmBody: (name: string) => string
+        uninstalledDesktop: (name: string) => string
+        deepLinkErrorTitle: string
+        deepLinkCatalogInvalidName: string
+        deepLinkCatalogUnknown: (name: string) => string
+        deepLinkCatalogUnavailable: string
+        settingsToggle: (name: string) => string
+        settingsForm: {
+          save: string
+          saved: (name: string) => string
+          saveFailed: (name: string) => string
+          required: string
+          optional: string
+          secretSet: string
+          secretStoredAs: (env: string) => string
+        }
       }
-      alreadyInstalled: (name: string) => string
-      catalogProvenance: (sha: string) => string
-      pinnedProvenance: (sha: string) => string
-      pinnedBadge: (sha: string) => string
-      uninstall: string
-      uninstallTip: (name: string, profile: string) => string
-      uninstallConfirmTitle: (name: string) => string
-      uninstallConfirmBody: (name: string, profile: string) => string
-      uninstallFailed: (name: string) => string
-      uninstalled: (name: string) => string
-      uninstallDesktopTip: (name: string) => string
-      uninstallDesktopConfirmBody: (name: string) => string
-      uninstalledDesktop: (name: string) => string
-      deepLinkErrorTitle: string
-      deepLinkCatalogInvalidName: string
-      deepLinkCatalogUnknown: (name: string) => string
-      deepLinkCatalogUnavailable: string
-      settingsToggle: (name: string) => string
-      settingsForm: {
-        save: string
-        saved: (name: string) => string
-        saveFailed: (name: string) => string
-        required: string
-        optional: string
-        secretSet: string
-        secretStoredAs: (env: string) => string
-      }
-    }
     officialCatalog: string
     officialPill: string
     hub: {
@@ -2003,10 +2041,6 @@ catalog: CatalogTranslations
       openLog: string
       actionLog: string
       alreadyInstalled: (name: string) => string
-      pickerTitle: string
-      pickerBrowse: string
-      pickerHide: string
-      pickerHint: string
       loadFailed: string
       previewFailed: string
       scanFailed: string
@@ -2226,6 +2260,8 @@ catalog: CatalogTranslations
       backupDesc: string
       debugShare: string
       debugShareDesc: string
+      debugShareConfirm: string
+      debugShareConfirmDesc: string
       debugShareRunning: string
       debugShareLinks: string
       debugShareFailed: string
@@ -2242,9 +2278,6 @@ catalog: CatalogTranslations
       resume: string
       runNow: string
       memoryData: string
-      memoryDataDesc: string
-      memoryProvider: (name: string) => string
-      builtinMemory: string
       memoryFile: string
       userFile: string
       bytes: (size: string) => string
@@ -2331,6 +2364,32 @@ catalog: CatalogTranslations
     restartFailedManualDetail: string
     restartAgain: string
     openLogs: string
+    relayLink: {
+      title: string
+      badge: string
+      intro: (platform: string) => string
+      link: (platform: string) => string
+      linkAnother: (platform: string) => string
+      linkedAccounts: string
+      unlink: string
+      unlinkFailed: string
+      stepOpen: (platform: string) => string
+      stepSend: string
+      open: (platform: string) => string
+      copy: string
+      copied: string
+      copyFailed: (command: string) => string
+      waiting: string
+      linked: (platform: string) => string
+      expired: string
+      refused: (platform: string) => string
+      qrAlt: (platform: string) => string
+      managed: string
+      managedNote: (platform: string) => string
+      managedIntro: string
+      openPortal: string
+      noNewAccount: (platform: string) => string
+    }
     telegramQr: {
       title: string
       subtitle: string
@@ -2410,6 +2469,9 @@ catalog: CatalogTranslations
     fieldSkillsPlaceholder: string
     fieldDeliver: string
     fieldDeliverOnly: string
+    fieldSignature: string
+    fieldSignatureHint: string
+    signatureOptions: Record<string, string>
     fieldPrompt: string
     fieldPromptPlaceholder: string
     nameRequired: string
@@ -2438,8 +2500,10 @@ catalog: CatalogTranslations
     exported: string
     failedImport: string
     failedExport: string
+    exportNeedsHost: (name: string) => string
     allProfiles: string
     showAllProfiles: string
+    notServedHere: string
     switchToProfile: (name: string) => string
     switchToConnection: (name: string) => string
     switchConnectionFailed: (name: string) => string
@@ -2454,9 +2518,6 @@ catalog: CatalogTranslations
       deleteOn: (gateway: string) => string
       /** At-rest local default pill: device, not Home, and the click's consequence. */
       localDevice: string
-      switchDeviceTitle: string
-      switchDeviceDesc: string
-      switchDeviceConfirm: string
       installDeviceTitle: string
       installDeviceDesc: string
       installDeviceConfirm: string
@@ -2470,6 +2531,8 @@ catalog: CatalogTranslations
     remoteOverride: {
       menuItem: string
       badge: (host: string) => string
+      runHere: string
+      sandboxed: string
       title: (profile: string) => string
       description: string
       urlLabel: string
@@ -2581,6 +2644,7 @@ catalog: CatalogTranslations
 
   cron: {
     close: string
+    control: CronControlCopy
     title: string
     count: (count: number) => string
     search: string
@@ -2846,7 +2910,6 @@ catalog: CatalogTranslations
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
-      continuationOrigin: string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string
@@ -2881,7 +2944,10 @@ catalog: CatalogTranslations
 
   composer: {
     message: string
-    wakingProfile: (profile: string) => string
+    switchingProfile: (profile: string) => string
+    switchingProfileSlow: string
+    switchProfileFailed: (profile: string) => string
+    willSendTo: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string
@@ -3268,6 +3334,8 @@ catalog: CatalogTranslations
     versionDetailsTitle: string
     versionDetailsBody: string
     versionDetailsVersion: string
+    versionDetailsClient: string
+    versionDetailsBackend: string
     versionDetailsCommit: string
     versionDetailsBuildOrigin: string
     versionDetailsDistribution: string
@@ -3518,6 +3586,8 @@ catalog: CatalogTranslations
       sendsOnRoute: (level: string) => string
       updateFailed: string
       fastFailed: string
+      daybreak: string
+      daybreakFailed: string
     }
     gatewayMenu: {
       gateway: string
@@ -3634,6 +3704,15 @@ catalog: CatalogTranslations
           system_prompt: string
           tool_definitions: string
         }
+        compact: {
+          action: string
+          busyHint: string
+          confirm: string
+          hint: string
+          question: string
+          questionNamed: (title: string) => string
+          working: string
+        }
         empty: string
         loading: string
         percentFull: (percent: number) => string
@@ -3654,52 +3733,7 @@ catalog: CatalogTranslations
     }
   }
 
-  rightSidebar: {
-    aria: string
-    panelsAria: string
-    files: string
-    terminal: string
-    noFolderSelected: string
-    changeCwdTitle: string
-    remotePickerTitle: string
-    remotePickerDescription: string
-    remotePickerSelect: string
-    remotePickerNewFolder: string
-    remotePickerFolderName: string
-    remotePickerCreateFolder: string
-    remotePickerInvalidFolderName: string
-    remotePickerCreateFolderFailed: (error: string) => string
-    folderTip: (cwd: string) => string
-    openFolder: string
-    refreshTree: string
-    collapseAll: string
-    showIgnored: string
-    hideIgnored: string
-    previewUnavailable: string
-    couldNotPreview: (path: string) => string
-    noProjectTitle: string
-    noProjectBody: string
-    noProjectOpen: string
-    noDiffs: string
-    unreadableTitle: string
-    unreadableBody: (error: string) => string
-    emptyTitle: string
-    emptyBody: string
-    treeErrorTitle: string
-    treeErrorBody: string
-    tryAgain: string
-    loadingTree: string
-    loadingFiles: string
-    terminalHide: string
-    terminalsAria: string
-    terminalNew: string
-    terminalReadOnly: string
-    terminalReadOnlyHelp: string
-    terminalOpenInteractive: string
-    terminalCloseOthers: string
-    terminalCloseAll: string
-    addToChat: string
-  }
+  rightSidebar: RightSidebarTranslations
 
   preview: {
     tab: string
@@ -3762,6 +3796,7 @@ catalog: CatalogTranslations
       sentMessage: (count: number) => string
     }
     web: {
+      embeddedPreviewHint: string
       appFailedToBoot: string
       serverNotFound: string
       remoteLoopback: string
@@ -3811,6 +3846,16 @@ catalog: CatalogTranslations
       commentTitle: (n: number) => string
       saveComment: string
       cancelComment: string
+      vaultFill: string
+      vaultTitle: (site: string) => string
+      vaultLoading: string
+      vaultEmpty: string
+      vaultUnlock: (name: string) => string
+      vaultOpenSettings: string
+      vaultFilled: (label: string) => string
+      vaultFillFailed: string
+      vaultLoadFailed: string
+      vaultPageNotReady: string
     }
   }
 
@@ -3869,6 +3914,8 @@ catalog: CatalogTranslations
     notExpressible: string
     zoneCount: (count: number) => string
     tabCount: (count: number) => string
+    /** A phone tab picker row's actions button (names the tab). */
+    tabActions: (title: string) => string
   }
 
   contextMenu: {
@@ -3916,7 +3963,12 @@ catalog: CatalogTranslations
       branchNewChat: string
       react: string
       dismissError: string
+      /** A reply paused for an automatic continuation (store/paused-replies.ts). */
+      responseContinuing: string
       responseStopped: string
+      /** Greyed notice on a safety-refused turn kept for display, used when the
+       *  backend sent none in display_metadata.content_refused.notice. */
+      contentRefusedNotice: string
       /** Layer titles for the structured error card (agent/error_surface.py).
        *  `generic` is the fallback when the backend sent no descriptor. */
       errorLayers: {
@@ -3952,14 +4004,24 @@ catalog: CatalogTranslations
       errorAuthKinds: { api_key: ErrorCardCopy; oauth: Pick<ErrorCardCopy, 'title'> }
       /** Collapsed "Details" line holding the raw provider/gateway text. */
       errorDetails: string
+      errorHideDetails: string
+      errorDetailsCopy: string
+      errorCopyRaw: string
+      errorContinue: string
+      errorOpenProviderSettings: (provider: string) => string
+      errorOpenSetupGuide: string
+      errorSetupGuideLink: string
+      errorOpenModelSettings: string
+      errorStartNewChatLink: string
+      errorChooseModelLink: string
+      errorRetryAtResetShort: (time: string) => string
+      errorRateLimitResetBody: (provider: string, time: string) => string
       /** Stands in for the provider name when the descriptor carries none. */
       errorGenericProvider: string
       /** Global toast title for a mid-turn gateway `error` event. */
       errorToastTitle: string
       errorRetry: string
-      errorLimitResets: (time: string) => string
       /** Arms ONE client-side retry of this turn at the 429's `resets_at` (#98852). */
-      errorRetryAtReset: (time: string) => string
       /** Countdown shown while that retry is armed; `wait` is "12m 03s". */
       errorRetryScheduled: (time: string, wait: string) => string
       errorRetryScheduledCancel: string
@@ -3994,7 +4056,6 @@ catalog: CatalogTranslations
       errorOpenLogs: string
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string
-      errorCopyDiagnostics: string
       errorSendDiagnostics: string
       filesChanged: (count: number) => string
       reviewChanges: string
@@ -4019,24 +4080,7 @@ catalog: CatalogTranslations
       sendEdited: string
       attachingFile: string
     }
-    approval: {
-      gatewayDisconnected: string
-      sendFailed: string
-      reconnect: string
-      timedOutSystemLine: string
-      openSafetySettings: string
-      run: string
-      command: string
-      commandDetails: string
-      moreOptions: string
-      allowSession: string
-      alwaysAllowMenu: string
-      jumpToApproval: string
-      reject: string
-      alwaysTitle: string
-      alwaysDescription: (pattern: string) => string
-      alwaysAllow: string
-    }
+    approval: ApprovalCopy
     clarify: ClarifyCopy
     themePicker: ThemePickerCopy
     catalogInstall: CatalogInstallTranslations
@@ -4052,6 +4096,11 @@ catalog: CatalogTranslations
       authorized: (server: string) => string
       failed: (server: string) => string
       toolCount: (count: number) => string
+      launchCommand: (target: string) => string
+      launchRemote: (target: string) => string
+      /** The env var names a stdio server adds (comma-joined); values never reach the card. */
+      launchEnv: (keys: string) => string
+      launchCwd: (dir: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string
@@ -4238,6 +4287,7 @@ catalog: CatalogTranslations
     imageAttach: string
     imageWriteFailed: string
     imageAttachFailed: string
+    attachFailed: string
     pastedContent: string
     pasteAttachFailed: string
     attachImages: string
@@ -4245,6 +4295,7 @@ catalog: CatalogTranslations
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    dropFilesMore: (count: number) => string
     handoff: {
       pickPlatform: string
       success: (platform: string) => string

@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
-from pm.filesystem import durable_write_bytes, file_digest, read_bytes_or_none
+from pm.filesystem import durable_write_bytes, file_digest, inherit_parent_acl, read_bytes_or_none
 from pm.workspace import enabled_plugin_dirs, _is_member_candidate
 
 
@@ -34,9 +34,9 @@ def _metadata_records(data: bytes | None) -> dict:
 
 def candidate_members(extra_dirs=(), **selection):
     selected = enabled_plugin_dirs(**selection)
-    for source in selected:
-        validate_manifest(source)
-    members = [source for source in selected if _is_member_candidate(source)]
+    enabled = {path.resolve() for path in (enabled_plugin_dirs() if selection else selected)}
+    members = [source for source in selected
+               if _admitted(source, new=source.resolve() not in enabled) and _is_member_candidate(source)]
     for directory in extra_dirs:
         directory = Path(directory)
         if directory not in members and _is_member_candidate(directory):
@@ -46,29 +46,50 @@ def candidate_members(extra_dirs=(), **selection):
 
 def selection_snapshot() -> dict[Path, bytes | None]:
     from pm.plugins_state import dependency_homes
-    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml") for home in dependency_homes()}
+    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml")  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+            for home in dependency_homes()}
 
 
 def validate_manifest(source: Path) -> dict:
     from pm.plugin_declarations import read_python_declaration, manifest_version_error
+    from pm.workspace import core_requirement_error
 
-    manifest = read_python_declaration(source).manifest
-    reason = manifest_version_error(manifest, source.name)
+    declaration = read_python_declaration(source)
+    reason = manifest_version_error(declaration.manifest, source.name)
+    if not reason and (core := core_requirement_error(declaration)):
+        reason = f"Plugin '{source.name}' {core}"
     if reason:
         raise ValueError(reason)
-    return manifest
+    return declaration.manifest
+
+
+def _admitted(source: Path, *, new: bool) -> bool:
+    """Refuse a change that newly enables or stages a plugin which does not fit; one enabled
+    before it whose ``hermes-agent`` requirement misses this Hermes sits out (False), as the
+    build leaves it out, rather than refusing every other plugin's change."""
+    from pm.plugin_declarations import read_python_declaration, manifest_version_error
+    from pm.workspace import core_requirement_error
+
+    if new:
+        validate_manifest(source)
+        return True
+    declaration = read_python_declaration(source)
+    if reason := manifest_version_error(declaration.manifest, source.name):
+        raise ValueError(reason)
+    return not core_requirement_error(declaration)
 
 
 class PluginSelection:
     def __init__(self, selection: dict):
         from hermes_yaml import roundtrip_yaml
+        from pm.plugin_eviction import settle_record
 
         self.configs = selection_snapshot()
         self.home = Path(selection["home"]).resolve()
         if not self.home.is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
         self.path = self.home / "config.yaml"
-        self.previous = read_bytes_or_none(self.path)
+        self.previous = read_bytes_or_none(self.path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
         expected = selection.get("expected_config")
         actual = hashlib.sha256(self.previous).hexdigest() if self.previous is not None else "missing"
         if expected is not None and expected != actual:
@@ -84,6 +105,7 @@ class PluginSelection:
             raise ValueError(f"plugins must be a mapping in {self.path}")
         plugins["enabled"] = sorted(selection["enabled"])
         plugins["disabled"] = sorted(selection["disabled"])
+        settle_record(plugins, selection.get("settled", ()))
         output = io.StringIO()
         yaml.dump(config, output)
         self.proposed = output.getvalue().encode("utf-8")
@@ -91,7 +113,7 @@ class PluginSelection:
                                          enabled=selection["enabled"], disabled=selection["disabled"])
 
     def publish(self, project: Path) -> None:
-        if selection_snapshot() != self.configs or read_bytes_or_none(self.path) != self.previous:
+        if selection_snapshot() != self.configs or read_bytes_or_none(self.path) != self.previous:  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
             raise ValueError("plugin configuration changed while preparing publication; retry")
         row = {"config": str(self.path),
                "previous": base64.b64encode(self.previous).decode() if self.previous is not None else None,
@@ -99,6 +121,20 @@ class PluginSelection:
                "config_after": hashlib.sha256(self.proposed).hexdigest()}
         durable_write_bytes(install_state_dir(project) / "publication.json", json.dumps(row).encode())
         durable_write_bytes(self.path, self.proposed)
+
+
+def _warn_acl_not_inherited(target: Path) -> None:
+    """Best effort stays best effort, but not silent: the plugin keeps the staging folder's DACL,
+    which a non-elevated Hermes may be unable to read. The worker's stderr reaches the user."""
+    import sys
+
+    from pm import receipt
+
+    message = (f"Could not give {target} the Windows permissions of {target.parent}; a Hermes running "
+               f"without elevation may be unable to read this plugin. To repair, from an elevated prompt "
+               f'run: icacls "{target}" /reset /t')
+    print(f"⚠ {message}", file=sys.stderr, flush=True)
+    receipt.record_warning(message)
 
 
 class StagedPlugin:
@@ -135,9 +171,8 @@ class StagedPlugin:
         self.members = {}
         if self.active:
             sources[self.target.resolve()] = self.staged
-            for source in sources.values():
-                validate_manifest(source)
-            self.members = {identity: source for identity, source in sources.items() if _is_member_candidate(source)}
+            self.members = {identity: source for identity, source in sources.items()
+                            if _admitted(source, new=source == self.staged) and _is_member_candidate(source)}
 
     def publish(self, project: Path) -> None:
         import os
@@ -172,4 +207,8 @@ class StagedPlugin:
             if self.target.exists():
                 os.replace(self.target, backup)
             os.replace(self.staged, self.target)
+            # The staging folder's private Windows DACL must not travel with the plugin (#111804 is the
+            # unreadable-at-install sibling); the plugin takes plugins/'s entries like any new file.
+            if not inherit_parent_acl(self.target) and os.name == "nt":
+                _warn_acl_not_inherited(self.target)
             durable_write_bytes(self.metadata, proposed)

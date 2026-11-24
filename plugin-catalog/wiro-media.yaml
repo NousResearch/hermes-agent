@@ -1,0 +1,34 @@
+name: wiro-media
+title: Wiro AI Media
+repo: https://github.com/wiroai/Wiro-Hermes
+sha: be81dea413b700757d44771519fdd3307e92dc3f
+subdir: wiro-media
+description: "Wiro AI's image, video, speech, music, transcription and 3D models as thirteen wiro_* tools: generate and edit images (upscale, remove backgrounds, prompt edits), text or image to video, text to speech, music, transcription, image to 3D, catalog search with prices, any catalog model, task follow-up and Wiro AI workflows. It also registers Wiro AI as an opt-in backend for image_generate, video_generate, text_to_speech and speech-to-text, and ships the wiro-media:wiro skill. Every tool takes any catalog model; outputs are saved in cache/generated/ with MEDIA: tags, and every result reports its cost. Disclosure — prompts, settings and input files go to https://api.wiro.ai/v1 with WIRO_API_KEY, read per call through Hermes secret scope; every generation spends the user's Wiro AI balance with no Hermes approval prompt, and the model can pick costly options such as high resolution or long video. Local input files are read only from Hermes' media cache, or from anywhere the user can read when the terminal backend is local (system and credential folders and the rest of the Hermes home excluded), and only when their bytes are media or documents of the expected kind; they are uploaded to the user's Wiro AI storage. Output files are downloaded only from *.wiro.ai hosts. Ogg Opus voice notes and bmp, tiff or avif images are converted with the local ffmpeg when it is installed."
+maintainer: wiroai
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/wiroai/Wiro-Hermes/tree/main/wiro-media#readme
+version: "2.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/wiroai/Wiro-Hermes/be81dea413b700757d44771519fdd3307e92dc3f/docs/screenshots/generate-image.png
+  - https://raw.githubusercontent.com/wiroai/Wiro-Hermes/be81dea413b700757d44771519fdd3307e92dc3f/docs/screenshots/voice-note.png
+capabilities:
+  provides_tools:
+    - wiro_generate_image
+    - wiro_edit_image
+    - wiro_generate_video
+    - wiro_text_to_speech
+    - wiro_generate_music
+    - wiro_transcribe
+    - wiro_generate_3d
+    - wiro_search_models
+    - wiro_model_info
+    - wiro_run_model
+    - wiro_task
+    - wiro_workflows
+    - wiro_run_workflow
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - WIRO_API_KEY

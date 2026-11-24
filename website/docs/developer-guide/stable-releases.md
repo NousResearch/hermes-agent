@@ -35,7 +35,7 @@ files on `main`.
    `tests/ci/test_stable_release_commit_threading.py` enforces that.
 4. Run the lanes the claim records: by default the whole source, Docker, Nix,
    PM bundle, install/update, Windows, signed-package, and native-upgrade
-   acceptance graph, without macOS Intel and Termux.
+   acceptance graph, without Termux.
 5. Push immutable versioned Docker and R2 artifacts from the tested bytes. The
    Docker image is pushed as soon as its own tests pass, tagged by the attempt
    ref. Do not move `stable` or `latest` aliases yet and do not rebuild for
@@ -64,7 +64,8 @@ repair a pointer.
 
 Promotion replaces the stable downloads page at `releases/stable/index.html` on
 the R2 public origin. Canary tag builds own `releases/canary/index.html`, and
-commit builds own `releases/commit/<sha>/index.html`. Pages list only staged,
+a commit build owns only its claim archive's page,
+`releases/tag/commit.<stamp>-v<version>/index.html`. Pages list only staged,
 receipt-backed objects; an older run cannot regress a protected channel.
 
 ## Run, publish, or abandon a stable release
@@ -111,7 +112,7 @@ a test lane is a suite that gates the release. `release` starts from the
 default set and edits it:
 
 ```sh
-# The default: everything except macOS Intel and Termux
+# The default: everything except Termux
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --remote origin
 # Only the signed Windows bundles and the Docker image, no tests
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows,docker --remote origin
@@ -119,8 +120,8 @@ python scripts/release.py release --commit "$(git rev-parse origin/main)" --only
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --without windows --remote origin
 # Only the Store bundle: no Azure signing anywhere
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows-store --remote origin
-# Everything, plus macOS Intel, without the install/update E2E
-python scripts/release.py release --commit "$(git rev-parse origin/main)" --with macos-intel --without install-e2e --remote origin
+# Everything, plus Termux, without the install/update E2E
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --with termux --without install-e2e --remote origin
 ```
 
 `--only` replaces the default set, `--with` adds lanes and `--without`
@@ -133,8 +134,8 @@ lists every lane.
 | `windows` | on | signed Windows x64 and arm64 MSIX and the universal bundle, which feed the update channel |
 | `windows-store` | on | the unsigned Microsoft Store bundle, submitted to Partner Center (needs no Azure signing) |
 | `macos-arm64` | on | macOS Apple Silicon DMG and ZIP |
-| `macos-intel` | off | macOS Intel DMG and ZIP: unsupported on `main`, and its runner adds over an hour |
 | `termux` | off | Termux (Android aarch64) APT package |
+| `linux` | off | diagnostic Linux x64 + arm64 AppImage builds (non-gating; on for canaries) |
 | `ci`, `nix`, `docker-tests`, `pm-bundle`, `windows-live`, `install-e2e`, `bootstrap-version` | on | the standalone suites |
 | `termux-checks` | on | Termux verification; runs only with `termux` |
 | `smoke` | on | native install and chat smoke of each built desktop package |
@@ -157,7 +158,8 @@ requires each job they remove to report `skipped`, and every other gated job to
 report `success`. A job that ran although a lane removes it also blocks the
 release. A claim cut before lanes existed (`skipBundles`, `skipTests`,
 `includeMacosIntel`, `includeTermux`) reads as the lane set that gated the same
-jobs. A claim without `lanesRevision` was cut when `windows` also meant the Store
+jobs. macOS Intel is no longer built, so such a claim reads only while its
+`includeMacosIntel` is absent or `false`. A claim without `lanesRevision` was cut when `windows` also meant the Store
 bundle, so its `windows` reads as `windows` plus `windows-store`.
 
 What a release publishes follows what it built:
@@ -173,8 +175,11 @@ What a release publishes follows what it built:
   bundle file, and moves no channel. The protected R2 stable head, the App Installer and macOS
   feeds, the APT channel, downloads page,
   `releases/stable/release-candidates.json` and the signed-package baseline stay
-  on the previous full release. Source checkouts on the official repository
-  follow `releases/stable/release-candidates.json`, so they stay too.
+  on the previous full release. Source checkouts of the official repository on
+  `stable`, their default channel, do not stay: that channel is GitHub's latest
+  published `vX.Y.Z` release (`_resolve_stable` in
+  `hermes_cli/source_releases.py`) and reads no R2 pointer, so every published
+  release moves them, whatever its lanes.
 - **Finished.** A release that advances the desktop channel is finished when
   the protected R2 head names it. One that only moves Docker is finished when
   the `stable` alias carries the digest its final tag binds. One that moves no
@@ -186,11 +191,11 @@ What a release publishes follows what it built:
   claim's `smoke` lane. The next full release uses that manifest as its upgrade
   baseline like any other. Cut a normal release after an untested one.
 
-When macOS Intel is left out, its rows are absent from the candidate manifest,
-the release body's downloads table and the downloads page. There is one macOS
-stable feed (`releases/darwin/stable/stable-mac.yml`), and `promote` replaces it
-with the arm64 leg alone, so Intel Macs on that feed get no update until a
-release is cut with `--with macos-intel`. When Termux is left out the APT
+No release builds macOS Intel: the candidate manifest, the release body's
+downloads table and the downloads page carry no Intel Mac row. There is one
+macOS stable feed (`releases/darwin/stable/stable-mac.yml`), and `promote`
+writes it from the arm64 leg alone, so Intel Macs on that feed get no
+update. When Termux is left out the APT
 indexes are not rewritten, so the APT channel stays on its previous release.
 A release that adds a target back after one that left it out has no published
 baseline for it, so that target's upgrade arm is skipped like a first release.
@@ -280,10 +285,15 @@ attempt installed from it is not upgrade-safe: every attempt of a version has
 the same package version, so the published build never replaces it. The Docker
 image is pushed early under the attempt ref; the `stable` and `latest` aliases
 move with the feed in the publication pass. The Store build follows the same
-rule: the green run commits it held (auto-publish off), so certification runs
-before the gate, and the publication pass switches that submission to
-auto-publish. If the submission API refuses the switch, the pass warns: select
-Publish now in Partner Center once the build is certified. A submission that
+rule: the green run uploads it as an uncommitted draft set to auto-publish, and
+only the publication pass commits it, so it goes live by itself once it passes
+certification. Partner Center refuses to change a committed submission, so the
+draft cannot be committed held earlier and released later. To keep a release's
+Store build back for a manual release, set the repository variable
+`MS_STORE_HOLD` to `true` before the publication pass: the draft is then
+committed with auto-publish off, and once it is certified someone selects
+Publish now in Partner Center. A submission committed held before this change
+also gets that Publish now warning. A submission that
 does not carry the release's Store bundle is left alone while the pass checks
 older published releases for its owner. Store reconciliation runs even when
 the feeds and aliases are already current, so interrupted publication can be
@@ -301,10 +311,11 @@ published release with a Termux R2 handoff. Explicit non-publishing desktop buil
 retain no downloadable job artifacts.
 
 The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
-`darwin-x64`, `win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`,
-`linux-arm64`, and `termux`. Stable calls it once per group, except the linux
-groups, which wait for a real Linux build, and the `darwin-x64`, `termux` and
-any other group whose lane the claim leaves out, which it does not call. Each Mac arch and the Windows bundle
+`win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`, `linux-arm64`, and
+`termux`. Stable calls it once per group, except the linux groups, whose
+diagnostic AppImage builds no lane selects yet, and the `termux` and any other
+group whose lane the
+claim leaves out, which it does not call. The Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
 
@@ -327,27 +338,59 @@ creation to organization administrators and the release integration and blocks
 update and deletion. The ruleset is not applied yet; until an admin applies it,
 these locks are honor-system — anyone with push access can delete a marker ref
 or move a receipt tag. Attempt refs, marker refs, and final tags are immutable.
-Channel and commit builds write annotated post-build receipts such as
-`v0.0.7+channel.<YYYYMMDDTHHMMSSZ>.<run-id>` and
-`v0.0.0+commit.<YYYYMMDDTHHMMSSZ>.<run-id>` only after publication succeeds.
-Receipt tags do not create GitHub releases and do not trigger workflows.
+Channel builds write annotated post-build receipts such as
+`v0.0.7+channel.<YYYYMMDDTHHMMSSZ>.<run-id>` only after publication succeeds.
+Receipt tags do not create GitHub releases and do not trigger workflows. A
+commit build writes no receipt: its claim tag, made before the build, is its
+identity (see below).
 
-Canary source identity is only
-`v<stable>+canary.<YYYYMMDDTHHMMSSZ>`. Build metadata intentionally makes it
-SemVer-equal to its stable core; the protected channel record and embedded UTC
-timestamp decide progression. Desktop clients treat that validated channel
-sequence as the update authority rather than asking SemVer to order build
-metadata. `Canary Release` runs once a day at 06:41 UTC from the default
-branch, and a manual dispatch starts one at any time. Runs queue with
+A canary tag is `canary.<YYYYMMDDTHHMMSSZ>-v<stable>`, the same claim shape as
+a stable `rc.N-v<stable>`, so nothing that lists `v*` release tags mistakes it for
+a release. The tag is the canary's identity everywhere: its GitHub prerelease,
+its archive (`releases/tag/<tag>/`), the tag stamped into its builds and its
+Docker image tag. The version it publishes is `<stable>+canary.<stamp>`. Build
+metadata intentionally makes it SemVer-equal to its stable core; the protected
+channel record and embedded UTC timestamp decide progression. Desktop clients
+treat that validated channel sequence as the update authority rather than
+asking SemVer to order build metadata.
+
+A canary runs the Stable Release pipeline itself. Its tag message is its claim:
+the lanes it runs (`release.py --canary` takes `--only`, `--with` and
+`--without`, starting from every lane except the signed-package upgrade arms,
+which a canary can never run) and whether a red suite holds its publication
+(`--require-green`, the default, or `--no-require-green`). `Canary Release`
+runs once a day at 06:41 UTC from the default branch with `--no-require-green`.
+Publication still waits for the selected suites to finish. The candidate must
+build and pass its smoke tests, but unrelated suite failures do not block it.
+A manual dispatch starts one at any time and requires every selected suite to
+pass unless its `require_green` input is off. Runs queue with
 `cancel-in-progress: false`. If `main` has no new commits, the run resumes an
-unpublished canary or does nothing. Historical `-canary.` identities are
-unsupported.
+unpublished canary or does nothing. The retired `v<stable>+canary.<stamp>` and
+`-canary.` identities are no longer produced; old ones age out through
+`--prune-canaries`.
 If a process stops after pushing the canary tag, rerunning the command verifies
 the exact remote tag object, repairs the missing draft, and redispatches until the
 protected canary head receipts that tag.
 The protected publication controller verifies that exact annotated tag object
 before it flips the GitHub prerelease from draft to public, reads both states back,
 and only then advances the R2 head.
+Only Stable Release's `publish-canary` job publishes a canary. A direct dispatch of
+`desktop-bundled-release.yml` refuses a release tag, and the controller refuses
+any other workflow as a canary publisher. The canary Docker aliases (`:canary`,
+`:canary-desktop`) move only after `publish-canary` succeeds, so they follow the
+claim's green policy and lanes like every other canary channel. The canary's
+Termux packages go to `hermes-canary` under a pool prefix named by its tag, just
+as a stable attempt's go to `hermes-stable` under its attempt ref.
+
+Pull requests and pushes to `main` run no E2E suite. Each daily `Canary Release`
+dispatches `Stable Release` with the canary claim tag, running full CI with
+`release: true`, install/update E2E, and Windows live E2E directly inside the
+canary pipeline so an E2E regression shows up within a day of landing rather than
+at the next stable claim. Scheduled runs pass `--no-require-green` so a red suite
+reports without blocking canary publication once the candidate builds and smokes
+pass, and `stable-release.yml`'s `track-canary-red` job keeps one
+`install-e2e-red` issue open while the latest canary run is red (`install-e2e-red.yml`
+remains available for manual dry-run preview/replay).
 
 ## Canary and one-off desktop identities
 
@@ -357,6 +400,8 @@ canary feed updates that application only. One-off builds use
 `release.py --build-commit REV --remote REMOTE` (add `--publish` to dispatch).
 Their application identity and CLI command (`hermes-<7-character-sha>`) include
 the pinned commit. Two different commit builds do not replace each other.
+A commit build runs the Stable Release pipeline itself (see
+[Commit builds](#commit-builds)).
 
 Branding is selected from those build inputs, not from runtime settings:
 canary uses yellow/dark-yellow icons; one-off builds use red icons bearing
@@ -365,22 +410,70 @@ the short SHA. All desktop icon formats derive from the same artwork.
 One-off stamps use `source: commit-build`. No app update feed or App Installer
 subscription is published for them, and both the GUI and bundled CLI refuse
 update requests. They direct the recipient to ask the developer for a new
-build. Source checkouts are separate: `main` is their only valid channel.
+build. Source checkouts are separate: an official-repository checkout follows
+`stable` and a fork or mirror follows `main`, until
+`hermes update --set-channel` picks another channel.
 
-`--build-commit` prints its deterministic downloads-page URL before dispatch,
-including in dry runs:
-`https://hermes-assets.nousresearch.com/releases/commit/<full-sha>/index.html`.
-`CLOUDFLARE_R2_PUBLIC_URL` overrides the public origin. After admission, the
-commit summary runs even when a build or assembly job fails; it lists only
-receipt-backed existing downloads and marks missing binaries as not built.
-Missing binaries link to the workflow run under **View build run**, not to
-nonexistent downloads. Disabled platforms have no download or failure link.
-Page publication still requires working R2 access. The commit links to its source
-on GitHub; tag and channel pages link to the corresponding GitHub release tag.
-Commit pages also list explicit non-secret `--bundle-env` defaults and
-`--bundle-unset` clears passed to the desktop bundles, not the CI environment.
-Values are shown as JSON strings (including `""` for an empty value); clears are
-labeled **Unset**. The section is omitted when no overrides were supplied.
+### Commit builds
+
+`release.py --build-commit REV --remote REMOTE` claims an exact pushed commit
+with an annotated tag `commit.<YYYYMMDDTHHMMSSZ>-v<version>` (the pyproject
+version at REV) and dispatches `stable-release.yml` on it from the default
+branch, using the same claim/admission pipeline as stable and canary releases.
+Without `--publish` it prints the claim, its lanes and the dispatch command and
+creates nothing. The claim message records the lanes, the green policy and the
+bundle defaults; admission reads only the claim, and `stable verify` refuses
+any candidate leg whose bundle environment differs from it. Stable Release runs
+only from `main`, so a repository whose default branch is another one gets no
+claim: `--build-commit` dispatches the tagless `desktop-bundled-release.yml`
+commit build on that branch instead (its page is
+`releases/commit/<sha>/index.html`), and refuses `--only`, `--with` and
+`--without` there.
+
+Because a commit build runs arbitrary pushed commits rather than reviewed
+release commits, it enforces four trust-boundary rules:
+
+- **Bundles + smoke only:** it starts from `windows`, `macos-arm64` and `smoke`;
+  `--with termux` adds the Termux `.deb` build, and `--only` / `--without`
+  narrow that set. Shared-cache workflows and release-only lanes (`ci`,
+  `docker`, `docker-tests`, `nix`, `pm-bundle`, `install-e2e`, `termux-checks`,
+  `windows-live`, `upgrade`, `windows-store`, `linux`, `bootstrap-version`) are
+  refused.
+- **Read-only caches and no APT signing key:** every native build leg
+  (Windows, macOS and Termux) routes to its `cache-mode: read` branch and skips
+  every cache-save step. The commit Termux leg has no access to
+  `TERMUX_APT_GPG_KEY` or `TERMUX_APT_GPG_PASSPHRASE` and stages only the
+  downloadable `.deb` (never an APT repository).
+- **Identity & pre-PR compatibility:** its packages are versioned like a
+  canary's (`X.Y.Z+commit.<stamp>`, the stamped Windows quad, Debian
+  `X.Y.Z~commit.<stamp>-1`) while keeping the `Commit<sha7>` application
+  identity and `source: commit-build`, so every updater refuses them. A commit
+  whose tree doesn't declare a claim build in
+  `scripts/releases/commit_claim_build.txt` (every commit predating commit-claim
+  packaging) still builds cleanly through the tagless `--commit` path while the
+  default-branch controller records, smokes and stages it under the claim
+  archive; a declared contract the controller doesn't know is refused.
+- **Publication:** none. Its only publication job, `publish-commit`, renders
+  the accepted candidate's full downloadable assets (`.msixbundle`, per-arch
+  `.msix`, macOS `.dmg` and `.zip`, and Termux `.deb`) at
+  `releases/tag/commit.<stamp>-v<version>/index.html` and in the run summary
+  (waiting for every selected check with `--require-green`, the default, or
+  only for the built candidate with `--no-require-green`). Channel and feed
+  writers, APT staging, Docker push and Store submission all refuse commit
+  claims.
+
+The page links its source commit and lists the explicit non-secret
+`--bundle-env` defaults and `--bundle-unset` clears baked into the desktop
+bundles (not the CI environment), as JSON strings with clears labeled
+**Unset**; the section is omitted when there were none. `--build-commit`
+prints the page URL before dispatch, including in dry runs;
+`CLOUDFLARE_R2_PUBLIC_URL` overrides the public origin. Each commit build runs
+in its own concurrency group, so it never queues behind a release, and both the
+stable publication reconciler and sandbox image workflow ignore it.
+
+Commit builds keep 90 days: the daily canary workflow's prune deletes claim
+archives and claim tags older than that (and lets legacy
+`releases/commit/<sha>/` pages from tagless builds age out on the same window).
 
 Tagged builds also publish a per-tag diagnostic page at
 `releases/tag/<tag>/index.html` after build or feed failures, including when no
@@ -508,7 +601,8 @@ See [the bundled update contract](https://github.com/NousResearch/hermes-agent/b
   All applicable source CI jobs still run, regardless of changed paths.
 - OSV vulnerability findings retain their existing advisory policy. Required
   scanner execution failures are failures, not advisory findings.
-- Disabled Linux desktop packaging is not claimed as shipped. Native Linux
+- Linux desktop AppImages, diagnostic canary builds, are not claimed as
+  shipped. Native Linux
   PM bundles, Docker, Nix and install/update checks remain required.
 - Housekeeping, autofix, comment and skills-index/deploy workflows are not
   release acceptance suites.

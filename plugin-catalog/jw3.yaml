@@ -1,0 +1,37 @@
+name: jw3
+title: JW3.ai trading
+repo: https://github.com/agnostic4321-ops/jw3-hermes-plugin
+sha: 44100ebdae63bf42b51f5a43913274cf2ee31959
+version: "1.1.0"
+description: "JW3.ai non-custodial trading inside Hermes: 12 market/risk/Diary reads, Diary propose cards, and 4 human-approved execution tools — all thin wrappers over the local jw3 CLI, which owns the PAT and enforces server-side scope, kill-switch, fee, and idempotency gates. Bundles the jw3-ops skill and /jw3-status. Disclosure — every tool call runs the local `jw3` CLI (installed separately from github.com/agnostic4321-ops/jw3-mcp-cli, not covered by the pinned sha) with a minimal env (PATH, HOME, XDG_CONFIG_HOME, TMPDIR, JW3_*); the CLI holds the JW3 PAT and reaches JW3.ai's Supabase edge functions and the user's exchange accounts; jw3_execute, jw3_close, jw3_exits and jw3_cancel dry-run unless confirm=true, and every confirm=true call goes through a Hermes approval prompt showing the exact command before it places, closes or cancels real orders with real funds (unattended runs follow the user's approval mode; an \"always\" answer pre-approves only that identical command); the plugin itself holds no secrets and stores nothing."
+maintainer: agnostic4321-ops
+tier: community
+category: tools
+docs_url: https://github.com/agnostic4321-ops/jw3-hermes-plugin
+image: https://raw.githubusercontent.com/agnostic4321-ops/jw3-hermes-plugin/44100ebdae63bf42b51f5a43913274cf2ee31959/assets/jw3-icon.svg
+requires_hermes: ">=0.22.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - jw3_market
+    - jw3_screener
+    - jw3_positions
+    - jw3_balances
+    - jw3_orders
+    - jw3_fills
+    - jw3_pnl
+    - jw3_klines
+    - jw3_analyze
+    - jw3_risk
+    - jw3_scan
+    - jw3_diary
+    - jw3_propose
+    - jw3_execute
+    - jw3_close
+    - jw3_exits
+    - jw3_cancel
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

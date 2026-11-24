@@ -1,4 +1,4 @@
-// npm's source-development composition; the compiler consumes prepared inputs.
+// The source-development composition (`pnpm run build`); the compiler consumes prepared inputs.
 import { execFileSync } from 'node:child_process'
 import { cpSync } from 'node:fs'
 import { join, resolve } from 'node:path'

@@ -1,0 +1,23 @@
+name: stave
+title: Stave
+repo: https://github.com/Adolanium/hermes-stave
+sha: 433bcf90d5317b692733d5bf74e63b98650b471b
+description: "Describe a piece of music and Hermes writes it as sheet music in Hermes Desktop: it plans the form, writes every bar in ABC notation, checks bar lengths, instrument ranges, guitar chord shapes and syntax and repairs what fails, then engraves the score. Playback lights each note as it sounds, guitar parts get TAB, and you change any bars you select by asking in words, with undo. Exports PDF, SVG, MIDI, WAV and ABC. Two agent tools (stave_check, stave_open) and the stave:compose skill let any chat compose and open pieces on the page. Disclosure — the page makes one stateless llm.oneshot call per step through its own Stave composer auxiliary task (Settings › Models; reasoning off by default) and creates no sessions; playback downloads FluidR3 GM instrument samples from paulrosen.github.io/midi-js-soundfonts the first time each instrument plays; stave_open writes one JSON file per piece to plugin-data/stave/inbox, which the page reads through the plugin's dashboard route and deletes; pieces and undo history live in Desktop plugin storage; files are written only when the user exports; no shell commands, no processes of its own, no telemetry."
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Adolanium/hermes-stave#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-stave/433bcf90d5317b692733d5bf74e63b98650b471b/docs/images/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-stave/433bcf90d5317b692733d5bf74e63b98650b471b/docs/images/revise.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-stave/433bcf90d5317b692733d5bf74e63b98650b471b/docs/images/compose.gif
+  - https://raw.githubusercontent.com/Adolanium/hermes-stave/433bcf90d5317b692733d5bf74e63b98650b471b/docs/images/play.gif
+capabilities:
+  provides_tools:
+    - stave_check
+    - stave_open
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

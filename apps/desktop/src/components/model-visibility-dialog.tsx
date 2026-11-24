@@ -149,7 +149,7 @@ export function ModelVisibilityDialog({
           <Search className="pointer-events-none size-3.5 shrink-0 text-muted-foreground/70" />
           <input
             autoFocus
-            className="h-5 w-full bg-transparent text-xs text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
+            className="h-5 w-full bg-transparent text-xs text-foreground placeholder:text-(--ui-text-tertiary)"
             onChange={event => setSearch(event.target.value)}
             placeholder={copy.search}
             type="text"

@@ -1,0 +1,24 @@
+name: minimalist-themes
+title: Minimalist Themes
+repo: https://github.com/mykeura/minimalist-themes-for-hermes
+sha: 54fa3ffb9728a42faf842758f20aa64c01acdb76
+description: "Eighteen warm, readable palettes for Hermes Desktop, assigned natively per profile, with one embedded type system (Figtree + Geist Mono), matching terminal colors and a CLI banner painted per palette. Disclosure — theme-only plugin: it registers eighteen themes through the plugin SDK, and its stylesheet adjusts a few Desktop surfaces (profile-rail glyph contrast, Capabilities metadata, the MCP JSON editor and the Manage Profiles overlay) only while a Minimalist theme is active. It also ships optional CLI/TUI skins as plain YAML files the user copies; the Desktop side never reads them. Fonts are bundled; no network requests, no agent tools or hooks, no background processes. The package also ships an inert Agent entrypoint whose register() does nothing, so Hermes Agent imports it cleanly instead of reporting a missing module."
+maintainer: mykeura
+tier: community
+category: desktop
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/mykeura/minimalist-themes-for-hermes#readme
+version: "1.5.1"
+image: https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/54fa3ffb9728a42faf842758f20aa64c01acdb76/images/minimalist-themes.png
+screenshots:
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/54fa3ffb9728a42faf842758f20aa64c01acdb76/images/beetroot-juice.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/54fa3ffb9728a42faf842758f20aa64c01acdb76/images/diana-yin.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/54fa3ffb9728a42faf842758f20aa64c01acdb76/images/horchata.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/54fa3ffb9728a42faf842758f20aa64c01acdb76/images/oceans.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/54fa3ffb9728a42faf842758f20aa64c01acdb76/images/mango.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/54fa3ffb9728a42faf842758f20aa64c01acdb76/images/yuzu.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

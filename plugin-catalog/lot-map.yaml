@@ -1,0 +1,25 @@
+name: lot-map
+title: Lot Map for Hermes
+repo: https://github.com/thanhduy1706/lot-map-hermes
+sha: e9c77dd87333b613aa5439d2cce9e035a689da37
+description: "Community port of the original MIT Lot Map SVG/braille renderers with provider themes, customizable UI, session insights and optional quota-cache display. Disclosure: passive hooks store bounded local tool metadata; native quota RPC may contact providers via Hermes; opt-in cache uses fixed cli.exec quota status command; no direct credential reads or telemetry."
+maintainer: thanhduy1706
+tier: community
+category: desktop
+requires_hermes: ">=0.23.3"
+version: "0.2.0"
+docs_url: https://github.com/thanhduy1706/lot-map-hermes#readme
+screenshots:
+  - https://raw.githubusercontent.com/thanhduy1706/lot-map-hermes/e9c77dd87333b613aa5439d2cce9e035a689da37/docs/preview.png
+readme: true
+known_issues:
+  - "TUI widget requires an explicit install step. Desktop surface is opt-in."
+  - "Structured quota needs the separately installed quota plugin and explicit opt-in; missing or stale data is unknown."
+  - "Upstream Unicode sanitizer and command-classifier text trigger disclosed scanner cautions; see docs/validation-notes.md."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

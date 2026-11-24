@@ -43,18 +43,16 @@ def _grouped(tools):
 
 def _policy_tools(policy, config):
     """The tool list the session's next agent build loads (``agent/agent_init.py`` tool snapshot):
-    the policy's toolsets minus the configured and platform-gated disabled ones, one-shot pruned."""
+    the policy's toolsets minus the configured, platform-gated and one-shot disabled ones."""
     import model_tools
-    from agent.oneshot_footprint import ONESHOT_HIDDEN_TOOLS
     from agent.skill_utils import parse_config_string_list
     from toolsets import session_disabled_toolsets, session_platform_tool_drops
     enabled = list(policy.current_toolsets(config))
     disabled = session_disabled_toolsets(
-        parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None, policy.platform)
+        parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None, policy.platform,
+        oneshot=policy.source == "oneshot")
     tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True)
     drops = set(session_platform_tool_drops(policy.platform))
-    if policy.source == "oneshot":
-        drops |= ONESHOT_HIDDEN_TOOLS
     return enabled, [tool for tool in tools or [] if tool["function"]["name"] not in drops]
 
 
@@ -202,6 +200,9 @@ async def snapshot_info(authority, ref):
     if info.get('tool_count') is None:
         # A lazy session: the tools its first turn loads (the banner's own count).
         info['tool_count'] = sum(len(names) for names in (inventory.get('tools') or {}).values())
+    from gateway.session_usage import snapshot_usage
+    if (usage := await asyncio.to_thread(snapshot_usage, authority, ref, agent)) is not None:
+        info['usage'] = usage
     return {**inventory, **info}
 
 

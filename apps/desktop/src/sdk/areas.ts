@@ -9,6 +9,10 @@ export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right
  *  runs once per registration, not once per route. Page-owned controls that
  *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
+/** Which session a composer belongs to, read from inside a `composer.top` contribution: the
+ *  main composer and every tile's answer for their own session, so a banner can tell whose
+ *  chat it sits above. */
+export { type ComposerSessionInfo, useComposerSession } from '@/app/chat/composer/scope'
 /** Per-card labels on Kanban tiles: register a `KANBAN_CARD_AREAS.badges`
  *  data contribution whose `decorate({ id, status, tenant, assignee },
  *  { tenants })` returns `{ label, tone?, tooltip? }` (or a few, or `null`). Core paints
@@ -27,3 +31,11 @@ export {
   type KanbanCardBadgeTone,
   type KanbanCardBoard
 } from '@/contrib/kanban-card-badges'
+/** Draw the `MEDIA:` files your package's OWN tools produced, in place of the
+ *  built-in player (ownership is checked against the backend's tool registry). */
+export {
+  TOOL_MEDIA_RENDERER_AREA,
+  type ToolMediaFile,
+  type ToolMediaRendererContribution,
+  type ToolMediaRendererProps
+} from '@/lib/tool-media-renderers'

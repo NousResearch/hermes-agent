@@ -23,6 +23,23 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _program_outcome(result):
+    """OSC 7501 (state, msg) for a finished turn. No result = the monitor gave up on a still-running
+    agent, so claim no outcome (None reads as idle); a cancelled turn is idle per the spec. A failure
+    that kept answer text is done, as the TUI reports it; ``done`` carries no msg, never the reply."""
+    if not result:
+        return None
+    if result.get("interrupted"):
+        return ("idle", "")
+    if result.get("failed"):
+        error = str(result.get("error") or "")
+        text = result.get("final_response")
+        kept = bool(result.get("partial") and isinstance(text, str) and text.strip()
+                    and text.strip() != error.strip())
+        return ("done", "") if kept else ("error", error)
+    return ("done", "")
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -30,6 +47,90 @@ class CLIChatTurnMixin:
     # response string, so one-shot callers that must map an outcome onto a
     # process exit code (see cli._run_single_query_mode) read this instead.
     _last_turn_result = None
+
+    def _report_program_status(self, state: str, *, kind: str = "", message: str = "") -> None:
+        """OSC 7501 Program Status report (idle/working/blocked/done/error) on an interactive terminal only."""
+        from hermes_cli.terminal_notify import program_status_sequence
+        try:
+            seq = program_status_sequence(state, kind=kind, message=message)
+        except (TypeError, ValueError, UnicodeError):
+            return
+        self._write_program_status(seq)
+
+    def _write_program_status(self, seq: str) -> None:
+        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
+            return
+        if not sys.stdout.isatty():
+            return
+        from hermes_cli.terminal_notify import write_tty
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            write_tty(seq)
+            return
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+
+        def _emit() -> None:
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass
+
+        _run_on_app_loop(app, _emit)
+
+    # (state, msg) of the last finished turn; None = no outcome to show (fresh, early return, lost result).
+    _program_turn_outcome: tuple[str, str] | None = None
+    _program_status_last = None
+    # Set on quit: the record is cleared and nothing may report again (a turn settling during shutdown).
+    _program_status_closed = False
+
+    def _clear_program_status(self) -> None:
+        """Quit: clear the record this CLI reported. idle/done/error outlive the process under the spec,
+        so without this a pane back at its shell keeps listing Hermes as an agent."""
+        if self._program_status_closed:
+            return
+        self._program_status_closed = True
+        if self._program_status_last is None:
+            return
+        self._program_status_last = None
+        from hermes_cli.terminal_notify import program_status_clear_sequence
+        self._write_program_status(program_status_clear_sequence())
+
+    def _program_prompt_status(self):
+        """(kind, msg) for the blocking prompt on screen, or None. Connection cards block only while
+        they wait on the user (form, browser link, retry), never while the backend works."""
+        approval = getattr(self, "_approval_state", None)
+        if approval:
+            return "permission", str(approval.get("command") or "")
+        clarify = getattr(self, "_clarify_state", None)
+        if clarify:
+            return "question", str(clarify.get("question") or "")
+        confirm = getattr(self, "_slash_confirm_state", None)
+        if confirm:  # billing wall, /reset and other slash confirmations; the TUI's `confirm` twin
+            return "question", str(confirm.get("title") or "")
+        if getattr(self, "_sudo_state", None) or getattr(self, "_secret_state", None):
+            return "auth", ""
+        connection = getattr(self, "_connection_state", None)
+        if connection and connection.get("phase") in {"form", "url", "failed"}:
+            return "auth", ""
+        return None
+
+    def _sync_program_status(self) -> None:
+        """Report what the screen shows: a blocking prompt, else a running turn, else the last turn's
+        outcome (idle when none). One owner, called on every modal repaint and turn boundary, so no
+        prompt or exit path has to remember its own transition."""
+        if self._program_status_closed:
+            return
+        prompt = self._program_prompt_status()
+        if prompt:
+            key = ("blocked", prompt[0], prompt[1])
+        elif getattr(self, "_agent_running", False):
+            key = ("working", "", "")
+        else:
+            state, message = self._program_turn_outcome or ("idle", "")
+            key = (state, "", message)
+        if key != self._program_status_last:
+            self._program_status_last = key
+            self._report_program_status(key[0], kind=key[1], message=key[2])
 
     def _sync_fallback_chain_with_config(self, agent) -> None:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
@@ -127,6 +228,8 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
+                self._program_turn_outcome = ("error", str(e))
+                self._sync_program_status()
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:
@@ -316,10 +419,12 @@ class CLIChatTurnMixin:
         self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
+        _taken_notes = {}
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
             _note = getattr(self, _note_attr, None)
             if _note:
                 agent_message = _prepend_note_to_message(agent_message, _note)
+                _taken_notes[_note_attr] = _note
                 setattr(self, _note_attr, None)
         # Barged mid-speech (VAD or record key)? Tell the model it was cut off.
         from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
@@ -332,6 +437,11 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
+        # Set only by a dispatcher-spawned `-q` run; a human turn keeps today's call shape.
+        from agent.interrupt_compat import _accepts_keyword
+        _author = getattr(self, "_single_query_turn_author", None)
+        _author_kwargs = ({"turn_author": _author}
+                          if _author is not None and _accepts_keyword(self.agent.run_conversation, "turn_author") else {})
         try:
             from agent.notification_presentation import notification_turn
             muted = getattr(turn, "mute_notification_reply", False)
@@ -341,6 +451,7 @@ class CLIChatTurnMixin:
                     conversation_history=self.conversation_history[:-1],
                     stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
                     persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                    **_author_kwargs,
                 )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}
@@ -362,13 +473,35 @@ class CLIChatTurnMixin:
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
-            if _one_turn_model_restore and (turn.result or {}).get("failure_reason") == "session_busy":
+            _unadmitted = (turn.result or {}).get("admitted") is False
+            if _unadmitted:  # refused before the submit: the resend still owes the notes
+                for _note_attr, _note in _taken_notes.items():
+                    setattr(self, _note_attr, _note)
+            if _one_turn_model_restore and (_unadmitted or (turn.result or {}).get("failure_reason") == "session_busy"):
                 # The owner admitted nothing: the resend is still the one turn the pick was for.
                 self._pending_one_turn_model_restore = _one_turn_model_restore
             elif _one_turn_model_restore:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)
             # Credit notices paint cleanly above the prompt here, not behind streamed output.
             self._flush_credit_notices()
+            # Safety refusal: take the whole refused turn (user row + any tool rounds + the refusal)
+            # out of this session's MODEL context so a later /resume isn't re-sent the blocked
+            # content and locked, while KEEPING the user's message visible in the chat as a greyed
+            # refused notice. The in-memory history (result["messages"]) is already the clean
+            # pre-refusal history; this makes the durable model read match it.
+            if (turn.result or {}).get("failure_reason") == "content_policy_blocked":
+                from agent.agent_init_session import agent_interface
+                from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                _store, _refused_sid = agent_interface(self.agent), getattr(self.agent, "session_id", None)
+                if _store is not None and _refused_sid:
+                    try:  # best-effort: a refusal must never crash turn teardown
+                        _store.messages.retain_refused_turn_for_display(
+                            _refused_sid, notice=CONTENT_REFUSED_NOTICE,
+                            boundary_row_id=(turn.result or {}).get("refused_turn_boundary_row_id"))
+                    except Exception:
+                        logging.getLogger("hermes").warning(
+                            "content-policy refusal: could not retain the refused turn for %s", _refused_sid,
+                            exc_info=True)
             # A reused thread must never hold stale references to a disposed CLI instance.
             try:
                 set_sudo_password_callback(None)
@@ -388,7 +521,7 @@ class CLIChatTurnMixin:
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
-        from cli import _cprint, _hermes_home, logger
+        from cli import _cprint, logger
         # Ambient "thinking" blips in voice mode; skipped per-blip while TTS speaks, the mic
         # records or a barge capture is live. voice.thinking_sound gates it (default on).
         if self._voice_mode:
@@ -428,15 +561,6 @@ class CLIChatTurnMixin:
             # Modal prompts gate input until reset — otherwise the CLI freezes after an
             # interrupt until the prompt's own timeout.
             self._clear_active_overlays_for_interrupt()
-            # Debug log to file (stdout may be devnull under redirect_stdout).
-            try:
-                with open(_hermes_home / "interrupt_debug.log", "a", encoding="utf-8") as _f:
-                    _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
-                             f"children={len(self.agent._active_children)}, "
-                             f"parent._interrupt={self.agent._interrupt_requested}\n")
-                    _f.writelines(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n" for _ci, _ch in enumerate(self.agent._active_children))
-            except Exception:
-                pass
             break
 
         if interrupt_msg is not None:
@@ -497,6 +621,35 @@ class CLIChatTurnMixin:
             self._write_terminal_breadcrumb()
             self._pending_title = None
 
+    def _handle_discard_command(self, cmd_original: str):
+        """/discard <admission_id>: acknowledge a turn the gateway lost in a restart without replaying
+        it (the owner's fenced ``prompt.resolve_unknown``), so prompts may run again."""
+        from cli import _cprint
+        from hermes_cli.gateway_chat_view import lost_admission
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_side import connection_for
+        admission_id = cmd_original.partition(" ")[2].strip()
+        if not admission_id:
+            _cprint("  Usage: /discard <admission_id>")
+            return
+        connection = connection_for(self)
+        if connection is None:
+            _cprint("  /discard: no gateway session is open")
+            return
+        try:
+            lost = lost_admission(connection.reattach(self.session_id), admission_id)
+            connection.call("prompt.resolve_unknown", session_id=self.session_id,
+                            admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
+            # The cached pending list the next prompt checks: any other lost turn still refuses it.
+            snapshot = connection.reattach(self.session_id)
+        except GatewayClientError as exc:
+            _cprint(f"  /discard: {exc}")
+            return
+        left = sum(row["status"] == "unknown" for row in snapshot.get("pending", []))
+        _cprint(f"  Discarded {lost['admission_id']}; it was not re-run. "
+                + (f"{left} more paused turn{'s' if left > 1 else ''} to /discard first." if left
+                   else "You can send messages again."))
+
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):
         """Post-turn display: errors, interrupt marker, reasoning/response panels, bell, re-queues.
 
@@ -539,6 +692,8 @@ class CLIChatTurnMixin:
         except Exception:
             pass
 
+        self._program_turn_outcome = _program_outcome(turn.result)
+        self._sync_program_status()
         self._ring_bell(context=t("cli.modal.bell_turn_complete"))  # propagates over SSH
         if turn.result and not turn.result.get("completed") and not turn.result.get("interrupted"):
             _api_calls = turn.result.get("api_calls", 0)
@@ -687,6 +842,10 @@ class CLIChatTurnMixin:
                 (self._stream_started and self._stream_box_opened) or _interrupted_streamed
             ) and not is_error_response
             modern = getattr(self, "_modern_layout", False)
+            # A gateway refusal is Hermes's own copy (quoted user text, a /discard line to copy):
+            # markdown stripping or rendering would rewrite the quote and merge the lines.
+            mode = ("raw" if turn.result and turn.result.get("failure_reason") == "gateway_connection"
+                    else self.final_response_markdown)
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
                 if modern:
@@ -703,12 +862,12 @@ class CLIChatTurnMixin:
             elif modern:
                 from hermes_cli.cli_modern_layout import answer_label, closing_separator
                 _cprint(answer_label())
-                ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
+                ChatConsole().print(_render_final_assistant_content(response, mode=mode),
                                     style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(
-                    _render_final_assistant_content(response, mode=self.final_response_markdown),
+                    _render_final_assistant_content(response, mode=mode),
                     title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
                     style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
                     width=self._scrollback_box_width(),

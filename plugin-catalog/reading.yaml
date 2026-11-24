@@ -1,0 +1,20 @@
+name: reading
+title: Reading
+repo: https://github.com/Nj07r/hermes-reading
+sha: c739110797b0bcd0bad53d8f2a83b8ce1854430d
+version: "1.0.0"
+description: "Newsletters out of the Gmail inbox, into a reader in Hermes Desktop (a page in the sidebar) and on your phone (dashboard web app). Setup scans the inbox and suggests the newsletters; native Gmail filters then move the senders you pick into one label, even when Hermes is off. Read with j/k, dark or original colors per sender, unsubscribe in one tap, add or remove senders by hand, and ask Hermes about any issue (a new chat with the issue attached, or the @newsletter: reference in any chat). `hermes reading export` feeds digest cron jobs. Disclosure: uses your own Google OAuth client, declared under oauth: and signed in with `hermes auth add reading:google` (Hermes stores and refreshes the token; the plugin never holds it); calls only the Gmail API through credentialed_provider_request, plus, when you press Unsubscribe, a one-click POST to the sender's List-Unsubscribe URL (public https hosts only) or an unsubscribe email from your account; changes Gmail only to create its label, write and delete its own filters, move routed senders' mail out of the inbox, mark opened emails read and trash emails you delete; `hermes reading setup` runs `hermes config set` and `hermes auth add` in your terminal (without YOLO or auto-approve variables); writes only its own HERMES_HOME/reading folder; @newsletter: and Ask Hermes send the newsletter text to your model provider; no telemetry."
+maintainer: Nj07r
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Nj07r/hermes-reading
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/Nj07r/hermes-reading/c739110797b0bcd0bad53d8f2a83b8ce1854430d/docs/reader.png
+  - https://raw.githubusercontent.com/Nj07r/hermes-reading/c739110797b0bcd0bad53d8f2a83b8ce1854430d/docs/reader-dark.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [READING_GOOGLE_CLIENT_ID, READING_GOOGLE_CLIENT_SECRET]

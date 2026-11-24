@@ -1,0 +1,30 @@
+name: deepseek-meter
+repo: https://github.com/samieshmil-blip/hermes-deepseek-meter
+sha: 3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65
+description: >-
+  DeepSeek account meter for the Hermes status bar: the live account balance
+  from the DeepSeek API, the focused chat's context-window load with a bar, and
+  today's token/cost totals from the local session store, plus 7-day, all-time,
+  per-chat and per-model splits in a click-through panel. The UI follows the
+  app language (en, ru, uk, es, de, fr, zh, ja). Disclosure — one outbound HTTPS
+  call to api.deepseek.com/user/balance; the key is read through Hermes' secret
+  route (agent.secret_scope) and is never returned to the renderer or written
+  anywhere. It also reads token/cost aggregates from $HERMES_HOME/state.db
+  read-only (no message text, titles or prompts). No telemetry, no self-updater,
+  no tools, hooks or middleware, and no core patching: two GET routes and a
+  status-bar chip.
+maintainer: samieshmil-blip
+tier: community
+category: desktop
+docs_url: https://github.com/samieshmil-blip/hermes-deepseek-meter#readme
+version: "1.0.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [DEEPSEEK_API_KEY]
+screenshots:
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65/docs/hero.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65/docs/locales.png
+requires_hermes: ">=0.23.0"

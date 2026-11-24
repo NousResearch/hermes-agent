@@ -45,7 +45,7 @@ def main():
     workspace.mkdir()
     cfg = {'gateway': {'multiplex_profiles': False},
            'model': {'provider': 'custom', 'default': 'frozen-model', 'base_url': url},
-           'auxiliary': {'title_generation': {'enabled': False}},
+           'auxiliary': {'title_generation': {'enabled': False}}, 'updates': {'check': False},
            'platform_toolsets': {'cli': []}, 'kanban': {'dispatch_in_gateway': False}}
     (owner / 'config.yaml').write_text(json.dumps(cfg))
     env = dict(os.environ, HERMES_HOME=str(owner), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
@@ -133,6 +133,9 @@ def main():
                     wait_for(lambda: admission()['status'] == 'terminal')
                     wait_for(lambda: kb.get_task(conn, tid).status == 'done')
                     assert asyncio.run(retry(desc, params))['session_id'] == first['target_session_id']
+                    # The worker reads its terminal receipt from this owner: one still polling when the
+                    # owner stops redials, and the redial starts a replacement owner (a client's own start).
+                    wait_for(lambda: all(p.poll() is not None for p in clients))
             if mode == 'restart':
                 cfg['model']['default'] = 'changed-default'
                 (owner / 'config.yaml').write_text(json.dumps(cfg))

@@ -168,7 +168,7 @@ class TestRedactMcpProbeText:
         assert "Digest ***" in out
 
     def test_shared_secret_header_vocabulary_is_fully_replaced(self):
-        from agent.redact import _SECRET_HEADER_NAMES
+        from agent.redact_headers import _SECRET_HEADER_NAMES
         from hermes_cli.mcp_config import redact_mcp_probe_text
 
         inner = _SECRET_HEADER_NAMES

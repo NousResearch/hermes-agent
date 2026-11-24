@@ -16,7 +16,7 @@ A **desktop plugin** is a single ESM file that default-exports a `HermesPlugin`.
 It imports one module — `@hermes/plugin-sdk` — and gets everything: the app's
 live state, the gateway JSON-RPC door, a scoped REST/socket backend namespace,
 React Query, and the app's own UI kit so plugin UI looks native by default. No
-repo clone, no `npm run build`, no patching app source. Drop the file in
+repo clone, no `pnpm run build`, no patching app source. Drop the file in
 `$HERMES_HOME/desktop-plugins/<id>/plugin.js` and the app loads it within seconds
 and hot-reloads every save.
 
@@ -251,6 +251,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
+| Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
 ### Panes
@@ -1071,8 +1072,25 @@ attribute is fully privileged. `loading="lazy"` and
 containment: guest content cannot reach the app, its storage, or the preload
 bridge.
 
+*Webapp (browser tab):* the page's Content-Security-Policy would also bind a
+`data:` document, so a `data:text/html` src is rendered through the gateway's
+guest shell (`/assets/webapp-guest.html`, its own policy, same opaque origin
+and sandbox tokens) instead of being navigated to directly. Scripts run as on
+native Desktop; messages the guest posts to `parent` arrive with
+`event.source === ref.current.contentWindow`, messages posted to that window
+reach the guest, and `onLoad` fires when the guest document has loaded (the
+shell announces that with one `{type: 'hermes-guest-loaded'}` message from the
+same window, so filter guest messages by type). Post
+to `parent`, not `top`: the shell sits between them. Changing `sandbox` after
+mount gives the Webapp a fresh frame (a new `ref.current`, the guest restarts
+with the new tokens, `onLoad` fires again), so read `ref.current` when you need
+the frame rather than keeping the first one. A direct frame on native Desktop
+keeps the element and its current document, and the new tokens apply from its
+next navigation.
+
 *Teardown:* it is a plain React element — unmounting your pane/page removes the
-frame and its realm; nothing is registered app-side.
+frame and its realm; nothing is registered app-side for it (the Webapp routes
+guest shells through one shared listener that holds frames only weakly).
 
 Migration for **rss-reader** (#115972): replace the stubbed `/preview` → 501 →
 `host.openWorkspace('rss-browser')` → empty `RssBrowserFrame` → `ctx.os.openExternal`
@@ -1136,8 +1154,8 @@ Core ships one directive as the reference consumer: `::preview{file="…"}`
 renders the workspace HTML file **live inside the message** — a sandboxed
 `srcdoc` iframe with an opaque origin (scripts run and the widget is fully
 interactive; no reach into the app, its storage, or the bridge). The frame
-sizes itself to the content (height live, width adopted from the content's
-intrinsic span, flush left in the message flow), and a theme prelude hands
+spans the message column up to 960px and follows it on resize, its height
+follows the content live, and a theme prelude hands
 the document the app's resolved tokens (`--foreground`, `--muted-foreground`,
 `--accent`, `--border`, `--card`), the app font, and a transparent
 background — so widget-shaped HTML reads as native while a full page keeps
@@ -1159,6 +1177,101 @@ prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
 `too_long` (with `maxLength`), `throttled` (with `retryAfterMs`), `invalid`,
 or `undelivered` (no visible composer took it). Check it before showing a
 widget as saved.
+
+### Tool media renderers — draw the files your own tools produce {#tool-media-renderers}
+
+A unified package (agent tools + a desktop half) can decide how Desktop shows
+the media **its own tools** produce. When an assistant reply delivers a file
+with a `MEDIA:` line, Desktop looks for the tool call whose result first named
+the path, earlier in the transcript. If the plugin that owns that tool registered a renderer for
+the tool's name, your component replaces the built-in player:
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
+import { jsx, jsxs } from 'react/jsx-runtime'
+
+export default {
+  id: 'sound-fx', // the desktop half of the `sound-fx` package
+  register(ctx) {
+    // Older Desktops don't export the area: keep your old path there.
+    if (typeof sdk.TOOL_MEDIA_RENDERER_AREA !== 'string') return
+
+    ctx.register({
+      id: 'sound-card',
+      area: sdk.TOOL_MEDIA_RENDERER_AREA,
+      data: {
+        tools: ['sound_fx_generate'], // a tool this package's plugin.yaml registers
+        render: props => jsx(SoundCard, props)
+      }
+    })
+  }
+}
+
+function SoundCard({ file, args, result, sessionId, fallback }) {
+  const [src, setSrc] = useState(null)
+  useEffect(() => {
+    let live = true
+    file.resolveUrl().then(url => live && setSrc(url), () => live && setSrc(''))
+    return () => { live = false }
+  }, [file])
+
+  if (file.kind !== 'audio' || src === '') return fallback // the built-in player
+  return jsxs('figure', {
+    children: [
+      jsx('figcaption', { children: args.prompt ?? file.name }),
+      src && jsx('audio', { controls: true, src })
+    ]
+  })
+}
+```
+
+`render` receives:
+
+| Prop | What it is |
+|------|------------|
+| `file` | `{ path, name, kind, mime, resolveUrl() }`. `path` is the path on the **backend's** machine exactly as the `MEDIA:` line wrote it; never open it yourself. `resolveUrl()` returns a URL this window can load with a local or a remote backend: a range-streaming route for audio and video, a data URL for anything else (capped by the host's file reader), read from the backend that owns the chat. A large file (a 3D model) is better served by your own `plugin_api.py` route, called with `ctx.rest` and the `path`. |
+| `toolName`, `toolCallId` | The producing call. |
+| `args`, `result` | The call's arguments and result payload (the result as the tool returned it: an object, or a string). A reopened chat rebuilds them from history, so read fields defensively: `args` can carry display keys (`context`, labels) and `result` can arrive parsed where it was a JSON string live. |
+| `sessionId` | The chat whose transcript shows the file (same meaning as a directive's `sessionId`), or `null`. |
+| `fallback` | The built-in player for this file. Return it (or `null`) for anything you don't draw. |
+
+What the host guarantees:
+
+- **Ownership is provenance, never file type.** A claim counts only for tools
+  your package's own code registered: native tools from `ctx.register_tool` in
+  the same package's `plugin.yaml` plugin, or the tools of the MCP servers your
+  portable package declares (a trailing `*` matches by prefix, e.g.
+  `mcp__meshy__*`). The backend reports the exact tool names per package
+  (`plugins.manage list` → `tools`, from the chat's own backend and profile),
+  so a claim on a core tool
+  (`text_to_speech`), another plugin's tool, or from a standalone desktop
+  plugin with no agent half is refused with a console warning.
+- **Everything else keeps the built-in player:** core voice replies, files
+  from other tools, user uploads, and any path no tool produced. The earliest
+  successful call whose result names the whole path is the producer, so a
+  later `ls`, a read, or a plugin tool that takes the file as input does not
+  count, and rewriting a file in place does not move it to another tool. A
+  path the user named first (an upload, or an output path typed in the
+  prompt) has no producer. A failed call (live, or a stored result carrying
+  `error` / `success: false`) never produces anything.
+- **Fail-safe:** a renderer that throws or returns `null`, a plugin that is
+  disabled, a backend too old to report ownership, or a tool whose agent half
+  is not loaded all fall back to the built-in player. An MCP server that has
+  not connected yet owns nothing; Desktop re-reads ownership on a bounded
+  backoff while a claimed tool has no owner, and after `reload.mcp` or a
+  plugin-list change, so the card appears once the server is up.
+- **Only this app pairs a desktop half with a package.** The
+  `.hermes-package.json` marker is written by the installer and the reconcile
+  pass; one shipped inside a desktop-only repository is dropped on install.
+- **Other surfaces are unchanged.** Tools keep emitting plain `MEDIA:` lines;
+  the CLI, the TUI and messaging platforms deliver the file as before.
+
+Before this area existed, a plugin had to make the model emit its own
+`::directive` to get a custom card, which needs a skill instruction and leaves
+non-Desktop users with a raw directive line. With a renderer, the tool returns
+the ordinary `MEDIA:` tag every surface understands and Desktop alone upgrades
+it.
 
 ### Mount-scoped chrome (`Contribute`)
 
@@ -1344,6 +1457,9 @@ host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Ca
 host.toolsets.list(profile?)               // toolsets + enabled state
 host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
 host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail reads
+host.setProfileBackend({ plugin, profile, purpose?, prepare? | url, token })  // run a profile's backend yourself → { applied }
+host.clearProfileBackend({ plugin, profile, beforeApply? })  // give it back to this computer's backend → { applied }
+host.profileBackendFeatures                // { prepare, purpose, beforeApply }: what this build supports
 host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
 host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
 host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
@@ -1374,6 +1490,71 @@ programmatically. Feature-detect it (`typeof host.openWorkspace ===
 'function'`) and fall back to a regular contributed pane on older desktop
 builds — Bot Mode's group-chat rooms are the reference consumer (main-window
 takeover when available, in-panel view otherwise).
+
+`host.setProfileBackend()` routes one profile to a backend your plugin runs on
+this computer, typically a sandbox behind a loopback proxy. The app asks the
+user first in a native dialog that names your plugin and the profile, says the
+chats will run "on this computer", and shows your optional `purpose` (one line,
+at most 160 characters) as your plugin's own words. It accepts only
+`http://127.0.0.1`, `localhost` or `[::1]` addresses and refuses a profile that
+already connects to a remote host or runs through another plugin. It resolves
+`{ applied: false }` when the user declines.
+
+- Pass `url` and `token` for a backend that is already running, or `prepare`
+  to start it only after the user agrees: the app confirms, awaits
+  `prepare()` for `{ url, token }`, then switches without asking again. The
+  profile stays on this computer's backend until then. A Cancel never calls
+  `prepare`; if it throws, nothing changes and the error propagates.
+- A hook (`prepare`, `beforeApply`) may run for up to 10 minutes. The composer
+  and the queue hold messages for as long as it runs. A hook that has not
+  returned after 10 minutes loses the hold, and messages then go to the backend
+  the profile is still on. The user's answer is kept for 5 minutes: when a hook
+  returns later than that, the app asks once more before it switches.
+- On a switch, only that profile's chats reconnect, in place, in every open
+  window; each window stays on the profile it shows. A window connected to
+  another gateway is left as it is, also when the profile it shows there has
+  the same name. The profile rail marks it
+  Sandboxed, the app lists profiles from this computer for it, and it stops
+  copying desktop plugins out of that profile's home.
+- `host.clearProfileBackend()` routes the profile back after the same kind of
+  confirm. Pass `beforeApply` to stop your backend in between (and clear core's
+  `profiles_run_elsewhere` marker): the app asks, awaits `beforeApply()`, then
+  switches back without asking again. A profile that had its own local entry
+  (saved SSH settings) gets it back.
+- The app skips that home's desktop plugins only while the profile is routed
+  to your backend or marked. After the switch back the home is this computer's
+  again and is read like any other profile's: desktop plugins found in it are
+  copied out and loaded, and Hermes's own backend uses its `config.yaml`,
+  hooks, cron jobs and skills. If your sandbox can write the home, grant
+  `plugins/` and `desktop-plugins/` read-only inside it, and treat whatever
+  else it can write there as input the user's own backend will trust.
+- While core's `profiles_run_elsewhere/<profile>.json` marker names a profile,
+  the app refuses to start it on this computer, so a lost route fails closed.
+- While the profile's connection is down, the app asks
+  `GET /api/plugins/<plugin>/status` on the profile's route. Answer
+  `{ "state": "starting" | "restarting" | "stopping" }` for a planned
+  transition and `"running"` once the backend is back: the status bar and
+  composer then show "Restarting sandbox…" instead of offline. A request the
+  restart or the switch cut off waits for the backend and is sent again only
+  when a second run cannot repeat work: it was never written to the socket, it
+  is a read the app repeats (`session.resume`, `session.history`), or it
+  carries a `submission_id` or `input_id`. Any other request fails with the
+  connection's error, as it does without a plugin, and nothing sends it again.
+  Any other answer is a failure. With no planned transition, a request whose
+  connection went silent (a heartbeat timeout) is not sent again: its caller
+  gets the error.
+- The composer keeps a message away from a backend that is about to go away.
+  During a switch (`"starting"`, `"stopping"`) the message stays in the composer
+  until the profile is on its new backend. During a switch the composer also
+  does not take `host.composer.submit` or other requests sent through it:
+  nothing is sent or queued, although the call still returns `true` while a
+  composer is visible.
+  During `"restarting"` a message waits in the chat's queue and is sent when the
+  backend is back, so report `"restarting"` only when the same backend returns
+  with the same sessions.
+
+Feature-detect with `typeof host.setProfileBackend === 'function'` and
+`host.profileBackendFeatures`.
 
 `host.paneVisibility(paneId)` returns a readonly reactive atom that is `true`
 while a contributed pane is actually on screen: present in the layout tree,
@@ -1937,7 +2118,7 @@ host.i18n.languageOptions(): LanguageOption[]   // bundled ∪ registered ∪ ba
 Where English has a **function** entry (``results: n => `${n} results` ``), a pack
 gives a plain string with POSITIONAL placeholders — `{0}`, `{1}` in argument
 order — and the merge wraps it into the same call shape. The full key set is
-published in `locales/_keys.desktop.json` (regenerate with `npm run i18n:keys`
+published in `locales/_keys.desktop.json` (regenerate with `pnpm run i18n:keys`
 in `apps/desktop` and commit it; CI pins the file to `en.ts`), which is what `hermes plugins
 validate` checks a pack's `<lang>.desktop.yaml` against.
 
@@ -2037,6 +2218,11 @@ pipeline as the standalone disk door (hot reload included):
 
 The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
 imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
+A `plugin.js` at the package root works too, as it does for a standalone
+install: the root `plugin.js` wins over `desktop/plugin.js`, and the whole
+package folder is copied as the desktop half (without `.git` and
+`__pycache__`). It must hold no symlinks and stay under 64 MB, or nothing is
+copied.
 Installing, sharing, or removing the feature is one folder: the app-root copy
 is refreshed when the source `plugin.js` changes (`hermes plugins update`, or
 **Rescan**) and removed when the package folder disappears. The copy is what
@@ -2143,7 +2329,7 @@ async def action(body: dict):
 
 Routes mount under `/api/plugins/<id>/` (`GET /api/plugins/<id>/board`, …).
 Backend code runs inside the gateway process, so it can import from the
-hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
+hermes-agent codebase directly (`persistence_assembly`, `hermes_cli.config`, …). See
 [Extending the Dashboard → Backend API routes](../user-guide/features/extending-the-dashboard.md#backend-api-routes)
 for the full backend reference — the mount is identical.
 
@@ -2373,7 +2559,7 @@ pipeline as a trust boundary.
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
-| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches` |
+| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches`, `PROFILE_ID_ARG_RE` (the profile-id grammar) |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.
 

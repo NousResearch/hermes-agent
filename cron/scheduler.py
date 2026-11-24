@@ -362,9 +362,10 @@ def _upsert_incident_for_failure(
 ) -> tuple[bool, Optional[str]]:
     """Record a durable failure incident (grouped by job + error signature). Returns
     ``(withheld, incident_id)``; withheld=True when the signature's incident is already ``closed``
-    (operator ack) or ``alerted`` inside the ``cron.failure_repeat_alert_hours`` cooldown (a ping
-    already went out) -> suppress the per-run ping. Store errors log at debug; the caller delivers
-    as if none existed."""
+    (operator ack), ``alerted`` inside the ``cron.failure_repeat_alert_hours`` cooldown (a ping
+    already went out), or the failure is gateway restart noise inside its grace window
+    (``cron.restart_noise``) -> suppress the per-run ping. Store errors log at debug; the caller
+    delivers as if none existed."""
     try:
         from cron.incidents import get_incident, upsert_incident
 
@@ -373,6 +374,10 @@ def _upsert_incident_for_failure(
         incident = get_incident(incident_id)
         state = incident.get("state") if incident else None
         withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident))
+        if not withheld:
+            from cron.restart_noise import withhold_notice
+
+            withheld = withhold_notice(job, str(error or ""))
         return withheld, incident_id
     except Exception as exc:
         logger.debug(

@@ -75,7 +75,8 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=F
          patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
-        mock_agent.run_conversation.side_effect = RuntimeError(error)
+        mock_agent.run_conversation.side_effect = (
+            error if isinstance(error, BaseException) else RuntimeError(error))
         mock_agent_cls.return_value = mock_agent
         sched.run_one_job(dict(job))
         assert mock_agent.run_conversation.called
@@ -430,3 +431,63 @@ def test_alerted_gate_honours_cooldown_opt_out_and_legacy_rows(monkeypatch, tmp_
     assert inc.ack_incident(inc_id) is True
     monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 0)
     assert sched._upsert_incident_for_failure(job, "repeat boom") == (True, inc_id)
+
+
+# ── Gateway restart noise ──────────────────────────────────────────────────
+
+
+def test_gateway_restart_failure_is_held_inside_the_grace_window(monkeypatch, tmp_path, cron_owner):
+    """A job that fires into a gateway restart fails without reaching its work. Its notice is
+    held (the run and the incident are still recorded); a job still failing that way once the
+    grace window has passed alerts, and a green run in between opens a new window."""
+    from hermes_cli.gateway_client import GatewayUnavailableError
+
+    inc = _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    job = _job()
+
+    def draining():
+        return GatewayUnavailableError("Gateway draining: update_paused", "draining", "update_paused")
+
+    def stored():
+        return next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
+
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        _tick_failing(stored(), tmp_path, deliveries, error=draining())
+        assert deliveries == [], "a restart-window failure must not ping"
+        assert stored()["last_status"] == "error" and stored()["failure_streak"] == 1
+        assert [row["state"] for row in inc.list_incidents()] == ["detected"]
+
+        with inc._transaction() as conn:
+            conn.execute("UPDATE cron_restart_failures SET started_at = started_at - 31 * 60")
+        _tick_failing(stored(), tmp_path, deliveries, error=draining())
+        assert len(deliveries) == 1, "still failing past the grace window must alert"
+        assert "Gateway draining" in deliveries[0]
+
+        cron_jobs.mark_job_run(job["id"], True)
+        _tick_failing(stored(), tmp_path, deliveries, error=draining())
+        assert len(deliveries) == 1, "a green run starts a new grace window"
+
+
+def test_restart_grace_covers_only_restart_failures(monkeypatch, tmp_path):
+    """An ordinary failure and a run the shutdown interrupted alert at once. A worker death is
+    held only while some job has reported a gateway restart failure inside the window, and ``0``
+    disables the hold."""
+    from cron import restart_noise
+
+    _point_db(monkeypatch, tmp_path)
+    worker_died = (
+        "Restart-safe cron worker dispatch failed: cron external worker exited before "
+        "ownership acknowledgement (exit 1)")
+    interrupted = "Interrupted by gateway shutdown before the run finished"
+    assert sched._upsert_incident_for_failure(_job(), "Script execution failed: exit 1")[0] is False
+    assert sched._upsert_incident_for_failure(_job(id="mid-run"), interrupted)[0] is False
+    assert sched._upsert_incident_for_failure(_job(id="lone-worker"), worker_died)[0] is False
+
+    restarting = "GatewayClientError: Gateway connection failed; no local fallback"
+    assert sched._upsert_incident_for_failure(_job(id="sibling"), restarting)[0] is True
+    assert sched._upsert_incident_for_failure(_job(id="lone-worker"), worker_died)[0] is True
+
+    monkeypatch.setattr(restart_noise, "grace_seconds", lambda: 0.0)
+    assert sched._upsert_incident_for_failure(_job(id="sibling"), restarting)[0] is False

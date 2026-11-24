@@ -59,8 +59,20 @@ def is_delegate_child_row(row: dict) -> bool:
     recovery's ``_DELEGATE_CHILD_EXCLUSION_SQL``)."""
     from persistence.conversation.sessions import parse_model_config
     config = parse_model_config(row.get("model_config"))
-    return (bool(config.get("_delegate_from")) and "_reset_from" not in config
-            and not config.get(CHAT_ADOPTED_MARKER))
+    return bool(config.get("_delegate_from")) and not chat_owned(config)
+
+
+def chat_owned(config: dict) -> bool:
+    """A /new continuation, or a row the user switched a chat onto: the chat's own conversation."""
+    return "_reset_from" in config or bool(config.get(CHAT_ADOPTED_MARKER))
+
+
+def needs_chat_adoption(row: dict) -> bool:
+    """A subagent's row a chat is being switched onto: a marked delegate child, or a markerless row a
+    subagent created (the peer stamp relabels ``source``; ``created_source`` is immutable)."""
+    from persistence.conversation.sessions import parse_model_config
+    return is_delegate_child_row(row) or (
+        row.get("created_source") == "subagent" and not chat_owned(parse_model_config(row.get("model_config"))))
 
 
 def auto_continue_freshness_window() -> float:

@@ -14,16 +14,15 @@ import logging
 from typing import Any, Optional, Sequence, cast
 
 from gateway.session import SessionEntry
+from gateway.session_lifecycle import chat_owned
 from persistence import STORE_FAILURES
 
 
 def _is_execution_transcript(source, created_source, config) -> bool:
     """A markerless row is a subagent's execution transcript when it runs as one, or was created as one
     and no chat has since owned it: the peer stamp rewrites ``source`` to the chat platform, while
-    ``/resume`` adoption and ``/new`` carry their own marker (``is_delegate_child_row``'s rule)."""
-    from gateway.session_lifecycle import CHAT_ADOPTED_MARKER
-    chat_owned = bool(config.get(CHAT_ADOPTED_MARKER)) or "_reset_from" in config
-    return source == "subagent" or (created_source == "subagent" and not chat_owned)
+    ``/resume`` adoption and ``/new`` carry their own marker (``chat_owned``)."""
+    return source == "subagent" or (created_source == "subagent" and not chat_owned(config))
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")

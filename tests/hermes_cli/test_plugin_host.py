@@ -852,6 +852,40 @@ def test_a_launch_body_under_task_local_multiplexing_gives_its_launcher_no_value
 
 
 @pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_launch_hosts_launcher_and_child_resolve_its_env_file_the_same_way_under_multiplexing(tmp_path, monkeypatch):
+    """Under multiplexing the launch profile's launcher resolves its ``.env`` templates against the launch env frozen
+    when multiplexing began. The host child's env carries that ``.env`` resolved the same way, so one start never
+    gives the launcher and its child two values for one setting after a name the ``.env`` references changed in
+    the live env."""
+    from agent import secret_scope as ss
+    from hermes_cli import env_loader
+    from tui_gateway import launch_profile_policy
+
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    monkeypatch.setenv("RUNNER_TAG", "registered-for-restore")
+    monkeypatch.delenv("RUNNER_TAG")
+    monkeypatch.setenv("RUNNER_BASE", "/old")
+    seen, runner = tmp_path / "seen", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho "$1|${{RUNNER_TAG:-unset}}" >> "{seen}"\nshift\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "isolation": "host", "host": {"launcher": [str(runner), "${RUNNER_TAG}"]}}}), encoding="utf-8")
+    (home / ".env").write_text("RUNNER_TAG=${RUNNER_BASE:-unset}/tag\n", encoding="utf-8")
+    ss.set_multiplex_active(True)
+    launch_profile_policy.capture_launch_env()  # the launch env freezes with RUNNER_BASE=/old
+    monkeypatch.setenv("RUNNER_BASE", "/new")  # written to the live env since
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        host.ensure_started()
+        assert seen.read_text(encoding="utf-8").split() == ["/old/tag|/old/tag"]
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
 @pytest.mark.parametrize("reloaded", [False, True], ids=["loaded_once", "reloaded_since_the_freeze"])
 def test_a_launch_launchers_env_file_template_resolves_as_the_process_loaded_the_file(
         tmp_path, monkeypatch, reloaded):

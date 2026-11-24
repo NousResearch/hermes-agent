@@ -53,11 +53,12 @@ _RESTART_BUDGET = 3
 _RESTART_WINDOW_SECS = 600.0
 
 
-def _hosted_ambient_credentials(home: Path, own: Optional[bool] = None) -> dict[str, str]:
+def _hosted_ambient_credentials(home: Path, own: Optional[bool] = None,
+                                template_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``env_vars`` of this home's hosted ``ambient_credentials`` providers (``GH_TOKEN``-style names the
     child-env scrub always strips), read the way that provider reads them in-process: ``get_secret``
     under the home's scope, so the launch home keeps its shell value and a routed home never gets it.
-    *own* is ``build_profile_secret_scope``'s *process_home*."""
+    *own* and *template_env* are ``build_profile_secret_scope``'s *process_home* and *template_env*."""
     from agent.runtime_scope import bind_state, scope_for_profile
     from agent.secret_scope import build_profile_secret_scope, get_secret
     from hermes_cli.plugin_host_profiles import is_hosted_profile
@@ -65,7 +66,8 @@ def _hosted_ambient_credentials(home: Path, own: Optional[bool] = None) -> dict[
     names = {name for p in list_providers() if p.ambient_credentials and is_hosted_profile(p) for name in p.env_vars}
     if not names:
         return {}
-    with bind_state(scope_for_profile(home), secrets=build_profile_secret_scope(home, process_home=own),
+    with bind_state(scope_for_profile(home), secrets=build_profile_secret_scope(home, process_home=own,
+                                                                                template_env=template_env),
                     home_override=False, terminal=False):
         return {name: value for name in sorted(names) if (value := get_secret(name))}
 
@@ -79,9 +81,13 @@ def _is_launch_home(home: Path) -> bool:
     return hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
 
 
-def _launcher_for(home: Path, host_launcher: Callable[..., list], own: bool) -> list:
+def _launcher_for(home: Path, host_launcher: Callable[..., list],
+                  own: bool) -> tuple[list, Optional[dict[str, str]]]:
     """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home*: a start can come from a
-    caller bound to another profile, or from a crash restart's thread, which has no binding at all.
+    caller bound to another profile, or from a crash restart's thread, which has no binding at all. With it, the
+    env the launch profile's ``.env`` templates resolved against when they did not resolve against the live env
+    (the frozen launch env, under multiplexing), for the host child's env to resolve that ``.env`` the same way;
+    else None.
 
     A profile a plugin runs elsewhere expands its ``${VAR}``s against the process env, as ``host_launcher``
     documents for the managed overlay's launcher. A start inside a launch-profile body (a caller bound to the
@@ -107,24 +113,25 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list], own: bool) -> 
     launch_body = current_secret_scope() is not None and (stamp is None or hermes_home_key(stamp) == launch_key)
     multiplexed = is_multiplex_active()
 
-    def choose() -> list:
+    def choose() -> tuple[list, Optional[dict[str, str]]]:
         from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
         if launch_body and multiplexed:
             set_multiplex_context(True)  # this context's own copy, dropped with it
         if run_elsewhere_refusal(home) is not None or (own and not launch_body and not is_multiplex_active()):
             from hermes_cli.plugins_loader import _plugin_home_scope
             with _plugin_home_scope(home):
-                return host_launcher(home=home)
+                return host_launcher(home=home), None
         from agent.runtime_scope import bind_state, scope_for_profile
         from agent.secret_scope import build_profile_secret_scope
-        from tui_gateway.launch_profile_policy import launch_secret_scope
+        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_template_env
         # The launch profile's scope with its files read through *home*, the name that leads there now; any other
         # profile's from its own files, by ``own`` rather than by where the process's own name leads now (its
         # ``.env`` templates included).
-        secrets = (launch_secret_scope(home, frozen_templates=True, process_home=True) if own
+        templates = launch_template_env() if own and is_multiplex_active() else None
+        secrets = (launch_secret_scope(home, template_env=templates, process_home=True) if own
                    else build_profile_secret_scope(Path(home), process_home=False))
         with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
-            return host_launcher(home=home)
+            return host_launcher(home=home), templates
 
     return contextvars.Context().run(choose)
 
@@ -184,20 +191,22 @@ class PluginHost:
         context.run(bind)
         return context
 
-    def _argv(self, own: bool) -> list:
+    def _argv(self, own: bool) -> tuple[list, Optional[dict[str, str]]]:
+        """The host's argv, and the env its launcher's ``.env`` templates resolved against (``_launcher_for``)."""
         from hermes_cli.plugin_isolation import host_launcher
         # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
         # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
         # For the home this start took (``_home``), not ``owner_home`` read again nor the caller's binding, either
         # of which can name a link renamed since. Not in the host's context either: its secret scope holds only
         # the profile's files, without the launch profile's env-only keys.
-        return [*_launcher_for(self._home, host_launcher, own), sys.executable, "-P", "-m", _HOST_MODULE]
+        launcher, templates = _launcher_for(self._home, host_launcher, own)
+        return [*launcher, sys.executable, "-P", "-m", _HOST_MODULE], templates
 
-    def _env(self, own: bool) -> dict[str, str]:
+    def _env(self, own: bool, templates: Optional[dict[str, str]]) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True,
-                                     own_profile=own)
-        env.update(self._base_context.run(_hosted_ambient_credentials, self._home, own))
+                                     own_profile=own, template_env=templates)
+        env.update(self._base_context.run(_hosted_ambient_credentials, self._home, own, templates))
         repo_root = project_root_str()
         # Absolute entries only: the host starts in the profile home, where an empty or relative entry
         # (``PYTHONPATH=:/x``) would put that home back on the import path that -P keeps it off.
@@ -223,9 +232,9 @@ class PluginHost:
                     self._home = previous  # so the next start builds the context for the new home again
                     raise
             own = _is_launch_home(self._home)  # one answer for the launcher and the child's env
-            argv = self._argv(own)
+            argv, templates = self._argv(own)  # the launcher's .env, resolved once for the child's env too
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=self._env(own), cwd=str(self._home),
+                                    stderr=subprocess.PIPE, env=self._env(own, templates), cwd=str(self._home),
                                     bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()

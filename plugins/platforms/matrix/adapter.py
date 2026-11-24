@@ -699,6 +699,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._encryption: bool = self._e2ee_mode != "off"
         self._device_id: str = config.extra.get("device_id", "") or _get_scoped_secret("MATRIX_DEVICE_ID", "").strip()
         self._device_id_unverified: bool = False
+        # Why the last connect() refused, so a delivery error can name it instead of
+        # "Matrix connect failed" (#111333). Cleared at the start of every connect().
+        self.last_connect_error: str | None = None
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._store_dir: Optional[Path] = None  # pinned per profile in connect()
@@ -1021,6 +1024,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 proxy_error = describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver))
                 logger.error("Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
                              proxy_error or exc, exc_info=not proxy_error)
+                self.last_connect_error = f"whoami failed: {proxy_error or exc}"
                 return await self._abort_connect(api)
         elif self._password and self._user_id:
             try:
@@ -1031,10 +1035,13 @@ class MatrixAdapter(BasePlatformAdapter):
                     client.device_id = resp.device_id
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
-                logger.error("Matrix: login failed — %s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
+                reason = describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc
+                logger.error("Matrix: login failed — %s", reason)
+                self.last_connect_error = f"login failed: {reason}"
                 return await self._abort_connect(api)
         else:
             logger.error("Matrix: need MATRIX_ACCESS_TOKEN or MATRIX_USER_ID + MATRIX_PASSWORD")
+            self.last_connect_error = "need MATRIX_ACCESS_TOKEN or MATRIX_USER_ID + MATRIX_PASSWORD"
             return await self._abort_connect(api)
         return True
 
@@ -1050,6 +1057,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.error(
                     "Matrix: E2EE is required but dependencies are missing. %s. Refusing to connect — "
                     "encrypted rooms would silently fail.", _E2EE_INSTALL_HINT)
+                self.last_connect_error = "E2EE is required but the Matrix dependencies are missing"
                 return await self._abort_connect(api)
         if not self._encryption:
             return True
@@ -1088,6 +1096,9 @@ class MatrixAdapter(BasePlatformAdapter):
             olm.send_keys_min_trust = TrustState.UNVERIFIED
             await olm.load()
             if not await self._verify_device_keys_on_server(client, olm):
+                self.last_connect_error = (
+                    "device keys on the homeserver do not match the local crypto store — "
+                    "delete the crypto store and restart")
                 return await self._abort_connect(api, crypto_db)
             try:
                 await olm.share_keys()
@@ -1097,6 +1108,10 @@ class MatrixAdapter(BasePlatformAdapter):
                         "Matrix: device %s has stale one-time keys on the server signed with a "
                         "previous identity key. Delete the device from the homeserver and restart, "
                         "or generate a new access token to get a fresh device ID.", client.device_id)
+                    self.last_connect_error = (
+                        f"device {client.device_id} has stale one-time keys on the server signed with a "
+                        "previous identity key — delete the device from the homeserver or generate a "
+                        "new access token")
                     return await self._abort_connect(api, crypto_db)
                 logger.warning("Matrix: share_keys() warning during startup: %s", exc)
             await self._verify_or_bootstrap_cross_signing(olm, client)
@@ -1117,6 +1132,8 @@ class MatrixAdapter(BasePlatformAdapter):
             self._encryption = False
             return True
         logger.error("Matrix: failed to %s E2EE client: %s. %s", what, exc, _E2EE_INSTALL_HINT)
+        # Never clobber a cause recorded deeper (e.g. stale one-time keys).
+        self.last_connect_error = self.last_connect_error or f"failed to {what} the E2EE client: {exc}"
         return await self._abort_connect(api)
 
     async def _verify_or_bootstrap_cross_signing(self, olm: Any, client: Any) -> None:
@@ -1171,8 +1188,14 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Matrix: initial sync error: %s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
 
+    def _connect_failed(self, reason: str) -> bool:
+        """Record why connect() refused and return False, keeping the bool contract."""
+        self.last_connect_error = self.last_connect_error or reason
+        return False
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
+        self.last_connect_error = None
         if self._client is not None:
             try:
                 await self.disconnect()
@@ -1183,7 +1206,7 @@ class MatrixAdapter(BasePlatformAdapter):
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
         if not self._homeserver:
             logger.error("Matrix: homeserver URL not configured")
-            return False
+            return self._connect_failed("MATRIX_HOMESERVER is not configured")
         # Resolved here, inside the profile scope, so multiplexed profiles never share it.
         mkdir_under_hermes_home(self._resolve_store_dir())  # a dead profile home is never recreated
         client_session = _create_matrix_session(self._proxy_url)
@@ -1195,9 +1218,9 @@ class MatrixAdapter(BasePlatformAdapter):
             api=api, state_store=state_store, sync_store=sync_store)
         self._client = client
         if not await self._connect_authenticate(client, api):
-            return False
+            return self._connect_failed("authentication failed")
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
-            return False
+            return self._connect_failed("E2EE setup failed")
         from mautrix.client import InternalEventType as IntEvt
         from mautrix.client.dispatcher import MembershipEventDispatcher
         client.add_dispatcher(MembershipEventDispatcher)  # without this INVITE never fires

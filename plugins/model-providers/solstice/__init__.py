@@ -8,6 +8,7 @@ token refresh go through the generic PKCE plugin flow with a Nous-portal broker 
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any
 
@@ -16,6 +17,8 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 from .auth import broker_token_request, discover_client
+
+logger = logging.getLogger(__name__)
 
 # Lives here, not in transport.py: discovery imports this module from interpreters without the app's
 # HTTP stack (PM's runtime reads config, which lists providers), so the transport loads on first use.
@@ -43,6 +46,27 @@ _THINKING_LEVELS: dict[str, tuple[tuple[str, ...], str]] = {
 }
 
 
+# Ids the earlier list offered that this endpoint does not serve. A user who picked one keeps it in
+# config; each is sent as the default model instead of failing every turn. Exactly these, nothing else.
+_RETIRED_MODELS = frozenset({"gemini-4-argon", "gemini-3.1-pro", "gemini-3.8-flash"})
+_RETIRED_LOGGED: set[str] = set()
+
+
+def current_model_id(model: str | None) -> str | None:
+    """The default model for a retired id (any spelling the client accepts, ``gemini/``/``google/``
+    included), logged once per process per id; None for every other id, which stays as typed."""
+    from agent.reasoning_effort import bare_gemini_model_id
+
+    bare = bare_gemini_model_id(model).lower()
+    if bare not in _RETIRED_MODELS:
+        return None
+    if bare not in _RETIRED_LOGGED:
+        _RETIRED_LOGGED.add(bare)
+        logger.info("Solstice no longer serves %s; sending %s instead (pick a model with `hermes model`)",
+                    bare, FALLBACK_MODELS[0])
+    return FALLBACK_MODELS[0]
+
+
 def _thinking_levels(model: str | None) -> tuple[tuple[str, ...], str] | None:
     """The listed model's (levels, default), or None for an id typed outside the list. Keyed on the id the
     client sends (``bare_gemini_model_id``: ``gemini/`` and ``google/`` stripped), so a prefixed listed
@@ -54,7 +78,7 @@ def _thinking_levels(model: str | None) -> tuple[tuple[str, ...], str] | None:
 
 def _setup_efforts(model: str) -> tuple[str, ...] | None:
     """Levels the setup effort picker offers: exactly the listed model's own, else the generic ladder."""
-    known = _thinking_levels(model)
+    known = _thinking_levels(current_model_id(model) or model)
     return known[0] if known else None
 
 
@@ -107,6 +131,7 @@ class SolsticeProfile(ProviderProfile):
         """Native ``thinking_config`` (the client reads only that key): the per-model table for a listed
         model, the ``gemini`` provider's shared mapping for any other id a user types."""
         model, reasoning_config = context.get("model") or "", context.get("reasoning_config")
+        model = current_model_id(model) or model
         config = _thinking_config(model, reasoning_config)
         if config is not None:
             return {"thinking_config": config}
@@ -114,6 +139,11 @@ class SolsticeProfile(ProviderProfile):
 
         thinking_config = gemini_thinking_config(model, reasoning_config)
         return {"thinking_config": thinking_config} if thinking_config else {}
+
+    def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:
+        """The default model for a retired id, so a saved one is upgraded where Hermes resolves the model;
+        None (core's generic rules) for every other id."""
+        return current_model_id(model)
 
     def get_max_tokens(self, model: str | None) -> int | None:
         return None  # output caps are the backend's; a Hermes default would truncate long answers

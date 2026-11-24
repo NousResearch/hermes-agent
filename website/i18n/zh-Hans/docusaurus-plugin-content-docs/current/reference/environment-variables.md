@@ -470,6 +470,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `LINE_REQUIRE_MENTION_CHATS` | 逗号分隔的群组/房间 ID（`C…`/`R…`），仅在被 @ 时回复。其余已允许的聊天照常回复。私聊从不受限。默认：空。 |
 | `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` | 可跳过 @ 要求的消息类型（`image`、`video` 等），逗号分隔。默认：空（不跳过）。 |
 | `LINE_IGNORE_GROUP_MESSAGE_TYPES` | 在群组/房间中、分发前丢弃的类型（`sticker`、`emoji` 等）。`emoji` 指纯表情文本，不含文字与表情混合。私聊从不过滤。默认：空。 |
+| `LINE_OBSERVED_UNMENTIONED_MESSAGES` | 在已允许且需要 @ 的群组/房间中，保留多少条近期未被 @ 的消息，作为下一次 @ 或媒体跳过触发的背景。每个会话只收到尚未读过的消息，随后进度会前进以免重复。默认：`50`。`0` 关闭。上限：`500`（单次附加约 8,000 字）。被忽略的类型和媒体只保存文本标记。私聊和斜杠命令不受影响；`/new` 与 `/reset` 会推进进度。Dashboard 明文显示，提示字为 `Ex: 50`。 |
 | `LINE_ALLOW_ALL_USERS` | 仅用于开发的逃生舱——接受任意来源。默认：`false`。 |
 | `LINE_HOME_CHANNEL` | `deliver: line` 的 cron 任务的默认投递目标。 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 慢速 LLM Template Buttons postback 触发前的等待秒数（默认：`45`）。设为 `0` 可禁用并始终使用 Push 回退。 |

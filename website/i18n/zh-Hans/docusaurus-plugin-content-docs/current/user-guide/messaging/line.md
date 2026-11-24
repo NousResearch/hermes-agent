@@ -66,6 +66,12 @@ LINE_ALLOWED_USERS=U1234567890abcdef...           # 逗号分隔的 U 开头 ID
 LINE_ALLOWED_GROUPS=C1234567890abcdef...          # 可选的群组 ID
 LINE_ALLOWED_ROOMS=R1234567890abcdef...           # 可选的房间 ID
 
+# 可选的群组/房间过滤（私聊从不受影响）。空 = 关闭。
+# LINE_REQUIRE_MENTION_CHATS=C123...,R456...      # 仅在被 @ 时回复
+# LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES=image,video
+# LINE_IGNORE_GROUP_MESSAGE_TYPES=sticker,emoji
+# LINE_OBSERVED_UNMENTIONED_MESSAGES=50          # 未被 @ 的旁听条数（0=关闭，最大 500）
+
 # 发送图片 / 音频 / 视频时必填 — 隧道解析到的公网 HTTPS 基础 URL
 # 未设置时，send_image/voice/video 将拒绝执行
 LINE_PUBLIC_URL=https://my-tunnel.example.com
@@ -169,6 +175,7 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 | `LINE_REQUIRE_MENTION_CHATS` | 否 | 空 | 逗号分隔的群组/房间 ID（`C…`/`R…`）。列出的聊天只有在 @ 机器人时才回复；其余已允许的群组/房间照常回复。私聊从不受此限制。已知斜杠命令（如 `/help`）以及 `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` 可跳过此限制。 |
 | `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` | 否 | 空 | 在需要 @ 的群组/房间中，这些 LINE 消息类型仍会得到回复（`image`、`video`、`audio`、`file`、`sticker`、`location`）。空表示没有任何媒体可跳过 @。 |
 | `LINE_IGNORE_GROUP_MESSAGE_TYPES` | 否 | 空 | 在群组/房间中、于 @ 判断之前静默丢弃的类型（`sticker`、`emoji`、`image`、`video`、`audio`、`file`、`location`）。`emoji` 指仅含 LINE 表情占位符的文本；文字与表情混合不会被忽略。私聊从不过滤。 |
+| `LINE_OBSERVED_UNMENTIONED_MESSAGES` | 否 | `50` | 在已允许且列入 `LINE_REQUIRE_MENTION_CHATS` 的群组/房间中，保留这么多条近期未被 @ 的消息作为背景。下一次 @ 或 `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` 触发（例如未 @ 直接传图片）只会附上该会话尚未读过的消息，然后推进进度，避免重复附加。`0` 关闭此功能。超过 `500` 的值会被限制为 `500`，单次附加大约不超过 8,000 字。被忽略的类型和未被 @ 的媒体只保存轻量标记（如 `[sticker]`、`[image]`），不下载媒体、不调用 LLM。私聊和斜杠命令不受影响；`/new` 与 `/reset` 会推进该会话进度，不会重播旧消息。在 Dashboard 中以明文显示，提示字为 `Ex: 50`。 |
 | `LINE_ALLOW_ALL_USERS` | 仅开发环境 | `false` | 完全跳过白名单验证 |
 | `LINE_HOME_CHANNEL` | 否 | — | 默认 cron / 通知推送目标 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 否 | `45` | 触发 postback 按钮的等待秒数（`0` = 禁用） |

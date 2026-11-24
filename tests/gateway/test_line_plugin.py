@@ -1031,6 +1031,32 @@ class TestLineObservation(_LineGroupHarness):
         text = adapter.handle_message.await_args.args[0].text
         assert "after photo" in text and "before photo" not in text and "[image]" not in text
 
+    def test_image_bypass_injects_unread_context_and_advances_the_cursor(self, monkeypatch):
+        """An unmentioned image still consumes the session cursor after it replies.
+
+        When ``LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES=image``, a photo with no
+        text in a mention-gated chat is a trigger: unread background is
+        prepended to ``[image]``, the cursor advances, and a later @mention or
+        image sees only newer unmentioned messages.
+        """
+        adapter = self._gated(monkeypatch, LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES="image")
+        source = _group()
+        assert self._dispatch(adapter, source, _text("hello before photo"), "pre1") is None
+        assert self._dispatch(adapter, source, _text("more chatter"), "pre2") is None
+        image = self._dispatch(adapter, source, {"type": "image", "id": "img-only"}, "img1")
+        assert image is not None
+        assert image.text.endswith("[image]")
+        assert "hello before photo" in image.text and "more chatter" in image.text
+        assert image.media_urls == ["/cache/line.bin"]
+        assert self._mention(adapter, source, "after-image") == "update?"
+        assert self._dispatch(adapter, source, _text("after the photo"), "post") is None
+        later = self._dispatch(adapter, source, {"type": "image", "id": "img-two"}, "img2")
+        assert later is not None and later.text.endswith("[image]")
+        assert "after the photo" in later.text
+        assert "hello before photo" not in later.text and "more chatter" not in later.text
+        assert adapter._download_media.await_count == 2
+
+
     @pytest.mark.parametrize("fails,sender", [(False, "Ada"), (True, "Umember")])
     @pytest.mark.asyncio
     async def test_member_lookup_is_best_effort_and_cached(self, monkeypatch, fails, sender):

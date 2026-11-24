@@ -666,7 +666,8 @@ def _compute_docstring_lines(lines: list) -> set:
                 doc_lines.update(range(tok.start[0], tok.end[0] + 1))
             elif fstrings and tok.type not in _FSTRING_BOUNDARY_TYPES and tok.type != _FSTRING_MIDDLE:
                 expr_lines.update(range(tok.start[0], tok.end[0] + 1))
-    except (tokenize.TokenError, SyntaxError):  # unparsable input must never silence the pattern passes
+    # A lone surrogate (U+D800-U+DFFF) makes the 3.12+ C tokenizer raise UnicodeEncodeError on its UTF-8 encode.
+    except (tokenize.TokenError, SyntaxError, UnicodeError):  # unparsable input must never silence the pattern passes
         return set()
     return doc_lines - expr_lines
 

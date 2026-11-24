@@ -127,8 +127,10 @@ def _forward_relay_fronted_run(job: dict[str, Any], extra_prompt: Optional[str] 
     has no standalone sender — the gateway's live relay adapter is the only path, reached via
     ``POST /api/jobs/{id}/run`` (marks the job due; ``extra_prompt`` rides in the body). Returns a
     JSON result string when forwarding engages, else None (normal in-process run)."""
-    if not is_job_runnable(job) or not _relay_fronted_delivery_platforms(job):
-        return None  # paused: keep the claim's refusal; the gateway's trigger_job would resume it
+    if not _relay_fronted_delivery_platforms(job):
+        return None
+    if not is_job_runnable(job):  # the gateway's trigger_job would resume it; a local run can't deliver
+        return _dumps({"success": False, "error": NOT_RUNNABLE_ERROR})
     from agent.secret_scope import get_secret
     key = get_secret("API_SERVER_KEY", "") or ""
     try:

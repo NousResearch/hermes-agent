@@ -737,6 +737,12 @@ describe('bundle version parsing and comparison', () => {
     expect(compareBundleVersions('invalid', '0.24.0')).toBeNull()
   })
 
+  it('refuses to order numbers too large to compare exactly', () => {
+    expect(compareBundleVersions('9007199254740993.0.0', '9007199254740992.0.0')).toBeNull()
+    expect(compareBundleVersions('1.0.0-9007199254740993', '1.0.0-9007199254740992')).toBeNull()
+    expect(compareBundleVersions('1.0.0-20261124', '1.0.0-20261125')).toBe(-1)
+  })
+
   it('orders canary and commit builds of one core by the UTC stamp in their build metadata', () => {
     expect(compareBundleVersions('0.24.0+canary.20261124T001400Z', '0.24.0+canary.20261125T001400Z')).toBe(-1)
     expect(compareBundleVersions('0.24.0+canary.20261125T001400Z', '0.24.0+canary.20261124T001400Z')).toBe(1)
@@ -746,7 +752,7 @@ describe('bundle version parsing and comparison', () => {
     expect(compareBundleVersions('0.24.0+canary.20261124T001400Z', '0.24.0+commit.20261125T001400Z')).toBeNull()
   })
 
-  it.each(['0.23', '0.23.0-rc..1', '01.2.3', '0.24.0-', '0.24.0+', '0.24.0+build..1'])(
+  it.each(['0.23', '0.23.0-rc..1', '01.2.3', '0.24.0-', '0.24.0+', '0.24.0+build..1', 'v0.24.0'])(
     'refuses to order %s, which is not a SemVer version',
     version => {
       expect(compareBundleVersions(version, '0.24.0')).toBeNull()

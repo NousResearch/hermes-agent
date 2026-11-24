@@ -252,19 +252,21 @@ const SEMVER_RE = new RegExp(
 )
 
 function parseBundleVersion(raw: string): ParsedBundleVersion | null {
-  const match = SEMVER_RE.exec(raw.trim().replace(/^v/i, ''))
+  const match = SEMVER_RE.exec(raw.trim())
 
   if (!match) {
     return null
   }
 
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4] ? match[4].split('.') : [],
-    build: match[5] ?? ''
+  const prerelease = match[4] ? match[4].split('.') : []
+  const numbers = [match[1], match[2], match[3], ...prerelease.filter(part => /^\d+$/.test(part))].map(Number)
+
+  // Past 2^53 two different numbers can read as one, so such a version can't be ordered exactly.
+  if (!numbers.every(Number.isSafeInteger)) {
+    return null
   }
+
+  return { major: numbers[0], minor: numbers[1], patch: numbers[2], prerelease, build: match[5] ?? '' }
 }
 
 // Canary and commit builds keep their stable core and carry the build as X.Y.Z+<kind>.<UTC stamp>, which

@@ -104,3 +104,27 @@ async def test_busy_voice_note_interrupts_at_once_in_interrupt_mode(tmp_path, mo
         assert sent, 'no busy ack'
     finally:
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["interrupt", "steer"])
+async def test_recovered_messages_wait_in_the_authority_fifo(tmp_path, monkeypatch, mode):
+    runner, authority, source, agent, _sent, _turn = await _setup(tmp_path, monkeypatch, mode)
+    from tests.waiting import async_wait_until
+
+    tasks = []
+    try:
+        for i, text in enumerate(("First missed message", "Second missed message"), 1):
+            event = MessageEvent(text=text, source=source, message_id=f"replay-{i}", recovered=True)
+            tasks.append(asyncio.create_task(runner._handle_message(event)))
+            await async_wait_until(lambda: len(_admitted(authority)) == i or tasks[-1].done(),
+                                   timeout=10, what=f"replayed message {i} admitted")
+
+        assert [row.request_id for row in _admitted(authority)] == ["replay-1", "replay-2"]
+        assert agent.interrupts == []
+        assert agent.steers == []
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        runner.session_store.close_all_db_handles()

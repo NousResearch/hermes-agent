@@ -123,6 +123,17 @@ class TestGatewayPinningFailsClosed:
         self._assert_no_route_change(runner)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("ownership", [{"_chat_adopted": True}, {"_reset_from": "sess_prev"}])
+    async def test_chat_owned_subagent_continuation_still_delivers(self, ownership):
+        runner = self._make_runner(
+            {"sess_cont": {"id": "sess_cont", "source": "telegram", "created_source": "subagent",
+                           "model_config": ownership}}
+        )
+        verdict, owner, _row = await runner._lookup_completion_owner("sess_cont", "")
+        assert (verdict, owner) == ("deliver", "sess_cont")
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
     async def test_subagent_without_resolvable_parent_fails_closed(self):
         current = self._entry("sess_chat")
         runner = self._make_runner(

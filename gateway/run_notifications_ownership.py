@@ -16,6 +16,15 @@ from typing import Any, Optional, Sequence, cast
 from gateway.session import SessionEntry
 from persistence import STORE_FAILURES
 
+
+def _is_execution_transcript(source, created_source, config) -> bool:
+    """A markerless row is a subagent's execution transcript when it runs as one, or was created as one
+    and no chat has since owned it: the peer stamp rewrites ``source`` to the chat platform, while
+    ``/resume`` adoption and ``/new`` carry their own marker (``is_delegate_child_row``'s rule)."""
+    from gateway.session_lifecycle import CHAT_ADOPTED_MARKER
+    chat_owned = bool(config.get(CHAT_ADOPTED_MARKER)) or "_reset_from" in config
+    return source == "subagent" or (created_source == "subagent" and not chat_owned)
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
@@ -150,9 +159,7 @@ class GatewayNotificationOwnershipMixin:
                     return "retry", session_id, None
             config = row.model_config
             if "_delegate_from" not in config:
-                # ``source`` is rewritten by the peer stamp when a surface takes a routing key;
-                # ``created_source`` is immutable provenance, so either one marks an execution transcript.
-                verdict = "terminal" if "subagent" in (row.source, row.created_source) else "deliver"
+                verdict = "terminal" if _is_execution_transcript(row.source, row.created_source, config) else "deliver"
                 return verdict, session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:

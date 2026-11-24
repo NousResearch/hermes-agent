@@ -10,13 +10,9 @@ export const MAC_APPLICATIONS_GUARD_FILENAME = 'mac-applications-guard.json'
 
 export type MacUnsafeBundleLocation = 'app-translocation' | 'desktop-folder' | 'downloads-folder' | 'read-only-volume'
 
+// "Don't ask again" is all startup reads, so it's all the file holds.
 export interface MacApplicationsGuardPreference {
-  schemaVersion: 1
   dismissed: true
-  reason: MacUnsafeBundleLocation
-  bundlePath: string
-  appVersion: string
-  dismissedAt: string
 }
 
 export type MacApplicationsGuardResult =
@@ -182,34 +178,20 @@ export function readMacApplicationsGuardPreference(userDataDir: string): MacAppl
   }
 
   try {
-    const raw = fs.readFileSync(macApplicationsGuardPreferencePath(userDataDir), 'utf8')
-    const parsed = JSON.parse(raw) as Partial<MacApplicationsGuardPreference>
+    const parsed = JSON.parse(fs.readFileSync(macApplicationsGuardPreferencePath(userDataDir), 'utf8')) as {
+      dismissed?: unknown
+    } | null
 
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      parsed.schemaVersion === 1 &&
-      parsed.dismissed === true &&
-      typeof parsed.reason === 'string' &&
-      typeof parsed.bundlePath === 'string' &&
-      typeof parsed.appVersion === 'string' &&
-      typeof parsed.dismissedAt === 'string'
-    ) {
-      return parsed as MacApplicationsGuardPreference
-    }
+    return parsed?.dismissed === true ? { dismissed: true } : null
   } catch {
     return null
   }
-
-  return null
 }
 
-export function writeMacApplicationsGuardPreference(
-  userDataDir: string,
-  preference: MacApplicationsGuardPreference
-): void {
+export function writeMacApplicationsGuardPreference(userDataDir: string): void {
   const target = macApplicationsGuardPreferencePath(userDataDir)
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}`
+  const preference: MacApplicationsGuardPreference = { dismissed: true }
 
   fs.mkdirSync(userDataDir, { recursive: true })
   fs.writeFileSync(tmp, `${JSON.stringify(preference, null, 2)}\n`, 'utf8')
@@ -603,7 +585,7 @@ function precheckMacApplicationsGuard(deps: MacApplicationsGuardDeps): MacGuardP
 }
 
 function recordDeclinedMove(
-  deps: Pick<MacApplicationsGuardDeps, 'app' | 'log'>,
+  deps: Pick<MacApplicationsGuardDeps, 'log'>,
   bundlePath: string,
   location: MacUnsafeBundleLocation,
   userDataDir: string,
@@ -611,14 +593,7 @@ function recordDeclinedMove(
 ): MacApplicationsGuardResult {
   if (remember) {
     try {
-      writeMacApplicationsGuardPreference(userDataDir, {
-        schemaVersion: 1,
-        dismissed: true,
-        reason: location,
-        bundlePath,
-        appVersion: deps.app.getVersion(),
-        dismissedAt: new Date().toISOString()
-      })
+      writeMacApplicationsGuardPreference(userDataDir)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 

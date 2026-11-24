@@ -405,13 +405,8 @@ describe('guardMacApplicationsLaunch', () => {
       remembered: true
     })
 
-    const saved = readMacApplicationsGuardPreference(userDataDir)
-
-    expect(saved).toMatchObject({
-      schemaVersion: 1,
-      dismissed: true,
-      reason: 'app-translocation',
-      appVersion: '0.24.0'
+    expect(JSON.parse(fs.readFileSync(macApplicationsGuardPreferencePath(userDataDir), 'utf8'))).toEqual({
+      dismissed: true
     })
 
     exe = '/private/var/folders/aa/bb/T/AppTranslocation/UUID-SECOND/d/Hermes Agent.app/Contents/MacOS/Hermes Agent'
@@ -578,6 +573,22 @@ describe('guardMacApplicationsLaunch', () => {
     )
     expect(logs.some(line => line.includes('could not confirm'))).toBe(true)
     expect(readMacApplicationsGuardPreference(userDataDir)).toBeNull()
+  })
+
+  it.each([
+    ['a bare dismissal', { dismissed: true }, false],
+    ['an earlier build with extra fields', { schemaVersion: 1, dismissed: true, reason: 'read-only-volume' }, false],
+    ['no dismissal', { dismissed: false }, true]
+  ] as const)('reads the saved choice from the dismissal flag alone (%s)', async (_label, saved, prompts) => {
+    const { deps, dialog, userDataDir } = makeDeps()
+
+    fs.writeFileSync(macApplicationsGuardPreferencePath(userDataDir), JSON.stringify(saved), 'utf8')
+    dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+
+    await expect(guardMacApplicationsLaunch(deps)).resolves.toMatchObject({
+      reason: prompts ? 'user-declined' : 'dismissed'
+    })
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(prompts ? 1 : 0)
   })
 
   it('recovers cleanly from corrupt saved preferences and unexpected startup errors', async () => {

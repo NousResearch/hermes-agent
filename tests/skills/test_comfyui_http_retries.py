@@ -95,7 +95,8 @@ def _dead_port():
 
 @pytest.fixture
 def submission_server():
-    """Counts POSTs it fully reads; 'drop' then closes, 'redirect' answers 303 to a dead port."""
+    """Counts POSTs it fully reads; 'drop' then closes, 'redirect' answers 303 to a dead port,
+    'receipt_429' answers 303 to a receipt that is rate-limited."""
     seen = {"posts": 0, "mode": "drop", "dead": _dead_port()}
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -105,12 +106,18 @@ def submission_server():
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
             seen["posts"] += 1
             self.close_connection = True
-            if seen["mode"] == "redirect":
+            if seen["mode"] in {"redirect", "receipt_429"}:
+                dead = seen["mode"] == "redirect"
                 self.send_response(303)
-                self.send_header("Location", f"http://127.0.0.1:{seen['dead']}/receipt")
+                self.send_header("Location", f"http://127.0.0.1:{seen['dead']}/receipt" if dead else "/receipt")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             # 'drop': return without a response line; the server closes the socket.
+
+        def do_GET(self):
+            self.send_response(429)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def log_message(self, *args):
             pass
@@ -154,3 +161,22 @@ def test_real_clients_replay_only_unsent_submissions(transport, monkeypatch, sub
     assert isinstance(info.value, common.RequestNotSent) is never_sent
     assert attempts.call_count == (common.DEFAULT_RETRIES if never_sent else 1)
     assert seen["posts"] == (0 if never_sent else 1)
+
+
+@pytest.mark.parametrize("client", ["requests", "stdlib"])
+def test_rate_limited_receipt_does_not_replay_accepted_submission(transport, monkeypatch,
+                                                                  submission_server, client):
+    common, _runner, _backoff = transport
+    if client == "stdlib":
+        monkeypatch.setattr(common, "HAS_REQUESTS", False)
+    elif not common.HAS_REQUESTS:
+        pytest.skip("requests is not installed")
+    base, seen = submission_server
+    seen["mode"] = "receipt_429"
+    for key in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = common.http_post(f"{base}/prompt", json_body={"prompt": {}, "client_id": "c"}, timeout=5)
+
+    assert (result.status, result.url) == (429, f"{base}/receipt")
+    assert seen["posts"] == 1

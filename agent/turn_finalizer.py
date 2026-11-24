@@ -301,6 +301,27 @@ def _store_rewrite_on_tail(agent, messages, raw, final) -> None:
     tail["content"] = final
 
 
+def _store_footer_on_tail(agent, messages, before_footer, after_footer) -> None:
+    """Fold the file-mutation verifier footer into the tail assistant row before the durable
+    snapshot, so the stored reply is the reply the user read (#158952).
+
+    ``_store_rewrite_on_tail`` deliberately leaves a row that was already flushed mid-turn
+    (``_db_persisted``) alone, and no later seam rewrites that row's text — the footer would be
+    delivered and silently dropped on reload. Rewriting the content therefore also invalidates
+    the marker and the bounded flush-scan cursor, the same pair the blank-row fill in
+    ``_close_transcript_tail`` resets.
+    """
+    if not after_footer or after_footer == before_footer:
+        return
+    tail = messages[-1] if messages else None
+    if not (isinstance(tail, dict) and tail.get("role") == "assistant"
+            and tail.get("content") == before_footer):
+        return
+    tail["content"] = after_footer
+    tail.pop(_DB_PERSISTED_MARKER, None)
+    agent._db_flush_scan_prefix = None
+
+
 def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
@@ -726,6 +747,9 @@ def finalize_turn(
     finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
 
     _cleanup_errors: list[str] = []
+    # Set by ``_persist_step`` once the verifier footer has been folded into the row it stores;
+    # the post-persist fallback below only fires when that step raised before reaching it.
+    _footer_stored = False
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
@@ -746,7 +770,7 @@ def finalize_turn(
     # the fallible tail-shaping / override / micro-compaction / persist calls — so a
     # raise in any of them can't drop text the user already saw (#95514, #8049).
     def _persist_step():
-        nonlocal final_response
+        nonlocal final_response, _footer_stored
         _drop_transcript_scaffolding(agent, messages)
         final_response, _recovered_from_stream = _recover_final_from_stream(
             agent, final_response, interrupted, failed
@@ -759,6 +783,16 @@ def finalize_turn(
             _raw = final_response
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
             _store_rewrite_on_tail(agent, messages, _raw, final_response)
+            # The verifier footer is text the user reads, so it must reach the row this turn
+            # persists. Appended after ``_persist_session`` it was delivered to the UI and to cron
+            # output files but never stored, so a transcript reload dropped the very warning that
+            # turn produced (#158952). Its own rewrite is recorded here for the same reason the
+            # output transform's is: the durable row has to match the delivered reply. It stays
+            # after the transform so the advisory text is byte-identical to before.
+            _before_footer = final_response
+            final_response = _append_file_mutation_footer(agent, final_response, logger)
+            _store_footer_on_tail(agent, messages, _before_footer, final_response)
+            _footer_stored = True
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed and not vetoed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
@@ -774,7 +808,9 @@ def finalize_turn(
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
     # Response transforms apply only to real, uninterrupted responses.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not _footer_stored:
+        # A ``_persist_step`` that raised before the footer seam still owes the user the
+        # advisory; it just has no durable row to travel with, since that write failed.
         final_response = _append_file_mutation_footer(agent, final_response, logger)
     if not interrupted:
         final_response = _explain_abnormal_exit(

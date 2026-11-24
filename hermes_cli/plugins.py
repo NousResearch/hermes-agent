@@ -367,8 +367,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         named = self._named_home
         if named == self.home_path or self._leads_here(named):
             return named
-        renamed = next((p for p in self._profile_names_beside(named) if self._leads_here(p)), self.home_path)
-        self._named_home = renamed  # remembered: a name gone for good is not searched for at every bind
+        renamed = next((p for p in self._profile_names_beside(named) if self._leads_here(p)), None)
+        if renamed is None:
+            return self.home_path  # the old name is kept, so a name that leads here later is still found
+        self._named_home = renamed
         return renamed
 
     def _leads_here(self, path: Path) -> bool:

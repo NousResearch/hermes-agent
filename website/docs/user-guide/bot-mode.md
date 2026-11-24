@@ -198,7 +198,10 @@ gateway:
   bot_loop_guard:
     max_hops: 4                       # bot-to-bot messages per exchange, Bot Mode and messaging platforms
     bot_replies_expect_reply: false   # true: a bot's reply to a bot may be answered
+    reset_all_on_human: false   # true: a human message in any Bot Chat resets every hop chain and the time-window budget
 ```
+
+`reset_all_on_human` defaults to false. When it is true, a message you type in any session titled exactly `Bot Chat` resets every bot's hop count and the messaging-platform time window (`max_events` per `window_seconds`), including bots you did not type to. A bot message does not do that. A background completion notice does not do that. A message in an ordinary chat does not do that. The switch is read from the install-root `config.yaml`, not from a profile's copy: `hermes config set gateway.bot_loop_guard.reset_all_on_human true`.
 
 The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
 

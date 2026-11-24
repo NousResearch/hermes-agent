@@ -499,6 +499,34 @@ def _clear_readonly_bits(root: Path) -> None:
             os.chmod(target, stat.S_IWRITE)
 
 
+def _leave_tree(path: Path) -> bool:
+    """Move this process's cwd out of *path* when it sits inside it.
+
+    Windows keeps a handle on the directory a process is sitting in, so an
+    ``rmtree`` of that tree fails on the directory itself (``PermissionError``
+    / WinError 32) after emptying it — one silent empty shell per finished
+    scratch card. A cwd the process reached via ``os.chdir`` is released by
+    moving out. POSIX lets the removal through but strands the process on a
+    deleted cwd; moving out prevents that too. One handle this cannot release:
+    the one for the directory the process was *started* in survives until the
+    process exits (that residue is the dispatcher's second pass, see
+    :func:`_retry_workspace_cleanup_after_exit`). True when moved.
+    """
+    target = path.resolve(strict=False)
+    try:
+        cwd = Path.cwd().resolve(strict=False)
+    except OSError:
+        return False  # the cwd is already gone: it cannot be holding *path* open
+    if cwd != target and not cwd.is_relative_to(target):
+        return False
+    try:
+        os.chdir(target.parent)
+    except OSError as exc:
+        _kb._log.warning("Could not leave %s before removing it: %s", path, exc)
+        return False
+    return True
+
+
 def _force_rmtree(path: Path) -> Optional[str]:
     """Remove the tree at *path*; None once it is gone, else why it could not be.
 
@@ -508,8 +536,12 @@ def _force_rmtree(path: Path) -> Optional[str]:
     event and no log line (git checkouts and fixtures copied out of a
     repository keep the read-only bit). After a failed first pass the bit is
     cleared on what remains and the removal is retried once; the caller logs
-    any residue.
+    any residue. A cwd inside *path* is moved out first (:func:`_leave_tree`):
+    on Windows the directory the caller is sitting in can never be removed
+    otherwise, whatever the retry.
     """
+    if _leave_tree(path):
+        _kb._log.debug("Left %s to remove it (the cwd was inside)", path)
     try:
         shutil.rmtree(path)
     except OSError:
@@ -671,6 +703,37 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         _try_cleanup_parent_workspaces(conn, task_id)
     except Exception:
         pass  # best-effort — never block completion
+
+
+def _retry_workspace_cleanup_after_exit(conn: sqlite3.Connection, task_id: str) -> bool:
+    """One more cleanup pass for a terminal task whose worker is known to be gone.
+
+    One more pass matters because completion cleanup runs inside the worker,
+    which the dispatcher started with the workspace as its cwd; on Windows the
+    directory a process was started in keeps a handle until that process exits,
+    so the worker's own deletion always failed on the directory itself and left
+    an empty shell. The dispatcher calls this once it has confirmed the run's
+    worker exited and cleared its pid evidence; True when the directory went.
+    A residue is logged here rather than left for a user to find, and
+    ``kanban gc --workspaces`` still reports it.
+    """
+    if not _is_terminal_task(conn, task_id):
+        return False  # requeued: the next run reuses this workspace
+    plan = _plan_workspace_cleanup(conn, task_id)
+    if not plan.removable:
+        return False  # gone already, or kept for a reason completion recorded
+    _cleanup_workspace(conn, task_id)
+    if plan.path is not None and plan.path.exists():
+        _kb._log.warning(
+            "Workspace for task %s still present after its worker exited: %s",
+            task_id, plan.path,
+        )
+        return False
+    _kb._log.info(
+        "Removed leftover workspace for task %s after its worker exited: %s",
+        task_id, plan.path,
+    )
+    return True
 
 
 def _worktree_preserve_reason(wp: Path) -> tuple[Optional[Path], Optional[str]]:

@@ -11,7 +11,9 @@ the next tick — never a recycled PID, never a legacy row without a fingerprint
 
 from __future__ import annotations
 
+import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -147,3 +149,116 @@ def test_one_failing_row_does_not_abort_the_sweep(conn):
         for p in (broken, healthy):
             p.kill()
             p.wait()
+
+
+# --- the workspace a dead worker left behind -----------------------------------
+#
+# Completion cleanup runs inside the worker, which the dispatcher started with
+# the workspace as its cwd. ``_force_rmtree`` moves the worker out before the
+# removal, but a run can leave another child process holding the directory and
+# Windows keeps refusing the ``rmdir`` until that child is gone. Once the
+# dispatcher has confirmed the worker itself is gone it runs the cleanup again.
+
+
+def _completed_card_with_leftover_workspace(conn, pid: int) -> tuple[str, int, Path]:
+    """A finished scratch card whose workspace is still on disk — the empty
+    shell Windows leaves when the worker's own ``rmdir`` was refused."""
+    tid, run_id = _completed_card_with_worker(conn, type("Proc", (), {"pid": pid})())
+    ws = kb.workspaces_root() / tid
+    ws.mkdir(parents=True)
+    (ws / "scratch.txt").write_text("left over", encoding="utf-8")
+    conn.execute(
+        "UPDATE tasks SET workspace_kind='scratch', workspace_path=? WHERE id=?",
+        (str(ws), tid),
+    )
+    return tid, run_id, ws
+
+
+def _exited_pid() -> int:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    proc.wait(timeout=60)
+    return proc.pid
+
+
+def test_leftover_workspace_of_an_exited_worker_is_removed_on_the_sweep(conn):
+    tid, run_id, ws = _completed_card_with_leftover_workspace(conn, _exited_pid())
+
+    # Nothing to terminate: the pid is gone, so the row is not a reap — only
+    # its stale evidence is dropped, and the shell with it.
+    assert kbd.reap_terminal_workers(conn) == []
+    run = conn.execute("SELECT worker_pid FROM task_runs WHERE id=?", (run_id,)).fetchone()
+    assert run["worker_pid"] is None
+    assert not ws.exists()
+    kinds = [r["kind"] for r in conn.execute("SELECT kind FROM task_events WHERE task_id=?", (tid,))]
+    assert "terminal_worker_reaped" not in kinds
+
+
+def test_leftover_workspace_waits_for_a_live_worker(conn, monkeypatch):
+    proc = _sleeper()
+    try:
+        _tid, run_id, ws = _completed_card_with_leftover_workspace(conn, proc.pid)
+        # Still running and refusing to die: nothing about this card may move.
+        monkeypatch.setattr(kbd, "_worker_alive", lambda pid, started_at=None: True)
+        monkeypatch.setattr(kbd, "_terminate_reclaimed_worker", lambda *a, **k: {"terminated": False})
+
+        assert kbd.reap_terminal_workers(conn) == []
+
+        assert ws.is_dir() and (ws / "scratch.txt").exists()
+        run = conn.execute("SELECT worker_pid FROM task_runs WHERE id=?", (run_id,)).fetchone()
+        assert run["worker_pid"] == proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_leftover_workspace_of_a_respawned_card_is_kept(conn):
+    tid, _run_id, ws = _completed_card_with_leftover_workspace(conn, _exited_pid())
+    # Requeued after a failed/cancelled run: the next worker reuses this directory.
+    conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+
+    kbd.reap_terminal_workers(conn)
+
+    assert ws.is_dir() and (ws / "scratch.txt").exists()
+
+
+def test_one_failed_leftover_cleanup_does_not_abort_the_sweep(conn, monkeypatch):
+    first, second = _exited_pid(), _exited_pid()
+    broken_tid, _run, _broken_ws = _completed_card_with_leftover_workspace(conn, first)
+    tid, _run, second_ws = _completed_card_with_leftover_workspace(conn, second)
+    real = kbd._kbw._retry_workspace_cleanup_after_exit
+    calls = []
+
+    def flaky(c, task_id):
+        calls.append(task_id)
+        if task_id == broken_tid:
+            raise RuntimeError("boom")
+        return real(c, task_id)
+
+    monkeypatch.setattr(kbd._kbw, "_retry_workspace_cleanup_after_exit", flaky)
+
+    assert kbd.reap_terminal_workers(conn) == []
+    assert sorted(calls) == sorted([broken_tid, tid])
+    assert not second_ws.exists()
+
+
+def test_retry_reports_a_workspace_that_still_refuses_to_go(conn, monkeypatch, caplog):
+    tid, _run, ws = _completed_card_with_leftover_workspace(conn, _exited_pid())
+    monkeypatch.setattr(kbd._kbw, "_cleanup_workspace", lambda c, task_id: None)  # refused again
+
+    with caplog.at_level(logging.WARNING):
+        assert kbd._kbw._retry_workspace_cleanup_after_exit(conn, tid) is False
+
+    assert ws.is_dir()
+    assert any("still present" in r.getMessage() for r in caplog.records)
+
+
+def test_retry_is_a_no_op_once_the_workspace_is_gone(conn):
+    tid, _run, _ws = _completed_card_with_leftover_workspace(conn, _exited_pid())
+    shutil.rmtree(_ws)
+
+    assert kbd._kbw._retry_workspace_cleanup_after_exit(conn, tid) is False
+
+    assert not _ws.exists()

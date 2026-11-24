@@ -7,6 +7,9 @@ sibling scan raise ``no such table: tasks``, so every completion cleanup since
 was deferred with ``reason=unknown`` and nothing was ever retried. A second,
 silent failure: ``shutil.rmtree(..., ignore_errors=True)`` gives up on the
 first read-only file (Windows), leaving half-deleted trees with no event.
+A third: the dispatcher spawns every worker with ``cwd=workspace`` and the
+worker runs completion cleanup itself; Windows refuses ``rmdir`` on a process's
+own cwd, so each finished scratch card left an empty shell behind, silently.
 """
 import argparse
 import json
@@ -14,6 +17,8 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -365,3 +370,107 @@ def test_slash_kanban_gc_workspaces_is_a_dry_run(board):
     report = json.loads(out)
     assert report["mode"] == "dry-run" and report["counts"]["removable"] == 2
     assert all(p.exists() for p in fx["removable"])
+
+
+# --- C: the worker's own cwd must not keep its workspace alive -----------------
+#
+# ``_default_spawn`` starts every worker with ``cwd=<workspace>`` and
+# ``complete_task`` runs the cleanup inside that worker. Windows keeps a
+# handle on the directory a process was started in until that process exits,
+# so the worker's ``rmdir`` on its own workspace always fails: contents gone,
+# shell kept, nothing to retry from inside. Two layers fix it —
+# :func:`_force_rmtree` moves a process whose cwd sits inside the tree out
+# first (covers in-process callers, and never strands anyone on a deleted
+# cwd), and the dispatcher runs the cleanup once more after the worker itself
+# has exited (``reap_terminal_workers``), from a process that holds nothing.
+
+
+def test_force_rmtree_removes_the_tree_the_process_is_sitting_in(board, monkeypatch):
+    ws = kb.workspaces_root() / "cwd-tree"
+    nested = ws / "sub"
+    nested.mkdir(parents=True)
+    (nested / "scratch.txt").write_text("work", encoding="utf-8")
+    monkeypatch.chdir(nested)
+
+    assert kbw._force_rmtree(ws) is None
+
+    assert not ws.exists()
+    # Parked next to the tree — not left on a directory that no longer exists.
+    assert Path.cwd().resolve() == ws.parent.resolve()
+    assert Path.cwd().is_dir()
+
+
+def test_complete_task_removes_the_scratch_workspace_that_is_the_cwd(board, monkeypatch):
+    with kbc.connect_closing() as conn:
+        tid, ws = _terminal_scratch(conn, status="ready")
+    monkeypatch.chdir(ws)
+
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(conn, tid, summary="finished") is True
+
+    assert not ws.exists(), "completion left the workspace shell behind"
+    with kbc.connect_closing() as conn:
+        assert _deferred_reasons(conn, tid) == []
+
+
+_WORKER_SCRIPT = """
+import json, os, sys
+from pathlib import Path
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+db_path, task_id, run_id = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+workspace = kb.workspaces_root() / task_id
+with kbc.connect_closing(db_path) as conn:
+    report = {
+        "pid": os.getpid(),
+        "cwd_inside": Path.cwd().resolve() == workspace.resolve(),
+        "done": bool(kb.complete_task(conn, task_id, result="finished", expected_run_id=run_id)),
+        "exists_after": workspace.exists(),
+        "cwd_after": os.getcwd(),
+    }
+print(json.dumps(report))
+"""
+
+
+def test_worker_spawned_inside_its_workspace_leaves_no_shell_behind(board):
+    """The dispatcher's exact lifecycle: a real worker started with
+    ``cwd=workspace`` completes its own card, exits, and the next dispatch
+    sweep removes the directory the worker could not delete from inside."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="spawned in its own workspace")
+        ws = kb.workspaces_root() / tid
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / "scratch.txt").write_text("work", encoding="utf-8")
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='scratch', workspace_path=? WHERE id=?",
+            (str(ws), tid),
+        )
+        kb.claim_task(conn, tid, claimer=kb._claimer_id())
+        run_id = kb._current_run_id(conn, tid)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])  # the checkout under test
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _WORKER_SCRIPT, str(kb.kanban_db_path()), tid, str(run_id)],
+        cwd=ws,  # what _default_spawn does
+        env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    with kbc.connect_closing() as conn:
+        kbd._set_worker_pid(conn, tid, proc.pid)
+    out, err = proc.communicate(timeout=180)
+    assert proc.returncode == 0, err
+    report = json.loads(out.strip().splitlines()[-1])
+    assert report["cwd_inside"] is True and report["done"] is True
+    # The worker lives on for its final turn: it must still have a real cwd.
+    assert Path(report["cwd_after"]).is_dir()
+
+    # Worker exited; the next tick cleans up what it could not.
+    assert proc.wait(timeout=10) == 0
+    grace = kbd.TERMINAL_WORKER_REAP_GRACE_SECONDS + 10
+    with kbc.connect_closing() as conn:
+        conn.execute("UPDATE task_runs SET ended_at = ended_at - ? WHERE id=?", (grace, run_id))
+        assert kbd.reap_terminal_workers(conn) == []  # nothing to terminate, pid simply gone
+    assert not ws.exists(), "the sweep left the shell the worker could not delete"

@@ -46,8 +46,9 @@ def test_suffix_only_still_prints(monkeypatch):
     turn = SimpleNamespace(use_streaming_tts=False, box_opened=False,
                            result={"completed": True, "final_response": "footer line"})
     cli._chat_print_response_panel(turn, "footer line")
-    # no extra accumulated prefix; panel may or may not print depending on already_streamed
-    assert True
+    panels = [str(getattr(p, "renderable", "")) for p in _printed]
+    assert len(panels) == 1, _printed
+    assert panels[0].count("footer line") == 1, panels[0]
 
 
 def test_disjoint_final_response_is_not_dropped(monkeypatch):
@@ -61,3 +62,29 @@ def test_disjoint_final_response_is_not_dropped(monkeypatch):
     assert len(panels) == 1, printed
     assert "The tool finished processing" in str(panels[0])
     assert "Done." in str(panels[0]), panels[0]
+
+
+def test_short_tool_call_text_before_longer_final_is_kept(monkeypatch):
+    """Tool-call text shorter than the final answer must not be dropped."""
+    cli, _emitted, printed = _cli_stub(monkeypatch)
+    cli._streamed_text_this_turn = "Saved the report to disk."
+    final = "Here is a much longer final explanation of everything that happened in this turn."
+    turn = SimpleNamespace(use_streaming_tts=False, box_opened=False,
+                           result={"completed": True, "final_response": final})
+    cli._chat_print_response_panel(turn, final)
+    panels = [str(getattr(p, "renderable", "")) for p in printed]
+    assert len(panels) == 1, printed
+    assert "Saved the report to disk." in panels[0], panels[0]
+    assert "much longer final explanation" in panels[0], panels[0]
+
+
+def test_final_that_contains_the_streamed_text_is_rendered_once(monkeypatch):
+    cli, _emitted, printed = _cli_stub(monkeypatch)
+    cli._streamed_text_this_turn = "Checking the file."
+    final = "Checking the file. It has 3 errors on lines 4, 9 and 12."
+    turn = SimpleNamespace(use_streaming_tts=False, box_opened=False,
+                           result={"completed": True, "final_response": final})
+    cli._chat_print_response_panel(turn, final)
+    panels = [str(getattr(p, "renderable", "")) for p in printed]
+    assert len(panels) == 1, printed
+    assert panels[0].count("Checking the file.") == 1, panels[0]

@@ -751,9 +751,10 @@ class CLIChatTurnMixin:
                 _streamed = getattr(self, "_streamed_text_this_turn", "") or ""
                 _norm_streamed = " ".join(_streamed.split())
                 _norm_response = " ".join(response.split())
+                # Length alone can't decide: tool-call text may be shorter than the final
+                # answer. Render the response alone only when it already contains that text.
                 if (_norm_streamed and _norm_response
-                        and _norm_streamed != _norm_response
-                        and len(_norm_streamed) > len(_norm_response)):
+                        and _norm_streamed not in _norm_response):
                     _render_response = _streamed.strip()
                     # A separate final message may not be a suffix of the streamed text.
                     # Keep both rather than dropping the final answer.

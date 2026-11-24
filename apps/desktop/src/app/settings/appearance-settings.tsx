@@ -85,7 +85,7 @@ import { InterfaceModeFeedbackContext, InterfaceModeSettings } from './interface
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow } from './primitives'
-import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { NATIVE_CONTROL_OFFERED, SETTING_IDS, settingElementId } from './settings-manifest'
 import { SimplifiedAgentFeedback } from './simplified-agent-feedback'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useSettingDeepLink } from './use-setting-deep-link'
@@ -483,14 +483,17 @@ function AppearanceThemeSettings({ compact, query, setQuery }: AppearanceThemeSe
       below={
         <>
           {/* One search box: filters your installed themes (the grid)
-              and live-searches the VS Code Marketplace below. */}
-          <SearchField
-            containerClassName="mt-3 w-full"
-            inputClassName="flex-1"
-            onChange={setQuery}
-            placeholder={a.themeSearchPlaceholder}
-            value={query}
-          />
+              and live-searches the VS Code Marketplace below. The redesigned
+              Webapp cannot reach the Marketplace the box names, so it has none. */}
+          {NATIVE_CONTROL_OFFERED.themeMarketplace() && (
+            <SearchField
+              containerClassName="mt-3 w-full"
+              inputClassName="flex-1"
+              onChange={setQuery}
+              placeholder={a.themeSearchPlaceholder}
+              value={query}
+            />
+          )}
 
           {/* The dedicated theme page uses the page scroller rather
               than clipping its gallery inside another scroll area. */}

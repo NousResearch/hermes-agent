@@ -464,3 +464,48 @@ it('shows the whole agent Runtime & Limits page and leaves desktop and tool-key 
   // …while device-level update policy stays in global Settings.
   expect(document.getElementById('setting-field-updates.non_interactive_local_changes')).toBeNull()
 })
+
+describe('Desktop & startup rows that only act in the native app', () => {
+  const DEVICE_ROWS = ['Keep computer awake', 'Disable F12 DevTools', 'Always open links in external browser']
+  const shownRows = () => DEVICE_ROWS.filter(title => screen.queryByText(title))
+
+  // The Webapp's bridge has neither member; the native preload has both.
+  const nativeBridge = { setDisableF12: () => undefined, setKeepAwake: () => undefined }
+
+  afterEach(() => {
+    delete document.documentElement.dataset.hermesDesktopHost
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  async function renderDesktopPage() {
+    getHermesConfigRecord.mockResolvedValue({ agent: { max_turns: 42 } })
+    renderConfigSettings('advanced')
+    await screen.findByText('Run onboarding again')
+  }
+
+  it('leaves them out of the redesigned Webapp, where they would change nothing', async () => {
+    $shellChoice.set(true)
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    Object.assign(window, { hermesDesktop: {} })
+    await renderDesktopPage()
+
+    expect(shownRows()).toEqual([])
+  })
+
+  it('offers them in the redesigned native app', async () => {
+    $shellChoice.set(true)
+    Object.assign(window, { hermesDesktop: nativeBridge })
+    await renderDesktopPage()
+
+    expect(shownRows()).toEqual(DEVICE_ROWS)
+  })
+
+  it('keeps every row classic has always drawn, in the Webapp too', async () => {
+    $shellChoice.set(false)
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    Object.assign(window, { hermesDesktop: {} })
+    await renderDesktopPage()
+
+    expect(shownRows()).toEqual(DEVICE_ROWS)
+  })
+})

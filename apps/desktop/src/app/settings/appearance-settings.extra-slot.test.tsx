@@ -154,3 +154,30 @@ describe('Appearance overview', () => {
     expect(screen.queryByRole('radio', { name: 'Light' })).toBeNull()
   })
 })
+
+describe('Theme search', () => {
+  const search = () => screen.queryByPlaceholderText(/VS Code Marketplace/)
+
+  afterEach(() => {
+    delete document.documentElement.dataset.hermesDesktopHost
+  })
+
+  it('is left out of the redesigned Webapp, which cannot reach the Marketplace', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    renderPage('theme')
+
+    expect(screen.getByText('Theme')).toBeTruthy()
+    expect(search()).toBeNull()
+  })
+
+  it('stays in the native app, and in classic on either host', () => {
+    const native = renderPage('theme')
+    expect(search()).toBeTruthy()
+    native.unmount()
+
+    $shellChoice.set(false)
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    renderPage('theme')
+    expect(search()).toBeTruthy()
+  })
+})

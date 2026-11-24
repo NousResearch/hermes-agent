@@ -1,8 +1,10 @@
 import type { Translations } from '@/i18n'
 import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import { hostHas } from '@/lib/host-capabilities'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
 import { canUseQuickEntry } from '@/store/quick-entry'
+import { $portalShell } from '@/store/shell-variant'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
 import type { AppearanceSubpageId } from './appearance-subpages'
@@ -21,6 +23,21 @@ export interface SettingDefinition {
   keywords: readonly string[]
   /** The child page the row lives on; omitted when the view has no subpages. */
   subpage?: string
+}
+
+// A control whose only effect is in the native app. The redesign leaves a dead one out of the Webapp,
+// on the page and in search alike; classic keeps every row it has always drawn.
+const nativeControl = (works: () => boolean) => () => !$portalShell.get() || works()
+
+export const NATIVE_CONTROL_OFFERED = {
+  /** Links leave a browser tab for another tab whatever this says; only the app has a pane to keep them in. */
+  alwaysExternalLinks: nativeControl(() => hostHas('inAppLinks')),
+  /** F12 is blocked in the main process; the Webapp's bridge has no such member. */
+  disableF12: nativeControl(() => Boolean(window.hermesDesktop?.setDisableF12)),
+  /** The power-save blocker lives in the main process, likewise. */
+  keepAwake: nativeControl(() => Boolean(window.hermesDesktop?.setKeepAwake)),
+  /** The Marketplace is searched by the main process; the Webapp's bridge answers every query with nothing. */
+  themeMarketplace: nativeControl(() => !isBrowserHostedDesktop())
 }
 
 type AppearanceCopy = Translations['settings']['appearance']
@@ -163,11 +180,13 @@ export const SETTINGS_MANIFEST = {
     keepAwake: {
       subpage: 'desktop',
       keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power', 'while working', 'turn'],
+      available: NATIVE_CONTROL_OFFERED.keepAwake,
       copy: t => ({ label: t.settings.config.keepAwakeTitle, description: t.settings.config.keepAwakeDesc })
     },
     disableF12: {
       subpage: 'desktop',
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
+      available: NATIVE_CONTROL_OFFERED.disableF12,
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
     },
     quickEntry: {

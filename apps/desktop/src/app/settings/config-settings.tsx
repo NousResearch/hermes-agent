@@ -72,7 +72,7 @@ import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } fro
 import { SettingsProfileScope, useSettingsOwner, useSettingsRequestScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SettingsCard, SettingsGroup, SettingsOverview } from './settings-card'
-import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { NATIVE_CONTROL_OFFERED, SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingsEditsActiveAgent } from './settings-owner-request'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import { SharedMetricsSettings } from './shared-metrics-settings'
@@ -758,34 +758,40 @@ function DesktopDeviceSettings() {
 
   const rows = (
     <>
-      <ListRow
-        action={
-          <SegmentedControl
-            onChange={mode => {
-              triggerHaptic('selection')
-              setKeepAwakeMode(mode)
-            }}
-            options={keepAwakeOptions}
-            value={keepAwakeMode}
-          />
-        }
-        description={c.keepAwakeDesc}
-        id={settingElementId(SETTING_IDS.advanced.keepAwake)}
-        title={c.keepAwakeTitle}
-      />
-      <ToggleRow
-        checked={disableF12}
-        description={c.disableF12Desc}
-        id={settingElementId(SETTING_IDS.advanced.disableF12)}
-        label={c.disableF12Title}
-        onChange={setDisableF12}
-      />
-      <ToggleRow
-        checked={alwaysExternalLinks}
-        description={c.alwaysExternalLinksDesc}
-        label={c.alwaysExternalLinksTitle}
-        onChange={setAlwaysExternalLinks}
-      />
+      {NATIVE_CONTROL_OFFERED.keepAwake() && (
+        <ListRow
+          action={
+            <SegmentedControl
+              onChange={mode => {
+                triggerHaptic('selection')
+                setKeepAwakeMode(mode)
+              }}
+              options={keepAwakeOptions}
+              value={keepAwakeMode}
+            />
+          }
+          description={c.keepAwakeDesc}
+          id={settingElementId(SETTING_IDS.advanced.keepAwake)}
+          title={c.keepAwakeTitle}
+        />
+      )}
+      {NATIVE_CONTROL_OFFERED.disableF12() && (
+        <ToggleRow
+          checked={disableF12}
+          description={c.disableF12Desc}
+          id={settingElementId(SETTING_IDS.advanced.disableF12)}
+          label={c.disableF12Title}
+          onChange={setDisableF12}
+        />
+      )}
+      {NATIVE_CONTROL_OFFERED.alwaysExternalLinks() && (
+        <ToggleRow
+          checked={alwaysExternalLinks}
+          description={c.alwaysExternalLinksDesc}
+          label={c.alwaysExternalLinksTitle}
+          onChange={setAlwaysExternalLinks}
+        />
+      )}
       <QuickEntrySettings />
       <OnboardingSettings />
     </>

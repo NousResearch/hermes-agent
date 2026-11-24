@@ -494,6 +494,41 @@ def test_a_hosted_model_provider_of_a_renamed_linked_profile_still_runs_after_a_
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
+def test_a_hosted_model_provider_whose_install_link_was_removed_stays_removed_after_a_host_crash(
+        tmp_path, monkeypatch):
+    """Only the profile home's spelling is resolved in a hosted provider's address: a plugin installed as a link
+    and then removed is not loaded again from the link's old target by the restarted host."""
+    import signal
+
+    import providers
+    from tests.waiting import wait_until
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    installed = tmp_path / "installed" / "hostmodel"
+    installed.mkdir(parents=True)
+    (installed / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (installed / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    (home / "plugins" / "model-providers").mkdir(parents=True)
+    (home / "plugins" / "model-providers" / "hostmodel").symlink_to(installed, target_is_directory=True)
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        profile = providers.get_provider_profile("hostmodel")
+        assert profile is not None
+        first = profile.build_extra_body(session_id="s1")["pid"]
+        killed = plugins_mod.get_plugin_manager()._plugin_host()
+        (home / "plugins" / "model-providers" / "hostmodel").unlink()
+        os.kill(first, signal.SIGKILL)
+        wait_until(lambda: not killed.alive, timeout=15, what="the killed host to be noticed")
+        with pytest.raises(Exception, match="__init__.py"):
+            profile.build_extra_body(session_id="s1")
+    finally:
+        host = getattr(plugins_mod.get_plugin_manager(), "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink
 def test_a_recall_matched_by_the_recorded_repo_refuses_a_linked_profiles_plugin(tmp_path, monkeypatch):
     """Discovery records a linked profile's plugins under its directory while code runs under its name; the

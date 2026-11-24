@@ -57,12 +57,10 @@ class SolsticeProfile(ProviderProfile):
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Native ``thinking_config``, as the ``gemini`` provider sends it: the native client reads only that
         key, so without it a reasoning effort, or thinking off for a title, never reached the model."""
-        from agent.reasoning_effort import gemini_top_thinking_level
-        from agent.transports.chat_completions import _build_gemini_thinking_config
+        from agent.reasoning_effort import gemini_thinking_config
 
-        model, reasoning_config = context.get("model") or "", context.get("reasoning_config")
-        raw = _build_gemini_thinking_config(model, reasoning_config)
-        return {"thinking_config": gemini_top_thinking_level(model, reasoning_config, raw)} if raw else {}
+        thinking_config = gemini_thinking_config(context.get("model"), context.get("reasoning_config"))
+        return {"thinking_config": thinking_config} if thinking_config else {}
 
     def get_max_tokens(self, model: str | None) -> int | None:
         return None  # output caps are the backend's; a Hermes default would truncate long answers

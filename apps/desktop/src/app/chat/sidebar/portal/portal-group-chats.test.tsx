@@ -9,6 +9,7 @@ import { $groupChats } from '@/plugins/hermes-bots/group-chat'
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $seenGroupRooms } from '@/store/seen-group-rooms'
 import { $connection } from '@/store/session'
 
 import { PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
@@ -38,7 +39,7 @@ vi.mock('@/plugins/hermes-bots/i18n', async original => {
   return { ...module, useBots: () => module.BOTS_LOCALES.en }
 })
 
-afterEach(() => { cleanup(); $botMeta.set({}); $lastRoster.set([]); $groupChats.set({}); vi.clearAllMocks() })
+afterEach(() => { cleanup(); $botMeta.set({}); $lastRoster.set([]); $groupChats.set({}); $seenGroupRooms.set([]); vi.clearAllMocks() })
 
 it('opens same-named rooms using their exact gateway authority and retains desktop rooms', () => {
   const rooms = ['alpha', 'beta'].map(connectionId => ({
@@ -134,6 +135,14 @@ describe('rooms seen under an agent that was active earlier', () => {
 
     show('ops', [roomOf('ops', 'r2', 'Field notes')], view)
     expect(listed()).toBe('Launch crew@default, Field notes@ops')
+  })
+
+  it('are still listed when the sidebar is closed and opened again under another agent', () => {
+    $connection.set({ connectionId: 'local' } as never)
+    show('default', [roomOf('default', 'r1', 'Launch crew')]).unmount()
+
+    show('ops', [])
+    expect(listed()).toBe('Launch crew@default')
   })
 
   it('leave when their own agent no longer lists them', () => {

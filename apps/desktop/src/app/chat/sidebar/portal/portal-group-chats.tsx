@@ -1,6 +1,6 @@
 import { host, useValue } from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -23,6 +23,7 @@ import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import { groupChatMemberBots, groupChatNames } from '@/plugins/hermes-bots/group-membership'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $seenGroupRooms } from '@/store/seen-group-rooms'
 
 import { PortalSectionHeader } from './portal-section-header'
 
@@ -45,13 +46,16 @@ function useSeenGatewayRooms(): GatewayGroupRoom[] {
   const profile = useStore($activeGatewayProfile)
   const roster = useStore($lastRoster)
   const disbanded = useStore($disbandedGatewayRooms)
-  const seen = useRef<GatewayGroupRoom[]>([])
   // One row a room: a backend with a single store lists the same rooms under every agent.
   const ids = new Set(current.map(room => room.room.room_id))
   // This machine's agents. None means its roster has not been read yet: a machine has at least one.
   const agents = new Set(roster.filter(row => botOnConnection(row, connectionId)).map(row => row.name))
 
-  const earlier = seen.current.filter(
+  // Read as the section renders, not subscribed to: this hook is its only writer.
+  const seen = $seenGroupRooms.get()
+  const elsewhere = seen.filter(room => room.binding.connectionId !== connectionId)
+
+  const earlier = seen.filter(
     room =>
       room.binding.connectionId === connectionId &&
       room.binding.profile !== profile &&
@@ -61,9 +65,11 @@ function useSeenGatewayRooms(): GatewayGroupRoom[] {
   )
 
   // Newest first, whichever agent is active: opening another agent does not reorder the rows.
-  seen.current = [...earlier, ...current].sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key))
+  const rooms = [...earlier, ...current].sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key))
 
-  return seen.current
+  useEffect(() => $seenGroupRooms.set([...elsewhere, ...rooms]))
+
+  return rooms
 }
 
 /** Bot Mode's hooks (the gateway room list polls): call only while that plugin is loaded. */

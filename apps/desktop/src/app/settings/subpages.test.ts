@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
 import { $shellChoice } from '@/store/shell-variant'
@@ -148,25 +148,34 @@ describe('settings subpage routing', () => {
     )
   })
 
-  // Two controls act only through the native app's bridge. The redesign leaves them out of search
-  // where that bridge has no such member (the Webapp); the app itself, and classic anywhere, keep them.
-  it('offers the native-only controls in search where the app can act on them', () => {
+  // Two controls act only through the native app's bridge.
+  describe('the native-only controls in search', () => {
+    const NATIVE_ONLY = ['Keep computer awake', 'Disable F12 DevTools']
     const labels = () => settingSearchTargets(TRANSLATIONS.en).map(target => target.label)
-    const previous = window.hermesDesktop
+    const bridge = window.hermesDesktop
 
-    try {
-      window.hermesDesktop = { ...previous, setDisableF12: () => undefined, setKeepAwake: () => undefined } as never
-      $shellChoice.set(true)
-      expect(labels()).toEqual(expect.arrayContaining(['Keep computer awake', 'Disable F12 DevTools']))
-
-      window.hermesDesktop = previous
-      expect(labels()).not.toContain('Keep computer awake')
-
-      $shellChoice.set(false)
-      expect(labels()).toEqual(expect.arrayContaining(['Keep computer awake', 'Disable F12 DevTools']))
-    } finally {
-      window.hermesDesktop = previous
+    afterEach(() => {
+      window.hermesDesktop = bridge
       $shellChoice.set(null)
-    }
+    })
+
+    it('are offered where the app can act on them', () => {
+      window.hermesDesktop = { ...bridge, setDisableF12: () => undefined, setKeepAwake: () => undefined } as never
+      $shellChoice.set(true)
+
+      expect(labels()).toEqual(expect.arrayContaining(NATIVE_ONLY))
+    })
+
+    it('are left out of the redesigned Webapp, whose bridge has neither', () => {
+      $shellChoice.set(true)
+
+      expect(labels().filter(label => NATIVE_ONLY.includes(label))).toEqual([])
+    })
+
+    it('stay in classic on either host', () => {
+      $shellChoice.set(false)
+
+      expect(labels()).toEqual(expect.arrayContaining(NATIVE_ONLY))
+    })
   })
 })

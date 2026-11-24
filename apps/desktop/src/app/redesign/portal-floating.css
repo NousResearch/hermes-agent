@@ -307,11 +307,9 @@
   overflow-y: auto;
 }
 
-/* A dialog is capped at 85% of the window. Under the web app's own UI scale a viewport unit is
-   enlarged with everything else, so the cap came out taller than the window (170% of it at 200%)
-   and a long dialog ran off both edges with no way to reach its buttons. The cap is taken back to
-   the window, only while a scale is in force (redesign/layout-scale.ts marks the document): these
-   rules outrank a dialog's own `max-h-*`, so at 100% they must not be in the cascade at all. */
+/* A dialog is capped at 85% of the window. The web app's UI scale enlarges a viewport unit with
+   everything else, so under a scale the cap is divided back to the window. Only then
+   (redesign/layout-scale.ts marks the document): these rules outrank a dialog's own `max-h-*`. */
 :root[data-shell='portal'][data-layout-scaled] [data-slot='dialog-content'] {
   max-height: calc(85vh / var(--browser-ui-scale, 1));
 }

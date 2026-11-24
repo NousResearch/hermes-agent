@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterAll, afterEach, expect, it } from 'vitest'
 
 import { $layoutScale } from '@/lib/layout-scale'
 import { $shellChoice } from '@/store/shell-variant'
@@ -9,11 +9,19 @@ const root = window.document.documentElement
 let factor = 1
 let changed: () => void = () => undefined
 
+// The installer reads the host and the zoom bridge once, at install: both stand for this file.
+const bridge = window.hermesDesktop
+
 root.dataset.hermesDesktopHost = 'browser'
 window.hermesDesktop = {
   zoom: { factor: () => factor, onChanged: (listener: () => void) => void (changed = listener) }
 } as never
 installLayoutScale()
+
+afterAll(() => {
+  window.hermesDesktop = bridge
+  delete root.dataset.hermesDesktopHost
+})
 
 function setScale(next: number) {
   factor = next

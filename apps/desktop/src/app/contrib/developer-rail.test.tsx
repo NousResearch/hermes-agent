@@ -189,8 +189,7 @@ it('shows developer tools only in Advanced mode with the redesign enabled', () =
   expect(screen.queryByRole('navigation')).toBeNull()
 })
 
-// HADESK-90: on a medium window the chat's items are a sheet, like Files and Review. Their tile read
-// the docked state (lit while nothing showed) and its click only un-hid the pane, which opens no sheet.
+// On a medium window the chat's items are a sheet, like Files and Review.
 it('lights the Items tile for its sheet on narrow windows, and its click asks for that sheet', () => {
   $narrowViewport.set(true)
   $chatItemsOpen.set(true)

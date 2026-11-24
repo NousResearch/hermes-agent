@@ -527,10 +527,7 @@ describe('Back and Forward in the redesigned band', () => {
   })
 })
 
-// HADESK-100. The right button is positional in classic: it folds whatever column stands outermost
-// right of the chat. In the redesign that side is the one tool panel, and the button read the Files
-// store instead ("Show right sidebar" with the Terminal open) and acted on the outermost zone (the
-// chat's items, parked apart until first shown), opening a second panel beside the first.
+// Classic's right button is positional. The redesign's reads and flips its one tool panel.
 describe('the redesign’s right sidebar button', () => {
   beforeEach(() => {
     $shellChoice.set(true)

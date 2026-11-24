@@ -158,11 +158,7 @@ it('hides store-bound tools through their stores, so a later Show brings them ba
   registerPaneCloser('terminal')
 })
 
-// A Browser tab registers as a main surface (it can stand as a tile), so the pane tree no longer
-// reads the panel it joined as the window's right side, and Files' closer (contrib/close-files-pane.ts,
-// the one the app registers) took its "dragged beside main" branch: it dismissed Files instead of hiding it.
-// With Files gone the tools no longer counted as gathered, and each one opened next made a panel of
-// its own beside the last (HADESK-90: one to three panels, the chat squeezed between them).
+// A Browser tab is a main surface to the pane tree; the panel it joins is still the side to Files' closer.
 it('keeps one panel when it is closed and reopened with a Browser tab in it', () => {
   $shellChoice.set(true)
   $layoutTree.set(DEFAULT_TREE)
@@ -211,8 +207,7 @@ it('gathers into the panel that is left when Files has been dismissed', () => {
   expect(hideDeveloperToolPanel('chat-items')).toBe(true)
 })
 
-// A zone the user tiled with Browser tabs is not the tool panel, however many tabs it holds: each
-// tab is a pane of its own, and counting them let that zone outrank the panel (HADESK-90 review).
+// A zone the user tiled with Browser tabs is theirs, however many tabs it holds.
 it('never takes a zone of Browser tabs for the panel', () => {
   $shellChoice.set(true)
   $layoutTree.set(

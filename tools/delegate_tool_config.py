@@ -222,6 +222,31 @@ def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     return is_truthy_value(_load_config().get("inherit_mcp_toolsets"), default=True)
 
+def _get_child_toolsets(cfg: Optional[dict] = None) -> Optional[list[str]]:
+    """delegation.child_toolsets: toolset names every child is narrowed to (unset/empty = inherit the parent's).
+
+    Operator-controlled, never model-controlled, exactly like the older internal ``toolsets`` argument: the
+    value only narrows, because ``_resolve_child_toolsets`` intersects it with the parent's (composite-expanded)
+    set. A name the parent does not hold is dropped there, so a stale entry costs a capability, never a leak.
+    Non-string entries are dropped here; a comma-separated string is split into its names.
+    """
+    raw = (cfg if cfg is not None else _load_config()).get("child_toolsets")
+    if isinstance(raw, str):
+        raw = raw.split(",")  # a lone YAML string is either one name or a `file,web` list
+    if not isinstance(raw, (list, tuple)):
+        if raw is not None:
+            # A number/dict/nested list parses to None = inherit, the opposite of what the operator meant.
+            logger.warning("delegation.child_toolsets=%r is not a list; children inherit every parent toolset", raw)
+        return None
+    names = [name.strip() for name in raw if isinstance(name, str) and name.strip()]
+    return names or None
+
+def _get_child_bare(cfg: Optional[dict] = None) -> bool:
+    """delegation.child_bare: build a bare child prompt — no skills index, and no persona (SOUL.md) on a
+    profile-routed child. Context files and pinned ``skills.auto_load`` blocks are already skipped for every
+    child; tool schemas are unchanged."""
+    return is_truthy_value((cfg if cfg is not None else _load_config()).get("child_bare"), default=False)
+
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 

@@ -194,7 +194,9 @@ def _start(
             max_iterations=delegate_tool_config._load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS), parent_agent=parent_agent,
             live_deleg_id=live_id, live_writers=writers,
             rebuild=[{"toolsets": spec.get("toolsets") or None, "model": spec.get("model") or route.creds["model"],
-                      "subagent_id": sid, "session_id": session_id, "expect_endpoint": spec.get("endpoint")}],
+                      "subagent_id": sid, "session_id": session_id, "expect_endpoint": spec.get("endpoint"),
+                      # Pinned, not re-read: the transcript was recorded under this prompt shape.
+                      "override_child_bare": spec.get("child_bare")}],
         )
         if err:
             return None, err

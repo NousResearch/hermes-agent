@@ -314,8 +314,11 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 
 
 def _skills_prompt(agent: Any) -> str:
-    """Skills index (empty without skills tools).  Focus mode demotes non-coding
+    """Skills index (empty without skills tools, and empty for a ``skip_skills_index`` child — a
+    ``delegation.child_bare`` subagent does not pay the index). Focus mode demotes non-coding
     categories to names-only — never hidden, every name stays visible."""
+    if getattr(agent, "skip_skills_index", False):
+        return ""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools
@@ -334,10 +337,10 @@ def _auto_load_parts(agent: Any) -> list[str]:
     HERMES_IGNORE_RULES are read on the first build only) so the prompt stays byte-stable
     across model switches, compression and static-prefix restoration.
 
-    Same gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
+    Same tool gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
     context files (delegate children, curator/review forks, gateway hygiene agents) — pinned skills are
     operator guidance for the user's session, not payload for every internal fork."""
-    if getattr(agent, "skip_context_files", False) or not any(
+    if getattr(agent, "skip_skills_index", False) or getattr(agent, "skip_context_files", False) or not any(
             name in agent.valid_tool_names for name in ("skills_list", "skill_view", "skill_manage")):
         return []
     if not getattr(agent, "_auto_load_skills_resolved", False):
@@ -783,13 +786,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
+    # A bare child renders no index, so its variant is known up front: it keeps the skill pointer when it
+    # still holds skill_view, and the NO_SKILLS text (which "points the user there" — a child has none)
+    # otherwise. Only a normal agent waits for the index, whose string decides it.
+    bare = getattr(agent, "skip_skills_index", False)
+    has_skill_view = "skill_view" in (agent.valid_tool_names or set())
     _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE if bare and has_skill_view
+                        else HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
     stable_parts.extend(_guidance_parts(agent))
     skills_prompt = _skills_prompt(agent)
-    # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
-    # in the rendered index (pure string check — inherits the index's stability).
-    if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
+    # The remaining case needs BOTH skill_view AND the hermes-agent skill in the rendered index
+    # (pure string check — inherits the index's stability).
+    if not bare and has_skill_view and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.

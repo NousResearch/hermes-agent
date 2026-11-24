@@ -1952,6 +1952,13 @@ delegation:
                                               # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.
                                               # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
+  # child_toolsets: [terminal, file, web]      # Operator-side narrowing applied to EVERY child (unset = inherit the parent's
+                                              # toolsets; the model never chooses). Intersected with the parent's set, so a stale
+                                              # name costs a toolset and can never leak one; inherit_mcp_toolsets still applies.
+  # child_bare: false                          # Bare child prompt: no skills index, and no SOUL.md for a profile-routed child
+                                              # (context files and pinned skills are already skipped for every child).
+                                              # Tool schemas are unchanged.
+                                              # On a replay probe this cut the child system prompt by ~88% (34.3k -> 4.1k chars).
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.

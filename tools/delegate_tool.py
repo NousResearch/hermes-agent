@@ -30,7 +30,7 @@ from tools.delegate_tool_child_run import (
     _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _Heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
-    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_max_concurrent_children,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_bare, _get_child_toolsets, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled,
     _inherit_parent_capabilities, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime,
@@ -240,6 +240,8 @@ def _build_child_agent(
     subagent_id: Optional[str] = None,
     session_id: Optional[str] = None,
     expect_endpoint: Optional[tuple] = None,  # endpoint_identity it first ran on; a different one refuses
+    # A resumed child keeps the prompt shape its transcript was recorded under (None = read the config now).
+    override_child_bare: Optional[bool] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -264,7 +266,13 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = delegate_tool_config._load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    # Operator-narrowed default (delegation.child_toolsets); an explicit internal ``toolsets`` wins. Both are
+    # intersected with the parent's set, so the config can only ever remove capability.
+    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(
+        parent_agent, toolsets or _get_child_toolsets(delegation_cfg), effective_role)
+    # Operator-set: drop the persona, the skills index and pinned skill blocks from the child prompt. Tool
+    # schemas and the task payload are untouched, so this only trims fixed prompt cost.
+    child_bare = _get_child_bare(delegation_cfg) if override_child_bare is None else override_child_bare
     child_prompt = _build_child_system_prompt(
         workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -319,9 +327,10 @@ def _build_child_agent(
                 child = AIAgent(
                     **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
-                    ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
-                    side_agent=True,
+                    ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]",
+                    platform="subagent", side_agent=True,
                     skip_context_files=True, skip_memory=not child_checkpoint_required,
+                    skip_skills_index=child_bare,
                     memory_agent_context="subagent", clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
@@ -332,8 +341,9 @@ def _build_child_agent(
                     session_id=session_id or getattr(child_session_db, "reserved_session_id", None),
                     tool_progress_callback=child_progress_cb,
                     iteration_budget=None,  # fresh budget per subagent
-                    # A profile route carries that profile's identity (its SOUL.md under the bound home).
-                    **({"load_soul_identity": True} if profile_home is not None else {}),
+                    # A profile route carries that profile's identity (its SOUL.md under the bound home), unless
+                    # the operator asked for bare children.
+                    **({"load_soul_identity": True} if profile_home is not None and not child_bare else {}),
                 )
             except BaseException:
                 # No child close() will ever run: release the dedicated handle here.
@@ -383,7 +393,7 @@ def _build_child_agent(
         child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
     child._delegate_resume = {  # for action='continue'
-        "goal": goal, "context": context, "toolsets": list(child_toolsets),
+        "goal": goal, "context": context, "toolsets": list(child_toolsets), "child_bare": child_bare,
         "endpoint": endpoint_identity(rt["provider"], rt["base_url"]),  # a digest: the URL may carry a key
     }
     if child_pool is not None:

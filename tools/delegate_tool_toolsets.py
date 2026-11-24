@@ -108,6 +108,10 @@ def _resolve_child_toolsets(
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
     child_toolsets = _strip_blocked_tools(child_toolsets)
+    if not child_toolsets:
+        # ``enabled_toolsets=[]`` means "no tools", not "all", so a narrowing whose every name is blocked
+        # or absent (``child_toolsets: [memory]``) must not hand the child nothing: inherit instead.
+        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets) or DEFAULT_TOOLSETS)
 
     raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
     inherited_disabled = (

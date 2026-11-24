@@ -159,7 +159,7 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, gateway_mode, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
+subagent_auto_approve, inherit_mcp_toolsets, child_toolsets, child_bare, max_iterations, backend, backends`. **Child prompt levers:** `child_toolsets` narrows every child (intersected with the parent's set — it can never widen) and `child_bare` drops the skills index and (for a profile route) SOUL.md from the child prompt (tools and the task payload unchanged); both unset = today's child. **Routes:** `delegation.backend` picks a
 delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
 `delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields
 resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →

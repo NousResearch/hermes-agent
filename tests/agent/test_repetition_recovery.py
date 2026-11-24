@@ -228,6 +228,19 @@ def test_the_recovery_call_keeps_the_output_cap_of_the_cut_call(endpoint):
     assert retry == cut  # no cap on the cut call, none on the recovery
 
 
+def test_the_cut_and_recovery_warnings_carry_counts_but_no_reasoning(endpoint, caplog):
+    server = endpoint(Reply(reasoning=_restated_plan(80)), Reply(content=_ANSWER))
+
+    with caplog.at_level("WARNING"):
+        _assert_recovered(server, _run(_agent(server)))
+
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelname == "WARNING" and r.getMessage().startswith(("Stream cut", "Repetition cut"))]
+    assert len(warnings) == 2  # the stream cut and the recovery; WARNING reaches errors.log and debug bundles
+    assert not any(statement.lower()[:40] in line.lower() for line in warnings for statement in _PLAN)
+    assert all("repeated_counts=[" in line for line in warnings)
+
+
 def test_a_model_that_circles_again_ends_the_turn_after_one_recovery(endpoint, guard_decisions):
     server = endpoint(Reply(reasoning=_restated_plan(80)))
 

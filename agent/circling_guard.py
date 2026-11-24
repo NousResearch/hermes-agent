@@ -215,9 +215,6 @@ def apply_repetition_guard_config(agent: Any, section: Any) -> None:
 
 # ---- one streamed reply ---------------------------------------------------------------------------
 
-_LOG_UNIT_CHARS = 80
-
-
 @dataclass(frozen=True)
 class RepetitionCut:
     """What the stream watch saw when it cut a reply: the channel, which detector fired
@@ -230,8 +227,8 @@ class RepetitionCut:
     repeated: tuple[tuple[int, str], ...] = ()
 
     def describe(self) -> str:
-        units = [(count, unit[:_LOG_UNIT_CHARS]) for count, unit in self.repeated[:2]]
-        return f"detector={self.detector}, chars={self.chars}, repeated={units!r}"
+        counts = [count for count, _ in self.repeated[:2]]  # counts only: reasoning stays out of WARNING logs
+        return f"detector={self.detector}, chars={self.chars}, repeated_counts={counts}"
 
 
 class ReasoningStreamWatch:

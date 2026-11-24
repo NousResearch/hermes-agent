@@ -23,6 +23,7 @@ if _early_recovery.restore_interrupted_pull():
     _early_recovery.relaunch_after_restore()
 
 import argparse
+import sys
 from typing import Callable, List, Optional
 
 
@@ -33,7 +34,8 @@ def _build_parser() -> argparse.ArgumentParser:
         def __call__(self, parser, namespace, values, option_string=None):
             from hermes_cli.version_info import get_version_info, release_date_text
 
-            parser.exit(message=f"Hermes Agent v{get_version_info().base_version} ({release_date_text()})\n")
+            parser._print_message(f"Hermes Agent v{get_version_info().base_version} ({release_date_text()})\n", sys.stdout)
+            parser.exit()
 
     parser = argparse.ArgumentParser(
         prog="hermes-agent",

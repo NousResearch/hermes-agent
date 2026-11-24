@@ -75,10 +75,6 @@ class CanonicalBotDeliverParams(Params):
     notification_category: str | None = None
 
 
-class CanonicalBotDeliverResult(BotRelayDeliverResult):
-    """The authority and its legacy relay bridge return the same receipt."""
-
-
 class CanonicalBotCancelParams(Params):
     profile: str | None = None
     id: str
@@ -103,10 +99,10 @@ for _name, _params, _result in (
     ('groups.retry', CanonicalRoomAttemptParams, GroupsRetryResult),
     ('groups.create', CanonicalRoomCreateParams, GroupsCreateResult),
     ('groups.approve', CanonicalRoomApproveParams, GroupsApproveResult),
-    ('bot_relay.deliver', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
+    ('bot_relay.deliver', CanonicalBotDeliverParams, BotRelayDeliverResult),
     # The sender's finalize of a refusal marked ``admitted: false``: the same identity, answered
     # with the id's terminal not-sent receipt or its existing admission (``gateway/session_bot.py``).
-    ('bot_relay.settle', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
+    ('bot_relay.settle', CanonicalBotDeliverParams, BotRelayDeliverResult),
     # The sender's own cancel by delivery id, decided on the owner beside its one retry.
     ('bot_relay.cancel', CanonicalBotCancelParams, CanonicalBotCancelResult),
 ):

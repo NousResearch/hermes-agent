@@ -1974,7 +1974,7 @@ export interface BotRelayDeliverParams {
   from_handle?: string | null
   from_connection?: string | null
 }
-/** The target authority's receipt, unchanged across the relay bridge. */
+/** A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same on the canonical door and across this relay bridge. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed, a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
 export interface BotRelayDeliverResult {
   status: string
   delivery_id: string
@@ -5630,21 +5630,6 @@ export interface CanonicalBotDeliverParams {
   author?: Record<string, unknown> | null
   notification_category?: string | null
 }
-/** The authority and its legacy relay bridge return the same receipt. */
-export interface CanonicalBotDeliverResult {
-  status: string
-  delivery_id: string
-  profile_home: string
-  session_id: string
-  admission_id?: string | null
-  refused?: true | null
-  message: string
-  reply?: string | null
-  retry_admission_id?: string | null
-  error?: string | null
-  reason?: string | null
-  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
-}
 export interface CanonicalBotCancelParams {
   profile?: string | null
   id: string
@@ -7229,8 +7214,8 @@ export interface CanonicalRpcMethods {
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
   'bot_relay.cancel': { params: CanonicalBotCancelParams; result: CanonicalBotCancelResult }
-  'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
-  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
+  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
   /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */

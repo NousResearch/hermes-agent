@@ -165,12 +165,22 @@ def test_webhook_routes_keep_a_qqbot_target_before_the_plugin_registers():
     assert is_dispatchable_target("qqbot") is True
 
 
-def test_a_mixed_list_naming_hermes_qqbot_keeps_its_tools_once_the_plugin_registers(monkeypatch):
-    """``telegram: [hermes-qqbot, file]`` resolved hermes-qqbot's core tools on main; it does again once the plugin
-    registers the platform (the implicit bundle), not just ``file``."""
+def test_a_mixed_list_naming_hermes_qqbot_keeps_its_core_tools_and_an_unchecked_one_stays_off():
+    """``telegram: [hermes-qqbot, file]`` resolved hermes-qqbot's core tools on main, plugin or not (the bundle was
+    core tools only). The picker treats it as the preset it was: unchecking ``terminal`` sticks on the next read."""
     from hermes_cli import tools_config
-    import toolsets
-    core = toolsets.resolve_toolset("hermes-cli")
-    monkeypatch.setattr(toolsets, "_plugin_platform_bundle", lambda name: core if name == "hermes-qqbot" else [])
     config = {"platform_toolsets": {"telegram": ["hermes-qqbot", "file"]}}
-    assert tools_config._get_platform_tools(config, "telegram") >= {"file", "terminal", "web"}
+    enabled = tools_config._get_platform_tools(config, "telegram")
+    assert enabled >= {"file", "terminal", "web"}
+    tools_config._save_platform_tools(config, "telegram", enabled - {"terminal"})
+    assert "hermes-qqbot" not in config["platform_toolsets"]["telegram"]
+    assert "terminal" not in tools_config._get_platform_tools(config, "telegram")
+
+
+def test_a_newer_yaml_disable_under_the_old_key_beats_a_gateway_json_enable(tmp_path):
+    """Layer order decides between the two spellings: config.yaml's ``qqbot-platform: {enabled: false}`` is
+    newer than gateway.json's ``qqbot`` enable, as startup reads them."""
+    import json
+    home = _home(tmp_path, env=_CREDS, config="platforms:\n  qqbot-platform:\n    enabled: false\n")
+    (home / "gateway.json").write_text(json.dumps({"platforms": {"qqbot": {"enabled": True}}}), encoding="utf-8")
+    assert _qqbot_in_use(home) is False

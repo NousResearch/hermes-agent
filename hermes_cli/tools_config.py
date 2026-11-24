@@ -482,8 +482,15 @@ def _configurable_keys() -> set[str]:
     return {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
 
+def _left_core_core_bundles() -> set[str]:
+    """``hermes-<platform>`` of platforms that left core and whose plugin registers no toolset (QQ Bot): core's
+    bundle carried only core tools, so it still reads as them and the picker still treats it as a preset."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return {f"hermes-{f.platform}" for f in LEFT_CORE if f.platform and not f.toolsets}
+
+
 def _platform_default_keys() -> set[str]:
-    return {p["default_toolset"] for p in PLATFORMS.values()}
+    return {p["default_toolset"] for p in PLATFORMS.values()} | _left_core_core_bundles()
 
 
 def _explicit_toolsets(
@@ -495,11 +502,12 @@ def _explicit_toolsets(
     from toolsets import resolve_toolset, TOOLSETS
 
     enabled = {ts for ts in toolset_names if ts in explicit_known_keys and _toolset_allowed_for_platform(ts, platform)}
-    from toolsets import _plugin_platform_bundle
-    # A plugin platform's implicit ``hermes-<platform>`` bundle expands like a static composite.
+    from toolsets import _HERMES_CORE_TOOLS
+    core_bundles = _left_core_core_bundles()
     composite_tools = {
         t for ts_name in toolset_names if ts_name not in explicit_known_keys
-        for t in (resolve_toolset(ts_name) if ts_name in TOOLSETS else _plugin_platform_bundle(ts_name))}
+        and (ts_name in TOOLSETS or ts_name in core_bundles)
+        for t in (resolve_toolset(ts_name) if ts_name in TOOLSETS else _HERMES_CORE_TOOLS)}
     if composite_tools:
         enabled |= _configurable_subset_of(composite_tools, platform) - _default_off_toolsets(platform, explicitly_configured)
     _enable_recently_shipped_toolsets(enabled, config, platform)

@@ -40,7 +40,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.memory_provider_migration import (
     _failed_recently, _home_consent, _home_label, _install_command, _interactive,

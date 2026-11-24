@@ -35,12 +35,13 @@ import { isTodoToolName } from '@/lib/todos'
 import { type CardToolName, isCardTool, isCardToolName } from '@/lib/tool-render-class'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { sessionClarifyRequest } from '@/store/clarify'
 import { onboardingChatStore } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $showToolActivity } from '@/store/tool-activity'
 
-type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
+type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number; clarifyRequestId?: string }
 
 // A call sealed without a result (turn stopped, completion event lost) is
 // neither pending nor successful; only the generic row can say so.
@@ -88,10 +89,17 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 }
 
 const ClarifyToolPart: FC<TimelineToolCallProps> = props => {
-  // Stopped on this question, never answered: history. ClarifyTool reads
-  // the session's live clarify request, so a later turn's question would
-  // otherwise paint onto this row as a second live card.
-  if (settledWithoutResult(props)) {
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const $parked = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
+  const parked = useStore($parked)
+
+  // A row sealed without a result is history — unless the request it names is
+  // STILL parked server-side. A turn settle stamps `completedAt` across open
+  // parts, and a stale `running:false` can arrive while the backend is still
+  // waiting on the answer; falling back there leaves the turn unanswerable with
+  // no card to click (#139189). The match is on the row's own request id, so a
+  // later turn's question never paints onto an older row.
+  if (settledWithoutResult(props) && props.clarifyRequestId !== parked?.requestId) {
     return <ToolFallback {...props} />
   }
 

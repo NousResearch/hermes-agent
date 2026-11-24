@@ -62,3 +62,28 @@ it('rewrites a stylesheet size query to the scale and restores it as written at 
   expect(media()).toBe('(min-width: 1280px)')
   style.remove()
 })
+
+it('rescales for a stylesheet that finishes loading, not for an image that does', async () => {
+  $shellChoice.set(true)
+  setScale(2)
+  const style = window.document.createElement('style')
+  style.textContent = '@media (min-width: 640px) { body { color: red } }'
+  // Outside <head>, so only a load can bring the rescale.
+  window.document.body.append(style)
+  const media = () => (style.sheet!.cssRules[0] as CSSMediaRule).media.mediaText
+  const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve))
+
+  const image = window.document.body.appendChild(window.document.createElement('img'))
+  image.dispatchEvent(new Event('load'))
+  await nextFrame()
+  expect(media()).toBe('(min-width: 640px)')
+
+  const link = window.document.body.appendChild(window.document.createElement('link'))
+  link.dispatchEvent(new Event('load'))
+  await nextFrame()
+  expect(media()).toBe('(min-width: 1280px)')
+
+  style.remove()
+  image.remove()
+  link.remove()
+})

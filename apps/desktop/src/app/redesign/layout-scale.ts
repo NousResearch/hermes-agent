@@ -87,6 +87,13 @@ export function installLayoutScale(): void {
   // New stylesheets: a <style> or <link> joining <head>, and a <link>'s rules arriving on load.
   const arrivals = new MutationObserver(schedule)
 
+  // `load` does not bubble, so it is caught in capture, where every image and frame passes too.
+  const onLoad = (event: Event) => {
+    if (event.target instanceof HTMLLinkElement) {
+      schedule()
+    }
+  }
+
   $layoutScale.subscribe(scale => {
     if (scale === 1 && !scaled) {
       return
@@ -100,10 +107,10 @@ export function installLayoutScale(): void {
 
     if (scaled) {
       arrivals.observe(document.head, { characterData: true, childList: true, subtree: true })
-      document.addEventListener('load', schedule, true)
+      document.addEventListener('load', onLoad, true)
     } else {
       arrivals.disconnect()
-      document.removeEventListener('load', schedule, true)
+      document.removeEventListener('load', onLoad, true)
     }
   })
 }

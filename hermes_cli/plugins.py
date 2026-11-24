@@ -26,7 +26,9 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
-from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
+from hermes_constants import (
+    PROFILE_ID_RE, get_hermes_home, get_process_hermes_home, hermes_home_key, named_profile_is_deleted,
+)
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
@@ -374,13 +376,16 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
 
     @staticmethod
     def _profile_names_beside(named: Path) -> list[Path]:
-        """The other named profiles of the root *named* is a profile of (none for a home outside ``profiles/``)."""
+        """The other live named profiles of the root *named* is a profile of (none for a home outside
+        ``profiles/``): a profile id the marker lookup reads as a named profile, not ``default``, not deleted."""
         if named.parent.name != "profiles":
             return []
         try:
-            return sorted(p for p in named.parent.iterdir() if p.name != named.name and not p.name.startswith("."))
+            entries = sorted(named.parent.iterdir())
         except OSError:
             return []
+        return [p for p in entries if p.name not in (named.name, "default") and PROFILE_ID_RE.match(p.name)
+                and not named_profile_is_deleted(p)]
 
     @property
     def has_gateway_message_injector(self) -> bool:

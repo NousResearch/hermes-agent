@@ -93,6 +93,9 @@ export function installLayoutScale(): void {
     }
 
     scaled = scale !== 1
+    // The mark the CSS that takes a viewport length back to the window is keyed on, so none of it is
+    // in the cascade at 100% (portal-floating.css).
+    document.documentElement.toggleAttribute('data-layout-scaled', scaled)
     scaleDocument(scale)
 
     if (scaled) {

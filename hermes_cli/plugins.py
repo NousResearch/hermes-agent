@@ -379,15 +379,16 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     @staticmethod
     def _profile_names_beside(named: Path) -> list[Path]:
         """The other live named profiles of the root *named* is a profile of (none for a home outside
-        ``profiles/``): a profile id the marker lookup reads as a named profile, not ``default``, not deleted."""
+        ``profiles/``): a name the marker lookup reads as a named profile (lowercased, as a case-insensitive
+        volume opens any case), not ``default``, not deleted."""
         if named.parent.name != "profiles":
             return []
         try:
             entries = sorted(named.parent.iterdir())
         except OSError:
             return []
-        return [p for p in entries if p.name not in (named.name, "default") and PROFILE_ID_RE.match(p.name)
-                and not named_profile_is_deleted(p)]
+        return [p for p in entries if p.name != named.name and p.name.lower() != "default"
+                and PROFILE_ID_RE.match(p.name.lower()) and not named_profile_is_deleted(p)]
 
     @property
     def has_gateway_message_injector(self) -> bool:

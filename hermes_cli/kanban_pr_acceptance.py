@@ -193,6 +193,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
     if check.get("head_sha", check.get("sha")) != sha:
         return "stale"
-    if is_run and check.get("status") != "completed":
+    # GitHub can leave `status` at in_progress on a run that already has its conclusion and completed_at.
+    if is_run and check.get("status") != "completed" and not (outcome and check.get("completed_at")):
         return "pending"
     return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")

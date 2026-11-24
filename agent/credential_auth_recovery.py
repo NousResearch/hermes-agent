@@ -135,21 +135,25 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
             return _retry_after_backoff(
                 agent, pool, episode, failed_key=api_key_hint, entry_id=entry_id,
                 credential_id=credential_id, has_retried_429=has_retried_429)
-    elif entry_id and _episode(agent, provider, entry_id)["refreshes"] >= _MAX_AUTH_REFRESH_ATTEMPTS:
-        log.warning(
-            "Credential auth failure persists after %s refreshes for pool entry %s — "
-            "rotating to another entry, or allowing fallback to activate.",
-            _MAX_AUTH_REFRESH_ATTEMPTS, entry_id)
-        return (True, False) if rotate_and_swap(401, "auth persists after refresh") else (False, has_retried_429)
+    # At the cap the pool may still adopt a bearer a peer rotated, but it never POSTs again.
+    target = entry_id or credential_id
+    capped = not nous and bool(target) and _episode(agent, provider, target)["refreshes"] >= _MAX_AUTH_REFRESH_ATTEMPTS
     # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
     # burns its single-use refresh token for a failure it never had.
     refresh_kwargs = {"api_key_hint": api_key_hint}
     if entry_id or credential_id:
         refresh_kwargs["credential_id"] = entry_id or credential_id
+    if capped:
+        refresh_kwargs["allow_post"] = False
     refreshed = pool.try_refresh_matching(**refresh_kwargs)
     if refreshed is None:
-        # Refresh failed; rotate (the failed entry is already marked exhausted).
-        return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
+        if capped:
+            log.warning(
+                "Credential auth failure persists after %s refreshes for pool entry %s — "
+                "rotating to another entry, or allowing fallback to activate.",
+                _MAX_AUTH_REFRESH_ATTEMPTS, entry_id or credential_id)
+        label = "auth persists after refresh" if capped else "auth refresh failed"
+        return (True, False) if rotate_and_swap(401, label) else (False, has_retried_429)
     refreshed_id = getattr(refreshed, "id", None)
     if nous:
         episode = _episode(agent, provider, refreshed_id or entry_id)
@@ -163,7 +167,7 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
     elif refreshed_id is not None:
         state = _episode(agent, provider, refreshed_id)
         state["refreshes"] += 1
-        if state["refreshes"] > _MAX_AUTH_REFRESH_ATTEMPTS:
+        if not target and state["refreshes"] > _MAX_AUTH_REFRESH_ATTEMPTS:
             return False, has_retried_429
     log.info("Credential auth failure — refreshed pool entry %s", refreshed_id or "?")
     if agent._swap_credential(refreshed) is False:

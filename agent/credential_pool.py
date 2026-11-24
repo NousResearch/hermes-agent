@@ -1463,7 +1463,8 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
 
     # ---- refresh -----------------------------------------------------------
 
-    def _refresh_entry(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None):
+    def _refresh_entry(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None,
+                       allow_post: bool = True):
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
@@ -1472,7 +1473,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
         # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
         if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
-            return self._refresh_entry_impl(entry, force=force, failed_key=failed_key)
+            return self._refresh_entry_impl(entry, force=force, failed_key=failed_key) if allow_post else None
 
         # Single-use refresh tokens: sync -> POST -> write-back must be atomic across Hermes processes, or two
         # processes adopt the same on-disk token, both POST it, and the loser gets ``refresh_token_reused`` /
@@ -1484,7 +1485,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 synced = self._sync_entry_from_auth_store(entry)
                 if synced is not entry and not force and not self._entry_needs_refresh(synced):
                     return synced
-                return self._refresh_entry_impl(synced, force=force)
+                return self._refresh_entry_impl(synced, force=force) if allow_post else None
             synced = self._sync_entry_from_pool_store(entry)
             if self.provider == "anthropic" and synced.source == "claude_code":
                 # claude_code entries are NOT profile-owned: the refresh token lives in one shared
@@ -1497,13 +1498,13 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                     synced = self._sync_anthropic_entry_from_credentials_file(synced)
                     if synced.refresh_token != entry.refresh_token:
                         return synced
-                    return self._refresh_entry_impl(synced, force=force)
+                    return self._refresh_entry_impl(synced, force=force) if allow_post else None
             # Judge the bearer the 401'd request sent, not this row's copy: re-POSTing revokes a sibling (#138337).
             rotated = (synced.runtime_api_key not in ("", failed_key) and not self._entry_needs_refresh(synced)
                        if failed_key else synced.access_token != entry.access_token)
             if rotated or synced.refresh_token != entry.refresh_token:
                 return synced
-            return self._refresh_entry_impl(synced, force=force)
+            return self._refresh_entry_impl(synced, force=force) if allow_post else None
 
     def _claude_code_credentials_lock(self):
         """Cross-process lock keyed to the shared claude_code credentials file.
@@ -2302,7 +2303,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     def try_refresh_matching(
         self,
         api_key_hint: Optional[str] = None,
-        credential_id: Optional[str] = None,
+        credential_id: Optional[str] = None, allow_post: bool = True,
     ) -> Optional[PooledCredential]:
         """Force-refresh the entry that supplied the failed request.
 
@@ -2321,17 +2322,16 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             if entry is None:
                 return None
             self._current_id = entry.id
-            return self._try_refresh_current_unlocked(failed_key=api_key_hint)
+            return self._try_refresh_current_unlocked(failed_key=api_key_hint, allow_post=allow_post)
 
-    def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None) -> Optional[PooledCredential]:
+    def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None, allow_post: bool = True):
         entry = self._current_unlocked()
         if entry is None:
             return None
-        refreshed = self._refresh_entry(entry, force=True, failed_key=failed_key)
+        refreshed = self._refresh_entry(entry, force=True, failed_key=failed_key, allow_post=allow_post)
         if refreshed is not None:
             self._current_id = refreshed.id
         return refreshed
-
 
 
 # --- Seeding --------------------------------------------------------------

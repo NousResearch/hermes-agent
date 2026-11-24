@@ -240,3 +240,57 @@ class TestRefreshCap:
 
         assert child._credential_pool_entry_id == "claude-3"
         assert len(endpoint.posts) == 4
+
+
+class TestCapAdoptsAPeerRotation:
+    def _at_the_cap(self, pool):
+        child = _DelegatedChild(pool, "claude-3")
+        assert _on_401(child) == (True, False)
+        assert _on_401(child) == (True, False)
+        return child
+
+    def test_a_token_a_peer_process_rotated_is_adopted_at_the_cap(self, endpoint, fake_pool_store):
+        child = self._at_the_cap(CredentialPool("anthropic", [_row("claude-3")]))
+        assert _reload(fake_pool_store).try_refresh_matching(credential_id="claude-3").access_token == "claude-3-at-3"
+
+        assert _on_401(child) == (True, False)
+        assert child.api_key == "claude-3-at-3"
+        assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]
+
+    def test_a_token_the_shared_pool_already_holds_is_adopted_at_the_cap(self, endpoint, fake_pool_store):
+        pool = CredentialPool("anthropic", [_row("claude-3")])
+        child = self._at_the_cap(pool)
+        assert pool.try_refresh_matching(credential_id="claude-3").access_token == "claude-3-at-3"
+
+        assert _on_401(child) == (True, False)
+        assert child.api_key == "claude-3-at-3"
+        assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]
+
+
+def test_a_truncated_reply_ends_the_episode_before_its_continuation(endpoint, fake_pool_store, monkeypatch):
+    import types
+    import agent.turn_response_check as trc
+    monkeypatch.setattr(trc, "stop_thinking_spinner", lambda agent, spinner: None)
+    monkeypatch.setattr("agent.turn_recovery.validate_response_shape", lambda agent, response: (False, None))
+    monkeypatch.setattr("agent.turn_usage.note_response_reasoning_tokens", lambda agent, response: None)
+    monkeypatch.setattr("hermes_cli.observability.shared_metrics_harness.record_reply_finish", lambda *a: None)
+    monkeypatch.setattr(trc, "_derive_finish_reason", lambda agent, response, messages: "length")
+    monkeypatch.setattr(trc, "recover_from_truncation", lambda *a, **k: types.SimpleNamespace(
+        action="continue", result=None, messages=[], length_continue_retries=1, truncated_response_parts=[],
+        truncated_tool_call_retries=0, retry_count=0, compression_attempts=0))
+    child = _DelegatedChild(CredentialPool("anthropic", [_row("claude-3")]), "claude-3")
+    child.quiet_mode, child.verbose_logging = True, False
+    assert _on_401(child) == (True, False)
+    assert _on_401(child) == (True, False)
+    unused = dict.fromkeys((
+        "_retry", "thinking_spinner", "messages", "api_messages", "api_kwargs", "active_system_prompt",
+        "conversation_history", "finish_reason", "retry_count", "max_retries", "compression_attempts",
+        "max_compression_attempts", "length_continue_retries", "truncated_response_parts",
+        "truncated_tool_call_retries", "current_turn_user_idx", "api_call_count", "api_request_id",
+        "effective_task_id", "turn_id", "_preflight_compression_blocked", "_last_preflight_pressure"))
+
+    verdict = trc.check_api_response(child, response=object(), api_start_time=time.time(), **unused)
+
+    assert verdict.action == "continue"
+    assert _on_401(child) == (True, False)
+    assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]

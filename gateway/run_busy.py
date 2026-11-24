@@ -979,10 +979,9 @@ class GatewayBusySessionMixin:
             if _skill_reply:
                 await self._send_busy_reply(event, adapter, _skill_reply)
             return True
-        # Internal synthetic events (delegation / background completions) must never interrupt or
-        # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
-        # queue them through the FIFO (security metadata kept apart).
-        if getattr(event, "internal", False):
+        # Old arrivals and internal wakes both get their own turn when idle. The FIFO keeps
+        # plugin security metadata apart.
+        if event.recovered or getattr(event, "internal", False):
             self._queue_or_replace_pending_event(session_key, event)
             return True
         if (

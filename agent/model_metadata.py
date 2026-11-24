@@ -285,8 +285,8 @@ _LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
 _LOCAL_CTX_PROBE_CACHE: dict[tuple, tuple] = {}
 # In-process (model, region) -> monotonic_ts memo of a FAILED Bedrock context probe. That probe pads
 # prompts of 1.3M/2.2M tokens and attempts up to two converse calls (agent/bedrock_adapter.py
-# _BEDROCK_PROBE_TIERS; the second tier is sent only when the first yields no parseable limit, i.e. on
-# the failure path), and its failures are deliberately never persisted, so without a negative memo a
+# _BEDROCK_PROBE_TIERS; the second tier is sent when the first is accepted or yields no parseable
+# limit), and its failures are deliberately never persisted, so without a negative memo a
 # model whose probe keeps failing (un-enabled model, opaque InternalServerException, unparseable length
 # error) would re-send them on every resolution. Negative only, in memory only, and bounded — same
 # reasoning as _ENDPOINT_PROBE_FAILURE_TTL_SECONDS: a failure is usually transient (expired SSO

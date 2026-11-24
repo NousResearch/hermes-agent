@@ -64,10 +64,13 @@ def capture_launch_env() -> dict[str, str]:
 
 def launch_template_env() -> dict[str, str]:
     """What the launch ``.env``'s ``${VAR}``s resolve against in the frozen launch env (see
-    ``_snapshot_dotenv_record``)."""
+    ``_snapshot_dotenv_record``). A name a secret source holds there (``_source_writes``, read with the
+    snapshot) is the source's value and is never peeled, even one equal to what the ``.env`` published."""
     capture_launch_env()
     with _lock:
-        snapshot, record = dict(_snapshot), _snapshot_dotenv_record
+        snapshot = dict(_snapshot)
+        held = {name for (_home, name), rec in _source_writes.items() if snapshot.get(name) == rec[1]}
+        record = {name: rec for name, rec in _snapshot_dotenv_record.items() if name not in held}
     loader = sys.modules.get("hermes_cli.env_loader")
     return loader.dotenv_lookup_from(snapshot, record) if loader is not None else snapshot
 

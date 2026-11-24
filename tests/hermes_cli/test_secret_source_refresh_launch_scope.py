@@ -203,6 +203,36 @@ def test_the_launch_launchers_env_file_template_follows_the_frozen_env_through_a
         set_multiplex_active(False)
 
 
+def test_the_launch_launchers_env_file_template_keeps_a_sources_value_equal_to_what_the_env_file_published(
+        launch_home, monkeypatch):
+    """A name a secret source holds in the frozen launch env is the source's value, even after it rotates to the
+    value the launch ``.env`` once published for that name: the launcher's ``.env`` templates see it, rather than
+    taking it for dotenv output and peeling it back to what the env held before the ``.env`` loaded."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli import env_loader
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    monkeypatch.setenv("RUNNER_TAG", "registered-for-restore")
+    monkeypatch.delenv("RUNNER_TAG")
+    _rotating_override_source(launch_home)
+    # The template first, so the file's own later line cannot stand in for the env's value.
+    (launch_home / ".env").write_text("RUNNER_TAG=${VAULT_ONLY_KEY:-none}/tag\nVAULT_ONLY_KEY=same\n", encoding="utf-8")
+    env_loader.load_hermes_dotenv(hermes_home=launch_home, load_external_secrets=False)  # publishes "same"
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the override source writes v1 over it
+    activate_multi_profile_hosting()
+    try:
+        (launch_home / "vault.txt").write_text("same", encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)  # the source rotates to the value the .env published
+        assert launch_secret_scope(launch_home, frozen_templates=True)["RUNNER_TAG"] == "same/tag"
+    finally:
+        set_multiplex_active(False)
+
+
 def test_a_concurrent_write_during_the_fetch_never_enters_the_frozen_launch_env(launch_home):
     """Another thread writes the source's name into os.environ while the vault fetch runs (stood in
     for by the fetch itself, once foreign.txt exists); the source re-applies its unchanged value.

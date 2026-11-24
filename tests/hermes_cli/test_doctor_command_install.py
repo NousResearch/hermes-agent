@@ -514,6 +514,22 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
 
 
 @pytest.mark.platforms("posix")
+def test_bash_path_check_passes_over_a_login_file_bash_cannot_read(tmp_path, monkeypatch, capsys):
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file without read permission")
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    (Path.home() / ".profile").write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding="utf-8")
+    (Path.home() / ".bash_profile").write_text("alias ll='ls -l'\n", encoding="utf-8")
+    (Path.home() / ".bash_profile").chmod(0)
+
+    assert doctor.run_doctor(Namespace(fix=False)) == 0
+
+    assert "configured in ~/.profile" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
 def test_command_installation_path_check_accepts_trailing_slash_or_other_path_symlink(tmp_path, monkeypatch, capsys):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
     (link_dir / "hermes").symlink_to(launcher)

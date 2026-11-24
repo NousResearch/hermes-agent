@@ -647,9 +647,10 @@ def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
     if shell != "bash":
         preferred = "~/.bash_profile" if logins[0].is_file() and not bashrc.is_file() else "~/.bashrc"
         return shell, candidates, preferred, []
-    # A login bash reads only the first of its login files that exists; other interactive bash shells
-    # read ~/.bashrc (bash(1), INVOCATION). The advice names both, as install.sh writes both.
-    login = next((path for path in logins if path.is_file()), None)
+    # A login bash reads only the first of its login files that exists and is readable; other
+    # interactive bash shells read ~/.bashrc (bash(1), INVOCATION). The advice names both, as
+    # install.sh writes both.
+    login = next((path for path in logins if path.is_file() and os.access(path, os.R_OK)), None)
     advice = f"~/.bashrc and ~/{login.name if login else '.profile'}"
     return shell, [*([login] if login else []), bashrc], advice, [path for path in logins if path != login]
 

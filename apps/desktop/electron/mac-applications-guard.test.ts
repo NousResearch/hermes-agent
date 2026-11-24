@@ -501,6 +501,21 @@ describe('guardMacApplicationsLaunch', () => {
     expect(downgrade.logs.some(line => line.includes('0.22.0') && line.includes('0.24.0'))).toBe(true)
     expect(readMacApplicationsGuardPreference(downgrade.userDataDir)).toBeNull()
 
+    const canary = makeDeps(
+      installedCopies({
+        '/Volumes/Hermes Agent/Hermes Agent.app': '0.24.0+canary.20261120T090000Z',
+        '/Applications/Hermes Agent.app': '0.24.0+canary.20261124T090000Z'
+      })
+    )
+
+    const canaryDecision = captureExistsDecision(canary.app)
+
+    await expect(guardMacApplicationsLaunch(canary.deps)).resolves.toMatchObject({
+      action: 'continue',
+      reason: 'conflict-newer-installed'
+    })
+    expect(canaryDecision.value).toBe(false)
+
     for (const installed of [
       { '/Users/alice/Applications/Hermes Agent.app': '0.24.0' },
       // Electron may replace the ~/Applications copy even when /Applications holds an older one.
@@ -751,9 +766,21 @@ describe('bundle version parsing and comparison', () => {
     expect(compareBundleVersions('0.24.0', '0.24.0-rc.1')).toBe(1)
     expect(compareBundleVersions('0.24.0-rc.2', '0.24.0-rc.10')).toBe(-1)
     expect(compareBundleVersions('0.24.0-rc.10', '0.24.0-rc.2')).toBe(1)
-    expect(compareBundleVersions('0.24.0+build.1', '0.24.0+build.2')).toBe(0)
+    expect(compareBundleVersions('0.24.0+build.1', '0.24.0+build.1')).toBe(0)
+    // Build metadata SemVer ignores still tells two builds of one core apart, so an unknown difference can't be ordered.
+    expect(compareBundleVersions('0.24.0+build.1', '0.24.0+build.2')).toBeNull()
+    expect(compareBundleVersions('0.24.0', '0.24.0+canary.20261124T001400Z')).toBeNull()
     expect(compareBundleVersions('0.24.0-canary.20261124T001400Z', '0.24.0-canary.20261124T001500Z')).toBe(-1)
     expect(compareBundleVersions('invalid', '0.24.0')).toBeNull()
+  })
+
+  it('orders canary and commit builds of one core by the UTC stamp in their build metadata', () => {
+    expect(compareBundleVersions('0.24.0+canary.20261124T001400Z', '0.24.0+canary.20261125T001400Z')).toBe(-1)
+    expect(compareBundleVersions('0.24.0+canary.20261125T001400Z', '0.24.0+canary.20261124T001400Z')).toBe(1)
+    expect(compareBundleVersions('0.24.0+canary.20261124T001400Z', '0.24.0+canary.20261124T001400Z')).toBe(0)
+    expect(compareBundleVersions('0.24.0+commit.20261124T001400Z', '0.24.0+commit.20261124T001500Z')).toBe(-1)
+    expect(compareBundleVersions('0.25.0+canary.20261101T000000Z', '0.24.0+canary.20261124T001400Z')).toBe(1)
+    expect(compareBundleVersions('0.24.0+canary.20261124T001400Z', '0.24.0+commit.20261125T001400Z')).toBeNull()
   })
 
   it.each(['0.23', '0.23.0-rc..1', '01.2.3', '0.24.0-', '0.24.0+', '0.24.0+build..1'])(

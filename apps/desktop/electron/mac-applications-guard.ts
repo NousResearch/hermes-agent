@@ -214,6 +214,7 @@ interface ParsedBundleVersion {
   minor: number
   patch: number
   prerelease: string[]
+  build: string
 }
 
 // The SemVer 2.0.0 grammar (semver.org): anything else is a version this guard can't order.
@@ -236,8 +237,29 @@ function parseBundleVersion(raw: string): ParsedBundleVersion | null {
     major: Number(match[1]),
     minor: Number(match[2]),
     patch: Number(match[3]),
-    prerelease: match[4] ? match[4].split('.') : []
+    prerelease: match[4] ? match[4].split('.') : [],
+    build: match[5] ?? ''
   }
+}
+
+// Canary and commit builds keep their stable core and carry the build as X.Y.Z+<kind>.<UTC stamp>, which
+// SemVer precedence ignores; the fixed-width stamps order by time. Any other build-metadata difference on
+// the same core and prerelease can't be ordered.
+const RELEASE_BUILD_RE = /^(canary|commit)\.(20\d{6}T\d{6}Z)$/
+
+function compareBuildMetadata(a: string, b: string): -1 | 0 | 1 | null {
+  if (a === b) {
+    return 0
+  }
+
+  const left = RELEASE_BUILD_RE.exec(a)
+  const right = RELEASE_BUILD_RE.exec(b)
+
+  if (!left || !right || left[1] !== right[1]) {
+    return null
+  }
+
+  return left[2] < right[2] ? -1 : 1
 }
 
 function comparePrerelease(a: readonly string[], b: readonly string[]): -1 | 0 | 1 {
@@ -302,7 +324,7 @@ export function compareBundleVersions(running: string, existing: string): -1 | 0
     }
   }
 
-  return comparePrerelease(a.prerelease, b.prerelease)
+  return comparePrerelease(a.prerelease, b.prerelease) || compareBuildMetadata(a.build, b.build)
 }
 
 export function parseBundleShortVersionFromPlist(plistXml: string): string | null {

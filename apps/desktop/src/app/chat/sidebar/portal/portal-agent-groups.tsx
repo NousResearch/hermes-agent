@@ -213,20 +213,15 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
 
           const gatewayId = JSON.stringify(['gateway', connectionId])
           const open = Boolean(query) || (props.expanded[gatewayId] ?? true)
-          const selected = connectionId === (activeConnection ?? owner)
-          const label = agents.find(agent => agent.connectionId === connectionId)!.gateway
-          const offer = props.newAgent.find(machine => machine.connectionId === connectionId)
+          const machine = props.newAgent.find(machine => machine.connectionId === connectionId)!
 
           return (
             <div data-open={open && group.length > 0} data-slot="gateway-group" key={gatewayId}>
               <SimplifiedGatewayHeader
-                connectionId={connectionId}
-                label={label}
-                newAgentWaiting={offer?.owner ? undefined : offer?.waiting}
-                onNewAgent={() => offer?.owner && props.onNewAgent(offer.owner)}
+                machine={machine}
+                onNewAgent={props.onNewAgent}
                 onToggle={query ? undefined : () => props.onToggle(gatewayId, open)}
                 open={open}
-                selected={selected}
               />
               {open && group.length > 0 && (
                 <div className="portal-machine-agents">

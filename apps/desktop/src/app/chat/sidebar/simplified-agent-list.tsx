@@ -187,10 +187,10 @@ function NewAgentFallback({ offers, onPick }: NewAgentFallbackProps) {
   const { t } = useI18n()
   const [only] = offers
 
-  const button = (onClick?: () => void, waiting?: string) => (
+  const button = (label: string, onClick?: () => void, waiting?: string) => (
     <Button
       aria-disabled={waiting ? true : undefined}
-      aria-label={t.profiles.newProfile}
+      aria-label={label}
       className="portal-section-action"
       onClick={onClick}
       size="icon-xs"
@@ -202,16 +202,14 @@ function NewAgentFallback({ offers, onPick }: NewAgentFallbackProps) {
 
   if (offers.length === 1) {
     return (
-      <Tip label={only.waiting ? `${t.profiles.newProfile} · ${only.waiting}` : t.profiles.newProfile}>
-        {button(only.owner && (() => onPick(only.owner!)), only.waiting)}
-      </Tip>
+      <Tip label={only.tip}>{button(only.tip, only.owner && (() => onPick(only.owner)), only.waiting)}</Tip>
     )
   }
 
   return (
     <DropdownMenu>
       <Tip label={t.profiles.newProfile}>
-        <DropdownMenuTrigger asChild>{button()}</DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild>{button(t.profiles.newProfile)}</DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="end">
         {offers.map(machine => (

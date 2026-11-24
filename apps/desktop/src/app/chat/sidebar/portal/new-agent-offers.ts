@@ -8,16 +8,22 @@ import { $fleetRoster } from '@/store/fleet-roster'
 import { $profiles } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 
-import { machineState, useMachineStatusText } from '../simplified-gateway-header'
+import { type MachineState, machineState, useMachineStatusText } from '../simplified-gateway-header'
 import type { useSimplifiedAgents } from '../use-simplified-agents'
 
-/** Where New agent stands for one machine: the owner to open the dialog for, or what it waits for. */
-export interface NewAgentOffer {
+interface Machine {
   connectionId: null | string
   label: string
-  owner?: AgentSettingsOwner
-  waiting?: string
+  /** The window's own machine. */
+  selected: boolean
+  state: MachineState
+  /** New agent's tip: its name, and what it waits for while this machine cannot take one. */
+  tip: string
 }
+
+/** A listed machine and where New agent stands for it: the owner to open the dialog for, or what
+ *  it waits for. */
+export type NewAgentOffer = Machine & ({ owner: AgentSettingsOwner; waiting?: never } | { owner?: never; waiting: string })
 
 /** New agent for every machine the sidebar lists, in the list's order. A machine's row and the
  *  Agents header both read this, so they cannot say different things about the same machine. */
@@ -31,10 +37,13 @@ export function useNewAgentOffers({ agents, owner }: ReturnType<typeof useSimpli
   const machines = new Map(agents.map(agent => [agent.connectionId, agent.gateway]))
 
   return [...machines].map(([connectionId, label]) => {
-    const state = machineState(connectionId, connectionId === (activeConnection ?? owner), gatewayState, roster)
+    const selected = connectionId === (activeConnection ?? owner)
+    const state = machineState(connectionId, selected, gatewayState, roster)
+    const machine = { connectionId, label, selected, state }
+    const waitingFor = (waiting: string) => ({ ...machine, tip: `${t.profiles.newProfile} · ${waiting}`, waiting })
 
     if (state !== 'open') {
-      return { connectionId, label, waiting: status[state] }
+      return waitingFor(status[state])
     }
 
     // An installed agent the machine serves, from the roster or (this window's machine) its own
@@ -44,7 +53,7 @@ export function useNewAgentOffers({ agents, owner }: ReturnType<typeof useSimpli
     const profile = rostered ? rostered.targetProfile || rostered.profile : connectionId === owner ? profiles[0]?.name : undefined
 
     return profile
-      ? { connectionId, label, owner: { connectionId: agentMachine(connectionId), profile } }
-      : { connectionId, label, waiting: t.common.loading }
+      ? { ...machine, owner: { connectionId: agentMachine(connectionId), profile }, tip: t.profiles.newProfile }
+      : waitingFor(t.common.loading)
   })
 }

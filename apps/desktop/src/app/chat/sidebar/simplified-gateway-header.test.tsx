@@ -9,6 +9,7 @@ import { $confirmRequest } from '@/store/confirm'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { setInterfaceMode } from '@/store/interface-mode'
+import { $profiles } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import { stubMenuDomApis } from '@/test/jsdom'
 
@@ -24,6 +25,7 @@ vi.mock('@/app/shell/hooks/use-status-snapshot', () => ({
   })
 }))
 
+import { useNewAgentOffers } from './portal/new-agent-offers'
 import { SimplifiedGatewayHeader } from './simplified-gateway-header'
 
 const copy = en.shell.gatewayMenu
@@ -31,20 +33,29 @@ const onToggle = vi.fn()
 
 const onNewAgent = vi.fn()
 
-function mount(props: { connectionId?: null | string; label?: string; newAgentWaiting?: string; selected?: boolean } = {}) {
+interface Mounted {
+  connectionId?: null | string
+  label?: string
+  selected?: boolean
+}
+
+/** The header for one listed machine, as the sidebar hands it over. */
+function Header({ connectionId = null, label = 'Hermes host', selected = true }: Mounted) {
+  const [machine] = useNewAgentOffers({
+    agents: [{ connectionId, gateway: label, id: 'a', label: 'default', profile: 'default' }],
+    owner: selected ? connectionId : 'another machine',
+    sessionsByAgent: new Map()
+  })
+
+  return <SimplifiedGatewayHeader machine={machine} onNewAgent={onNewAgent} onToggle={onToggle} open />
+}
+
+function mount(props: Mounted = {}) {
   return render(
     <MemoryRouter>
       <StableNavigateProvider>
         <RootTooltipProvider>
-          <SimplifiedGatewayHeader
-            connectionId={props.connectionId ?? null}
-            label={props.label ?? 'Hermes host'}
-            newAgentWaiting={props.newAgentWaiting}
-            onNewAgent={onNewAgent}
-            onToggle={onToggle}
-            open
-            selected={props.selected ?? true}
-          />
+          <Header {...props} />
         </RootTooltipProvider>
       </StableNavigateProvider>
     </MemoryRouter>
@@ -62,6 +73,7 @@ beforeEach(() => {
   onNewAgent.mockReset()
   mocks.restart.mockReset()
   $gatewayState.set('open')
+  $profiles.set([{ name: 'default' }] as never)
   setInterfaceMode('simple')
 })
 
@@ -72,6 +84,7 @@ afterEach(() => {
   $fleetRoster.set(null)
   $connectionsRegistry.set(null)
   $gatewayState.set('idle')
+  $profiles.set([])
   setInterfaceMode('advanced')
 })
 
@@ -81,12 +94,13 @@ describe('a machine row status', () => {
 
     fireEvent.click(screen.getByRole('button', { name: `${en.profiles.newProfile}: Hermes host` }))
 
-    expect(onNewAgent).toHaveBeenCalledTimes(1)
+    expect(onNewAgent).toHaveBeenCalledWith({ connectionId: 'local', profile: 'default' })
     expect(onToggle).not.toHaveBeenCalled()
   })
 
-  it('keeps New agent in place on a machine that cannot take one, saying what it waits for', () => {
-    mount({ newAgentWaiting: copy.offline })
+  it('keeps New agent in place while this window’s machine is offline, saying what it waits for', () => {
+    $gatewayState.set('closed')
+    mount()
 
     const button = screen.getByRole('button', { name: `${en.profiles.newProfile} · ${copy.offline}: Hermes host` })
     fireEvent.click(button)

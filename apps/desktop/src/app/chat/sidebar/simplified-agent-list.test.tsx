@@ -23,8 +23,6 @@ vi.mock('@/app/agent-settings/new-agent-dialog', () => ({
     return <div role="dialog" />
   }
 }))
-// The roster is the test's; the list's own refresh would replace it.
-vi.mock('@/store/fleet-roster', async original => ({ ...(await original<object>()), useFleetRoster: () => {} }))
 
 const agent = (connectionId: string, profile: string, gateway: string): SimplifiedAgent => ({
   connectionId,
@@ -96,6 +94,22 @@ it('offers New agent in the Agents header only while no machine row is there to 
   $portalAgentsSectionOpen.set(true)
   mount([STUDIO], 'no agent is called this')
   expect(fallback()).not.toBeNull()
+
+  cleanup()
+  mount([STUDIO], 'defa')
+  expect(fallback()).toBeNull()
+})
+
+it('with one machine that cannot take an agent, waits in place and says why', () => {
+  $gatewayState.set('closed')
+  $portalAgentsSectionOpen.set(false)
+  mount([STUDIO])
+
+  const button = screen.getByRole('button', { name: `${en.profiles.newProfile} · ${en.shell.gatewayMenu.offline}` })
+  fireEvent.click(button)
+
+  expect(button.getAttribute('aria-disabled')).toBe('true')
+  expect(screen.queryByRole('dialog')).toBeNull()
 })
 
 it('with one machine, starts the agent on it directly', async () => {
@@ -130,14 +144,12 @@ it('lists a machine that cannot take an agent, disabled, with the reason its row
       { connectionId: 'lab', reachable: false }
     ]
   } as never)
+  $portalAgentsSectionOpen.set(false)
   mount([STUDIO, LAB])
-  const row = new RegExp(`^${en.profiles.newProfile} · (.*): Lab box$`)
-  const reason = screen.getByRole('button', { name: row }).getAttribute('aria-label')!.replace(row, '$1')
 
-  act(() => $portalAgentsSectionOpen.set(false))
   fireEvent.pointerDown(fallback()!, { button: 0, ctrlKey: false })
   const item = await screen.findByRole('menuitem', { name: /Lab box/ })
 
   expect(item.getAttribute('aria-disabled')).toBe('true')
-  expect(item.textContent).toContain(reason)
+  expect(item.textContent).toBe(`Lab box${en.shell.gatewayMenu.offline}`)
 })

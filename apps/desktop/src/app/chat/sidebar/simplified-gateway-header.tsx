@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
+import type { AgentSettingsOwner } from '@/app/agent-settings/data'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { RowButton } from '@/components/ui/row-button'
@@ -9,12 +10,12 @@ import { useI18n } from '@/i18n'
 import { Plus } from '@/lib/icons'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { $fleetRoster } from '@/store/fleet-roster'
-import { $gatewayState } from '@/store/session'
 
 import { ActiveMachineStatusPanel, MachineStatusPanel } from '../../redesign/portal-gateway-menu-panel'
 
-type MachineState = 'open' | 'connecting' | 'idle' | 'closed' | 'error'
+import type { NewAgentOffer } from './portal/new-agent-offers'
+
+export type MachineState = 'open' | 'connecting' | 'idle' | 'closed' | 'error'
 
 /** Figma's three machine tones: green online, orange in transition, grey offline. */
 const TONE: Record<MachineState, 'online' | 'pending' | 'offline'> = {
@@ -26,17 +27,12 @@ const TONE: Record<MachineState, 'online' | 'pending' | 'offline'> = {
 }
 
 interface SimplifiedGatewayHeaderProps {
-  connectionId: string | null
-  /** The machine's display label, already resolved by `useSimplifiedAgents`. */
-  label: string
-  selected: boolean
+  /** The machine, and where New agent stands for it. */
+  machine: NewAgentOffer
   open: boolean
   /** Absent while a search holds the machine open: the row then stands as a disabled disclosure. */
   onToggle?: () => void
-  /** Start a new agent on this machine. */
-  onNewAgent: () => void
-  /** What New agent waits for, while this machine cannot take one. */
-  newAgentWaiting?: string
+  onNewAgent: (owner: AgentSettingsOwner) => void
 }
 
 /** A machine's state as the app knows it: the gateway's own for the window's machine, the roster's
@@ -66,20 +62,11 @@ export function useMachineStatusText(): Record<MachineState, string> {
 
 /** A machine row (Figma 147:7470): name with its organisation as a quiet inline tag, the status at
  *  the end behind its dot; it discloses the machine's agents. */
-export function SimplifiedGatewayHeader({
-  connectionId,
-  label,
-  selected,
-  open,
-  onToggle,
-  onNewAgent,
-  newAgentWaiting
-}: SimplifiedGatewayHeaderProps) {
+export function SimplifiedGatewayHeader({ machine, open, onToggle, onNewAgent }: SimplifiedGatewayHeaderProps) {
+  const { connectionId, label, selected, state } = machine
   const { t } = useI18n()
   const statusId = useId()
   const registry = useStore($connectionsRegistry)
-  const roster = useStore($fleetRoster)
-  const gatewayState = useStore($gatewayState)
   const registered = registry?.connections.find(connection => connection.id === connectionId)
 
   const address =
@@ -88,12 +75,7 @@ export function SimplifiedGatewayHeader({
       : registered?.host || (selected && isBrowserHostedDesktop() ? window.location.host : '')
 
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${label}`
-  const state = machineState(connectionId, selected, gatewayState, roster)
   const status = useMachineStatusText()[state]
-  const canAdd = newAgentWaiting === undefined
-  // The tip says what the row does not; the name also says which machine, as the row's other controls do.
-  const newAgentTip = canAdd ? t.profiles.newProfile : `${t.profiles.newProfile} · ${newAgentWaiting}`
-  const newAgentLabel = `${newAgentTip}: ${label}`
 
   return (
     <div
@@ -132,12 +114,13 @@ export function SimplifiedGatewayHeader({
         <span id={statusId}>{status}</span>
       </MachineStatusPopover>
       {/* A machine that cannot take an agent keeps its button, which says what it waits for. */}
-      <Tip label={newAgentTip}>
+      <Tip label={machine.tip}>
         <Button
-          aria-disabled={canAdd ? undefined : true}
-          aria-label={newAgentLabel}
+          aria-disabled={machine.owner ? undefined : true}
+          // The tip says what the row does not; the name also says which machine, as its neighbours do.
+          aria-label={`${machine.tip}: ${label}`}
           className="portal-section-action"
-          onClick={canAdd ? onNewAgent : undefined}
+          onClick={() => machine.owner && onNewAgent(machine.owner)}
           size="icon-xs"
           variant="ghost"
         >

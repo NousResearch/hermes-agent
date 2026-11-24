@@ -468,6 +468,38 @@ def test_a_host_whose_new_home_failed_to_bind_binds_it_on_the_next_start(tmp_pat
 
 
 @pytest.mark.platforms("posix")  # a directory symlink
+def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_new_directorys_key(
+        tmp_path, monkeypatch):
+    """A process remembers the key each home spelling resolved to. After a profile's link is repointed at another
+    directory, plugin code loaded for the new directory's manager must not run under that spelling, whose
+    remembered key is still the old directory's."""
+    from hermes_constants import hermes_home_key
+
+    out = tmp_path / "key.out"
+    monkeypatch.setenv("KEYPROBE_OUT", str(out))
+    old = _home_with_plugins(tmp_path / "old", monkeypatch, {}, isolation="in_process")
+    new = _home_with_plugins(tmp_path / "new", monkeypatch, {"keyprobe": (
+        "import os\nfrom pathlib import Path\nfrom hermes_constants import hermes_home_key\n"
+        "def register(ctx):\n    Path(os.environ['KEYPROBE_OUT']).write_text(hermes_home_key())\n")},
+        isolation="in_process")
+    link = tmp_path / "root" / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(old, target_is_directory=True)
+    hermes_home_key(link)  # the process served the old directory under this name
+    link.unlink()
+    link.symlink_to(new, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    try:
+        manager.discover_and_load()
+        assert out.read_text() == manager.scope_key == hermes_home_key(new)
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # a directory symlink
 def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path, monkeypatch):
     """One start, one home: a profile name that appears while the host starts does not give the launcher check a
     different home from the one the host's environment and working directory were built for."""

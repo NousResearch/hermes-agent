@@ -344,3 +344,17 @@ class TestRefreshFailedEntryOutcome:
         outcome = pool.refresh_failed_entry("shared", "b", key_wins=True)
 
         assert outcome.row.id == "b"
+
+    def test_a_failed_codex_post_recovers_against_the_row_it_synced(self, monkeypatch):
+        row = PooledCredential(provider="openai-codex", id="cx", label="cx", auth_type=AUTH_TYPE_OAUTH, priority=0,
+                               source="manual:device_code", access_token="cx-at-0", refresh_token="cx-rt-0")
+        pool = CredentialPool("openai-codex", [row])
+        synced = replace(row, refresh_token="cx-rt-1")
+        recovered = []
+        monkeypatch.setattr(pool, "_sync_entry_from_auth_store", lambda _e: synced)
+        monkeypatch.setattr(pool, "_post_tokens_refresh", lambda _e: (_ for _ in ()).throw(RuntimeError("401")))
+        monkeypatch.setattr(pool, "_recover_failed_refresh", lambda e, _exc: recovered.append(e))
+
+        pool._refresh_entry_impl(row, force=True)
+
+        assert [e.refresh_token for e in recovered] == ["cx-rt-1"]

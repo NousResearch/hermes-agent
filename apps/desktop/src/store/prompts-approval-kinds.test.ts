@@ -86,6 +86,12 @@ describe('approvalKindFields', () => {
     })
   })
 
+  // A job card's body is its description; it names no folder or site and must still be shown.
+  it('never refuses a job card for naming no folder or site', () => {
+    expect(approvalNamesNothing(approvalKindFields({ kind: 'schedule' }))).toBe(false)
+    expect(approvalNamesNothing(approvalKindFields({ kind: 'schedule_edit' }))).toBe(false)
+  })
+
   it('reads a site target and its optional label', () => {
     expect(
       approvalKindFields({ host: 'api.keenable.ai', kind: 'network', label: 'Web search (api.keenable.ai)' }).target

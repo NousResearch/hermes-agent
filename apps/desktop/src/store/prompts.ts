@@ -272,7 +272,7 @@ const $approvalQueues = atom<Record<string, ApprovalRequest[]>>({})
 $approvalQueues.listen(queues => {
   setSessionsWaitingOnCard(
     Object.entries(queues)
-      .filter(([sessionId, queue]) => sessionId && queue.some(request => !isCommandApproval(request)))
+      .filter(([sessionId, queue]) => sessionId && queue.some(request => !isTurnApproval(request)))
       .map(([sessionId]) => sessionId)
   )
 })

@@ -1,9 +1,9 @@
 import { $gateway } from '@/store/gateway'
-import { approvalKindFields, isCommandApproval, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import { approvalKindFields, isTurnApproval, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import type { SessionResumeResult } from '@/types/hermes'
 
 /** Re-park a resume snapshot's pending approval. True when the session's turn waits on it: a
- *  command approval. A folder or site card marks its session by being parked. */
+ *  command or job approval. A folder or site card marks its session by being parked. */
 export function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
   const pending = response.pending_approval
 
@@ -29,5 +29,5 @@ export function restorePendingApproval(response: SessionResumeResult, sessionId:
   })
   void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 
-  return isCommandApproval(kindFields)
+  return isTurnApproval(kindFields)
 }

@@ -43,3 +43,14 @@ def test_reply_publishes_and_round_trips_as_itself(reply):
         assert type(clone) is type(reply)
         assert str(clone) == str(reply)
         assert _fields(clone) == _fields(reply)
+
+
+def test_footered_reply_copies_keep_text_and_attributes_after_footer_changes():
+    reply = FooteredReply("Here it is", "gpt-5.4 · 68%")
+    reply.extra = {"turn": 2}
+    reply.runtime_footer = "changed"
+    for clone in (copy.deepcopy(reply), pickle.loads(pickle.dumps(reply))):
+        assert str(clone) == "Here it is\n\ngpt-5.4 · 68%"
+        assert clone.extra == {"turn": 2}
+        assert clone.runtime_footer == "changed"
+    assert copy.deepcopy(reply).extra is not reply.extra

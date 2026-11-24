@@ -133,24 +133,18 @@ class FooteredReply(str):
     """A final reply whose text ends with ``\n\n<runtime_footer>``. Plain text everywhere; any
     rewrite yields a plain ``str`` again, so the footer then simply stays in the text."""
     runtime_footer: str
+    _text_len: int
 
     def __new__(cls, text: str, footer: str):
         instance = super().__new__(cls, f"{text}\n\n{footer}")
         instance.runtime_footer = footer
+        instance._text_len = len(text)
         return instance
 
-    # Immutable value: ``copy``/``deepcopy`` must return self. The default str-subclass
-    # reconstruction calls ``cls.__new__(cls)`` with no args, which this __new__ rejects, so a
-    # plain ``deepcopy`` of any payload holding the reply raised TypeError (the gateway's
-    # ``event_stream.publish`` deepcopies its frame, which killed ``message.complete``).
-    def __copy__(self):
-        return self
-
-    def __deepcopy__(self, memo):
-        return self
-
-    def __reduce__(self):
-        return (FooteredReply, (str(self)[: -len(f"\n\n{self.runtime_footer}")], self.runtime_footer))
+    def __getnewargs_ex__(self) -> tuple[tuple[str, str], dict[str, Any]]:
+        # copy/pickle rebuild via __new__ (``SessionEvents.publish`` deep-copies the reply). Split
+        # at the stored length: ``runtime_footer`` is a plain attribute and may no longer match.
+        return (self[:self._text_len], self[self._text_len + 2:]), {}
 
 
 class _FooterCaption(str):

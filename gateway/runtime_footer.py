@@ -133,11 +133,22 @@ class FooteredReply(str):
     """A final reply whose text ends with ``\n\n<runtime_footer>``. Plain text everywhere; any
     rewrite yields a plain ``str`` again, so the footer then simply stays in the text."""
     runtime_footer: str
+    _orig_text: str
 
-    def __new__(cls, text: str, footer: str):
-        instance = super().__new__(cls, f"{text}\n\n{footer}")
-        instance.runtime_footer = footer
+    def __new__(cls, text: str, footer: Optional[str] = None):
+        orig_text = getattr(text, "_orig_text", str(text or "")) if isinstance(text, FooteredReply) else str(text or "")
+        if footer is None:
+            effective_footer = getattr(text, "runtime_footer", "") if isinstance(text, FooteredReply) else ""
+        else:
+            effective_footer = str(footer)
+        content = f"{orig_text}\n\n{effective_footer}" if effective_footer else orig_text
+        instance = super().__new__(cls, content)
+        instance.runtime_footer = effective_footer
+        instance._orig_text = orig_text
         return instance
+
+    def __reduce__(self):
+        return (self.__class__, (self._orig_text, self.runtime_footer), self.__dict__)
 
 
 class _FooterCaption(str):

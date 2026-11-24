@@ -3,10 +3,13 @@ appended to final gateway replies."""
 
 from __future__ import annotations
 
+import copy
+import pickle
 
 import pytest
 
 from gateway.runtime_footer import (
+    FooteredReply,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -279,3 +282,97 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# FooteredReply — copy, deepcopy, and pickle protocols (#158883)
+# ---------------------------------------------------------------------------
+
+
+def test_footered_reply_copy_and_deepcopy():
+    """#158883: FooteredReply supports copy and deepcopy without TypeError in __new__."""
+    reply = FooteredReply("Task complete.", "gpt-5.4 · 12% · ~/projects")
+    assert reply == "Task complete.\n\ngpt-5.4 · 12% · ~/projects"
+    assert reply.runtime_footer == "gpt-5.4 · 12% · ~/projects"
+    assert reply._orig_text == "Task complete."
+
+    # Shallow copy
+    shallow = copy.copy(reply)
+    assert shallow == reply
+    assert shallow.runtime_footer == "gpt-5.4 · 12% · ~/projects"
+    assert isinstance(shallow, FooteredReply)
+
+    # Deepcopy (as performed by EventStream.publish on payload dictionaries)
+    payload = {"response": reply, "settled": True}
+    copied_payload = copy.deepcopy(payload)
+    cloned_reply = copied_payload["response"]
+    assert cloned_reply == reply
+    assert cloned_reply.runtime_footer == "gpt-5.4 · 12% · ~/projects"
+    assert isinstance(cloned_reply, FooteredReply)
+
+
+def test_footered_reply_pickle():
+    """#158883: FooteredReply roundtrips through pickle without losing footer metadata."""
+    reply = FooteredReply("Summary output.", "claude-sonnet-4.6 · 45%")
+    pickled = pickle.dumps(reply)
+    unpickled = pickle.loads(pickled)
+    assert unpickled == reply
+    assert unpickled.runtime_footer == "claude-sonnet-4.6 · 45%"
+    assert unpickled._orig_text == "Summary output."
+    assert isinstance(unpickled, FooteredReply)
+
+
+def test_footered_reply_single_arg_construction():
+    """#158883: FooteredReply can be initialized with text alone when footer is omitted."""
+    plain = FooteredReply("Plain response.")
+    assert plain == "Plain response."
+    assert plain.runtime_footer == ""
+    assert plain._orig_text == "Plain response."
+    assert isinstance(plain, FooteredReply)
+
+
+def test_event_stream_publish_with_footered_reply():
+    """#158883: EventStream / SessionEvents publish handles FooteredReply payload without TypeError."""
+    from gateway.session_events import SessionEvents
+
+    events = SessionEvents()
+    reply = FooteredReply("Completed turn.", "gpt-5.4 · 10%")
+    # Must not raise TypeError: FooteredReply.__new__() missing 1 required positional argument
+    events.publish("test-session", {"response": reply, "settled": True})
+
+
+def test_footered_reply_state_and_attribute_preservation():
+    """#158883: FooteredReply preserves dynamic instance attributes across copy and pickle."""
+    reply = FooteredReply("Completed task.", "gpt-5.4 · 10%")
+    reply.custom_metadata = {"cached": True, "turn": 2}
+
+    cloned = copy.deepcopy(reply)
+    assert cloned == reply
+    assert cloned.runtime_footer == "gpt-5.4 · 10%"
+    assert cloned._orig_text == "Completed task."
+    assert getattr(cloned, "custom_metadata", None) == {"cached": True, "turn": 2}
+
+    unpickled = pickle.loads(pickle.dumps(reply))
+    assert unpickled == reply
+    assert unpickled.runtime_footer == "gpt-5.4 · 10%"
+    assert unpickled._orig_text == "Completed task."
+    assert getattr(unpickled, "custom_metadata", None) == {"cached": True, "turn": 2}
+
+
+def test_footered_reply_idempotent_and_replacement_wrapping():
+    """#158883: FooteredReply unwraps existing FooteredReply avoiding duplicate concatenation."""
+    original = FooteredReply("Base content.", "footer-v1")
+    assert original == "Base content.\n\nfooter-v1"
+
+    # Preserves metadata when wrapped without new footer
+    wrapped_no_footer = FooteredReply(original)
+    assert wrapped_no_footer == "Base content.\n\nfooter-v1"
+    assert wrapped_no_footer.runtime_footer == "footer-v1"
+    assert wrapped_no_footer._orig_text == "Base content."
+
+    # Replaces footer cleanly without duplicate concatenation
+    replaced_footer = FooteredReply(original, "footer-v2")
+    assert replaced_footer == "Base content.\n\nfooter-v2"
+    assert replaced_footer.runtime_footer == "footer-v2"
+    assert replaced_footer._orig_text == "Base content."
+

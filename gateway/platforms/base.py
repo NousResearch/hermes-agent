@@ -2014,7 +2014,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     fatal_error_retryable = property(lambda self: self._fatal_error_retryable)
 
     def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
-        """Explicit /voice on|tts wins over off, then fall back to voice.auto_tts (#16007)."""
+        """Voice-incapable adapters never speak. Otherwise /voice on|tts wins over off, then voice.auto_tts (#16007)."""
+        if self.supports_voice_replies is False:
+            return False
         return chat_id in self._auto_tts_enabled_chats or (
             chat_id not in self._auto_tts_disabled_chats and bool(self._auto_tts_default))
 

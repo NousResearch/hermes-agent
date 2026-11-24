@@ -628,6 +628,9 @@ Whether the gateway speaks a reply depends on the chat's `/voice` mode and, when
 | `supports_voice_replies` | `True` | `False` keeps every reply text, whatever `voice.auto_tts` or `/voice` say. For platforms that cannot deliver audio (`plugins/platforms/a2a/`) |
 | `speaks_replies_by_default` | `False` | `True` speaks replies unless the chat runs `/voice off`, instead of following `voice.auto_tts`. For voice-first surfaces such as a device with a speaker |
 
+Adapters that cannot deliver audio must explicitly set `supports_voice_replies = False`.
+The gateway checks this capability before chat preferences for whole-file and streaming TTS.
+
 ```python
 class MyDeviceAdapter(BasePlatformAdapter):
     speaks_replies_by_default = True

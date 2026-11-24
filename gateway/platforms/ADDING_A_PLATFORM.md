@@ -64,6 +64,8 @@ orphans) and the developer-guide page for the prose walkthrough.
 should be spoken. `supports_voice_replies = False` is for platforms that
 cannot deliver audio (an agent peer, a text-only bridge): replies stay text
 whatever `voice.auto_tts` or `/voice` say. `plugins/platforms/a2a/` sets it.
+Adapters that cannot deliver audio must explicitly set `supports_voice_replies = False`.
+The gateway checks this capability before chat preferences for whole-file and streaming TTS.
 `speaks_replies_by_default = True` is for voice-first surfaces (a device with
 a speaker): replies are spoken unless the chat runs `/voice off`, instead of
 following the global `voice.auto_tts` default.

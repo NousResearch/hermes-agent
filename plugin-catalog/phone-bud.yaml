@@ -1,0 +1,37 @@
+name: phone-bud
+title: Phone Bud
+repo: https://github.com/cshape/phone-bud-plugin
+sha: ac72b4512928c99fd841928a69207398f139067d
+subdir: hermes
+description: >-
+  Place real phone calls to US and Canada numbers with an AI voice agent, one number or a short
+  list of businesses, and get back the summary, outcome and transcript, through Phone Bud's hosted
+  MCP server (Streamable HTTP, OAuth 2.1 with dynamic client registration and PKCE), with one
+  calling skill bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/).
+  Disclosure — hosted-only connector with no local code: every tool call goes to Phone Bud's MCP
+  server at www.phone-bud.com, signed in as the user, and a first sign-in creates a Phone Bud
+  account. make_call and start_campaign dial real phone numbers and use the user's paid Phone Bud
+  minutes (the first call is free); create_agent and update_agent change the user's Phone Bud
+  agents. The request, the numbers called and each call's transcript and notes reach the user's
+  model provider through the session, and Phone Bud keeps calls, recordings and transcripts in the
+  user's account. The package marks the server untrusted and gives it an 11-minute call deadline
+  (make_call waits for the call to end), but the required sign-in step writes a config.yaml entry
+  that replaces the package's own, trust and deadline included, unless the user adds them to it.
+  Hermes stores and refreshes the OAuth tokens. The tool list comes from Phone Bud's server at run
+  time, so the pinned commit doesn't cover it. OAuth must be enabled with
+  `hermes mcp add phone-bud --url https://www.phone-bud.com/mcp --auth oauth`; the bundled
+  mcp.json alone yields 401.
+maintainer: cshape
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/cshape/phone-bud-plugin/blob/ac72b4512928c99fd841928a69207398f139067d/hermes/README.md
+version: "1.0.0"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add phone-bud --url https://www.phone-bud.com/mcp --auth oauth"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

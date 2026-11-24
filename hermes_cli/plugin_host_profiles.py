@@ -40,7 +40,9 @@ def load_hosted_profiles(plugin_dir: Path, module_name: str) -> tuple[list[Any],
         raise PluginHostUnavailable(str(payload["error"]))
     entries = payload.get("profiles") or []
     in_process = {str(e["name"]): str(e["in_process"]) for e in entries if e.get("in_process")}
-    hosted = [_profile_proxy(ProviderProfile, str(plugin_dir), module_name, e)
+    # Addressed by the resolved directory: the host loads the plugin from it, so it must outlive a rename
+    # of the link the profile was opened by.
+    hosted = [_profile_proxy(ProviderProfile, str(Path(plugin_dir).resolve()), module_name, e)
               for e in entries if not e.get("in_process")]
     return hosted, in_process
 

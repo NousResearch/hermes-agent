@@ -1,6 +1,6 @@
 name: google-meet
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 063463c0abdc9f75f02afb0e58837ed6846730ff
+sha: 04d928e367e05c166cf3a28f8916ef0199320532
 subdir: google-meet
 description: 'Google Meet for Hermes: the agent joins a meet.google.com call you give it (meet_join),
   scrapes live captions into a transcript (meet_status, meet_transcript), can speak in the call in
@@ -19,7 +19,7 @@ tier: official
 category: general
 requires_hermes: ">=0.21.7"
 version: "0.3.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/063463c0abdc9f75f02afb0e58837ed6846730ff/assets/google-meet.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/04d928e367e05c166cf3a28f8916ef0199320532/assets/google-meet.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet
 platforms:
   - linux

@@ -52,7 +52,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, is_gateway_known_command
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -476,7 +476,6 @@ def _gateway_slash_command(text: str) -> Optional[str]:
     if not command:
         return None
     try:
-        from hermes_cli.commands import is_gateway_known_command
         return command if is_gateway_known_command(command) else None
     except Exception:
         # A missing command registry must not silence /help in a mention-gated chat.

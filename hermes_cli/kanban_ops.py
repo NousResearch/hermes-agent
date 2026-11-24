@@ -17,6 +17,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
+from hermes_cli.sizefmt import format_bytes
 
 
 def _kanban_config() -> dict:
@@ -302,9 +303,126 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return _poll_loop(args.interval, tick)
 
 
+_KEEP_REASONS = {
+    "not_removable": "workspace_kind 'dir' or no path (never auto-removed)",
+    "active_children": "a child task is still active",
+    "missing": "directory already gone",
+    "unmanaged": "outside any kanban-managed workspaces root",
+    "not_linked_worktree": "not a linked git worktree",
+    "main_checkout": "the repository's main checkout",
+    "dirty_or_unpushed": "dirty or has unpushed commits",
+    "predicates_unavailable": "git safety predicates unavailable",
+    "shared": "still used by another non-terminal task",
+    "unknown": "sibling boards unreadable, cannot tell",
+}
+
+_GC_LIST_LIMIT = 50
+
+
+def _tree_size(path: Path) -> int:
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path, followlinks=False, onerror=lambda _exc: None):
+        for name in filenames:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
+def _count_by(rows: list[dict], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row[key])
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _gc_workspaces(args: argparse.Namespace) -> int:
+    """Sweep terminal tasks' workspaces through the completion cleanup's own
+    predicate (``kanban_db_workspace._cleanup_workspace``) — the retry path for
+    a cleanup deferred at completion. Dry run unless ``--apply``; never touches
+    events or worker logs."""
+    apply = bool(getattr(args, "apply", False))
+    as_json = bool(getattr(args, "json", False))
+    removable: list[dict] = []
+    kept: list[dict] = []
+    with kbc.connect_closing() as conn:
+        rows = conn.execute(
+            "SELECT id, status FROM tasks "
+            f"WHERE status IN {kbw._TERMINAL_STATUSES_SQL} "
+            f"AND workspace_kind IN {kbw._REMOVABLE_KINDS_SQL} ORDER BY status, id"
+        ).fetchall()
+        for row in rows:
+            plan = kbw._plan_workspace_cleanup(conn, row["id"])
+            entry = {"id": row["id"], "status": row["status"], "kind": plan.kind}
+            if plan.removable and plan.path is not None:
+                removable.append({**entry, "bytes": _tree_size(plan.path), "path": str(plan.path)})
+            else:
+                kept.append({**entry, "reason": plan.reason})
+        stubs = [{"path": str(p), "why": why} for p, why in kbw._stray_board_db_stubs(conn)]
+        removed = failed = 0
+        if apply:
+            for entry in removable:
+                kbw._cleanup_workspace(conn, entry["id"])
+                if Path(entry["path"]).exists():
+                    failed += 1
+                else:
+                    removed += 1
+    total_bytes = sum(entry["bytes"] for entry in removable)
+    kept_by_reason = _count_by(kept, "reason")
+    if as_json:
+        report = {
+            "mode": "apply" if apply else "dry-run",
+            "removable": removable,
+            "kept": kept,
+            "stray_board_db_stubs": stubs,
+            "counts": {
+                "removable": len(removable),
+                "kept": len(kept),
+                "kept_by_reason": kept_by_reason,
+                "stray_board_db_stubs": len(stubs),
+            },
+            "bytes": total_bytes,
+        }
+        if apply:
+            report["removed"] = removed
+            report["failed"] = failed
+        _print_json(report)
+        return 0
+    mode = "apply" if apply else "dry run (nothing removed; pass --apply to remove)"
+    print(f"Workspace GC — {mode}")
+    print(f"removable: {len(removable)} task workspace(s), {format_bytes(total_bytes)}")
+    by_status_kind: dict[tuple[str, str], int] = {}
+    for entry in removable:
+        group = (entry["status"], entry["kind"] or "-")
+        by_status_kind[group] = by_status_kind.get(group, 0) + 1
+    for (status, kind), count in sorted(by_status_kind.items()):
+        print(f"  {status:<9} {kind:<9} {count}")
+    print(f"kept: {len(kept)}")
+    for reason, count in kept_by_reason.items():
+        print(f"  {reason:<22} {count:>6}  {_KEEP_REASONS.get(reason, reason)}")
+    for entry in removable[:_GC_LIST_LIMIT]:
+        print(f"  {entry['id']}  {entry['status']:<9} {entry['kind']:<9} "
+              f"{format_bytes(entry['bytes']):>9}  {entry['path']}")
+    if len(removable) > _GC_LIST_LIMIT:
+        print(f"  … and {len(removable) - _GC_LIST_LIMIT} more (use --json for the full list)")
+    print(f"stray board db stubs: {len(stubs)} (skipped by the shared-workspace scan; safe to delete)")
+    for stub in stubs:
+        print(f"  {stub['path']}  [{stub['why']}]")
+    if apply:
+        print(f"GC complete: {removed} workspace(s) removed, {failed} left in place")
+    return 0
+
+
 def _cmd_gc(args: argparse.Namespace) -> int:
-    """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
-    import shutil
+    """Remove archived tasks' scratch workspaces, old events, and old worker logs.
+
+    ``--workspaces`` switches to a dry-run (``--apply`` to act) sweep of every
+    terminal task's workspace through the completion cleanup's predicate, and
+    leaves events and worker logs alone."""
+    if getattr(args, "workspaces", False):
+        return _gc_workspaces(args)
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
     if event_days < 0 or log_days < 0:
@@ -339,8 +457,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
                 continue
             if kbw._defer_shared_workspace_cleanup(conn, row["id"], path):
                 continue
-            shutil.rmtree(path, ignore_errors=True)
-            if not path.exists():
+            if kbw._force_rmtree(path) is None:
                 removed_ws += 1
 
     removed_events = 0

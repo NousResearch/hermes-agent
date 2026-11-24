@@ -148,6 +148,26 @@ describe('settings subpage routing', () => {
     )
   })
 
+  // The redesign has Spacing where classic has its session list density: one setting id, two rows.
+  describe('the density setting in search', () => {
+    const target = () => settingSearchTargets(TRANSLATIONS.en).find(row => row.id === SETTING_IDS.appearance.sessionDensity)!
+
+    afterEach(() => $shellChoice.set(null))
+
+    it('is Spacing in the redesign, found by that word', () => {
+      $shellChoice.set(true)
+
+      expect(target().label).toBe('Spacing')
+      expect(target().keywords).toContain('spacing')
+    })
+
+    it('is the session list density in classic', () => {
+      $shellChoice.set(false)
+
+      expect(target().label).toBe(TRANSLATIONS.en.settings.appearance.sessionDensityTitle)
+    })
+  })
+
   // Two controls act only through the native app's bridge.
   describe('the native-only controls in search', () => {
     const NATIVE_ONLY = ['Keep computer awake', 'Disable F12 DevTools']

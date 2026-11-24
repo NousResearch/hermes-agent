@@ -665,8 +665,10 @@ function AppearanceTypographySettings() {
 }
 
 /** The redesign's spacing (store/portal-density.ts), where classic has its sidebar density. */
-function SpacingRow({ copy }: Required<RowProps>) {
-  const a = useI18n().t.settings.appearance
+function SpacingRow() {
+  const { t, locale } = useI18n()
+  const a = t.settings.appearance
+  const [title, description] = appearanceAdvancedCopy(locale).density
   const density = useStore($portalDensity)
   const labels = { comfortable: a.sessionDensityComfortable, compact: a.sessionDensityCompact }
 
@@ -682,14 +684,14 @@ function SpacingRow({ copy }: Required<RowProps>) {
           value={density}
         />
       }
-      description={copy[1]}
+      description={description}
       id={settingElementId(ids.sessionDensity)}
-      title={copy[0]}
+      title={title}
     />
   )
 }
 
-function SessionDensityRow({ copy }: RowProps) {
+function SessionDensityRow() {
   const { t } = useI18n()
   const a = t.settings.appearance
   const sessionListDensity = useStore($sessionListDensity)
@@ -712,9 +714,9 @@ function SessionDensityRow({ copy }: RowProps) {
           value={sessionListDensity}
         />
       }
-      description={copy?.[1] ?? a.sessionDensityDesc}
+      description={a.sessionDensityDesc}
       id={settingElementId(ids.sessionDensity)}
-      title={copy?.[0] ?? a.sessionDensityTitle}
+      title={a.sessionDensityTitle}
     />
   )
 }
@@ -797,7 +799,7 @@ function AppearanceWindowLayoutSettings() {
   return (
     <>
       <InterfaceModeSettings />
-      <SessionDensityRow />
+      {usePortalShell() ? <SpacingRow /> : <SessionDensityRow />}
       <WindowDeviceRows />
     </>
   )
@@ -1322,7 +1324,7 @@ export function AppearanceAdvancedSettings() {
         <BubbleRow copy={copy.bubble} />
       </AdvancedGroup>
       <AdvancedGroup title={copy.groups.layout}>
-        <SpacingRow copy={copy.density} />
+        <SpacingRow />
         <ThreadTimelineRow copy={copy.timeline} />
         <ModelPricingRow copy={copy.pricing} />
         <WelcomeScreenRow copy={copy.welcome} />

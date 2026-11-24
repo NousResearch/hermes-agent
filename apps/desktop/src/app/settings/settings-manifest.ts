@@ -1,4 +1,5 @@
 import type { Translations } from '@/i18n'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import { hostHas } from '@/lib/host-capabilities'
 import { isBrowserHostedDesktop } from '@/lib/platform'
@@ -7,6 +8,7 @@ import { canUseQuickEntry } from '@/store/quick-entry'
 import { $portalShell } from '@/store/shell-variant'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
+import { appearanceAdvancedCopy } from './appearance-advanced-copy'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { nativeHostOnly } from './other-subpages'
 import type { SettingsView } from './types'
@@ -106,11 +108,16 @@ export const SETTINGS_MANIFEST = {
       keywords: ['simple', 'advanced', 'mode', 'interface', 'chrome', 'minimal', 'focus'],
       copy: t => ({ label: t.interfaceMode.title, description: t.interfaceMode.hint })
     },
-    sessionDensity: appearanceSetting(
-      'window-layout',
-      ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
-      'sessionDensity'
-    ),
+    // One id, two rows: classic's session list density, the redesign's Spacing.
+    sessionDensity: {
+      subpage: 'window-layout',
+      keywords: ['sidebar', 'sessions', 'compact', 'comfortable', 'density', 'spacing'],
+      copy: t => {
+        const [label, description] = appearanceAdvancedCopy(getRuntimeI18nLocale()).density
+
+        return $portalShell.get() ? { label, description } : appearanceCopy('sessionDensity')(t)
+      }
+    },
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
     appActions: appearanceSetting(
       'window-layout',

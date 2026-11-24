@@ -16,17 +16,17 @@ screenshots:
 platforms: []
 title: Triage
 known_issues:
-  - Hides Hermes' own skills from Hermes while installed; run `python run.py restore` in the plugin folder before uninstalling.
+- Hides Hermes' own skills from Hermes while installed; run `python run.py restore` in the plugin folder before uninstalling.
 capabilities:
   provides_tools:
-    - skill_search
-    - skill_load
+  - skill_search
+  - skill_load
   provides_hooks:
-    - pre_llm_call
-    - pre_tool_call
-    - transform_tool_result
-    - post_compaction
+  - pre_llm_call
+  - pre_tool_call
+  - transform_tool_result
+  - post_compaction
   provides_middleware:
-    - llm_request
-    - tool_execution
+  - llm_request
+  - tool_execution
   requires_env: []

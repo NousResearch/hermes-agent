@@ -5,7 +5,8 @@ import {
   onComposerAttachImagesRequest,
   onComposerAttachPastedTextRequest,
   onComposerFocusRequest,
-  onComposerInsertRequest
+  onComposerInsertRequest,
+  requestComposerAttachPastedText
 } from './focus'
 import { LARGE_PASTE_ATTACHMENT_THRESHOLD } from './large-paste'
 import { handleWindowPaste, routeClipboardToComposer } from './paste-to-focus'
@@ -182,6 +183,35 @@ describe('large paste on non-editable chrome', () => {
     offInsert()
 
     expect(inserts).toEqual([HUGE])
+  })
+
+  it('settles false on the timeout when no composer acks, and a late ack cannot resurrect it', async () => {
+    // The request's own contract, not the routed handler's: a composer that never
+    // answers must not strand the caller, and an ack arriving after the timeout
+    // must not settle an already-settled promise a second time (which would
+    // double-insert the payload).
+    vi.useFakeTimers()
+    const acks: Array<(ok: boolean) => void> = []
+    const offAttach = onComposerAttachPastedTextRequest(({ token }) => {
+      // Hold the ack: this simulates a composer that mounted but never answered
+      // before the timeout (or answered very late).
+      acks.push(ok => ackComposerAttachPastedText(token, ok))
+    })
+    try {
+      const pending = requestComposerAttachPastedText(HUGE)
+      // No claimant answer: the 5s reply timeout must settle it false.
+      await vi.advanceTimersByTimeAsync(6_000)
+      await expect(pending).resolves.toBe(false)
+
+      // A late ack, after the timeout, is ignored — the promise is already settled.
+      // (`flushBus` uses a real timer, so drain microtasks instead while faked.)
+      acks.forEach(ack => ack(true))
+      await Promise.resolve()
+      await expect(pending).resolves.toBe(false)
+    } finally {
+      offAttach()
+      vi.useRealTimers()
+    }
   })
 
   it('never applies the policy to images — an image-only paste still just attaches', async () => {

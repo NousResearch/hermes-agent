@@ -361,11 +361,14 @@ def copy_tree(src: Path, dst: Path) -> None:
 
 
 @contextlib.contextmanager
-def cell(column: str, root: Path, provider_url: str, *, extra: dict | None = None):
+def cell(column: str, root: Path, provider_url: str, *, extra: dict | None = None, drop_env: tuple[str, ...] = ()):
     """Stage ``column`` under ``root``, write a user config on the fake provider with the API server
     platform on a free port, and start the shared-PID-namespace sandbox. Closing asserts that the
-    sandbox took every process with it."""
+    sandbox took every process with it. ``drop_env`` names test-environment variables a user's machine
+    does not set; they go before the sandbox starts, which copies the environment once."""
     inst = stage(column, root / column)
+    for name in drop_env:
+        inst.env.pop(name, None)
     inst.port = free_port()
     write_config(inst.hermes_home, provider_url, port=inst.port, extra=extra)
     start_host(inst)

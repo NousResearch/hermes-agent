@@ -7,9 +7,11 @@ remain build-owned. ``--check`` is passive and never provisions tools.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from hermes_cli.steward import UPDATE_MECHANISMS
@@ -194,6 +196,9 @@ def arm_completion(project_root: Path) -> Path:
 COMPLETION_RETRY_BACKOFF_ATTEMPTS = 2
 COMPLETION_RETRY_BACKOFF_SECONDS = 15 * 60
 COMPLETION_RETRY_MAX_ATTEMPTS = 6
+#: Past the cap, where a launch keeps retrying (an engine-less generation the guard refuses), the
+#: window doubles per failure up to this bound: a cause that never heals costs ~4 syncs a day.
+COMPLETION_RETRY_MAX_BACKOFF_SECONDS = 6 * 60 * 60
 
 
 def _completion_attempts_path(project_root: Path) -> Path:
@@ -251,12 +256,22 @@ def _record_completion_attempt(root: Path, *, failed: bool, inputs: str | None =
         pass  # a read-only install state degrades to unbounded retries, never blocks boot
 
 
-def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, int]:
+def _completion_backoff_seconds(attempts: int) -> int:
+    """The wait after *attempts* failures: the base window, doubling per failure past the cap."""
+    doublings = max(0, attempts - COMPLETION_RETRY_MAX_ATTEMPTS)
+    if doublings >= 16:  # far past the bound; keeps the shift small
+        return COMPLETION_RETRY_MAX_BACKOFF_SECONDS
+    return min(COMPLETION_RETRY_MAX_BACKOFF_SECONDS, COMPLETION_RETRY_BACKOFF_SECONDS << doublings)
+
+
+def completion_retry_state(project_root: Path, *, now=None, capped: bool = True) -> tuple[bool, int, int]:
     """``(may_retry_now, attempts, backoff_seconds)`` for the owed tail.
 
     Never raises; an unreadable record answers ``(True, 0, 0)`` — the
     historical unbounded behavior — because a bookkeeping failure must not
-    stop a launch from finishing its own update.
+    stop a launch from finishing its own update. ``capped=False`` drops
+    ``COMPLETION_RETRY_MAX_ATTEMPTS`` and keeps the backoff window, doubled per failure past the
+    cap up to ``COMPLETION_RETRY_MAX_BACKOFF_SECONDS``.
     """
     import time as _time
 
@@ -268,7 +283,7 @@ def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, 
     if attempts <= 0 or (inputs is not None and inputs != _sync_inputs_digest(project_root)):
         # Failed syncs of other inputs say nothing about this tree's repair.
         return True, 0, 0
-    if attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+    if capped and attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
         return False, attempts, 0
     if attempts < COMPLETION_RETRY_BACKOFF_ATTEMPTS:
         # A single failure is the historical case (a flaky tail that a plain
@@ -281,9 +296,10 @@ def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, 
         return True, attempts, 0
     reference = (now or _time.time)()
     age = max(0.0, reference - mtime)
-    if age >= COMPLETION_RETRY_BACKOFF_SECONDS:
-        return True, attempts, COMPLETION_RETRY_BACKOFF_SECONDS
-    return False, attempts, int(COMPLETION_RETRY_BACKOFF_SECONDS - age)
+    window = _completion_backoff_seconds(attempts)
+    if age >= window:
+        return True, attempts, window
+    return False, attempts, int(window - age)
 
 
 def clear_completion(root: Path) -> None:
@@ -377,6 +393,17 @@ def _tree_matches_completed_stamp(root: Path) -> bool:
 _REPORT_ONLY_UPDATE_FLAGS = frozenset({"--check", "--plan", "--list-venv-holders"})
 
 
+def _selected_generation_lacks_regex_engine(root: Path) -> bool:
+    """Whether the dependency generation this launch would boot on has no google-re2 (``re2``)."""
+    from pm.environments import selected_venv, site_packages
+
+    try:
+        packages = site_packages(selected_venv(root))
+    except RuntimeError:
+        return False  # a broken selection fails activation either way; keep the cap's answer
+    return not ((packages / "re2" / "__init__.py").is_file() or any(packages.glob("re2.*")))
+
+
 def _may_retry_completion(root: Path, command: list[str], *, current: bool) -> bool:
     """Whether this launch runs the owed repair now; a suppressed one says why when it matters."""
     import sys
@@ -386,13 +413,30 @@ def _may_retry_completion(root: Path, command: list[str], *, current: bool) -> b
         # Its report-only forms change nothing, so they stay inside the backoff like any launch.
         return True
     may_retry, attempts, backoff = completion_retry_state(root)
-    if not may_retry and attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+    capped = not may_retry and attempts >= COMPLETION_RETRY_MAX_ATTEMPTS
+    lacks_engine = not may_retry and not current and _selected_generation_lacks_regex_engine(root)
+    if capped and lacks_engine and not _runs_without_regex_engine(command):
+        # The cap trades a slow launch for one that still runs on the previous dependencies
+        # (#122206). Without the engine that launch is refused (guard_regex_engine), so a capped
+        # sync would keep a supervised gateway down until someone types a command: keep retrying,
+        # once per (doubling) backoff window, so the install heals once the cause (network) is
+        # gone. Commands the guard lets run (`gateway stop`, `doctor`) keep the cap: no wait.
+        capped = False
+        may_retry, attempts, backoff = completion_retry_state(root, capped=False)
+    if capped:
         # The tail has failed often enough that every relaunch re-running it
         # does more harm than good (#122206: "every launch burns ~4 minutes").
         # Leave the marker for an explicit `hermes update`; say so once.
         print(
             f"hermes: a source update could not be finished automatically "
             f"({attempts} attempts); run `hermes update` from a shell to finish it",
+            file=sys.stderr, flush=True,
+        )
+    elif not may_retry and lacks_engine:
+        # The guard refuses next; "running with the previous dependencies" would be false here.
+        print(
+            f"hermes: the dependency sync failed {attempts} times; next automatic retry in "
+            f"{max(1, backoff // 60)} min, or run `hermes pm install`",
             file=sys.stderr, flush=True,
         )
     elif not may_retry and not current:
@@ -538,6 +582,82 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
               file=sys.stderr, flush=True)
     return None
+
+
+REGEX_ENGINE_MISSING = "the dependencies this process runs on lack google-re2, the regex engine this Hermes needs"
+#: The install that needs no regex (works where no launch retries the sync: ZIP install, lazy installs off).
+REGEX_ENGINE_REPAIR = "run `hermes pm install` to install them (or `hermes update`, whose launch retries the install)"
+
+#: Runnable without the engine: the package manager, the diagnostics of a stuck install, and the
+#: commands that stop a gateway its service manager keeps restarting into the refusal.
+_ENGINE_FREE_COMMANDS = (["pm"], ["doctor"], ["gateway", "status"], ["gateway", "stop"], ["gateway", "uninstall"])
+
+
+def _runs_without_regex_engine(command: list[str]) -> bool:
+    """Whether *command* (``command_argv`` form) is one the guard lets run without the engine."""
+    return any(command[:len(free)] == free for free in _ENGINE_FREE_COMMANDS)
+
+
+def regex_engine_missing() -> bool:
+    """Whether the active ``sys.path`` has no usable google-re2, the engine ``hermes_re`` matches with.
+
+    Locates the package without importing it (tens of microseconds on every launch; the import
+    costs milliseconds and runs the extension). A build that is present but cannot load is the
+    facade's error at the first match. Never imports ``hermes_re``. A finder that refuses the
+    package or a stub without a spec counts as missing instead of raising: this runs before the
+    ``update`` exemption, and the import-health probe reads any exception as a broken checkout.
+    """
+    try:
+        spec = importlib.util.find_spec("re2")
+    except (ImportError, ValueError):  # a meta-path finder refusing re2; a re2 module whose __spec__ is None
+        return True
+    return spec is None or spec.origin is None  # origin None: a bare re2/ directory (namespace portion)
+
+
+def guard_regex_engine(project_root: Path, argv: list[str]) -> None:
+    """Refuse a launch that would run this tree without its regex engine (exit 1).
+
+    ``hermes_bootstrap`` calls this after activation. A failed dependency sync leaves the previous
+    generation selected (the degraded launch above); product code matches through ``hermes_re``,
+    so every match there would raise, and the CLI, gateways and workers stop here instead of
+    failing turn by turn. Exit 1, not EX_CONFIG: the cause is temporary, and every supervisor
+    Hermes generates restarts on 1, so a refused gateway runs again once the dependencies are
+    installed (while its supervisor still retries); ``gateway stop`` / ``uninstall`` end those
+    retries. ``update`` always passes: it can be the repair (a self-managed checkout's launch
+    retries the sync), it refuses its own run (:func:`refuse_update_without_regex_engine`), and the
+    import-health probe of every shipped updater imports the CLI as ``['hermes', 'update']`` and
+    reads any exit as a broken checkout. The completion tails are update machinery too.
+    """
+    if not regex_engine_missing():
+        return
+    from hermes_cli._parser import command_argv
+
+    command = command_argv(argv)
+    if command[:1] == ["update"] or _is_tail_script(Path(project_root).resolve(), sys.argv[0]):
+        return
+    if _runs_without_regex_engine(command) or _METADATA_FLAGS & set(argv):
+        print(f"hermes: warning: {REGEX_ENGINE_MISSING}; anything that matches text fails until they are "
+              f"installed: {REGEX_ENGINE_REPAIR}", file=sys.stderr, flush=True)
+        return
+    print(f"hermes: cannot start: {REGEX_ENGINE_MISSING}; {REGEX_ENGINE_REPAIR}", file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+def refuse_update_without_regex_engine() -> None:
+    """Stop ``hermes update`` before its first step when the regex engine is missing (exit 1).
+
+    The update's own steps match text (proxy settings, the pulled tree's checks, unit repair,
+    redaction), so on these dependencies it would stop half-way with gateways paused. Where its
+    launch retries the dependency sync (a self-managed git checkout) a successful sync relaunches
+    the command on the new generation and it never gets here; elsewhere (a ZIP install,
+    ``HERMES_DISABLE_LAZY_INSTALLS``) nothing at launch syncs, so the stop names
+    ``hermes pm install``, which installs them without matching any text.
+    """
+    if regex_engine_missing():
+        print(f"✗ Cannot update: {REGEX_ENGINE_MISSING}, and installing them did not finish.")
+        print("  Fix the cause (network access; a C++ compiler where google-re2 has no prebuilt wheel), "
+              "run `hermes pm install` to install them, then re-run `hermes update`.")
+        sys.exit(1)
 
 
 def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path | None:

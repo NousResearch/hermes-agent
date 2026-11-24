@@ -101,6 +101,10 @@ def test_backed_off_failed_sync_boots_on_the_previous_dependencies(tmp_path, mon
     (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\nname='example'\n", encoding="utf-8")
     (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+    # The previous generation boots (BOOTED), so it models one that has the engine (a post-S0 release).
+    engine = root / "venv" / f"lib/python{sys.version_info[0]}.{sys.version_info[1]}/site-packages/re2"
+    engine.mkdir(parents=True)
+    (engine / "__init__.py").write_text("", encoding="utf-8")
 
     for launch in range(1, 5):
         result, generations = _launch(tmp_path, root, "fail", launch, argv)

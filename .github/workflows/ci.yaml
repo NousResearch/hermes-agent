@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: ''
+      upgrade_base:
+        description: "Start versions of the e2e-upgrade suites: release tags (or commits, or an updater generation name), comma-separated; each becomes its own shard set. Empty: the newest release before HEAD. Sets HERMES_E2E_UPGRADE_BASE (tests/e2e/core/upgrade/_install_helpers.upgrade_base)."
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       commit:
@@ -158,6 +163,7 @@ jobs:
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
       e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
       strict_acceptance: ${{ inputs.strict_acceptance || '' }}
+      upgrade_base: ${{ inputs.upgrade_base || '' }}
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the

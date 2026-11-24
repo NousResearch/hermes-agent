@@ -30,8 +30,20 @@ For self-managed source installs, the pre-import launcher compares PM's recorded
 successful dependency stamp with the current inputs. Missing or stale completion
 state triggers a sync, then the same command restarts on the managed Python before
 loading application dependencies. Failed syncs keep the previous selection and
-retry on the next launch; no pending-update marker is required. Developer checkouts
-and packaged installations retain their existing owner.
+retry on the next launch; no pending-update marker is required. A previous
+selection without `google-re2` (the regex engine Hermes matches text with) cannot
+run this checkout, so such a launch refuses to start: it prints
+`hermes: cannot start: ...`, names `hermes pm install` (which installs the
+dependencies without matching any text) and exits 1. Its
+automatic sync ignores the usual attempt limit but keeps the 15-minute backoff,
+doubling after each further failure up to 6 hours, so the launch heals by itself
+once the cause (network access) is gone. `hermes update` still
+starts: where its launch retries the sync it repairs the install, and while the
+engine is still missing it stops before changing anything and names
+`hermes pm install` too. `hermes pm`, `hermes doctor`, `hermes gateway status`,
+`hermes gateway stop`, `hermes gateway uninstall`, `--version` and `--help`
+start with a warning instead, and past the attempt limit they do not wait for a sync.
+Developer checkouts and packaged installations retain their existing owner.
 
 Historical updaters can still execute old Python code after replacing the source
 tree. Compatibility entry points start a fresh child, wait for completion, and
@@ -309,6 +321,19 @@ GCC equivalent is (`gcc`/`g++`, as on stock Debian, Ubuntu and WSL), PM points
 as `-pthread`, and defaults `AR` to the host's `ar`. A `CC`, `CXX`, `LDSHARED`,
 `LDCXXSHARED` or `AR` you set yourself wins. With no compiler at all, a source
 build fails with a hint to install one (`sudo apt install build-essential`).
+
+On musl Linux `google-re2` (the regular-expression engine, a core dependency) has
+no wheel, so PM compiles its source distribution when it builds an environment.
+It links the system RE2 and Abseil: install `build-base re2-dev abseil-cpp-dev`
+on Alpine first. The build needs pybind11, which the source distribution does
+not declare; `[tool.uv.extra-build-dependencies]` in `pyproject.toml` supplies
+the pinned version, and plugin workspaces inherit it. uv does not record that
+build requirement in `uv.lock`. A google-re2 build that stops on a missing
+`re2/` or `absl/` header (gcc or clang wording), or that finds no compiler, fails
+with a hint naming the compiler and header packages for Alpine, Debian/Ubuntu,
+Fedora, Arch and macOS. macOS 12 and older, glibc older than
+2.27 (x86_64) or 2.26 (aarch64) and other CPUs have no wheel either and build
+the same way.
 
 Clone the repository and select your branch before preparing dependencies:
 

@@ -101,8 +101,8 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
 )
 
 BY_HAND: tuple[tuple[str, str], ...] = (
-    ("cron/lifecycle_guard.py", 'r"|(?:\\b(?:p?kill|taskkill|stop-process)\\b[^\\n]*\\bhermes\\b[^\\n]*\\bgateway)"'),
-    ("cron/lifecycle_guard.py", '_GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|\\bhermes\\b[^\\n]*\\bgateway\\b|\\bgateway\\b[^\\n]*\\bhermes\\b")'),
+    ("cron/lifecycle_guard.py", 'r"|(?:\\b(?:p?kill|taskkill|stop-process)[^\\w\\n](?:[^\\n]*[^\\w\\n])?hermes[^\\w\\n](?:[^\\n]*[^\\w\\n])?gateway)"'),
+    ("cron/lifecycle_guard.py", "_GATEWAY_CMDLINE_TOKEN_RE = re.compile("),
     ("gateway/status.py", "def _gateway_command_subcommand("),
     ("gateway/status.py", 'entry = sys.modules.get("hermes_cli.main")'),
     ("gateway/status_inline_source.py", 'r"\\s*from\\s+(?P<target>hermes_cli\\.main)\\s+import\\s+main\\s*;\\s*sys\\.exit\\(\\s*main\\(\\)\\s*\\)")),'),

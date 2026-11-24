@@ -22,6 +22,7 @@ from hermes_cli._subprocess_compat import no_prompt_git_kwargs as _no_prompt_git
 from hermes_cli.config import get_hermes_home
 from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort, _record_stop
+from hermes_cli import venv_sync as _venv_sync  # a module import: old processes hold an older venv_sync
 # Captured BEFORE a checkout swap: parent transport/lifecycle never imports new code.
 from hermes_cli.update_completion import run_completion
 from hermes_cli.update_channel import adopt_retired_channel
@@ -1778,6 +1779,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # _old_updater.in_historical_update(); historical on-disk updaters do not
     # declare this local, so only they hand off through retired shims.
     _hermes_current_updater_frame = True
+    _venv_sync.refuse_update_without_regex_engine()  # before any step that can match text
     _commit.begin_update_attempt()  # nothing an earlier update in this process armed is ours (O5)
     from hermes_cli.update_proxy_env import prefer_dotenv_proxy_env
     prefer_dotenv_proxy_env()  # the .env loaded at import beats a system proxy the Desktop injected

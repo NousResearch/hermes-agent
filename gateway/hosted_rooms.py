@@ -174,10 +174,25 @@ _SCHEMA_DDL = (
             held INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (room_id, member_id, grant_digest)
         )""")
+
+
+def _ddl_table_and_columns(ddl: str) -> tuple[str, frozenset[str]]:
+    """Table name and typed column names of one ``CREATE TABLE IF NOT EXISTS name (...)`` statement.
+
+    String code, not a regex: this runs at import, and importing must not need the regex engine."""
+    head, body = ddl.split("(", 1)
+    columns = set()
+    for line in body.split("\n"):
+        name, _, rest = line.lstrip().partition(" ")
+        kind = next((k for k in ("TEXT", "INTEGER", "REAL") if rest.startswith(k)), None)
+        after = rest[len(kind):len(kind) + 1] if kind else "_"
+        if name.replace("_", "a").isalnum() and not (after.isalnum() or after == "_"):
+            columns.add(name)
+    return head.split("EXISTS ", 1)[1].strip(), frozenset(columns)
+
+
 # (table, required columns) parsed from the DDL, in the order _schema_is_current probes them.
-_REQUIRED_COLUMNS = tuple(
-    (re.search(r"EXISTS (\w+)", ddl).group(1),
-     frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL)\b", ddl.split("(", 1)[1], re.MULTILINE))) for ddl in _SCHEMA_DDL)
+_REQUIRED_COLUMNS = tuple(_ddl_table_and_columns(ddl) for ddl in _SCHEMA_DDL)
 _REMOTE_RUN_SCHEMA_COLUMNS = _REQUIRED_COLUMNS[4][1]
 
 # --- SQL fragments (statement text must stay byte-stable after whitespace normalisation) ---

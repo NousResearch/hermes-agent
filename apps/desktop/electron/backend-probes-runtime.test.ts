@@ -53,6 +53,9 @@ assert len(specs) == 2, specs
 subprocess.run([shutil.which('uv'), 'pip', 'install', '--python', sys.executable,
                 '--target', str(dependencies), '--no-deps', *specs],
                check=True, stdout=sys.stderr, timeout=60)
+# Stand-in for google-re2: every current generation has it, and the launch guard refuses one without it.
+(dependencies / 're2').mkdir()
+(dependencies / 're2' / '__init__.py').write_text('', encoding='utf-8')
 selected = install_state_dir(root) / 'environments' / 'selected' / 'venv'
 site = site_packages(selected)
 site.mkdir(parents=True)
@@ -84,6 +87,17 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
       true,
       'Python home overrides must be scrubbed before the interpreter starts'
     )
+
+    // The probe runs the real launch path: a generation without the regex engine cannot start
+    // Hermes, so the desktop falls through to its bootstrap, which installs the dependencies.
+    const engine: string = path.join(fixture.dependencies, 're2')
+    fs.renameSync(engine, `${engine}.aside`)
+    assert.equal(
+      await canImportHermesCli(fixture.python, { cwd: REPO, env }),
+      false,
+      'a generation without google-re2 cannot start Hermes'
+    )
+    fs.renameSync(`${engine}.aside`, engine)
 
     fs.unlinkSync(path.join(fixture.site, 'selected-dependencies.pth'))
     const foreign: string = path.join(temp, 'foreign-packages')

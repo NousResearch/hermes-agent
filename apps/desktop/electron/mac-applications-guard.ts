@@ -20,7 +20,7 @@ export interface MacApplicationsGuardPreference {
 }
 
 export type MacApplicationsGuardResult =
-  | { action: 'relaunching'; location: MacUnsafeBundleLocation; skipCliProvision: true }
+  | { action: 'relaunching'; location: MacUnsafeBundleLocation }
   | {
       action: 'continue'
       reason:
@@ -42,7 +42,6 @@ export type MacApplicationsGuardResult =
         | 'user-declined'
       location?: MacUnsafeBundleLocation
       remembered?: boolean
-      skipCliProvision: boolean
       error?: string
     }
 
@@ -335,15 +334,26 @@ export function readBundleShortVersion(
   }
 }
 
-export function shouldSkipMacCliProvision(location: MacUnsafeBundleLocation | undefined): boolean {
-  return location === 'app-translocation' || location === 'read-only-volume'
-}
-
+// CLI links into a translocated or read-only bundle dangle once macOS drops the translocation or the volume
+// ejects. This is judged on the payload the links point into, whatever the launch guard decided; without a
+// home dir, classifyMacBundleLocation reports only those two locations.
 export function shouldProvisionBundledCliLinks(
-  isWindows: boolean,
-  guardResult: MacApplicationsGuardResult | null
+  payloadRoot: string,
+  log: (message: string) => void,
+  platform: NodeJS.Platform = process.platform,
+  access?: (file: string, mode: number) => void
 ): boolean {
-  return !isWindows && !guardResult?.skipCliProvision
+  if (platform === 'win32') {
+    return false
+  }
+
+  const location = platform === 'darwin' ? classifyMacBundleLocation(payloadRoot, { access }) : null
+
+  if (location) {
+    log(`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`)
+  }
+
+  return !location
 }
 
 interface InstalledCopyBlock {
@@ -400,24 +410,12 @@ function buildMovePromptOptions(appName: string, location: MacUnsafeBundleLocati
   }
 }
 
-function noteSkippedCliProvision(
-  log: (message: string) => void,
-  location: MacUnsafeBundleLocation,
-  skipCliProvision: boolean
-): void {
-  if (skipCliProvision) {
-    log(`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`)
-  }
-}
-
 async function reportInstalledCopyConflict(
   deps: Pick<MacApplicationsGuardDeps, 'appName' | 'dialog' | 'log'>,
   location: MacUnsafeBundleLocation,
   runningVersion: string,
   { existingVersion, newer }: InstalledCopyBlock
 ): Promise<MacApplicationsGuardResult> {
-  const skipCliProvision = shouldSkipMacCliProvision(location)
-
   const notice = newer
     ? {
         reason: 'conflict-newer-installed' as const,
@@ -449,9 +447,8 @@ async function reportInstalledCopyConflict(
     cancelId: 0,
     noLink: true
   })
-  noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-  return { action: 'continue', reason: notice.reason, location, skipCliProvision }
+  return { action: 'continue', reason: notice.reason, location }
 }
 
 async function attemptMoveToApplications(
@@ -462,7 +459,6 @@ async function attemptMoveToApplications(
   bundlePath: string,
   location: MacUnsafeBundleLocation
 ): Promise<MacApplicationsGuardResult> {
-  const skipCliProvision = shouldSkipMacCliProvision(location)
   const readBundleVersion = deps.readBundleVersion ?? (target => readBundleShortVersion(target))
   const exists = deps.exists ?? fs.existsSync
   const homeDir = deps.homeDir ?? os.homedir()
@@ -490,7 +486,7 @@ async function attemptMoveToApplications(
     if (moved) {
       deps.log(`[install] relocated ${deps.appName} into /Applications from ${location}; relaunching`)
 
-      return { action: 'relaunching', location, skipCliProvision: true }
+      return { action: 'relaunching', location }
     }
 
     if (blocked) {
@@ -513,15 +509,13 @@ async function attemptMoveToApplications(
         cancelId: 0,
         noLink: true
       })
-      noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-      return { action: 'continue', reason: 'conflict-running', location, skipCliProvision }
+      return { action: 'continue', reason: 'conflict-running', location }
     }
 
     deps.log('[install] move to /Applications cancelled by user')
-    noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-    return { action: 'continue', reason: 'move-cancelled', location, skipCliProvision }
+    return { action: 'continue', reason: 'move-cancelled', location }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
 
@@ -538,9 +532,8 @@ async function attemptMoveToApplications(
       cancelId: 0,
       noLink: true
     })
-    noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-    return { action: 'continue', reason: 'move-failed', location, skipCliProvision, error: message }
+    return { action: 'continue', reason: 'move-failed', location, error: message }
   }
 }
 
@@ -552,38 +545,38 @@ function precheckMacApplicationsGuard(deps: MacApplicationsGuardDeps): MacGuardP
   const platform = deps.platform ?? process.platform
 
   if (platform !== 'darwin') {
-    return { prompt: false, result: { action: 'continue', reason: 'not-macos', skipCliProvision: false } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-macos' } }
   }
 
   if (!deps.isPackaged) {
-    return { prompt: false, result: { action: 'continue', reason: 'not-packaged', skipCliProvision: false } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-packaged' } }
   }
 
   if (!isMacBundleArtifact(deps.installStamp)) {
-    return { prompt: false, result: { action: 'continue', reason: 'not-mac-bundle', skipCliProvision: false } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-mac-bundle' } }
   }
 
   if (isAutomatedDesktopLaunch(deps.env ?? process.env, deps.argv ?? process.argv)) {
-    return { prompt: false, result: { action: 'continue', reason: 'automated-environment', skipCliProvision: false } }
+    return { prompt: false, result: { action: 'continue', reason: 'automated-environment' } }
   }
 
   const bundlePath = resolveMacAppBundle(deps.app.getPath('exe'), platform)
 
   if (!bundlePath) {
-    return { prompt: false, result: { action: 'continue', reason: 'not-app-bundle', skipCliProvision: false } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-app-bundle' } }
   }
 
   if (
     typeof deps.app.isInApplicationsFolder !== 'function' ||
     typeof deps.app.moveToApplicationsFolder !== 'function'
   ) {
-    return { prompt: false, result: { action: 'continue', reason: 'api-unavailable', skipCliProvision: false } }
+    return { prompt: false, result: { action: 'continue', reason: 'api-unavailable' } }
   }
 
   const translocated = bundlePath.includes('/AppTranslocation/')
 
   if (!translocated && deps.app.isInApplicationsFolder()) {
-    return { prompt: false, result: { action: 'continue', reason: 'already-in-applications', skipCliProvision: false } }
+    return { prompt: false, result: { action: 'continue', reason: 'already-in-applications' } }
   }
 
   const location = classifyMacBundleLocation(bundlePath, {
@@ -594,19 +587,16 @@ function precheckMacApplicationsGuard(deps: MacApplicationsGuardDeps): MacGuardP
   if (!location) {
     return {
       prompt: false,
-      result: { action: 'continue', reason: 'custom-writable-location', skipCliProvision: false }
+      result: { action: 'continue', reason: 'custom-writable-location' }
     }
   }
 
   const userDataDir = deps.app.getPath('userData')
 
   if (readMacApplicationsGuardPreference(userDataDir)?.dismissed) {
-    const skipCliProvision = shouldSkipMacCliProvision(location)
-
     deps.log(`[install] /Applications move prompt suppressed by saved preference (${location}: ${bundlePath})`)
-    noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-    return { prompt: false, result: { action: 'continue', reason: 'dismissed', location, skipCliProvision } }
+    return { prompt: false, result: { action: 'continue', reason: 'dismissed', location } }
   }
 
   return { prompt: true, bundlePath, location, userDataDir }
@@ -636,14 +626,11 @@ function recordDeclinedMove(
     }
   }
 
-  const skipCliProvision = shouldSkipMacCliProvision(location)
-
   deps.log(
     `[install] user chose to keep running from ${location} (${bundlePath})${remember ? '; remembered dismissal' : ''}`
   )
-  noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-  return { action: 'continue', reason: 'user-declined', location, remembered: remember, skipCliProvision }
+  return { action: 'continue', reason: 'user-declined', location, remembered: remember }
 }
 
 export async function guardMacApplicationsLaunch(deps: MacApplicationsGuardDeps): Promise<MacApplicationsGuardResult> {
@@ -669,7 +656,6 @@ export async function guardMacApplicationsLaunch(deps: MacApplicationsGuardDeps)
     return await attemptMoveToApplications(deps, check.bundlePath, check.location)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    const skipCliProvision = shouldSkipMacCliProvision(detectedLocation)
 
     deps.log(`[install] /Applications launch guard skipped: ${message}`)
 
@@ -677,7 +663,6 @@ export async function guardMacApplicationsLaunch(deps: MacApplicationsGuardDeps)
       action: 'continue',
       reason: 'error',
       ...(detectedLocation ? { location: detectedLocation } : {}),
-      skipCliProvision,
       error: message
     }
   }

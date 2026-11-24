@@ -4815,7 +4815,7 @@ async function resolveHermesBackend(backendArgs: string[], progress?: typeof adv
   const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
-    if (shouldProvisionBundledCliLinks(IS_WINDOWS, macGuardResult)) {
+    if (shouldProvisionBundledCliLinks(payload.root, rememberLog)) {
       provisionCliLinks(payload.commands, path.join(os.homedir(), '.local', 'bin'), rememberLog)
     }
 

@@ -17,8 +17,7 @@ import {
   readBundleShortVersion,
   readMacApplicationsGuardPreference,
   resolveMacAppBundle,
-  shouldProvisionBundledCliLinks,
-  shouldSkipMacCliProvision
+  shouldProvisionBundledCliLinks
 } from './mac-applications-guard'
 import { ensureMainWindow } from './main-window-lifecycle'
 
@@ -243,8 +242,7 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(inApps.deps)).resolves.toEqual({
       action: 'continue',
-      reason: 'already-in-applications',
-      skipCliProvision: false
+      reason: 'already-in-applications'
     })
     expect(inApps.dialog.showMessageBox).not.toHaveBeenCalled()
   })
@@ -262,7 +260,7 @@ describe('guardMacApplicationsLaunch', () => {
     const { deps, dialog, app } = makeDeps(overrides)
     const result = await guardMacApplicationsLaunch(deps)
 
-    expect(result).toEqual({ action: 'continue', reason: 'automated-environment', skipCliProvision: false })
+    expect(result).toEqual({ action: 'continue', reason: 'automated-environment' })
     expect(dialog.showMessageBox).not.toHaveBeenCalled()
     expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
   })
@@ -283,8 +281,7 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'continue',
-      reason: 'custom-writable-location',
-      skipCliProvision: false
+      reason: 'custom-writable-location'
     })
     expect(dialog.showMessageBox).not.toHaveBeenCalled()
     expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
@@ -337,7 +334,7 @@ describe('guardMacApplicationsLaunch', () => {
 
     const result = await guardMacApplicationsLaunch(deps)
 
-    expect(result).toEqual({ action: 'relaunching', location: expectedLocation, skipCliProvision: true })
+    expect(result).toEqual({ action: 'relaunching', location: expectedLocation })
     expect(dialog.showMessageBox).toHaveBeenCalledOnce()
     expect(dialog.showMessageBox).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -363,8 +360,7 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'relaunching',
-      location: 'app-translocation',
-      skipCliProvision: true
+      location: 'app-translocation'
     })
     expect(dialog.showMessageBox).toHaveBeenCalledOnce()
   })
@@ -378,8 +374,7 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'user-declined',
       location: 'read-only-volume',
-      remembered: false,
-      skipCliProvision: true
+      remembered: false
     })
     expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
     expect(fs.existsSync(macApplicationsGuardPreferencePath(userDataDir))).toBe(false)
@@ -388,8 +383,7 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'user-declined',
       location: 'read-only-volume',
-      remembered: false,
-      skipCliProvision: true
+      remembered: false
     })
     expect(dialog.showMessageBox).toHaveBeenCalledTimes(2)
   })
@@ -408,8 +402,7 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'user-declined',
       location: 'app-translocation',
-      remembered: true,
-      skipCliProvision: true
+      remembered: true
     })
 
     const saved = readMacApplicationsGuardPreference(userDataDir)
@@ -426,8 +419,7 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'continue',
       reason: 'dismissed',
-      location: 'app-translocation',
-      skipCliProvision: true
+      location: 'app-translocation'
     })
     expect(dialog.showMessageBox).toHaveBeenCalledTimes(1)
   })
@@ -444,8 +436,7 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(conflictCase.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'conflict-running',
-      location: 'read-only-volume',
-      skipCliProvision: true
+      location: 'read-only-volume'
     })
     expect(conflictCase.dialog.showMessageBox).toHaveBeenCalledTimes(2)
     expect(conflictCase.dialog.showMessageBox).toHaveBeenLastCalledWith(
@@ -463,8 +454,7 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(cancelCase.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'move-cancelled',
-      location: 'read-only-volume',
-      skipCliProvision: true
+      location: 'read-only-volume'
     })
     expect(cancelCase.dialog.showMessageBox).toHaveBeenCalledTimes(1)
 
@@ -478,7 +468,6 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'move-failed',
       location: 'read-only-volume',
-      skipCliProvision: true,
       error: 'ENOSPC: no space left on device'
     })
     expect(errorCase.dialog.showMessageBox).toHaveBeenCalledTimes(2)
@@ -504,8 +493,7 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(downgrade.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'conflict-newer-installed',
-      location: 'read-only-volume',
-      skipCliProvision: true
+      location: 'read-only-volume'
     })
     expect(downgradeDecision.value).toBe(false)
     expect(downgrade.dialog.showMessageBox).toHaveBeenCalledTimes(2)
@@ -531,8 +519,7 @@ describe('guardMacApplicationsLaunch', () => {
 
       await expect(guardMacApplicationsLaunch(userApps.deps)).resolves.toMatchObject({
         action: 'continue',
-        reason: 'conflict-newer-installed',
-        skipCliProvision: true
+        reason: 'conflict-newer-installed'
       })
       expect(userAppsDecision.value).toBe(false)
     }
@@ -556,8 +543,7 @@ describe('guardMacApplicationsLaunch', () => {
 
       await expect(guardMacApplicationsLaunch(allowed.deps)).resolves.toEqual({
         action: 'relaunching',
-        location: 'app-translocation',
-        skipCliProvision: true
+        location: 'app-translocation'
       })
       expect(decision.value).toBe(true)
     }
@@ -581,8 +567,7 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'continue',
       reason: 'conflict-unverified-installed',
-      location: 'read-only-volume',
-      skipCliProvision: true
+      location: 'read-only-volume'
     })
     expect(decision.value).toBe(false)
     expect(dialog.showMessageBox).toHaveBeenLastCalledWith(
@@ -595,50 +580,6 @@ describe('guardMacApplicationsLaunch', () => {
     expect(readMacApplicationsGuardPreference(userDataDir)).toBeNull()
   })
 
-  it('skips CLI symlink provisioning on read-only or translocated bundles, and keeps it on writable locations', async () => {
-    expect(shouldSkipMacCliProvision('app-translocation')).toBe(true)
-    expect(shouldSkipMacCliProvision('read-only-volume')).toBe(true)
-    expect(shouldSkipMacCliProvision('downloads-folder')).toBe(false)
-    expect(shouldSkipMacCliProvision('desktop-folder')).toBe(false)
-    expect(shouldSkipMacCliProvision(undefined)).toBe(false)
-
-    const dmgDecline = makeDeps()
-
-    dmgDecline.dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: true })
-
-    const dmgResult = await guardMacApplicationsLaunch(dmgDecline.deps)
-
-    expect(dmgResult).toMatchObject({ action: 'continue', reason: 'user-declined', skipCliProvision: true })
-    expect(shouldProvisionBundledCliLinks(false, dmgResult)).toBe(false)
-    expect(dmgDecline.logs.some(line => line.includes('skipping ~/.local/bin CLI symlink provisioning'))).toBe(true)
-
-    const dmgDismissed = await guardMacApplicationsLaunch(dmgDecline.deps)
-
-    expect(dmgDismissed).toMatchObject({ action: 'continue', reason: 'dismissed', skipCliProvision: true })
-    expect(shouldProvisionBundledCliLinks(false, dmgDismissed)).toBe(false)
-
-    const downloadsDecline = makeDeps({ access: () => undefined })
-
-    downloadsDecline.app.getPath = vi.fn((name: string) =>
-      name === 'exe'
-        ? '/Users/alice/Downloads/Hermes Agent.app/Contents/MacOS/Hermes Agent'
-        : downloadsDecline.userDataDir
-    ) as unknown as MacApplicationsGuardDeps['app']['getPath']
-    downloadsDecline.dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
-
-    const downloadsResult = await guardMacApplicationsLaunch(downloadsDecline.deps)
-
-    expect(downloadsResult).toMatchObject({
-      action: 'continue',
-      reason: 'user-declined',
-      location: 'downloads-folder',
-      skipCliProvision: false
-    })
-    expect(shouldProvisionBundledCliLinks(false, downloadsResult)).toBe(true)
-    expect(shouldProvisionBundledCliLinks(true, downloadsResult)).toBe(false)
-    expect(shouldProvisionBundledCliLinks(false, null)).toBe(true)
-  })
-
   it('recovers cleanly from corrupt saved preferences and unexpected startup errors', async () => {
     const { deps, dialog, userDataDir } = makeDeps()
 
@@ -647,8 +588,7 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toMatchObject({
       action: 'continue',
-      reason: 'user-declined',
-      skipCliProvision: true
+      reason: 'user-declined'
     })
 
     const broken = makeDeps()
@@ -660,10 +600,75 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(broken.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'error',
-      skipCliProvision: false,
       error: 'NSBundle unavailable'
     })
     expect(broken.logs.some(line => line.includes('NSBundle unavailable'))).toBe(true)
+  })
+})
+
+describe('shouldProvisionBundledCliLinks', () => {
+  const erofs = () => {
+    throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+  }
+
+  const writable = () => undefined
+
+  it.each([
+    [
+      'a mounted DMG',
+      '/Volumes/Hermes Agent/Hermes Agent.app/Contents/Resources/agent-payload',
+      erofs,
+      'read-only-volume'
+    ],
+    [
+      'App Translocation',
+      '/private/var/folders/aa/bb/T/AppTranslocation/1111/d/Hermes Agent.app/Contents/Resources/agent-payload',
+      writable,
+      'app-translocation'
+    ]
+  ] as const)(
+    'skips CLI links into %s whatever the launch guard decided',
+    async (_label, payloadRoot, access, location) => {
+      // An automated launch never prompts, so the guard has no location to report.
+      const { deps } = makeDeps({ env: { HERMES_DESKTOP_USER_DATA_DIR: '/tmp/smoke-ud' }, access })
+
+      await expect(guardMacApplicationsLaunch(deps)).resolves.toMatchObject({ reason: 'automated-environment' })
+
+      const logs: string[] = []
+
+      expect(shouldProvisionBundledCliLinks(payloadRoot, line => logs.push(line), 'darwin', access)).toBe(false)
+      expect(logs).toEqual([`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`])
+    }
+  )
+
+  it('links a payload on a writable or merely root-owned volume, and keeps Linux and Windows as they were', () => {
+    const eacces = () => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    }
+
+    const log = vi.fn()
+
+    expect(
+      shouldProvisionBundledCliLinks(
+        '/Users/alice/Downloads/Hermes Agent.app/Contents/Resources/agent-payload',
+        log,
+        'darwin',
+        writable
+      )
+    ).toBe(true)
+    expect(
+      shouldProvisionBundledCliLinks(
+        '/Applications/Hermes Agent.app/Contents/Resources/agent-payload',
+        log,
+        'darwin',
+        eacces
+      )
+    ).toBe(true)
+    expect(shouldProvisionBundledCliLinks('/tmp/.mount_hermes/resources/agent-payload', log, 'linux', erofs)).toBe(true)
+    expect(
+      shouldProvisionBundledCliLinks('C:\\Program Files\\Hermes\\resources\\agent-payload', log, 'win32', writable)
+    ).toBe(false)
+    expect(log).not.toHaveBeenCalled()
   })
 })
 
@@ -697,7 +702,7 @@ describe('macGuardAllowsWindows', () => {
     secondLaunch()
     expect(createWindow).toHaveBeenCalledOnce()
 
-    guardResult = { action: 'relaunching', location: 'read-only-volume', skipCliProvision: true }
+    guardResult = { action: 'relaunching', location: 'read-only-volume' }
     secondLaunch()
     expect(createWindow).toHaveBeenCalledOnce()
   })

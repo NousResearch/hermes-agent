@@ -471,6 +471,9 @@ _SEARCH_CALL = '<tool_call>{"name": "search_files", "arguments": {"path": "/app"
     # Unclosed: the call runs to the end.
     ('Then <tool_call>{"name": "search_files", "arguments": {"path": "/a', "search_files"),
     (FRAGMENT_TAILS[1], ""),
+    # The last tool name in the text sits inside the call's arguments: the call around it counts.
+    ('{"name": "terminal", "arguments": {"spec": {"name": "read_file"}}}', "terminal"),
+    ('<tool_call>{"name": "terminal", "arguments": {"spec": {"name": "read_file"}}}</tool_call>', "terminal"),
 ])
 def test_trailing_scan_finds_a_call_the_text_ends_on(text, name):
     from agent.leaked_tool_call import find_trailing_leaked_tool_call
@@ -484,6 +487,7 @@ def test_trailing_scan_finds_a_call_the_text_ends_on(text, name):
     'Example: {"name": "read_file", "arguments": {"path": "/x"}} is how a call looks; not needed.',
     "No call at all.",
     None,
+    f"{_SEARCH_CALL}\n<function=launch_rockets><parameter=n>3</parameter></function>",
 ])
 def test_trailing_scan_ignores_calls_followed_by_more_text(text):
     from agent.leaked_tool_call import find_trailing_leaked_tool_call
@@ -527,3 +531,26 @@ def test_trailing_scan_judges_many_calls_by_the_last_one_in_linear_time():
     started = time.perf_counter()
     assert find_trailing_leaked_tool_call(drafts + "None of these are needed; here is the answer.", TOOLS) is None
     assert time.perf_counter() - started < 0.1
+
+
+_ADVERSARIAL = {
+    "xml_openers": "<function=terminal>" * 20_000,
+    "xml_openers_spaced": " x ".join(["<function=terminal>"] * 20_000),
+    "hermes_unclosed": '<tool_call>{"name": "terminal" ' * 10_000,
+    "gemma_unclosed": "<|tool_call>call:terminal{" * 10_000,
+    "bare_json_unclosed": '{"name": "terminal", "arguments": ' * 10_000,
+    "harmony": "to=functions.terminal " * 20_000,
+}
+
+
+@pytest.mark.parametrize("suffix", ["", " That was all just thinking; the answer is 42."])
+@pytest.mark.parametrize("key", sorted(_ADVERSARIAL))
+def test_scans_stay_fast_on_many_unclosed_openers(key, suffix):
+    # Each unclosed opener searches ahead for its closer: walking every one of them is quadratic.
+    from agent.leaked_tool_call import find_trailing_leaked_tool_call
+
+    text = _ADVERSARIAL[key] + suffix
+    for scan in (find_leaked_tool_call, find_trailing_leaked_tool_call):
+        started = time.perf_counter()
+        scan(text, TOOLS)
+        assert time.perf_counter() - started < 0.2, scan.__name__

@@ -9,7 +9,8 @@ markdown code never count.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 import json
 import re
 from typing import Any, Callable, Collection, Iterator, Optional
@@ -45,6 +46,16 @@ _CALL_TOKENS = ("<tool_call>", "<|tool_call>", "<function=", "<parameter=", "to=
 _WRAPPER_OPENER_RE = re.compile(r"<\|?tool_call>\s*")
 _NAMED_OPENER_RE = re.compile(r"(?:<function=|<parameter=|to=functions\.)[\w.\-]*")
 _GEMMA_CALL_PREFIX_RE = re.compile(r"c(?:a(?:l(?:l(?::[\w.\-]*)?)?)?)?")
+# Where a named call starts, in any format: one linear pass finds the last of them. Groups 1-3 sit
+# at the call's own start (XML, gemma, harmony); group 4 is a JSON "name" key inside the call.
+_CALL_MARKER_RE = re.compile(
+    r"<function=(" + _NAME + r")>|<\|tool_call>\s*call:(" + _NAME + r")|to=functions\.(" + _NAME + r")"
+    r'|"name"\s*:\s*"(' + _NAME + r')"'
+)
+_JSON_MARKER = 4
+# Known-tool markers tried from the end when the last one is not itself a call (a "name" key inside
+# another call's arguments). A small constant: each try rescans only the text after its marker.
+_TRAILING_MARKERS = 4
 
 _DECODER = json.JSONDecoder()
 
@@ -120,10 +131,9 @@ def _hermes_json(text: str) -> Iterator[_Match]:
 
 def _xml_function(text: str) -> Iterator[_Match]:
     for m in _XML_FUNCTION_RE.finditer(text):
-        close = text.find("</function>", m.end())
         nxt = _XML_FUNCTION_RE.search(text, m.end())
-        if nxt and (close < 0 or nxt.start() < close):
-            close = -1  # a second call opened before this one closed
+        # A closer after the next opener doesn't close this call: bound the search there (linear).
+        close = text.find("</function>", m.end(), nxt.start() if nxt else len(text))
         body = text[m.end():close if close >= 0 else len(text)]
         balanced = body.count("<parameter=") == body.count("</parameter>")
         if close >= 0:
@@ -205,25 +215,40 @@ def find_trailing_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Op
     """The leaked call ``text`` ends on (only whitespace after it), or None. Calls drafted mid-text
     and then set aside are stepped past; an unclosed call runs to the end, so it always counts. The
     cut-off start of one more call after the last one (``<tool``, ``<function=na``) also counts as
-    the tail. One pass per scanner over the whole text, so the cost stays linear in the number of calls."""
+    the tail. Cost: one pass to find the last call's start, then single-call detection from there."""
     if not isinstance(text, str) or not text or not tool_names:
         return None
     masked = _mask_code(text)
-    last: Optional[_Match] = None
-    if any(name in text for name in tool_names):
-        for scan in _SCANNERS:
-            for start, raw_name, fmt, complete, end in scan(masked):
-                name = _known(raw_name, tool_names)
-                # The call reaching furthest is the last one; on a tie the outer (earlier) match wins.
-                if name and (last is None or end > last[4] or (end == last[4] and start < last[0])):
-                    last = (start, name, fmt, complete, end)
-    if last is None:
+    if not any(name in text for name in tool_names):
         return _xml_fragment(text, masked)  # a fragment ends the text by construction
-    start, name, fmt, complete, end = last
-    if not _is_call_tail(text[end:]):
-        return None
-    return LeakedToolCall(name=name, fmt=fmt, snippet=text[start:start + _SNIPPET_CHARS], complete=complete,
-                          end=end)
+    markers: deque[re.Match] = deque(maxlen=_TRAILING_MARKERS)
+    for m in _CALL_MARKER_RE.finditer(masked):
+        if _known(m.group(m.lastindex), tool_names):
+            markers.append(m)
+    tried: set[int] = set()
+    for m in reversed(markers):
+        start = _call_start(masked, m)
+        if start in tried:
+            continue
+        tried.add(start)
+        leak = find_leaked_tool_call(text[start:], tool_names)
+        if leak is not None:
+            end = start + leak.end
+            return replace(leak, end=end) if _is_call_tail(text[end:]) else None
+    return None if markers else _xml_fragment(text, masked)
+
+
+def _call_start(masked: str, marker: re.Match) -> int:
+    """Where the call holding ``marker`` starts: the marker itself, or for a JSON "name" key the open
+    ``<tool_call>`` wrapper around it, else the nearest ``{`` before it."""
+    pos = marker.start()
+    if marker.lastindex != _JSON_MARKER:
+        return pos
+    wrapper = masked.rfind("<tool_call>", 0, pos)
+    if wrapper > masked.rfind(_HERMES_CLOSE, 0, pos):
+        return wrapper
+    brace = masked.rfind("{", 0, pos)
+    return brace if brace >= 0 else pos
 
 
 def _is_call_tail(rest: str) -> bool:

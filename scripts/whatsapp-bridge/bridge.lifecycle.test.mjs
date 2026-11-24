@@ -20,7 +20,8 @@ async function startBridge(t, { holdVersion = false } = {}) {
   writeFileSync(stub, `
     export * from ${JSON.stringify(baileys)};
     import { EventEmitter } from 'node:events';
-    let socket, releaseVersion, subject = 'Family', failMetadata = false, metadataCalls = 0;
+    let socket, releaseVersion, releaseMetadata, holdMetadata = false;
+    let subject = 'Family', failMetadata = false, metadataCalls = 0;
     export async function useMultiFileAuthState() {
       return { state: { creds: { me: { id: '${SENDER}' } } }, saveCreds() {} };
     }
@@ -37,7 +38,11 @@ async function startBridge(t, { holdVersion = false } = {}) {
         async groupMetadata() {
           metadataCalls++;
           if (failMetadata) throw new Error('metadata unavailable');
-          return { subject, participants: [] };
+          const snapshot = subject;
+          if (holdMetadata) {
+            await new Promise(resolve => { releaseMetadata = resolve; process.send({ type: 'metadata-pending' }); });
+          }
+          return { subject: snapshot, participants: [] };
         },
         async sendMessage(chatId, message) { return { key: { id: 'sent-poll', remoteJid: chatId }, message }; },
         end() {
@@ -52,8 +57,10 @@ async function startBridge(t, { holdVersion = false } = {}) {
       });
       return socket;
     }
-    process.on('message', async ({ id, event, data, name, fail, release }) => {
+    process.on('message', async ({ id, event, data, name, fail, release, hold, releaseGroupMetadata }) => {
       if (release) releaseVersion();
+      if (hold !== undefined) holdMetadata = hold;
+      if (releaseGroupMetadata) { holdMetadata = false; releaseMetadata(); }
       if (name !== undefined) subject = name;
       if (fail !== undefined) failMetadata = fail;
       if (event) for (const listener of socket.ev.listeners(event)) await listener(data);
@@ -166,6 +173,17 @@ test('inbound group subjects are cached, refreshed on rename, and used for poll 
   const votes = await bridge.request('messages');
   assert.equal(votes.length, 1);
   assert.equal(votes[0].chatName, 'Friends');
+
+  await bridge.command({ hold: true, event: 'groups.update', data: [{ id: GROUP }] });
+  const paused = once(bridge.child, 'message');
+  const pending = bridge.command(inbound('pending'));
+  assert.equal((await paused)[0].type, 'metadata-pending');
+  await bridge.command({ name: 'Renamed again', event: 'groups.update', data: [{ id: GROUP, subject: 'Renamed again' }] });
+  await bridge.command({ releaseGroupMetadata: true });
+  await pending;
+  await bridge.request('messages');
+  await bridge.command(inbound('after-pending-rename'));
+  assert.equal((await bridge.request('messages'))[0].chatName, 'Renamed again');
 });
 
 test('unavailable group metadata preserves messages and does not change DM names', { timeout: 15000 }, async t => {

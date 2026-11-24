@@ -421,7 +421,10 @@ const groupSubjectCache = new Map();
 
 async function getGroupSubject(socket, chatId) {
   const cached = groupSubjectCache.get(chatId);
-  if (cached) return cached;
+  if (cached?.subject) return cached.subject;
+  const entry = {};
+  groupSubjectCache.set(chatId, entry);
+  if (groupSubjectCache.size > 256) groupSubjectCache.delete(groupSubjectCache.keys().next().value);
   let timer;
   try {
     // Metadata is optional context: a stalled lookup must not stop inbound delivery.
@@ -431,14 +434,15 @@ async function getGroupSubject(socket, chatId) {
     ]);
     const subject = metadata?.subject;
     if (typeof subject === 'string' && subject.trim()) {
-      groupSubjectCache.set(chatId, subject);
-      if (groupSubjectCache.size > 256) groupSubjectCache.delete(groupSubjectCache.keys().next().value);
+      // A rename or socket replacement may have invalidated this lookup while it was in flight.
+      if (groupSubjectCache.get(chatId) === entry) entry.subject = subject;
       return subject;
     }
   } catch {
     // A transient metadata failure must not discard the message or cache the fallback forever.
   } finally {
     clearTimeout(timer);
+    if (!entry.subject && groupSubjectCache.get(chatId) === entry) groupSubjectCache.delete(chatId);
   }
   return null;
 }

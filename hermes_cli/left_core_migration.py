@@ -212,11 +212,25 @@ yuanbao_in_use = platform_in_use(
 
 # DingTalk: core's ``_is_connected`` / env gate needed Client ID + Client Secret (block ``extra`` or env). Its
 # ``hermes-dingtalk`` bundle carried only core tools; a platform that selected it keeps resolving it once the
-# plugin registers the platform. A bare ``dingtalk`` in plugins.disabled did not stop core's adapter.
-dingtalk_in_use = platform_in_use(
-    "dingtalk", plugin_keys=("platforms/dingtalk", "dingtalk-platform"),
+# plugin registers the platform. A bare ``dingtalk`` in plugins.disabled did not stop core's adapter. The
+# bundled plugin's standalone sender (cron / cross-platform delivery) also ran on the robot webhook alone.
+_DINGTALK_PLUGIN_KEYS = ("platforms/dingtalk", "dingtalk-platform")
+_dingtalk_stream_or_tools_in_use = platform_in_use(
+    "dingtalk", plugin_keys=_DINGTALK_PLUGIN_KEYS,
     cred_sets=((("client_id", "DINGTALK_CLIENT_ID"), ("client_secret", "DINGTALK_CLIENT_SECRET")),),
     toolsets=("hermes-dingtalk",))
+
+
+def dingtalk_in_use(home: Path, *, process_env: bool = False) -> bool:
+    if _dingtalk_stream_or_tools_in_use(home, process_env=process_env):
+        return True
+    if _plugins_listed(home, _DINGTALK_PLUGIN_KEYS)[1]:
+        return False
+    # The standalone sender works without Stream Mode credentials, even when Stream Mode is disabled.
+    block = _merged_platform_block(home, "dingtalk")
+    extra = _platform_config(block).extra if block is not None else {}
+    return bool(str(extra.get("webhook_url") or "").strip()
+                or _home_env(home, "DINGTALK_WEBHOOK_URL", process_env=process_env))
 
 
 # ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports

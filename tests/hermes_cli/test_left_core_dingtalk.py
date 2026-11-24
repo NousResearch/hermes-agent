@@ -50,7 +50,6 @@ def _dingtalk():
     ("", "platform_toolsets:\n  telegram: [hermes-dingtalk]\n", True),  # resolves only once the platform registers
     ("", "", False),
     ("DINGTALK_CLIENT_ID=cid\n", "", False),  # half a credential pair never enabled the adapter
-    ("DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=x\n", "", False),  # cron-only sender
     ("", "platforms:\n  dingtalk:\n    extra: {client_id: c}\n", False),
     (_CREDS, "platforms:\n  dingtalk:\n    enabled: false\n", False),
     (_CREDS, "dingtalk:\n  enabled: false\n", False),
@@ -61,6 +60,21 @@ def _dingtalk():
 ])
 def test_dingtalk_in_use_matches_what_core_ran(tmp_path, env, config, in_use):
     assert lcm.dingtalk_in_use(_home(tmp_path, env=env, config=config)) is in_use
+
+
+@pytest.mark.parametrize("from_env", [True, False], ids=["dotenv", "yaml-disabled-stream"])
+def test_webhook_only_dingtalk_home_migrates(tmp_path, from_env):
+    url = "https://oapi.dingtalk.com/robot/send?access_token=fixture"
+    env = f"DINGTALK_WEBHOOK_URL={url}\n" if from_env else ""
+    config = "" if from_env else f"platforms:\n  dingtalk:\n    enabled: false\n    extra: {{webhook_url: '{url}'}}\n"
+    home = _home(tmp_path, env=env, config=config)
+
+    def install(name):
+        (home / "plugins" / name).mkdir(parents=True)
+        return {"ok": True}
+
+    assert lcm.migrate_home(home, install=install, say=lambda _: None) == ["dingtalk"]
+    assert lcm.migrate_home(home, install=install, say=lambda _: None) == []
 
 
 def test_a_disable_in_legacy_gateway_json_vetoes_env_credentials(tmp_path):

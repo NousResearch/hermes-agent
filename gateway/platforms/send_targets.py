@@ -43,6 +43,7 @@ class StandaloneSendPolicy:
     all_sends: bool = False  # every send bypasses it, text included (Discord)
     # send_message may use the standalone sender while ``platforms.<name>`` is disabled or absent, when the
     # entry's ``is_connected`` still sees credentials (a send-only home that never runs the poller: Weixin).
+    # Needs ``all_sends`` and a ``standalone_sender_fn``: only that sender ever runs for the platform.
     sends_while_disabled: bool = False
     captionable: bool = False  # one captionable file + short text ride as the media caption
     # Non-final chunks get ``media_files=[]`` (True) or ``media_files=None`` (False).

@@ -272,15 +272,22 @@ def _resolve_platform_config(platform_name, config):
 
 
 def _send_only_pconfig(entry, pconfig):
-    """An enabled copy of a disabled/absent platform's config for a plugin whose policy sends while
-    disabled and whose ``is_connected`` sees credentials (config extras or the profile's env), else None."""
+    """The disabled/absent platform's own config, enabled, for a plugin whose policy sends while disabled
+    and routes every send through its registered standalone sender (``all_sends``), when its
+    ``is_connected`` sees credentials (config or the profile's env); else None."""
+    import dataclasses
     from gateway.config import PlatformConfig
     policy = getattr(entry, "standalone_send", None)
-    if not (policy is not None and policy.sends_while_disabled and entry.is_connected is not None):
+    if not (policy is not None and policy.sends_while_disabled and policy.all_sends
+            and entry.standalone_sender_fn is not None and entry.is_connected is not None):
         return None
-    candidate = PlatformConfig(enabled=True, token=getattr(pconfig, "token", None),
-                               extra=dict(getattr(pconfig, "extra", None) or {}))
-    return candidate if entry.is_connected(candidate) else None
+    candidate = dataclasses.replace(pconfig, enabled=True) if pconfig is not None else PlatformConfig(enabled=True)
+    try:
+        connected = entry.is_connected(candidate)
+    except Exception as exc:  # health: allow BLE001 -- a plugin's credential probe must not escape send's JSON errors
+        logger.debug("is_connected for %s raised: %s", entry.name, exc)
+        return None
+    return candidate if connected else None
 
 
 def _not_configured_error(platform_name, platform, entry):

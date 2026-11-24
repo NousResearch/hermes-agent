@@ -170,8 +170,9 @@ def test_stable_promotion_publishes_unversioned_dmg_and_downloads_page(
 ):
     monkeypatch.setattr(urllib.request, "urlopen", https_origin.opener)
     manifest, dmg_bytes = _stage_stable_release(tmp_path, r2_server, https_origin, version="1.2.3")
-    orphan = f"releases/tag/{manifest['archive']}/HermesBundled-1.2.3-linux-x64.AppImage"
-    r2_server.store[orphan] = (b"diagnostic linux orphan", '"e"')
+    # Same version and table-shaped, so a page built from a bucket listing would show it.
+    orphan = f"releases/tag/{manifest['archive']}/HermesLight-1.2.3-win-x64.msix"
+    r2_server.store[orphan] = (b"unreceipted light msix", '"e"')
     r2_server.requests.clear()
 
     artifacts.promote(manifest, tmp_path / "promote", https_origin.base)
@@ -211,6 +212,7 @@ def test_stable_promotion_publishes_unversioned_dmg_and_downloads_page(
     assert f"{https_origin.base}/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-win-arm64.msix" in page
     assert "Attempt builds are not upgrade-safe" not in page
     assert orphan not in page
+    assert "Hermes Light" not in page
     assert page.count("Passed") == len(SMOKE_RESULTS)
 
     r2_server.requests.clear()

@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { $widthClass } from '@/app/redesign/breakpoints'
+import { $developerToolShown, toggleDeveloperToolPanel } from '@/app/redesign/developer-tool-panel'
 import { PortalBandAgentSettings } from '@/app/redesign/portal-agent-settings'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
@@ -186,6 +187,8 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   const overlayPanes = useStore($narrowOverlayPaneIds)
   const browserHost = hostHas('narrowOverlayChrome')
   const overlayChrome = narrow && browserHost
+  const portal = usePortalShell()
+  const toolShown = useStore($developerToolShown)
   const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
 
   const edge = (id: string, dockedOpen: boolean, toggleDocked: () => void): SidebarEdge => {
@@ -203,7 +206,11 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
 
   return {
     left: edge(CHAT_SIDEBAR_PANE_ID, leftSideOpen, toggleLeftSide),
-    right: edge(rightOverlayId, fileBrowserOpen, toggleRightSide)
+    // The redesign's right side is its one tool panel, whichever zone stands outermost.
+    right:
+      portal && !narrow
+        ? { open: toolShown, expanded: browserHost ? toolShown : undefined, toggle: toggleDeveloperToolPanel }
+        : edge(rightOverlayId, fileBrowserOpen, toggleRightSide)
   }
 }
 

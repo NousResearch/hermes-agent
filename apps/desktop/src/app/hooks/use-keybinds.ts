@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
+import { toggleDeveloperToolPanel } from '@/app/redesign/developer-tool-panel'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
@@ -367,7 +368,18 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // ⌘J toggles the physical right side — whatever column lives there in the
     // live tree (the Browser preview column, the files column). Falls back to
     // the terminal when nothing lives on the right (terminal-on-bottom).
-    'view.toggleRightSidebar': () => (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
+    // The redesign's right side is its one tool panel (as the band's button, titlebar-controls.tsx).
+    'view.toggleRightSidebar': () => {
+      if (toggleDeveloperToolPanel()) {
+        return
+      }
+
+      if (layoutHasRightSide()) {
+        toggleRightSide()
+      } else {
+        toggleTerminalPane()
+      }
+    },
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.toggleProfileRail': toggleProfileRailVisible,

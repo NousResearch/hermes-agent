@@ -6,7 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import { $narrowViewport } from '@/components/pane-shell/tree/store'
+import { group, split } from '@/components/pane-shell/tree/model'
+import {
+  $collapsedTreeSides,
+  $hiddenTreePanes,
+  $layoutTree,
+  $narrowViewport,
+  isPaneVisible
+} from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
 import { $chromiumAppWindow } from '@/lib/keybinds/app-window'
@@ -517,5 +524,50 @@ describe('Back and Forward in the redesigned band', () => {
     expect(within(left).getByRole('button', { name: 'Back' })).toBeTruthy()
     expect(within(left).getByRole('button', { name: 'Forward' })).toBeTruthy()
     act(() => $chromiumAppWindow.set(false))
+  })
+})
+
+// HADESK-100. The right button is positional in classic: it folds whatever column stands outermost
+// right of the chat. In the redesign that side is the one tool panel, and the button read the Files
+// store instead ("Show right sidebar" with the Terminal open) and acted on the outermost zone (the
+// chat's items, parked apart until first shown), opening a second panel beside the first.
+describe('the redesign’s right sidebar button', () => {
+  beforeEach(() => {
+    $shellChoice.set(true)
+    $narrowViewport.set(false)
+    $collapsedTreeSides.set(new Set())
+    $hiddenTreePanes.set(new Set(['files', 'review', 'chat-items']))
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { id: 'main' }),
+        group(['files', 'review', 'terminal'], { active: 'terminal', id: 'tools' }),
+        group(['chat-items'], { id: 'items' })
+      ])
+    )
+  })
+
+  afterEach(() => {
+    cleanup()
+    $shellChoice.set(null)
+    $layoutTree.set(null)
+    $hiddenTreePanes.set(new Set())
+  })
+
+  it('says Hide while a tool shows, and hides the panel without opening another', () => {
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+    expect(['files', 'review', 'terminal', 'chat-items'].filter(isPaneVisible)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+  })
+
+  it('shows Files in the panel when nothing is open', () => {
+    $hiddenTreePanes.set(new Set(['files', 'review', 'terminal', 'chat-items']))
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+    expect(['files', 'review', 'terminal', 'chat-items'].filter(isPaneVisible)).toEqual(['files'])
   })
 })

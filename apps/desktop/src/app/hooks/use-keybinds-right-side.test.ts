@@ -16,9 +16,10 @@ vi.mock('@/app/right-sidebar/terminal/reveal-focus', async importOriginal => ({
 
 import { useKeybinds } from '@/app/hooks/use-keybinds'
 import { findGroupOfPane, group, type LayoutNode, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { isMacPlatform } from '@/lib/platform'
+import { $shellChoice } from '@/store/shell-variant'
 
 // ⌘J dispatch must resolve the SAME physical right target the toggle mutates:
 // a Browser column registers `placement: 'main'`, so the semantic side gate
@@ -56,24 +57,42 @@ beforeEach(() => {
 afterEach(() => {
   unmountKeybinds?.()
   $layoutTree.set(null)
+  $hiddenTreePanes.set(new Set())
+  $shellChoice.set(null)
 })
+
+const pressToggle = () =>
+  window.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      code: 'KeyJ',
+      ctrlKey: !isMacPlatform(),
+      key: 'j',
+      metaKey: isMacPlatform()
+    })
+  )
 
 describe('⌘J (view.toggleRightSidebar)', () => {
   it('folds a Browser column on the right instead of toggling the terminal', () => {
+    $shellChoice.set(false)
     $layoutTree.set(split('row', [group(['sessions', 'files']), group(['workspace']), group([BROWSER])]))
 
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        bubbles: true,
-        cancelable: true,
-        code: 'KeyJ',
-        ctrlKey: !isMacPlatform(),
-        key: 'j',
-        metaKey: isMacPlatform()
-      })
-    )
+    pressToggle()
 
     expect(findGroupOfPane($layoutTree.get() as LayoutNode, BROWSER)?.minimized).toBe(true)
+    expect(toggleTerminalPane).not.toHaveBeenCalled()
+  })
+
+  // The redesign's right side is its tool panel: the Browser hides, and its tab is not closed.
+  it('hides a lone Browser in the redesign, keeping its tab', () => {
+    $shellChoice.set(true)
+    $layoutTree.set(split('row', [group(['sessions']), group(['workspace']), group([BROWSER])]))
+
+    pressToggle()
+
+    expect($hiddenTreePanes.get().has(BROWSER)).toBe(true)
+    expect(findGroupOfPane($layoutTree.get() as LayoutNode, BROWSER)).not.toBeNull()
     expect(toggleTerminalPane).not.toHaveBeenCalled()
   })
 })

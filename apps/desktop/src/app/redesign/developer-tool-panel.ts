@@ -1,6 +1,10 @@
+import { computed } from 'nanostores'
+
 import { allPaneIds, findGroupOfPane, type GroupNode, type LayoutNode } from '@/components/pane-shell/tree/model'
 import type { PaneSizing } from '@/components/pane-shell/tree/renderer/track-model'
 import {
+  $collapsedTreeSides,
+  $dismissedPanes,
   $hiddenTreePanes,
   $layoutTree,
   $narrowViewport,
@@ -8,8 +12,10 @@ import {
   activateTreePane,
   closeTreePane,
   isCollapsePane,
+  isPaneVisible,
   moveTreePane,
   moveTreePanes,
+  restoreTreePane,
   setTreePaneHidden
 } from '@/components/pane-shell/tree/store'
 import { Codecs, persistentAtom } from '@/lib/persisted'
@@ -168,12 +174,51 @@ export function hideDeveloperToolPanel(paneId: string): boolean {
     activateTreePane(panel.id, front)
   }
 
-  for (const id of panel.panes.filter(isTool)) {
-    if (STORE_BOUND.includes(id) && $panesWithCloser.get().has(id)) {
-      closeTreePane(id)
-    } else {
-      setTreePaneHidden(id, true)
-    }
+  panel.panes.filter(isTool).forEach(hideTool)
+
+  return true
+}
+
+// Bound, a tool hides through its closer, so the store a later "Show" writes is not left claiming it
+// is open. A Browser tab's closer closes the tab, so it only hides.
+function hideTool(id: string): void {
+  if (STORE_BOUND.includes(id) && $panesWithCloser.get().has(id)) {
+    closeTreePane(id)
+  } else {
+    setTreePaneHidden(id, true)
+  }
+}
+
+const shownTool = (): string | undefined => {
+  const tree = $layoutTree.get()
+
+  return tree ? allPaneIds(tree).filter(isTool).find(isPaneVisible) : undefined
+}
+
+/** Whether a tool is on screen beside the chat: what the band's right sidebar button says and flips
+ *  in the redesign. Read from the pane tree, the same answer each tool's tile gives for itself. */
+export const $developerToolShown = computed(
+  [$layoutTree, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides],
+  () => shownTool() !== undefined
+)
+
+/** The band's right sidebar button and its keybind, on a wide redesign window: hide the tool panel,
+ *  or show Files in it. Classic's button is positional (it folds the outermost column right of the
+ *  chat), which here is whichever tool zone happens to stand last, not the panel. False where that
+ *  positional toggle still applies (classic, and the medium layout's sheets). */
+export function toggleDeveloperToolPanel(): boolean {
+  if (!$portalShell.get() || $narrowViewport.get()) {
+    return false
+  }
+
+  const shown = shownTool()
+
+  if (shown === undefined) {
+    restoreTreePane('files')
+    prepareDeveloperToolPanel('files')
+  } else if (!hideDeveloperToolPanel(shown)) {
+    // A tool standing alone in its zone, not yet gathered.
+    hideTool(shown)
   }
 
   return true

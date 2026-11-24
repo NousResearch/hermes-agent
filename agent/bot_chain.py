@@ -13,6 +13,8 @@ Desktop relay) is still capped. ``gateway.bot_loop_guard.enabled: false`` turns 
 
 Recipients are compared by the identity the receiving turn's author id carries (``bot:<profile>``,
 ``bot:<connection>/<profile>``), resolved by the caller with the same resolver delivery uses.
+When ``gateway.bot_loop_reset_on_human`` is on, a newer epoch file drops every in-process chain
+before a turn or send is counted, so a process that missed the human message still starts fresh.
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ logger = logging.getLogger(__name__)
 # lost count would hand the chain a fresh budget. A session id change (compression rotation, turn-start
 # recovery, lease reload) moves the entry along (``carry_chain`` / ``_bound_key``).
 _CHAINS: dict[str, dict] = {}
+# Stamp this process last applied. A newer epoch file drops every chain above.
+_APPLIED_EPOCH = 0.0
 _LOCK = threading.Lock()
 
 
@@ -71,6 +75,28 @@ def carry_chain(old_session_id: str, new_session_id: str) -> None:
             _CHAINS.setdefault(str(new_session_id), state)
 
 
+def _apply_shared_epoch() -> None:
+    """Drop every in-process chain when the shared epoch file is newer than the stamp
+    this process last applied.
+
+    No-op unless ``bot_loop_reset_on_human_enabled`` is exactly True. A missing or
+    unreadable epoch does not clear. Caller must not hold ``_LOCK`` — it is a
+    ``Lock``, not an ``RLock``. The file read runs under the lock so the clear and
+    the stamp cannot race a chain read.
+    """
+    global _APPLIED_EPOCH
+    from hermes_cli.config import bot_loop_reset_on_human_enabled
+    if bot_loop_reset_on_human_enabled() is not True:
+        return
+    from gateway.bot_loop_reset import read_epoch
+    from hermes_constants import get_default_hermes_root
+    with _LOCK:
+        epoch = read_epoch(get_default_hermes_root())
+        if isinstance(epoch, float) and epoch > _APPLIED_EPOCH:
+            _CHAINS.clear()
+            _APPLIED_EPOCH = epoch
+
+
 def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optional[str],
                   user_message: Any = None, *,
                   on_reset: Optional[Callable[[], None]] = None) -> None:
@@ -83,6 +109,7 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
     callback is how other sessions' in-flight exchanges die. A raising callback is logged and
     does not fail the turn. Bot authors, machinery wakes, forks, and a disabled guard do not call it.
     """
+    _apply_shared_epoch()
     if getattr(agent, "_turn_origin", None):
         return
     settings = _settings()
@@ -120,6 +147,9 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
             state["updated"] = now
     if person_reset:
         _call_on_reset(on_reset)
+        # on_reset stays outside _LOCK. Apply the stamp it just wrote so other
+        # sessions in this process die with it.
+        _apply_shared_epoch()
 
 
 def _call_on_reset(on_reset: Optional[Callable[[], None]]) -> None:
@@ -165,6 +195,7 @@ class Admission:
 def admit_send(agent: Any, recipients: list[str], body: str) -> Admission:
     """Check one ``message_agent`` call to ``recipients`` (resolved identities, see the module doc).
     Admitted recipients reserve their ask and the call's hop until ``Admission.release``."""
+    _apply_shared_epoch()
     settings = _settings()
     if not settings.enabled:
         return Admission()

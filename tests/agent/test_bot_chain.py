@@ -14,6 +14,7 @@ def bot_chain(monkeypatch):
     from agent import bot_chain
 
     monkeypatch.setattr(bot_chain, "_CHAINS", {})
+    monkeypatch.setattr(bot_chain, "_APPLIED_EPOCH", 0.0)
     monkeypatch.setattr(bot_chain, "_settings", lambda: BotLoopGuardSettings(max_hops=4))
     return bot_chain
 
@@ -163,3 +164,75 @@ def test_a_disabled_guard_turns_the_bot_mode_rules_off(bot_chain, monkeypatch):
               message=f"{NO_REPLY_MARKER} hi")
         refusal, envelope, notify_only = _send(bot_chain, beta, "bot:alpha", "same")
         assert (refusal, envelope, notify_only) == (None, {}, False)
+
+
+def _force_shared_epoch(monkeypatch, tmp_path, *, enabled):
+    """Patch the flag reader and install root ``bot_chain`` looks up at call time.
+
+    ``on_turn_start`` / ``admit_send`` import ``bot_loop_reset_on_human_enabled`` from
+    ``hermes_cli.config`` and ``get_default_hermes_root`` from ``hermes_constants``.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.config.bot_loop_reset_on_human_enabled",
+        lambda config_path=None: enabled,
+    )
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **_kwargs: tmp_path)
+
+
+def test_newer_shared_epoch_lets_a_capped_send_start_fresh(bot_chain, monkeypatch, tmp_path):
+    """A process that missed the human message still starts from a fresh chain."""
+    from gateway.bot_loop_reset import write_epoch
+
+    _force_shared_epoch(monkeypatch, tmp_path, enabled=True)
+    agent = _agent("beta-chat")
+    _turn(bot_chain, agent, {"id": "bot:alpha", "name": "alpha", "is_bot": True, "hops": 4})
+    assert "max_hops" in _send(bot_chain, agent, "bot:gamma", "over the cap")[0]
+
+    write_epoch(tmp_path, 9000.0)
+    _turn(bot_chain, agent, {"id": "bot:alpha", "name": "alpha", "is_bot": True})
+    assert bot_chain._CHAINS[agent.session_id]["hops"] <= 2
+    refusal, envelope, _ = _send(bot_chain, agent, "bot:gamma", "fresh")
+    assert refusal is None
+    assert envelope.get("hops", 1) <= 2
+
+
+def test_newer_shared_epoch_lets_a_send_start_fresh_without_a_turn(bot_chain, monkeypatch, tmp_path):
+    """A send that did not see the human message still starts fresh when the epoch advanced."""
+    from gateway.bot_loop_reset import write_epoch
+
+    _force_shared_epoch(monkeypatch, tmp_path, enabled=True)
+    agent = _agent("beta-chat")
+    _turn(bot_chain, agent, {"id": "bot:alpha", "name": "alpha", "is_bot": True, "hops": 4})
+    write_epoch(tmp_path, 9000.0)
+    refusal, envelope, _ = _send(bot_chain, agent, "bot:gamma", "fresh send")
+    assert refusal is None
+    assert envelope.get("hops", 1) <= 2
+
+
+def test_flag_off_epoch_file_does_not_clear_the_chain(bot_chain, monkeypatch, tmp_path):
+    """An epoch file must not wipe chains when the flag is off."""
+    from gateway.bot_loop_reset import write_epoch
+
+    _force_shared_epoch(monkeypatch, tmp_path, enabled=False)
+    agent = _agent("beta-chat")
+    _turn(bot_chain, agent, {"id": "bot:alpha", "name": "alpha", "is_bot": True, "hops": 4})
+    write_epoch(tmp_path, 9000.0)
+    refusal, _, _ = _send(bot_chain, agent, "bot:gamma", "still capped")
+    assert refusal and "max_hops" in refusal
+
+
+def test_own_human_reset_clears_other_sessions_in_this_process(bot_chain, monkeypatch, tmp_path):
+    """A quiet human turn that writes the epoch must not leave other chains alive."""
+    from gateway.bot_loop_reset import write_epoch
+
+    _force_shared_epoch(monkeypatch, tmp_path, enabled=True)
+    other = _agent("other-chat")
+    _turn(bot_chain, other, {"id": "bot:alpha", "name": "alpha", "is_bot": True, "hops": 4})
+    assert "other-chat" in bot_chain._CHAINS
+
+    quiet = _agent("quiet-chat")
+    bot_chain.on_turn_start(
+        quiet, None, None, "hi", on_reset=lambda: write_epoch(tmp_path, 9000.0),
+    )
+    assert "other-chat" not in bot_chain._CHAINS
+    assert bot_chain._APPLIED_EPOCH == 9000.0

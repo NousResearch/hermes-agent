@@ -130,21 +130,29 @@ def start_loop_liveness_watchdog(
                 continue
             if stop_event.is_set():
                 return
+            def diagnose() -> None:
+                with contextlib.suppress(Exception):
+                    logger.critical(
+                        "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
+                        "stacks and exiting with code %d so the service supervisor can restart it.",
+                        strikes, exit_code)
+                # Diagnostics and status writers may block on the same resource as the loop.
+                _write_watchdog_dump(
+                    get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
+                    snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
+                    event="loop_liveness_watchdog_fired", loop_thread_id=loop_thread_id)
+                if not stop_event.is_set():
+                    _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
+
+            diagnostics = threading.Thread(target=diagnose, daemon=True,
+                                           name="gateway-liveness-diagnostics")
             with contextlib.suppress(Exception):
-                logger.critical(
-                    "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
-                    "stacks and exiting with code %d so the service supervisor can restart it.",
-                    strikes, exit_code)
-            # File + stderr: a console-less launcher (Windows .vbs login item) discards stderr, so a
-            # liveness death used to leave no stack anywhere (#120356, #91097).
-            _write_watchdog_dump(
-                get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
-                snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
-                event="loop_liveness_watchdog_fired", loop_thread_id=loop_thread_id)
+                diagnostics.start()
+                diagnostics.join(timeout=5.0)
             if stop_event.is_set():
                 return
-            _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
             _hard_exit(exit_code)
+            return
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
         thread.start()
@@ -285,7 +293,13 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
         sys.stderr.write(f"Gateway {event.replace('_', ' ')} after {delay_s:.0f}s "
                          f"(pid={os.getpid()}); dumping all thread stacks.\n" + loop_section)
         sys.stderr.flush()
-        faulthandler.dump_traceback(all_threads=True)
+        # faulthandler writes with the GIL held: a full supervisor pipe would freeze even
+        # the watchdog's deadline thread. Python stream I/O releases the GIL while waiting.
+        sys.stderr.write("--- Python thread stacks (oldest call first) ---\n")
+        for ident, frame in sys._current_frames().items():
+            sys.stderr.write(f"\nThread {ident:#x} ({_thread_name(ident)}):\n")
+            traceback.print_stack(frame, file=sys.stderr)
+        sys.stderr.flush()
 
 
 def _format_loop_thread_section(loop_thread_id: int) -> str:

@@ -101,11 +101,17 @@ def test_read_uses_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_module_does_not_import_config() -> None:
+    """Storage helpers stay config-free. ``note_human_reset`` is the policy caller."""
+    import inspect
+
     import gateway.bot_loop_reset as mod
 
     source_path = mod.__file__
     assert source_path
-    source = Path(source_path).read_text(encoding="utf-8")
-    assert "hermes_cli" not in source
-    assert "import config" not in source
-    assert "bot_loop_reset_on_human" not in source
+    storage = "\n".join(
+        inspect.getsource(getattr(mod, name))
+        for name in ("epoch_path", "read_epoch", "write_epoch")
+    )
+    assert "hermes_cli" not in storage
+    assert "import config" not in storage
+    assert "bot_loop_reset_on_human" not in storage

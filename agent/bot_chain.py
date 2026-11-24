@@ -18,10 +18,13 @@ Recipients are compared by the identity the receiving turn's author id carries (
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 # Keyed by session id, not held on the agent: a gateway may rebuild the agent between turns, and a
 # lost count would hand the chain a fresh budget. A session id change (compression rotation, turn-start
@@ -69,11 +72,17 @@ def carry_chain(old_session_id: str, new_session_id: str) -> None:
 
 
 def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optional[str],
-                  user_message: Any = None) -> None:
+                  user_message: Any = None, *,
+                  on_reset: Optional[Callable[[], None]] = None) -> None:
     """Set the hop this session's turn runs at. A bot-authored turn runs at the hop its envelope names
     (or one past this side's own count, whichever is higher); a completion wake after this bot sent a
     message carries the answer, which is one more hop; a person's message ends the chain. A fork
-    (background review, side question) shares the session id but is not the conversation: no change."""
+    (background review, side question) shares the session id but is not the conversation: no change.
+
+    A non-bot, non-machinery turn calls ``on_reset`` even when this session has no chain: that
+    callback is how other sessions' in-flight exchanges die. A raising callback is logged and
+    does not fail the turn. Bot authors, machinery wakes, forks, and a disabled guard do not call it.
+    """
     if getattr(agent, "_turn_origin", None):
         return
     settings = _settings()
@@ -82,6 +91,7 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
     from gateway.response_filters import is_machinery_display_kind
     from tools.bot_mode_probe import NO_REPLY_MARKER
     now = time.monotonic()
+    person_reset = False
     with _LOCK:
         key = _bound_key(agent)
         for stale in [k for k, v in _CHAINS.items() if now - v["updated"] > settings.cooldown_seconds]:
@@ -94,15 +104,31 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
             # The sender's notify-only marker, read from the text like gateway/session_bot_outcome.py
             # does, so it survives every transport (the Desktop relay rebuilds the author).
             state["no_reply_from"] = turn_author.get("id") if NO_REPLY_MARKER in str(user_message or "") else None
-        elif state is not None and is_machinery_display_kind(display_kind):
-            if state["sent"] > state["hops"]:
-                state["hops"] = state["sent"] = state["sent"] + 1
-            state["no_reply_from"] = None
-        elif state is not None:
-            del _CHAINS[key]  # a person spoke: a new chain starts with their message
-            return
+        elif is_machinery_display_kind(display_kind):
+            if state is not None:
+                if state["sent"] > state["hops"]:
+                    state["hops"] = state["sent"] = state["sent"] + 1
+                state["no_reply_from"] = None
+        else:
+            # A person spoke. Drop this session's chain if it has one, and always notify:
+            # a quiet session still has to be able to end other teams' exchanges.
+            if state is not None:
+                del _CHAINS[key]
+            state = None
+            person_reset = True
         if state is not None:
             state["updated"] = now
+    if person_reset:
+        _call_on_reset(on_reset)
+
+
+def _call_on_reset(on_reset: Optional[Callable[[], None]]) -> None:
+    if on_reset is None:
+        return
+    try:
+        on_reset()
+    except Exception:
+        logger.warning("bot-loop on_reset callback failed", exc_info=True)
 
 
 @dataclass

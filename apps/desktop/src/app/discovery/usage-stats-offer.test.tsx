@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -10,12 +10,14 @@ import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-
 import { en } from '@/i18n/en'
 import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
 import { immediateMetricsLocks } from '@/store/desktop-metrics-test-locks'
+import { $firstTimeSplash } from '@/store/first-time-splash'
 import type * as GatewayStore from '@/store/gateway'
 import { $guidanceLedger, GUIDANCE_LEDGER_KEY } from '@/store/guidance-ledger'
 import { $traySeen } from '@/store/notification-tray'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $renameSplash } from '@/store/rename-splash'
 import { $sharedMetricsConsent, $sharedMetricsDetailsOpen, type SharedMetricsConsent } from '@/store/shared-metrics'
 import { $shellChoice } from '@/store/shell-variant'
 import { $usageStatsOfferPlace } from '@/store/usage-stats-offer'
@@ -121,6 +123,8 @@ afterEach(() => {
   $desktopOnboarding.set(initialOnboarding)
   $sharedMetricsConsent.set(null)
   $sharedMetricsDetailsOpen.set(false)
+  $firstTimeSplash.set(null)
+  $renameSplash.set(null)
   $visitorAccess.set({ kind: 'open' })
   vi.unstubAllGlobals()
 })
@@ -175,6 +179,21 @@ describe('the sidebar’s foot while sign up is required', () => {
 })
 
 describe('the card’s ×', () => {
+  // A click in the navigation closes an open splash for good, and the card stands in the navigation:
+  // answering it there would end the welcome the person was reading.
+  it.each([
+    ['the welcome splash', $firstTimeSplash],
+    ['the rename splash', $renameSplash]
+  ])('waits while %s is open', async (_name, $splash) => {
+    $splash.set('shown')
+    renderApp()
+    await waitFor(() => expect($usageStatsOfferPlace.get()).toBe('card'))
+    expect(card()).toBeNull()
+
+    act(() => $splash.set(null))
+    expect(card()).not.toBeNull()
+  })
+
   it('moves the question to the tray unanswered, and that survives a reload', async () => {
     const first = renderApp()
     await waitFor(() => expect(card()).not.toBeNull())

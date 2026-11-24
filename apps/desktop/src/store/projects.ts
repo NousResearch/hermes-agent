@@ -26,7 +26,7 @@ import {
   isActivePrimary
 } from '@/store/gateway'
 import { setGatewayProjectAppearance } from '@/store/gateway-project-looks'
-import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarShowAllSessions, autoEnterProjectView, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -287,10 +287,10 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
   const projectId = projectIdForCwd(target)
 
   if (projectId) {
-    // The Projects tree only renders in grouped mode, so flip the sidebar into
-    // it — otherwise following from the flat Sessions list would change scope
-    // invisibly. Then drill into the thread's project.
-    setSidebarAgentsGrouped(true)
+    // The Projects tree only renders in grouped mode, so show it — but as a
+    // transient view: the grouping the user picked survives the detour and
+    // comes back as soon as they leave the project (see $projectScopeAuto).
+    autoEnterProjectView()
 
     if (projectId !== $projectScope.get()) {
       enterProject(projectId)

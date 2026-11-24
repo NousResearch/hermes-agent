@@ -1,13 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  $sidebarAgentsGrouped,
   $sidebarGrouping,
   $sidebarOrdering,
   $sidebarRowMeta,
   $sidebarShowAllSessions,
   $sidebarViewCustomized,
+  autoEnterProjectView,
   cycleSidebarGrouping,
   resetSidebarView,
+  setSidebarAgentsGrouped,
   setSidebarGrouping,
   setSidebarOrdering,
   setSidebarShowAllSessions,
@@ -17,10 +20,12 @@ import {
   toggleSidebarStatusFilter
 } from './layout'
 import { $showAllProfiles } from './profile'
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 
 beforeEach(() => {
   $showAllProfiles.set(false)
   resetSidebarView()
+  $projectScope.set(ALL_PROJECTS)
 })
 
 describe('the sidebar as it ships', () => {
@@ -107,5 +112,77 @@ describe('the sidebar as it ships', () => {
 
     expect(new Set(visited)).toEqual(new Set(SIDEBAR_GROUPING_ORDER))
     expect($sidebarGrouping.get()).toBe(start)
+  })
+})
+
+// An automatic follow (a session's cwd moving into a project) borrows the
+// project tree for the duration of the detour. The stored grouping is the
+// user's own choice and has to survive it.
+describe('a project view borrowed by an automatic follow', () => {
+  it('shows the project tree without writing the grouping preference', () => {
+    setSidebarGrouping('date')
+    window.localStorage.removeItem('hermes.desktop.agentsGroupedByWorkspace')
+
+    autoEnterProjectView()
+
+    expect($sidebarGrouping.get()).toBe('project')
+    expect($sidebarAgentsGrouped.get()).toBe(false)
+    expect(window.localStorage.getItem('hermes.desktop.agentsGroupedByWorkspace')).toBeNull()
+    // A detour is not a customization: "Reset" should stay out of the menu.
+    expect($sidebarViewCustomized.get()).toBe(false)
+  })
+
+  it('gives the sidebar back to the stored grouping when the scope is left', () => {
+    setSidebarGrouping('date')
+    $projectScope.set('p_x')
+    autoEnterProjectView()
+
+    exitProjectScope()
+
+    expect($sidebarGrouping.get()).toBe('date')
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+  })
+
+  it('keeps a project grouping the user picked themselves', () => {
+    setSidebarGrouping('project')
+    $projectScope.set('p_x')
+
+    // The automatic detour must not stack on a project view the user chose.
+    autoEnterProjectView()
+    expect($sidebarGrouping.get()).toBe('project')
+
+    exitProjectScope()
+
+    expect($sidebarGrouping.get()).toBe('project')
+    expect($sidebarAgentsGrouped.get()).toBe(true)
+  })
+
+  it('ends the detour as soon as the user picks a grouping', () => {
+    autoEnterProjectView()
+
+    setSidebarGrouping('status')
+
+    expect($sidebarGrouping.get()).toBe('status')
+  })
+
+  it('an explicit un-group ends a detour that is already on screen', () => {
+    setSidebarGrouping('date')
+    autoEnterProjectView()
+
+    // Any explicit write replaces the detour; it must not keep overriding the
+    // grouping the setter just stored.
+    setSidebarAgentsGrouped(false)
+
+    expect($sidebarGrouping.get()).toBe('date')
+  })
+
+  it('restores the all-profiles grouping it was borrowed from', () => {
+    setSidebarGrouping('profile')
+
+    autoEnterProjectView()
+    expect($sidebarGrouping.get()).toBe('project')
+
+    exitProjectScope()
+    expect($sidebarGrouping.get()).toBe('profile')
   })
 })

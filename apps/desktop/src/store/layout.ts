@@ -28,6 +28,7 @@ import { modeBound, modeLayout } from '@/store/interface-mode'
 import { trackArea } from './desktop-metrics'
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride } from './panes'
 import { $showAllProfiles, setShowAllProfiles } from './profile'
+import { $projectScopeAuto } from './project-scope'
 import type { PullRequestBucket } from './pull-requests'
 import type { SessionStatusBucket } from './session-dot-state'
 
@@ -262,8 +263,10 @@ const $sidebarAllProfilesAgentsGrouped = persistentAtom(
   Codecs.bool
 )
 
-/** Whether the CURRENT scope shows the project tree (reads the scope's own
- *  flag, so each workspace and the all-profiles view remember it separately). */
+/** The CURRENT scope's stored project-tree choice (each workspace and the
+ *  all-profiles view remember their own). This is a preference, not the render
+ *  gate: an automatic follow can show the tree while this is false — ask
+ *  `$sidebarGrouping` what the sidebar actually draws. */
 export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
   [$showAllProfiles, $sidebarFlatAgentsGrouped, $sidebarAllProfilesAgentsGrouped],
   (showAll, flat, allProfiles) => (showAll ? allProfiles : flat)
@@ -305,8 +308,11 @@ export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created
 
 // `project` deliberately does NOT live here. Entering a project from ⌘K, the
 // projects store, or a repo scan flips $sidebarAgentsGrouped directly, so that
-// atom stays the single authority for the project view and this one only holds
-// the grouping to fall back to when the user leaves it.
+// atom stays the stored half of the project view and this one only holds
+// the grouping to fall back to when the user leaves it. An automatic follow
+// (a session's cwd moving into a project) does not write that flag at all — it
+// shows the tree through the transient $projectScopeAuto instead, so leaving
+// the project lands back on the grouping the user actually picked.
 const $sidebarFlatGrouping = persistentAtom<SidebarGrouping>(
   SIDEBAR_GROUPING_STORAGE_KEY,
   'date',
@@ -404,9 +410,19 @@ export const $sidebarPrFilter = persistentAtom<PullRequestBucket[]>(
   listOf(PR_FILTERS)
 )
 
-export const $sidebarGrouping: ReadableAtom<SidebarGrouping> = computed(
+// The grouping the user actually chose. Kept apart from the on-screen value so
+// a transient project view (below) is never mistaken for a customized sidebar.
+const $sidebarStoredGrouping: ReadableAtom<SidebarGrouping> = computed(
   [$sidebarAgentsGrouped, $sidebarFlatGrouping, $sidebarAllProfilesGrouping, $showAllProfiles],
   (grouped, flat, allProfiles, showAll) => (grouped ? 'project' : showAll ? allProfiles : flat)
+)
+
+// What the sidebar draws. An automatic follow can borrow the project tree
+// without persisting anything, and drops back to the stored grouping the
+// moment the scope is left.
+export const $sidebarGrouping: ReadableAtom<SidebarGrouping> = computed(
+  [$sidebarStoredGrouping, $projectScopeAuto],
+  (stored, auto) => (auto ? 'project' : stored)
 )
 
 // A hand-dragged order outranks any sort key — dragging IS how you pick manual,
@@ -427,7 +443,7 @@ export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
  *  hides rows, not about how they're grouped, sorted or labelled. */
 export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
   [
-    $sidebarGrouping,
+    $sidebarStoredGrouping,
     $sidebarOrdering,
     $sidebarRowMeta,
     $sidebarCardRows,
@@ -849,11 +865,29 @@ export function toggleSidebarMessagingOpen(sourceId: string) {
 }
 
 export function setSidebarAgentsGrouped(grouped: boolean) {
+  // An explicit write replaces the automatic detour rather than stacking on it:
+  // from here on the flag above is what says whether the tree is on.
+  $projectScopeAuto.set(false)
   // Write the flag the current scope reads — see $sidebarAgentsGrouped.
   ;($showAllProfiles.get() ? $sidebarAllProfilesAgentsGrouped : $sidebarFlatAgentsGrouped).set(grouped)
 }
 
+// Show the project tree without writing the saved grouping. Used when the
+// active session's cwd moves into a project on its own — the sidebar follows,
+// but the user's own grouping survives and comes back when the scope is left.
+export function autoEnterProjectView(): void {
+  if ($sidebarAgentsGrouped.get()) {
+    return
+  }
+
+  $projectScopeAuto.set(true)
+}
+
 export function setSidebarGrouping(grouping: SidebarGrouping) {
+  // An explicit pick ends any automatic detour into the project tree; from here
+  // on the choice below is the one that persists.
+  $projectScopeAuto.set(false)
+
   // Grouping by owner is a request to see every owner, so it turns the
   // all-profiles view on rather than drawing one group around one profile —
   // and every write that follows must target that scope, not the one we were
@@ -950,6 +984,7 @@ export function resetSidebarView() {
   $sidebarAllProfilesGrouping.set(SIDEBAR_DEFAULT_GROUPING)
   $sidebarFlatAgentsGrouped.set(false)
   $sidebarAllProfilesAgentsGrouped.set(false)
+  $projectScopeAuto.set(false)
   setSidebarOrdering(SIDEBAR_DEFAULT_ORDERING)
   $sidebarRowMeta.set(SIDEBAR_DEFAULT_ROW_META)
   $sidebarCardRows.set(false)

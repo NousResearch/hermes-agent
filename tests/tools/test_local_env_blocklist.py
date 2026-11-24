@@ -1620,3 +1620,15 @@ class TestSanePathIncludesHomebrew:
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]
         assert "PATH" not in result
+
+
+@pytest.mark.usefixtures("child_env")
+@pytest.mark.parametrize("builder", ["foreground", "nonterminal"])
+def test_deleted_memory_provider_keys_stay_out_of_children(monkeypatch, builder):
+    """ByteRover/RetainDB lost their OPTIONAL_ENV_VARS rows when they were deleted, but an old
+    profile's .env still loads their keys: children must not inherit them."""
+    names = ["BRV_API_KEY", "RETAINDB_API_KEY", "RETAINDB_BASE_URL"]
+    for name in names:
+        monkeypatch.setenv(name, "fake-" + name)
+    env = local._make_run_env({}) if builder == "foreground" else local.hermes_subprocess_env()
+    assert observe_child(env, names) == dict.fromkeys(names)

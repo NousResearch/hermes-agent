@@ -128,6 +128,8 @@ def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Option
     failed migration): doctor, ``memory status``, ``memory setup <name>`` and the CLI's unknown-command
     error point at the one command that fixes it. In-tree catalog only, never the network — these run
     offline and on error paths."""
+    if removed_provider_notice(name):
+        return None  # deleted, not moved: no catalog entry to point at
     try:
         from hermes_cli.plugin_catalog import get_catalog_entry
         entry = get_catalog_entry(name) if name else None

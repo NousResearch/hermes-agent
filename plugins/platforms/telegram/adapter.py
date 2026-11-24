@@ -1490,13 +1490,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.debug("[%s] " + failure_msg, self.name, exc_info=True)
             return False
 
-    def _orphan_and_rebuild_polling_client(self, polling_req) -> None:
+    def _orphan_and_rebuild_polling_client(self, polling_req, label: str = "getUpdates") -> None:
         """Replace a wedged HTTPXRequest client after a hung aclose(): swap in a fresh client and close
         the old one in a detached, bounded task so it can't block the reconnect ladder.
 
         PTB's ``HTTPXRequest.initialize()`` only calls ``_build_client()`` when the current client reports
         ``is_closed``. If ``shutdown()`` was abandoned on a CLOSE-WAIT socket, that flag stays false and the
-        next ``start_polling()`` reuses the dead getUpdates connection (#87057).
+        next ``start_polling()`` reuses the dead getUpdates connection (#87057). ``label`` names the pool in
+        the log because the general Bot API pool is rebuilt through here too.
         """
         old = getattr(polling_req, "_client", None)
         build = getattr(polling_req, "_build_client", None)
@@ -1505,9 +1506,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         try:
             polling_req._client = build()
         except Exception:
-            logger.debug("[%s] Failed to rebuild polling HTTP client after hung drain", self.name, exc_info=True)
+            logger.debug("[%s] Failed to rebuild %s HTTP client after hung drain", self.name, label, exc_info=True)
             return
-        logger.warning("[%s] Replaced wedged getUpdates HTTP client after drain timeout (likely CLOSE-WAIT socket)", self.name)
+        logger.warning("[%s] Replaced wedged %s HTTP client after drain timeout (likely CLOSE-WAIT socket)", self.name, label)
 
         async def _orphan_aclose() -> None:
             try:
@@ -1696,11 +1697,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except Exception:
             return
         async with self._get_general_request_drain_lock():
-            await self._bounded_request_step(
-                general_req.shutdown(), "General request shutdown failed/timed out after pool timeout (non-fatal)")
-            if await self._bounded_request_step(
-                general_req.initialize(), "General request re-initialize failed/timed out after pool timeout (non-fatal)"):
-                logger.warning("[%s] General request pool drained after Telegram pool timeout", self.name)
+            if not await self._bounded_request_step(
+                    general_req.shutdown(), "General request shutdown failed/timed out (non-fatal)"):
+                self._orphan_and_rebuild_polling_client(general_req, "general")
+            if not await self._bounded_request_step(
+                    general_req.initialize(), "General request re-initialize failed/timed out (non-fatal)"):
+                self._orphan_and_rebuild_polling_client(general_req, "general")
+            else:
+                logger.warning("[%s] General request pool drained after Telegram timeout", self.name)
 
     def _spawn_polling_recovery(self, loop, coro) -> None:
         """Start ``coro`` as the tracked in-flight recovery task (reentrancy guard)."""
@@ -1934,7 +1938,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         # start_polling() bootstraps through the *general* pool before getUpdates; a confirmed pool timeout means the request
         # was never sent, so rebuilding that pool is safe. Generic network errors stay polling-only (sends untouched).
-        if self._looks_like_pool_timeout(error):
+        # LOCAL FIX (22.10.2026, ported to 0.23.3 on 24.11.2026): a generic timeout/ConnectError left by a dead
+        # tunnel also keeps a CLOSE-WAIT socket in that pool, and then the whole reconnect ladder and the
+        # heartbeat probe keep timing out on the same dead connection until the gateway is restarted.
+        # Collateral is bounded: the updater is already stopped here, and a dropped in-flight send is retried
+        # by the caller, whereas a deaf pool was previously unrecoverable without a full restart.
+        if self._looks_like_pool_timeout(error) or self._looks_like_network_error(error):
             await self._drain_general_connections_after_pool_timeout()
         if self._teardown_started:
             return

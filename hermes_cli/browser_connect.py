@@ -107,6 +107,15 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
+    _Browser(
+        "helium", "/Applications/Helium.app/Contents/MacOS/Helium",
+        ("net.imput.helium",), ("helium.exe", "helium"),
+        (("imput", "Helium", "Application", "helium.exe"),),
+        ("imput", "Helium", "User Data"),
+        ("helium-browser", "helium"),
+        ("/usr/bin/helium-browser", "/opt/helium-browser-beta-bin/helium",
+         "/opt/helium/helium", "/opt/helium-browser-beta-bin/helium-browser"),
+        "net.imput.helium", linux_exec=("helium-browser",)),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -142,7 +151,8 @@ _LINUX_DESKTOP_MAP = (
     # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave`` fragment,
     # so the substring scan must hit the Origin entry first (#95549).
     ("brave-origin", "brave-origin"), ("brave", "brave"),
-    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"))
+    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"),
+    ("helium", "helium"))
 
 _LINUX_CHANNEL_FRAGMENTS = (
     "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary",
@@ -588,7 +598,8 @@ def _processes_holding_profile(src: str):
     norm = os.path.normcase(os.path.normpath(src))
     browser_bins = (
         "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
-        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome")
+        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome",
+        "helium", "helium-browser", "helium.exe")
     for proc in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()

@@ -99,7 +99,8 @@ async def test_plugin_blueprint_in_api_catalog_and_instantiates_real_job(homes):
     # A form that edits the routine's own fields starts from the job the defaults would create.
     assert entry["prefill"]["prompt"] == "Summarize yesterday's commits for acme/app."
     assert entry["prefill"]["schedule"] == "15 9 * * 1-5"
-    assert builtin["prefill"]["skills"] == ["google-workspace"]
+    reviewed = next(e for e in listed["blueprints"] if e["key"] == "weekly-review")
+    assert reviewed["prefill"]["skills"] == ["weekly-review-planning"]
 
     created = await _rt_cron.instantiate_blueprint(
         _web_models.AutomationBlueprintInstantiate(

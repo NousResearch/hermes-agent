@@ -82,7 +82,7 @@ def _is_final_reply(row) -> bool:
 
 
 def _continued_parent_sql() -> str:
-    from persistence.sqlite.conversation._store.sql_common import _non_continuation_child_sql
+    from persistence.sqlite._schema_ddl import _non_continuation_child_sql
     return ("SELECT p.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id "
             "WHERE c.id = ? AND p.end_reason = 'compression'\n" + _non_continuation_child_sql("c.", "p.id"))
 

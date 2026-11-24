@@ -12,9 +12,11 @@ from session_rules.activity import ActivityProvenance, bound_activity_descriptio
 from persistence.sqlite._state.errors import SessionActiveWriteGuardError
 from persistence.sqlite._state.common import _shape_preview
 from persistence.sqlite._holder import StoreHolder
-from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _sql_json_extract
+from persistence.sqlite._schema_ddl import (
+    _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql, _sql_json_extract,
+)
 from persistence.sqlite.conversation._store.sql_common import (
-    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL, _non_continuation_child_sql,
+    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL,
     _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY, _sql_in_window, _sql_session_last_active,
     _sql_session_last_active_by_id, escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks,
     _placeholders as _session_ids_placeholders, _source_match_clause, launch_stub_filter_sql,

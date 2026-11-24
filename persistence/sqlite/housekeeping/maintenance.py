@@ -25,7 +25,7 @@ from .._backend import SQLiteStore, register_repository, translated
 from ..conversation._store.core import _delete_unreferenced_system_prompts
 from ..conversation._store.retirement import retire_prunable
 from ..conversation._store.sessions import _cwd_prefix_clause, _set_lineage_column_in_transaction
-from ..conversation._store.sql_common import _non_continuation_child_sql
+from .._schema_ddl import _non_continuation_child_sql
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._routes import _sql_session_last_active
 from ._portability import SessionPortability

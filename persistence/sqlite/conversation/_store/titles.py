@@ -9,13 +9,13 @@ from persistence.sqlite._schema import (
     next_title_in_lineage,
 )
 from persistence.sqlite._holder import StoreHolder
-from persistence.sqlite._schema_ddl import _COMPRESSION_CHILD_SQL
+from persistence.sqlite._schema_ddl import _COMPRESSION_CHILD_SQL, _non_continuation_child_sql
 from persistence.sqlite.conversation._store.compression import _compression_tip_on, get_compression_tip
 from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE, MAX_TITLE_LENGTH, _session_row_dict
 from persistence.sqlite.conversation._store.rules import _sanitize_surrogates
 from persistence.sqlite.conversation._store.sessions import _EMPTY_SESSION_WHERE, _LINEAGE_CTE_SQL, get_session
 from persistence.sqlite.conversation._store.sql_common import (
-    _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL, _non_continuation_child_sql, escape_like as _escape_like,
+    _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL, escape_like as _escape_like,
 )
 
 

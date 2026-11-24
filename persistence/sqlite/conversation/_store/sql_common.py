@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from persistence.conversation.messages import QUEUED_PROMPT_METADATA_KEY
 from persistence.sqlite._schema_ddl import (
-    _BRANCH_CHILD_SQL, _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_literal,
+    _BRANCH_CHILD_SQL, _RESET_CHILD_SQL, _sql_json_extract, _sql_literal,
 )
 from persistence.sqlite.conversation._store.rules import (
     AUTO_LOAD_SCAFFOLD_SQL_LIKE, EPOCH_MAX, EPOCH_MIN, SKILL_SCAFFOLD_SQL_LIKE,

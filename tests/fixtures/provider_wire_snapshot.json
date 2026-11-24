@@ -10055,7 +10055,7 @@
  },
  "solstice": {
   "api_mode": "chat_completions",
-  "base_url": "https://generativelanguage.googleapis.com/v1alpha",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta",
   "high": {
    "extra_body": {
     "thinking_config": {
@@ -10184,6 +10184,12 @@
    ]
   },
   "unset": {
+   "extra_body": {
+    "thinking_config": {
+     "includeThoughts": true,
+     "thinkingLevel": "high"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",

@@ -1,6 +1,7 @@
 """Tests for the gateway control socket (#92091 migration step 1)."""
 
 import asyncio
+import errno
 import json
 import socket
 import sys
@@ -78,7 +79,7 @@ def test_client_resolution_prefers_direct_then_pointer(home: Path, tmp_path: Pat
     # pointer file to an existing socket-ish file
     target = tmp_path / "elsewhere.sock"
     target.touch()
-    (home / "gateway.sock.path").write_text(str(target))
+    (home / "gateway.sock.path").write_text(str(target), encoding="utf-8")
     assert resolve_client_socket_path(home) == target
     # direct file wins over pointer
     direct = home / "gateway.sock"
@@ -123,6 +124,68 @@ def test_server_answers_identify_and_status(home: Path):
     ident, status = _run(scenario())
     assert ident == {"pid": 4242, "code_sha": "abc123", "protocol": 1}
     assert status == {"gateway_state": "running"}
+
+
+def test_identify_answers_from_identity_resolved_before_accepting(home: Path, monkeypatch):
+    """A fresh process's first ``identify`` must not pay the code-identity git walk inside the
+    client's deadline: the listener warms it before it accepts (a loaded Windows runner
+    stretched that walk past the 5 s identify budget)."""
+    from hermes_cli import version_info
+
+    resolved = []
+
+    def _resolve_once():
+        resolved.append(True)
+        return version_info.VersionInfo("1.2.3", "1.2.3", 0, "f" * 40, "main", "git")
+
+    monkeypatch.setattr(version_info, "_cached_version_info", None)
+    monkeypatch.setattr(version_info, "_stamp_or_none", _resolve_once)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        assert await server.start()
+        try:
+            resolved_at_start = len(resolved)
+            ident = await asyncio.get_running_loop().run_in_executor(None, lambda: identify_gateway(home))
+            return resolved_at_start, ident
+        finally:
+            await server.stop()
+
+    resolved_at_start, ident = _run(scenario())
+    assert resolved_at_start == 1
+    assert ident is not None and ident["code_sha"] == "f" * 40
+    assert len(resolved) == 1
+
+
+def test_process_record_is_built_before_the_listener_opens(home: Path, monkeypatch):
+    """The first psutil process probe (``_build_pid_record``) is the other cold cost of a fresh
+    ``identify``: the listener builds it before it opens, so no client's deadline pays it."""
+    from gateway import control_socket, status
+
+    order = []
+    real_record = status._build_pid_record
+    real_open = control_socket.GatewayControlServer._start_windows if sys.platform == "win32" \
+        else control_socket.GatewayControlServer._start_posix
+
+    def _record():
+        order.append("pid_record")
+        return real_record()
+
+    async def _open(self):
+        order.append("listener")
+        return await real_open(self)
+
+    monkeypatch.setattr(status, "_build_pid_record", _record)
+    monkeypatch.setattr(control_socket.GatewayControlServer,
+                        "_start_windows" if sys.platform == "win32" else "_start_posix", _open)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        assert await server.start()
+        await server.stop()
+
+    _run(scenario())
+    assert order[:2] == ["pid_record", "listener"], order
 
 
 def test_unknown_verb_and_malformed_request(home: Path):
@@ -213,7 +276,7 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
     # Plant the stale file at wherever the server will actually bind
     # (in-home OR the temp-dir fallback, depending on path length).
     bind, _ = resolve_server_socket_path(home)
-    bind.parent.mkdir(parents=True, exist_ok=True)
+    bind.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     bind.touch()  # crashed predecessor's leftover
 
     async def scenario():
@@ -228,6 +291,105 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
             await server.stop()
 
     assert _run(scenario()) == {"pid": 7}
+
+
+@pytest.fixture()
+def short_home():
+    """A home short enough that the server binds IN-HOME (no pointer fallback).
+
+    pytest's tmp_path can exceed sun_path on macOS/CI, in which case the
+    server already uses the temp-dir fallback and an in-home bind refusal can
+    never be exercised — so build the home directly under /tmp, like
+    test_short_home_binds_in_home does.
+    """
+    import shutil
+    import tempfile
+    try:
+        root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+    except OSError:
+        pytest.skip("/tmp not writable on this host")
+    home = root / ".hermes"
+    home.mkdir()
+    if resolve_server_socket_path(home)[1] is not None:
+        shutil.rmtree(root, ignore_errors=True)
+        pytest.skip("even /tmp yields a too-long socket path here")
+    try:
+        yield home
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _refusing_start_unix_server(monkeypatch, *, refuse_under: Path, err: int):
+    """start_unix_server that refuses paths under ``refuse_under`` with ``err``
+    and otherwise delegates — the behaviour of a Docker Desktop bind mount."""
+    real = asyncio.start_unix_server
+    attempts: list[str] = []
+
+    async def fake(client_connected_cb, path=None, **kwargs):
+        attempts.append(str(path))
+        if Path(path).is_relative_to(refuse_under):
+            raise OSError(err, "Operation not supported" if err == errno.EOPNOTSUPP else "refused")
+        return await real(client_connected_cb, path=path, **kwargs)
+
+    monkeypatch.setattr(asyncio, "start_unix_server", fake)
+    return attempts
+
+
+def test_home_refusing_sockets_listens_on_private_fallback_both_clients_reach(short_home: Path, monkeypatch):
+    """Docker Desktop bind mount (#123761): the in-home path refuses the socket and a socket inode an
+    earlier container left there cannot even be stat'ed. The listener moves to the private temp-dir
+    socket + 0600 pointer, and both the authenticated discovery client and the legacy client reach it."""
+    import os
+    import stat
+
+    from hermes_cli.gateway_runtime_discovery import query_identify
+
+    home = short_home.resolve()  # the server resolves its home; macOS /tmp is a symlink to /private/tmp
+    home.chmod(0o700)
+    stale = home / "gateway.sock"
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EOPNOTSUPP)
+    for name in ("lstat", "stat"):
+        real = getattr(os, name)
+
+        def unstatable(path, *a, _real=real, **k):
+            if os.fspath(path) == str(stale):
+                raise OSError(errno.EOPNOTSUPP, "Operation not supported", str(stale))
+            return _real(path, *a, **k)
+
+        monkeypatch.setattr(os, name, unstatable)
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 11}})
+        assert await server.start()
+        try:
+            pointer = home / "gateway.sock.path"
+            target = Path(pointer.read_text(encoding="utf-8-sig"))
+            assert server._bind_path == target and target.name == "control.sock"
+            assert stat.S_IMODE(pointer.lstat().st_mode) == 0o600
+            assert stat.S_IMODE(target.parent.lstat().st_mode) == 0o700
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: (query_identify(home, timeout=3), identify_gateway(home)))
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == ({"pid": 11}, {"pid": 11})
+    assert attempts[-1].endswith("/control.sock")  # the in-home attempt, if made, was refused
+    assert not (home / "gateway.sock.path").exists()
+
+
+def test_bind_refused_for_other_reasons_still_fails(short_home: Path, monkeypatch):
+    # A live sibling (EADDRINUSE) must keep failing loudly — no silent fallback
+    # that would let two gateways for one home both look healthy.
+    home = short_home.resolve()  # match the server's resolved home (macOS /tmp -> /private/tmp)
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EADDRINUSE)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        return await server.start()
+
+    assert _run(scenario()) is False
+    assert attempts == [str(home / "gateway.sock")]
+    assert not (home / "gateway.sock.path").exists()
 
 
 def test_long_home_end_to_end_via_pointer(tmp_path: Path):
@@ -463,18 +625,11 @@ def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, m
 
     released = threading.Event()
 
-    class _SilentPipe:  # accepts the request, never answers
-        def write(self, _data):
-            return None
+    def _silent_native_client(_home, _request, _timeout):  # accepts the request, never answers
+        released.wait(10)
+        return b""
 
-        def read(self, _n):
-            released.wait(10)
-            return b""
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr(control_socket, "open", lambda *_a, **_k: _SilentPipe(), raising=False)
+    monkeypatch.setattr("gateway.runtime_bootstrap_windows.query_runtime_control", _silent_native_client)
     start = time.monotonic()
     try:
         assert control_socket._query_windows_pipe(home, b"{}\n", 0.3) is None

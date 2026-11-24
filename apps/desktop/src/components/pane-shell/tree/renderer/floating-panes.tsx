@@ -13,7 +13,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef 
 
 import { HUD_SURFACE } from '@/app/floating-hud'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
-import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
+import { useOnboardingChatActive } from '@/components/onboarding/first-run/assembly'
 import { Codicon } from '@/components/ui/codicon'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'

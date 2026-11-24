@@ -97,9 +97,9 @@ def _serve_skill_file(
         return _fail(f"Failed to read '{file_path}': {exc}")
     if mark_read:
         _mark_background_review_read(target)
-    return _json({  # _source_path: internal, feeds the repeat-view dedup fingerprint
+    return _json({
         "success": True, "name": label, "file": file_path, "content": content,
-        "file_type": target.suffix, "_source_path": str(target)})
+        "file_type": target.suffix})
 
 
 def _mark_background_review_read(path: Path) -> None:
@@ -125,10 +125,11 @@ def _serve_plugin_skill(
     preprocess: bool = True, session_id: str | None = None) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+    from hermes_cli.plugins_content import plugin_skill_owners
     from tools import skills_tool as _st
-    if namespace in _get_disabled_plugins():
-        return _fail(f"Plugin '{namespace}' is disabled. Re-enable with: hermes plugins enable {namespace}")
     qualified_name = f"{namespace}:{bare}"
+    if disabled := sorted(plugin_skill_owners(get_plugin_manager(), qualified_name) & _get_disabled_plugins()):
+        return _fail(f"Plugin '{disabled[0]}' is disabled. Re-enable with: hermes plugins enable {disabled[0]}")
     try:
         content = _read_skill_text(skill_md)
     except Exception as e:
@@ -158,7 +159,7 @@ def _serve_plugin_skill(
         "description": _truncate_description(str(parsed_frontmatter.get("description", ""))),
         "linked_files": _plugin_skill_linked_files(skill_md.parent),
         "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
+        "skill_dir": str(skill_md.parent)})
 
 
 def _plugin_skill_linked_files(skill_root: Path) -> dict[str, list[str]] | None:

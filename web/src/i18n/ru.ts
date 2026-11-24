@@ -92,6 +92,14 @@ export const ru: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Активный провайдер памяти",
+    noProvider: "нет — только встроенная",
+    builtinLayer: "Встроенный слой",
+    builtinNote: "MEMORY.md и USER.md — собственная память Hermes, независимая от внешних провайдеров. По умолчанию оба файла загружаются в сессии; переключатели конфигурации (memory.memory_enabled / memory.user_profile_enabled) отключают каждый из них. Внешний провайдер дополняет их, но никогда не заменяет.",
+  },
+
   status: {
     actionFailed: "Ошибка действия",
     actionFinished: "Завершено",
@@ -362,6 +370,13 @@ export const ru: Translations = {
     authRequired: "Требуется аутентификация",
     authRequiredHint: "Выполните эту команду для аутентификации:",
     updateGit: "Git pull",
+    updateAll: "Обновить все",
+    updatingAll: "Обновление плагинов…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Обновлено ${updated}, требуют проверки ${needsReview}, с ошибкой ${failed}`,
+    autoUpdate: "Автообновление",
+    autoUpdateDesc: (hours: number) =>
+      `Автоматически применять обновления плагинов при проверке шлюзом (каждые ${hours} ч). Обновлённый код загружается в новых сессиях.`,
     versionBadge: "Версия",
     showInSidebar: "Показывать в боковой панели",
     hideFromSidebar: "Скрыть из боковой панели",

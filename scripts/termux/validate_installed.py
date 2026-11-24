@@ -13,7 +13,7 @@ import time
 
 
 def run(argv: list[str], env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess:
-    result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=90)
+    result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=90, check=False)
     print("+", " ".join(argv), flush=True)
     print(result.stdout, result.stderr, flush=True)
     result.check_returncode()
@@ -142,7 +142,7 @@ def main() -> None:
             "import pm; issues = pm.check(); "
             "assert not issues, issues; print('PM_RUNTIME_TOOLS_OK')",
         ], env, home)
-        result = subprocess.run([str(launcher), "update"], env=env, cwd=home, capture_output=True, text=True, encoding="utf-8", timeout=60)
+        result = subprocess.run([str(launcher), "update"], env=env, cwd=home, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
         validate_update_refusal(root / "app", result)
         tui_smoke(launcher, env, home)
         print("INSTALLED_BUNDLE_VALIDATION_OK", flush=True)

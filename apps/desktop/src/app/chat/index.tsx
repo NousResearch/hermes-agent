@@ -11,9 +11,9 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
-import { useSetupChatView } from '@/components/onboarding-chat/assembly'
-import { $introHoldsThread } from '@/components/onboarding-chat/intro'
-import { IntroCopy } from '@/components/onboarding-chat/intro-copy'
+import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
+import { $introHoldsThread } from '@/components/onboarding/first-run/intro'
+import { IntroCopy } from '@/components/onboarding/first-run/intro-copy'
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
@@ -29,10 +29,11 @@ import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $guideOpening, $onboardingGate } from '@/store/onboarding-gate'
+import { $introView } from '@/store/onboarding-intro'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $profileSwitchFailure } from '@/store/profile-switch-state'
 import {
   $connection,
   $contextSuggestions,
@@ -59,7 +60,7 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitle
 
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { dropOverlayKind, useShowChatBar } from './chat-surface-state'
-import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
+import { ChatSwitchIndicator } from './chat-switch-indicator'
 import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
@@ -70,6 +71,7 @@ import {
   useComposerScope,
   useComposerSurfaceId
 } from './composer/scope'
+import { useSwitchSendTarget } from './composer/send-target-hint'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
@@ -113,7 +115,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickFolders: () => void
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
-  onSteer: (text: string) => Promise<boolean> | boolean
+  onSteer: (text: string, mode?: 'interrupt' | 'steer') => Promise<boolean> | boolean
   onSteerHidden?: (text: string) => Promise<boolean> | boolean
   onSubmit: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
@@ -381,11 +383,12 @@ export function ChatRuntimeBoundary({
           // checking the live atoms (not captured props) discards a page that
           // resolves after the user moved on — same pattern as isCurrentResume.
           isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
+          heldMessages: () => view.$messages.get(),
           applyOlderPage: olderPage => {
             const current = view.$messages.get()
 
             if (mergeOlderTranscriptPage(current, olderPage) === current) {
-              return
+              return false
             }
 
             beforePrepend?.()
@@ -420,6 +423,7 @@ export function ChatRuntimeBoundary({
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
+  const historicalMessages = history.page?.messages
 
   const transcriptWindow = useMemo(
     () => ({
@@ -427,11 +431,13 @@ export function ChatRuntimeBoundary({
       expandWindow,
       revealRow,
       returnToLatest,
-      currentMessages,
+      // Live navigation reads the session store. Broadcasting the changing
+      // live tail here invalidates the entire transcript's navigation context.
+      currentMessages: historicalMessages ?? [],
       isHistorical,
       newerAvailable
     }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+    [expandWindow, olderAvailable, revealRow, returnToLatest, historicalMessages, isHistorical, newerAvailable]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -479,6 +485,28 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
   )
 })
 
+// Vibe hearts rise from the composer only when no pet is out (else they play
+// on the pet). Keep the pet subscriptions with this reaction-event surface.
+function ComposerHeartField() {
+  const petActive = useStore($petActive)
+  const petOverlayActive = useStore($petOverlayActive)
+
+  if (petActive || petOverlayActive) {
+    return null
+  }
+
+  return (
+    <HeartField
+      className="absolute inset-x-0 z-30"
+      config={COMPOSER_HEART_CONFIG}
+      style={{
+        top: 0,
+        bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
+      }}
+    />
+  )
+}
+
 const ChatViewContent = memo(function ChatViewContent({
   className,
   gateway,
@@ -521,9 +549,8 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
-  const guideOpening = useStore($guideOpening) && isPrimary
   const introHoldsThread = useStore($introHoldsThread) && isPrimary && isMainWindow()
-  const guideStarted = useStoreSelector($onboardingGate, gate => gate.guideKickoff === 'started')
+  const guideStarted = useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended')
   const activeSessionId = useStore(view.$runtimeId)
 
   const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
@@ -553,15 +580,13 @@ const ChatViewContent = memo(function ChatViewContent({
   const currentCwd = useStore(view.$cwd)
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
-  // A pet anywhere (in-window or popped out) owns the hearts; composer only when none.
-  const petActive = useStore($petActive)
-  const petOverlayActive = useStore($petOverlayActive)
-  const petPresent = petActive || petOverlayActive
   const freshDraftReady = useStore($freshDraftReady)
   const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const hydrationSyncProfile = useStore($hydrationSyncProfile)
+  const profileSwitchFailure = useStore($profileSwitchFailure)
+  const switchTarget = useSwitchSendTarget()
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -681,7 +706,6 @@ const ChatViewContent = memo(function ChatViewContent({
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
 
   const showChatBar = useShowChatBar({
-    guideOpening,
     loadingSession,
     resumeExhausted,
     routedSessionId,
@@ -772,6 +796,13 @@ const ChatViewContent = memo(function ChatViewContent({
         />
       )}
 
+      {/* Profile switch status (rail picks, bot wakes, paint-first sync). In
+          flow above the thread — never over it — and primary-only: a switch
+          re-homes the primary surface; a tile keeps showing its own session. */}
+      {isPrimary && (
+        <ChatSwitchIndicator failure={profileSwitchFailure} syncing={hydrationSyncProfile} target={switchTarget} />
+      )}
+
       {/* Mounted for the primary AND every tile, each scoped to its own session
           so a tiled/background session's blocking prompt surfaces instead of
           stalling to timeout. */}
@@ -791,46 +822,29 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
-          {!guideOpening && (
-            <Thread
-              clampToComposer={showChatBar}
-              cwd={currentCwd}
-              gateway={gateway}
-              intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
-              loading={threadLoading}
-              onBranchInNewChat={onBranchInNewChat}
-              onCancel={haltRun}
-              onDismissError={onDismissError}
-              onRestoreToMessage={onRestoreToMessage}
-              scrollProfile={modelOptionsProfile || activeGatewayProfile}
-              sessionId={activeSessionId}
-              sessionKey={threadKey}
-            />
-          )}
+          <Thread
+            clampToComposer={showChatBar}
+            cwd={currentCwd}
+            gateway={gateway}
+            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+            loading={threadLoading}
+            onBranchInNewChat={onBranchInNewChat}
+            onCancel={haltRun}
+            onDismissError={onDismissError}
+            onRestoreToMessage={onRestoreToMessage}
+            scrollProfile={modelOptionsProfile || activeGatewayProfile}
+            sessionId={activeSessionId}
+            sessionKey={threadKey}
+          />
           {isPrimary && isMainWindow() && <IntroCopy />}
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}
           {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
-          {/* Vibe hearts rise from the composer only when no pet is out (else
-              they play on the pet). Fired by the core `reaction` event. */}
-          {!petPresent && (
-            <HeartField
-              className="absolute inset-x-0 z-30"
-              config={COMPOSER_HEART_CONFIG}
-              style={{
-                top: 0,
-                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
-              }}
-            />
-          )}
+          <ComposerHeartField />
           {/* A session drag hovering an EDGE hands the visual to the zone
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />
-          <ChatSwapOverlay profile={gatewaySwapTarget} />
-          {/* Paint-first wake (#89843): transcript is live, profile gate still
-              settling in the background — subtle badge, not an overlay. */}
-          {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}
         </div>
         {/* Docked composers overlay their pane; the shared float escapes pane
             clipping through a stable portal host without remounting its editor. */}

@@ -31,7 +31,7 @@ def _run(tmp_path: Path, body: str) -> dict:
                PYTHONPATH=os.pathsep.join([str(ROOT), *filter(None, sys.path)]),
                PYTHONDONTWRITEBYTECODE="1")
     done = subprocess.run([sys.executable, str(script), str(ROOT)], env=env, cwd=tmp_path,
-                          text=True, capture_output=True, timeout=60)
+                          text=True, capture_output=True, timeout=60, check=False)
     assert done.returncode == 0, done.stdout + done.stderr
     return json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 

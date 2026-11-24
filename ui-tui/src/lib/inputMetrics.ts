@@ -170,6 +170,25 @@ export function inputVisualHeight(value: string, columns: number) {
   return cursorLayout(value, value.length, columns).line + 1
 }
 
+/**
+ * Rows the composer shows and how far they are scrolled. Normally the composer
+ * grows with its text; while a paste is expanded for editing (`capped`) it
+ * shows half a page that follows the cursor.
+ */
+export function composerViewport(
+  value: string,
+  selection: null | { cursor: number },
+  columns: number,
+  capped: boolean,
+  pageSize: number
+) {
+  const height = inputVisualHeight(value, columns)
+  const rows = capped ? Math.min(height, Math.max(3, Math.floor(pageSize / 2))) : height
+  const line = selection ? cursorLayout(value, selection.cursor, columns).line : height - 1
+
+  return { height, rows, scroll: Math.max(0, Math.min(height - rows, line - rows + 1)) }
+}
+
 export function composerPromptWidth(promptText: string) {
   return Math.max(1, stringWidth(promptText)) + COMPOSER_PROMPT_GAP_WIDTH
 }

@@ -106,5 +106,5 @@ class RunToCompletionEnv:
     def execute(self, command, cwd=None, timeout=30, stdin_data=None):
         result = subprocess.run([self.bash, "-c", command], cwd=cwd or self.root,
                                 env=self.env, input=stdin_data or "", timeout=timeout,
-                                capture_output=True, text=True, encoding="utf-8")
+                                capture_output=True, text=True, encoding="utf-8", check=False)
         return {"returncode": result.returncode, "output": result.stdout + result.stderr}

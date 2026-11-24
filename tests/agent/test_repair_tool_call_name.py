@@ -125,3 +125,42 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+@pytest.mark.parametrize("name, repaired", [
+    ("read_fiel", "read_file"),
+    ('terminal" parameter="command" string="true', "terminal"),  # #33007 shape, anthropic_messages
+])
+def test_repaired_name_reaches_the_native_replay(name, repaired):
+    """Signed-thinking turns replay from the ordered sidecars, so the repair must rename them too."""
+    import json
+
+    from agent.anthropic_message_convert import _convert_assistant_message
+    from agent.bedrock_adapter import _assistant_blocks
+    from agent.turn_tool_validation import validate_tool_calls
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider, agent.model, agent.session_id, agent.tools = "anthropic", "m", "s1", []
+    agent.valid_tool_names = set(VALID)
+    agent.log_prefix, agent._base_url, agent.api_mode = "", "https://api.example.invalid", "anthropic_messages"
+    agent._invalid_tool_retries = agent._invalid_json_retries = 0
+    agent._vprint = lambda *a, **k: None
+    args = {"path": "a.txt"}
+    provider_data = {
+        "anthropic_content_blocks": [{"type": "thinking", "thinking": "read it", "signature": "sig"},
+                                     {"type": "tool_use", "id": "toolu_1", "name": name, "input": args}],
+        "bedrock_content_blocks": [{"reasoningContent": {"text": "read it", "signature": "sig"}},
+                                   {"toolUse": {"toolUseId": "toolu_1", "name": name, "input": args}}],
+    }
+    tc = SimpleNamespace(id="toolu_1", type="function",
+                         function=SimpleNamespace(name=name, arguments=json.dumps(args)))
+    message = SimpleNamespace(content="", tool_calls=[tc], provider_data=provider_data)
+    verdict = validate_tool_calls(agent, message, "tool_calls", messages=[], conversation_history=[],
+                                  api_call_count=1, effective_task_id="t1")
+    stored = {"role": "assistant", "content": "", **provider_data, "tool_calls": [
+        {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}]}
+
+    assert verdict.action == "ok" and tc.function.name == repaired
+    assert [b["name"] for b in _convert_assistant_message(stored)["content"] if b["type"] == "tool_use"] == [repaired]
+    assert [b["toolUse"]["name"] for b in _assistant_blocks(stored, "") if "toolUse" in b] == [repaired]

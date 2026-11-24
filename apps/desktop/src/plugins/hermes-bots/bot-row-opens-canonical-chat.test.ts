@@ -109,7 +109,10 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
 
     await expect(openRosterBot(canonicalBot)).resolves.toBe(true)
 
-    expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, { openingStillCurrent: expect.any(Function) })
+    expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, {
+      intent: 'in-place',
+      openingStillCurrent: expect.any(Function)
+    })
     expect($openBotChat.get()?.openedSessionId).toBe('bot-chat-tip')
   })
 
@@ -170,5 +173,23 @@ describe('the open Bot Chat follows its session on the gateway', () => {
       busy.mockRestore()
       $selectedStoredSessionId.set(null)
     }
+  })
+})
+
+describe('opening a Bot Chat as a stacked tab (⌘-click / "Open Bot Chat in new tab")', () => {
+  // Two Bot Chats could never be open at once: every row click spent main, so
+  // the second bot replaced the first. A `tab` intent reaches the canonical
+  // open so the chat stacks beside whatever main holds; a plain click keeps
+  // its in-place meaning.
+  it('threads a tab intent into the canonical open', async () => {
+    await expect(openRosterBot(bot, { intent: 'tab' })).resolves.toBe(true)
+
+    expect(openBotCanonicalChat).toHaveBeenCalledWith(bot, expect.objectContaining({ intent: 'tab' }))
+  })
+
+  it('a plain click still opens in place', async () => {
+    await expect(openRosterBot(bot)).resolves.toBe(true)
+
+    expect(openBotCanonicalChat).toHaveBeenCalledWith(bot, expect.objectContaining({ intent: 'in-place' }))
   })
 })

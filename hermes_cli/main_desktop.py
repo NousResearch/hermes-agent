@@ -107,6 +107,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
+        # The source launch runs the linked Electron. A ZIP swap drops workspace links, and
+        # a failed reinstall can leave the renderer current with no runtime beside it.
+        if not (_electron_dir(project_root) / "package.json").exists():
+            return True
     elif _desktop_packaged_executable(desktop_dir) is None:
         return True
 
@@ -254,14 +258,46 @@ def _recover_interrupted_swap(live: Path, aside: Path) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+def _move_live_app_aside(live_root: Path, previous: Path, held_by: Optional[list], consent) -> None:
+    """First swap rename. On Windows a refusal names the programs whose working folder is inside
+    ``live_root``, the folder being renamed (#101789), and retries once only after the user
+    consented to closing them. A program in a sibling folder (``win-arm64-unpacked``) does not
+    block this rename, so it is neither named nor offered for closing."""
+    try:
+        _rename_riding_out_file_lock(live_root, previous)
+        return
+    except PermissionError:
+        if sys.platform != "win32":
+            raise
+        from hermes_cli.desktop_release_holders import find_release_cwd_holders, release_after_refused_rename
+        holders, closed = release_after_refused_rename(live_root, consent=consent)
+        if not closed:
+            if held_by is not None:
+                held_by.extend(holders)
+            raise
+    try:
+        _rename_riding_out_file_lock(live_root, previous)
+    except PermissionError:
+        if held_by is not None:
+            held_by.extend(find_release_cwd_holders(live_root))
+        raise
+
+
+def _swap_staged_desktop_app(
+    desktop_dir: Path, staging_dir: Path, *, held_by: Optional[list] = None,
+) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
-    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
+    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises.
+    ``held_by`` collects the named programs that blocked the swap (Windows cwd holders)."""
+    from hermes_cli.desktop_release_holders import take_consent
+    from hermes_cli.update_receipt import _launcher_correlation_id
+    release_dir = desktop_dir / "release"
+    # A "close and retry" consent covers this one attempt of the run it was given for (#101789).
+    consent = take_consent(release_dir, _launcher_correlation_id())
     staged_exe = _desktop_packaged_executable_in(staging_dir)
     if staged_exe is None:
         shutil.rmtree(staging_dir, ignore_errors=True)
         return None
-    release_dir = desktop_dir / "release"
     try:
         staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
         live_root = release_dir / staged_root.name
@@ -278,7 +314,7 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            _rename_riding_out_file_lock(live_root, previous)
+            _move_live_app_aside(live_root, previous, held_by, consent)
         try:
             _rename_riding_out_file_lock(staged_root, live_root)
         except OSError:
@@ -440,12 +476,9 @@ def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
 
 
 def _electron_dir(project_root: Path) -> Path:
-    """The installed Electron package dir: workspace-local ``apps/desktop/node_modules/electron`` (where
-    ``electronDist`` points) when present, else the root hoist npm sometimes uses instead."""
-    desktop_local = project_root / "apps" / "desktop" / "node_modules" / "electron"
-    if desktop_local.exists():
-        return desktop_local
-    return project_root / "node_modules" / "electron"
+    """The installed Electron package dir: pnpm links it into the desktop workspace (where
+    ``electronDist`` points), never into the root."""
+    return project_root / "apps" / "desktop" / "node_modules" / "electron"
 
 
 def _runs_from(proc, release_dir: Path) -> bool:
@@ -607,7 +640,7 @@ def _desktop_macos_local_signing_identity() -> Optional[str]:
 
 
 def _codesign_verify(codesign: str, app: Path, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
         [codesign, "--verify", "--deep", "--strict", str(app)], capture_output=True, **kwargs)
 
 
@@ -1214,7 +1247,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if _sandbox_helper_is_setuid_root(st):
         return True
 
-    if _desktop_linux_userns_sandbox_available():
+    from hermes_cli.main_desktop_apparmor import chromium_userns_sandbox_verdict
+
+    verdict = chromium_userns_sandbox_verdict(packaged_executable)
+    if verdict if verdict is not None else _desktop_linux_userns_sandbox_available():
         print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
         return True
 
@@ -1288,7 +1324,7 @@ def _detect_linux_password_store() -> str | None:
                 "org.freedesktop.DBus.Peer.Ping",
             ],
             capture_output=True,
-            timeout=5)
+            timeout=5, check=False)
         if result.returncode == 0:
             return "gnome-libsecret"
     return None
@@ -1403,7 +1439,13 @@ def _promote_staged_desktop_app(
             print(f"✗ The built {staged_executable.name} failed its integrity check: {error}\n"
                   f"    at: {staged_executable}")
         raise RuntimeError(f"Desktop build produced no launchable app. {_PREVIOUS_APP_KEPT}")
-    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+    held_by: list = []
+    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir, held_by=held_by)
+    if packaged_executable is None and held_by:
+        from hermes_cli.desktop_release_holders import describe_block, holder_names
+        print(describe_block(held_by, desktop_dir / "release"))
+        raise RuntimeError(
+            f"Could not publish the desktop build: {holder_names(held_by)} is using its folder. {_PREVIOUS_APP_KEPT}")
     if packaged_executable is None:
         print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
         raise RuntimeError(f"Could not publish the desktop build. {_PREVIOUS_APP_KEPT}")
@@ -1412,24 +1454,23 @@ def _promote_staged_desktop_app(
 
 def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
     """Print an actionable hint when a desktop build failed because esbuild's platform
-    binary was never staged (`ignore-scripts=true` skips esbuild's postinstall, so the
-    ``@esbuild/<platform>`` optional dependency is absent) — #53082. Best-effort: only
-    adds context, never masks the original error."""
+    binary was never staged (the ``@esbuild/<platform>`` optional dependency is absent, or
+    `ignoreScripts` skipped esbuild's postinstall) — #53082. Best-effort: only adds
+    context, never masks the original error."""
     text = output or ""
     if not ("@esbuild/" in text and "could not be found" in text) and "ignore-scripts" not in text:
         return
-    print("  ⚠ This looks like esbuild's native binary is missing — commonly caused by")
-    print("    `ignore-scripts=true` in your npm config, which skips esbuild's postinstall")
-    print("    that stages the @esbuild/<platform> package.")
-    print("    Fix: run `npm config get ignore-scripts` — if true, either set it to false")
-    print("    (`npm config set ignore-scripts false`), then reinstall: `npm ci` in the repo root,")
-    print("    or stage the binary directly: `node node_modules/esbuild/install.js` in apps/desktop.")
+    print("  ⚠ This looks like esbuild's native binary is missing — its @esbuild/<platform> package")
+    print("    was not installed, or `ignoreScripts: true` in your pnpm config skipped its postinstall.")
+    print("    Fix: run `pnpm config get ignore-scripts` — if true, remove it")
+    print("    (`pnpm config delete --global ignore-scripts`), then delete node_modules in the repo")
+    print("    root so the next build reinstalls every workspace.")
 
 
-def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
+def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, pnpm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
-    from hermes_cli.source_build import run_in_custody  # npm writes the checkout: update custody
+    from hermes_cli.source_build import run_in_custody  # pnpm writes the checkout: update custody
 
     if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
         # The Desktop running this build holds the exe lock the promotion rename needs,
@@ -1453,7 +1494,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         print("  → No Developer ID configured; ad-hoc signing this local rebuild "
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
     build_args = ["--icons", str(icons)] if icons else []
-    build_cmd = [npm, "run", "build", "--", *build_args]
+    build_cmd = [pnpm, "run", "build", *build_args]
     staging_dir = None if source_mode else _desktop_staging_dir(desktop_dir)
     if staging_dir is not None:
         # electron-builder packs in place; only the verified staging tree may
@@ -1465,7 +1506,10 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     try:
         run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
+            from hermes_cli.update_stage import publish_stage
+
+            publish_stage("Packaging the desktop app")
+            run_in_custody(desktop_dir.parents[1], [pnpm, "run", "builder", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
                            cwd=desktop_dir, env=build_env)
         packaged_executable = (
@@ -1561,18 +1605,18 @@ def _check_desktop_skip_build(
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")
-            print("  Pre-build first:  cd apps/desktop && npm run build")
+            print("  Pre-build first:  cd apps/desktop && pnpm run build")
             print("  Or drop --skip-build to install dependencies and build automatically.")
             sys.exit(1)
         if not (_electron_dir(project_root) / "package.json").exists():
             print("✗ --skip-build --source requires existing desktop workspace dependencies.")
-            print(f"  Install first:  cd {project_root} && npm ci")
+            print(f"  Install first:  cd {project_root} && pnpm install --frozen-lockfile")
             print("  Or drop --skip-build to install dependencies and build automatically.")
             sys.exit(1)
         print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
     elif packaged_executable is None:
         print(f"✗ --skip-build was passed but no packaged desktop app was found at: {desktop_dir / 'release'}")
-        print("  Pre-build first:  cd apps/desktop && npm run pack")
+        print("  Pre-build first:  cd apps/desktop && pnpm run pack")
         print("  Or drop --skip-build to package automatically.")
         sys.exit(1)
     else:
@@ -1581,10 +1625,12 @@ def _check_desktop_skip_build(
 
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
+    from hermes_cli.main_desktop_apparmor import print_no_sandbox_fallback
+
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            print_no_sandbox_fallback(packaged_executable)
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
@@ -1627,6 +1673,27 @@ def _launch_installed_macos_desktop_app() -> bool:
     return True
 
 
+def _run_desktop_one_shot(args: argparse.Namespace, desktop_dir: Path, *, bundled: bool) -> None:
+    """Run a host-setup one-shot flag, then exit without building or launching."""
+    # macOS: a self-signed code-signing identity so TCC grants survive rebuilds.
+    if getattr(args, "setup_tcc_identity", False):
+        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
+        identity = getattr(args, "identity", None) or "Hermes Local Signing"
+        sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
+    # Linux: the per-binary AppArmor profile for Chromium's namespace sandbox (#130177).
+    if getattr(args, "install_apparmor_profile", False):
+        from hermes_cli.bundled_app import NotBundledApp, resolve_bundle_layout
+        from hermes_cli.main import PROJECT_ROOT
+        from hermes_cli.main_desktop_apparmor import install_profile
+        exe = _desktop_packaged_executable(desktop_dir)
+        if bundled:
+            with contextlib.suppress(NotBundledApp):
+                exe = resolve_bundle_layout(PROJECT_ROOT).launcher
+        if exe is None:
+            print(f"✗ No packaged Hermes Desktop found under {desktop_dir / 'release'}; run `hermes desktop` first.")
+        sys.exit(0 if exe is not None and install_profile(exe) else 1)
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1667,19 +1734,14 @@ def cmd_gui(args: argparse.Namespace):
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
 
-    # macOS-only one-shot: create a self-signed code-signing identity so TCC
-    # grants survive rebuilds, then exit without building/launching.
-    if getattr(args, "setup_tcc_identity", False):
-        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
-        identity = getattr(args, "identity", None) or "Hermes Local Signing"
-        sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
+    _run_desktop_one_shot(args, desktop_dir, bundled=bundled)
 
     if bundled:
         _launch_bundled_desktop(args, env, config_electron_flags)
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
-    # The mutable preflight (freshness check → npm install → pack) mutates
+    # The mutable preflight (freshness check → pnpm install → pack) mutates
     # checkout-scoped node_modules and apps/desktop/release. Serialize it
     # across processes so a manual `hermes desktop` racing `hermes update`'s
     # rebuild cannot corrupt either (#93940). The lock lives outside the
@@ -1693,7 +1755,7 @@ def cmd_gui(args: argparse.Namespace):
             acquired = build_lock.acquire()
         except OSError as exc:
             print(f"✗ Could not create the desktop build lock: {exc}")
-            print("  Refusing to run npm without serialization; check the checkout permissions and retry.")
+            print("  Refusing to run pnpm without serialization; check the checkout permissions and retry.")
             sys.exit(1)
         if not acquired:
             print("✗ A Hermes update or another desktop dependency install or build is already running.")
@@ -1703,11 +1765,11 @@ def cmd_gui(args: argparse.Namespace):
     needs_build = not skip_build and (
         force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
     )
-    npm = None
+    pnpm = None
     try:
         if needs_build:
             build_env = source_build_env(env, explicit=force_build or getattr(args, "build_only", False))
-            npm = shutil.which("npm", path=build_env["PATH"])
+            pnpm = shutil.which("pnpm", path=build_env["PATH"])
             env["PATH"] = build_env["PATH"]
         if skip_build:
             _check_desktop_skip_build(
@@ -1716,7 +1778,7 @@ def cmd_gui(args: argparse.Namespace):
         elif needs_build:
             prepare_source_dependencies(PROJECT_ROOT, ("ui-tui", "web", "apps/desktop"), env=build_env,
                                         explicit=force_build or getattr(args, "build_only", False))
-            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
+            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, pnpm=pnpm, env=build_env)
             if not source_mode:
                 # None only when the build was skipped under its own Desktop: reopen the app it kept.
                 packaged_executable = built or packaged_executable
@@ -1760,8 +1822,8 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        # Launch only the prepared runtime. npm exec can provision a missing
-        # Electron package, including when --skip-build was requested.
+        # Launch only the prepared runtime, never through a package manager,
+        # including when --skip-build was requested.
         electron = _electron_dir(PROJECT_ROOT)
         try:
             executable = electron / "dist" / (electron / "path.txt").read_text(encoding="utf-8-sig").strip()
@@ -1769,6 +1831,7 @@ def cmd_gui(args: argparse.Namespace):
                 raise FileNotFoundError(executable)
         except OSError as exc:
             print(f"✗ Prepared Electron runtime is missing: {exc}")
+            print("  From the project root, run: node scripts/build/electron-runtime.mjs --source .")
             raise SystemExit(1) from exc
         launch_command = [str(executable), "."]
     else:
@@ -1906,7 +1969,7 @@ def _launch_bundled_desktop(
     except NotBundledApp as exc:
         # The stamp says bundled, so a tree that is not one is a damaged or
         # mispackaged install. Report it — degrading to the build ladder
-        # would run npm inside the app's own resources.
+        # would run pnpm inside the app's own resources.
         print(f"✗ This Hermes is stamped as a bundled desktop install, but {exc}.")
         print("  The install is damaged — reinstall Hermes from the website.")
         sys.exit(1)
@@ -1916,14 +1979,7 @@ def _launch_bundled_desktop(
         print("  The install is damaged — reinstall Hermes from the website.")
         sys.exit(1)
 
-    launch_command = [str(layout.launcher)]
-    if not _desktop_linux_sandbox_fixup(layout.launcher):
-        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(layout.launcher):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
-            launch_command.append("--no-sandbox")
-        else:
-            sys.exit(1)
-
+    launch_command = _packaged_desktop_launch_command(layout.launcher)
     launch_command.extend(electron_flags)
     launch_command.extend(_explicit_profile_args())
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)

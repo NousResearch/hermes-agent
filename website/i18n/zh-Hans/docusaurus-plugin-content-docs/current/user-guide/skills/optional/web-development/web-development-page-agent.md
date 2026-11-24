@@ -44,7 +44,7 @@ alibaba/page-agent（https://github.com/alibaba/page-agent，17k+ stars，MIT）
 
 ## 何时不应使用此 skill
 
-- 用户希望 **Hermes 本身驱动浏览器** → 使用 Hermes 内置的浏览器工具（Browserbase / Camofox）。page-agent 是*相反*的方向。
+- 用户希望 **Hermes 本身驱动浏览器** → 使用 Hermes 内置的 `browser_exec` 工具（本地 Chromium 或云端浏览器）。page-agent 是*相反*的方向。
 - 用户希望**在不嵌入的情况下实现跨标签页自动化** → 使用 Playwright、browser-use 或 page-agent Chrome 扩展
 - 用户需要**视觉定位 / 截图** → page-agent 仅支持文本 DOM；请改用多模态浏览器 agent
 

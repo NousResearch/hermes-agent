@@ -20,7 +20,8 @@ from hermes_cli.gitlock import prune_stale_shallow_grafts
 
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True
+        ["git", *args], cwd=str(repo), capture_output=True, text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()

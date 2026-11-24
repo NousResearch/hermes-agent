@@ -15,8 +15,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from agent.codex_headers import is_official_codex_base_url
-from agent.context_compressor import is_compaction_summary_message
-from agent.message_content import flatten_message_text
+from session_rules.turns import is_compaction_summary_message, flatten_message_text
 from agent.reasoning_effort import is_astra_model
 
 logger = logging.getLogger(__name__)
@@ -107,8 +106,10 @@ def _warn_native_compaction_suppressed_by_checkpoint_gate() -> None:
 
 
 def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, is_xai_responses: bool = False,
-                                         is_github_responses: bool = False) -> Optional[list[dict[str, Any]]]:
+                                         endpoint: Any = None) -> Optional[list[dict[str, Any]]]:
     """Return the ``context_management`` payload for this request, or None ("do not send").
+
+    ``endpoint`` is the route's ``ResponsesEndpointQuirks``; ``native_compaction=False`` never sends.
 
     Every gate is re-checked per request so a mid-session model switch or the in-session
     kill switch (``agent.codex_responses_native_compaction = False``) takes effect next call.
@@ -125,7 +126,7 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     if getattr(agent, "compression_checkpoint_required", False) is True:
         _warn_native_compaction_suppressed_by_checkpoint_gate()
         return None
-    if is_xai_responses or is_github_responses or not is_native_compaction_model(
+    if is_xai_responses or (endpoint is not None and not endpoint.native_compaction) or not is_native_compaction_model(
         getattr(agent, "model", None), provider=getattr(agent, "provider", None),
         base_url=getattr(agent, "base_url", None),
     ):

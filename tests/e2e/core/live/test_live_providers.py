@@ -200,15 +200,16 @@ def test_three_turn_tool_conversation(case: LiveCase, live_home: Path, monkeypat
     assert runtime.get("api_key") == secret, f"{case.id}: resolver did not pick the {case.key_env} credential"
 
     from hermes_constants import parse_reasoning_effort
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
+    from tests.fixtures.storage_read import transcript_rows
 
-    db = SessionDB(live_home / "state.db")
+    db = open_persistence(profile_scope(home=live_home))
     agent = AIAgent(
         provider=runtime.get("provider"), api_mode=runtime.get("api_mode"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"),
         credential_pool=runtime.get("credential_pool"), model=model,
-        session_db=db, session_id=f"live-{case.id}", quiet_mode=True, platform="cli",
+        persistence=db, session_id=f"live-{case.id}", quiet_mode=True, platform="cli",
         enabled_toolsets=["live_probe"], skip_context_files=True, skip_memory=True,
         skip_background_review=True, max_tokens=2048, max_iterations=6,
         reasoning_config=parse_reasoning_effort("low"), run_budget_seconds=240,
@@ -268,7 +269,7 @@ def test_three_turn_tool_conversation(case: LiveCase, live_home: Path, monkeypat
             assert cache_read_turn3 > 0, f"{case.id}: no prompt-cache read on the follow-up turn"
 
         # Persisted == sent: the three tool results are in state.db for this session.
-        rows = db.get_messages(agent.session_id)
+        rows = transcript_rows(db, agent.session_id)
         persisted = " ".join(str(r.get("content")) for r in rows if r.get("role") == "tool")
         for value in LOOKUP_VALUES.values():
             assert value in persisted, f"{case.id}: tool result {value} not persisted"

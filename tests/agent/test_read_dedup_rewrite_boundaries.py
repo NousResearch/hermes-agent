@@ -9,6 +9,8 @@ so the next repeat must serve content again, as after compaction (#32106).
 from __future__ import annotations
 
 import json
+import os
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -16,7 +18,7 @@ import pytest
 
 from tools.file_tools_read_tracking import _read_tracker, _read_tracker_lock, _task_data
 from tools.skills_tool import _skill_view_with_bump
-from tools.skills_tool_dedup import _check_skill_view_dedup, reset_skill_view_dedup
+from tools.skills_tool_dedup import _skill_view_tracker, reset_skill_view_dedup
 
 TASK = "rewrite-boundary-task"
 FILE_KEY = ("/x/big.txt", 1, 2000)
@@ -54,7 +56,7 @@ def _dedup_state():
     """(a skill_view repeat would get the stub, a read_file repeat would get the stub)."""
     with _read_tracker_lock:
         file_stubbed = FILE_KEY in _read_tracker.get(TASK, {}).get("dedup_generation_reads", ())
-    return _check_skill_view_dedup(TASK, "demo-skill", None) is not None, file_stubbed
+    return ("demo-skill", "") in _skill_view_tracker.get(TASK, {}), file_stubbed
 
 
 def _run(agent, history, monkeypatch):
@@ -100,8 +102,8 @@ def test_micro_compaction_splice_rearms_read_dedup(served, splice, monkeypatch):
     # A splice returns a new list with the oldest exchange folded into the rolling summary;
     # a no-op (nothing to absorb, or a defrag) returns the input list.
     compressor._micro_compact = (
-        (lambda messages: [{"role": "user", "content": "[MICRO] loaded demo-skill"}, *messages[4:]])
-        if splice else (lambda messages: messages))
+        (lambda messages, **_kw: [{"role": "user", "content": "[MICRO] loaded demo-skill"}, *messages[4:]])
+        if splice else (lambda messages, **_kw: messages))
     agent.context_compressor = compressor
     agent.client.chat.completions.create.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(

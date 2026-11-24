@@ -1,0 +1,35 @@
+name: skilluminati
+title: Skilluminati
+repo: https://github.com/yxssxn/skilluminati
+sha: "9c8babd39abe3b20a9b8f9aa4b2b8e41b7dcdfaa"
+subdir: plugin
+version: "0.2.1"
+description: "Your skills, judged blind: finds out whether each skill your Hermes agent loads makes its answers better. /skilluminati <skill> takes the latest 12 times you used the skill, each with the chat as it stood at that moment, and your model answers each one twice, once with the skill and once without. The Owl, a blind judge, sees both answers and the skill's one-line description of its job, never which answer had the skill, and sees every pair twice with the answers swapped; if it picks differently the second time, the pair counts as Same. Verdicts: Enlightened (answers are clearly better with it), Dead weight (the model does this anyway, it only costs tokens), Hindrance (answers are worse with it) or Unproven (too few uses to tell yet), each marked Probable or Plausible. A close Dead weight that is only Plausible reads No clear difference yet, and asking again pools the new run with earlier runs of the same skill version, model and judge. Each result carries flags where they apply: Skill changed, Stale, Tool-driven, Same-model judge and Judge failed, plus a same-vs-same figure for how often the Owl picks a side between two answers from the same setup. Built-in question sets for frontend-design, systematic-debugging and hermes-agent let a fresh install run a test with no history, and /skilluminati selftest plants a helpful, a harmful and an empty skill to prove the Owl can tell them apart. Surfaces: the /skilluminati command, two read-only agent tools, a Desktop page with a sidebar entry (plugin SDK only) and a read-only dashboard backend. Disclosure — opens HERMES_HOME/state.db read-only and reads installed skill files, skills/.usage.json and skills.disabled/model.default from config.yaml; for each test it sends up to 12 past tasks (the stored session system prompt, the chat up to the moment the skill loaded and any tool output in it, after best-effort regex blanking of emails, phone numbers, key-shaped strings, token-carrying URLs, money amounts and names in plugin-data/skilluminati/names.txt) plus the skill text to the active provider and model, or a per-role provider/model you configure, through ctx.llm (a configured judge model must also be on plugins.entries.skilluminati.llm.allowed_models when that list exists), at up to 64 model calls per skill on your own allowance; runs start only from a local CLI/TUI/Desktop/ACP session (never cron or a messaging gateway) on a background thread; registers one plugin skill (skilluminati:skilluminati, about 25 tokens a turn) so the agent quotes saved results instead of guessing; run folders keep only redacted copies of the tasks, and redaction also turns the account name in home-folder paths into ~; writes only under HERMES_HOME/plugin-data/skilluminati/; imports one private core helper (agent.skill_utils.get_all_skills_dirs) to list skill folders; no other network calls, no shell commands, no stored credentials."
+maintainer: yxssxn
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/yxssxn/skilluminati/blob/9c8babd39abe3b20a9b8f9aa4b2b8e41b7dcdfaa/README.md
+image: https://raw.githubusercontent.com/yxssxn/skilluminati/9c8babd39abe3b20a9b8f9aa4b2b8e41b7dcdfaa/docs/img/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/yxssxn/skilluminati/9c8babd39abe3b20a9b8f9aa4b2b8e41b7dcdfaa/docs/img/page.png
+  - https://raw.githubusercontent.com/yxssxn/skilluminati/9c8babd39abe3b20a9b8f9aa4b2b8e41b7dcdfaa/docs/img/chat-result.png
+  - https://raw.githubusercontent.com/yxssxn/skilluminati/9c8babd39abe3b20a9b8f9aa4b2b8e41b7dcdfaa/docs/img/progress.png
+readme: true
+platforms: []
+known_issues:
+  - "Each test is one fresh answer per task from the moment the skill loaded. Tools are not run again, so skills that mostly drive tools are judged on the answer text only."
+  - "The replay puts the skill into the chat directly, so it does not test whether your agent would have chosen to load it."
+  - "If the judge is the same model family as the one under test, it may favour answers like its own. The result names the model."
+  - "Every test spends your own provider allowance: up to 64 model calls for one skill. The frontend-design built-in set takes about an hour because every answer is a whole web page."
+  - "The Owl is noisy: on the author's runs (Opus 5.5 judging its own answers) it picked a side 37 of 59 times between two answers from the same setup, so a single run is a lean. Asking again pools the evidence."
+  - "A verdict run needs at least 6 usable past uses of the skill; with fewer, it falls back to a built-in question set where one exists."
+  - "The Desktop page appears only after Capabilities -> Plugins -> Skilluminati is switched on in Hermes Desktop."
+  - "Lists skill folders through agent.skill_utils.get_all_skills_dirs, a private core helper (validator rule 9 warning); a future Hermes release may move it."
+capabilities:
+  provides_tools:
+    - skilluminati_estimate
+    - skilluminati_result
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

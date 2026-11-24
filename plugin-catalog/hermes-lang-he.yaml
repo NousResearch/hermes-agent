@@ -1,0 +1,26 @@
+name: hermes-lang-he
+repo: https://github.com/Adolanium/hermes-lang-he
+sha: 9e470ec786f5abf7c97d1939dd8898782a36d430
+description: >-
+  Hebrew (עברית) language pack for Hermes — core CLI, gateway and tips (3,396 of
+  3,486 keys on main), TUI (1,331 of 1,356) and Desktop (5,153 of 5,245), with
+  Desktop flipped right-to-left. Hermes bundles no Hebrew, so the pack ships all
+  three catalogs; values identical to English and entries whose English wording
+  depends on an argument (on/off, show/hide) are omitted so they fall back to
+  English. Disclosure — text-only catalogs plus an __init__.py whose register()
+  is a no-op (kept so Desktop "Install from Git" accepts the pack, #138118);
+  registering the pack never changes display.language, the user opts in via
+  config.
+maintainer: Adolanium
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Adolanium/hermes-lang-he#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-lang-he/9e470ec786f5abf7c97d1939dd8898782a36d430/assets/catalog-banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

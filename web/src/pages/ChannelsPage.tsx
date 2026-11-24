@@ -35,9 +35,11 @@ import type {
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { AllowlistInput } from "@/components/AllowlistInput";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { RelayLinkPanel } from "./ChannelsRelayLink";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -57,6 +59,28 @@ const STATE_BADGE: Record<
 
 function stateBadge(state: string) {
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
+}
+
+function platformBadge(platform: MessagingPlatform) {
+  if (platform.relay_exclusive) return { tone: "secondary" as const, label: "Via Team Gateway" };
+  if (platform.disabled_by_relay) return { tone: "secondary" as const, label: "Managed by Team Gateway" };
+  return stateBadge(platform.state);
+}
+
+// The relay-exclusive rule turns this platform off on every gateway start (#141175):
+// a plain "Disabled" plus a live toggle reads as a setting that will not save.
+export function RelayManagedNote({ platform }: { platform: MessagingPlatform }) {
+  // A platform the shared bot carries gets the link panel instead of this dead end.
+  if (!platform.disabled_by_relay || platform.relay_exclusive) return null;
+  return (
+    <span id={`relay-note-${platform.id}`} className="text-xs text-muted-foreground">
+      Team Gateway carries messaging on this deployment, so the gateway turns the direct{" "}
+      {platform.name} connection off at every start. To run it alongside the relay, set{" "}
+      <code className="font-mono">GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true</code> in the
+      gateway's environment (a direct connection keeps the instance from scaling to zero and
+      can deliver messages twice).
+    </span>
+  );
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
@@ -569,7 +593,9 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          // Under an exclusive relay the direct bot never runs: setup is the shared-bot link below.
+          const viaRelay = Boolean(platform.relay_exclusive);
+          const badge = platformBadge(platform);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -603,6 +629,7 @@ export default function ChannelsPage() {
                       <span className="text-xs text-muted-foreground">
                         {platform.description}
                       </span>
+                      <RelayManagedNote platform={platform} />
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
                           {platform.error_message}
@@ -617,6 +644,7 @@ export default function ChannelsPage() {
                     </div>
                   </div>
 
+                  {!viaRelay && (
                   <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
                     <div className="flex items-center gap-1.5">
                       {busy ? (
@@ -626,6 +654,10 @@ export default function ChannelsPage() {
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
                           aria-label={`Enable ${platform.name}`}
+                          disabled={platform.disabled_by_relay}
+                          aria-describedby={
+                            platform.disabled_by_relay ? `relay-note-${platform.id}` : undefined
+                          }
                         />
                       )}
                     </div>
@@ -655,8 +687,12 @@ export default function ChannelsPage() {
                       </Button>
                     )}
                   </div>
+                  )}
                 </div>
-                {platform.id === "telegram" && (
+                {platform.relay_fronted && (
+                  <RelayLinkPanel platform={platform} showToast={showToast} />
+                )}
+                {platform.id === "telegram" && !viaRelay && (
                   <TelegramOnboardingPanel
                     onManualSetup={() => openConfig(platform)}
                     onChanged={load}
@@ -666,7 +702,7 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
-                {platform.id === "whatsapp" && (
+                {platform.id === "whatsapp" && !viaRelay && (
                   <WhatsAppOnboardingPanel
                     onChanged={load}
                     onRestartNeeded={() => setRestartNeeded(true)}
@@ -684,7 +720,7 @@ export default function ChannelsPage() {
   );
 }
 
-function WhatsAppOnboardingPanel({
+export function WhatsAppOnboardingPanel({
   onChanged,
   onRestartNeeded,
   platform,
@@ -712,6 +748,7 @@ function WhatsAppOnboardingPanel({
     configuredMode ?? "bot",
   );
   const [allowedUsers, setAllowedUsers] = useState("");
+  const [confirmRepair, setConfirmRepair] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
@@ -796,7 +833,9 @@ function WhatsAppOnboardingPanel({
     setError("");
   };
 
-  const start = async () => {
+  const start = async (resetSession = false) => {
+    setConfirmRepair(false);
+    setSetup(null);
     setPhase("starting");
     setError("");
     setQrDataUrl("");
@@ -804,6 +843,7 @@ function WhatsAppOnboardingPanel({
       const res = await api.startWhatsAppOnboarding({
         mode,
         allowed_users: allowedUsers,
+        reset_session: resetSession,
       });
       setSetup(res);
       if (res.qr_payload) {
@@ -923,6 +963,7 @@ function WhatsAppOnboardingPanel({
       : !allowedUsers.trim() && hasSavedAllowedUsers
         ? "Hermes will keep the saved WhatsApp allowlist."
         : "If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.";
+  const pairingBusy = ["starting", "waiting", "applying"].includes(phase);
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
@@ -932,10 +973,18 @@ function WhatsAppOnboardingPanel({
             size="sm"
             className="uppercase"
             onClick={() => void start()}
-            disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
+            disabled={pairingBusy}
             prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
           >
             {phase === "starting" ? "Starting…" : "Pair with QR"}
+          </Button>
+          <Button
+            size="sm"
+            outlined
+            onClick={() => setConfirmRepair(true)}
+            disabled={pairingBusy}
+          >
+            Re-pair with QR
           </Button>
           {platform.configured && (
             <span className="text-xs text-muted-foreground">
@@ -943,6 +992,16 @@ function WhatsAppOnboardingPanel({
             </span>
           )}
         </div>
+
+        <ConfirmDialog
+          open={confirmRepair}
+          title="Replace the saved WhatsApp link?"
+          description="Use this if WhatsApp logged out or removed this linked device. Disable WhatsApp and restart the gateway first. The old session will be kept in a private backup. Scan the new QR from Linked Devices on your phone, then Save and restart to enable WhatsApp again."
+          confirmLabel="Back up and re-pair"
+          destructive
+          onCancel={() => setConfirmRepair(false)}
+          onConfirm={() => void start(true)}
+        />
 
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <div className="grid gap-1.5">

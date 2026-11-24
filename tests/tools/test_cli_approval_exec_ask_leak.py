@@ -46,7 +46,6 @@ def _clean_approval_env(monkeypatch):
     )
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
-    approval_module._pending.clear()
     # The consecutive-denial breaker is process-global; a tally left behind by
     # another test would leak its escalated addendum into these assertions.
     approval_module._denial_tally.clear()
@@ -246,6 +245,7 @@ print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
                 "HERMES_HOME": str(hermes_home),
             },
             timeout=60,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr
         assert "EXEC_ASK=None" in proc.stdout, proc.stdout + proc.stderr

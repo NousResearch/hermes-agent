@@ -25,10 +25,19 @@ record() {
 }
 source() { [[ "$1" == .venv/bin/activate ]]; }
 scripts/run_tests.sh() { record pytest "$@"; }
-npx() { record npx "$@"; }
+pnpm() { record pnpm "$@"; }
 xvfb-run() { shift 2; "$@"; }
 sleep() { return 1; }
 '''
+
+
+# Workflows use Blacksmith's drop-in checkout (same inputs, cached on its runners;
+# it also works on the remaining GitHub-hosted jobs); a few still use actions/checkout.
+CHECKOUT_ACTIONS = ("actions/checkout@", "useblacksmith/checkout@")
+
+
+def is_checkout(step: dict) -> bool:
+    return str(step.get("uses", "")).startswith(CHECKOUT_ACTIONS)
 
 
 def required(step: dict, ctx: dict) -> None:
@@ -55,10 +64,26 @@ def _interpreter_dirs(root: Path) -> tuple[str, ...]:
     return str(interpreter), str(shims)
 
 
+# A replayed step is a pure function of its rendered script, env and cwd within one process.
+# The routing tests replay the same unmutated workflow dozens of times (363 Bash runs, 37
+# distinct, in the Windows lane's selection); each Git Bash spawn costs ~0.5 s on a loaded
+# Windows runner, which pushed the file past the runner's 300 s per-file cap.
+_REPLAYED: dict[tuple, tuple[dict, list]] = {}
+
+
 def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = False) -> tuple[dict, list]:
     required(step, ctx)
     assert step.get("shell", "bash") == "bash", "only safe Bash selection steps are replayed"
-    with tempfile.TemporaryDirectory(prefix="workflow-replay-") as directory:
+    key = (gha.render(step["run"], ctx), receipt, str(cwd),
+           tuple((k, gha.to_string(gha.render(v, ctx))) for k, v in step.get("env", {}).items()))
+    if key not in _REPLAYED:
+        _REPLAYED[key] = _execute(step, ctx, cwd, receipt=receipt)
+    outputs, calls = _REPLAYED[key]
+    return dict(outputs), list(calls)
+
+
+def _execute(step: dict, ctx: dict, cwd: Path | None, *, receipt: bool) -> tuple[dict, list]:
+    with tempfile.TemporaryDirectory(prefix="workflow-replay-", ignore_cleanup_errors=True) as directory:
         root = Path(directory)
         output, calls = root / "outputs", root / "calls"
         output.touch()
@@ -76,17 +101,31 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
         }
         script = root / "step.sh"
         script.write_text((_RECEIPTS if receipt else "") + gha.render(step["run"], ctx), encoding="utf-8")
-        result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-eo", "pipefail", str(script)],
-            cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=30,
-        )
+        # Files, not pipes: on Windows a timed-out run() kills bash and then calls communicate()
+        # with no timeout, which blocks for good while any descendant (Git's bash.exe launcher
+        # spawns usr/bin/bash.exe) still holds the pipe; the test file then died at the runner's
+        # 300 s cap with no output. With files the 30 s timeout raises and names the step.
+        out_path, err_path = root / "stdout", root / "stderr"
+        with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
+            try:
+                returncode = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+                    cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
+                    stdout=out_f, stderr=err_f, timeout=30,
+                    check=False,
+                ).returncode
+            except subprocess.TimeoutExpired:
+                returncode = None
+        stdout = out_path.read_text(encoding="utf-8", errors="replace")
+        stderr = err_path.read_text(encoding="utf-8", errors="replace")
         # workflow_steps is not a test module, so pytest does not rewrite this assert: the
         # message is all a CI failure shows. A child that dies without a word (a Windows
         # NTSTATUS exit, a process killed from outside) must still name its exit code.
-        assert result.returncode == 0, (
-            f"replayed step exited {result.returncode} (0x{result.returncode & 0xFFFFFFFF:08X}) "
-            f"under {bash}\n--- stdout ---\n{result.stdout}--- stderr ---\n{result.stderr}")
+        assert returncode is not None, (
+            f"replayed step timed out after 30 s under {bash}\n--- stdout ---\n{stdout}--- stderr ---\n{stderr}")
+        assert returncode == 0, (
+            f"replayed step exited {returncode} (0x{returncode & 0xFFFFFFFF:08X}) "
+            f"under {bash}\n--- stdout ---\n{stdout}--- stderr ---\n{stderr}")
         return (dict(line.split("=", 1) for line in output.read_text(encoding="utf-8-sig").splitlines()),
                 [json.loads(line) for line in calls.read_text(encoding="utf-8-sig").splitlines()])
 
@@ -101,10 +140,10 @@ def selected_files(step: dict, ctx: dict, repo: Path) -> set[str]:
     _, calls = _run(step, ctx, cwd, receipt=True)
     assert len(calls) == 1, f"expected one test invocation, got {calls}"
     command, *args = calls[0]
-    if command == "npx":
-        assert args[:3] == ["playwright", "test", "-c"], args
-        assert (cwd / args[3]).is_file(), args
-        paths = args[4:]
+    if command == "pnpm":
+        assert args[:4] == ["exec", "playwright", "test", "-c"], args
+        assert (cwd / args[4]).is_file(), args
+        paths = args[5:]
         assert paths and all(p.endswith(".spec.ts") for p in paths), args
         ignores = []
     else:

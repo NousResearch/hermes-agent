@@ -30,6 +30,7 @@ def _git(*args: str, cwd: str | None = None) -> str:
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, f"git {' '.join(args)} failed: {result.stderr}"
     return result.stdout

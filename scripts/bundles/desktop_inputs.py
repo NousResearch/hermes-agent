@@ -33,7 +33,7 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
 
     request = prepared.request
     env = bootstrap_environment(request.source, request.work, request.cache, inherited)
-    selection = verified_tools(["python", "node", "npm"], source_store=request.cache / "tools",
+    selection = verified_tools(["python", "node", "pnpm"], source_store=request.cache / "tools",
                                target=request.target, lock=Lockfile(request.source / "pm/lock.json"))
     if prepared.python != selection.entries["python"].binary or prepared.node != selection.entries["node"].binary:
         raise ValueError("prepared Python/Node paths do not match selected tools; prepare again")
@@ -47,12 +47,11 @@ def identity_environment(request: BuildRequest, variant: str, inherited: Mapping
     request.validate_channel()
     if request.channel_request is not None and variant != "bundled":
         raise ValueError("channel builds currently support only the bundled variant")
-    bundle_env = {**request.bundle_env, "HERMES_GUEST_ONBOARDING": "1"} if variant == "store" else request.bundle_env
     env = dict(inherited)
     env.update(CI="true", PYTHONUTF8="1", GITHUB_SHA=request.commit,
                HERMES_DESKTOP_VARIANT=variant,
                HERMES_PAYLOAD_VERSION=request.version,
-               HERMES_BUNDLE_ENV_JSON=json.dumps(bundle_env, sort_keys=True))
+               HERMES_BUNDLE_ENV_JSON=json.dumps(request.bundle_env, sort_keys=True))
     if request.release_epoch is None:
         env.pop("HERMES_RELEASE_EPOCH", None)
     else:
@@ -70,7 +69,14 @@ def identity_environment(request: BuildRequest, variant: str, inherited: Mapping
         env.pop("HERMES_PAYLOAD_TAG", None)
         env.pop("GITHUB_REF_NAME", None)
     else:
-        env.pop("HERMES_BUILD_COMMIT", None)
+        from hermes_cli.update_channel import is_commit_tag
+
+        # A commit build's claim tag versions the packages; the commit identity (Commit<sha7>, no
+        # feed, updates refused) still comes from HERMES_BUILD_COMMIT.
+        if is_commit_tag(request.tag):
+            env["HERMES_BUILD_COMMIT"] = request.commit
+        else:
+            env.pop("HERMES_BUILD_COMMIT", None)
         env["HERMES_PAYLOAD_TAG"] = request.tag
         env["GITHUB_REF_NAME"] = request.tag
     return env
@@ -101,7 +107,7 @@ def select_variant(prepared: PreparedDesktop, variant: str | None) -> str:
     variant = variant or request.variant
     if variant != request.variant and not (
         {variant, request.variant} == {"bundled", "store"} and request.tag
-        and channel_for_tag(request.tag) == "stable"
+        and channel_for_tag(request.tag) in ("stable", "canary")
     ):
         raise ValueError("requested variant was not prepared")
     return variant

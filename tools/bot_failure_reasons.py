@@ -39,12 +39,13 @@ ALL_REASONS = frozenset({
     TARGET_SCOPE_UNRESOLVED, UNKNOWN,
 })
 
+# Not a bot-turn reason (kept out of ALL_REASONS): the runtime refusal code a Bot Chat delivery id's
+# settled not-sent receipt carries (``gateway/session_bot.py:_not_sent_record``). The Bot DM tool
+# recognises that definite no-send by it, so owner and tool share this one literal.
+HELD_NOT_SENT = "runtime_coordination_required"
+
 #: Reasons a supervisor may retry automatically without human intervention.
 AUTO_RETRYABLE = frozenset({RUNTIME_OFFLINE, DELIVERY_TIMEOUT, PROVIDER_RATE_LIMIT, PROVIDER_SERVER_ERROR})
-
-
-def is_auto_retryable(reason: str) -> bool:
-    return reason in AUTO_RETRYABLE
 
 
 # Retry session policy: a retried bot turn NEVER mints a fresh session. Transient

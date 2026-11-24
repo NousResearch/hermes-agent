@@ -17,10 +17,12 @@ import subprocess
 import sys
 import time
 
+import psutil
 import pytest
 
 from gateway.status import get_process_start_time
 from hermes_cli.update_cmd_windows import _unmapped_ready_filter
+from tests.waiting import wait_until
 
 
 @pytest.fixture
@@ -33,7 +35,10 @@ def spawn(tmp_path):
 
     def _spawn(home) -> subprocess.Popen:
         proc = subprocess.Popen(argv, env={**os.environ, "HERMES_HOME": str(home)})
-        procs.append(proc)  # Popen returns after exec: the gateway argv and environment are in place
+        procs.append(proc)
+        # Popen returns once exec has begun, before the kernel publishes the new image's argv and
+        # environment: /proc/<pid>/cmdline reads empty for that instant. A gateway is running.
+        wait_until(psutil.Process(proc.pid).cmdline, interval=0.001, what="the spawned gateway's argv")
         return proc
 
     yield _spawn, argv

@@ -23,11 +23,14 @@
 
 import { atom } from 'nanostores'
 
+import { ambientOwnerConnectionId } from '@/api/client'
 import { setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
+import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
+  $connection,
   $cronSessions,
   $messagingSessions,
   $sessions,
@@ -37,6 +40,7 @@ import {
   setMessagingSessions,
   setSessions
 } from '@/store/session'
+import { isSessionRemovalPending } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
 
 // pin ids we've successfully PATCHed pinned=true this session.
@@ -98,8 +102,35 @@ function profileFor(pinId: string): null | string | undefined {
   return loadedRowFor(pinId)?.profile
 }
 
+/**
+ * Whether `row` lives on the gateway the pin set is scoped to.
+ *
+ * `$pinnedSessionIds` follows `$connection` (setConnection rescopes it), but
+ * the loaded slices can hold other gateways' rows: a gateway pick publishes
+ * the new connection while the previous one's rows are still painted, and
+ * kept gateways pool their rows into the same lists. Another gateway's
+ * `pinned` flag says nothing about this gateway's state.db, and a PATCH for it
+ * would ride the ambient connection to a backend that never had the row. A
+ * row with no `connection_id` belongs to the primary pool (the row stamp never
+ * tags `local` or the primary's own rows): `local` for a local primary, else
+ * the primary's registry id; a primary with no registry id keeps counting as
+ * the active backend's, as before. A descriptor that names no connection falls
+ * back to the ambient owner id (the request scope's tag, or `local` for the
+ * local pool).
+ */
+function ownedByPinScope(row: SessionInfo): boolean {
+  const primary = $primaryGatewayRoute.get()
+  const owner = row.connection_id?.trim() || (primary.mode === 'local' ? 'local' : primary.connectionId?.trim())
+
+  if (!owner) {
+    return true
+  }
+
+  return owner === ($connection.get()?.connectionId?.trim() || ambientOwnerConnectionId())
+}
+
 function loadedSessionRows(): SessionInfo[] {
-  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].filter(ownedByPinScope)
 }
 
 /**
@@ -172,6 +203,7 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
         typeof row.pinned !== 'boolean' ||
         row.pinned === pinned ||
         !sessionMatchesStoredId(row, pinId) ||
+        !ownedByPinScope(row) ||
         (owner != null && normalizeProfileKey(row.profile) !== owner)
       ) {
         return row
@@ -332,7 +364,12 @@ function reconcileInner(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
-      void writePin(id, false, profileFor(id)).catch(() => {})
+
+      // Removal owns the durable write; a separate unpin would race its
+      // revision snapshot. Archive clears the pin in the same PATCH.
+      if (!isSessionRemovalPending(id)) {
+        void writePin(id, false, profileFor(id)).catch(() => {})
+      }
     }
   }
 

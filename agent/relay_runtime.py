@@ -36,7 +36,7 @@ _PROFILE_KEY_CACHE: dict[str, str] = {}
 
 # Bound for native scope ops gating turn/session completion: a wedged pipeline costs one
 # lost span, never a blocked agent.
-_SCOPE_OP_TIMEOUT = 10.0
+SCOPE_OP_TIMEOUT = 10.0
 
 
 
@@ -462,7 +462,7 @@ class RelayRuntime:
         self, session: RelaySession, scope_metadata: dict[str, Any], *, resolve_parent: bool,
         exit_fallback: bool = False, **push_kwargs: Any,
     ) -> None:
-        """Push a fresh SESSION_SCOPE for ``session`` (bounded by ``_SCOPE_OP_TIMEOUT``); record handle + context.
+        """Push a fresh SESSION_SCOPE for ``session`` (bounded by ``SCOPE_OP_TIMEOUT``); record handle + context.
         Subagents parent under their spawning turn/session handle (``resolve_parent`` creates the parent when
         unknown). ``exit_fallback``: at interpreter shutdown the executor refuses futures; push synchronously."""
         parent_handle = None
@@ -486,7 +486,7 @@ class RelayRuntime:
         else:
             # future.result() re-raises push's own RuntimeError; keeping it outside the
             # except prevents a real push failure from retrying via the exit fallback.
-            session.handle = future.result(timeout=_SCOPE_OP_TIMEOUT)
+            session.handle = future.result(timeout=SCOPE_OP_TIMEOUT)
         session.context = context
 
     def ensure_session(
@@ -535,7 +535,7 @@ class RelayRuntime:
             try:
                 self.run_in_session(
                     session, self.relay.scope.pop, old_handle, output={"hermes.session.segment_reason": reason},
-                    metadata=runtime_metadata(self.runtime_id), timeout=_SCOPE_OP_TIMEOUT,
+                    metadata=runtime_metadata(self.runtime_id), timeout=SCOPE_OP_TIMEOUT,
                 )
             except Exception:
                 logger.warning(
@@ -620,7 +620,7 @@ class RelayRuntime:
     ) -> Any:
         """Run a Relay operation against a session's isolated scope stack.
         ``timeout`` bounds the native call on the daemon executor (``TimeoutError`` on breach); ``None``
-        runs synchronously. Lifecycle ops pass ``_SCOPE_OP_TIMEOUT``: a wedged pipeline costs one span."""
+        runs synchronously. Lifecycle ops pass ``SCOPE_OP_TIMEOUT``: a wedged pipeline costs one span."""
         with self._operation():
             return self._run_in_session_untracked(
                 session, callback, *args, allow_closing=allow_closing, timeout=timeout, **kwargs
@@ -758,7 +758,7 @@ class RelayRuntime:
             failure = run_in_session(
                 session, self._pop_with_drain, handle, output=output or {},
                 metadata=runtime_metadata(self.runtime_id), session_root=session.handle,
-                drain_limit=drain_limit, allow_closing=allow_closing, timeout=_SCOPE_OP_TIMEOUT,
+                drain_limit=drain_limit, allow_closing=allow_closing, timeout=SCOPE_OP_TIMEOUT,
             )
         except Exception as exc:
             failure = exc
@@ -1082,7 +1082,7 @@ class RelaySessionCoordinator:
                 TURN_SCOPE, host.relay.ScopeType.Function, handle=lease.session.handle,
                 input=_scope_input(lease.turn_cwd),
                 metadata=turn_metadata,
-                timeout=_SCOPE_OP_TIMEOUT,
+                timeout=SCOPE_OP_TIMEOUT,
             )
         turn._previous_turn = _CURRENT_TURN.get()
         _CURRENT_TURN.set(turn)

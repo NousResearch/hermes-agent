@@ -34,7 +34,7 @@ _WAIT_ALREADY_TIMED_OUT = False  # after one full wait, later callers only peek
 # Keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
 # Duplicated rather than imported to avoid a circular import.
 _REMOTE_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
+    "docker", "modal", "daytona", "ssh", "managed_modal",
     "vercel_sandbox",
 })
 
@@ -167,18 +167,15 @@ def _build_probe_line() -> str:
     return "Python toolchain: " + ", ".join(bits) + "."
 
 
-def get_environment_probe_line(*, force_refresh: bool = False) -> str:
+def get_environment_probe_line() -> str:
     """Return the cached probe line (building it on first call); "" when the
     environment is clean, so the prompt assembler drops the section. Waits at most
     ``_PROBE_WAIT_TIMEOUT`` on the single worker, then fails open with "".
-    ``force_refresh`` is for tests.
 
     A wedged probe subprocess (#67964) therefore can never block system-prompt construction — at worst the
     toolchain line is absent from prompts built while the probe is stuck.
     """
     global _WAIT_ALREADY_TIMED_OUT
-    if force_refresh:
-        _reset_cache_for_tests()
     # Resolve the backend HERE, in the caller's context: under gateway multiplexing the
     # routed profile's backend lives in the per-turn terminal scope, which the worker
     # thread does not inherit. Remote backends answer "" without consulting the cache

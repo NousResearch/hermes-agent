@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useId, useMemo, useState } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { DocsLink } from '@/components/onboarding/flow'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,10 +16,10 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { $tourActive } from '@/lib/tour/tour-active'
 import { cn } from '@/lib/utils'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
-import { $guidedOnboardingSettled, $setupProfileName } from '@/store/onboarding-gate'
-import { $onboardingSurfaces } from '@/store/onboarding-presence'
+import { $onboardingSurfaceClear } from '@/store/onboarding-presence'
 import { normalizeProfileKey } from '@/store/profile'
 import {
   $sharedMetricsConsent,
@@ -28,8 +29,7 @@ import {
   SHARED_METRICS_DOCS_URL,
   type SharedMetricsChoice,
   sharedMetricsOfferPending,
-  sharedMetricsProfileRequester,
-  type SharedMetricsRequester
+  sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
 
 interface SharedMetricsConsentDialogProps {
@@ -37,10 +37,9 @@ interface SharedMetricsConsentDialogProps {
   enabled: boolean
   /** Re-ask per profile: each profile keeps its own opt-ins and install ID. */
   profile: string
-  requestGateway: SharedMetricsRequester
 }
 
-const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
+const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'off']
 
 /**
  * Owner of the one-time shared-metrics question, the Desktop twin of `hermes
@@ -50,39 +49,51 @@ const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
  * healthy install opens straight to chat. An answer given in the CLI (or here,
  * or in Settings) is the same config keys, so nobody is asked twice. This host
  * also paints the "What is collected" details the strip opens on request:
- * three equal choices, none preselected or focused, and closing it decides
+ * two equal choices, neither preselected or focused, and closing it decides
  * nothing (the strip stays until answered).
  */
-export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }: SharedMetricsConsentDialogProps) {
+export function SharedMetricsConsentDialog({ enabled, profile: fallbackProfile }: SharedMetricsConsentDialogProps) {
+  const scope = useStore($apiRequestScope)
+  const profile = normalizeProfileKey(scope.profile ?? fallbackProfile)
+
+  return <SharedMetricsConsentDialogForOwner connectionId={scope.connectionId} enabled={enabled} key={JSON.stringify([scope.connectionId, profile])} profile={profile} />
+}
+
+interface SharedMetricsConsentDialogOwnerProps extends SharedMetricsConsentDialogProps {
+  connectionId: string | null
+}
+
+function SharedMetricsConsentDialogForOwner({ connectionId, enabled, profile }: SharedMetricsConsentDialogOwnerProps) {
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const onboarding = useStore($desktopOnboarding)
-  const surfaces = useStore($onboardingSurfaces)
-  const guidedSettled = useStore($guidedOnboardingSettled)
+  const surfaceClear = useStore($onboardingSurfaceClear)
   const tourActive = useStore($tourActive)
-  const setupProfile = useStore($setupProfileName)
   const detailsId = useId()
   const consent = useStore($sharedMetricsConsent)
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
+  const scopedRequest = useMemo(
+    () => sharedMetricsProfileRequester(
+      <T,>(method: string, params: Record<string, unknown> = {}) =>
+        requestGatewayForAgent<T>(connectionId, profile, method, params),
+      profile
+    ),
+    [connectionId, profile]
+  )
 
-  // Never over the provider picker, the free-tier welcome, the guided chat or a tour on screen:
+  // Never over the provider picker, the free-tier welcome, onboarding or a tour on screen:
   // the question belongs to the moment after setup.
   const onboardingSettled =
     (onboarding.configured === true || onboarding.firstRunSkipped) &&
     !onboarding.manual &&
     !onboarding.freeTierReady &&
-    surfaces.size === 0 &&
-    guidedSettled &&
+    surfaceClear &&
     !tourActive
 
-  // The setup profile only hosts the welcome chat; its answer would count for nobody.
-  const inSetupProfile = setupProfile !== null && normalizeProfileKey(setupProfile) === normalizeProfileKey(profile)
-
-  const ready = enabled && onboardingSettled && !inSetupProfile
+  const ready = enabled && onboardingSettled
 
   useEffect(() => {
     $sharedMetricsConsent.set(null)
@@ -114,7 +125,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     setSaving(true)
 
     try {
-      await answerSharedMetricsOffer(scopedRequest, choice)
+      await answerSharedMetricsOffer(scopedRequest, choice, `${connectionId ?? ''}|${profile}`)
     } catch (err) {
       notifyError(err, copy.saveFailed)
     } finally {

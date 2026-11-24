@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 
+import { bindReleaseHolderConsent } from '../release-holder-consent'
 import {
   claimBridgeMarker,
   describeSkippedPrewrite,
@@ -38,7 +39,10 @@ import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, Updat
  */
 export interface CheckoutStrategyDeps {
   resolveUpdateRoot: () => string
-  readSourceUpdate: (root: string, opts: { force?: boolean }) => Promise<SourceUpdate | null>
+  readSourceUpdate: (
+    root: string,
+    opts: { force?: boolean; setChannel?: 'main' | 'stable' }
+  ) => Promise<SourceUpdate | null>
   hermesHome: string
   isWindows: boolean
   isMac: boolean
@@ -130,7 +134,38 @@ export function readStampedCommit(root: string): string | null {
  * The bodies are the production update flow; the mechanism stamp rides on
  * every result the way the wire contract expects.
  */
-export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrategy {
+export interface CheckoutStrategy extends UpdaterStrategy {
+  check(opts?: { force?: boolean; setChannel?: 'main' | 'stable' }): Promise<UpdaterStatusWire>
+}
+
+/**
+ * The Windows script hand-off's environment. Its `hermes update` runs under the run the
+ * close-holder consent is bound to: an id this Desktop inherited from the hand-off that
+ * relaunched it names the previous run, under which that consent never matches (#101789).
+ * Async and awaiting the shared env builder, which becomes async when it resolves the system
+ * proxy (#144894): either merge order keeps this binding with no change here.
+ */
+async function windowsHandoffEnvironment(
+  updateRoot: string,
+  hermesHome: string,
+  updateStartedAt: number,
+  runId: string | null
+): Promise<NodeJS.ProcessEnv> {
+  const env: NodeJS.ProcessEnv = {
+    ...(await sourceUpdateEnvironment(updateRoot, hermesHome)),
+    HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
+  }
+
+  delete env.HERMES_UPDATE_CORRELATION_ID
+
+  if (runId) {
+    env.HERMES_UPDATE_CORRELATION_ID = runId
+  }
+
+  return env
+}
+
+export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStrategy {
   function markerHelper(op: MarkerHelperOp, runId: string | null): Promise<MarkerHelperVerdict> {
     return (deps.markerHelper ?? runMarkerHelper)(op, {
       updateRoot: deps.resolveUpdateRoot(),
@@ -294,7 +329,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
   const mechanism: UpdaterMechanism = deps.isWindows ? 'windows-handoff' : 'posix-handoff'
 
-  async function check(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
+  async function check(opts: { force?: boolean; setChannel?: 'main' | 'stable' } = {}): Promise<UpdaterStatusWire> {
     const root: string = deps.resolveUpdateRoot()
 
     // A checkout without the source probe predates source channels, so it can
@@ -332,7 +367,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const child = spawnUpdaterProcess(updater, updaterArgs, {
       cwd: deps.hermesHome,
       env: {
-        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome)
+        ...(await sourceUpdateEnvironment(updateRoot, deps.hermesHome, deps.rememberLog))
       },
       detached: true,
       stdio: 'ignore'
@@ -548,6 +583,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       }
 
       plan = planned.plan
+      bindReleaseHolderConsent(updateRoot, plan.runId, deps.rememberLog)
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
@@ -580,10 +616,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: deps.hermesHome,
-        env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-          HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
-        },
+        env: await windowsHandoffEnvironment(updateRoot, deps.hermesHome, updateStartedAt, plan.runId),
         // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
         // `start /b` hands PowerShell a new VISIBLE console whose QuickEdit
         // selection can freeze the hand-off before relaunch (#103222).
@@ -720,7 +753,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const child = spawnUpdaterProcess(handoff.command, args, {
       cwd: deps.hermesHome,
       env: {
-        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+        ...(await sourceUpdateEnvironment(updateRoot, deps.hermesHome, deps.rememberLog)),
         HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
       },
       detached: true,

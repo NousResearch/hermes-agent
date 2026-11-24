@@ -150,12 +150,12 @@ def test_connector_gateway_origin_pins_the_deployed_connectors_host():
             "https://connector-gateway.nousresearch.com"
         )
 
-def test_managed_gateway_origin_honors_the_harness_override():
+def test_tool_gateway_origin_honors_the_harness_override():
     # TOOL_GATEWAY_URL pins the full media origin (the e2e harness sets it to a
     # loopback gateway), and the bearer gate must accept exactly that origin.
     with patch.dict(os.environ, {"TOOL_GATEWAY_URL": "http://127.0.0.1:3009/"}, clear=False):
         os.environ.pop("CONNECTOR_GATEWAY_URL", None)
-        assert managed_gateway_auth.managed_gateway_origin() == "http://127.0.0.1:3009"
+        assert managed_gateway_auth.build_vendor_gateway_url("tool") == "http://127.0.0.1:3009"
         assert managed_gateway_auth.is_managed_nous_gateway_url(
             "http://127.0.0.1:3009/api/vendorx/generations"
         )
@@ -177,7 +177,7 @@ def test_connector_gateway_origin_honors_its_own_override():
     ):
         os.environ.pop("TOOL_GATEWAY_URL", None)
         assert managed_gateway_auth.connector_gateway_origin() == "http://127.0.0.1:3009"
-        assert managed_gateway_auth.managed_gateway_origin() == (
+        assert managed_gateway_auth.build_vendor_gateway_url("tool") == (
             "https://tool-gateway.nousresearch.com"
         )
         assert managed_gateway_auth.is_managed_nous_gateway_url(
@@ -215,14 +215,13 @@ def test_read_nous_provider_state_falls_back_to_global_root_for_share_auth_profi
     # root identity. The connector gate must see that identity, or manage_connections vanishes
     # from the profile's tool list while every other credential reader still works.
     root = tmp_path / ".hermes"
-    profile = root / "profiles" / "hermes-setup"
+    profile = root / "profiles" / "work"
     profile.mkdir(parents=True)
     (root / "auth.json").write_text(json.dumps({
         "version": 1,
         "providers": {"nous": {"auth_method": "anonymous", "access_token": "tok"}},
     }))
     monkeypatch.setenv("HERMES_HOME", str(profile))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     import hermes_constants

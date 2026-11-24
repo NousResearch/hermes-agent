@@ -10,7 +10,7 @@ commands package the current desktop build; they do not stage a fresh runtime.
 | Windows x64 / ARM64, sideload | Signed per-architecture MSIX packages, combined into a universal `.msixbundle`; `.appinstaller` descriptor | Windows App Installer |
 | Windows x64 / ARM64, Store | Store-identity MSIX packages and a separate Store bundle | Microsoft Store |
 | macOS ARM64 / x64 | Signed, notarized `Hermes.app` in DMG and ZIP artifacts | `electron-updater` with Squirrel.Mac |
-| Linux x64 / ARM64 | Local builder can produce AppImage | External replacement; Linux desktop release legs are disabled |
+| Linux x64 / ARM64 | AppImage, built on canary tags as an unpublished diagnostic artifact and by the local builder | External replacement; no Linux feed yet |
 
 The current MSIX manifest requires Windows 11 22H2 (`10.0.22621.0`).
 The source-script Windows support range is separate from this package floor.
@@ -68,6 +68,15 @@ It refreshes digests after child signatures and before the outer app signature.
 Unsigned macOS builds refresh them at the end of `afterPack`.
 Do not refresh facts in `afterSign`: that changes resources covered by the signature.
 
+electron-builder copies the payload with builder-util, whose `walk()` drops
+`.gitkeep` and `.DS_Store` files and whose `copyDir()` never creates empty
+directories. The resource copy, the AppImage stage and the MSIX file map all
+use them, and tool digests cover those files. `run-electron-builder.mjs`
+therefore starts the builder with `scripts/patch-electron-builder-copy.mjs`,
+which removes both omissions in memory. Before relocation, framework repair
+and signing change anything, `afterPack` fails the pack unless the packaged
+payload has the prepared payload's entries, types, file sizes and link targets.
+
 ## Local test build
 
 To build the commit you have checked out, without a tag and without pushing:
@@ -118,8 +127,8 @@ python scripts/bundles/desktop.py --tag=vX.Y.Z
 Replace `vX.Y.Z` with an actual immutable tag. Stable tags must match the
 version in `pyproject.toml`. Canary tags use the release script's tag grammar.
 Start with host Python 3.11+ and Git. Use `python3` if that is your host's command.
-Preparation asks PM for the pinned Python, Node, npm and private installer;
-preinstalling a separate Node/npm/uv toolchain is not required. Native dependency
+Preparation asks PM for the pinned Python, Node, pnpm and private installer;
+preinstalling a separate Node/pnpm/uv toolchain is not required. Native dependency
 builds still need the platform's compiler, SDK and libraries. Windows ARM64 uses
 the shared Visual Studio/Clang/Rust/static OpenSSL preparation provider, which
 can require Administrator permissions for missing system components. macOS
@@ -141,8 +150,8 @@ is the sole packaging configuration. The wrapper disables automatic publishing;
 the release workflow owns uploads and channel promotion.
 
 `pm bundle --out DIR --ref REF` stages the native runtime only.
-`scripts/bundles/stage.py` also builds the TUI/dashboard unless both products
-are supplied explicitly. Both generate launchers; neither creates an Electron installer.
+`scripts/bundles/stage.py` also builds the TUI, dashboard and Webapp unless the
+TUI and dashboard products are supplied explicitly. Both generate launchers; neither creates an Electron installer.
 The launcher stage checks the payload and records its relative launch paths.
 The Electron build bakes these paths into its stamp. Desktop startup does not
 inspect, create, or repair a PM payload. Non-bundled builds carry no placeholder payload.
@@ -203,7 +212,7 @@ defaults into the desktop app, for example:
 
 ```sh
 python scripts/release.py --build-commit REV --remote fork --publish \
-  --bundle-env HERMES_GUEST_ONBOARDING=1 \
+  --bundle-env HERMES_PREVIEW_FULL_CONNECTORS=1 \
   --bundle-env HERMES_DATA_DIR_SUFFIX=magic-test \
   --bundle-unset HERMES_HOME
 ```
@@ -226,8 +235,7 @@ For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts a JSON object whose
 string values are defaults and whose `null` values are explicit clears. For example,
 `{"HERMES_HOME":null,"HERMES_DATA_DIR_SUFFIX":"magic-test"}`. Only
 `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `HERMES_DESKTOP_USER_DATA_DIR`,
-`HERMES_SHARED_AUTH_DIR`, `HERMES_GUEST_ONBOARDING`, and
-`HERMES_PREVIEW_FULL_CONNECTORS` are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
+`HERMES_SHARED_AUTH_DIR`, and `HERMES_PREVIEW_FULL_CONNECTORS` are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
 are rejected. These settings are not applied to the build runner itself.
 Commit archive keys still use the SHA, so use a fresh commit for different
 defaults: an existing artifact is never overwritten with different bytes.
@@ -240,8 +248,8 @@ It rejects mixed tag, release-phase, channel-publication, and upgrade inputs.
 Builder jobs check out the admitted SHA. Their artifacts and completion receipts
 go to `releases/commit/FULL_SHA/`, separate from tag archives and update channels.
 The run summary lists Windows sideload packages and their universal bundle, macOS DMG/ZIP
-files, and the Termux package. Linux release legs remain disabled and are listed
-as not built. Only receipt-listed artifacts that exist in storage get download
+files, and the Termux package. Commit builds skip the Linux legs, which are listed
+as skipped. Only receipt-listed artifacts that exist in storage get download
 links. Missing receipts show the failed or incomplete leg.
 
 Each commit build also writes a downloads page to
@@ -379,8 +387,8 @@ separate development home. Activation supplies the toolchain, not `node_modules`
 From the repository root:
 
 ```sh
-npm ci
-npm run dev --workspace apps/desktop
+pnpm install --frozen-lockfile
+pnpm --dir apps/desktop run dev
 ```
 
 For an ordinary package of that desktop build, use the workspace's
@@ -398,11 +406,3 @@ live in the [existing install/update family](../../tests/install/BUNDLED_UPDATES
 A helper test or unpacked-app smoke is not proof of native install, update,
 or automatic relaunch. Historical receipts and current unresolved gates are
 separate in [PM audit status](../../docs/pm-audit-status.md).
-
-## Rehearsing the guided onboarding
-
-From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
-`env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME=<tmp>/.hermes HERMES_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
-(replace `<tmp>` with that directory). To use the portal stand-in, add
-`HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
-before `npm run dev`. Stop Electron and its dev server after the run.

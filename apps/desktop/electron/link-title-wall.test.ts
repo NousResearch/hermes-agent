@@ -6,8 +6,12 @@ import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 
 // A published Doc answers the cookieless curl tier with its own <title>, so these
 // links must stay fetchable — the wall is proven at fetch time, not from the host.
-function tier1(payload: { authWall?: boolean; title?: string } = {}) {
-  return async () => ({ authWall: payload.authWall ?? false, title: payload.title ?? '' })
+function tier1(payload: { authWall?: boolean; refused?: boolean; title?: string } = {}) {
+  return async () => ({
+    authWall: payload.authWall ?? false,
+    refused: payload.refused ?? false,
+    title: payload.title ?? ''
+  })
 }
 
 test('a proven sign-in wall never escalates to the hidden renderer', async () => {
@@ -76,4 +80,24 @@ test('an ordinary title-less page still escalates to the hidden renderer', async
 
   assert.equal(title, 'Lab AI service — guides')
   assert.equal(rendererCalls, 1)
+})
+
+test('a refused redirect hop never escalates to the hidden renderer', async () => {
+  // #126885 follow-up: tier 1's ladder refused a mid-chain hop (Location onto a
+  // private target). Chromium would follow the same chain itself, so tier 2
+  // must not load the original URL either.
+  let rendererCalls = 0
+
+  const title = await resolveLinkTitle({
+    curl: tier1({ refused: true, title: '' }),
+    renderer: async () => {
+      rendererCalls += 1
+
+      return 'Should never load'
+    },
+    url: 'https://public.example/r'
+  })
+
+  assert.equal(title, '')
+  assert.equal(rendererCalls, 0)
 })

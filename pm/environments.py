@@ -34,8 +34,43 @@ def installs_root() -> Path:
     return dependency_home_root() / "installs"
 
 
+def named_install_state_dir() -> Path | None:
+    """The state folder a launcher named for this process (``HERMES_INSTALL_STATE_DIR``), else ``None``.
+
+    A launcher names one when it starts Hermes on an interpreter it prepared, where the install's own
+    state cannot be used: a sandbox that may read the selected environment and nothing else of
+    ``installs/<key>`` still sees that folder, cannot read or lock it, and would end at start on it.
+    Such a process and its children keep their locks and markers in the named folder. Start-up reads
+    nothing from it: the process is not restarted (``prepare_launch``), repairs nothing
+    (``recover_if_needed``) and selects no recorded environment (``activate_dependencies``), and a
+    command that would build one is refused (``refuse_dependency_change``). A value that is not an
+    absolute path names nothing; no ``.env`` or secret source can set it (``LAUNCH_ONLY_ENV_KEYS``).
+    """
+    # health: allow HX002 -- a launcher's fact about one process tree, read at start before any config loads
+    value = os.environ.get("HERMES_INSTALL_STATE_DIR", "").strip()
+    return Path(value) if value and Path(value).is_absolute() else None
+
+
 def install_state_dir(project_root: Path) -> Path:
-    return installs_root() / install_key(project_root)
+    return named_install_state_dir() or installs_root() / install_key(project_root)
+
+
+def refuse_dependency_change() -> None:
+    """Refuse to build a dependency environment from a process whose launcher named its state folder.
+
+    The environment would be recorded in that folder, where no process ever selects one, and the
+    command would report it installed.
+    """
+    if named_install_state_dir() is None:
+        return
+    from pm.package import InstallError
+
+    raise InstallError(
+        "venv",
+        "this Hermes runs on the Python environment its launcher chose (HERMES_INSTALL_STATE_DIR is set), "
+        "and an environment built from here would never be used",
+        "run the command from Hermes started outside that launcher",
+    )
 
 
 def owning_home_root(project_root: Path) -> Path | None:
@@ -108,7 +143,7 @@ def runtime_facts_path(project_root: Path) -> Path:
 
 # The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
-ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
+ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "setup.py", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:
@@ -147,45 +182,54 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
-def _payload_manifest(root: Path) -> dict | None:
-    """The manifest of the sealed payload whose tree is the resolved *root*, or ``None``.
+def _payload_manifest(root: Path) -> tuple[dict, Path] | None:
+    """The manifest of the sealed payload whose tree is the resolved *root*, with the
+    payload directory its entries resolve from, or ``None``.
 
+    The manifest sits at the payload root: beside the tree, or on the tree itself when
+    the tree IS the payload root (the Docker image's in-place ``repo: "."`` assembly).
     Every install asks, so a ``manifest.json`` that some other tool left beside a
     checkout, or one with a mistyped field, must read as "not a payload", never as an
     error. Readers then take each field with ``.get`` and treat an absent one as unset.
     """
-    try:
-        manifest = json.loads((root.parent / "manifest.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("repo"), str):
-        return None
-    runtime = manifest.get("runtime", {})
-    commands = runtime.get("commands", {}) if isinstance(runtime, dict) else None
-    well_formed = (isinstance(commands, dict)
-                   and isinstance(commands.get("hermes", ""), str)
-                   and all(isinstance(manifest.get(key, ""), str) for key in ("venv", "store")))
-    return manifest if well_formed and (root.parent / manifest["repo"]).resolve() == root else None
+    for path in (root.parent / "manifest.json", root / "manifest.json"):
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("repo"), str):
+            continue
+        runtime = manifest.get("runtime", {})
+        commands = runtime.get("commands", {}) if isinstance(runtime, dict) else None
+        well_formed = (isinstance(commands, dict)
+                       and isinstance(commands.get("hermes", ""), str)
+                       and all(isinstance(manifest.get(key, ""), str) for key in ("venv", "store")))
+        if well_formed and (path.parent / manifest["repo"]).resolve() == root:
+            return manifest, path.parent
+    return None
 
 
-def _payload_path(root: Path, relative: str, what: str) -> Path:
-    """*relative* resolved inside the payload that holds *root*; a manifest may not point outside it."""
-    path = (root.parent / relative).resolve()
-    if not path.is_relative_to(root.parent):
+def _payload_path(payload_root: Path, relative: str, what: str) -> Path:
+    """*relative* resolved from the payload root its manifest was read from; a manifest
+    may not point outside it."""
+    path = (payload_root / relative).resolve()
+    if not path.is_relative_to(payload_root):
         raise RuntimeError(f"payload {what} escapes its root")
     return path
 
 
 def payload_venv(project_root: Path) -> Path | None:
-    """The environment a sealed payload ships beside its tree, or ``None``."""
+    """The environment a sealed payload ships with its tree, or ``None``."""
     root = Path(project_root).resolve()
-    venv = (_payload_manifest(root) or {}).get("venv")
-    return _payload_path(root, venv, "environment") if venv else None
+    payload = _payload_manifest(root)
+    venv = payload[0].get("venv") if payload else None
+    return _payload_path(payload[1], venv, "environment") if venv else None
 
 
 def _payload_hermes_command(root: Path) -> Path | None:
-    command = (_payload_manifest(root) or {}).get("runtime", {}).get("commands", {}).get("hermes")
-    return _payload_path(root, command, "launcher") if command else None
+    payload = _payload_manifest(root)
+    command = payload[0].get("runtime", {}).get("commands", {}).get("hermes") if payload else None
+    return _payload_path(payload[1], command, "launcher") if command else None
 
 
 def payload_command_dir(project_root: Path) -> Path | None:
@@ -222,9 +266,10 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
         if override:
             return Path(override).resolve()
     root = Path(project_root).resolve()
-    store = (_payload_manifest(root) or {}).get("store")
+    payload = _payload_manifest(root)
+    store = payload[0].get("store") if payload else None
     if store:
-        return _payload_path(root, store, "store")
+        return _payload_path(payload[1], store, "store")
     from pm.paths import install_stamp_path
 
     for directory in (root, *root.parents):
@@ -289,12 +334,17 @@ def committed_venv(project_root: Path) -> Path | None:
 
     Unlike ``selected_venv`` this never answers with the in-tree ``venv``/``.venv``: that tree
     predates PM and is built for whichever interpreter created it, so loading it from PM's store
-    Python mixes ABIs (compiled modules vanish) and PM deletes it once a generation is committed.
+    Python mixes ABIs (compiled modules vanish). PM never deletes it: ``legacy_selection`` reads its
+    site-packages again whenever this install has no dependency facts.
     """
     return _recorded_venv(project_root) or payload_venv(project_root)
 
 
 def _recorded_venv(project_root: Path) -> Path | None:
+    if named_install_state_dir() is not None:
+        # A named state folder selects nothing: its process keeps the interpreter its launcher chose,
+        # whatever is written into the folder afterwards.
+        return None
     path = runtime_facts_path(project_root)
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -340,13 +390,13 @@ def project_python(project_root: Path) -> Path:
 
 def _payload_store_python(root: Path) -> Path | None:
     """A sealed payload's own interpreter when a venv must not be entered through its own."""
-    manifest = _payload_manifest(root)
-    if manifest is None or str(manifest.get("target", "")).endswith("-bionic"):
+    payload = _payload_manifest(root)
+    if payload is None or str(payload[0].get("target", "")).endswith("-bionic"):
         return None  # Termux payloads launch through their venv interpreter by design.
-    relative = manifest.get("runtime", {}).get("storePython")
+    relative = payload[0].get("runtime", {}).get("storePython")
     if not isinstance(relative, str) or not relative:
         return None
-    return _payload_path(root, relative, "interpreter")
+    return _payload_path(payload[1], relative, "interpreter")
 
 
 def venv_command(project_root: Path, venv: Path, options: tuple[str, ...] | list[str] = ()) -> list[str]:
@@ -382,7 +432,7 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     try:
         for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
             key, _, value = line.partition("=")
-            if key.strip() != "version":
+            if key.strip() not in ("version", "version_info"):  # venv / uv, virtualenv
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")
@@ -432,6 +482,10 @@ def running_from_selected_environment(project_root: Path) -> bool:
     return any(Path(entry).resolve() == selected for entry in sys.path if entry)
 
 
+class NoCommittedEnvironment(RuntimeError):
+    """PM's store Python with no committed generation: no retry fixes it, only `hermes pm repair`."""
+
+
 def _require_own_dependencies(project_root: Path) -> None:
     """With nothing committed, an interpreter keeps the packages it booted with.
 
@@ -443,7 +497,7 @@ def _require_own_dependencies(project_root: Path) -> None:
     if sys.prefix != sys.base_prefix:
         return  # a venv interpreter (developer .venv, test env) carries its own packages
     if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
-        raise RuntimeError("no dependency environment is committed for this install")
+        raise NoCommittedEnvironment("no dependency environment is committed for this install")
 
 
 def activate_dependencies(project_root: Path) -> None:
@@ -455,7 +509,8 @@ def activate_dependencies(project_root: Path) -> None:
     import sys
 
     state = install_state_dir(project_root)
-    if state.is_dir():
+    # A folder a launcher named holds no selection of this process: nothing in it is read or replayed.
+    if named_install_state_dir() is None and state.is_dir():
         from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
         # The lock's holder may be another profile's backend running a full dependency rebuild;
         # this process only reads the committed selection, so it proceeds without waiting rather
@@ -476,7 +531,8 @@ def activate_dependencies(project_root: Path) -> None:
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
     else:
-        # Sealed payloads still select once, before imports.
+        # Sealed payloads still select once, before imports: the environment one ships is part of
+        # its tree, not of install state.
         # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
         environment = payload_venv(project_root)
         if environment is None:

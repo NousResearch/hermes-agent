@@ -352,6 +352,7 @@ it('restores text and attachments by the loaded draft owner, not an uncommitted 
   const rendered = seed({ onSubmit })
   act(() => handles.submit.submitDraft())
   expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining('draft B'), {
+    submission_id: expect.any(String),
     attachments: [attachmentB],
     composerScope: 'stored-B'
   })
@@ -389,6 +390,7 @@ it('restores text and attachments by the loaded draft owner, not an uncommitted 
   onSubmit.mockResolvedValueOnce(false)
   await act(async () => handles.submit.submitDraft())
   expect(onSubmit).toHaveBeenLastCalledWith(expect.stringContaining('draft B'), {
+    submission_id: expect.any(String),
     attachments: [attachmentB],
     composerScope: 'stored-B'
   })
@@ -534,4 +536,61 @@ it('sends the first prompt of a chat keyed by its per-lifecycle fresh-draft scop
     { method: 'prompt.submit', text: 'hello from a fresh chat' }
   ])
   expect(route).toBe('stored-B')
+})
+
+// N7: the owner deduplicates by submission identity (`admit_session_input` replays the
+// terminal row). Only an explicit retry of the restored draft may reuse an uncertain send's
+// identity; a new message with the same text is a new turn, and a reload keeps the retry.
+it('a new identical message never adopts an unconfirmed send; the restored draft retries it exactly', async () => {
+  const admitted = new Set<string>()
+  let loseAck = true
+  vi.mocked(requestGatewayForProfile).mockImplementation(async (_profile, method, params) => {
+    if (method !== 'prompt.submit') { throw new Error(`unexpected ${method}`) }
+    const id = String((params as Record<string, unknown>).submission_id)
+    const replay = admitted.has(id)
+    admitted.add(id)
+
+    if (loseAck) {
+      loseAck = false
+      throw new Error('connection closed')
+    }
+
+    return { admission_id: id, status: replay ? 'terminal' : 'started' }
+  })
+  const ids = () => vi.mocked(requestGatewayForProfile).mock.calls.map(([, , params]) => String((params as Record<string, unknown>).submission_id))
+  stashSessionDraft('stored-B', 'continue', [])
+  seed()
+
+  // The ACK is lost (the turn may have run): the draft comes back for the user to decide.
+  act(() => handles.submit.submitDraft())
+  await waitFor(() => expect(editorText()).toBe('continue'))
+  expect(ids()).toHaveLength(1)
+
+  // Typing the same words anew is a new message: a fresh identity, so a turn really runs.
+  act(() => {
+    composer.aui.composer().setText('')
+    composer.aui.composer().setText('continue')
+  })
+  await act(async () => handles.submit.submitDraft())
+  await waitFor(() => expect(ids()).toHaveLength(2))
+  expect(ids()[1]).not.toBe(ids()[0])
+
+  // A restored draft, unchanged across a renderer reload, is the explicit retry: the same
+  // identity, so the owner replays instead of running it twice. (Session A: B is now busy.)
+  cleanup()
+  loseAck = true
+  stashSessionDraft('stored-A', 'retry me', [])
+  seed({}, null)
+  act(() => navigate('A'))
+  act(() => handles.submit.submitDraft())
+  await waitFor(() => expect(ids()).toHaveLength(3))
+  await waitFor(() => expect(editorText()).toBe('retry me'))
+  flushDraft()
+  cleanup()
+  seed({}, null)
+  act(() => navigate('A'))
+  await waitFor(() => expect(editorText()).toBe('retry me'))
+  await act(async () => handles.submit.submitDraft())
+  await waitFor(() => expect(ids()).toHaveLength(4))
+  expect(ids()[3]).toBe(ids()[2])
 })

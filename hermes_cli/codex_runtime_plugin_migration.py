@@ -378,8 +378,8 @@ def _looks_like_test_tempdir(path: str) -> bool:
 
 
 def _build_hermes_tools_mcp_entry() -> dict:
-    """Codex stdio entry launching Hermes' own tool surface as an MCP server (browser/web/
-    delegate_task/vision/memory/skills call-backs).
+    """Codex stdio entry launching Hermes' own tool surface as an MCP server (web/vision/
+    image/skills/kanban call-backs).
 
     HERMES_HOME passes through only IF SET, read from os.environ (not get_hermes_home()): when
     unset the codex subprocess must inherit its launcher's runtime HERMES_HOME (systemd, gateway,
@@ -407,9 +407,10 @@ def _build_hermes_tools_mcp_entry() -> dict:
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
     return {
         "command": sys.executable,
-        "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        # -P: codex starts this in the user's workspace, which must not shadow Hermes' own packages.
+        "args": ["-P", "-m", "agent.transports.hermes_tools_mcp_server"],
         "env": env,
-        # Generous timeouts — browser_navigate or delegate_task can take a while.
+        # Generous timeouts — image_generate or delegate_task can take a while.
         "startup_timeout_sec": 30.0,
         "tool_timeout_sec": 600.0}
 

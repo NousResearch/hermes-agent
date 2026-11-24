@@ -74,7 +74,9 @@ class TestCirclingStreamWatch:
         glued = restated_plan(80, paragraph_break=" ")
         assert "\n" not in glued.rstrip("\n")
 
-        assert _fired_at(CirclingStreamWatch(), glued) is not None
+        fired = _fired_at(CirclingStreamWatch(), glued)
+
+        assert fired is not None and fired < 30_000  # judged as it streams, not at the closing newline
 
     def test_settings_trade_latency_for_strictness(self):
         text = restated_plan(80)

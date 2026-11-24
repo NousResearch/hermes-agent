@@ -84,12 +84,14 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     directory's, and the scope built below reads the files of the directory this host starts in. With no such
     caller the launch profile outside multiplexing uses the process env, so a restart reads what the process
     loaded. The process env holds the launch profile's values, so any other profile's launcher expands through
-    its own secrets (``owner_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a
+    its own files (``build_profile_secret_scope``), multiplexing or not: a desktop backend's cron ticker serves a
     sibling under task-local multiplexing, which a fresh context does not carry. Under multiplexing the launch
     profile's expands through its own scope too (``launch_secret_scope``: its env-only keys and files). The
-    launch profile is the one whose directory the process's own path keys, as ``serves_routed_profile`` asks:
-    after that link is renamed, *home* is the new name, which ``owner_secret_scope`` would take for another
-    profile, and the old name leads to no files. No terminal policy: the launcher is only read here."""
+    launch profile is the one whose directory the process's own path keys, as ``serves_routed_profile`` asks, by
+    the key the process remembered for that path: after that link is renamed, *home* is the new name, which
+    ``owner_secret_scope`` would take for another profile, and the old name leads to no files; after it is
+    repointed at another profile's directory, ``owner_secret_scope`` would hand that profile the launch env. No
+    terminal policy: the launcher is only read here."""
     from agent.secret_scope import (current_secret_scope, current_secret_scope_home, is_multiplex_active,
                                     set_multiplex_context)
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
@@ -111,9 +113,14 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
             with _plugin_home_scope(home):
                 return host_launcher(home=home)
         from agent.runtime_scope import bind_state, scope_for_profile
-        from tui_gateway.launch_profile_policy import launch_secret_scope, owner_secret_scope
-        # The launch profile's scope with its files read through *home*, the name that leads there now.
-        secrets = lent if lent is not None else launch_secret_scope(home) if own else owner_secret_scope(home)
+        from agent.secret_scope import build_profile_secret_scope
+        from tui_gateway.launch_profile_policy import launch_secret_scope
+        # The launch profile's scope with its files read through *home*, the name that leads there now; any other
+        # profile's from its own files, by ``own`` rather than by where the process's own name leads now.
+        if lent is not None:
+            secrets = lent
+        else:
+            secrets = launch_secret_scope(home) if own else build_profile_secret_scope(Path(home))
         with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
             return host_launcher(home=home)
 

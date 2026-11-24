@@ -204,18 +204,18 @@ def test_retry_after_parser_is_public_but_the_rest_of_retry_utils_is_not(tmp_pat
 
 
 def test_silence_helpers_are_public_text_checks_and_the_rest_of_response_filters_is_not(tmp_path):
-    """A platform plugin that reads Hermes's silence rule before sending a finished turn's reply
-    gets no private-import warning; another name from the same module still warns. The helpers
-    answer what the docs row says."""
-    clean = _plugin(tmp_path / "notifier", {"deliver.py": (
+    """A plugin that imports Hermes's silence-marker text helpers gets no private-import warning;
+    delivery-policy helpers from the same module (such as ``silence_allowed``) still warn. The
+    helpers answer what the docs row says."""
+    clean = _plugin(tmp_path / "notifier", {"markers.py": (
         "from gateway.response_filters import (\n"
         "    is_autonomous_silence_response,\n"
         "    is_intentional_silence_response,\n"
         "    strip_trailing_silence_marker,\n"
         ")\n"
-        "def text_to_send(reply, *, autonomous=False):\n"
+        "def check_markers(reply, *, autonomous=False):\n"
         "    silent = is_autonomous_silence_response if autonomous else is_intentional_silence_response\n"
-        "    return None if silent(reply) else strip_trailing_silence_marker(reply)\n"
+        "    return silent(reply), strip_trailing_silence_marker(reply)\n"
     )})
     assert _private_warnings(validate_plugin_dir(clean)) == []
 
@@ -230,6 +230,7 @@ def test_silence_helpers_are_public_text_checks_and_the_rest_of_response_filters
     )
 
     assert is_intentional_silence_response("NO_REPLY")
+    assert strip_trailing_silence_marker("NO_REPLY") == "NO_REPLY"
     assert strip_trailing_silence_marker("Here is the answer.\n\nNO_REPLY") == "Here is the answer."
     prose = "I will answer with NO_REPLY when there is nothing to add."
     assert not is_intentional_silence_response(prose)

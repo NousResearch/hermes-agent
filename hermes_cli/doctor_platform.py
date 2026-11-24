@@ -600,15 +600,17 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
-# What puts an entry on PATH in an rc line (PATH itself, not PYTHONPATH); a "#" ends the line in both families.
-# PATH+= only counts when its value starts a new entry with ":"; without one it extends the last entry.
+# The commands that put entries on PATH, and the unquoted characters that end each one's value: a
+# PATH= value is one word, zsh's path array runs to ")", fish's arguments run to the end of the
+# command. Outside zsh, path=(...) is an ordinary array.
+_PATH_ASSIGNMENT = (re.compile(r"(?<![\w$])PATH(?P<append>\+?)="), " \t;&|")
 _PATH_SETTERS = {
-    "fish": r"(?:fish_add_path\b|set\b[^#\n]*?\bPATH\b)",
-    "posix": r"(?:\bPATH=|\bPATH\+=[\"']?:|\bpath\+?=\()",
+    "posix": (_PATH_ASSIGNMENT,),
+    "zsh": (_PATH_ASSIGNMENT, (re.compile(r"(?<![\w$])path\+?=\("), ";&|)")),
+    "fish": ((re.compile(r"(?<![\w$-])(?:fish_add_path\b|set\s+(?:-[-\w]*\s+)*PATH\b)"), ";&|"),),
 }
-# A PATH entry ends at an optional trailing slash and then a delimiter, so ~/.local/bin-tools,
-# ~/.local/bin+x and ~/.local/bin/scripts are other directories.
-_PATH_ENTRY_END = r"/?(?=[:\"'\s;&|)}$]|$)"
+# Stands in for an expansion doctor can't know (another variable, PATH's old value): it names no directory.
+_UNKNOWN = "\0"
 
 
 def _expand_user_path(raw: str, home: Path) -> Path:
@@ -619,22 +621,21 @@ def _expand_user_path(raw: str, home: Path) -> Path:
     return Path(raw)
 
 
-def _resolved_path_entry(entry: str, home: Path) -> Path:
-    candidate = _expand_user_path(entry, home)
+def _resolved_path_entry(entry: str) -> Path:
+    # Taken as written: a literal ~ left in PATH is no home directory to sh or exec.
     try:
-        return candidate.resolve()
+        return Path(entry).resolve()
     except (OSError, RuntimeError):  # Python < 3.13 raises RuntimeError on a symlink loop
-        return Path(os.path.normpath(str(candidate)))
+        return Path(os.path.normpath(entry))
 
 
 def _dir_on_path(directory: Path, path_env: str | None = None) -> bool:
     raw_path = os.environ.get("PATH", "") if path_env is None else path_env
-    home = Path.home()
     try:
         target = directory.resolve()
     except OSError:
         target = directory
-    return any(entry and _resolved_path_entry(entry, home) == target for entry in raw_path.split(os.pathsep))
+    return any(entry and _resolved_path_entry(entry) == target for entry in raw_path.split(os.pathsep))
 
 
 def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
@@ -680,29 +681,73 @@ def _open_quote(code: str, pos: int) -> str:
     return quote
 
 
-def _shell_expands(root: str, quote: str) -> bool:
-    # A quoted ~ and a single-quoted $HOME stay literal in PATH; a literal path needs no expansion.
-    if root == "~":
-        return not quote
-    return quote != "'" or not root.startswith("$")
+def _expand_variable(text: str, i: int, variables: dict[str, str]) -> tuple[str, int]:
+    """The value of the $NAME or ${...} at ``text[i]``, and the index just past it."""
+    if text.startswith("${", i):
+        depth, j = 0, i + 1
+        while j < len(text):
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            if depth == 0:
+                break
+            j += 1
+        body = text[i + 2 : j]
+        if body.startswith("PATH:+:"):  # ${PATH:+:${PATH}} adds ":" and the old PATH when PATH is set
+            return ":" + _UNKNOWN, j + 1
+        return variables.get(body, _UNKNOWN), j + 1
+    name = re.match(r"[A-Za-z_]\w*", text[i + 1 :])
+    if name is None:
+        return "$", i + 1
+    return variables.get(name[0], _UNKNOWN), i + 1 + name.end()
 
 
-def _puts_entry_on_path(line: str, setter: re.Pattern[str], entry: re.Pattern[str]) -> bool:
+def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]:
+    """The words a setter's value expands to, read up to its first unquoted stop character: quotes
+    removed, escaped characters literal, known variables and an unquoted leading ~ replaced."""
+    words: list[str] = []
+    word, started, quote, i = "", False, "", 0
+    while i < len(text):
+        ch = text[i]
+        if not quote and ch in stops:
+            break
+        if not quote and ch in " \t":
+            words.extend([word] if started else [])
+            word, started, i = "", False, i + 1
+            continue
+        started, i = True, i + 1
+        if ch == "\\" and quote != "'" and i < len(text):
+            word, i = word + text[i], i + 1
+        elif ch == quote:
+            quote = ""
+        elif not quote and ch in "\"'":
+            quote = ch
+        elif ch == "$" and quote != "'":
+            value, i = _expand_variable(text, i - 1, variables)
+            word += value
+        elif ch == "~" and not quote and (not word or word.endswith(":")) and text[i : i + 1] in ("", "/", ":"):
+            word += variables["HOME"]
+        else:
+            word += ch
+    return [*words, word] if started else words
+
+
+def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], target: str) -> bool:
     code = line.split("#", 1)[0]
-    found = setter.search(code)
-    return found is not None and any(
-        _shell_expands(m["root"], _open_quote(code, m.start("root"))) for m in entry.finditer(code, found.end())
-    )
+    for setter, stops in setters:
+        for found in setter.finditer(code):
+            if _open_quote(code, found.start()):
+                continue  # inside a string: an alias body or an echo, not a PATH change
+            entries = [entry for word in _setter_words(code[found.end() :], stops, variables) for entry in word.split(":")]
+            if found.groupdict().get("append"):
+                entries = entries[1:]  # PATH+=x extends the last entry; only what follows a ":" is new
+            if any(entry and os.path.normpath(entry) == target for entry in entries):
+                return True
+    return False
 
 
 def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
-    if termux:
-        roots, rest = rf"\$PREFIX|\$\{{PREFIX\}}|{re.escape(str(link_dir.parent))}", "bin"
-    else:
-        # ~/.local/bin by any spelling of home; /opt/team/.local/bin is another directory.
-        roots, rest = rf"\$HOME|\$\{{HOME\}}|~|{re.escape(str(Path.home()))}", r"\.local/bin"
-    entry = re.compile(rf"(?<![\w./-])(?P<root>{roots})[\"']?/{rest}{_PATH_ENTRY_END}")
-    setter = re.compile(_PATH_SETTERS["fish" if shell == "fish" and not termux else "posix"])
+    variables = {"HOME": str(Path.home()), **({"PREFIX": str(link_dir.parent)} if termux else {})}
+    setters = _PATH_SETTERS.get(shell, _PATH_SETTERS["posix"])
+    target = os.path.normpath(str(link_dir))
     for rc_path in candidates:
         if not rc_path.is_file():
             continue
@@ -710,7 +755,7 @@ def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, 
             text = rc_path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        if any(_puts_entry_on_path(line, setter, entry) for line in text.splitlines()):
+        if any(_puts_dir_on_path(line, setters, variables, target) for line in text.splitlines()):
             return rc_path
     return None
 

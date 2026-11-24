@@ -532,6 +532,12 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("zsh", ".zprofile", 'export PATH+=":~/.local/bin"'),
     ("zsh", ".zprofile", "export PATH='$HOME/.local/bin':$PATH"),  # single quotes keep $HOME literal
     ("fish", ".config/fish/config.fish", 'fish_add_path "~/.local/bin"'),
+    ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin backup:$PATH"'),  # a quoted space is part of the entry
+    ("zsh", ".zprofile", 'export PATH="\\$HOME/.local/bin:$PATH"'),  # an escaped $ stays literal
+    ("zsh", ".zprofile", 'export PATH="/usr/bin:/bin"; export BACKUP_BIN="$HOME/.local/bin"'),  # not PATH's value
+    ("zsh", ".zprofile", "export PATH=/usr/local/bin:$PATH; ls ~/.local/bin"),
+    ("fish", ".config/fish/config.fish", "set -l saved_path $PATH; contains ~/.local/bin $PATH"),
+    ("bash", ".bashrc", "path=(~/.local/bin $path)"),  # an ordinary array outside zsh
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin-tools"'),
     ("fish", ".config/fish/config.fish", "fish_add_path /opt/team/.local/bin"),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin/scripts"'),
@@ -556,6 +562,9 @@ def test_path_check_needs_a_line_that_puts_local_bin_on_path(tmp_path, monkeypat
     ("zsh", ".zprofile", 'export PATH="$PATH":~/.local/bin'),  # the ~ is outside the quotes
     ("zsh", ".zprofile", 'export PATH="$HOME"/.local/bin:$PATH'),
     ("fish", ".config/fish/config.fish", "set -gx PATH $HOME/.local/bin $PATH"),
+    ("zsh", ".zprofile", "path=(~/.local/bin $path)"),
+    ("zsh", ".zprofile", 'export PATH="${HOME}/.local/bin${PATH:+:${PATH}}"'),
+    ("zsh", ".zprofile", 'export PATH=/usr/local/bin:$PATH; export PATH="$HOME/.local/bin:$PATH"'),
 ])
 def test_path_check_counts_a_line_that_puts_local_bin_on_path(tmp_path, monkeypatch, capsys, shell, rc_file, line):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
@@ -624,6 +633,18 @@ def test_command_installation_path_check_accepts_trailing_slash_or_other_path_sy
     rc_alt = doctor.run_doctor(Namespace(fix=False))
     assert rc_alt == 0
     assert "is not on your PATH" not in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+def test_path_check_does_not_expand_a_literal_tilde_in_path(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    # What export PATH="~/.local/bin:$PATH" leaves behind: sh and exec take the ~ literally.
+    monkeypatch.setenv("PATH", "~/.local/bin:/usr/bin")
+
+    assert doctor.run_doctor(Namespace(fix=False)) == 1
+
+    assert "~/.local/bin is not on your PATH" in capsys.readouterr().out
 
 
 @pytest.mark.platforms("posix")

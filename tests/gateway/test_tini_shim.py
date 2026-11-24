@@ -85,3 +85,10 @@ def test_strips_p_and_e_with_arguments(recorder: tuple[Path, Path]) -> None:
     assert lines == [str(wrapper), "sleep", "infinity"]
     assert "SIGKILL" not in lines
     assert "143" not in lines
+
+
+def test_no_command_without_a_terminal_runs_the_gateway(recorder: tuple[Path, Path]) -> None:
+    """Legacy `tini -g --` with no command and no TTY gets the gateway, as the dispatcher does (#159590)."""
+    r = _run_shim(recorder, ["-g", "--"])
+    _init, wrapper = recorder
+    assert [ln for ln in r.stdout.splitlines() if ln] == [str(wrapper), "/opt/hermes/bin/hermes", "gateway", "run"]

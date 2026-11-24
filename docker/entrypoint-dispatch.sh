@@ -21,7 +21,7 @@ set -e
 # HERMES_GATEWAY_NO_SUPERVISE opt-out handled exactly as an explicit `gateway run`).
 if [ $# -eq 0 ] && ! [ -t 0 ]; then
     echo "[hermes] no command and no terminal: running 'hermes gateway run' (use 'docker run -it' for the interactive CLI)" >&2
-    set -- gateway run
+    set -- /opt/hermes/bin/hermes gateway run
 fi
 
 if [ "$$" -eq 1 ]; then

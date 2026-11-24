@@ -170,6 +170,16 @@ class SessionLifecycleMixin:
             self._save()
             return True
 
+    def _update_entry_metadata(self, session_key: str, mutate) -> bool:
+        """Metadata-only variant of ``_update_entry``. Like ``update_session``, save one row
+        outside ``_lock`` so a slow routing write cannot block the loop on it (#158204)."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or mutate(entry) is False:
+                return False
+        self._save_entry(session_key)
+        return True
+
     def _update_all_entries_locked(self, mutate) -> int:
         """Apply ``mutate(entry) -> bool`` to every entry under ``_lock``; save once if any
         returned True. Returns the count that did."""

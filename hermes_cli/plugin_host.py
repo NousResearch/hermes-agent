@@ -129,7 +129,8 @@ class PluginHost:
         from hermes_cli.plugin_isolation import host_launcher
         # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
         # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
-        return [*host_launcher(home=self._manager.owner_home), sys.executable, "-P", "-m", _HOST_MODULE]
+        # The home this start took (``_home``), not ``owner_home`` read again: a name can come or go meanwhile.
+        return [*host_launcher(home=self._home), sys.executable, "-P", "-m", _HOST_MODULE]
 
     def _env(self) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env

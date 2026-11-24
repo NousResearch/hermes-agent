@@ -9,6 +9,8 @@ Request building, thought signature replay, stream translation and error mapping
 so a fix there reaches this provider too. That wire is the gemini provider plugin's ``interactions`` module,
 found through provider discovery (``interactions_wire``), not a relative import: a copy of this plugin in a
 profile's own ``plugins/model-providers/`` loads under a top-level module name, with no sibling package.
+The stream helpers (SSE event iterator, bounded error-body read) come from that plugin's ``client`` module,
+found the same way, so this plugin imports only published core names besides its base client and error type.
 """
 
 from __future__ import annotations
@@ -21,8 +23,8 @@ from typing import Any, Iterator, Optional
 
 import httpx
 
-from agent.bounded_response import read_streaming_error_body
-from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, _iter_sse_events, bare_gemini_model_id
+from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient
+from agent.reasoning_effort import bare_gemini_model_id
 from hermes_cli.version_info import hermes_user_agent
 
 from . import INFERENCE_BASE_URL
@@ -50,6 +52,12 @@ _WIRE_MISSING = ("Solstice sends its requests through the gemini provider plugin
 def interactions_wire() -> ModuleType:
     """The gemini provider plugin's ``interactions`` module: the ``interactions`` submodule of the package the
     registered ``gemini`` profile was loaded from. Raises ``GeminiAPIError`` when there is none."""
+    return gemini_plugin_module("interactions")
+
+
+def gemini_plugin_module(name: str) -> ModuleType:
+    """Submodule *name* of the package the registered ``gemini`` profile was loaded from. Raises
+    ``GeminiAPIError`` when there is none."""
     from providers import get_provider_profile
 
     profile = get_provider_profile("gemini")
@@ -61,10 +69,10 @@ def interactions_wire() -> ModuleType:
     try:
         if not package:
             raise ImportError(f"{module} is not part of a package")
-        return importlib.import_module(f"{package}.interactions")
+        return importlib.import_module(f"{package}.{name}")
     except ImportError as exc:
         raise GeminiAPIError(_WIRE_MISSING.format(why=f"the loaded gemini provider plugin ({package or module}) "
-                                                      f"has no interactions module: {exc}"),
+                                                      f"has no {name} module: {exc}"),
                              code="gemini_wire_unavailable") from exc
 
 
@@ -120,13 +128,15 @@ class SolsticeClient(GeminiNativeClient):
 
     def _stream(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[Any]:
         wire = self._wire
+        # The gemini client's own stream helpers, from the package the wire came from (already found above).
+        helpers = gemini_plugin_module("client")
         state = wire.StreamState()
         headers = {**self._headers(), "Accept": "text/event-stream"}
         try:
             with self._http.stream("POST", url, json={**request, "stream": True}, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
-                    raise self._http_error(response, read_streaming_error_body(response))
-                for event in wire.iter_events(_iter_sse_events(response)):
+                    raise self._http_error(response, helpers.read_streaming_error_body(response))
+                for event in wire.iter_events(helpers._iter_sse_events(response)):
                     yield from wire.translate_stream_event(event, model, state)
         except httpx.HTTPError as exc:  # nothing is stored to resume from: the turn is retried from the start
             raise GeminiAPIError(f"Gemini streaming request failed: {exc}", code="gemini_stream_error") from exc

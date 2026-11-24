@@ -1,6 +1,6 @@
 import threading
 
-from tools import checkpoint_manager as checkpoints
+from agent.checkpoints import manager as checkpoints
 
 
 def test_concurrent_agent_writes_preserve_every_ledger_entry(tmp_path, monkeypatch):

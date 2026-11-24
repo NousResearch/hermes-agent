@@ -287,6 +287,14 @@
       "entries": [
         "cron.plugin_api"
       ]
+    },
+    {
+      "source": "model-provider-plugin.md § Public helpers for native Gemini reasoning",
+      "entries": [
+        "agent.reasoning_effort:gemini_thinking_config",
+        "agent.reasoning_effort:clamp_effort",
+        "agent.reasoning_effort:bare_gemini_model_id"
+      ]
     }
   ]
 }

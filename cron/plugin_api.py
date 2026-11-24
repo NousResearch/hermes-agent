@@ -1,8 +1,8 @@
 """Cron calls for plugins: schedule one named job, and read where cron delivers a job's output.
 
 Published as a whole module (``hermes_cli/data/plugin_api.json``), so a dashboard route or a
-standalone process without a ``ctx`` can use it too. Each function forwards to the code cron itself
-runs; none adds a rule of its own. Guide: plugins/index.md § Schedule a job once and read where cron
+standalone process without a ``ctx`` can use it too. Each function uses the scheduler's own job
+and delivery logic. Guide: plugins/index.md § Schedule a job once and read where cron
 delivers it.
 """
 from __future__ import annotations
@@ -84,11 +84,11 @@ def ensure_named_job(
     not find any other name again; anything else raises ``ValueError`` before anything is written.
 
     ``home`` runs the call against that profile's home, cron store, secrets and settings (its
-    time zone for a schedule), all restored afterwards; ``~`` and environment variables are expanded. Its secrets are read from
-    its own files, also when it is the profile already active. A ``home`` that is not an existing
-    directory raises ``FileNotFoundError`` and is not created. Inside a hosted activity, which
-    cannot act for a profile, binding one is refused. The lookup and the create are not atomic
-    across processes: a caller that can race with itself serializes its own calls.
+    time zone for a schedule), all restored afterwards; ``~`` and environment variables are expanded
+    once. Its secrets are read from its own files, also when it is the profile already active.
+    A ``home`` that is not an existing directory raises ``FileNotFoundError`` and is not created.
+    Inside a hosted activity, which cannot act for a profile, binding one is refused. The lookup
+    and create are not atomic across processes: a caller that can race with itself serializes its own calls.
     """
     from cron.jobs import _normalize_job_record, load_jobs
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
@@ -131,13 +131,16 @@ def delivery_platforms(
     nowhere. It reads the normal delivery lane; a ``failure_deliver`` override is not consulted. The
     targets come from cron's own resolver, so ``all``, the ``origin`` fallback, home channels and
     Bot Chat tokens follow cron's rules. Only platform names are returned, never chat or thread ids.
-    ``home`` runs the call against that profile's home, cron store and secrets; ``None`` when it
-    is not an existing directory, which is not created.
+    A non-``None`` ``home`` requires an explicit ``job_id``; otherwise raises ``ValueError``.
+    A preview with ``home`` uses that profile's home, cron store and secrets, or returns ``None``
+    if the directory does not exist. Firing-run lookups use the profile already bound to the run.
     """
     from cron.execution_identity import _current_cron_execution_job
     from cron.jobs import get_job
     from cron.scheduler_delivery import _resolve_delivery_targets
 
+    if home is not None and job_id is None:
+        raise ValueError("job_id is required when home is specified")
     home = _expanded(home)
     if home is not None and not home.is_dir():
         return None

@@ -263,6 +263,23 @@ def test_home_is_read_the_way_hermes_reads_a_home_path(tmp_path, monkeypatch, re
     assert not (literal / "cron").exists()
 
 
+def test_home_expands_variables_once_for_store_and_timezone(tmp_path, monkeypatch, registered):
+    monkeypatch.setenv("CRON_PROFILE_OUTER", "$CRON_PROFILE_INNER")
+    monkeypatch.setenv("CRON_PROFILE_INNER", "other-profile")
+    literal, other = tmp_path / "$CRON_PROFILE_INNER", tmp_path / "other-profile"
+    for home, zone in [(literal, "Asia/Tokyo"), (other, "America/New_York")]:
+        home.mkdir()
+        (home / "config.yaml").write_text(f"timezone: {zone}\n", encoding="utf-8")
+
+    job = ensure_named_job("follow-up", prompt="check in", schedule="0 9 * * *",
+                           home=tmp_path / "$CRON_PROFILE_OUTER")
+
+    with jobs.use_cron_store(literal):
+        assert [j["id"] for j in _all_jobs()] == [job["id"]]
+    assert not (other / "cron").exists()
+    assert datetime.fromisoformat(job["next_run_at"]).astimezone(ZoneInfo("Asia/Tokyo")).hour == 9
+
+
 def test_home_wins_over_a_cron_store_the_caller_is_already_inside(tmp_path, registered):
     # A plugin hook running inside one profile's cron fire is already routed to that profile's store.
     mine, other = tmp_path / "mine", tmp_path / "other-profile"
@@ -311,6 +328,19 @@ def test_no_job_id_inside_a_cron_run_answers_for_that_run(home_channels):
     finally:
         exit_cron_execution(token)
     assert delivery_platforms() is None
+
+
+def test_firing_all_delivery_requires_job_id_for_explicit_home(target, caller_scope, registered):
+    other_job = ensure_named_job("other", prompt="p", schedule="every 1h", deliver="all", home=target)
+    job = jobs.create_job(prompt="p", schedule="every 1h", name="run", deliver="all")
+    token = enter_cron_execution(job, "exec-1", {"source": "direct"})
+    try:
+        assert delivery_platforms() == ("telegram",)
+        assert delivery_platforms(other_job["id"], home=target) == ("discord",)
+        with pytest.raises(ValueError, match="job_id is required"):
+            delivery_platforms(home=target)
+    finally:
+        exit_cron_execution(token)
 
 
 def test_no_job_id_uses_firing_job_settings_even_after_disk_edit_or_delete(home_channels):

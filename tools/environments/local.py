@@ -439,6 +439,7 @@ def build_subprocess_env(
 def served_profile_child_env(
     base: Mapping[str, str] | None = None, *, target_home: str | Path | None = None,
     inherit_credentials: bool = False, own_profile: bool | None = None,
+    template_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
@@ -459,8 +460,10 @@ def served_profile_child_env(
     launch profile, for a caller that decided it by another rule (the plugin host, by the key the process
     remembered for its own path); by default ``_is_routed_home`` answers by where the process's own path
     leads now. It decides the launch-residue strip, the credential scrub, the overlay's templates, the
-    bootstrap tokens and the bridge markers."""
-    return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials, own_profile))
+    bootstrap tokens and the bridge markers. ``template_env`` is what the launch profile's ``.env`` templates
+    resolve against in place of the live env (the plugin host passes the frozen env its launcher used)."""
+    return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials, own_profile,
+                                                     template_env))
 
 
 def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
@@ -473,7 +476,7 @@ def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
 
 def _profile_child_env(
     base: Mapping[str, str] | None, target_home: str | Path | None, inherit_credentials: bool,
-    own_profile: bool | None = None,
+    own_profile: bool | None = None, template_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
@@ -489,7 +492,7 @@ def _profile_child_env(
             _scrub_credentials(env, inherit_credentials=False)
     if inherit_credentials:
         if target:
-            secrets = build_profile_secret_scope(Path(target), process_home=own_profile)
+            secrets = build_profile_secret_scope(Path(target), process_home=own_profile, template_env=template_env)
         else:
             secrets = current_secret_scope()
             if secrets is None and is_multiplex_active():

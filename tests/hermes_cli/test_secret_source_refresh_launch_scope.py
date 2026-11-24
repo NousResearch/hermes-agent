@@ -179,7 +179,8 @@ def test_the_launch_launchers_env_file_template_follows_the_frozen_env_through_a
     from agent.secret_scope import set_multiplex_active
     from gateway.run import _profile_runtime_scope
     from hermes_cli.plugins import get_plugin_manager
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+    from tui_gateway.launch_profile_policy import (activate_multi_profile_hosting, launch_secret_scope,
+                                                   launch_template_env)
 
     _rotating_override_source(launch_home)
     (launch_home / ".env").write_text("RUNNER_TAG=${VAULT_ONLY_KEY:-none}/tag\n", encoding="utf-8")
@@ -196,7 +197,7 @@ def test_the_launch_launchers_env_file_template_follows_the_frozen_env_through_a
                     "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
             with _profile_runtime_scope(launch_home):
                 manager.discover_and_load(force=True)
-            seen.append((launch_secret_scope(launch_home, frozen_templates=True)["RUNNER_TAG"],
+            seen.append((launch_secret_scope(launch_home, template_env=launch_template_env())["RUNNER_TAG"],
                          launch_secret_scope(launch_home)["RUNNER_TAG"]))
         assert seen == [("v2/tag", "v2/tag"), ("none/tag", "none/tag")]
     finally:
@@ -212,7 +213,8 @@ def test_the_launch_launchers_env_file_template_keeps_a_sources_value_equal_to_w
     from gateway.run import _profile_runtime_scope
     from hermes_cli import env_loader
     from hermes_cli.plugins import get_plugin_manager
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+    from tui_gateway.launch_profile_policy import (activate_multi_profile_hosting, launch_secret_scope,
+                                                   launch_template_env)
 
     monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
     monkeypatch.setenv("RUNNER_TAG", "registered-for-restore")
@@ -228,7 +230,7 @@ def test_the_launch_launchers_env_file_template_keeps_a_sources_value_equal_to_w
         (launch_home / "vault.txt").write_text("same", encoding="utf-8")
         with _profile_runtime_scope(launch_home):
             manager.discover_and_load(force=True)  # the source rotates to the value the .env published
-        assert launch_secret_scope(launch_home, frozen_templates=True)["RUNNER_TAG"] == "same/tag"
+        assert launch_secret_scope(launch_home, template_env=launch_template_env())["RUNNER_TAG"] == "same/tag"
     finally:
         set_multiplex_active(False)
 

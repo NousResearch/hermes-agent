@@ -179,6 +179,20 @@ def test_check_fails_on_drift_and_strays_but_not_on_ignored_output(repo):
     assert "elsewhere.py: stray" in result.stdout and "oldpkg/notes.txt: stray" in result.stdout
 
 
+def test_check_reads_a_crlf_gitattributes_as_the_same_file(repo):
+    # `* text=auto` with no eol rule: Git for Windows checks .gitattributes out with CRLF (#159061).
+    attributes = repo / ".gitattributes"
+    lf = attributes.read_bytes()
+    attributes.write_bytes(lf.replace(b"\n", b"\r\n"))
+    result = _generate(repo, "--check")
+    assert result.returncode == 0, result.stdout
+    assert "wrote .gitattributes" not in _generate(repo).stdout
+
+    # A real difference in the shim block still fails.
+    attributes.write_bytes(lf.replace(b"/oldpkg/tool.py", b"/oldpkg/gone.py").replace(b"\n", b"\r\n"))
+    assert ".gitattributes: differs from what" in _generate(repo, "--check").stdout
+
+
 def test_startup_list_and_hand_files_fail_only_the_check(repo):
     (repo / "pyproject.toml").write_text('[tool.hermes]\nupdate-startup-files = ["oldpkg/gone.py"]\n')
     for args, code in ((["--check"], 1), ([], 0)):

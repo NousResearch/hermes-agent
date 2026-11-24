@@ -70,6 +70,23 @@ def make_targz(base: str, root_dir: str, base_dir: str) -> str:
     return archive_path
 
 
+def relativize_internal_links(staged: Path, source: Path) -> None:
+    """Rewrite each absolute symlink in ``staged`` (a copy of ``source``) that points inside
+    ``source`` as a relative link, so the archive imports anywhere.
+
+    Installers link by absolute path (``lsp/bin/<server>`` -> ``<profile>/lsp/node_modules/...``)
+    and :func:`safe_extract_targz` refuses absolute links. Links leaving ``source`` are left as-is.
+    """
+    root = os.path.realpath(source)
+    for link in [p for p in staged.rglob("*") if p.is_symlink()]:
+        target = os.readlink(link)
+        real = os.path.realpath(target)
+        if os.path.isabs(target) and real.startswith(root + os.sep):
+            inside = staged / os.path.relpath(real, root)
+            link.unlink()
+            os.symlink(os.path.relpath(inside, link.parent), link, target_is_directory=os.path.isdir(real))
+
+
 def _create_archive_symlinks(links: list[tuple[tarfile.TarInfo, Path]], destination: Path) -> None:
     """Create the archive's symlinks after every file is written, then refuse any that escapes.
 

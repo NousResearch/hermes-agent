@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.file_safety import HOME_CREDENTIAL_DIRS
-from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, relativize_internal_links, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
@@ -2120,8 +2120,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
     force-redacted first. Returns the output file path."""
     import tempfile
     canon, profile_dir = _existing_profile_dir(name)
-    # Archive base name without extension (.tar.gz appended by the writer).
-    base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")
+    base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")  # writer appends .tar.gz
 
     # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
     # copy under a temp dir named after the canonical id: root allow-list for default,
@@ -2139,6 +2138,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / canon
         shutil.copytree(profile_dir, staged, symlinks=True, ignore=ignore)
+        relativize_internal_links(staged, profile_dir)  # import refuses absolute links
         for rel, content in (extra_files or {}).items():
             target = staged.joinpath(*normalize_archive_parts(rel))
             target.parent.mkdir(parents=True, exist_ok=True)

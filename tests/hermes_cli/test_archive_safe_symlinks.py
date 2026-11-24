@@ -46,6 +46,8 @@ def test_exported_profile_with_symlinks_imports_with_the_links_kept(tmp_path, mo
     (src / "plugins" / "eng" / "engine.py").write_text("print('engine')\n")
     os.symlink(os.path.join("..", "..", "plugins", "eng", "engine.py"), src / "lsp" / "bin" / "tool")
     os.symlink("plugins", src / "plugins-link", target_is_directory=True)
+    # The LSP installer links by absolute path; export must ship it as a relative link.
+    os.symlink(src / "plugins" / "eng" / "engine.py", src / "lsp" / "bin" / "abs-tool")
 
     imported = import_profile(str(export_profile("rlink", str(tmp_path / "rlink"))), name="rlink2")
 
@@ -53,6 +55,9 @@ def test_exported_profile_with_symlinks_imports_with_the_links_kept(tmp_path, mo
     assert (imported / "lsp" / "bin" / "tool").read_text() == "print('engine')\n"
     assert (imported / "plugins-link").is_symlink()
     assert (imported / "plugins-link" / "eng" / "engine.py").is_file()
+    abs_tool = imported / "lsp" / "bin" / "abs-tool"
+    assert not os.path.isabs(os.readlink(abs_tool))
+    assert abs_tool.resolve() == (imported / "plugins" / "eng" / "engine.py").resolve()
 
 
 @pytest.mark.require_symlinks

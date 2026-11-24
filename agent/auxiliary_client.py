@@ -3633,18 +3633,8 @@ def _refresh_nous_credentials() -> bool:
 
 
 def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
-    token = failed_api_key
-    if not token:
-        return False
-    pool = load_pool("anthropic")
-    if pool.entry_id_for_api_key(token):
-        return pool.try_refresh_matching(api_key_hint=token) is not None
-    creds = read_claude_code_credentials()
-    # Never spend an ambient login's refresh rotation for another request's key.
-    if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
-        return bool(_refresh_oauth_token(creds))
-    return False
+    from agent.anthropic_credentials import refresh_anthropic_token_for_failed_key
+    return refresh_anthropic_token_for_failed_key(failed_api_key) is not None
 
 
 def _refresh_xai_oauth_credentials() -> bool:

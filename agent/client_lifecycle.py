@@ -841,7 +841,7 @@ class ClientLifecycleMixin:
         self._apply_client_headers_for_base_url(str(self.base_url or ""))
         return self._replace_primary_openai_client(reason=f"{profile.name}_credential_{reason}")
 
-    def _try_refresh_anthropic_client_credentials(self) -> bool:
+    def _try_refresh_anthropic_client_credentials(self, *, after_401: bool = False) -> bool:
         # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
         # and Azure use static keys — a refresh would pick up the ~/.claude OAuth token and break auth.
         anthropic_base_url = getattr(self, "_anthropic_base_url", "") or ""
@@ -860,13 +860,24 @@ class ClientLifecycleMixin:
         if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
         try:
-            from agent.anthropic_credentials import resolve_anthropic_token
+            from agent.anthropic_credentials import refresh_anthropic_token_for_failed_key, resolve_anthropic_token
             new_token = resolve_anthropic_token(model=self.model)
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False
         new_token = new_token.strip() if isinstance(new_token, str) else ""
-        if not new_token or new_token == self._anthropic_api_key:
+        stale_key = current_key.strip()
+        pool = getattr(self, "_credential_pool", None)
+        if after_401 and new_token == stale_key and (pool is None or not pool.entry_id_for_api_key(stale_key)):
+            # The resolver does not refresh pool rows, so the expired token comes straight back and the 401 is
+            # final (#149065). Refresh the credential that issued it, or adopt a peer's rotation that already
+            # landed. A bound pool that owns the key forced its own refresh before this runs.
+            try:
+                new_token = refresh_anthropic_token_for_failed_key(stale_key) or (
+                    resolve_anthropic_token(model=self.model) or "").strip()
+            except Exception:
+                logger.debug("Anthropic credential refresh after 401 failed", exc_info=True)
+        if not new_token or new_token == stale_key:
             return False
         with suppress(Exception):
             self._anthropic_client.close()

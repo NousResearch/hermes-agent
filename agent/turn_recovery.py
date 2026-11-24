@@ -453,7 +453,7 @@ def _refresh_credentials_after_401(
         and not _retry.anthropic_auth_retry_attempted
     ):
         _retry.anthropic_auth_retry_attempted = True
-        if agent._try_refresh_anthropic_client_credentials():
+        if agent._try_refresh_anthropic_client_credentials(after_401=True):
             _plines(agent, "🔐 Anthropic credentials refreshed after 401. Retrying request...")
             return True
         _print_anthropic_401_diagnostics(agent, agent._anthropic_api_key)

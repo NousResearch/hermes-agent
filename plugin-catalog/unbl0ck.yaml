@@ -1,23 +1,23 @@
 name: unbl0ck
 title: UNBL0CK
 repo: https://github.com/KyaniteLabs/unbl0ck
-sha: ad3592c8e5c011184c75876d421db95dfc92f0a9
-version: "0.6.1"
-description: "One queue of what is blocked on you: live prompts, pairing requests, Kanban cards, chats and agent-filed items or watched-folder drafts and notes. Search, read, answer and recover in place. Disclosure: reads local profiles' chat histories and pending pairing requests (never pairing codes), Kanban and configured folders; records live prompt text and agent-filed items in plugin data; comments on and can unblock Kanban cards only when you answer. Summaries send new or changed eligible item text, including other profiles' chats and outside items, to your configured model through ctx.llm by default; TL;DR/Ask sends card context when clicked (disable with bluf_enabled: false and ask_enabled: false). Watched folders and bounded recursive reading are off by default and remain read-only. Ask restart markers contain no card, question or answer text by default; optional ask_persist_replies retains finished answers for up to 15 minutes. Messaging /unbl0ck returns counts only. Uses private Hermes imports and, on hosts without /proc, ps to check process start time. Optional owner-run Security review tooling contacts GitHub and a configured gateway; it is not activated by installation. No telemetry or self-updater."
+sha: e1b21daa89386d1cba865d5ef6f6364c03edc40e
+version: "0.6.2"
+description: "One queue of what is blocked on you: live prompts, pairing requests, Kanban cards, chats and agent-filed items or watched-folder drafts and notes. Search, read, answer and recover in place. Disclosure: reads local profiles' chat histories and pending pairing requests (never pairing codes), Kanban and configured folders; records live prompt text and agent-filed items in plugin data; comments on and can unblock Kanban cards via public kanban_db.unblock_task only when you answer. Summaries send new or changed eligible item text, including other profiles' chats and outside items, to your configured model through ctx.llm by default; TL;DR/Ask sends card context when clicked (disable with bluf_enabled: false and ask_enabled: false). Watched folders and bounded recursive reading are off by default and remain read-only. Ask restart markers contain no card, question or answer text by default; optional ask_persist_replies retains finished answers for up to 15 minutes. Messaging /unbl0ck returns counts only. Uses Hermes Kanban and pairing modules (no private helpers) and, on hosts without /proc, ps to check process start time. Optional owner-run Security review script contacts GitHub and a configured gateway; it is not activated by installation. No telemetry or self-updater."
 maintainer: KyaniteLabs
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/KyaniteLabs/unbl0ck/blob/ad3592c8e5c011184c75876d421db95dfc92f0a9/README.md
-image: https://raw.githubusercontent.com/KyaniteLabs/unbl0ck/ad3592c8e5c011184c75876d421db95dfc92f0a9/assets/banner.png
+docs_url: https://github.com/KyaniteLabs/unbl0ck/blob/e1b21daa89386d1cba865d5ef6f6364c03edc40e/README.md
+image: https://raw.githubusercontent.com/KyaniteLabs/unbl0ck/e1b21daa89386d1cba865d5ef6f6364c03edc40e/assets/banner.png
 screenshots: []
 readme: true
 platforms: []
 known_issues:
   - "Queue detection has known missed asks and false positives: initially blocked cards, natural decision wording, staged manual commands and other-owner mentions. See https://github.com/KyaniteLabs/unbl0ck/issues/90 through /93."
-  - "Uses private Hermes Kanban and pairing imports; revalidate after Hermes upgrades."
+  - "Uses Hermes Kanban and pairing modules (no private _ helpers); revalidate after Hermes upgrades."
   - "With no principal_name set, detection uses the configured role words plus principal and human."
-  - "Windows state locking is implemented but not verified on a real Windows host; use one writer. Ask journal and recovery have POSIX-dependent limits. See issues #43, #35 and #48."
+  - "Windows and macOS state-lock tests run in CI; Ask journal and recovery retain POSIX-dependent limits. See issues #43, #35 and #48."
   - "Typed answer recovery is session-only, expires after 30 minutes and does not survive reload."
   - "Watched folders select at most the newest 200 eligible files per folder and read 256 KiB per file."
   - "Packaged Desktop, real export fixtures, live-provider and install/rollback acceptance remain unverified; no independent Security acceptance for this exact release is claimed."

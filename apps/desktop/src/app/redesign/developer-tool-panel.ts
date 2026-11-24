@@ -88,20 +88,25 @@ export function installDeveloperToolPanelWidth(root: HTMLElement = document.docu
   }
 }
 
-// The tools gathered: a zone beside the chat that holds more than one of them. One tool alone in a
-// zone is where a classic layout (or the user) put it, and is gathered on its next reveal.
-const isToolPanel = (zone: GroupNode) => !zone.panes.includes('workspace') && zone.panes.filter(isTool).length > 1
+const builtInTools = (zone: GroupNode) => zone.panes.filter(id => STORE_BOUND.includes(id)).length
 
-/** The redesign's one tool panel: the zone holding the most tools. Not "the zone Files is in with
- *  every built-in tool": a tool can leave the tree (its tab's Close), and the tools that remain are
- *  still the panel the next one joins. */
+// The tools gathered: a zone beside the chat that holds more than one of them, a built-in among
+// them. One tool alone in a zone is where a classic layout (or the user) put it, and is gathered on
+// its next reveal. Browser tabs alone never make the panel: each tab is a pane of its own, and a
+// zone the user tiled with several is theirs.
+const isToolPanel = (zone: GroupNode) =>
+  !zone.panes.includes('workspace') && builtInTools(zone) > 0 && zone.panes.filter(isTool).length > 1
+
+/** The redesign's one tool panel: the zone holding the most built-in tools, the first in the tree's
+ *  order on a tie. Not "the zone Files is in with every built-in tool": a tool can leave the tree
+ *  (its tab's Close), and the tools that remain are still the panel the next one joins. */
 function toolPanel(tree: LayoutNode): GroupNode | null {
   let panel: GroupNode | null = null
 
   for (const id of allPaneIds(tree).filter(isTool)) {
     const zone = findGroupOfPane(tree, id)
 
-    if (zone && isToolPanel(zone) && zone.panes.filter(isTool).length > (panel?.panes.filter(isTool).length ?? 0)) {
+    if (zone && isToolPanel(zone) && builtInTools(zone) > (panel ? builtInTools(panel) : 0)) {
       panel = zone
     }
   }

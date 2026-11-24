@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, expect, it } from 'vitest'
 
+import { closeFilesPane } from '@/app/contrib/close-files-pane'
 import { DEFAULT_TREE } from '@/app/contrib/layout-presets'
 import { allPaneIds, findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import {
@@ -14,18 +15,17 @@ import {
   dismissTreePane,
   isPaneVisible,
   moveTreePane,
-  paneRootSide,
   registerPaneCloser,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $shellChoice } from '@/store/shell-variant'
 
 import {
   $developerToolPanelWidth,
   hideDeveloperToolPanel,
-  inDeveloperToolPanel,
   installDeveloperToolPanelWidth,
   prepareDeveloperToolPanel
 } from './developer-tool-panel'
@@ -159,8 +159,8 @@ it('hides store-bound tools through their stores, so a later Show brings them ba
 })
 
 // A Browser tab registers as a main surface (it can stand as a tile), so the pane tree no longer
-// reads the panel it joined as the window's right side, and Files' closer (contrib/controller.tsx,
-// mirrored here) took its "dragged beside main" branch: it dismissed Files instead of hiding it.
+// reads the panel it joined as the window's right side, and Files' closer (contrib/close-files-pane.ts,
+// the one the app registers) took its "dragged beside main" branch: it dismissed Files instead of hiding it.
 // With Files gone the tools no longer counted as gathered, and each one opened next made a panel of
 // its own beside the last (HADESK-90: one to three panels, the chat squeezed between them).
 it('keeps one panel when it is closed and reopened with a Browser tab in it', () => {
@@ -173,13 +173,8 @@ it('keeps one panel when it is closed and reopened with a Browser tab in it', ()
     registry.register({ id: browser, area: 'panes', data: { placement: 'main' }, render: () => null })
   ]
 
-  const $files = atom(true)
-  bindPaneVisibility(
-    'files',
-    $files,
-    () => (paneRootSide('files') === 'right' || inDeveloperToolPanel('files') ? $files.set(false) : dismissTreePane('files')),
-    () => $files.set(true)
-  )
+  setFileBrowserOpen(true)
+  bindPaneVisibility('files', $fileBrowserOpen, closeFilesPane, () => setFileBrowserOpen(true))
 
   prepareDeveloperToolPanel('files')
   const panel = findGroupOfPane($layoutTree.get()!, 'files')!
@@ -214,4 +209,24 @@ it('gathers into the panel that is left when Files has been dismissed', () => {
 
   expect(findGroupOfPane($layoutTree.get()!, 'chat-items')?.id).toBe(panel.id)
   expect(hideDeveloperToolPanel('chat-items')).toBe(true)
+})
+
+// A zone the user tiled with Browser tabs is not the tool panel, however many tabs it holds: each
+// tab is a pane of its own, and counting them let that zone outrank the panel (HADESK-90 review).
+it('never takes a zone of Browser tabs for the panel', () => {
+  $shellChoice.set(true)
+  $layoutTree.set(
+    split('row', [DEFAULT_TREE, group(['preview-tile:a', 'preview-tile:b', 'preview-tile:c', 'preview-tile:d'])])
+  )
+  prepareDeveloperToolPanel('terminal')
+  const panel = findGroupOfPane($layoutTree.get()!, 'terminal')!
+  const browsers = findGroupOfPane($layoutTree.get()!, 'preview-tile:a')!
+  expect(browsers.id).not.toBe(panel.id)
+
+  moveTreePane('review', { groupId: findGroupOfPane($layoutTree.get()!, 'workspace')!.id, pos: 'left' })
+  prepareDeveloperToolPanel('review')
+
+  expect(findGroupOfPane($layoutTree.get()!, 'review')?.id).toBe(panel.id)
+  // And hiding from a Browser zone is that tab's own toggle, not the panel's.
+  expect(hideDeveloperToolPanel('preview-tile:a')).toBe(false)
 })

@@ -14,12 +14,9 @@ import { chatItemsCopy } from '@/app/chat/items/chat-items-copy'
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { closeFilesPane } from '@/app/contrib/close-files-pane'
 import { bindChatToolPanels, bindChatToolRouteCollapse } from '@/app/redesign/chat-tool-panel'
-import {
-  developerToolSizing,
-  inDeveloperToolPanel,
-  installDeveloperToolPanelWidth
-} from '@/app/redesign/developer-tool-panel'
+import { developerToolSizing, installDeveloperToolPanelWidth } from '@/app/redesign/developer-tool-panel'
 import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -82,7 +79,6 @@ import {
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
-  fileBrowserSide,
   setFileBrowserOpen,
   setSidebarOpen,
   SIDEBAR_DEFAULT_WIDTH,
@@ -857,12 +853,7 @@ registerPaneOpener('sessions', () => {
     setSidebarOpen(true)
   }
 })
-// The redesign's tool panel is that side too, whatever else stands in it (developer-tool-panel.ts).
-registerPaneCloser('files', () =>
-  paneRootSide('files') === fileBrowserSide() || inDeveloperToolPanel('files')
-    ? setFileBrowserOpen(false)
-    : dismissTreePane('files')
-)
+registerPaneCloser('files', closeFilesPane)
 // The redesign's conversation header stands in for chat-only tab strips in every zone.
 provideZoneHeader(usePortalZoneHeader)
 

@@ -1,6 +1,7 @@
 // health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { deApproval } from './de_approval'
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
@@ -499,6 +500,14 @@ export const deOverrides = {
       approvalTitleNamed: session => `Freigabe erforderlich — ${session}`,
       approveAction: 'Genehmigen',
       rejectAction: 'Ablehnen',
+      accessTitle: 'Ordnerzugriff erforderlich',
+      accessTitleNamed: session => `Ordnerzugriff erforderlich — ${session}`,
+      accessReadBody: folder => `Nur lesen: ${folder}`,
+      accessReadWriteBody: folder => `Lesen und schreiben: ${folder}`,
+      networkTitle: 'Website-Zugriff erforderlich',
+      networkTitleNamed: session => `Website-Zugriff erforderlich — ${session}`,
+      allowAction: 'Erlauben',
+      denyAction: 'Ablehnen',
       inputTitle: 'Eingabe erforderlich',
       inputTitleNamed: session => `Eingabe erforderlich — ${session}`,
       inputBody: 'Hermes wartet auf Ihre Antwort.',
@@ -3305,6 +3314,8 @@ export const deOverrides = {
     remoteOverride: {
       menuItem: 'Mit Remote-Host verbinden…',
       badge: (host: string) => `Läuft auf ${host}`,
+      runHere: 'Auf diesem Computer ausführen…',
+      sandboxed: 'In der Sandbox',
       title: (profile: string) => `${profile} mit einem Remote-Host verbinden`,
       description:
         'Sessions in diesem Profil laufen auf dem von Ihnen festgelegten Remote-Hermes statt auf diesem Computer.',
@@ -5152,25 +5163,7 @@ export const deOverrides = {
       sendEdited: 'Bearbeitete Nachricht senden',
       attachingFile: 'Hängt an…'
     },
-    approval: {
-      gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
-      sendFailed: 'Genehmigungsantwort konnte nicht gesendet werden',
-      reconnect: 'Neu verbinden',
-      timedOutSystemLine:
-        'Die Freigabe ist abgelaufen — der Befehl wurde nicht ausgeführt. Bitten Sie Hermes, es erneut zu versuchen, oder erhöhen Sie das Limit unter Einstellungen → Sicherheit → Freigabe-Timeout.',
-      openSafetySettings: 'Sicherheitseinstellungen öffnen',
-      run: 'Ausführen',
-      command: 'Befehl',
-      moreOptions: 'Weitere Genehmigungsoptionen',
-      allowSession: 'Diese Session erlauben',
-      alwaysAllowMenu: 'Immer erlauben…',
-      jumpToApproval: 'Genehmigung erforderlich',
-      reject: 'Ablehnen',
-      alwaysTitle: 'Diesen Befehl immer erlauben?',
-      alwaysDescription: pattern =>
-        `Dies fügt das Muster „${pattern}“ Ihrer dauerhaften Zulassungsliste hinzu (~/.hermes/config.yaml). Hermes fragt bei solchen Befehlen nicht mehr nach – weder in dieser noch in zukünftigen Sessions.`,
-      alwaysAllow: 'Immer erlauben'
-    },
+    approval: deApproval,
     clarify: deClarify,
     themePicker: deThemePicker,
     catalogInstall: {

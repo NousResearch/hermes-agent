@@ -1,3 +1,4 @@
+import type { CanonicalClientIdentity } from './gateway-contract.generated.js'
 import type { GatewayEvent, GatewayEventName } from './gateway-events.js'
 import {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
@@ -178,6 +179,11 @@ export class JsonRpcGatewayClient {
     return false
   }
 
+  /** Which client this is, announced once per connection on its first `gateway.ready` (`JsonRpcRequestChannelOptions.clientIdentity`); none by default. */
+  protected clientIdentity(): CanonicalClientIdentity | null | Promise<CanonicalClientIdentity | null> {
+    return null
+  }
+
   constructor(options: GatewayClientOptions = {}) {
     this.options = {
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
@@ -197,6 +203,7 @@ export class JsonRpcGatewayClient {
       socketFactory: options.socketFactory
     }
     this.channel = new JsonRpcRequestChannel({
+      clientIdentity: () => this.clientIdentity(),
       createRequestId: this.options.createRequestId,
       desktopLocal: () => this.isDesktopLocal(),
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
@@ -221,6 +228,11 @@ export class JsonRpcGatewayClient {
   /** The connected canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
   protected get backendClarifyBatch(): boolean {
     return this.channel.clarifyBatch
+  }
+
+  /** The connected backend keeps `client.activity` reports (`client.capabilities`); send none otherwise. */
+  get clientActivity(): boolean {
+    return this.channel.clientActivity
   }
 
   async connect(wsUrl: string): Promise<void> {

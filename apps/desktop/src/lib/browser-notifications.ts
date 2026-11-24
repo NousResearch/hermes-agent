@@ -25,6 +25,11 @@ export function browserNotificationPermission(): BrowserNotificationPermission {
   return 'Notification' in window ? Notification.permission : 'unsupported'
 }
 
+/** The live permission check `showBrowserNotification` applies, readable before anything is shown. */
+export function browserNotificationsAllowed(): boolean {
+  return browserNotificationPermission() === 'granted'
+}
+
 /** Call from a click handler only. */
 export async function requestBrowserNotificationPermission(): Promise<BrowserNotificationPermission> {
   if (browserNotificationPermission() === 'default') {
@@ -60,7 +65,7 @@ export function showBrowserNotification(payload: BrowserNotifyPayload): boolean 
 
   flagTabAttention(title)
 
-  if (browserNotificationPermission() !== 'granted') {
+  if (!browserNotificationsAllowed()) {
     return false
   }
 

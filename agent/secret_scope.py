@@ -442,7 +442,8 @@ def build_profile_secret_scope(hermes_home: Path, *, process_home: Optional[bool
     it by another rule (the plugin host's launcher, by the key remembered for the process's own path);
     by default it is ``_is_process_home``, where that path leads now. *template_env* is what the process's
     own profile's ``.env`` templates resolve against in place of the live process env, its dotenv output
-    already peeled back (``env_loader.dotenv_lookup_from``)."""
+    already peeled back (``env_loader.dotenv_lookup_from``); a process-global key's still resolve against the
+    live env, as ``get_secret`` reads that key from ``os.environ``."""
     secrets = load_env_file(Path(hermes_home) / ".env")
     # Launch-only keys are never profile secrets (#135200): get_secret consults
     # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
@@ -501,11 +502,18 @@ def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: di
     if not templated:
         return
     from hermes_cli.env_loader import resolve_home_dotenv
-    if _owns(hermes_home, process_home):
+    owned = _owns(hermes_home, process_home)
+    if owned:
         lookup = template_env  # None: the live env, peeled as it is read
     else:
         lookup = {k: v for k, v in os.environ.items() if _is_global_env(k)}
     resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup)
+    if owned and template_env is not None and any(_is_global_env(k) for k in templated):
+        # A process-global key is read from os.environ, where the dotenv load expanded it against the live
+        # env: expand it that way too, not against the frozen env (a value config.yaml bridged over it still
+        # differs, as on main).
+        live = resolve_home_dotenv(Path(hermes_home), lookup_env=None)
+        resolved.update((k, live[k]) for k in templated if _is_global_env(k) and k in live)
     secrets.update((k, resolved[k]) for k in templated if k in resolved)
 
 

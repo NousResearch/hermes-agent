@@ -1068,6 +1068,10 @@ export const en: Translations = {
       embedsAlways: 'Always',
       embedsOff: 'Off',
       embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
+      clarifyCardWidthTitle: 'Card Width',
+      clarifyCardWidthDesc: 'How wide question cards sit in the conversation. Full matches the reply text; Compact keeps them narrow.',
+      clarifyCardWidthFull: 'Full',
+      clarifyCardWidthCompact: 'Compact',
       resumeLastSessionTitle: 'Reopen Last Chat on Launch',
       resumeLastSessionDesc:
         'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',

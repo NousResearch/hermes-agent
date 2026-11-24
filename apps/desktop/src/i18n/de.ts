@@ -1103,6 +1103,10 @@ export const deOverrides = {
       embedsAlways: 'Immer',
       embedsOff: 'Aus',
       embedsReset: (count: number) => `${count} erlaubte ${count === 1 ? 'Aktivität' : 'Aktivitäten'} zurücksetzen`,
+      clarifyCardWidthTitle: 'Kartenbreite',
+      clarifyCardWidthDesc: 'Wie breit Rückfrage-Karten im Gespräch stehen. Volle Breite folgt dem Antworttext; Kompakt hält sie schmal.',
+      clarifyCardWidthFull: 'Volle Breite',
+      clarifyCardWidthCompact: 'Kompakt',
       resumeLastSessionTitle: 'Letzten Chat beim Start wieder öffnen',
       resumeLastSessionDesc:
         'Wenn aktiviert, öffnet die App beim Kaltstart Ihren letzten Chat wieder. Schalten Sie es aus, um immer mit einem frischen Chat zu starten.',

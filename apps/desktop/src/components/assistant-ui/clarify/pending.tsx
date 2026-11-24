@@ -7,6 +7,7 @@ import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { MessageQuestion } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import {
   bareChoice,
   type ClarifyQuestion,
@@ -22,7 +23,7 @@ import { requestForOwnedSession } from '@/store/session-states'
 
 import { ClarifyConfirmBar } from './core/confirm-bar'
 import { emptyStage, QuestionBlock } from './core/question-block'
-import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
+import { CLARIFY_ICON_CLASS, ClarifyShell, useClarifyWidthClass } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
 import type { ClarifyArgs } from './parse'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
@@ -283,6 +284,7 @@ export function ClarifyToolPending({
   })
 
   const disabled = submitting || !ready
+  const widthClass = useClarifyWidthClass()
 
   if (questions.length === 0) {
     return (
@@ -295,7 +297,7 @@ export function ClarifyToolPending({
   return (
     <form
       aria-busy={ready || undelivered ? undefined : 'true'}
-      className="my-1.5 grid gap-4"
+      className={cn('my-1.5 grid gap-4', widthClass)}
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
       data-clarify-choices={ready ? questions[keys.activeQuestion]?.choices?.length || undefined : undefined}

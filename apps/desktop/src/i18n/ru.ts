@@ -581,6 +581,10 @@ export const ruOverrides = {
       embedsAsk: 'Спрашивать',
       embedsAlways: 'Всегда',
       embedsOff: 'Выкл',
+      clarifyCardWidthTitle: 'Ширина карточек',
+      clarifyCardWidthDesc: 'Ширина карточек с вопросами в беседе. «Во всю ширину» совпадает с текстом ответа; «Компактно» оставляет их узкими.',
+      clarifyCardWidthFull: 'Во всю ширину',
+      clarifyCardWidthCompact: 'Компактно',
       embedsReset: count =>
         `Сбросить ${count} ${RU_NOUN(count, 'разрешённый сервис', 'разрешённых сервиса', 'разрешённых сервисов')}`,
       resumeLastSessionTitle: 'Открывать последний чат при запуске',

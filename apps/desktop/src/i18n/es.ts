@@ -1104,6 +1104,10 @@ export const esOverrides = {
       embedsAsk: 'Preguntar',
       embedsAlways: 'Siempre',
       embedsOff: 'Desactivado',
+      clarifyCardWidthTitle: 'Ancho de tarjeta',
+      clarifyCardWidthDesc: 'Qué tan anchas se muestran las tarjetas de preguntas en la conversación. Completo coincide con el texto de la respuesta; Compacto las mantiene estrechas.',
+      clarifyCardWidthFull: 'Completo',
+      clarifyCardWidthCompact: 'Compacto',
       embedsReset: count => `Restablecer ${count} ${count === 1 ? 'servicio permitido' : 'servicios permitidos'}`,
       resumeLastSessionTitle: 'Reabrir el último chat al iniciar',
       resumeLastSessionDesc:

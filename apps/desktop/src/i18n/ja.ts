@@ -611,6 +611,10 @@ export const jaOverrides = {
       embedsAsk: '確認',
       embedsAlways: '常に',
       embedsOff: 'オフ',
+      clarifyCardWidthTitle: 'カードの幅',
+      clarifyCardWidthDesc: '会話内の質問カードの幅。全幅は返信テキストに合わせ、コンパクトは狭く保ちます。',
+      clarifyCardWidthFull: '全幅',
+      clarifyCardWidthCompact: 'コンパクト',
       embedsReset: (count: number) => `許可した${count}件のサービスをリセット`,
       resumeLastSessionTitle: '起動時に前回のチャットを再開',
       resumeLastSessionDesc:

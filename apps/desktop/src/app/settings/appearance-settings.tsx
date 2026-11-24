@@ -17,6 +17,7 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
+import { $clarifyCardWidth, type ClarifyCardWidth, setClarifyCardWidth } from '@/store/clarify-card-width'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import {
@@ -414,6 +415,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const clarifyCardWidth = useStore($clarifyCardWidth)
   const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
@@ -543,6 +545,11 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'always', label: a.embedsAlways },
     { id: 'off', label: a.embedsOff }
   ] as const satisfies readonly { id: EmbedMode; label: string }[]
+
+  const clarifyCardWidthOptions = [
+    { id: 'full', label: a.clarifyCardWidthFull },
+    { id: 'compact', label: a.clarifyCardWidthCompact }
+  ] as const satisfies readonly { id: ClarifyCardWidth; label: string }[]
 
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
 
@@ -1037,6 +1044,24 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={withModeNote(a.toolViewDesc, toolViewShadowed)}
               id={settingElementId(ids.toolView)}
               title={a.toolViewTitle}
+            />
+          )}
+
+          {show('chat-display') && (
+            <ListRow
+              action={
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setClarifyCardWidth(id)
+                  }}
+                  options={clarifyCardWidthOptions}
+                  value={clarifyCardWidth}
+                />
+              }
+              description={a.clarifyCardWidthDesc}
+              id={settingElementId(ids.clarifyCardWidth)}
+              title={a.clarifyCardWidthTitle}
             />
           )}
 

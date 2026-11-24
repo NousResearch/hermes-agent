@@ -141,6 +141,11 @@ export const SETTINGS_MANIFEST = {
       'reasoningCollapsed'
     ),
     embeds: appearanceSetting('chat-display', ['external content', 'privacy'], 'embeds'),
+    clarifyCardWidth: appearanceSetting(
+      'chat-display',
+      ['clarify', 'question', 'card', 'width', 'wide', 'compact', 'full'],
+      'clarifyCardWidth'
+    ),
     pet: {
       subpage: 'pet',
       keywords: ['pet', 'mascot', 'petdex', 'companion', 'buddy'],

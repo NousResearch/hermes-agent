@@ -1107,6 +1107,10 @@ export const frOverrides = {
       embedsAsk: 'Demander',
       embedsAlways: 'Toujours',
       embedsOff: 'Désactivé',
+      clarifyCardWidthTitle: 'Largeur des cartes',
+      clarifyCardWidthDesc: 'Largeur des cartes de question dans la conversation. Pleine largeur suit le texte de la réponse ; Compacte les garde étroites.',
+      clarifyCardWidthFull: 'Pleine largeur',
+      clarifyCardWidthCompact: 'Compacte',
       embedsReset: (count: number) =>
         `Réinitialiser ${count} ${count === 1 ? 'service autorisé' : 'services autorisés'}`,
       resumeLastSessionTitle: 'Rouvrir la dernière conversation au lancement',

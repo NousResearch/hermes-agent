@@ -879,6 +879,10 @@ export interface Translations extends NoticeTranslations {
       embedsAlways: string
       embedsOff: string
       embedsReset: (count: number) => string
+      clarifyCardWidthTitle: string
+      clarifyCardWidthDesc: string
+      clarifyCardWidthFull: string
+      clarifyCardWidthCompact: string
       resumeLastSessionTitle: string
       resumeLastSessionDesc: string
       product: string

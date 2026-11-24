@@ -772,6 +772,11 @@ def main(argv: list[str] | None = None) -> None:
     else:
         if not args.archive:
             parser.error(f"{args.command} requires the admitted --archive ref")
+        # read_admitted_candidate binds the manifest to --tag, so the tag decides before any read.
+        if args.command == "promote" and release_channel(args.tag) == "stable":
+            parser.error("promote refuses stable candidates: stable promotion runs only through the "
+                         "Stable Release Publication sequencer (channel_releases.advance_stable), which "
+                         "requires the published release and serializes every stable writer")
         manifest = read_admitted_candidate(args.tag, args.commit, args.public_base,
                                           os.environ.get("CANDIDATE_MANIFEST_SHA256", ""),
                                           archive=args.archive)

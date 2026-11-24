@@ -413,6 +413,56 @@ def test_promote_refuses_when_the_macos_feed_is_missing(tmp_path, monkeypatch, r
                 if method == 'PUT' and '/releases/win32/stable/' in path]
 
 
+
+def _controller_promote(monkeypatch, https_origin, manifest, base, root):
+    """Promote the way the stable sequencer does: the admitted candidate through
+    channel_releases.promote_stable_feeds, never the release_artifacts CLI."""
+    import urllib.request
+
+    from scripts.releases import channel_releases
+
+    monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
+    stored = https_origin.store[f"releases/tag/{manifest['archive']}/release-candidates.json"][0]
+    candidate = artifacts.read_admitted_candidate(manifest['tag'], manifest['commit'], base,
+                                                  hashlib.sha256(stored).hexdigest(), archive=manifest['archive'])
+    channel_releases.promote_stable_feeds(candidate, root, base)
+
+
+@pytest.mark.parametrize('tag_key', ['tag', 'archive'])
+def test_standalone_promote_refuses_a_stable_candidate_the_controller_promotes(
+        tmp_path, monkeypatch, r2_server, https_origin, staged_candidate, tag_key):
+    """Stable promotion runs only through the serialized controller: the CLI refuses both the
+    payload tag and the attempt ref before it reads anything, and the controller still promotes."""
+    import urllib.request
+
+    manifest, _, base = staged_candidate
+    monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
+    reads = []
+    r2_server.requests.clear()
+    with monkeypatch.context() as patch, pytest.raises(SystemExit) as refused:
+        patch.setattr(artifacts, 'read_admitted_candidate', lambda *args, **kwargs: reads.append(args) or manifest)
+        artifacts.main(['promote', '--root', str(tmp_path / 'cli'), '--tag', manifest[tag_key],
+                        '--archive', manifest['archive'], '--commit', manifest['commit'], '--public-base', base])
+    assert refused.value.code == 2
+    assert not reads
+    assert not [path for method, path, _ in r2_server.requests if method == 'PUT']
+
+    _controller_promote(monkeypatch, https_origin, manifest, base, tmp_path / 'controller')
+    for key in ('releases/win32/stable/stable.appinstaller', 'releases/darwin/stable/stable-mac.yml',
+                'releases/darwin/stable/HermesBundled-mac-arm64.dmg', 'releases/stable/index.html'):
+        assert key in r2_server.store, key
+
+
+def test_standalone_promote_still_promotes_a_canary_candidate(tmp_path, monkeypatch):
+    tag, archive, commit = 'canary.20261120T064609Z-v1.2.3', 'canary.20261120T064609Z-v1.2.3', 'a' * 40
+    candidate = {'tag': tag, 'archive': archive}
+    promoted = []
+    monkeypatch.setattr(artifacts, 'read_admitted_candidate', lambda *args, **kwargs: candidate)
+    monkeypatch.setattr(artifacts, 'promote', lambda manifest, root, base: promoted.append(manifest['tag']))
+    artifacts.main(['promote', '--root', str(tmp_path), '--tag', tag, '--archive', archive,
+                    '--commit', commit, '--public-base', 'https://example.invalid'])
+    assert promoted == [tag]
+
 @pytest.fixture
 def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
     """Run real workflow shell/CLIs; replace only service endpoints and tool setup."""
@@ -422,13 +472,9 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
         (ROOT / '.github/workflows/stable-release.yml').read_text(encoding='utf-8-sig'))['jobs']
     render = next(step for step in stable_jobs['complete']['steps']
                   if step.get('name', '').startswith('Render the admitted'))
-    jobs['controller-promote'] = {
-        'env': jobs['stable-publish']['env'],
-        'steps': [
-            {'run': 'python -m scripts.bundles.release_artifacts promote --root verified'},
-            render,
-        ],
-    }
+    # The controller promotes in process (channel_releases.promote_stable_feeds); only the renderer
+    # step runs through the workflow shell.
+    jobs['controller-promote'] = {'env': jobs['stable-publish']['env'], 'steps': [render]}
     shutil.copytree(fetched, tmp_path / 'candidates')
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
@@ -500,7 +546,7 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
 
 @pytest.mark.parametrize('ambient_needs', [None, {job: {'result': 'skipped'} for job in SMOKE_RESULTS}])
 @pytest.mark.platforms('posix')
-def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_server, staged_candidate,
+def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, monkeypatch, r2_server, staged_candidate,
                                                            candidate_workflow_step, ambient_needs, https_origin):
     manifest, _, base = staged_candidate
     jobs, run, body_file = candidate_workflow_step
@@ -509,6 +555,7 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_serve
     # An unrelated orphan object must not acquire the candidate's Passed label.
     orphan = f"releases/tag/{manifest['archive']}/HermesBundled-1.2.3-linux-x64.AppImage"
     r2_server.store[orphan] = (b'orphan transport fixture', '"e"')
+    _controller_promote(monkeypatch, https_origin, manifest, base, tmp_path / 'verified')
     for step in jobs['controller-promote']['steps']:
         if 'run' in step:
             result = run('controller-promote', step, {'validate': {'result': 'success'}},

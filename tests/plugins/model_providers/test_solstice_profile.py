@@ -149,7 +149,7 @@ def test_setup_effort_picker_keeps_the_generic_ladder_for_an_unlisted_model(monk
     from hermes_constants import VALID_REASONING_EFFORTS
 
     monkeypatch.setattr("agent.models_dev.get_model_capabilities", lambda *a, **k: None)
-    assert _main_model_reasoning_efforts("gemini-4-argon", "solstice") == list(VALID_REASONING_EFFORTS)
+    assert _main_model_reasoning_efforts("gemini-4-xenon", "solstice") == list(VALID_REASONING_EFFORTS)
 
 
 def test_profile_loads_and_shapes_thinking_without_httpx():

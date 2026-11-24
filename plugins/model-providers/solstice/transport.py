@@ -27,7 +27,7 @@ from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient
 from agent.reasoning_effort import bare_gemini_model_id
 from hermes_cli.version_info import hermes_user_agent
 
-from . import INFERENCE_BASE_URL
+from . import INFERENCE_BASE_URL, current_model_id
 
 INTERACTIONS_METHOD = "interactions:createPerUserQuota"
 # The method exists only on v1beta. Credential rows minted before the move store the old
@@ -111,7 +111,8 @@ class SolsticeClient(GeminiNativeClient):
         # ``extra_body`` is ignored: this method cannot continue a turn past one request.
         wire = self._wire = self._wire or interactions_wire()
         extra = extra_body if isinstance(extra_body, dict) else {}
-        model = bare_gemini_model_id(model)
+        # A retired id goes out as the default model (also mapped in build_extra_body and normalize_model_id).
+        model = current_model_id(model) or bare_gemini_model_id(model)
         request = single_request(wire.build_interactions_request(
             model=model, messages=messages or [], tools=tools, tool_choice=tool_choice, max_tokens=max_tokens,
             stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),

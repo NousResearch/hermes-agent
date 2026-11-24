@@ -94,10 +94,10 @@ def test_an_unlisted_model_keeps_the_shared_gemini_mapping():
     from agent.transports.chat_completions import _build_gemini_thinking_config
 
     for config in (None, {"enabled": False}, {"enabled": True, "effort": "ultra"}):
-        raw = _build_gemini_thinking_config("gemini-4-argon", config)
-        expected = {"thinking_config": gemini_top_thinking_level("gemini-4-argon", config, raw)} if raw else {}
-        assert _thinking("gemini-4-argon", config) == expected
-    assert _thinking("gemini-4-argon", None) == {}
+        raw = _build_gemini_thinking_config("gemini-4-xenon", config)
+        expected = {"thinking_config": gemini_top_thinking_level("gemini-4-xenon", config, raw)} if raw else {}
+        assert _thinking("gemini-4-xenon", config) == expected
+    assert _thinking("gemini-4-xenon", None) == {}
 
 
 @pytest.mark.parametrize("model", ["gemini-4-hydrogen", "gemini-4-carbon", "gemini-flash-lite-latest"])

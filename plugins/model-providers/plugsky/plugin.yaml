@@ -1,0 +1,5 @@
+name: plugsky-provider
+kind: model-provider
+version: 1.0.0
+description: Plugsky — OpenAI-compatible API with a free Micro/Lite tier
+author: Plugsky

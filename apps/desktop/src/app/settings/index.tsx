@@ -35,6 +35,7 @@ import {
   Wrench,
   Zap
 } from '@/lib/icons'
+import { $chromiumAppWindow } from '@/lib/keybinds/app-window'
 import { isEditableTarget } from '@/lib/keybinds/combo'
 import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
@@ -50,8 +51,11 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import { $widthClass } from '../redesign/breakpoints'
 import { PageHero, type PageHeroArt } from '../redesign/page-hero'
 import { SETTINGS_ROUTE } from '../routes'
+import { bandOffersHistory } from '../shell/history-position'
+import { TitlebarIcon } from '../shell/titlebar-icon'
 
 import { AboutSettings } from './about-settings'
 import { AgentSettingsLink } from './agent-settings-link'
@@ -223,6 +227,39 @@ function SettingsSearchButton() {
         variant="ghost"
       >
         <Search />
+      </Button>
+    </Tip>
+  )
+}
+
+/** The redesign's way out of Settings where its band draws no Back to close the page with (a browser
+ *  tab, a compact window): classic's close button, at the band's end. The rail's destinations, Esc
+ *  and the browser's own Back leave it too, but none of them says so on the page. */
+function SettingsCloseButton({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n()
+  const redesign = usePortalShell()
+  const compact = useStore($widthClass) === 'compact'
+  const appWindow = useStore($chromiumAppWindow)
+
+  // Classic's card already carries its own close button.
+  if (!redesign || bandOffersHistory(compact, appWindow)) {
+    return null
+  }
+
+  return (
+    <Tip label={t.settings.closeSettings} placement="toolbar">
+      <Button
+        aria-label={t.settings.closeSettings}
+        className="portal-chrome-button"
+        onClick={() => {
+          triggerHaptic('close')
+          onClose()
+        }}
+        size="icon"
+        type="button"
+        variant="ghost"
+      >
+        <TitlebarIcon name="close" />
       </Button>
     </Tip>
   )
@@ -678,6 +715,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       closeLabel={t.settings.closeSettings}
       edgeBadge={simplified ? undefined : <SettingsSearchPill />}
       onClose={onClose}
+      titlebarActions={<SettingsCloseButton onClose={onClose} />}
     >
       <OverlaySplitLayout>
         <OverlayNav

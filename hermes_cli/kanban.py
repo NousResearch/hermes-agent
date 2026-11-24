@@ -1338,6 +1338,76 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _cmd_blocked_impact(args: argparse.Namespace) -> int:
+    """Rank blocked tasks by the transitive todo work behind them.
+
+    A flat blocked list treats a card that gates 88 todos the same as one that gates
+    none. Resolving the top roots is the cheapest throughput win on a dependency-
+    starved board, so triage order belongs in the CLI.
+    """
+    limit = max(0, int(getattr(args, "limit", 10) or 0))
+    rows = []
+    with kbc.connect_closing() as conn:
+        gated = conn.execute(
+            """
+            WITH RECURSIVE downstream(root, id) AS (
+                SELECT t.id, l.child_id
+                  FROM tasks t JOIN task_links l ON l.parent_id = t.id
+                 WHERE t.status = 'blocked'
+                UNION
+                SELECT d.root, l.child_id
+                  FROM downstream d JOIN task_links l ON l.parent_id = d.id
+            )
+            SELECT d.root, COUNT(DISTINCT t.id)
+              FROM downstream d JOIN tasks t ON t.id = d.id AND t.status = 'todo'
+             GROUP BY d.root
+            """
+        ).fetchall()
+        counts = {str(r[0]): int(r[1]) for r in gated}
+        union_gated = int(conn.execute(
+            """
+            WITH RECURSIVE downstream(root, id) AS (
+                SELECT t.id, l.child_id
+                  FROM tasks t JOIN task_links l ON l.parent_id = t.id
+                 WHERE t.status = 'blocked'
+                UNION
+                SELECT d.root, l.child_id
+                  FROM downstream d JOIN task_links l ON l.parent_id = d.id
+            )
+            SELECT COUNT(DISTINCT t.id)
+              FROM downstream d JOIN tasks t ON t.id = d.id AND t.status = 'todo'
+            """
+        ).fetchone()[0])
+        todo_total = int(conn.execute("SELECT COUNT(*) FROM tasks WHERE status='todo'").fetchone()[0])
+        blocked = conn.execute(
+            "SELECT id, title, block_kind, assignee FROM tasks WHERE status='blocked'"
+        ).fetchall()
+        for tid, title, kind, assignee in blocked:
+            rows.append({
+                "task_id": tid, "title": title,
+                "block_kind": kind or "", "assignee": assignee or "",
+                "todo_gated": counts.get(str(tid), 0),
+            })
+    rows.sort(key=lambda r: (-int(r["todo_gated"]), str(r["task_id"])))
+    shown = rows if limit == 0 else rows[:limit]
+    covered = len({r["task_id"] for r in rows if r["todo_gated"]})
+    if getattr(args, "json", False):
+        _print_json({"todo_total": todo_total, "todo_gated_union": union_gated,
+                     "blocked_total": len(rows), "roots_with_impact": covered, "roots": shown})
+        return 0
+    if not shown:
+        print("No blocked tasks on this board.")
+        return 0
+    width = max(len(str(r["task_id"])) for r in shown)
+    print(f"{'TASK':<{width}}  {'GATED':>5}  {'KIND':<12}  TITLE")
+    for r in shown:
+        print(f"{r['task_id']:<{width}}  {r['todo_gated']:>5}  {(r['block_kind'] or '-'):<12}  {r['title']}")
+    print(f"\n{union_gated} of {todo_total} todo cards are gated by blocked roots"
+          f" ({covered} of {len(rows)} roots have downstream work)."
+          f" Resolving the top roots unlocks the most work per decision.")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1353,6 +1423,7 @@ _HANDLERS = {
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
+    "blocked-impact": _cmd_blocked_impact,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,

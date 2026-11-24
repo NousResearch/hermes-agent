@@ -12,14 +12,11 @@ import {
   MAC_APPLICATIONS_GUARD_FILENAME,
   type MacApplicationsGuardDeps,
   macApplicationsGuardPreferencePath,
-  type MacApplicationsGuardResult,
-  macGuardAllowsWindows,
   parseBundleShortVersionFromPlist,
   readBundleShortVersion,
   readMacApplicationsGuardPreference,
   resolveMacAppBundle
 } from './mac-applications-guard'
-import { ensureMainWindow } from './main-window-lifecycle'
 
 const tempDirs: string[] = []
 
@@ -664,42 +661,6 @@ describe('guardMacApplicationsLaunch', () => {
       error: 'NSBundle unavailable'
     })
     expect(broken.logs.some(line => line.includes('NSBundle unavailable'))).toBe(true)
-  })
-})
-
-describe('macGuardAllowsWindows', () => {
-  it('keeps a second launch from opening a window until the move prompt lets startup continue', async () => {
-    const { deps, dialog } = makeDeps()
-    const createWindow = vi.fn()
-    let answer: (value: { response: number; checkboxChecked: boolean }) => void = () => undefined
-    // main.ts keeps the guard's answer in macGuardResult; the second-instance handler reads it.
-    let guardResult: MacApplicationsGuardResult | null = null
-
-    const secondLaunch = () =>
-      ensureMainWindow(null, { isReady: macGuardAllowsWindows(guardResult), createWindow, focusWindow: vi.fn() })
-
-    dialog.showMessageBox.mockReturnValueOnce(
-      new Promise(resolve => {
-        answer = resolve
-      })
-    )
-
-    const startup = guardMacApplicationsLaunch(deps).then(result => {
-      guardResult = result
-    })
-
-    await vi.waitFor(() => expect(dialog.showMessageBox).toHaveBeenCalledOnce())
-    secondLaunch()
-    expect(createWindow).not.toHaveBeenCalled()
-
-    answer({ response: 1, checkboxChecked: false })
-    await startup
-    secondLaunch()
-    expect(createWindow).toHaveBeenCalledOnce()
-
-    guardResult = { action: 'relaunching', location: 'read-only-volume' }
-    secondLaunch()
-    expect(createWindow).toHaveBeenCalledOnce()
   })
 })
 

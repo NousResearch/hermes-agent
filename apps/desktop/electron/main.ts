@@ -362,11 +362,11 @@ import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPat
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
-import { guardMacApplicationsLaunch, type MacApplicationsGuardResult, macGuardAllowsWindows, resolveMacAppBundle } from './mac-applications-guard'
+import { guardMacApplicationsLaunch, type MacApplicationsGuardResult, resolveMacAppBundle } from './mac-applications-guard'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
-import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
+import { activateWindow, ensureMainWindow, handleSecondInstance, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -447,7 +447,7 @@ import { registerPreparedSubmissions } from './prepared-submissions'
 import { attachPresenceSource, sendToEveryWindow } from './presence'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
-import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
+import { previewGuestInputAction } from './preview-guest-escape'
 import { registerPreviewGuestIpc } from './preview-guest-ipc'
 import { commandFocusedGuest } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
@@ -17269,34 +17269,17 @@ if (!isPrimaryInstance) {
     console.error('[hermes] failed to persist --profile launch override:', error)
   }
 
-  app.on('second-instance', (_event, argv) => {
-    // --close-preview: the same escape hatch as hermes://close-preview, for
-    // environments where spawning a URL is harder than a flag (kiosk launchers,
-    // SSH-started sessions). Checked before deep links so a carried `hermes://`
-    // URL still routes normally when no flag is present.
-    if (hasClosePreviewFlag(argv)) {
-      handleDeepLink('hermes://close-preview')
-    }
-
-    const url = extractDeepLink(argv, DEEPLINK_SCHEMES)
-
-    if (url) {
-      handleDeepLink(url)
-    }
-
-    // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
-    // silently exit. Log it so a future silent exit stays diagnosable, then
-    // restore a live primary with activation (restore + show + focus), or
-    // re-create it when it was destroyed.
-    rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
-    ensureMainWindow(mainWindow, {
-      isReady: macGuardAllowsWindows(macGuardResult),
+  app.on('second-instance', (_event, argv) =>
+    handleSecondInstance(argv, {
+      mainWindow,
+      launchGuard: macGuardResult,
+      deepLinkSchemes: DEEPLINK_SCHEMES,
+      handleDeepLink,
       createWindow,
       focusWindow: activateWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
+      log: rememberLog
     })
-  })
+  )
 }
 
 // macOS delivers deep links via 'open-url' — register early (can fire before

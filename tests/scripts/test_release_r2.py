@@ -409,6 +409,11 @@ class _R2StubHandler(BaseHTTPRequestHandler):
         if self.headers.get("x-amz-copy-source-if-match") and self.headers["x-amz-copy-source-if-match"] != src_etag:
             return self._send(412, b"<Error><Code>PreconditionFailed</Code></Error>")
         server.copy_attempts += 1
+        if server.copy_failure == "unavailable":
+            return self._send(503, b"<Error><Code>ServiceUnavailable</Code></Error>")
+        if server.copy_failure == "dropped" and server.copy_attempts == 1:
+            self.close_connection = True
+            return None
         if server.copy_failure == "denied" or (server.copy_failure == "transient" and server.copy_attempts == 1):
             code = "AccessDenied" if server.copy_failure == "denied" else "InternalError"
             return self._send(200, f"<Error><Code>{code}</Code></Error>")
@@ -947,6 +952,27 @@ def test_copy_object_sends_signed_server_side_copy_and_verifies_destination(r2_s
         r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
     r2_server.corrupt_put = None
 
+
+def test_copy_object_spends_one_retry_budget(r2_server, monkeypatch):
+    """R2 503s and dropped connections share copy_object's three attempts, not three per attempt."""
+    creds, base, bucket = r2.credentials()
+    src_key = "releases/tag/rc.3-v0.22.0/HermesBundled-0.22.0-mac-arm64.dmg"
+    dest_key = r2.channel_dmg_key_for("stable")
+    payload = b"signed dmg bytes for server-side copy"
+    r2_server.store[src_key] = (payload, '"src-etag"')
+    monkeypatch.setattr(r2.time, "sleep", lambda _: None)
+
+    r2_server.copy_failure = "unavailable"
+    with pytest.raises(r2.R2RequestError):
+        r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
+    assert r2_server.copy_attempts == 3
+    assert dest_key not in r2_server.store
+
+    r2_server.copy_failure = "dropped"
+    r2_server.copy_attempts = 0
+    r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
+    assert r2_server.copy_attempts == 2
+    assert r2_server.store[dest_key][0] == payload
 
 def test_copy_object_stays_inside_disposable_scope(r2_server, monkeypatch):
     monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765")

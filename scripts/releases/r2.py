@@ -850,7 +850,8 @@ def copy_object(
     meta_headers = {f"x-amz-meta-{k.lower()}": str(v) for k, v in (metadata or {}).items()}
     extra.update(meta_headers)
     resolved_type = content_type if content_type is not None else content_type_for(dest_key)
-    last_error: Exception | None = None
+    # One budget for HTTP errors, error documents sent with HTTP 200 and dropped connections:
+    # signed_request gets tries=1, as multipart completion does, so 503s cannot multiply.
     for attempt in range(3):
         req_now = now if attempt == 0 else amz_timestamp()
         try:
@@ -862,21 +863,19 @@ def copy_object(
                 if fetcher is not None
                 else signed_request(
                     "PUT", dest_url, body=None, body_hash=EMPTY_SHA, content_length=0,
-                    creds=creds, now=req_now, content_type=resolved_type, extra_headers=extra,
+                    creds=creds, now=req_now, content_type=resolved_type, extra_headers=extra, tries=1,
                 )
             )
             if response.status >= 400:
                 raise R2RequestError("PUT", dest_key, response.status, response.text())
             _parse_copy_result(dest_key, response)
             break
-        except R2RequestError as err:
-            last_error = err
-            if err.status in _RETRYABLE_STATUSES and attempt < 2:
+        except (R2RequestError, OSError, http.client.HTTPException) as err:
+            retryable = not isinstance(err, R2RequestError) or err.status in _RETRYABLE_STATUSES
+            if retryable and attempt < 2:
                 time.sleep(float(attempt + 1))
                 continue
             raise
-    else:
-        raise last_error if last_error else R2RequestError("PUT", dest_key, 0)
     _verify_copied_destination(creds, base, bucket, dest_key, expected_size, meta_headers, fetcher)
     from scripts.releases.upload_summary import note
     note(dest_key)

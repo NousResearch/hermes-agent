@@ -697,14 +697,17 @@ def get_compression_chain(holder: StoreHolder, session_id: str) -> list[str]:
     written, while a stale websocket later creates a sibling that passes it). Instead exclude
     branch/delegate/tool children and prefer children that continue the chain or are still live over
     stale closed siblings such as ``ws_orphan_reap``."""
+    sql = [_CHAIN_STEP_SQL]  # an old store's first "no such column" switches the rest of the walk
+
     def step(current: str):
         with holder._read_ctx() as conn:
             try:
-                return conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
+                return conn.execute(sql[0], (current,)).fetchone()
             except sqlite3.OperationalError as exc:
                 if "created_source" not in str(exc):
                     raise
-                return conn.execute(_CHAIN_STEP_SQL_WITHOUT_CREATED, (current,)).fetchone()
+                sql[0] = _CHAIN_STEP_SQL_WITHOUT_CREATED
+                return conn.execute(sql[0], (current,)).fetchone()
     return _walk_compression_chain(session_id, step)
 
 

@@ -37,10 +37,63 @@ def _redacted(value):
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(value)
     if isinstance(value, dict):
-        return {k: _redacted(v) for k, v in value.items()}
+        return {k: _redacted_cron_result(v) if k == 'cron_result' else _redacted(v)
+                for k, v in value.items()}
     if isinstance(value, list):
         return [_redacted(v) for v in value]
     return value
+
+
+def _redacted_cron_result(value):
+    """Redact a canonical run tuple while preserving only validated length framing."""
+    if (not isinstance(value, list) or len(value) != 4
+            or not isinstance(value[0], bool) or not isinstance(value[1], str)):
+        return _redacted(value)
+    document = value[1]
+    from cron.scheduler_prompt import (
+        _PROMPT_FRAME_RE, _PROMPT_HEADING, _PROMPT_SEPARATOR,
+        _RESPONSE_FRAME_RE, _RESPONSE_HEADING, _RESPONSE_TERMINATOR,
+    )
+    prompt = _PROMPT_FRAME_RE.search(document)
+    response = None
+    if prompt and document.startswith(_PROMPT_HEADING, prompt.end() - len(_PROMPT_HEADING)):
+        body_start = prompt.end()
+        try:
+            prompt_end = body_start + int(prompt.group(1))
+        except ValueError:
+            return _redacted(value)
+        response_start = prompt_end + len(_PROMPT_SEPARATOR)
+        frame = (_RESPONSE_FRAME_RE.match(document, response_start)
+                 if document[prompt_end:response_start] == _PROMPT_SEPARATOR else None)
+        if frame:
+            tail = document[frame.end():]
+            try:
+                length = int(frame.group(1))
+            except ValueError:
+                return _redacted(value)
+            if len(tail) == length + len(_RESPONSE_TERMINATOR) and tail.endswith(_RESPONSE_TERMINATOR):
+                header = document[:prompt.start()]
+                prompt_body = document[body_start:prompt_end]
+                response_body = tail[:-len(_RESPONSE_TERMINATOR)]
+                from agent.redact import redact_sensitive_text
+                header = redact_sensitive_text(header)
+                prompt_body = redact_sensitive_text(prompt_body)
+                response_body = redact_sensitive_text(response_body)
+                # Never weaken whole-document masking across component boundaries.
+                # Prefer ordinary fail-closed output to a valid but leaky frame.
+                old_counts = (header + document[prompt.start():body_start] + prompt_body
+                              + document[prompt_end:frame.end()] + response_body
+                              + _RESPONSE_TERMINATOR)
+                if old_counts != redact_sensitive_text(document):
+                    return _redacted(value)
+                document = (header + f"**Prompt Characters:** {len(prompt_body)}\n"
+                            + _PROMPT_HEADING + prompt_body + _PROMPT_SEPARATOR
+                            + f"**Response Characters:** {len(response_body)}\n"
+                            + _RESPONSE_HEADING + response_body + _RESPONSE_TERMINATOR)
+                response = document
+    if response is None:
+        document = _redacted(document)
+    return [value[0], document, *(_redacted(item) for item in value[2:])]
 
 
 def retain_result(store, *, epoch, row, result):

@@ -267,6 +267,21 @@ class TestCapAdoptsAPeerRotation:
         assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1", "claude-3-rt-2"]
 
 
+def test_adoptions_up_to_the_cap_leave_every_refresh_post_available(endpoint, fake_pool_store):
+    pool = CredentialPool("anthropic", [_row("claude-3", access="claude-3-at-1", refresh="claude-3-rt-1")])
+    child = _DelegatedChild(pool, "claude-3")
+    for _ in range(2):
+        child.api_key = "claude-3-at-0"
+        assert _on_401(child) == (True, False)
+        assert child.api_key == "claude-3-at-1"
+    assert endpoint.posts == []
+
+    assert _two_refreshes_then_401(child) == (False, False)
+
+    assert endpoint.posts == ["claude-3-rt-1", "claude-3-rt-2"]
+    assert child.api_key == "claude-3-at-3"
+
+
 def test_a_truncated_reply_ends_the_episode_before_its_continuation(endpoint, fake_pool_store, monkeypatch):
     import types
     import agent.turn_response_check as trc

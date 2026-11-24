@@ -14,6 +14,8 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+from agent.credential_pool_selection import RefreshKind
+
 # Waits before each retry of an unexpired Nous key that keeps answering 401 (~50 s in total).
 TRANSIENT_AUTH_BACKOFF_S = (5.0, 15.0, 30.0)
 # Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
@@ -125,9 +127,7 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
     # Only a 401 is the "valid key refused" shape worth backing off on; a non-entitlement 403
     # keeps the capped-refresh path and fails fast.
     nous = provider == "nous" and status_code == 401
-    failed = _entry_for(pool, credential_id, api_key_hint) if nous else pool._identify_failed_entry(
-        credential_id, api_key_hint)
-    entry_id = getattr(failed, "id", None) or (credential_id if nous else None)
+    entry_id = (getattr(_entry_for(pool, credential_id, api_key_hint), "id", None) or credential_id) if nous else None
     if nous:
         episode = _episode(agent, provider, entry_id)
         if episode["refreshes"] >= 1:
@@ -135,23 +135,23 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
             return _retry_after_backoff(
                 agent, pool, episode, failed_key=api_key_hint, entry_id=entry_id,
                 credential_id=credential_id, has_retried_429=has_retried_429)
-    # At the cap the pool may still adopt a bearer a peer rotated, but it never POSTs again.
-    target = entry_id or credential_id
-    capped = not nous and bool(target) and _episode(agent, provider, target)["refreshes"] >= _MAX_AUTH_REFRESH_ATTEMPTS
+    identified = bool(credential_id or api_key_hint)
+
+    def may_post(row) -> bool:
+        return nous or not identified or _episode(agent, provider, row.id)["refreshes"] < _MAX_AUTH_REFRESH_ATTEMPTS
+
     # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
     # burns its single-use refresh token for a failure it never had.
-    refresh_kwargs = {"api_key_hint": api_key_hint}
-    if entry_id or credential_id:
-        refresh_kwargs["credential_id"] = entry_id or credential_id
-    if capped:
-        refresh_kwargs["allow_post"] = False
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
+    outcome = pool.refresh_failed_entry(
+        api_key_hint, entry_id if nous else credential_id, key_wins=not nous, may_post=may_post)
+    refreshed = outcome.entry
     if refreshed is None:
+        capped = outcome.kind is RefreshKind.REFUSED
         if capped:
             log.warning(
                 "Credential auth failure persists after %s refreshes for pool entry %s — "
                 "rotating to another entry, or allowing fallback to activate.",
-                _MAX_AUTH_REFRESH_ATTEMPTS, entry_id or credential_id)
+                _MAX_AUTH_REFRESH_ATTEMPTS, getattr(outcome.row, "id", None) or credential_id)
         label = "auth persists after refresh" if capped else "auth refresh failed"
         return (True, False) if rotate_and_swap(401, label) else (False, has_retried_429)
     refreshed_id = getattr(refreshed, "id", None)
@@ -164,10 +164,10 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
             return _retry_after_backoff(
                 agent, pool, episode, failed_key=api_key_hint, entry_id=refreshed_id,
                 credential_id=credential_id, has_retried_429=has_retried_429)
-    elif refreshed_id is not None:
+    elif refreshed_id is not None and outcome.kind is RefreshKind.POSTED:
         state = _episode(agent, provider, refreshed_id)
         state["refreshes"] += 1
-        if not target and state["refreshes"] > _MAX_AUTH_REFRESH_ATTEMPTS:
+        if not identified and state["refreshes"] > _MAX_AUTH_REFRESH_ATTEMPTS:
             return False, has_retried_429
     log.info("Credential auth failure — refreshed pool entry %s", refreshed_id or "?")
     if agent._swap_credential(refreshed) is False:

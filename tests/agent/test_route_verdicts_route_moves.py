@@ -212,7 +212,9 @@ def _soft_auth_failure_refresh(agent, retry, url):
     from agent.turn_response_check import retry_invalid_response
 
     pool = MagicMock(provider="custom")
-    pool.try_refresh_matching.return_value = SimpleNamespace(runtime_api_key="fresh", runtime_base_url=url, id="a")
+    from agent.credential_pool_selection import RefreshKind, RefreshOutcome
+    pool.refresh_failed_entry.return_value = RefreshOutcome(
+        RefreshKind.POSTED, SimpleNamespace(runtime_api_key="fresh", runtime_base_url=url, id="a"))
     agent._credential_pool, agent._credential_pool_entry_id, agent._auth_pool_refresh_counts = pool, "a", {}
     agent._extract_api_error_context = extract_api_error_context
     response = SimpleNamespace(status="failed", output=[], error=SimpleNamespace(code="invalid_api_key", message="Invalid API key"))
@@ -225,7 +227,7 @@ def _soft_auth_failure_refresh(agent, retry, url):
             api_duration=0, effective_task_id="t", turn_id="t",
         )
     assert verdict.action == "continue"
-    assert pool.try_refresh_matching.call_count == 1
+    assert pool.refresh_failed_entry.call_count == 1
     assert agent.base_url == url
 
 

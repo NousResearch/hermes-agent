@@ -218,6 +218,7 @@ const en: BotsWording = {
       'Waiting for the machine connection… (remote machines can take a few seconds; retries automatically)'
   },
   screen: {
+    holderAgent: 'Agent',
     agentControls: 'Agent is in control',
     autoOpenMenu: 'Open Screen when the agent uses it',
     imageSwitchBody: (current, target) =>
@@ -452,6 +453,7 @@ const ja: BotsWording = {
       'マシンへの接続を待っています…（リモートマシンへの接続には数秒かかることがあります。自動で再試行します）'
   },
   screen: {
+    holderAgent: 'エージェント',
     agentControls: 'エージェントが操作中',
     autoOpenMenu: 'エージェントが画面を使い始めたら Screen を開く',
     imageSwitchBody: (current, target) =>
@@ -664,6 +666,7 @@ const zh: BotsWording = {
     waitingForGateway: '正在等待连接到机器…（远程机器可能需要几秒；会自动重试）'
   },
   screen: {
+    holderAgent: '智能体',
     agentControls: '智能体正在控制',
     autoOpenMenu: '智能体使用屏幕时自动打开',
     imageSwitchBody: (current, target) =>
@@ -876,6 +879,7 @@ const zhHant: BotsWording = {
     waitingForGateway: '正在等待連線至機器…（遠端機器可能需要幾秒；會自動重試）'
   },
   screen: {
+    holderAgent: '智慧體',
     agentControls: '智慧體正在控制',
     autoOpenMenu: '智慧體使用螢幕時自動開啟',
     imageSwitchBody: (current, target) =>

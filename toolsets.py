@@ -256,6 +256,18 @@ def _registry_generation() -> tuple[int, int]:
     return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
 
 
+def _left_core_bundle(name: str, registry: Any) -> Optional[dict[str, Any]]:
+    """Core's ``hermes-<platform>`` bundle for a platform that left core with tools (``hermes-feishu``: the core
+    tools plus feishu_doc + feishu_drive), so a saved explicit selection keeps resolving. Only in a profile where
+    the plugin registered every one of those toolsets; elsewhere the name stays unknown, as no bundled code is
+    left to back it."""
+    from hermes_cli.left_core_migration import legacy_bundle_toolsets
+    includes = legacy_bundle_toolsets(name)
+    if not includes or not all(registry.get_tool_names_for_toolset(part) for part in includes):
+        return None
+    return _ts(f"Platform bundle from before {name[len('hermes-'):]} left core", _HERMES_CORE_TOOLS, includes)
+
+
 def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[str, Any]]:
     """Toolset definition, or None if unknown.
 
@@ -295,7 +307,7 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[st
     else:
         registry_toolset = registry.get_toolset_alias_target(name)
         if not registry_toolset:
-            return None
+            return _left_core_bundle(name, registry)
         description = f"MCP server '{name}' tools"
     return {"description": description, "tools": registry.get_tool_names_for_toolset(registry_toolset), "includes": []}
 
@@ -478,7 +490,8 @@ def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str
 
 def validate_toolset(name: str) -> bool:
     return (name in {"all", "*"} or name in TOOLSETS
-            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
+            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases()
+            or (name.startswith("hermes-") and get_toolset(name) is not None))
 
 
 def create_custom_toolset(name: str, description: str, tools: list[str] | None = None, includes: list[str] | None = None) -> None:

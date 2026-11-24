@@ -762,6 +762,14 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
     ),
 )
 
+
+def legacy_bundle_toolsets(name: str) -> tuple[str, ...]:
+    """The plugin toolsets core's ``hermes-<platform>`` bundle *name* carried for a platform that left core
+    with tools (``hermes-feishu`` -> feishu_doc, feishu_drive); () for any other name."""
+    return next((f.toolsets for f in LEFT_CORE
+                 if f.platform and f.toolsets and f"hermes-{f.platform}" == name and name in f.legacy_toolsets), ())
+
+
 def _install_sentence(feature: LeftCoreFeature) -> str:
     from hermes_constants import get_hermes_home
     return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: install it with "

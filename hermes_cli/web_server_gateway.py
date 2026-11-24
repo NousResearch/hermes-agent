@@ -88,21 +88,33 @@ def _port_spec(name: str) -> tuple:
 _PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
 
 
+def _stamped_port(state: dict) -> Optional[int]:
+    """The port an adapter really bound, from the ``listener_base`` it stamped into runtime status
+    (``BasePlatformAdapter._mark_connected``), else None (an older gateway, or no bind)."""
+    from urllib.parse import urlsplit
+    base = state.get("listener_base")
+    try:
+        return urlsplit(base).port if isinstance(base, str) and base else None
+    except ValueError:
+        return None
+
+
 def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict[str, int]:
     """Best-effort ``platform -> host TCP port`` for one profile's live gateway.
 
-    Ports come from the profile's own config.yaml (``gateway.platforms`` then top-level
-    ``platforms`` — later wins, matching load_gateway_config precedence), falling back to the
-    adapter default. Env-var overrides (e.g. WEBHOOK_PORT in that profile's .env) are not resolved.
+    A live adapter that stamped its real bind (``listener_base``) reports that port, so a plugin platform
+    the dashboard's own profile never loaded still shows. Otherwise ports come from the profile's own
+    config.yaml (``gateway.platforms`` then top-level ``platforms`` — later wins, matching
+    load_gateway_config precedence), falling back to the adapter default. Env-var overrides (e.g.
+    WEBHOOK_PORT in that profile's .env) are not resolved on that path.
     """
     platforms = (runtime or {}).get("platforms") or {}
-    active = [
-        name for name, state in platforms.items()
-        if _port_spec(name)
-        and isinstance(state, dict)
-        and state.get("state") not in _PLATFORM_DEAD_STATES]
+    live = {name: state for name, state in platforms.items()
+            if isinstance(state, dict) and state.get("state") not in _PLATFORM_DEAD_STATES}
+    ports: dict[str, int] = {name: port for name, state in live.items() if (port := _stamped_port(state))}
+    active = [name for name in live if name not in ports and _port_spec(name)]
     if not active:
-        return {}
+        return ports
 
     blocks: dict[str, dict] = {}
     try:
@@ -119,7 +131,6 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
     except Exception:
         blocks = {}
 
-    ports: dict[str, int] = {}
     for name in active:
         port_key, default_port = _port_spec(name)
         block = blocks.get(name) or {}

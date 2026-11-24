@@ -74,6 +74,10 @@ async def bind_listener(
     except BaseException:
         await runner.cleanup()
         raise
+    # ``_mark_connected`` stamps it into runtime status: the dashboard reads another profile's live port there
+    # without loading that profile's plugin (a port-binder core no longer ships has no table row).
+    bound = next((addr[1] for addr in runner.addresses if isinstance(addr, tuple) and len(addr) >= 2), port)
+    adapter._bound_listener_base = listener_base_url(host, bound)
     return runner
 
 

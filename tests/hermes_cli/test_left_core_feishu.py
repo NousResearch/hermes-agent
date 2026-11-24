@@ -133,3 +133,29 @@ def test_child_processes_keep_the_feishu_strip_set():
         "FEISHU_ALLOWED_USERS", "FEISHU_ALLOW_ALL_USERS", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DOMAIN",
         "FEISHU_ENCRYPT_KEY", "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME", "FEISHU_VERIFICATION_TOKEN"}
     assert {"FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN"} <= _ADAPTER_SECRET_ENV
+
+
+def test_explicit_legacy_feishu_bundle_selects_the_installed_plugin_tools(monkeypatch, tmp_path):
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from model_tools import _apply_toolset_selection
+    from tools import registry as registry_module
+    from toolsets import validate_toolset
+
+    registry = registry_module.ToolRegistry()
+    monkeypatch.setattr(registry_module, "registry", registry)
+    plugin_home = tmp_path / "feishu-profile"
+    for tool, toolset in (("feishu_doc_read", "feishu_doc"), ("feishu_drive_add_comment", "feishu_drive")):
+        registry.register(tool, toolset, {"name": tool}, lambda: None, scope=hermes_home_key(plugin_home))
+
+    token = set_hermes_home_override(plugin_home)
+    try:
+        selected = set()
+        _apply_toolset_selection(selected, ["hermes-feishu"], quiet_mode=True, disable=False)
+        assert {"feishu_doc_read", "feishu_drive_add_comment", "terminal"} <= selected
+        _apply_toolset_selection(selected, ["hermes-feishu"], quiet_mode=True, disable=True)
+        assert "terminal" in selected
+        assert not {"feishu_doc_read", "feishu_drive_add_comment"} & selected
+    finally:
+        reset_hermes_home_override(token)
+
+    assert not validate_toolset("hermes-feishu")

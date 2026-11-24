@@ -1,6 +1,9 @@
+import { useStore } from '@nanostores/react'
+
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -8,10 +11,16 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { Tip } from '@/components/ui/tooltip'
-import { Check, Eye, EyeOff, Info, MoreVertical } from '@/lib/icons'
+import { Check, Eye, EyeOff, Info, Monitor, MonitorPlay, MoreVertical } from '@/lib/icons'
+import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
+import { useBots } from '@/plugins/hermes-bots/i18n'
+import { botRosterMeta } from '@/plugins/hermes-bots/routing'
+import { toggleBotScreenAutoOpen } from '@/plugins/hermes-bots/screen-open'
+import { profileScreenCommand, screenBotForRoute } from '@/plugins/hermes-bots/screen-portal'
 import { setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
 
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
+import { useBotModeLoaded } from '../simplified-bot-chat-row'
 import { agentOwner, type SimplifiedAgent } from '../use-simplified-agents'
 
 function HiddenAgentExplanation() {
@@ -36,6 +45,33 @@ function HiddenAgentExplanation() {
   )
 }
 
+/** Bot Mode's Screen for this agent, whichever chat is in front. Mounted only while that plugin is
+ *  loaded. */
+function ScreenItems({ agent }: { agent: SimplifiedAgent }) {
+  const b = useBots()
+  const roster = useStore($lastRoster)
+  const meta = useStore($botMeta)
+  const route = { connectionId: agent.connectionId, profile: agent.profile }
+  // The card names its agent as the roster does.
+  const bot = screenBotForRoute(route, roster, (served, profile) => served.profile === profile)
+
+  return (
+    <>
+      <DropdownMenuItem onSelect={() => void profileScreenCommand(route).run()}>
+        <Monitor aria-hidden />
+        {b.screen.menu}
+      </DropdownMenuItem>
+      <DropdownMenuCheckboxItem
+        checked={Boolean(botRosterMeta(bot, meta)?.screenAutoOpen)}
+        onSelect={() => void toggleBotScreenAutoOpen(bot)}
+      >
+        <MonitorPlay aria-hidden />
+        {b.screen.autoOpenMenu}
+      </DropdownMenuCheckboxItem>
+    </>
+  )
+}
+
 interface PortalAgentMenuProps {
   agent: SimplifiedAgent
   hidden: boolean
@@ -46,6 +82,7 @@ interface PortalAgentMenuProps {
 export function PortalAgentMenu({ agent, hidden, pending, onOpen }: PortalAgentMenuProps) {
   const c = useHiddenAgentCopy()
   const owner = agentOwner(agent)
+  const botMode = useBotModeLoaded()
 
   return (
     <DropdownMenu>
@@ -65,6 +102,7 @@ export function PortalAgentMenu({ agent, hidden, pending, onOpen }: PortalAgentM
           <FigmaAgentIcon className="portal-agent-menu-icon" color="transparent" variant="outline" />
           {c.manageAgent}
         </DropdownMenuItem>
+        {botMode && <ScreenItems agent={agent} />}
         <DropdownMenuSeparator />
         {hidden ? (
           <DropdownMenuItem onSelect={() => setSidebarAgentHidden(owner, false)}>

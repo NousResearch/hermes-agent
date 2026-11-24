@@ -217,7 +217,7 @@ const namesProfile = (route: BotRoute, profile: string) => route.profile === pro
 const servesProfile = (route: BotRoute, profile: string) => route.profile === profile || route.targetProfile === profile
 
 /** The roster row that owns a route's Screen, or a scoped row synthesized for it. */
-function screenBotForRoute(
+export function screenBotForRoute(
   { connectionId, profile }: ProfileGroupRoute,
   roster: RosterRow[],
   matches: (route: BotRoute, profile: string) => boolean

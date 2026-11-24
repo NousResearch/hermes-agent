@@ -133,8 +133,10 @@ dangling guide. Session hover and selection brighten only the name, like agent
 rows; the click target still includes the guide gutter. Reveal actions for
 hover, visible keyboard focus, or an open menu, not lingering mouse focus;
 touch controls remain visible. Only truncated titles need a tooltip.
-Screen is a tool rather than a conversation: use **Open Screen** in the command
-palette for the focused owner; classic/Bot Mode entry points remain available.
+Screen (an agent's own desktop) is a tool rather than a conversation, and it is reached from the
+agent: with Bot Mode loaded the agent's menu carries **Open Screen** and **Open Screen when the bot
+uses it** for that agent, whichever chat is in front. **Open Screen** in the command palette stays,
+for the focused owner; classic/Bot Mode entry points remain available.
 
 **Hidden agents** stays outside the agent list's scroll viewport so its count
 and attention dot remain reachable in crowded installations. Its expanded rows

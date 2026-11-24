@@ -493,24 +493,24 @@ def test_command_installation_path_check_respects_zdotdir_and_configured_rc(tmp_
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("bash_profile, rc, verdict", [
-    (False, 0, "configured in ~/.profile"),
+@pytest.mark.parametrize("others, rc, expected", [
+    ((), 0, ["configured in ~/.profile"]),
     # A login bash reads the first of ~/.bash_profile, ~/.bash_login, ~/.profile, so ~/.profile never runs.
-    (True, 1, "~/.local/bin is not on your PATH"),
-])
-def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeypatch, capsys, bash_profile, rc, verdict):
+    ((".bash_profile",), 1, ["add to ~/.bashrc and ~/.bash_profile:", "a login bash skips ~/.profile"]),
+    ((".bash_login", ".bashrc"), 1, ["add to ~/.bashrc and ~/.bash_login:", "a login bash skips ~/.profile"]),
+], ids=["profile_read", "bash_profile_first", "bash_login_first"])
+def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeypatch, capsys, others, rc, expected):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
     (link_dir / "hermes").symlink_to(launcher)
     monkeypatch.setenv("SHELL", "/bin/bash")
     (Path.home() / ".profile").write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding="utf-8")
-    if bash_profile:
-        (Path.home() / ".bash_profile").write_text("alias ll='ls -l'\n", encoding="utf-8")
+    for name in others:
+        (Path.home() / name).write_text("alias ll='ls -l'\n", encoding="utf-8")
 
     assert doctor.run_doctor(Namespace(fix=False)) == rc
 
     out = capsys.readouterr().out
-    assert verdict in out
-    assert "~/.profile" in out
+    assert all(text in out for text in expected), out
 
 
 @pytest.mark.platforms("posix")

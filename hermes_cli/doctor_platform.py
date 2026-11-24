@@ -644,12 +644,14 @@ def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
     if shell == "fish":
         return shell, [home / ".config" / "fish" / "config.fish"], "~/.config/fish/config.fish", []
     *logins, bashrc = candidates = [home / ".bash_profile", home / ".bash_login", home / ".profile", home / ".bashrc"]
-    preferred = "~/.bash_profile" if (home / ".bash_profile").is_file() and not bashrc.is_file() else "~/.bashrc"
     if shell != "bash":
+        preferred = "~/.bash_profile" if logins[0].is_file() and not bashrc.is_file() else "~/.bashrc"
         return shell, candidates, preferred, []
-    # A login bash reads only the first of its login files that exists (bash(1), INVOCATION).
+    # A login bash reads only the first of its login files that exists; other interactive bash shells
+    # read ~/.bashrc (bash(1), INVOCATION). The advice names both, as install.sh writes both.
     login = next((path for path in logins if path.is_file()), None)
-    return shell, [*([login] if login else []), bashrc], preferred, [path for path in logins if path != login]
+    advice = f"~/.bashrc and ~/{login.name if login else '.profile'}"
+    return shell, [*([login] if login else []), bashrc], advice, [path for path in logins if path != login]
 
 
 def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:

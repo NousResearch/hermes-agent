@@ -1,13 +1,13 @@
 name: free-model-radar
 repo: https://github.com/jh4184591-lgtm/free-model-radar
-sha: 5633f09ac5aec977b372eed8b915f111a4a78529
+sha: a4fcde5f8904f43e98cd43a71b622241e3de19c7
 subdir: ""
-description: Detect Nous free-model window drift, recommend the newest free switch target before a window closes, and report API-published retire dates; anonymous, keyless, $0.
+description: Detect Nous free-model window drift, recommend the newest free switch target before a window closes, and report API-published retire dates, and export deadlines to an .ics calendar; anonymous, keyless, $0.
 maintainer: Joshua Harrison
 tier: community
 category: models
 requires_hermes: ">=0.22.2"
-version: "0.3.0"
+version: "0.4.0"
 docs_url: ""
 image: ""
 screenshots: []
@@ -23,6 +23,7 @@ capabilities:
     - free_model_radar_track
     - free_model_radar_recommend
     - free_model_radar_retire
+    - free_model_radar_calendar
   provides_hooks: []
   provides_middleware: []
   requires_env: []

@@ -216,9 +216,17 @@ interface ParsedBundleVersion {
   prerelease: string[]
 }
 
+// The SemVer 2.0.0 grammar (semver.org): anything else is a version this guard can't order.
+const SEMVER_IDENTIFIER = '(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)'
+
+const SEMVER_RE = new RegExp(
+  `^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)` +
+    `(?:-(${SEMVER_IDENTIFIER}(?:\\.${SEMVER_IDENTIFIER})*))?` +
+    `(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$`
+)
+
 function parseBundleVersion(raw: string): ParsedBundleVersion | null {
-  const cleaned = raw.trim().replace(/^v/i, '')
-  const match = /^(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(cleaned)
+  const match = SEMVER_RE.exec(raw.trim().replace(/^v/i, ''))
 
   if (!match) {
     return null
@@ -227,7 +235,7 @@ function parseBundleVersion(raw: string): ParsedBundleVersion | null {
   return {
     major: Number(match[1]),
     minor: Number(match[2]),
-    patch: match[3] === undefined ? 0 : Number(match[3]),
+    patch: Number(match[3]),
     prerelease: match[4] ? match[4].split('.') : []
   }
 }

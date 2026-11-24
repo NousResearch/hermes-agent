@@ -547,6 +547,7 @@ describe('guardMacApplicationsLaunch', () => {
   it.each([
     ['an unreadable Info.plist', { '/Applications/Hermes Agent.app': null }],
     ['a version it cannot compare', { '/Applications/Hermes Agent.app': 'banana' }],
+    ['a two-part version', { '/Applications/Hermes Agent.app': '0.23' }],
     [
       'an unreadable ~/Applications copy beside an older /Applications one',
       { '/Applications/Hermes Agent.app': '0.20.0', '/Users/alice/Applications/Hermes Agent.app': null }
@@ -754,4 +755,12 @@ describe('bundle version parsing and comparison', () => {
     expect(compareBundleVersions('0.24.0-canary.20261124T001400Z', '0.24.0-canary.20261124T001500Z')).toBe(-1)
     expect(compareBundleVersions('invalid', '0.24.0')).toBeNull()
   })
+
+  it.each(['0.23', '0.23.0-rc..1', '01.2.3', '0.24.0-', '0.24.0+', '0.24.0+build..1'])(
+    'refuses to order %s, which is not a SemVer version',
+    version => {
+      expect(compareBundleVersions(version, '0.24.0')).toBeNull()
+      expect(compareBundleVersions('0.24.0', version)).toBeNull()
+    }
+  )
 })

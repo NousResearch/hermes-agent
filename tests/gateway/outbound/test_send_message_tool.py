@@ -1691,3 +1691,31 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     assert str(os.getpid()) in err and str(profile) in err
     assert "bitwarden" in err
     assert "SECRET-VALUE" not in err
+
+
+@pytest.mark.parametrize(("sends_while_disabled", "has_creds", "served"), [
+    (True, True, True), (True, False, False), (False, True, False)])
+def test_a_plugin_that_sends_while_disabled_resolves_a_disabled_platform(monkeypatch, tmp_path,
+                                                                         sends_while_disabled, has_creds, served):
+    """A send-only home (credentials, ``enabled: false``) delivers through a plugin whose policy says its
+    standalone sender may run while the platform is disabled, and only when ``is_connected`` sees credentials."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.outbound.send import _resolve_platform_config
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from gateway.platforms.send_targets import StandaloneSendPolicy
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    name = "sendonlyprobe"
+    platform_registry.register(PlatformEntry(
+        name=name, label="Send-only probe", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+        source="plugin", is_connected=lambda cfg: has_creds,
+        standalone_send=StandaloneSendPolicy(sends_while_disabled=sends_while_disabled)))
+    try:
+        config = GatewayConfig(platforms={Platform(name): PlatformConfig(enabled=False, extra={"k": "v"})})
+        _, pconfig, _, err = _resolve_platform_config(name, config)
+    finally:
+        platform_registry.unregister(name)
+    if served:
+        assert err is None and pconfig.enabled and pconfig.extra == {"k": "v"}
+    else:
+        assert pconfig is None and "not configured" in err.lower()

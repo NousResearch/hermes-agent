@@ -253,7 +253,8 @@ def _platform_enum(platform_name):
 
 def _resolve_platform_config(platform_name, config):
     """``(platform, pconfig, registry_entry, error)``. Plugin platforms must be registered;
-    disabled/missing platforms error."""
+    disabled/missing platforms error, unless the plugin's ``StandaloneSendPolicy.sends_while_disabled``
+    lets its standalone sender deliver from the credentials it still sees."""
     from gateway.config import Platform
     from gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
@@ -264,8 +265,22 @@ def _resolve_platform_config(platform_name, config):
         return None, None, None, err
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
+        pconfig = _send_only_pconfig(entry, pconfig)
+    if pconfig is None:
         return None, None, None, _not_configured_error(platform_name, platform, entry)
     return platform, pconfig, entry, None
+
+
+def _send_only_pconfig(entry, pconfig):
+    """An enabled copy of a disabled/absent platform's config for a plugin whose policy sends while
+    disabled and whose ``is_connected`` sees credentials (config extras or the profile's env), else None."""
+    from gateway.config import PlatformConfig
+    policy = getattr(entry, "standalone_send", None)
+    if not (policy is not None and policy.sends_while_disabled and entry.is_connected is not None):
+        return None
+    candidate = PlatformConfig(enabled=True, token=getattr(pconfig, "token", None),
+                               extra=dict(getattr(pconfig, "extra", None) or {}))
+    return candidate if entry.is_connected(candidate) else None
 
 
 def _not_configured_error(platform_name, platform, entry):

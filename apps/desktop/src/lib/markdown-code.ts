@@ -178,6 +178,8 @@ const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
   cxx: 'cpp',
   dart: 'dart',
   dockerfile: 'docker',
+  env: 'dotenv',
+  envrc: 'bash',
   ex: 'elixir',
   exs: 'elixir',
   fish: 'fish',
@@ -237,8 +239,23 @@ const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
   zsh: 'bash'
 }
 
+// `.env.local`, `.env.production`, `.env-sample`: the last dot-segment names the
+// variant, not the format, so match the dotenv prefix on a word boundary
+// (`.environment` and `.envoy` stay plain). A known extension still wins
+// (`.env.json` is JSON).
+const DOTENV_NAME_RE = /^\.env(?:$|[^a-z0-9])/i
+
 export function shikiLanguageForFilename(path: string | undefined): string {
-  return SHIKI_LANGUAGE_BY_EXTENSION[filenameExtToken(path)] || ''
+  const known = SHIKI_LANGUAGE_BY_EXTENSION[filenameExtToken(path)]
+
+  if (known) {
+    return known
+  }
+
+  const base = (path || '').replace(/\\/g, '/').split('/').pop() || ''
+
+  // A bare dotfile (`.envrc`) names its format after the dot.
+  return DOTENV_NAME_RE.test(base) ? 'dotenv' : SHIKI_LANGUAGE_BY_EXTENSION[base.slice(1).toLowerCase()] || ''
 }
 
 function proseLineCount(body: string): number {

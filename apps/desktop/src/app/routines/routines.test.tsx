@@ -239,6 +239,24 @@ describe('the Routines page', () => {
     expect(screen.queryByRole('button', { name: en.cron.resume })).toBeNull()
   })
 
+  // A one-off whose run failed has no run left either, and the backend refuses to pause it; a
+  // recurring routine in the same state still has its schedule.
+  it('offers Pause on a failed routine only while it still has runs to come', () => {
+    const failed = { ...brief, id: 'job-failed', name: 'One-off import', state: 'error' } as CronJob
+    setCronJobs([
+      { ...failed, schedule: { kind: 'once' } },
+      { ...failed, id: 'job-stuck', schedule: { kind: 'cron' } }
+    ])
+    selectRoutine({ id: 'job-failed', profile: 'default' })
+    const view = renderPage()
+    expect(screen.queryByRole('button', { name: en.cron.pause })).toBeNull()
+    view.unmount()
+
+    selectRoutine({ id: 'job-stuck', profile: 'default' })
+    renderPage()
+    expect(screen.getByRole('button', { name: en.cron.pause })).toBeTruthy()
+  })
+
   it('explains each header action in a tooltip that keyboard focus opens too', async () => {
     selectRoutine({ id: brief.id, profile: 'default' })
     renderPage()

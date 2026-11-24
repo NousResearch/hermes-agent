@@ -52,6 +52,17 @@ export function routinePaused(job: CronJob): boolean {
   return state === 'paused' || state === 'disabled'
 }
 
+const RECURRING = new Set(['cron', 'interval'])
+
+/** True when the scheduler holds no further run for the routine: it finished, or it is a one-off
+ *  whose run failed. A recurring routine in `error` still has its schedule. The scheduler refuses
+ *  to pause or resume the first kind (cron/jobs.py `pause_job`), so the page does not offer it. */
+export function routineSpent(job: CronJob): boolean {
+  const state = jobState(job)
+
+  return state === 'completed' || (state === 'error' && !RECURRING.has(job.schedule?.kind ?? ''))
+}
+
 export function routineGroup(job: CronJob, nowMs = Date.now()): RoutineGroup {
   if (routineIssue(job, nowMs)) {
     return 'attention'

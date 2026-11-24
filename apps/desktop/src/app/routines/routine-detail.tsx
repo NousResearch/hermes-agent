@@ -9,7 +9,7 @@ import { useI18n } from '@/i18n'
 import { jobIsScriptOnly } from '../cron/cron-job-model'
 import { PageHeader } from '../redesign/page-header'
 
-import { deliveryTargets, routinePaused, routineStatus, routineTitle } from './routine-model'
+import { deliveryTargets, routinePaused, routineSpent, routineStatus, routineTitle } from './routine-model'
 import { RoutineBanner, StatusChip, useAgentLabel } from './routine-parts'
 import { RoutineRuns } from './routine-runs'
 import { capitalized, describeSchedule, formatMoment } from './routine-schedule'
@@ -118,8 +118,8 @@ function RoutineHeaderActions({ actions, job }: { actions: RoutineActions; job: 
           </Button>
         </Tip>
       )}
-      {/* A finished routine has no runs left to pause or resume: Run now starts it again. */}
-      {job.state !== 'completed' && (
+      {/* A routine with no runs left has nothing to pause or resume: Run now starts it again. */}
+      {!routineSpent(job) && (
         <Tip label={toggle}>
           <Button
             aria-label={toggle}

@@ -9,8 +9,9 @@ outcome, note or turn, covers the whole batch. When that admission comes up for 
 viewer attached (the authority's own subscriber records) the executor records it in the session's
 history, where the next turn sees it, and settles the admission without a model call. Queue order, restart survival and
 exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was,
-except a local cron result, which is always a note; messaging, Kanban, ``/loop`` and heartbeat wakes
-never reach here.
+except a local cron result, which is always a note, and a completion queued behind a finite turn
+(``chat -q``, ``--oneshot``), whose client reads only that turn's reply (#156255); messaging, Kanban,
+``/loop`` and heartbeat wakes never reach here.
 
 A result the parent carries on from (``resumes_parent``: an async delegation's final result, a
 background process's exit) runs as a turn with no viewer too. A viewer going away is not the user
@@ -111,8 +112,12 @@ async def note_if_unviewed(authority, ref, row):
         return None
     from gateway.session_runtime_workers import tracked_write
     descriptor = row['payload']['local_automation_v1']
-    if (live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED)
-            or _wakes_unviewed_parent(authority, ref.session_id, live, descriptor)):
+    # Behind a finite turn the attached client only waits for that turn's reply and exits: a turn
+    # here would run unread, with a fresh budget, after the command returned (#156255).
+    finite = live is not None and live.finite_input
+    viewed = live is not None and live.subscribers and not finite
+    if (live is None or (viewed and _producer(descriptor['identity']) not in _ALWAYS_NOTED)
+            or (not finite and _wakes_unviewed_parent(authority, ref.session_id, live, descriptor))):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
         await reopen_for_turn(authority, ref)
         return None

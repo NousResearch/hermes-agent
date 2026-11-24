@@ -65,6 +65,9 @@ class LiveSession:
     pause_notified: bool = False
     # Failed-delegation wakes run in a row with no viewer (session_completion_notes.UNATTENDED_WAKE_LIMIT).
     unattended_wakes: int = 0
+    # The latest input (not a completion) was finite (``chat -q``, ``--oneshot``): its client reads only
+    # that reply, so a completion queued behind it is a note even while the client is still attached.
+    finite_input: bool = False
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Held by the FIFO claim and by compress across its summarization (which runs outside
     # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed

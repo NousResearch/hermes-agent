@@ -530,9 +530,10 @@ def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_n
 
 @pytest.fixture
 def repointed_profile_link(tmp_path, monkeypatch):
-    """Two profile directories, each with a ``${PLUGIN_RUNNER}`` launcher its own ``.env`` names, a profile link
-    ``ops`` that can be pointed at either, and a separate launch home. Yields ``point(dir)``, ``host_for(home)``
-    and which runner ran, multiplexing for the test's sake (a caller can then bind any of them)."""
+    """Two profile directories, each with a ``${PLUGIN_RUNNER}`` launcher its own ``.env`` names, the launch home
+    with the same launcher and its value only in the process env, and a profile link ``ops`` that can be pointed at
+    any of them. Yields ``point(dir)``, ``host_for(home)`` and which runners ran, multiplexing for the test's sake
+    (a caller can then bind any of them)."""
     from agent import secret_scope as ss
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -542,14 +543,14 @@ def repointed_profile_link(tmp_path, monkeypatch):
         script.chmod(0o755)
         return ran
 
-    runs = {"old": runner("old-runner"), "new": runner("new-runner")}
-    dirs = {name: _home_with_plugins(tmp_path / name, monkeypatch, {}) for name in runs}
-    _home_with_plugins(tmp_path / "launch", monkeypatch, {})
+    runs = {name: runner(f"{name}-runner") for name in ("old", "new", "launch")}
+    dirs = {name: _home_with_plugins(tmp_path / name, monkeypatch, {}) for name in runs}  # launch last: HERMES_HOME
     launcher = yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}})
     for name, home in dirs.items():
         (home / "config.yaml").write_text(launcher, encoding="utf-8")
-        (home / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / f'{name}-runner'}\n", encoding="utf-8")
-    monkeypatch.delenv("PLUGIN_RUNNER", raising=False)
+        if name != "launch":
+            (home / ".env").write_text(f"PLUGIN_RUNNER={tmp_path / f'{name}-runner'}\n", encoding="utf-8")
+    monkeypatch.setenv("PLUGIN_RUNNER", str(tmp_path / "launch-runner"))  # the launch profile's, env-only
     link = tmp_path / "root" / "profiles" / "ops"
     link.parent.mkdir(parents=True)
     hosts = []
@@ -581,27 +582,32 @@ def repointed_profile_link(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
 @pytest.mark.parametrize("moves", [
-    # (where the link points when the host is opened by it, when the caller binds, when the host starts)
-    ("old", "new", "new"),  # bound after the repoint: holds the new directory's values, the host is the old one's
-    ("old", "new", "old"),  # bound while repointed, link restored before the start
-    (None, "old", "new"),   # bound before the repoint: holds the old directory's values, the host is the new one's
-], ids=["bound_after_the_repoint", "restored_before_the_start", "bound_before_the_repoint"])
+    # (the host's manager, opened while the link points at old; where the link points when the caller binds through
+    # it; where it points when the host starts; whose runner that host runs)
+    ("link", "new", "new", "old"),  # bound after the repoint: holds new's values, the host is old's
+    ("link", "new", "old", "old"),  # bound while repointed, link restored before the start
+    ("new", "old", "new", "new"),   # bound before the repoint: holds old's values, the host is new's
+    ("launch", "old", "launch", "launch"),  # ... and the link now leads to the launch profile's directory
+], ids=["bound_after_the_repoint", "restored_before_the_start", "bound_before_the_repoint",
+        "repointed_at_the_launch_directory"])
 def test_a_caller_bound_through_a_moving_profile_link_lends_its_values_to_no_host(repointed_profile_link, moves):
     """A caller bound through a profile's link holds what the link's directory held when it bound. However the
-    link moved around that bind, the host that starts expands its launcher from the files of its own directory."""
+    link moved around that bind, the host that starts expands its launcher from its own profile's sources."""
     from agent import secret_scope as ss
+    from hermes_constants import hermes_home_key
     from tui_gateway import server
 
     env = repointed_profile_link
-    opened_by, bound, started = moves
-    env.point(opened_by or "old")
-    host = env.host_for(env.link if opened_by else env.dirs["new"])
+    manager, bound, started, runs = moves
+    env.point("old")
+    host = env.host_for(env.link if manager == "link" else env.dirs[manager])
     env.point(bound)
+    hermes_home_key(env.link)  # the process serves that profile under this name
     with server._session_profile_runtime_scope({"profile_home": str(env.link)}, hydrate_secrets=False):
         assert ss.get_secret("PLUGIN_RUNNER").endswith(f"{bound}-runner")
         env.point(started)
         host.ensure_started()
-    assert env.ran() == ["old" if opened_by else "new"]
+    assert env.ran() == [runs]
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
@@ -652,10 +658,14 @@ def test_a_single_profile_launcher_expands_against_the_process_env_not_a_later_e
 
 
 @pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
-def test_a_host_started_inside_the_launch_profiles_bound_scope_takes_its_launcher_value_from_it(tmp_path, monkeypatch):
-    """The TUI gateway binds the launch profile's secrets around its bodies even single-profile (``.env`` over the
-    live env). A host started inside such a body expands its launcher from that scope, as on main, so a value only
-    the ``.env`` holds (set after the process loaded it) still reaches the launcher."""
+@pytest.mark.parametrize("surface", ["tui_gateway", "dashboard"])
+def test_a_host_started_inside_the_launch_profiles_bound_scope_takes_its_launcher_value_from_it(
+        tmp_path, monkeypatch, surface):
+    """The TUI gateway and the dashboard bind the launch profile's secrets around their bodies even single-profile
+    (``.env`` over the live env; the dashboard stamps that scope with the launch home). A host started inside such a
+    body expands its launcher from that scope, as on main, so a value only the ``.env`` holds (set after the process
+    loaded it) still reaches the launcher."""
+    from hermes_cli.web_server_profiles import _config_profile_scope
     from tui_gateway import server
 
     ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
@@ -669,7 +679,9 @@ def test_a_host_started_inside_the_launch_profiles_bound_scope_takes_its_launche
     plugins_mod._reset_plugin_managers_for_tests()
     host = plugins_mod.get_plugin_manager()._plugin_host()
     try:
-        with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+        body = (server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False)
+                if surface == "tui_gateway" else _config_profile_scope(None))
+        with body:
             host.ensure_started()
         assert ran.read_text(encoding="utf-8").count("ran") == 1
     finally:

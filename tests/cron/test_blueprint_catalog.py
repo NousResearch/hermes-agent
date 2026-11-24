@@ -44,7 +44,8 @@ class TestCatalog:
                 matches = list(skills_root.glob(f"*/{name}/SKILL.md"))
                 assert matches, f"{blueprint.key}: attached skill {name!r} is not bundled"
                 frontmatter, _ = parse_frontmatter(matches[0].read_text(encoding="utf-8"))
-                if frontmatter.get("required_credential_files") or _get_required_environment_variables(frontmatter):
+                required_env = [e for e in _get_required_environment_variables(frontmatter) if not e.get("optional")]
+                if frontmatter.get("required_credential_files") or required_env:
                     needy[blueprint.key] = name
         assert not needy
 

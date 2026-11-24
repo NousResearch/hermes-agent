@@ -119,8 +119,9 @@ CATALOG: list[AutomationBlueprint] = [
             "Gmail, Google Calendar or Outlook, or a set-up mail/calendar skill). "
             "Use today's exact local day window; flag overlapping or back-to-back "
             "meetings; note prep for meetings that a recent email relates to; "
-            "list mail that needs a reply or has a deadline today. Keep it short "
-            "and scannable. If no calendar or mail source is connected, give a "
+            "list mail that needs a reply or has a deadline today. Suggest actions "
+            "in the brief, but do not send mail, edit events, or create tasks. "
+            "Keep it short and scannable. If no calendar or mail source is connected, give a "
             "brief good-morning with the date and weather and offer to connect "
             "calendar/email."
         ),

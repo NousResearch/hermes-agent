@@ -545,6 +545,7 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("fish", ".config/fish/config.fish", "echo set -gx PATH $HOME/.local/bin $PATH"),
     ("bash", ".bashrc", 'env ROOT=$(pwd) PATH="$HOME/.local/bin:$PATH"'),  # $(...) is part of a word
     ("bash", ".bashrc", 'env ROOT=`pwd` PATH="$HOME/.local/bin:$PATH"'),
+    ("bash", ".bashrc", 'LC_ALL=C env PATH="$HOME/.local/bin:$PATH"'),
     ("zsh", ".zprofile", 'export PATH="$PATH:$HOME/.local/bin#backup"'),  # a # inside a word is no comment
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin:/usr/local/bin"'),  # one directory
     ("zsh", ".zprofile", 'path=("$HOME/.local/bin:/usr/local/bin" $path)'),
@@ -588,6 +589,7 @@ def test_path_check_needs_a_line_that_puts_local_bin_on_path(tmp_path, monkeypat
     ("zsh", ".zprofile", 'if true; then export PATH="$HOME/.local/bin:$PATH"; fi'),
     ("fish", ".config/fish/config.fish", "status is-login; and fish_add_path ~/.local/bin"),
     ("bash", ".bashrc", 'ROOT=$(pwd) PATH="$HOME/.local/bin:$PATH"'),
+    ("bash", ".bashrc", 'LC_ALL=C export PATH="$HOME/.local/bin:$PATH"'),  # a prefix assignment, then export
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin:$PATH"  # added by the installer'),
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin:$PATH" EDITOR'),
 ])

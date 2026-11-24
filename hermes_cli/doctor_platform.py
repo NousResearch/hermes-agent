@@ -770,6 +770,8 @@ def _setter_counts(code: str, found: re.Match[str], variables: dict[str, str]) -
     if _open_quote(code, found.start()):
         return False  # inside a string: an alias body or an echo
     before = _words_before(code, found.start(), variables)
+    while before and _ASSIGNMENT_WORD.match(before[0]):
+        before.pop(0)  # LC_ALL=C export PATH=...: a prefix assignment, then the builtin
     declared = bool(before) and before[0] in _DECLARATIONS
     others = before[1:] if declared else before
     allowed = _DECLARATION_ARGUMENT.fullmatch if declared else _ASSIGNMENT_WORD.match

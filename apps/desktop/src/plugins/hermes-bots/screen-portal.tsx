@@ -214,7 +214,7 @@ type BotRoute = NonNullable<ReturnType<typeof resolveBotConnectionRoute>['route'
 const namesProfile = (route: BotRoute, profile: string) => route.profile === profile
 
 /** The focused chat's owner may name the profile an alias serves from. */
-const servesProfile = (route: BotRoute, profile: string) => route.profile === profile || route.targetProfile === profile
+export const servesProfile = (route: BotRoute, profile: string) => route.profile === profile || route.targetProfile === profile
 
 /** The roster row that owns a route's Screen, or a scoped row synthesized for it. */
 export function screenBotForRoute(

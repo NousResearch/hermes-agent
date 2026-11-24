@@ -1,15 +1,17 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useState } from 'react'
 
 import { RowButton } from '@/components/ui/row-button'
-import { $lastRoster } from '@/plugins/hermes-bots/data'
+import { $lastRoster, botSelectionKey } from '@/plugins/hermes-bots/data'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import {
   type PortalTone,
   profileScreenCommand,
   screenBotForRoute,
+  servesProfile,
   useScreenPortalState
 } from '@/plugins/hermes-bots/screen-portal'
+import type { RosterRow } from '@/plugins/hermes-bots/types'
 
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
@@ -20,20 +22,27 @@ interface AgentScreen {
   open: () => void
 }
 
+/** The roster row that owns an agent's Screen: the one the plugin's Open Screen action resolves
+ *  (its own matcher), so what a surface says about the Screen is about the one it opens. The row
+ *  object holds while it stands for the same bot: the plugin's status hook reads again whenever the
+ *  object it is given changes, and the roster is republished often. */
+export function useScreenBot(connectionId: null | string, profile: string): RosterRow {
+  const resolved = screenBotForRoute({ connectionId, profile }, useStore($lastRoster), servesProfile)
+  const [bot, setBot] = useState(resolved)
+
+  if (botSelectionKey(bot) !== botSelectionKey(resolved)) {
+    setBot(resolved)
+  }
+
+  return bot
+}
+
 /** One agent's Screen (Bot Mode: its own desktop), from the plugin's state for it. Mounting this
  *  reads that agent's screen status once, then follows pushed events: call it only for an agent of
  *  the window's own machine, and only while Bot Mode is loaded. */
 export function useAgentScreen(connectionId: null | string, profile: string): AgentScreen {
   const b = useBots()
-  const roster = useStore($lastRoster)
-
-  // The same row object across renders: the status read and the event listeners key on it.
-  const bot = useMemo(
-    () => screenBotForRoute({ connectionId, profile }, roster, (served, name) => served.profile === name),
-    [connectionId, profile, roster]
-  )
-
-  const { tone } = useScreenPortalState(bot)
+  const { tone } = useScreenPortalState(useScreenBot(connectionId, profile))
 
   const says: Partial<Record<PortalTone, string>> = {
     live: b.screen.portalWatching,

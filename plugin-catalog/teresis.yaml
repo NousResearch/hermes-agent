@@ -1,0 +1,16 @@
+name: teresis
+title: Teresis
+repo: https://github.com/raitoxlol/teresis
+sha: adc94b5c5dbb1c0cfd921ee0242f715d7cfedd9b
+subdir: src/teresis
+description: Local SQLite memory provider with scoped recall, versioned facts, and shared MCP storage.
+maintainer: raitoxlol
+tier: community
+category: memory
+requires_hermes: ">=0.23.3"
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

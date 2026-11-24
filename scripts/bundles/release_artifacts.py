@@ -552,17 +552,26 @@ def _check_stable_page_state(
     *,
     tag: str,
     page_bytes: bytes,
-) -> tuple[bool, dict[str, str]]:
+) -> tuple[bytes, dict[str, str] | None]:
+    """The page bytes that should be live after this promotion, and the conditions for writing
+    them (None: nothing to write).
+
+    A page that already describes a newer release stays as it is. Feed order is checked before
+    promotion, so that page can only come from render-builds-table's `complete` step rendering a
+    newer release while this older advance was pending; refusing would wedge the sequencer, which
+    advances oldest first."""
     from scripts.releases.downloads_page import supersedes
 
     if existing is None:
-        return True, {"If-None-Match": "*"}
+        return page_bytes, {"If-None-Match": "*"}
     existing_bytes, etag = existing
     if not supersedes(existing_bytes.decode("utf-8", errors="replace"), tag):
-        raise ValueError("Refusing to move the stable downloads page backward")
+        print(f"::warning::the stable downloads page already describes a release newer than {tag}; "
+              "leaving it unchanged")
+        return existing_bytes, None
     if existing_bytes == page_bytes:
-        return False, {}
-    return True, {"If-Match": etag}
+        return page_bytes, None
+    return page_bytes, {"If-Match": etag}
 
 
 def _verify_public_head_size(public_base: str, key: str, expected_size: int) -> None:
@@ -583,10 +592,10 @@ class StableDownloads:
     """The stable macOS DMG alias and downloads page for one accepted candidate.
 
     ``prepare`` runs every check (the DMG receipt, its source object and the single-copy limit,
-    the order against the live alias and page) before any feed moves. ``promote`` calls ``publish_dmg`` right after the macOS
-    feed, so a failed copy leaves the Windows and Termux pointers on the previous release, and
-    ``publish_page`` after every feed pointer, so a failed feed write leaves the page there too.
-    Each write is read back through the public origin."""
+    the order against the live alias and page) before any feed moves. ``promote`` calls
+    ``publish_dmg`` right after the macOS feed, so a failed copy leaves the Windows and Termux
+    pointers on the previous release, and ``publish_page`` after every feed pointer, so a failed
+    feed write leaves the page there too. Each object is read back through the public origin."""
 
     tag: str
     public_base: str
@@ -597,8 +606,7 @@ class StableDownloads:
     dmg_sha256: str
     dmg_needs_copy: bool
     page_bytes: bytes = field(repr=False)
-    page_needs_write: bool
-    page_conditions: dict[str, str]
+    page_conditions: dict[str, str] | None
 
     @classmethod
     def prepare(cls, manifest: dict, public_base: str) -> StableDownloads:
@@ -618,7 +626,7 @@ class StableDownloads:
             expected_size=dmg_item["size"],
             expected_sha256=dmg_item["sha256"],
         )
-        page_needs_write, page_conditions = _check_stable_page_state(
+        page_bytes, page_conditions = _check_stable_page_state(
             R2ChannelStore(creds, base, bucket).get(r2.channel_page_key_for("stable")),
             tag=manifest["tag"],
             page_bytes=page_bytes,
@@ -626,8 +634,7 @@ class StableDownloads:
         return cls(
             tag=manifest["tag"], public_base=public_base, creds=creds, base=base, bucket=bucket,
             source_dmg=source_dmg, dmg_sha256=dmg_item["sha256"],
-            dmg_needs_copy=dmg_needs_copy, page_bytes=page_bytes, page_needs_write=page_needs_write,
-            page_conditions=page_conditions,
+            dmg_needs_copy=dmg_needs_copy, page_bytes=page_bytes, page_conditions=page_conditions,
         )
 
     def publish_dmg(self) -> None:
@@ -647,7 +654,7 @@ class StableDownloads:
         from scripts.releases import r2
 
         page_key = r2.channel_page_key_for("stable")
-        if self.page_needs_write:
+        if self.page_conditions is not None:
             r2.put_object(
                 self.creds, self.base, self.bucket, page_key, self.page_bytes, r2.amz_timestamp(),
                 "text/html; charset=utf-8", self.page_conditions,

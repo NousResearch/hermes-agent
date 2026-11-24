@@ -78,8 +78,11 @@ because it would skip the published-release check and run outside the
 serialized `stable-release` group. Repair a partial stable publication by
 running Stable Release Publication again. A rerun repeats only an unfinished
 advance (a head, candidate pointer or Docker alias still behind); it never
-re-promotes a release that finished, so the unversioned DMG and the downloads
-page change only with a full-desktop promotion.
+re-promotes a release that finished, so it never backfills the unversioned DMG
+or the downloads page. The DMG changes only with a full-desktop promotion. The
+page also changes when `complete` renders a full-desktop release, which can put
+it ahead of an older advance still pending; that promotion then leaves the
+newer page as it is.
 
 ## Run, publish, or abandon a stable release
 

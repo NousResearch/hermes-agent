@@ -256,15 +256,21 @@ def test_stable_promotion_rejects_stale_order_for_dmg_and_page(
     assert r2_server.store[STABLE_DMG_KEY][0] == newer_dmg
     assert r2_server.store[STABLE_PAGE_KEY][0] == newer_page
 
+    # Only the page ahead is the state render-builds-table's `complete` step leaves when it
+    # renders a newer release while an older advance is still pending. The sequencer advances
+    # oldest first, so the older promotion must land and leave that page alone, not wedge.
     del r2_server.store[STABLE_DMG_KEY]
     r2_server.metadata.pop(STABLE_DMG_KEY, None)
     r2_server.requests.clear()
-    with pytest.raises(ValueError, match="backward"):
-        artifacts.promote(older, tmp_path / "promote-older-page-guard", https_origin.base)
-    assert not any(method == "PUT" for method, _, _ in r2_server.requests)
+    artifacts.promote(older, tmp_path / "promote-older-page-ahead", https_origin.base)
+    assert r2_server.store[STABLE_DMG_KEY][0] == _older_dmg
     assert r2_server.store[STABLE_PAGE_KEY][0] == newer_page
+    assert not any(method == "PUT" and path == f"/hermes-releases/{STABLE_PAGE_KEY}"
+                   for method, path, _ in r2_server.requests)
 
     artifacts.promote(newer, tmp_path / "restore-newer", https_origin.base)
+    assert r2_server.store[STABLE_DMG_KEY][0] == newer_dmg
+    assert r2_server.store[STABLE_PAGE_KEY][0] == newer_page
     different_same_ver, _ = _stage_stable_release(
         tmp_path,
         r2_server,

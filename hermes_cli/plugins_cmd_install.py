@@ -233,6 +233,24 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
                                          failure_class="incompatible")
 
 
+# The user plugins folder whose children provider discovery imports by placement alone.
+_PROVIDER_PLUGINS_FOLDER = "model-providers"
+
+
+def _refuse_provider_plugins_folder_name(plugin_name: str, target: Path, prior: Optional[dict], source: str) -> None:
+    """Refuse installing a plugin AS the provider-plugins folder (any letter case): every package
+    inside it would load as a provider while the plugin reads as not enabled. Re-installing an
+    existing install of that name from its recorded source (an update's re-clone) is left as it was."""
+    if str(plugin_name).casefold() != _PROVIDER_PLUGINS_FOLDER:
+        return
+    if target.is_dir() and isinstance(prior, dict) and prior.get("source") == source:
+        return
+    raise _pc().PluginOperationError(
+        f"Invalid plugin name '{plugin_name}': {_PROVIDER_PLUGINS_FOLDER} is the folder Hermes reserves for "
+        "provider plugins and cannot be used as a plugin's own name. Change the name in the plugin's manifest "
+        "to install it.", failure_class="manifest_invalid")
+
+
 def _read_manifest_for_install(plugin_dir: Path) -> dict:
     """A candidate's unreadable or malformed manifest must stop publication."""
     native = _pc()._native_manifest_file(plugin_dir)
@@ -334,7 +352,7 @@ def _known_issue_warnings(entry) -> list[str]:
 def interactive_scan_decision(console, verb: str) -> Callable[[Any], bool]:
     """The terminal ``[y/N]`` that accepts a caution verdict, shared by install and update (*verb*)."""
     def decide(scan_result) -> bool:
-        from tools.plugin_guard import format_scan_report
+        from hermes_cli.plugins_install_scan import format_scan_report
         console.print()
         console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
         console.print(format_scan_report(scan_result))
@@ -447,6 +465,9 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        if not allow_removed:  # every install surface lands here, before any dependency is resolved
+            from hermes_cli.plugins_cmd_catalog import raise_if_removed
+            raise_if_removed(identifier, git_url, str(plugin_name), *((catalog["name"],) if catalog else ()))
         link = plugins_dir / str(plugin_name)
         from pm.filesystem import is_junction
         if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
@@ -460,6 +481,7 @@ def _install_plugin_core(
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
             raise _pc().PluginOperationError(str(e), failure_class="manifest_invalid") from e
+        _refuse_provider_plugins_folder_name(plugin_name, target, old_metadata.get(plugin_name), source)
         _check_manifest_version(manifest, plugin_name)
         # One owner per plugin: an `install --ref` publishing between an unattended updater's hold
         # check and its publication would be overwritten (the updater holds this lock across both).
@@ -610,6 +632,18 @@ def _announce_source(identifier: str, console, *, brief: bool) -> tuple[Optional
     return entry, entry.install_identifier
 
 
+def _not_enabled_notice(target: Path, installed_name: str) -> str:
+    """The install outcome line when the operator did not enable *installed_name*. Provider discovery
+    loads a provider plugin without a ``plugins.enabled`` entry (``providers._scan_home_layer``), so
+    for one it does not skip via ``plugins.disabled`` the line says it is active and how to turn it off."""
+    from providers import _plugin_disabled
+    if _pc()._default_on(target, "user") and not _plugin_disabled(target):
+        return (f"[dim]Plugin installed. Provider plugins are active without an entry in plugins.enabled; "
+                f"`hermes plugins disable {installed_name}` turns it off.[/dim]")
+    return (f"[dim]Plugin installed but not enabled. "
+            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -742,9 +776,7 @@ def cmd_install(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
     else:
-        console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+        console.print(_not_enabled_notice(target, installed_name))
 
     from hermes_cli.plugin_provider_requests import requires_auth_notice
     if notice := requires_auth_notice(installed_manifest):
@@ -759,6 +791,7 @@ def cmd_install(
         # (its MCP servers stay absent from every session) and nothing tells the user to restart.
         from hermes_cli.plugins_activation import report_activation
         report_activation(console, installed_name)
+    _pc()._settings_cli().offer_settings_after_install(console, installed_name, target, brief=brief)
     console.print()
 
 
@@ -895,7 +928,7 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
     try:
         # _set_plugin_enabled serializes per home itself (parallel install-card rows).
         _pc()._set_plugin_enabled(installed_name, enable=True)
-    except AdmissionRefused as exc:
+    except (AdmissionRefused, _pc().PluginOperationError) as exc:
         return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None
 

@@ -98,3 +98,19 @@ def test_config_edit_refusal_without_a_config_file_exits_nonzero(tmp_path, monke
     assert exc.value.code == 1
     assert "hermes config set" in capsys.readouterr().err
     assert not (tmp_path / "config.yaml").exists()
+
+
+def test_template_seeded_config_keeps_the_update_backup_default(tmp_path, monkeypatch):
+    from argparse import Namespace
+
+    import hermes_cli.config as cfg
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.update_cmd_maint import _resolve_pre_update_backup_mode
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert cfg.seed_config_file(home / "config.yaml")
+
+    assert _resolve_pre_update_backup_mode(Namespace(no_backup=False, backup=False)) == \
+        DEFAULT_CONFIG["updates"]["pre_update_backup"]
+

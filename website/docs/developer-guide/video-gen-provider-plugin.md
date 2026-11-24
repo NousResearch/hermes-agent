@@ -184,6 +184,8 @@ There is deliberately no `model` parameter: the backend and model are user confi
 
 The provider's `capabilities()` advertises which of these are honored. The agent sees the active backend's capabilities in the tool description, dynamically rebuilt when the user changes backend via `hermes tools`.
 
+Local image paths never reach your `generate()`: the tool layer reads them through Hermes' guarded resolver and passes `data:image/...;base64,...` URLs (HTTPS URLs and existing `data:` URLs arrive unchanged). If your API caps the request body, return `"max_inline_image_chars": N` from `capabilities()` and the tool layer downscales inlined images until they fit N characters in total; without it, images are sent at full size.
+
 ## Model families and endpoint routing (the FAL pattern)
 
 When your backend has multiple endpoints per "model" — like FAL, where every family (Veo 3.1, Pixverse v6, Kling O3) has both a `/text-to-video` and an `/image-to-video` URL — represent each **family** as one catalog entry. Your `generate()` picks the right endpoint based on whether `image_url` was passed:

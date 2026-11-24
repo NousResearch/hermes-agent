@@ -1,0 +1,40 @@
+name: hermes-windows-certificates
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 11ab27aa089cf302ac628e49534a39a0da91eba9
+subdir: windows-certificates
+description: >-
+  Answer "which certificate on this Windows machine expired, and what am I actually
+  trusting": walks the user's and the machine's certificate stores (MY, Root, CA)
+  in-process through crypt32 - no certutil, no PowerShell - and lists every
+  certificate with subject, issuer, validity window, self-signed or not, SHA-1
+  thumbprint and the store it lives in; the expiry arrives in words ("expired 45
+  days ago", "expires in 12 days") and the list is sorted with the expired and
+  soon-expiring first. One certificate in full adds the serial number, certificate
+  version, the signature algorithm in words, the public key's algorithm, named
+  curve and size in bits (2048-bit RSA, P-256), and the purposes it is valid for
+  (server authentication, code signing...; no EKU extension is reported as "does
+  not restrict its purposes", which is what its absence means). Find it by
+  thumbprint or by a subject substring, across the user's and the machine's copies.
+  Use it for "why does TLS keep failing on this box", "is the root store healthy",
+  and "which personal certificate ran out". Read-only: stores are opened
+  read-only and only enumerated - nothing is added, removed or changed; no
+  network, no file writes, no elevation, no child processes; 121 certificates
+  across both contexts and all three stores walk in about 8 ms on the writing
+  machine. Windows only. Disclosure - the tools report certificate subjects,
+  issuers, validity windows and thumbprints, to the model; treat the output like
+  the machine's own certificate manager page.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-certificates
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_cert_table
+  - win_cert_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

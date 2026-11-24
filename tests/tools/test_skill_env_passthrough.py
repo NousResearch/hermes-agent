@@ -137,3 +137,38 @@ class TestAgentMailKeyPassthrough:
         assert result["setup_needed"] is False, (
             "an absent optional key must not force the skill into setup_needed"
         )
+
+
+class TestVaultBootstrapTokenRefusal:
+    """A secret source's bootstrap token is never forwarded to sandbox children, even
+    when a loaded skill declares it; the refusal must reach the model, not just the log."""
+
+    def test_declared_vault_token_is_refused_visibly(self, tmp_path, monkeypatch):
+        _create_skill(tmp_path, "vault-skill", frontmatter_extra=(
+            "required_environment_variables:\n"
+            "  - name: OP_SERVICE_ACCOUNT_TOKEN\n"
+            "    prompt: token\n"))
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_test")
+
+        with patch("tools.skills_tool._secret_capture_callback", None):
+            from tools.skills_tool import skill_view
+            result = json.loads(skill_view(name="vault-skill"))
+
+        assert not is_env_passthrough("OP_SERVICE_ACCOUNT_TOKEN")
+        assert "OP_SERVICE_ACCOUNT_TOKEN" in result["env_passthrough_refused"]
+
+    def test_bundled_1password_skill_does_not_collect_the_token(self, tmp_path, monkeypatch):
+        """The 1password skill must not prompt for a token it can never deliver."""
+        src = Path(__file__).resolve().parents[2] / "optional-skills" / "security" / "1password"
+        shutil.copytree(src, tmp_path / "security" / "1password")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+
+        with patch("tools.skills_tool._secret_capture_callback", None):
+            from tools.skills_tool import skill_view
+            result = json.loads(skill_view(name="1password"))
+
+        assert result["success"] is True
+        assert "OP_SERVICE_ACCOUNT_TOKEN" not in result["missing_required_environment_variables"]
+        assert "env_passthrough_refused" not in result

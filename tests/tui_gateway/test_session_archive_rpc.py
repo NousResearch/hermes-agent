@@ -5,7 +5,7 @@ equivalent JSON-RPC method, so TUI clients had to keep every session visible or
 delete it permanently. ``session.archive`` mirrors ``session.set_hidden``:
 
 * a DURABLE stored session id / key archives and un-archives through the profile
-  db (``SessionDB.set_session_archived``, whole compression lineage);
+  store (``sessions.set_archived``, whole compression lineage);
 * a LIVE runtime session id archives its stored key — and a live session with
   NO row yet defers via ``pending_archived`` so ``_ensure_session_db_row`` applies
   the flag when the first prompt persists the row;
@@ -16,12 +16,15 @@ import pytest
 
 import tui_gateway.server as srv
 import tui_gateway.methods_session
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    database = SessionDB(tmp_path / "state.db")
+    database = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(srv, "_get_db", lambda: database)
     try:
         yield database
@@ -34,9 +37,8 @@ def _call(method: str, params: dict) -> dict:
 
 
 def _seed(db, sid: str) -> None:
-    db.create_session(sid, source="desktop")
-    db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (sid,))
-    db._conn.commit()
+    seed_session(db, sid, "desktop")
+    raw_holder(db)._execute_write(lambda conn: conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (sid,)))
 
 
 def test_archive_resolves_stored_id_without_live_session(db):
@@ -48,13 +50,13 @@ def test_archive_resolves_stored_id_without_live_session(db):
     assert "error" not in envelope, envelope
     assert envelope["result"]["archived"] is True
     assert envelope["result"]["session_key"] == "stored-chat"
-    assert db.get_session("stored-chat")["archived"] == 1
+    assert session_row(db, "stored-chat")["archived"] == 1
 
     # And back — unarchive through the same durable path.
     envelope = _call("session.archive", {"session_id": "stored-chat", "archived": False})
     assert "error" not in envelope, envelope
     assert envelope["result"]["archived"] is False
-    assert db.get_session("stored-chat")["archived"] == 0
+    assert session_row(db, "stored-chat")["archived"] == 0
 
 
 def test_archive_accepts_session_key_alias(db):
@@ -62,7 +64,7 @@ def test_archive_accepts_session_key_alias(db):
     _seed(db, "keyed-chat")
     envelope = _call("session.archive", {"session_key": "keyed-chat", "archived": True})
     assert "error" not in envelope, envelope
-    assert db.get_session("keyed-chat")["archived"] == 1
+    assert session_row(db, "keyed-chat")["archived"] == 1
 
 
 def test_archive_unknown_id_still_errors(db):
@@ -88,11 +90,11 @@ def test_archive_live_runtime_session_defers_until_row_exists(db):
         envelope = _call("session.archive", {"session_id": sid, "archived": True})
         assert "error" not in envelope, envelope
         assert envelope["result"]["session_key"] == "20260927_000000_draft"
-        assert db.get_session("20260927_000000_draft") is None  # no row yet
+        assert session_row(db, "20260927_000000_draft") is None  # no row yet
 
         # The first prompt persists the row; the deferred intent must land with it.
         assert srv._ensure_session_db_row(srv._sessions[sid])
-        row = db.get_session("20260927_000000_draft")
+        row = session_row(db, "20260927_000000_draft")
         assert row is not None
         assert row["archived"] == 1
     finally:

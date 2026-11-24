@@ -26,6 +26,13 @@ rename sibling of `dropTilesForProfile`. Add any new profile-keyed localStorage
 family to BOTH, or a rename leaves it pointing at a backend that no longer
 exists ("Couldn't open this session" on every restore).
 
+Tile rotation stays coordinated by `store/session-states.ts`; its owner-profile projection,
+owner comparisons and placement-preserving merge live in `store/session-tile-identity.ts`. Matching
+stored ids alone must not merge tiles from different backend routes or Bot owners.
+Live-turn silence deadlines use the same monotonic clock as their latest-event
+stamp. A timer armed before newer activity waits out the remaining silence window
+instead of probing a turn that is still producing events.
+
 When an id is verifiably gone anyway (`goneSessionVerdict` → `'draft'`), the
 window drops to a fresh draft without toasting or looping — and the unsent
 text stashed under the dead key follows it: the verdict calls
@@ -52,9 +59,18 @@ assume:
   into the shared view; background work updates its own cache quietly.
 - **Coalesce noise, flush signal.** Batch high-frequency cosmetic updates, but
   let terminal transitions (a turn finishing, needing input, failing) reach the
-  user immediately.
+  user immediately. Frame-batched console logs follow the bottom in the same
+  layout commit, before another append can mistake DOM growth for a user scroll.
+  Clear publishes immediately; a queued append frame must not revive cleared rows.
 - **Preserve reference identity on no-ops.** Handing React a fresh array that
   contains the same data re-renders expensive trees for nothing.
+
+In `use-message-stream`, stream-row lookup probes the tail before searching sealed
+history; unchanged parts and pending state preserve the original transcript reference.
+`gateway-event/session-info.ts` reconciles foreground preferences separately from
+workspace ownership and per-runtime turn state. A terminal running=false still
+flushes owned queued text before settling. Watchdog deadlines use the monotonic
+clock for both activity stamps and remaining-delay calculations.
 
 ## Voice detection follows audio, not paint
 
@@ -119,6 +135,9 @@ There are three distinct switch shapes, and conflating them is the classic bug:
 - A **live profile swap** in the same window activates another profile's socket
   while background profiles keep streaming; lists merge rather than wipe, and
   only an explicit user selection starts a fresh foreground draft.
+  Failed rail picks, including registry-owned profiles, offer Retry without replacing
+  that draft. Automatic stored-session resume is not a new user selection and must
+  not cancel launch restoration.
 
 Treating a soft switch as hard flickers the app; treating a hard one as soft
 strands stale rows. After any swap, the active socket, active profile, and
@@ -140,6 +159,8 @@ for all of it is the same — an ordered ladder of candidates:
    enable a compatibility path or a disabled state; the second should retry.
 5. Retries are bounded and end in a real recovery affordance — never an infinite
    spinner or a hot loop.
+   Background callers back off a failed local owner-route probe; foreground retries and
+   remote primaries bypass it. Local owner bring-up gets the source-switch budget, not the shorter remote probe budget.
 6. One resolver owns each policy so every caller gets the same answer. Scatter is
    how two call sites drift apart.
 
@@ -197,6 +218,9 @@ reopens the gesture-less forced-navigation class the advisory closed.
 
 - Live transcript navigation reads the session store; the shared navigation
   context carries only the selected historical page, not every streamed delta.
+- Stable markdown adapters preserve block identity when streaming finishes.
+  Rich-fence error boundaries must retry on that transition even when the source
+  is unchanged: listing cards deliberately reject incomplete streamed input.
 - Hidden terminals stay mounted and keep parsing output. Suppress only their
   DOM rows, not the measurable host/helpers or terminal state. Do not reduce
   scrollback or replace parser state to save painting work. Unchanged retained
@@ -216,6 +240,7 @@ reopens the gesture-less forced-navigation class the advisory closed.
   follows the audio clock. The shared read-aloud preference is not ownership.
   Completed interim replies publish without waiting for a frame so read-aloud
   can speak tool-progress narration while hidden; partial text stays coalesced.
+  Live voice owners also bypass the hidden-window delta batching floor.
   Interims and finals that arrive before ownership IPC settles share the pending
   turn claim; message claims stay distinct so only the newest eligible reply plays.
 - Functional stream deadlines are not display loops. Delta coalescing and the
@@ -272,10 +297,10 @@ Verify scheduling changes with native hidden/minimized windows and real preview
 navigation, typing and capture. Browser automation's focus emulation can keep
 hidden frames awake and conceal regressions; disable it for these checks.
 Software-rendered VM timings are not hardware GPU or battery measurements.
-With a graphical session (or Xvfb), `npm run test:preview-activity-native
---workspace apps/desktop` exercises real hidden-frame navigation (including
+With a graphical session (or Xvfb), `pnpm --dir apps/desktop run
+test:preview-activity-native` exercises real hidden-frame navigation (including
 lease-only rAF and capture), overlapping operations, cancellation and plugin
-completion values in a disposable profile. Add `-- --minimized` with a running
+completion values in a disposable profile. Add `--minimized` with a running
 window manager to exercise actual iconification rather than hiding the window.
 
 ## Nous free tier: state is pulled, never latched in the renderer

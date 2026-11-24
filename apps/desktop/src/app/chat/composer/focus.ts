@@ -14,10 +14,11 @@ import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/componen
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
 import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
+import { newSessionDraftAnnouncedFor, pendingNewSessionDraftKey } from '@/store/composer'
 
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
-import { RICH_INPUT_SLOT } from './rich-editor'
+import { placeCaretEnd, RICH_INPUT_SLOT } from './rich-editor'
 
 /** Composer routing key. The main chat is `'main'`, the edit composer
  *  `'edit'`; scoped composers (session tiles) use `'tile:<id>'`. */
@@ -28,6 +29,9 @@ export interface FocusDetail {
   target: ComposerTarget
   /** Append after focus (type-to-focus / soft `/`). */
   typeChar?: string
+  /** Set by the subscriber that owns `target`; an unclaimed `typeChar` is kept
+   *  for the next composer that mounts there (see takeUnclaimedTypedChars). */
+  claimed?: boolean
 }
 
 interface InsertDetail {
@@ -262,17 +266,64 @@ export const releaseActiveComposer = (target: ComposerTarget) => {
  *  a keep-alive-mounted background composer. */
 export const getActiveComposer = (): ComposerTarget => resolveActive()
 
+/** Type-to-focus characters typed while no composer subscribed for their
+ *  target, bound to the session the pending draft handoff names. */
+const unclaimedTypedChars = new Map<ComposerTarget, { chars: string; sessionKey: string }>()
+
+/** Take (and clear) the keystrokes typed for `target` while no composer owned
+ *  it. `adoptedSessionKey` is the session whose announced handoff the calling
+ *  composer just adopted (null when it adopted none): only that chat gets the
+ *  keys, appended after its carried draft. Any other composer gets nothing —
+ *  the keys stay with the handoff, like the carried draft does, and are
+ *  dropped once that handoff is no longer announced (abandoned). */
+export const takeUnclaimedTypedChars = (target: ComposerTarget, adoptedSessionKey: string | null): string => {
+  const held = unclaimedTypedChars.get(target)
+
+  if (!held) {
+    return ''
+  }
+
+  if (adoptedSessionKey && held.sessionKey === adoptedSessionKey.trim()) {
+    unclaimedTypedChars.delete(target)
+
+    return held.chars
+  }
+
+  if (!newSessionDraftAnnouncedFor(held.sessionKey)) {
+    unclaimedTypedChars.delete(target)
+  }
+
+  return ''
+}
+
 export const requestComposerFocus = (
   target: ComposerTarget | 'active' = 'active',
   { typeChar }: { typeChar?: string } = {}
 ) => {
-  const detail = { target: resolve(target), typeChar }
+  const detail: FocusDetail = { target: resolve(target), typeChar }
   const owner = $floatingComposerOwner.get()
 
   // A first character must land before subsequent native input events, not
   // behind a timer that can reorder fast typing or a pane handoff.
   if (typeChar) {
     dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
+
+    // Nobody owns the target right now: the composer is between unmount and
+    // remount (the cold-start resume's loading view mounts none). While that
+    // draft handoff is pending, keep the keystroke for the composer that
+    // mounts next on the target instead of dropping it — type-to-focus has
+    // already preventDefault-ed it. Outside a handoff an unclaimed key stays
+    // dropped, so stray typing is never replayed into a later composer. The
+    // keys belong to the handoff's destination chat, never to whichever chat
+    // happens to mount on the shared target first.
+    const sessionKey = detail.claimed ? null : pendingNewSessionDraftKey()
+
+    if (sessionKey) {
+      const held = unclaimedTypedChars.get(detail.target)
+      const prefix = held?.sessionKey === sessionKey ? held.chars : ''
+
+      unclaimedTypedChars.set(detail.target, { chars: `${prefix}${typeChar}`, sessionKey })
+    }
   } else if (typeof window !== 'undefined') {
     window.setTimeout(() => {
       if (!owner || $floatingComposerOwner.get() === owner) {
@@ -761,7 +812,19 @@ export const focusComposerInput = (el: HTMLElement | null) => {
       return
     }
 
+    // A remounted editor gets its draft painted before its portal host is
+    // attached, so that paint's placeCaretEnd bails on `!isConnected`, and
+    // focus() on a contenteditable with no selection inside it collapses the
+    // caret to offset 0 — the next keystrokes land before the draft (#140142).
+    // Read the selection BEFORE focusing: afterwards it is always inside.
+    const selection = window.getSelection()
+    const hadCaret = Boolean(selection?.rangeCount && el.contains(selection.anchorNode))
+
     el.focus({ preventScroll: true })
+
+    if (!hadCaret) {
+      placeCaretEnd(el)
+    }
   }
 
   const retry = () => {

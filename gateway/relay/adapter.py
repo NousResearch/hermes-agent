@@ -25,8 +25,10 @@ from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
 from gateway.platforms.event import ProcessingOutcome
+from gateway.platforms.helpers import clarify_text_with_choices
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
+from gateway.relay.admitted_authors import note_delivered
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -116,9 +118,9 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
 class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
-    # Connector egress splits against negotiated max_message_length, so the
-    # gateway-level cap must not pre-truncate relay deliveries.
+    # The connector splits to max_message_length (never pre-truncate); its result cannot report a lost chunk.
     splits_long_messages = True
+    reports_partial_delivery = False
 
     def __init__(
         self,
@@ -907,6 +909,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
         try:
             self._capture_ingress_scope(event)
+            note_delivered(event.source)  # a delivered Discord message: its author is admitted here
             await self._remember_discord_labels(event.source)
             self._stamp_slack_session_thread(event)
             # A structured prompt answer resolves its waiting primitive and is CONSUMED —
@@ -1038,49 +1041,18 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             logger.debug("slack session-thread stamp failed", exc_info=True)
 
     async def _localize_inbound_media(self, event) -> None:
-        """Download connector re-hosted attachments to local temp paths — every NATIVE
-        adapter presents inbound media as LOCAL FILE PATHS (vision/file tools consume
-        paths). Best-effort per entry: a failed download drops that entry, never the
-        message; with no client only re-host URLs are dropped (they'd 401 downstream)."""
-        try:
-            urls = list(getattr(event, "media_urls", None) or [])
-            if not urls:
-                return
-            # media_types / media_filenames are INDEXED IN PARALLEL with media_urls downstream:
-            # carry (url, mime, name) TRIPLES or survivors inherit a neighbour's type or name.
-            types = list(getattr(event, "media_types", None) or []) + [""] * len(urls)
-            names = list(getattr(event, "media_filenames", None) or []) + [""] * len(urls)
-            client = self._get_media_client()
-            localized: list[tuple[str, str, str]] = []
-            for url, mime, name in zip(urls, types, names):
-                if not isinstance(url, str) or not url:
-                    continue
-                if client is None:
-                    if "/relay/media/" not in url:
-                        localized.append((url, mime, name))
-                    continue
-                # The path is a random temp name; the original name rides beside it.
-                got = await client.download_with_name(url, suggested_name=name or None)
-                if got:
-                    localized.append((got[0], mime, got[1]))
-                elif "/relay/media/" not in url:
-                    # A public URL still has value as a URL; a dead re-host does not.
-                    localized.append((url, mime, name))
-            event.media_urls, event.media_types, event.media_filenames = (
-                [entry[i] for entry in localized] for i in range(3))
-        except Exception:
-            logger.debug("relay inbound media localization failed", exc_info=True)
+        """Download connector attachments, retaining metadata for each surviving file."""
+        from gateway.relay.adapter_inbound_media import localize_inbound_media
+        await localize_inbound_media(event, self._get_media_client)
 
     def prime_routing_cache(self, event) -> None:
-        """Warm the per-chat egress routing caches from a SYNTHETIC event: a completion
-        turn injected right after a restart (durable async-delegation replay) reaches
-        handle_message with the caches COLD, so its replies egress without
-        scope_id/user_id and the connector's fail-closed tenant guard declines them."""
+        """Fill cold scope/user egress caches for a restored turn; preserve newer live routing."""
         if event is None or getattr(event, "source", None) is None:
             return
-        self._capture_scope(event)
+        self._capture_scope(event, fill_only=True)
 
-    def _capture_scope(self, event) -> None:
+
+    def _capture_scope(self, event, fill_only: bool = False) -> None:
         """Remember a chat's egress discriminators from an inbound event. Never raises.
 
         scope_id: scoped (guild/channel) message → routing-table resolution. user_id:
@@ -1095,12 +1067,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             if not chat:
                 return
             chat = str(chat)
+            put = dict.setdefault if fill_only else dict.__setitem__
             # Underlying platform's string VALUE, skipping the generic RELAY
             # fallback (the connector's session default handles egress then).
             platform = getattr(src, "platform", None)
             platform_value = getattr(platform, "value", platform)
             if platform_value and platform_value != "relay":
-                self._platform_by_chat[chat] = str(platform_value)
+                put(self._platform_by_chat, chat, str(platform_value))
             for attr, cache in (
                 ("user_id", self._dm_user_by_chat), ("scope_id", self._scope_by_chat),
                 ("chat_type", self._chat_type_by_chat),
@@ -1108,11 +1081,11 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             ):
                 value = getattr(src, attr, None)
                 if value:
-                    cache[chat] = str(value)
+                    put(cache, chat, str(value))
             # Latest message ts: the status anchor for typing frames that carry no turn's own anchor.
             message_id, _chat = _event_ids(event)
             if message_id:
-                self._last_inbound_ts_by_chat[chat] = str(message_id)
+                put(self._last_inbound_ts_by_chat, chat, str(message_id))
         except Exception:
             pass
 
@@ -1982,20 +1955,15 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         the 64-byte callback budget. Open-ended clarifies and unavailable lanes fall
         back to base."""
         if choices and self.descriptor.supports_op("prompt"):
-            options = [{"id": f"c{i}", "label": str(choice)[:75]} for i, choice in enumerate(choices)]
+            # Clipped button labels are unreadable (#78115): long options go in full in the text.
+            text, numbered = clarify_text_with_choices(f"❓ {question}", choices, max_label_cols=48,
+                limit=self.max_message_length_for_chat(chat_id), len_fn=self.message_len_fn_for_chat(chat_id))
+            options = [{"id": f"c{i}", "label": str(i + 1) if numbered else str(c)[:75]} for i, c in enumerate(choices)]
             options.append({"id": "other", "label": t("platform.relay.prompt_other")})
             result = await self._mint_and_send_prompt(
-                "clarify",
-                {
-                    "session_key": session_key,
-                    "clarify_id": clarify_id,
-                    "choices": [str(c) for c in choices],
-                },
-                chat_id,
-                prompt_kind="clarify",
-                text=f"❓ {question}",
-                options=options,
-                metadata=metadata,
+                "clarify", {"session_key": session_key, "clarify_id": clarify_id, "choices": [str(c) for c in choices]},
+                chat_id, prompt_kind="clarify", text=text,
+                options=options, metadata=metadata,
             )
             if result is not None:
                 return result
@@ -2029,6 +1997,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 "relay prompt_response %s (option=%s) already resolved — ignoring repeat", prompt_id, option_id
             )
             return True
+        pending = self._pending_prompts.get(str(prompt_id)) or {}
+        from gateway.relay.prompt_resolvers import prompt_actor, prompt_refusal
+        actor = prompt_actor(self, event) if pending.get("kind") in ("exec_approval", "slash_confirm", "clarify") else None
+        if actor and (refusal := prompt_refusal(pending, actor, option_id)):
+            # Left pending: only the requester (or an approver) can consume it.
+            self._send_lifecycle_ack(str(pending.get("chat_id") or getattr(event.source, "chat_id", "")),
+                                     refusal, self._prompt_reply_metadata(event))
+            return True
         state = self._pop_prompt(prompt_id)
         if state is None:
             logger.info("relay prompt_response for unknown/expired prompt %s (option=%s)", prompt_id, option_id)
@@ -2038,59 +2014,18 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
         kind = state.get("kind")
         chat_id = str(state.get("chat_id") or getattr(event.source, "chat_id", ""))
-        handler = _PROMPT_RESOLVERS.get(kind)
+        from gateway.relay.prompt_resolvers import PROMPT_RESOLVERS
+        handler = PROMPT_RESOLVERS.get(kind)
         try:
             if handler is None:
                 logger.warning("relay prompt_response with unknown kind %r", kind)
             else:
                 # Acks are fire-and-forget: we are ON the read loop here (see
                 # _send_lifecycle_ack) and awaiting a send would self-deadlock.
-                await handler(self, state, option_id, chat_id, self._prompt_reply_metadata(event))
+                await handler(self, {**state, "actor": actor}, option_id, chat_id, self._prompt_reply_metadata(event))
         except Exception:
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
-
-    async def _resolve_exec_approval(self, state, option_id, chat_id, ack_meta) -> None:
-        from tools.approval import resolve_gateway_approval_card
-        choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval_card(str(state.get("session_key") or ""), choice, state.get("request_id"))
-        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
-        # In-channel ack preserves the audit trail the native edit gives (the
-        # connector's prompt message can't be edited cross-platform yet).
-        self._send_lifecycle_ack(chat_id, label, ack_meta)
-        if count:
-            self.resume_typing_for_chat(chat_id)
-
-    async def _resolve_slash_confirm(self, state, option_id, chat_id, ack_meta) -> None:
-        from tools import slash_confirm as slash_confirm_mod
-
-        choice = option_id if option_id in _SLASH_CONFIRM_LABELS else "cancel"
-        result_text = await slash_confirm_mod.resolve(
-            str(state.get("session_key") or ""), str(state.get("confirm_id") or ""), choice
-        )
-        self._send_lifecycle_ack(chat_id, _SLASH_CONFIRM_LABELS[choice], ack_meta)
-        if result_text:
-            self._send_lifecycle_ack(chat_id, str(result_text), ack_meta)
-
-    async def _resolve_clarify(self, state, option_id, chat_id, ack_meta) -> None:
-        from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
-
-        clarify_id = str(state.get("clarify_id") or "")
-        if option_id == "other":
-            mark_awaiting_text(clarify_id)
-            self._send_lifecycle_ack(chat_id, "✏️ Type your answer:", ack_meta)
-            return
-        choices = state.get("choices") or []
-        try:
-            idx = int(option_id[1:]) if option_id.startswith("c") else -1
-        except ValueError:
-            idx = -1
-        if 0 <= idx < len(choices):
-            resolve_gateway_clarify(clarify_id, str(choices[idx]))
-            self._send_lifecycle_ack(chat_id, f"✅ {choices[idx]}", ack_meta)
-        else:
-            # Unmappable option: flip to text capture (never dead-end a clarify).
-            mark_awaiting_text(clarify_id)
 
     def _send_lifecycle_ack(self, chat_id: str, text: str, metadata: dict[str, Any]) -> None:
         """Fire-and-forget a prompt-lifecycle ack from read-loop context.
@@ -2295,11 +2230,3 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             platform=self._platform_by_chat.get(chat_id) or self._platform_by_chat.get(str(thread_id)),
         )
         return result is not None
-
-
-# prompt kind -> resolver (order-independent: kinds are distinct keys).
-_PROMPT_RESOLVERS = {
-    "exec_approval": RelayAdapter._resolve_exec_approval,
-    "slash_confirm": RelayAdapter._resolve_slash_confirm,
-    "clarify": RelayAdapter._resolve_clarify,
-}

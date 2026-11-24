@@ -155,3 +155,184 @@ def test_a_refused_write_is_a_400_with_no_secret_saved_and_no_switch(client):
     assert _config_path().read_text(encoding="utf-8") == "{not json"
     assert (load_config().get("memory") or {}).get("provider") != "ownprov"
     assert "OWNPROV_API_KEY" not in load_env()
+
+
+def _install(name, init, schema):
+    from hermes_constants import get_hermes_home
+    plugin_dir = get_hermes_home() / "plugins" / name
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text(init, encoding="utf-8")
+    (plugin_dir / "config_schema.py").write_text(schema, encoding="utf-8")
+
+
+def test_storage_provider_without_a_writer_is_a_501_with_no_secret_saved(client):
+    from hermes_cli.config import load_env
+
+    init = _INIT.replace("class OwnProv", "class _Unused").replace("def write_config_fields", "def _unused_write")
+    init = init.replace("ctx.register_memory_provider(OwnProv())", "ctx.register_memory_provider(_Unused())")
+    init = init.replace('name = "ownprov"', 'name = "nowriter"')
+    _install("nowriter", init, _SCHEMA.replace('name="ownprov"', 'name="nowriter"'))
+
+    resp = client.put("/api/memory/providers/nowriter/config?surface=declared",
+                      json={"values": {"workspace": "x", "apiKey": "nw-key"}})
+
+    assert resp.status_code == 501
+    assert "OWNPROV_API_KEY" not in load_env()
+
+
+def test_a_provider_that_fails_to_load_is_a_503_not_unknown(client):
+    _install("broken", "from agent.memory_provider import MemoryProvider\nraise RuntimeError('import-time failure')\n",
+             _SCHEMA.replace('name="ownprov"', 'name="broken"'))
+    assert client.get("/api/memory/providers/broken/config?surface=declared").status_code == 503
+
+
+def test_an_unknown_storage_kind_shows_no_panel_and_writes_no_stray_file(client):
+    from hermes_constants import get_hermes_home
+
+    _install("oddstore", _INIT.replace('name = "ownprov"', 'name = "oddstore"'),
+             _SCHEMA.replace('name="ownprov"', 'name="oddstore"').replace("storage=STORAGE_PROVIDER", 'storage="retired_kind"'))
+    url = "/api/memory/providers/oddstore/config?surface=declared"
+
+    assert client.get(url).json()["fields"] == []
+    assert client.put(url, json={"values": {"workspace": "x"}}).status_code == 400
+    assert not (get_hermes_home() / "oddstore").exists()
+
+
+def test_a_schema_that_fails_to_load_logs_its_traceback_once(client, caplog):
+    _install("oldschema", _INIT.replace('name = "ownprov"', 'name = "oldschema"'),
+             "from plugins.memory.config_schema import NO_SUCH_NAME\n")
+    with caplog.at_level("ERROR", logger="plugins.memory.config_schema"):
+        for _ in range(3):
+            assert client.get("/api/memory/providers/oldschema/config?surface=declared").status_code == 200
+    assert sum("failed to load config schema" in r.getMessage() for r in caplog.records if r.levelname == "ERROR") == 1
+
+
+def _park(home, spelling, provider=None):
+    import hermes_yaml as yaml
+
+    path = home / "config.yaml"
+    config = (yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None) or {}
+    config.setdefault("plugins", {})["disabled"] = [spelling]
+    if provider:
+        config.setdefault("memory", {})["provider"] = provider
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+
+def test_a_parked_provider_says_plugins_disabled_turned_it_off(client):
+    from hermes_constants import get_hermes_home
+
+    _park(get_hermes_home(), "ownprov", provider="ownprov")
+
+    resp = client.get(_URL)
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert "plugins.disabled" in detail, detail
+    assert f"`hermes -p default plugins enable ownprov` with HERMES_HOME set to {get_hermes_home()}." in detail, detail
+    assert "external memory is off" in detail, detail
+
+
+def test_a_parked_provider_while_another_is_selected_does_not_say_external_memory_is_off(client):
+    from hermes_constants import get_hermes_home
+
+    _park(get_hermes_home(), "ownprov", provider="otherprov")
+
+    detail = client.get(_URL).json()["detail"]
+
+    assert "plugins.disabled lists it" in detail and "external memory is off" not in detail, detail
+
+
+def test_a_secondary_profile_panel_names_that_profile_and_its_refused_save_changes_nothing(client, monkeypatch):
+    from hermes_cli import profiles
+    from hermes_constants import get_hermes_home
+
+    default_home = get_hermes_home()
+    work_home = default_home / "profiles" / "work"
+    plugin_dir = work_home / "plugins" / "ownprov"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text(_INIT, encoding="utf-8")
+    (plugin_dir / "config_schema.py").write_text(_SCHEMA, encoding="utf-8")
+    (plugin_dir / "plugin.yaml").write_text("name: ownprov-manifest\n", encoding="utf-8")
+    _park(work_home, "ownprov-manifest", provider="otherprov")  # the manifest spelling parks it too
+    (work_home / "ownprov.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: default_home / "profiles")
+    default_config = (default_home / "config.yaml").read_bytes() if (default_home / "config.yaml").exists() else None
+    work_config = (work_home / "config.yaml").read_bytes()
+
+    url = f"{_URL}&profile=work"
+    got = client.get(url)
+    put = client.put(url, json={"values": {"workspace": "w", "apiKey": "work-key"}})
+
+    assert got.status_code == put.status_code == 503, (got.text, put.text)
+    for detail in (got.json()["detail"], put.json()["detail"]):
+        assert f"`hermes plugins enable ownprov` with HERMES_HOME set to {work_home}." in detail, detail
+        assert "external memory is off" not in detail, detail
+    assert (work_home / "config.yaml").read_bytes() == work_config  # no switch to ownprov
+    assert (work_home / "ownprov.json").read_text(encoding="utf-8") == "{}"
+    for home in (work_home, default_home):
+        assert "work-key" not in ((home / ".env").read_text(encoding="utf-8") if (home / ".env").exists() else "")
+    assert ((default_home / "config.yaml").read_bytes()
+            if (default_home / "config.yaml").exists() else None) == default_config
+
+
+_NATIVE, _NATIVE_WORK, _CUSTOM, _CUSTOM_WORK, _LOOSE = (
+    ".hermes", ".hermes/profiles/work", "custom", "custom/profiles/work", ".hermes/loose-home")
+
+
+@pytest.mark.parametrize(("inspected", "launch", "shell", "sticky"), [
+    (_NATIVE, _NATIVE_WORK, _NATIVE_WORK, None),  # a named launch inspecting default
+    (_NATIVE, _NATIVE, None, "work"),  # default home under a sticky secondary
+    (_NATIVE_WORK, _NATIVE, None, None),
+    (_CUSTOM, _CUSTOM, None, None),  # a custom root's notice run from a shell with HERMES_HOME unset
+    (_CUSTOM_WORK, _CUSTOM, _NATIVE, "work"),
+    (_LOOSE, _NATIVE, _NATIVE, "work"),  # a home that is no profile
+])
+def test_the_enable_command_run_from_another_shell_enables_only_the_inspected_home(
+        tmp_path, monkeypatch, inspected, launch, shell, sticky):
+    import os
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import hermes_yaml as yaml
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from plugins.memory import parked_provider_notice
+
+    homes = [tmp_path / rel for rel in (_NATIVE, _NATIVE_WORK, _CUSTOM, _CUSTOM_WORK, _LOOSE)]
+    for home in homes:
+        plugin_dir = home / "plugins" / "ownprov"
+        plugin_dir.mkdir(parents=True)
+        for file, text in (("__init__.py", _INIT), ("config_schema.py", _SCHEMA), ("plugin.yaml", "name: ownprov\n")):
+            (plugin_dir / file).write_text(text, encoding="utf-8")
+        _park(home, "ownprov", provider="ownprov")
+        (home / ".env").write_text(f"OWNPROV_API_KEY={home.name}-key\n", encoding="utf-8")
+    if sticky:
+        for root in (_NATIVE, _CUSTOM):
+            (tmp_path / root / "active_profile").write_text(f"{sticky}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / launch))
+    token = set_hermes_home_override(tmp_path / inspected)
+    try:
+        notice = parked_provider_notice("ownprov")
+    finally:
+        reset_hermes_home_override(token)
+    assert "external memory is off" in notice, notice
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    # A shell somewhere else follows the notice: its own HERMES_HOME (or none), with HERMES_HOME set when told to.
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
+    env.update(HOME=str(tmp_path), PYTHONPATH=str(repo), **({"HERMES_HOME": str(tmp_path / shell)} if shell else {}))
+    told = re.search(r"with HERMES_HOME set to (.+)\.$", notice)
+    if told:
+        env["HERMES_HOME"] = told.group(1)
+    command = re.search(r"`hermes (.+?)`", notice).group(1).split()
+    run = subprocess.run([sys.executable, "-m", "hermes_cli.main", *command], cwd=repo, env=env,
+                         capture_output=True, text=True, timeout=120, check=False)
+
+    assert run.returncode == 0, (notice, run.stdout, run.stderr)
+    target = tmp_path / inspected / "config.yaml"
+    assert "ownprov" not in (yaml.safe_load(target.read_text(encoding="utf-8"))["plugins"].get("disabled") or ()), notice
+    assert {p: data for p, data in before.items() if p != target} == {
+        p: p.read_bytes() for p in before if p != target}, notice  # every other config, secret and sticky file

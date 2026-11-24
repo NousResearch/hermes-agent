@@ -43,7 +43,10 @@ def _ask_chat(runner, source, session_key, loop, question, labels) -> Optional[s
     clarify_id = uuid.uuid4().hex[:10]
     send = dict(chat_id=source.chat_id, question=question, choices=labels, clarify_id=clarify_id,
                 session_key=session_key, metadata=runner._thread_metadata_for_source(source))
-    clarify_gateway.register(clarify_id, session_key, question, labels)
+    from tools.approval_context import prompt_authority
+    # Asked on the command's executor thread: the command's sender is the requester.
+    clarify_gateway.register(clarify_id, session_key, question, labels, authority=prompt_authority(
+        source.user_id or "", source.user_name or "", source.chat_type or ""))
 
     def fallback():
         coro = text_fallback_coro(adapter, **send)

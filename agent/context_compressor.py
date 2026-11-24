@@ -2368,10 +2368,9 @@ class ContextCompressor(
             )
 
     def record_completed_compaction(self, *, used_fallback: bool = False, feasibility_skip: bool = False) -> None:
-        """Record one completed boundary; ``feasibility_skip`` is streak-neutral but still arms the real-usage verdict."""
+        """Record a completed boundary; a pre-LLM skip adds no ineffectiveness or fallback strike."""
         # A completed boundary proves compressibility: lift any structural no-op backoff.
         self._structural_no_op_backoff_until = 0.0
-        self._verify_compaction_cleared_threshold = True
         if feasibility_skip:
             # A deliberate pre-LLM summary skip (#60451, benched model) is not a summary-quality verdict: it must
             # neither extend a fallback streak (the streak decides whether the summary model is called)
@@ -2382,6 +2381,7 @@ class ContextCompressor(
                     self._fallback_compression_streak,
                 )
             return
+        self._verify_compaction_cleared_threshold = True
         if used_fallback:
             self._fallback_compression_streak += 1
             if not self.quiet_mode:

@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -15,6 +16,8 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -151,6 +154,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    lane_queue_depth: Optional[int] = None
+    """Model-lane queue depth that restricted this tick (``waiting_requests``
+    at the local scheduler), or ``None`` when the lane guard didn't hold.
+    Same contract as ``memory_pressure``: deferred, not dropped."""
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
@@ -165,6 +172,7 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
+    lane_depth: Optional[int] = None
     for res in results:
         if res is None:
             continue
@@ -176,9 +184,13 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
+        if res.lane_queue_depth is not None:
+            lane_depth = max(lane_depth or 0, res.lane_queue_depth)
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
         parts.append(f"memory_pressure={pressure}")
+    if lane_depth is not None:
+        parts.append(f"lane_queue={lane_depth}")
     return ", ".join(parts)
 
 
@@ -1959,6 +1971,46 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     return total
 
 
+def spawn_slot_available(
+    conn: sqlite3.Connection,
+    *,
+    max_spawn: Optional[int] = None,
+    max_in_progress: Optional[int] = None,
+    board: Optional[str] = None,
+) -> bool:
+    """True when the next tick would still have a spawn slot.
+
+    Side-effect-free mirror of :func:`_tick_spawn_budget`, used by the
+    "dispatcher stuck" health telemetry. ``has_spawnable_ready`` answers only
+    "is there work?" and ignores concurrency caps, so with ``max_spawn`` /
+    ``max_in_progress`` lanes legitimately full every tick reports ready work
+    plus 0 spawns and the warning fires forever. Fails open (True) on a read
+    error: a broken board must never hide a genuinely stuck dispatcher.
+
+    The model-lane guard counts here too: a tick legitimately held back by a
+    saturated inference lane is not a stuck dispatcher, and omitting it would
+    resurrect the same forever-firing warning for a different cap.
+    """
+    try:
+        lane_limit = configured_lane_queue_limit()
+        if lane_limit is not None:
+            lane_depth = _lane_queue_depth()
+            if lane_depth is not None and lane_depth >= lane_limit:
+                return False
+        if max_spawn is None and max_in_progress is None:
+            return True
+        running = count_running_tasks(conn)
+        if max_spawn is not None and running >= max_spawn:
+            return False
+        if max_in_progress is not None:
+            total_running = running + count_running_tasks_other_boards(board=board)
+            if total_running >= max_in_progress:
+                return False
+        return True
+    except Exception:
+        return True
+
+
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     """Classify system memory pressure: ok/elevated/critical/unknown.
 
@@ -1976,6 +2028,120 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return classify_pressure(sample.get("mem_available_kib"), sample.get("mem_total_kib"))
     except Exception:
         return "unknown"
+
+
+# Model-lane back-pressure guard. The caps above bound WORKERS; nothing bounded
+# the inference lane those workers feed. Where one local model serves requests
+# serially (oMLX ``scheduler.max_concurrent_requests: 1``), an extra card cannot
+# raise throughput — it only deepens the queue, and a turn stuck behind a long
+# prefill is likelier to be interrupted (``rc=130 waiting for model response``)
+# than to finish. Same contract as the memory guard: hold this tick's spawns,
+# keep reclaim/promotion live, and fail open on anything unreadable.
+
+LANE_STATUS_PATH = "/api/status"
+LANE_STATUS_TIMEOUT_SECONDS = 1.0
+
+# Only loopback base_urls are probed: this runs every dispatch tick and must
+# never add an outbound call to a hosted provider's API.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
+# One warning per blocked episode: a saturated lane holds for minutes, and the
+# tick fires every 15s — the memory guard's per-tick warning would be 40 lines
+# of identical noise before the queue drained.
+_lane_queue_guard_logged = False
+
+
+def _lane_status_url() -> Optional[str]:
+    """Scheduler status URL for the lane guard, or ``None`` when not local.
+
+    ``kanban.lane_status_url`` wins when set; otherwise derive
+    ``<model.base_url origin>/api/status`` (oMLX) for loopback base_urls only.
+    A hosted base_url returns ``None`` so the guard stays inert rather than
+    probing an external API every tick.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+    except Exception:
+        return None
+    explicit = str((cfg.get("kanban") or {}).get("lane_status_url") or "").strip()
+    if explicit:
+        return explicit
+    base = str((cfg.get("model") or {}).get("base_url") or "").strip()
+    if not base:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(base)
+    except Exception:
+        return None
+    if not parsed.scheme or not parsed.netloc or parsed.hostname not in _LOOPBACK_HOSTS:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}{LANE_STATUS_PATH}"
+
+
+def _lane_queue_depth(url: Optional[str] = None) -> Optional[int]:
+    """Queued requests on the local inference lane, or ``None`` when unknown.
+
+    Reads ``waiting_requests`` from the scheduler status document. Any failure
+    (unreachable, non-JSON, missing/invalid field) is ``None`` — the guard fails
+    open, exactly as ``_memory_pressure_level`` does on non-Linux hosts.
+    """
+    target = url or _lane_status_url()
+    if not target:
+        return None
+    try:
+        request = urllib.request.Request(target, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=LANE_STATUS_TIMEOUT_SECONDS) as response:
+            raw = json.load(response)
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    depth = raw.get("waiting_requests")
+    if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+        return None
+    return depth
+
+
+def configured_lane_queue_limit() -> Optional[int]:
+    """``kanban.lane_queue_limit``: max queued lane requests tolerated.
+
+    ``None`` (unset/invalid/``< 1``) disables the guard, so installs without a
+    local serialized lane are unaffected by its addition.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("lane_queue_limit")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        ival = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return ival if ival >= 1 else None
+
+
+def _log_lane_queue_guard(depth: int, limit: int) -> None:
+    global _lane_queue_guard_logged
+    if _lane_queue_guard_logged:
+        return
+    _lane_queue_guard_logged = True
+    _kb._log.warning(
+        "kanban dispatch: model lane has %d queued request(s) (limit %d); "
+        "spawning no new workers this tick (deferred, not dropped)",
+        depth,
+        limit,
+    )
+
+
+def _log_lane_queue_clear() -> None:
+    global _lane_queue_guard_logged
+    if not _lane_queue_guard_logged:
+        return
+    _lane_queue_guard_logged = False
+    _kb._log.info("kanban dispatch: model lane queue drained; resuming spawns")
 
 
 def dispatch_once(
@@ -2261,6 +2427,20 @@ def _tick_spawn_budget(
                 "limiting to at most 1 new worker this tick"
             )
             spawn_budget = 1
+
+    # Model-lane guard: a static worker cap can't see the queue those workers
+    # are already waiting in. Any queued request at/over the limit holds this
+    # tick's spawns; reclaim/promotion already ran, so bookkeeping stays live
+    # and deferred tasks wait for a later tick. ``None`` (unreadable, or the
+    # guard unset) imposes no restriction.
+    lane_limit = configured_lane_queue_limit()
+    if lane_limit is not None:
+        lane_depth = _lane_queue_depth()
+        if lane_depth is not None and lane_depth >= lane_limit:
+            result.lane_queue_depth = lane_depth
+            _log_lane_queue_guard(lane_depth, lane_limit)
+            return False, None
+        _log_lane_queue_clear()
     return True, spawn_budget
 
 

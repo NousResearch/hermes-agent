@@ -243,6 +243,44 @@ class _KanbanDispatcher:
                             conn.close()
         return False
 
+    def spawnable_with_capacity(self) -> bool:
+        """True when a board has spawnable work AND a free spawn slot.
+
+        Health-telemetry companion to :meth:`ready_nonempty`: that probe only
+        answers "is there work?" and ignores the concurrency caps, so while
+        ``max_spawn`` / ``max_in_progress`` lanes are legitimately full every
+        tick reports ready work plus 0 spawns and the "dispatcher stuck"
+        warning fires forever. Read-only; mirrors the budget the tick computes.
+        """
+        kbd = _kbd()
+        _review_probe = kbd.review_dispatch_enabled()
+        settings = self.settings
+        from hermes_cli import kanban_db as _kb
+        with _kb.pin_first_board_resolution():
+            for slug in self._board_slugs():
+                conn = None
+                try:
+                    conn = _kbc().connect(board=slug)
+                    has_work = kbd.has_spawnable_ready(conn) or (
+                        _review_probe and kbd.has_spawnable_review(conn)
+                    )
+                    if not has_work:
+                        continue
+                    if kbd.spawn_slot_available(
+                        conn,
+                        max_spawn=settings.max_spawn,
+                        max_in_progress=settings.max_in_progress,
+                        board=slug,
+                    ):
+                        return True
+                except Exception:
+                    continue
+                finally:
+                    if conn is not None:
+                        with contextlib.suppress(Exception):
+                            conn.close()
+        return False
+
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
         """Auto-decompose up to N triage tasks across all boards into ready workgraphs.
 

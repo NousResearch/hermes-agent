@@ -1,6 +1,6 @@
 name: better-peek
 repo: https://github.com/riverosmejia/better-peek
-sha: ad0bbf06c36859b60df31f5d0e978d224b6e8ea1
+sha: 88d29192181cbc62364de3aa830896c49d169c02
 description: >-
   The paths an answer names stop being text: /peek lists them and shows a file's lines with the one
   the path named marked (a plain command, so it works in the CLI, the TUI, over ssh and in the
@@ -14,7 +14,7 @@ maintainer: riverosmejia
 tier: community
 category: general
 docs_url: https://github.com/riverosmejia/better-peek#readme
-version: "0.3.0"
+version: "0.3.1"
 platforms: [linux]
 capabilities:
   provides_tools: []

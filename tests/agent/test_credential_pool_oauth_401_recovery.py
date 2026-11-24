@@ -358,3 +358,20 @@ class TestRefreshFailedEntryOutcome:
         pool._refresh_entry_impl(row, force=True)
 
         assert [e.refresh_token for e in recovered] == ["cx-rt-1"]
+
+    def test_a_recovery_that_fails_is_not_retried_against_an_older_row(self, monkeypatch):
+        row = PooledCredential(provider="openai-codex", id="cx", label="cx", auth_type=AUTH_TYPE_OAUTH, priority=0,
+                               source="manual:device_code", access_token="cx-at-0", refresh_token="cx-rt-0")
+        pool = CredentialPool("openai-codex", [row])
+        recovered = []
+
+        def recover(entry, _exc):
+            recovered.append(entry.refresh_token)
+            raise OSError("auth store write failed")
+        monkeypatch.setattr(pool, "_sync_entry_from_auth_store", lambda _e: replace(row, refresh_token="cx-rt-1"))
+        monkeypatch.setattr(pool, "_post_tokens_refresh", lambda _e: (_ for _ in ()).throw(RuntimeError("401")))
+        monkeypatch.setattr(pool, "_recover_failed_refresh", recover)
+
+        with pytest.raises(OSError):
+            pool._refresh_entry_impl(row, force=True)
+        assert recovered == ["cx-rt-1"]

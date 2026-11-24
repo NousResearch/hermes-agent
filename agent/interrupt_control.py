@@ -407,6 +407,29 @@ class InterruptControlMixin:
             self._steer_last_drain = (text, parts)  # requeue_drained_steer restores its tickets
         return text
 
+    def notify_between_tool_calls(self, text: str) -> bool:
+        """Queue machine notification text for delivery at the next tool-batch boundary.
+
+        The background-completion counterpart of ``steer()``: a process that finishes while this
+        turn is still running lands in the running turn at its next break instead of waiting for
+        the next user turn. Delivered as its own ``[INTERNAL NOTIFICATION ...]`` row (never the
+        steer marker — a process notice carries no user authority). Returns False for empty text.
+        """
+        if not text or not text.strip():
+            return False
+        with _ic_lock(self, "_pending_notifications_lock"):
+            pending: list = list(_ic_slot(self, "_pending_notifications_lock", "_pending_notifications") or ())
+            pending.append(text.strip())
+            self._pending_notifications = pending
+        return True
+
+    def _drain_pending_notifications(self) -> list:
+        """Return and clear queued notification texts, in arrival order."""
+        with _ic_lock(self, "_pending_notifications_lock"):
+            pending: list = list(_ic_slot(self, "_pending_notifications_lock", "_pending_notifications") or ())
+            self._pending_notifications = []
+        return pending
+
     def _drain_leftover_steer(self) -> Optional[str]:
         """The turn finalizer's drain: return and clear the ticketless steers (they become the next user
         turn) and keep each ticketed one buffered. A transfer is never a follow-up a restart may discard:

@@ -1536,6 +1536,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
         pending_event, pending = self._merge_leftover_steer(result, adapter, source, session_key, pending_event, pending)
+        # Same for a background notice that missed the final tool boundary: the first one becomes
+        # the next turn when nothing else is pending; the rest queue behind pending work.
+        pending_event, pending = self._requeue_leftover_notifications(
+            result, adapter, source, session_key, pending_event, pending)
 
         # Safety net: a pending slash command is never passed to the agent as user input.
         if pending and pending.strip().startswith("/"):

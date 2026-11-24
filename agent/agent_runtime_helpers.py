@@ -3258,6 +3258,43 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
+def apply_pending_notifications_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+    """Deliver queued background notifications at this turn's next break.
+
+    Called at the same point as ``apply_pending_steer_to_tool_results`` (end of a tool-call batch,
+    before the next API call). Each queued notice becomes its own ``role:"user"`` row after the
+    last tool result — the one role-alternation-safe mid-turn slot — carrying the notification
+    marker rather than the user steer marker. A process that finishes mid-turn therefore reaches
+    the model at the next tool boundary instead of waiting for the next user turn.
+    """
+    if num_tool_msgs <= 0 or not messages:
+        return
+    drain = getattr(agent, "_drain_pending_notifications", None)
+    if not callable(drain):
+        return
+    pending = drain()
+    if not pending:
+        return
+    tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
+    target = next((messages[j] for j in tail
+                   if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
+    if target is None:
+        # No tool result in this batch: requeue so the notice still lands at the next boundary
+        # rather than being lost with a batch that produced nothing to anchor against.
+        queue = getattr(agent, "notify_between_tool_calls", None)
+        if callable(queue):
+            for text in pending:
+                queue(text)
+        return
+    from agent.prompt_builder import notification_user_row
+    for text in pending:
+        messages.append(notification_user_row(text))
+    logger.info(
+        "Delivered %d background notification(s) to agent after tool batch: %s",
+        len(pending), "; ".join(t[:80] for t in pending),
+    )
+
+
 def _shutdown_socket(sock: Any) -> None:
     """``shutdown(SHUT_RDWR)`` WITHOUT closing the FD. ``close()`` from a non-owner thread is
     unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a flushed TLS record lands
@@ -3292,6 +3329,7 @@ __all__ = [
     "_iter_pool_sockets",
     "anthropic_prompt_cache_policy",
     "apply_pending_steer_to_tool_results",
+    "apply_pending_notifications_to_tool_results",
     "blank_cache_policy_stub",
     "convert_to_trajectory_format",
     "copy_reasoning_content_for_api",

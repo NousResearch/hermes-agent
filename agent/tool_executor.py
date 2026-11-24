@@ -1250,6 +1250,11 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     record_tool_batch(agent, batch, contents_before)
     release_replaced_skill_views(effective_task_id, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
+    # Background notices ride the same boundary, in their own marker row: a process that finished
+    # while this batch ran reaches the model now, not at the next user turn.
+    _apply_notices = getattr(agent, "_apply_pending_notifications_to_tool_results", None)
+    if callable(_apply_notices):
+        _apply_notices(messages, num_tools)
 
 
 def _tool_progress_enabled(agent) -> bool:

@@ -215,6 +215,64 @@ class GatewayBusySessionMixin:
         adapter._pending_messages[session_key] = pending_event
         logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
 
+    def _requeue_leftover_notifications(
+        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
+        pending_event: Optional[MessageEvent] = None, pending: Optional[str] = None,
+    ) -> tuple[Optional[MessageEvent], Optional[str]]:
+        """Re-queue background notices that arrived after the turn's last tool batch.
+
+        The running turn had no boundary left to deliver them at. With nothing else pending the
+        first notice IS the next turn — returned the way ``_merge_leftover_steer`` returns a
+        leftover steer, as its own internal event so it runs immediately (the idle-session
+        completion path's behavior) instead of stranding on the FIFO until the user's next
+        message. Anything else — the remaining notices, or all of them when a queued follow-up
+        is already pending — FIFO-appends behind that work in arrival order. Never user input:
+        internal events persist as ``internal_notification`` rows and never reply-notify.
+        """
+        if not isinstance(result, dict) or not session_key:
+            return pending_event, pending
+        leftovers = [text for text in (result.get("pending_notifications") or [])
+                     if isinstance(text, str) and text.strip()]
+        if not leftovers:
+            return pending_event, pending
+        from gateway.platforms.base import MessageEvent
+        from gateway.run_notifications import _mark_internal_notification
+        metadata = {"notification_origin": "process_registry_synthetic"}
+        events = [MessageEvent(
+            text=_mark_internal_notification(text), source=source, internal=True,
+            metadata=dict(metadata),
+        ) for text in leftovers]
+        if pending_event is None and not pending:
+            head, rest = events[0], events[1:]
+            logger.debug(
+                "Delivering a background notification as the next turn for session %s: '%s...'",
+                session_key, (head.text or "")[:40],
+            )
+        else:
+            head, rest = None, events
+        for event in rest:
+            # The busy-queue cap drops USER follow-ups on purpose; a notice the turn already
+            # failed to deliver must not be lost a second time, so at the cap it parks on the
+            # unbounded overflow list and the promotion path drains it in arrival order.
+            resolver = getattr(self, "_delivery_adapter_for", None)
+            target = (resolver(event.source) if callable(resolver) else None) or adapter
+            cap = getattr(self, "_BUSY_QUEUE_MAX_PENDING", 32)
+            at_cap = False
+            with contextlib.suppress(Exception):
+                at_cap = self._queue_depth(session_key, adapter=target) >= cap
+            if at_cap and target is not None and getattr(target, "_pending_messages", None) is not None:
+                logger.debug(
+                    "Busy queue at cap (%d) for session %s — parking the background notice on the overflow list",
+                    cap, session_key,
+                )
+                self._enqueue_fifo(session_key, event, target)
+            else:
+                self._queue_or_replace_pending_event(session_key, event)
+            logger.debug("Re-queued a background notification for session %s (no tool boundary left)", session_key)
+        if head is not None:
+            return head, head.text
+        return pending_event, pending
+
     def _merge_leftover_steer(
         self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
         pending_event: Optional[MessageEvent], pending: Optional[str],

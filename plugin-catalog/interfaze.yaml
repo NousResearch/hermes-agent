@@ -1,7 +1,7 @@
 name: interfaze
 title: Interfaze
 repo: https://github.com/InterfazeAI/interfaze-agent-plugin
-sha: f3c7fc1c8794e40c540a3e71786ce3dd32421a47
+sha: d9b038029e13c04c2895cbde98d1528557551789
 description: >-
   Interfaze, a model built for deterministic tasks, with accurate and verifiable output in
   one call: web search, web scraping, OCR for images, PDFs and Word documents, speech-to-text,
@@ -26,9 +26,9 @@ maintainer: "jade-interfaze <jade@interfaze.ai>"
 tier: community
 category: web
 requires_hermes: ">=0.22.6"
-version: "0.1.2"
-docs_url: https://github.com/InterfazeAI/interfaze-agent-plugin/blob/f3c7fc1c8794e40c540a3e71786ce3dd32421a47/README.md
-image: https://raw.githubusercontent.com/InterfazeAI/interfaze-agent-plugin/f3c7fc1c8794e40c540a3e71786ce3dd32421a47/assets/banner.png
+version: "0.1.3"
+docs_url: https://github.com/InterfazeAI/interfaze-agent-plugin/blob/d9b038029e13c04c2895cbde98d1528557551789/README.md
+image: https://raw.githubusercontent.com/InterfazeAI/interfaze-agent-plugin/d9b038029e13c04c2895cbde98d1528557551789/assets/banner.png
 platforms: []
 capabilities:
   provides_tools: []

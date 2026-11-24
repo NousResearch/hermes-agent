@@ -463,7 +463,7 @@ page in the stage instead, so every section stays reachable.
 
 Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
 following the Figma conversation (`491:40346`; width from "Prod - Desktop" chat 16292:16175): one
-centred 640px column shared with the docked composer (`--portal-column-conversation`, read as
+centred column shared with the docked composer, as wide as the stage allows up to 960px (`--portal-column-conversation`, read as
 `--portal-conversation-*` in `app/chat/stage.css`), prose flush with the composer's edges
 (`--portal-column-conversation-inset`), 30px turn gaps and 20px output gaps. User bubbles hug their text at
 the right edge up to 380px, with 6px corners, 6/10px insets and a 5% (light 2%)
@@ -511,7 +511,7 @@ foreground UI. Changing scope revokes the old metrics binding immediately;
 events during rebinding are discarded, never replayed under later consent.
 
 The redesigned composer is 640 × 148 on an empty landing (msg 16292:15670). In a populated native
-conversation it keeps the 148px base height, spans the shared 640px column and
+conversation it keeps the 148px base height, spans the shared conversation column (up to 960px) and
 docks 30px above the stage floor. Its card is navy, white .05 / blue .10 / black .80 flattened onto
 the stage (white on light), with no shadow, and its resting prompt is the card's heading line in
 full ink (16292:15681); Figma's dim second line ("Prompt suggestions or processing...") is template
@@ -921,10 +921,10 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-welcome-glyph` | `1rem` | ″ | The first-time splash's glyphs (Onboarding 18695:17165, 18695:18477): 16 on a place's row and in its seen tile, 20 on a starter idea. |
 | `--portal-idea-glyph` | `1.25rem` | ″ |  |
 | `--portal-notice-strip-height` | `1.5rem` | ″ | The notice strip (app/shell/butterbar.tsx: the terms) is one 24px row at the window's floor, under the frame; while it shows, the status bar stands on it rather than over it. |
-| `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
-| `--portal-column-conversation` | `40rem` | ″ |  |
+| `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer, the transcript flush with the composer's edges: as wide as its stage allows, up to 960. Figma draws 440 (chat 16292:16175) and the column was 640; at either, a wide window left most of the stage empty beside a narrow column, and dragging the sidebar narrower gave the chat nothing. It now takes the room there is, as classic's does, with a cap so a line never runs the width of a wide monitor. |
+| `--portal-column-conversation` | `60rem` | ″ |  |
 | `--portal-column-conversation-inset` | `0px` | ″ |  |
-| `--portal-column-landing` | `40rem` | ″ | The landing's composer before the first message, as wide as a conversation's (16292:14822). |
+| `--portal-column-landing` | `40rem` | ″ | The 640 column: the landing's composer before the first message (16292:14822), and what stands on the stage in its place (the splashes, the held exchange, the offers over the composer). |
 | `--portal-tool-panel-width` | `26.25rem` | ″ | The developer tool panel's default width (Files, Terminal, Review and Browser share one width, redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. |
 | `--page-content-inset` | `1.5rem` | ″ | The least a page's column keeps clear of its stage's sides, when the stage is narrower than the column. `(max-width: 639.98px)`: `1rem`. |
 | `--portal-scroll-edge-fade` | `1.5rem` | ″ | How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). |

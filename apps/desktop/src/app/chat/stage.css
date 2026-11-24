@@ -1,6 +1,6 @@
 /* The redesigned chat stage (Figma 906:19804, conversation 16292:16175).
    The transcript and the docked composer share ONE centred column, both its
-   full width (640). Both resolve 100cqw against this container, so they
+   full width (up to 960, tokens/space.css). Both resolve 100cqw against this container, so they
    measure the same box even though one lives in the scroller and the other
    overlays it. */
 :root[data-shell='portal'] [data-chat-surface] {

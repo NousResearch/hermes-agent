@@ -838,18 +838,21 @@ def test_a_name_kept_live_takes_the_live_expansion_and_later_lines_see_it(tmp_pa
     """``resolve_home_dotenv`` with a lookup env and *live_names*: every marked name gets the value the plain live
     resolution gives it, through earlier lines of its layer and the layer before (the managed ``.env`` after the
     home's), and an unmarked line naming one sees that value while its own references read the lookup env. A
-    marked name no line assigns reads the live env too, set or unset there."""
+    marked name no line assigns reads the live env too, set or unset there; one an earlier line assigns reads that
+    line, not the environment."""
     from hermes_cli import env_loader, managed_scope
 
     monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
     monkeypatch.setenv("PIN_BASE", "/live")
     monkeypatch.setenv("PIN_GENV", "/live-genv")
     monkeypatch.delenv("PIN_GONE", raising=False)
+    monkeypatch.setenv("PIN_GSET", "/env")
     home, managed = tmp_path / "home", tmp_path / "managed"
     home.mkdir()
     managed.mkdir()
     (home / ".env").write_text("PIN_G1=${PIN_BASE}/g1\nPIN_G2=${PIN_G1}/g2\nPIN_REF=${PIN_G2}|${PIN_BASE}\n"
-                               "PIN_EREF=${PIN_GENV}|${PIN_GONE:-unset}\n", encoding="utf-8")
+                               "PIN_EREF=${PIN_GENV}|${PIN_GONE:-unset}\nPIN_GSET=/file\nPIN_GSREF=${PIN_GSET}\n",
+                               encoding="utf-8")
     (managed / ".env").write_text("PIN_G3=${PIN_G2}/g3\nPIN_MREF=${PIN_G3}|${PIN_BASE}\n", encoding="utf-8")
     monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed)
 
@@ -861,6 +864,7 @@ def test_a_name_kept_live_takes_the_live_expansion_and_later_lines_see_it(tmp_pa
     assert live["PIN_G3"] == "/live/g1/g2/g3"
     assert (kept["PIN_REF"], kept["PIN_MREF"]) == ("/live/g1/g2|/frozen", "/live/g1/g2/g3|/frozen")
     assert kept["PIN_EREF"] == live["PIN_EREF"] == "/live-genv|unset"
+    assert kept["PIN_GSREF"] == live["PIN_GSREF"] == "/file"
 
 
 def test_a_home_resolved_with_names_kept_live_reads_itself_as_hermes_home(tmp_path, monkeypatch):

@@ -43,11 +43,11 @@ def test_solstice_title_call_reaches_the_wire_with_thinking_bounded():
     assert "reasoning" not in kwargs["extra_body"]
 
 
-_REPLY = {"candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}]}
+_REPLY = {"id": "i1", "status": "completed", "steps": [{"type": "model_output", "content": [{"type": "text", "text": "ok"}]}]}
 
 
 def _generation_config(**create_kwargs) -> dict:
-    """Send *create_kwargs* through the real Solstice client; return the posted ``generationConfig``."""
+    """Send *create_kwargs* through the real Solstice client; return the posted ``generation_config``."""
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -58,8 +58,8 @@ def _generation_config(**create_kwargs) -> dict:
     client = profile.create_client(api_key="token", base_url=_BASE, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
     client.chat.completions.create(**create_kwargs)
     (request,) = seen
-    assert request.url.path.endswith(":generateContentPerUserQuota")
-    return json.loads(request.content)["generationConfig"]
+    assert request.url.path.endswith("/interactions:createPerUserQuota")
+    return json.loads(request.content)["generation_config"]
 
 
 def test_solstice_title_request_bounds_thinking_and_keeps_the_title_cap():
@@ -70,8 +70,8 @@ def test_solstice_title_request_bounds_thinking_and_keeps_the_title_cap():
 
     config = _generation_config(**kwargs)
 
-    assert config["thinkingConfig"] == {"includeThoughts": False, "thinkingLevel": "low"}
-    assert config["maxOutputTokens"] == TITLE_MAX_TOKENS
+    assert (config["thinking_level"], config["thinking_summaries"]) == ("low", "none")
+    assert config["max_output_tokens"] == TITLE_MAX_TOKENS
 
 
 def _main_turn_kwargs(reasoning_config: dict) -> dict:
@@ -101,6 +101,6 @@ def _main_turn_kwargs(reasoning_config: dict) -> dict:
 def test_solstice_main_turn_effort_reaches_the_wire(effort, level):
     config = _generation_config(**_main_turn_kwargs({"enabled": True, "effort": effort}))
 
-    assert config["thinkingConfig"] == {"includeThoughts": True, "thinkingLevel": level}
+    assert (config["thinking_level"], config["thinking_summaries"]) == (level, "auto")
     # No caller cap on a main turn: the model's own ceiling, so thinking cannot starve the answer.
-    assert config["maxOutputTokens"] == 65535
+    assert config["max_output_tokens"] == 65535

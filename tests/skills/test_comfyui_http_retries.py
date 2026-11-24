@@ -1,5 +1,6 @@
 """ComfyUI must not replay submissions with an unknown outcome (#146034)."""
 
+import http.server
 import importlib
 import socket
 import sys
@@ -95,32 +96,33 @@ def _dead_port():
 @pytest.fixture
 def submission_server():
     """Counts POSTs it fully reads; 'drop' then closes, 'redirect' answers 303 to a dead port."""
-    listener = socket.create_server(("127.0.0.1", 0))
     seen = {"posts": 0, "mode": "drop", "dead": _dead_port()}
 
-    def serve():
-        while True:
-            try:
-                conn, _ = listener.accept()
-            except OSError:
-                return
-            with conn:
-                request = b""
-                while b"\r\n\r\n" not in request:
-                    request += conn.recv(65536)
-                head, _, body = request.partition(b"\r\n\r\n")
-                length = int(next(line.split(b":")[1] for line in head.split(b"\r\n")
-                                  if line.lower().startswith(b"content-length")))
-                while len(body) < length:
-                    body += conn.recv(65536)
-                seen["posts"] += 1
-                if seen["mode"] == "redirect":
-                    conn.sendall(b"HTTP/1.1 303 See Other\r\nLocation: http://127.0.0.1:%d/receipt"
-                                 b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" % seen["dead"])
+    class Handler(http.server.BaseHTTPRequestHandler):
+        timeout = 5
 
-    threading.Thread(target=serve, daemon=True).start()
-    yield f"http://127.0.0.1:{listener.getsockname()[1]}", seen
-    listener.close()
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            seen["posts"] += 1
+            self.close_connection = True
+            if seen["mode"] == "redirect":
+                self.send_response(303)
+                self.send_header("Location", f"http://127.0.0.1:{seen['dead']}/receipt")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            # 'drop': return without a response line; the server closes the socket.
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}", seen
+    server.shutdown()
+    server.server_close()
+    thread.join(5)
 
 
 @pytest.mark.parametrize("client", ["requests", "stdlib"])

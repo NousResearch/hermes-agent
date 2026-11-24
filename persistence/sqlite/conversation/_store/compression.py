@@ -697,13 +697,14 @@ def get_compression_chain(holder: StoreHolder, session_id: str) -> list[str]:
     written, while a stale websocket later creates a sibling that passes it). Instead exclude
     branch/delegate/tool children and prefer children that continue the chain or are still live over
     stale closed siblings such as ``ws_orphan_reap``."""
-    sql = _CHAIN_STEP_SQL
-    if not any(row[1] == "created_source" for row in holder._read_all("PRAGMA table_info(sessions)")):
-        sql = _CHAIN_STEP_SQL_WITHOUT_CREATED
-
     def step(current: str):
         with holder._read_ctx() as conn:
-            return conn.execute(sql, (current,)).fetchone()
+            try:
+                return conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
+            except sqlite3.OperationalError as exc:
+                if "created_source" not in str(exc):
+                    raise
+                return conn.execute(_CHAIN_STEP_SQL_WITHOUT_CREATED, (current,)).fetchone()
     return _walk_compression_chain(session_id, step)
 
 

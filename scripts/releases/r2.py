@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
@@ -779,40 +780,64 @@ def _verify_copied_destination(
             raise ValueError(f"Copied object metadata mismatch for {header_name}: {dest_key}")
 
 
+@dataclass(frozen=True)
+class CopySource:
+    """A CopyObject source checked against its receipt size and the single-copy limit. The copy
+    is conditional on this ETag, so it fails if the object changed after the check."""
+
+    key: str
+    size: int
+    etag: str | None
+
+
+def copy_source(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    key: str,
+    now: str,
+    *,
+    expected_size: int,
+    fetcher: Callable[..., Response] | None = None,
+) -> CopySource:
+    """Check a CopyObject source before anything is written: its path, the single-copy limit, and
+    that the object exists at its receipt size."""
+    relative_artifact_path(key)
+    if type(expected_size) is not int or expected_size <= 0 or expected_size > MAX_SINGLE_COPY_SIZE:
+        raise ValueError(f"CopyObject size must be between 1 and {MAX_SINGLE_COPY_SIZE} bytes")
+    head = head_object(creds, base, bucket, key, now, fetcher=fetcher)
+    if head is None:
+        raise R2RequestError("HEAD", key, 404)
+    if head.header("content-length") != str(expected_size):
+        raise ValueError(f"Source artifact size mismatch: {key}")
+    return CopySource(key=key, size=expected_size, etag=head.header("etag"))
+
+
 def copy_object(
     creds: dict[str, str],
     base: str,
     bucket: str,
-    source_key: str,
+    source: CopySource,
     dest_key: str,
     now: str,
     *,
-    expected_size: int,
     content_type: str | None = None,
     content_disposition: str | None = None,
     metadata: dict[str, str] | None = None,
     fetcher: Callable[..., Response] | None = None,
 ) -> None:
-    """Server-side S3/R2 CopyObject with explicit metadata replacement and HEAD verification."""
-    relative_artifact_path(source_key)
+    """Server-side S3/R2 CopyObject of a checked source, with explicit metadata replacement and
+    HEAD verification."""
     relative_artifact_path(dest_key)
-    if type(expected_size) is not int or expected_size <= 0 or expected_size > MAX_SINGLE_COPY_SIZE:
-        raise ValueError(f"CopyObject size must be between 1 and {MAX_SINGLE_COPY_SIZE} bytes")
     scope = R2Scope.configured()
-    source_head = head_object(creds, base, bucket, source_key, now, fetcher=fetcher)
-    if source_head is None:
-        raise R2RequestError("HEAD", source_key, 404)
-    if source_head.header("content-length") != str(expected_size):
-        raise ValueError(f"Source artifact size mismatch: {source_key}")
     dest_url = scope.object_url(base, bucket, dest_key)
     # R2's S3 CopyObject requires a leading slash on x-amz-copy-source.
     extra: dict[str, str] = {
-        "x-amz-copy-source": f"/{bucket}/{encode_key_path(scope.key(source_key))}",
+        "x-amz-copy-source": f"/{bucket}/{encode_key_path(scope.key(source.key))}",
         "x-amz-metadata-directive": "REPLACE",
     }
-    source_etag = source_head.header("etag")
-    if source_etag:
-        extra["x-amz-copy-source-if-match"] = source_etag
+    if source.etag:
+        extra["x-amz-copy-source-if-match"] = source.etag
     cache_control = cache_control_for(dest_key)
     if cache_control:
         extra["Cache-Control"] = cache_control
@@ -847,10 +872,10 @@ def copy_object(
                 time.sleep(float(attempt + 1))
                 continue
             raise
-    _verify_copied_destination(creds, base, bucket, dest_key, expected_size, meta_headers, fetcher)
+    _verify_copied_destination(creds, base, bucket, dest_key, source.size, meta_headers, fetcher)
     from scripts.releases.upload_summary import note
     note(dest_key)
-    print(f"OK r2: copied {source_key} -> {dest_key} ({expected_size} bytes)")
+    print(f"OK r2: copied {source.key} -> {dest_key} ({source.size} bytes)")
 
 
 def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,

@@ -16,12 +16,15 @@ import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 from urllib.parse import unquote
 
 from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 from scripts.termux.deb_version import deb_version_for_tag
+
+if TYPE_CHECKING:
+    from scripts.releases.r2 import CopySource
 
 
 def release_version(tag: str) -> str:
@@ -579,8 +582,8 @@ def _verify_public_bytes(public_base: str, key: str, expected_bytes: bytes) -> N
 class StableDownloads:
     """The stable macOS DMG alias and downloads page for one accepted candidate.
 
-    ``prepare`` runs every check (the DMG receipt, its source object, the order against the live
-    alias and page) before any feed moves. ``promote`` calls ``publish_dmg`` right after the macOS
+    ``prepare`` runs every check (the DMG receipt, its source object and the single-copy limit,
+    the order against the live alias and page) before any feed moves. ``promote`` calls ``publish_dmg`` right after the macOS
     feed, so a failed copy leaves the Windows and Termux pointers on the previous release, and
     ``publish_page`` after every feed pointer, so a failed feed write leaves the page there too.
     Each write is read back through the public origin."""
@@ -590,8 +593,7 @@ class StableDownloads:
     creds: dict[str, str] = field(repr=False)
     base: str
     bucket: str
-    source_dmg_key: str
-    dmg_size: int
+    source_dmg: CopySource
     dmg_sha256: str
     dmg_needs_copy: bool
     page_bytes: bytes = field(repr=False)
@@ -609,11 +611,7 @@ class StableDownloads:
         page_bytes = render_channel_page_from_manifest(manifest, public_base, repo=repo).encode("utf-8")
         creds, base, bucket = r2.credentials()
         now = r2.amz_timestamp()
-        source_head = r2.head_object(creds, base, bucket, source_dmg_key, now)
-        if source_head is None:
-            raise r2.R2RequestError("HEAD", source_dmg_key, 404)
-        if source_head.header("content-length") != str(dmg_item["size"]):
-            raise ValueError(f"Source artifact size mismatch: {source_dmg_key}")
+        source_dmg = r2.copy_source(creds, base, bucket, source_dmg_key, now, expected_size=dmg_item["size"])
         dmg_needs_copy = _check_stable_dmg_state(
             r2.head_object(creds, base, bucket, r2.channel_dmg_key_for("stable"), now),
             tag=manifest["tag"],
@@ -627,7 +625,7 @@ class StableDownloads:
         )
         return cls(
             tag=manifest["tag"], public_base=public_base, creds=creds, base=base, bucket=bucket,
-            source_dmg_key=source_dmg_key, dmg_size=dmg_item["size"], dmg_sha256=dmg_item["sha256"],
+            source_dmg=source_dmg, dmg_sha256=dmg_item["sha256"],
             dmg_needs_copy=dmg_needs_copy, page_bytes=page_bytes, page_needs_write=page_needs_write,
             page_conditions=page_conditions,
         )
@@ -638,13 +636,12 @@ class StableDownloads:
         dmg_key = r2.channel_dmg_key_for("stable")
         if self.dmg_needs_copy:
             r2.copy_object(
-                self.creds, self.base, self.bucket, self.source_dmg_key, dmg_key, r2.amz_timestamp(),
-                expected_size=self.dmg_size,
+                self.creds, self.base, self.bucket, self.source_dmg, dmg_key, r2.amz_timestamp(),
                 content_type=STABLE_DARWIN_DMG_CONTENT_TYPE,
                 content_disposition=STABLE_DARWIN_DMG_DISPOSITION,
-                metadata={"sha256": self.dmg_sha256, "release": self.tag, "source": self.source_dmg_key},
+                metadata={"sha256": self.dmg_sha256, "release": self.tag, "source": self.source_dmg.key},
             )
-        _verify_public_head_size(self.public_base, dmg_key, self.dmg_size)
+        _verify_public_head_size(self.public_base, dmg_key, self.source_dmg.size)
 
     def publish_page(self) -> None:
         from scripts.releases import r2

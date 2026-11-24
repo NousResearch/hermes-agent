@@ -903,14 +903,15 @@ def test_copy_object_sends_signed_server_side_copy_and_verifies_destination(r2_s
     r2_server.metadata[src_key] = {"Cache-Control": "public, max-age=31536000, immutable"}
     monkeypatch.setattr(r2.time, "sleep", lambda _: None)
 
+    source = r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload))
+    assert source == r2.CopySource(key=src_key, size=len(payload), etag='"src-etag"')
     r2.copy_object(
         creds,
         base,
         bucket,
-        src_key,
+        source,
         dest_key,
         NOW,
-        expected_size=len(payload),
         content_type="application/x-apple-diskimage",
         content_disposition='attachment; filename="HermesBundled-mac-arm64.dmg"',
         metadata={"sha256": hashlib.sha256(payload).hexdigest(), "release": "v0.22.0"},
@@ -930,26 +931,35 @@ def test_copy_object_sends_signed_server_side_copy_and_verifies_destination(r2_s
 
     r2_server.copy_failure = "transient"
     r2_server.copy_attempts = 0
-    r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
+    r2.copy_object(creds, base, bucket, source, dest_key, NOW)
     assert r2_server.copy_attempts == 2
 
     r2_server.copy_failure = "denied"
     with pytest.raises(r2.R2RequestError):
-        r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
     r2_server.copy_failure = None
 
     with pytest.raises(ValueError, match="CopyObject size"):
-        r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=r2.MAX_SINGLE_COPY_SIZE + 1)
+        r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=r2.MAX_SINGLE_COPY_SIZE + 1)
     with pytest.raises(ValueError, match="Invalid release artifact path"):
-        r2.copy_object(creds, base, bucket, "../escape.dmg", dest_key, NOW, expected_size=len(payload))
+        r2.copy_source(creds, base, bucket, "../escape.dmg", NOW, expected_size=len(payload))
+    with pytest.raises(ValueError, match="Invalid release artifact path"):
+        r2.copy_object(creds, base, bucket, source, "../escape.dmg", NOW)
     with pytest.raises(r2.R2RequestError):
-        r2.copy_object(creds, base, bucket, "releases/tag/v0.0.0/missing.dmg", dest_key, NOW, expected_size=len(payload))
+        r2.copy_source(creds, base, bucket, "releases/tag/v0.0.0/missing.dmg", NOW, expected_size=len(payload))
     with pytest.raises(ValueError, match="Source artifact size mismatch"):
-        r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload) + 1)
+        r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload) + 1)
+
+    # The copy is bound to the checked object: a source that changed after copy_source fails.
+    r2_server.store[src_key] = (payload, '"replaced-etag"')
+    with pytest.raises(r2.R2RequestError) as changed:
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+    assert changed.value.status == 412
+    r2_server.store[src_key] = (payload, '"src-etag"')
 
     r2_server.corrupt_put = dest_key
     with pytest.raises(r2.R2RequestError, match="size mismatch"):
-        r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
     r2_server.corrupt_put = None
 
 
@@ -961,16 +971,17 @@ def test_copy_object_spends_one_retry_budget(r2_server, monkeypatch):
     payload = b"signed dmg bytes for server-side copy"
     r2_server.store[src_key] = (payload, '"src-etag"')
     monkeypatch.setattr(r2.time, "sleep", lambda _: None)
+    source = r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload))
 
     r2_server.copy_failure = "unavailable"
     with pytest.raises(r2.R2RequestError):
-        r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
     assert r2_server.copy_attempts == 3
     assert dest_key not in r2_server.store
 
     r2_server.copy_failure = "dropped"
     r2_server.copy_attempts = 0
-    r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(payload))
+    r2.copy_object(creds, base, bucket, source, dest_key, NOW)
     assert r2_server.copy_attempts == 2
     assert r2_server.store[dest_key][0] == payload
 
@@ -984,7 +995,8 @@ def test_copy_object_stays_inside_disposable_scope(r2_server, monkeypatch):
     r2_server.store[dest_key] = (b"production dmg sentinel", '"prod"')
     r2_server.store[scope.key(src_key)] = (b"disposable dmg payload", '"disp"')
 
-    r2.copy_object(creds, base, bucket, src_key, dest_key, NOW, expected_size=len(b"disposable dmg payload"))
+    source = r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(b"disposable dmg payload"))
+    r2.copy_object(creds, base, bucket, source, dest_key, NOW)
 
     assert r2_server.store[dest_key][0] == b"production dmg sentinel"
     assert r2_server.store[scope.key(dest_key)][0] == b"disposable dmg payload"

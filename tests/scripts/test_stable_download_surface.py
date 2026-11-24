@@ -308,6 +308,22 @@ def test_stable_promotion_fails_closed_when_dmg_missing_from_manifest_or_r2(
     r2_server.store[source_dmg_key] = saved
 
 
+def test_stable_promotion_checks_the_dmg_copy_limit_before_any_feed_moves(
+    tmp_path,
+    monkeypatch,
+    r2_server,  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
+    https_origin,  # health: allow F811 -- pytest injects the imported https_origin fixture by parameter name
+):
+    """A DMG over the single-copy limit stops promotion before the first feed write, not after
+    the macOS feed has moved."""
+    monkeypatch.setattr(urllib.request, "urlopen", https_origin.opener)
+    manifest, dmg_bytes = _stage_stable_release(tmp_path, r2_server, https_origin, version="1.2.3")
+    monkeypatch.setattr(r2, "MAX_SINGLE_COPY_SIZE", len(dmg_bytes) - 1)
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match="CopyObject size"):
+        artifacts.promote(manifest, tmp_path / "oversized", https_origin.base)
+    assert not any(method == "PUT" for method, _, _ in r2_server.requests)
+
 @contextlib.contextmanager
 def _stable_channel_controller(tmp_path, monkeypatch):
     """Run publish_release against a real ChannelPublisher over an object server;

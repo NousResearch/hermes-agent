@@ -38,8 +38,13 @@ _XML_OPENER_RE = re.compile(r"<(?:function|parameter|tool_call)\b")
 # Closing tokens that may follow a call and still belong to it.
 _XML_WRAPPER_CLOSE_RE = re.compile(r"(?:\s*</tool_call>)?")
 _HARMONY_CALL_END_RE = re.compile(r"(?:\s*<\|call\|>)?")
-# Calls drafted mid-text that ``find_trailing_leaked_tool_call`` steps past before giving up.
-_MAX_TRAILING_SCANS = 8
+# Call markup a reply may stop partway through, after its last complete call: the cut-off start of
+# one more call (or a stray closer) is still the tail, not prose.
+_CALL_TOKENS = ("<tool_call>", "<|tool_call>", "<function=", "<parameter=", "to=functions.",
+                "</tool_call>", "</function>", "</parameter>", "<tool_call|>", "<|call|>")
+_WRAPPER_OPENER_RE = re.compile(r"<\|?tool_call>\s*")
+_NAMED_OPENER_RE = re.compile(r"(?:<function=|<parameter=|to=functions\.)[\w.\-]*")
+_GEMMA_CALL_PREFIX_RE = re.compile(r"c(?:a(?:l(?:l(?::[\w.\-]*)?)?)?)?")
 
 _DECODER = json.JSONDecoder()
 
@@ -198,18 +203,41 @@ def find_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Optional[Le
 
 def find_trailing_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Optional[LeakedToolCall]:
     """The leaked call ``text`` ends on (only whitespace after it), or None. Calls drafted mid-text
-    and then set aside are stepped past; an unclosed call runs to the end, so it always counts."""
-    if not isinstance(text, str):
+    and then set aside are stepped past; an unclosed call runs to the end, so it always counts. The
+    cut-off start of one more call after the last one (``<tool``, ``<function=na``) also counts as
+    the tail. One pass per scanner over the whole text, so the cost stays linear in the number of calls."""
+    if not isinstance(text, str) or not text or not tool_names:
         return None
-    offset = 0
-    for _ in range(_MAX_TRAILING_SCANS):
-        leak = find_leaked_tool_call(text[offset:], tool_names)
-        if leak is None:
-            return None
-        offset += leak.end
-        if not text[offset:].strip():
-            return leak
-    return None
+    masked = _mask_code(text)
+    last: Optional[_Match] = None
+    if any(name in text for name in tool_names):
+        for scan in _SCANNERS:
+            for start, raw_name, fmt, complete, end in scan(masked):
+                name = _known(raw_name, tool_names)
+                # The call reaching furthest is the last one; on a tie the outer (earlier) match wins.
+                if name and (last is None or end > last[4] or (end == last[4] and start < last[0])):
+                    last = (start, name, fmt, complete, end)
+    if last is None:
+        return _xml_fragment(text, masked)  # a fragment ends the text by construction
+    start, name, fmt, complete, end = last
+    if not _is_call_tail(text[end:]):
+        return None
+    return LeakedToolCall(name=name, fmt=fmt, snippet=text[start:start + _SNIPPET_CHARS], complete=complete,
+                          end=end)
+
+
+def _is_call_tail(rest: str) -> bool:
+    """True when ``rest`` (the text after a call) is blank or only the cut-off start of another call."""
+    rest = rest.strip()
+    wrapper = _WRAPPER_OPENER_RE.match(rest)
+    if wrapper:
+        rest = rest[wrapper.end():]
+    if not rest or _NAMED_OPENER_RE.fullmatch(rest):
+        return True
+    if wrapper and wrapper.group(0).startswith("<|") and _GEMMA_CALL_PREFIX_RE.fullmatch(rest):
+        return True  # gemma: "<|tool_call>call:na"
+    # A bare "t"/"to" is too likely to be prose; harmony's opener counts from "to=".
+    return any(token.startswith(rest) for token in _CALL_TOKENS) and (rest[0] == "<" or len(rest) >= 3)
 
 
 def leaked_tool_call_nudge(call: LeakedToolCall, where: str) -> str:

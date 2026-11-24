@@ -489,3 +489,41 @@ def test_trailing_scan_ignores_calls_followed_by_more_text(text):
     from agent.leaked_tool_call import find_trailing_leaked_tool_call
 
     assert find_trailing_leaked_tool_call(text, TOOLS) is None
+
+
+_XML_CALL = ("<tool_call>\n<function=terminal>\n<parameter=command>\ncat x\n</parameter>\n</function>\n"
+             "</tool_call>\n")
+
+
+@pytest.mark.parametrize("partial", [
+    "<", "<tool", "<tool_call", "<tool_call>", "<tool_call>\n<function", "<tool_call>\n<function=",
+    "<function=", "<function=termi", "<|tool_call", "<|tool_call>call:ter", "to=functions.", "</tool",
+])
+def test_trailing_scan_counts_the_start_of_one_more_call_as_the_tail(partial):
+    # Several calls back to back, then the next one cut off after its first few characters.
+    from agent.leaked_tool_call import find_trailing_leaked_tool_call
+
+    text = "Reading the files.\n" + _XML_CALL * 3 + partial
+    leak = find_trailing_leaked_tool_call(text, TOOLS)
+    assert (leak.name, leak.fmt) == ("terminal", "xml_function")
+
+
+@pytest.mark.parametrize("tail", ["<b>done</b>", "to be safe I answer directly.", "tool output was empty."])
+def test_trailing_scan_still_treats_other_text_after_the_calls_as_prose(tail):
+    from agent.leaked_tool_call import find_trailing_leaked_tool_call
+
+    assert find_trailing_leaked_tool_call(_XML_CALL * 3 + tail, TOOLS) is None
+
+
+def test_trailing_scan_judges_many_calls_by_the_last_one_in_linear_time():
+    from agent.leaked_tool_call import find_trailing_leaked_tool_call
+
+    drafts = (f"Maybe {_SEARCH_CALL}? Not yet.\n") * 2_000
+    started = time.perf_counter()
+    leak = find_trailing_leaked_tool_call(drafts + _XML_CALL, TOOLS)
+    assert time.perf_counter() - started < 0.1
+    assert (leak.name, leak.fmt) == ("terminal", "xml_function")
+
+    started = time.perf_counter()
+    assert find_trailing_leaked_tool_call(drafts + "None of these are needed; here is the answer.", TOOLS) is None
+    assert time.perf_counter() - started < 0.1

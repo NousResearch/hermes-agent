@@ -57,6 +57,7 @@ def _dingtalk():
     ("", "platform_toolsets:\n  dingtalk: [hermes-dingtalk]\n", False),  # its own row scoped its own sessions
     # Older ``hermes config set`` builds saved a bare list argument as a string; the runtime still parses it.
     ("", "platform_toolsets:\n  telegram: '[\"hermes-dingtalk\"]'\n", True),
+    ("", "toolsets: '[\"hermes-dingtalk\"]'\n", False),  # the runtime never parsed a string top-level list
 ])
 def test_dingtalk_in_use_matches_what_core_ran(tmp_path, env, config, in_use):
     assert lcm.dingtalk_in_use(_home(tmp_path, env=env, config=config)) is in_use

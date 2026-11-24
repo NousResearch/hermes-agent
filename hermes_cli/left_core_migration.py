@@ -129,10 +129,12 @@ def _toolset_listed(config: dict, names: frozenset[str], *, own_platform: str = 
     config.yaml, and it carried ``homeassistant: [hermes-homeassistant]`` until Home Assistant left core,
     so that row alone is not use."""
     rows = config.get("platform_toolsets")
-    selections = [sel for platform, sel in rows.items() if platform != own_platform] if isinstance(rows, dict) else []
+    # Only platform rows were string-saved by older builds (the runtime parses those); the top level is list-only.
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    selections = [parse_platform_toolsets_value(sel) for platform, sel in rows.items()
+                  if platform != own_platform] if isinstance(rows, dict) else []
     selections.append(config.get("toolsets"))
-    from hermes_cli.toolset_validation import parse_platform_toolsets_value  # older builds saved '["a", "b"]'
-    return any(any(str(item) in names for item in parse_platform_toolsets_value(sel) or ()) for sel in selections)
+    return any(isinstance(sel, list) and any(str(item) in names for item in sel) for sel in selections)
 
 
 def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:

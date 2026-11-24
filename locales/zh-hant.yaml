@@ -3461,6 +3461,11 @@ display:
     tool_call: "工具呼叫"
     tool_search: "工具搜尋"
     tool_describe: "工具詳細資訊"
+  bridge_label:
+    search: "正在搜尋工具"
+    describe: "正在讀取工具詳情"
+    count_one: "{count} 個工具"
+    count_many: "{count} 個工具"
   status_phrase:
     verb: "{verb}"
     using_tool: "正在使用 {tool}"

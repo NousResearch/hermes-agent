@@ -3478,6 +3478,11 @@ display:
     tool_call: "eszközhívás"
     tool_search: "eszközkeresés"
     tool_describe: "eszközleírás"
+  bridge_label:
+    search: "Eszközök keresése"
+    describe: "Eszközadatok olvasása"
+    count_one: "{count} eszköz"
+    count_many: "{count} eszköz"
   status_phrase:
     verb: "éppen: {verb}"
     using_tool: "a(z) {tool} eszközt használja"

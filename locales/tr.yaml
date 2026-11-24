@@ -3461,6 +3461,11 @@ display:
     tool_call: "bir araç çağrısı"
     tool_search: "bir araç araması"
     tool_describe: "araç ayrıntıları"
+  bridge_label:
+    search: "Araçlar aranıyor"
+    describe: "Araç ayrıntıları okunuyor"
+    count_one: "{count} araç"
+    count_many: "{count} araç"
   status_phrase:
     verb: "şu an {verb}"
     using_tool: "{tool} kullanıyor"

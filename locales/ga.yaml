@@ -3461,6 +3461,11 @@ display:
     tool_call: "glao uirlise"
     tool_search: "cuardach uirlisí"
     tool_describe: "sonraí uirlise"
+  bridge_label:
+    search: "Ag cuardach uirlisí"
+    describe: "Ag léamh sonraí"
+    count_one: "Uirlisí: {count}"
+    count_many: "Uirlisí: {count}"
   status_phrase:
     verb: "{verb}"
     using_tool: "ag úsáid {tool}"

@@ -8,6 +8,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from tests.gateway.test_responses_identity_retention import COMPACT, _compact_rows
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _app(api, owner, calls, release, hold=None):
@@ -48,7 +49,7 @@ async def _disconnect_mid_stream(client, store, key):
 
 async def _await_terminal(owner, count):
     for _ in range(200):
-        rows = owner.db._read_all("SELECT status FROM session_admissions WHERE principal_id='api'", ())
+        rows = raw_holder(owner.persistence)._read_all("SELECT status FROM session_admissions WHERE principal_id='api'", ())
         if len(rows) >= count and all(row['status'] == 'terminal' for row in rows):
             return
         await asyncio.sleep(0.05)
@@ -92,9 +93,10 @@ async def test_delete_retires_a_disconnected_stream_identity_but_not_a_running_o
     calls, release, hold = [], asyncio.Event(), asyncio.Event()
     store = api._current_response_store()
     store._max_size = 1
-    release.set()
     async with TestClient(TestServer(_app(api, owner, calls, release, hold))) as client:
+        # Held until the client has left: a turn that finished first is never 'incomplete'.
         done = await _disconnect_mid_stream(client, store, 'gone-done')
+        release.set()
         await _await_terminal(owner, 1)
         busy = await _disconnect_mid_stream(client, store, 'held')
         # The client deletes the response it walked away from: its identity goes everywhere.

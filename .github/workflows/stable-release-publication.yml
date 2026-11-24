@@ -17,8 +17,19 @@ on:
 # Shared with Stable Release so publication never races a build. The requested
 # rerun waits as pending behind this job instead of deadlocking it: the
 # sequencer only confirms the new attempt is queued, never that it finished.
+# Concurrency applies before reconcile's if, so a run that will skip — every
+# Canary or Commit release completion, a successful stable run, or a non-dispatch/fork
+# workflow_run — gets a group of its own so it cannot displace a pending stable
+# run or queued rerun in the shared stable-release group.
 concurrency:
-  group: stable-release
+  group: >-
+    ${{ (github.event_name != 'workflow_run' ||
+    (github.event.workflow_run.conclusion != 'success' &&
+     github.event.workflow_run.event == 'workflow_dispatch' &&
+     github.event.workflow_run.head_repository.full_name == github.repository &&
+     !startsWith(github.event.workflow_run.display_title, 'Canary release ') &&
+     !startsWith(github.event.workflow_run.display_title, 'Commit release ')))
+    && 'stable-release' || github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -27,19 +38,25 @@ permissions:
 
 jobs:
   reconcile:
+    # A canary and a commit build run Stable Release too (titled "Canary release <tag>" /
+    # "Commit release <tag>"); neither has a stable draft or head to reconcile, and a red one must
+    # never rerun its jobs from here.
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion != 'success' &&
        github.event.workflow_run.event == 'workflow_dispatch' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
-    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
-    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
-    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
-    runs-on: ubuntu-latest
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       !startsWith(github.event.workflow_run.display_title, 'Canary release ') &&
+       !startsWith(github.event.workflow_run.display_title, 'Commit release '))
+    # imagetools needs no BuildKit, but it reads the current builder's buildkitd.toml
+    # registry config. Not useblacksmith/setup-docker-builder: its no-cache-key fallback marks
+    # docker.io `http = true`, Docker Hub 301s the plain-HTTP manifest PUT to HTTPS, Go replays
+    # it as a GET, and the commit 404s (v0.22.3 rc.1-rc.4).
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     environment: release-signing
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
@@ -51,6 +68,8 @@ jobs:
           cache-python: false
       - name: Set up Docker Buildx for ordered alias promotion
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker  # no builder: imagetools then reads no registry config
       - name: Log in to Docker Hub for ordered alias promotion
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:

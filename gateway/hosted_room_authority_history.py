@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gateway.hosted_rooms_common import identifier
+from persistence.gateway.hosted_rooms import AuthorityHistoryError
 
 MAX_AUTHORITY_SPANS = 1024
 #: Committed authority transfers, each the first event of its span. ``authority.claimed`` is the new
@@ -21,10 +22,6 @@ MAX_AUTHORITY_SPANS = 1024
 #: checked alike, so a store whose log holds its own fence followed by a later claim (a handed-off
 #: room, a returning gateway that reclaims) reads as one unbroken chain.
 TRANSFER_KINDS = ("authority.claimed", "authority.lost")
-
-
-class AuthorityHistoryError(ValueError):
-    """The recorded authority sequence cannot explain the current room."""
 
 
 @dataclass(frozen=True)

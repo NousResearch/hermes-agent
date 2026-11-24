@@ -630,7 +630,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         )
         try:
             if self_suspend_available():
-                accepted = await asyncio.to_thread(suspend_self)
+                accepted = await self._suspend_after_status_goodbye(suspend_self)
                 lever = "self-suspend"
                 if accepted:
                     # flaps answers seconds BEFORE the kernel freezes, so the fence has to span
@@ -652,7 +652,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     )
                     return
                 # The watcher already holds the supervisor across this call.
-                accepted = await asyncio.to_thread(request_brokered_suspend, url)
+                accepted = await self._suspend_after_status_goodbye(request_brokered_suspend, url)
                 lever = "brokered suspend"
                 if not accepted:
                     self._scale_to_zero_abandon_suspend()
@@ -1350,13 +1350,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
 
         The host multiplexer is respawned with ``host_gateway_child_env`` (default-root
-        secrets via ``served_profile_child_env``, not ``os.environ.copy()``). A standalone
+        secrets plus available launch stamps, not ``os.environ.copy()``). A standalone
         named-profile gateway keeps that profile's home — only a multiplexer, or a process
         already on the default root, is the host.
         """
         from gateway.config_loader import drop_bridged_env
         from hermes_constants import get_default_hermes_root, get_hermes_home
-        from tools.environments.local import host_gateway_child_env, served_profile_child_env
+        from tools.environments.local import gateway_child_env, host_gateway_child_env
 
         home = get_hermes_home()
         try:
@@ -1390,9 +1390,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         if on_default or settled_multiplex or multiplex:
             watcher_env = host_gateway_child_env()
         else:
-            watcher_env = served_profile_child_env(
-                target_home=home, inherit_credentials=True,
-            )
+            watcher_env = gateway_child_env(home)
         watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
         from gateway.restart_watcher_env import keep_running_checkout_importable
@@ -1892,10 +1890,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             if _task is self._stop_task or _task is self._restart_task:
                 continue
             _task.cancel()
-        # The restart orchestration task is awaiting _stop_task right now; cancelling it would propagate
-        # CancelledError into this _stop_impl and skip _shutdown_event.set() / _exit_code = 75 (#12875). It
-        # self-terminates anyway.
+        # The restart task awaits _stop_task: cancelling it skips _shutdown_event.set() / _exit_code = 75 (#12875).
         self._background_tasks.clear()
+        from gateway.run_watchers import drain_pending_cache_releases
+        drain_pending_cache_releases(self)  # cache-edge jobs just cancelled (or never scheduled) owe a release
         ctx.api_live = self._active_api_run_count()
         self.adapters.clear()
         for _session_key in list(self._running_agents):
@@ -1989,7 +1987,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             return
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
-        # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.
+        # ``_session_db`` may wrap the SessionDB it serves (``_db``): unwrap; ``session_store`` holds ``_db``.
         _self_db = getattr(self, "_session_db", None)
         _self_db = getattr(_self_db, "_db", _self_db)
         store = getattr(self, "session_store", None)
@@ -2004,13 +2002,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         _step("Runner SessionDB handle sweep error", lambda: GatewayRunner.close_all_session_db_handles(self))
 
         def _close_shared() -> None:
-            # Shared SessionDB instances still held by the process-wide registry (tools, cron, mirror).
-            # This is the safety net that guarantees no WAL write lock survives past gateway shutdown
-            # (#90837).
-            from hermes_state_registry import close_all
-            closed = close_all()
-            if closed:
-                logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
+            # Shared stores still held in the process-wide registry (tools, cron, mirror, the storage interface).
+            # This is the safety net that guarantees no WAL write lock survives past gateway shutdown (#90837).
+            from persistence_assembly import close_all_stores
+            if closed := close_all_stores():
+                logger.debug("Closed %d shared store(s) at shutdown", closed)
 
         _step("Shared SessionDB close error", _close_shared)
         logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())

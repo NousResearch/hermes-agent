@@ -31,8 +31,8 @@ for mode in ("idle", "daily", "both", "none"):
               "routed_messages": len(store.load_transcript(new.session_id))}
     explicit = store.reset_session(new.session_key)
     result["explicit_rotated"] = explicit.session_id != new.session_id
-    result["explicit_end_reason"] = store._db.get_session(new.session_id)["end_reason"]
+    result["explicit_end_reason"] = store._scoped_persistence().sessions.get(new.session_id).end_reason
     results.append(result)
-    store._db.close()
+    store.close_all_db_handles()
 print(json.dumps(results, indent=2), flush=True)
 assert all(r["same_session"] and r["routed_messages"] == 2 and r["explicit_rotated"] and r["explicit_end_reason"] == "session_reset" for r in results), "elapsed-time rotation discarded routed conversation"

@@ -434,11 +434,17 @@ def _peel_dotenv_output(env: dict[str, str], published: dict[str, tuple[str | No
     return env
 
 
+def dotenv_publication_lock() -> threading.RLock:
+    """The lock a dotenv load holds while it publishes into ``os.environ`` and ``_DOTENV_PUBLISHED``.
+    Holding it, a copy of both is one moment's (``launch_profile_policy``'s capture). Lock order: this
+    lock before ``launch_profile_policy``'s own; this module never calls into that one while holding it."""
+    return _DOTENV_LOCK
+
+
 def dotenv_publication_record() -> dict[str, tuple[str | None, str, int]]:
-    """A copy of this process's dotenv publication record (``_DOTENV_PUBLISHED``), for
-    ``launch_profile_policy``'s capture, under its own lock: copied without the dotenv lock, whose
-    holders take that one."""
-    return dict(_DOTENV_PUBLISHED)
+    """A copy of this process's dotenv publication record (``_DOTENV_PUBLISHED``)."""
+    with _DOTENV_LOCK:
+        return dict(_DOTENV_PUBLISHED)
 
 
 def dotenv_lookup_from(env: dict[str, str], record: dict[str, tuple[str | None, str, int]]) -> dict[str, str]:

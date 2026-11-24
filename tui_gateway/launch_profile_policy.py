@@ -49,9 +49,14 @@ def capture_launch_env() -> dict[str, str]:
     """
     global _snapshot, _snapshot_dotenv_record, _source_writes
     with _lock:
+        if _snapshot is not None:
+            return dict(_snapshot)
+    # The first capture holds the dotenv loader's publication lock (taken before ``_lock``, the order
+    # env_loader documents), so a ``.env`` reload can't land between the env copy and the record copy.
+    loader = sys.modules.get("hermes_cli.env_loader")  # not imported yet: nothing published
+    with loader.dotenv_publication_lock() if loader is not None else contextlib.nullcontext(), _lock:
         if _snapshot is None:
             _snapshot = dict(os.environ)
-            loader = sys.modules.get("hermes_cli.env_loader")  # not imported yet: nothing published
             _snapshot_dotenv_record = loader.dotenv_publication_record() if loader is not None else {}
             _source_writes = _source_writes_held_by(_snapshot)
         return dict(_snapshot)

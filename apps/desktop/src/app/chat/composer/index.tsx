@@ -61,7 +61,12 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import {
+  ackComposerAttachPastedText,
+  markActiveComposer,
+  onComposerAttachImagesRequest,
+  onComposerAttachPastedTextRequest
+} from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
@@ -366,6 +371,30 @@ export function ChatBar({
       }
     })
   }, [onAttachImageBlob, scope.target])
+
+  useEffect(() => {
+    if (!onAttachPastedText) {
+      return undefined
+    }
+
+    return onComposerAttachPastedTextRequest(({ target, text, token }) => {
+      if (target !== scope.target) {
+        ackComposerAttachPastedText(token, false)
+
+        return
+      }
+
+      void Promise.resolve(onAttachPastedText(text))
+        .then(attached => {
+          if (attached) {
+            triggerHaptic('selection')
+          }
+
+          ackComposerAttachPastedText(token, attached === true)
+        })
+        .catch(() => ackComposerAttachPastedText(token, false))
+    })
+  }, [onAttachPastedText, scope.target])
 
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.

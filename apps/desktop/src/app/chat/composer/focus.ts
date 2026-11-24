@@ -60,10 +60,20 @@ interface AttachImagesDetail {
   target: ComposerTarget
 }
 
+/** A plain-text paste too large to inline (see `large-paste.ts`): the
+ *  claiming composer turns it into a `.txt` attachment chip. */
+interface AttachPastedTextDetail {
+  target: ComposerTarget
+  text: string
+  token?: number
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REPLY_EVENT = 'hermes:composer-insert-reply'
 const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
+const ATTACH_PASTED_TEXT_EVENT = 'hermes:composer-attach-pasted-text'
+const ATTACH_PASTED_TEXT_REPLY_EVENT = 'hermes:composer-attach-pasted-text-reply'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
@@ -434,6 +444,79 @@ export const requestComposerAttachImages = (
 
 export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDetail) => void) =>
   subscribe<AttachImagesDetail>(ATTACH_IMAGES_EVENT, handler)
+
+/** Hand a large plain-text paste to a composer's own `onAttachPastedText`, so
+ *  paste-to-focus obeys the same `large-paste.ts` threshold a focused paste
+ *  does. Without this the unfocused path inserted the raw payload (a copied
+ *  whole reply pasted onto the transcript landed as composer text). Resolves
+ *  true when a mounted surface claimed and attached it; false when none did
+ *  (no bridge, messaging chat, write failure), so the caller falls back to an
+ *  inline insert exactly like the focused path. */
+export const requestComposerAttachPastedText = (
+  text: string,
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+): Promise<boolean> => {
+  if (!text) {
+    return Promise.resolve(false)
+  }
+
+  const token = ++attachPastedTextToken
+  const settled = attachPastedTextReplies
+
+  if (!settled) {
+    return Promise.resolve(false)
+  }
+
+  // Resolved OUTSIDE the executor: `resolve` inside it names the promise's own
+  // resolver, not the target router.
+  const route = resolve(target)
+
+  return new Promise<boolean>(resolvePromise => {
+    settled.set(token, resolvePromise)
+
+    dispatch<AttachPastedTextDetail>(ATTACH_PASTED_TEXT_EVENT, { target: route, text, token })
+
+    // No claimant must not strand the caller: settle false so the paste falls
+    // back to an inline insert instead of vanishing.
+    window.setTimeout(() => {
+      if (settled.get(token) === resolvePromise) {
+        settled.delete(token)
+        resolvePromise(false)
+      }
+    }, ATTACH_PASTED_TEXT_REPLY_TIMEOUT_MS)
+  })
+}
+
+export const onComposerAttachPastedTextRequest = (handler: (detail: AttachPastedTextDetail) => void) =>
+  subscribe<AttachPastedTextDetail>(ATTACH_PASTED_TEXT_EVENT, handler)
+
+/** Subscriber-side ack for {@link requestComposerAttachPastedText}. */
+export const ackComposerAttachPastedText = (token: number | undefined, ok: boolean) => {
+  if (token === undefined || typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent<{ ok: boolean; token: number }>(ATTACH_PASTED_TEXT_REPLY_EVENT, { detail: { ok, token } }))
+}
+
+const ATTACH_PASTED_TEXT_REPLY_TIMEOUT_MS = 5_000
+
+let attachPastedTextToken = 0
+
+const attachPastedTextReplies: Map<number, (ok: boolean) => void> | null =
+  typeof window === 'undefined' ? null : new Map()
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(ATTACH_PASTED_TEXT_REPLY_EVENT, event => {
+    const reply = (event as CustomEvent<{ ok: boolean; token: number }>).detail
+    const resolve = reply && attachPastedTextReplies?.get(reply.token)
+
+    if (resolve) {
+      attachPastedTextReplies?.delete(reply.token)
+      resolve(reply.ok === true)
+    }
+  })
+}
 
 /** Insert typed ref chips (carrying a display label) into a composer — the
  * structured cousin of {@link requestComposerInsert}, used for session links. */

@@ -38027,6 +38027,63 @@
         "title": "SessionBranchWholeResult",
         "type": "object"
       },
+      "SessionBulkDeleteParams": {
+        "additionalProperties": false,
+        "description": "A hand-picked ``ids`` selection, or ``empty_sweep`` to delete every ended, unarchived row with\nno messages. The two are mutually exclusive: an empty sweep carries no ids.",
+        "properties": {
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ids"
+          },
+          "empty_sweep": {
+            "default": false,
+            "title": "Empty Sweep",
+            "type": "boolean"
+          }
+        },
+        "title": "SessionBulkDeleteParams",
+        "type": "object"
+      },
+      "SessionBulkDeleteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "skipped_active": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skipped Active"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "SessionBulkDeleteResult",
+        "type": "object"
+      },
       "SessionCloseParams": {
         "additionalProperties": false,
         "properties": {
@@ -51390,6 +51447,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionAutomationResult"
+        }
+      }
+    },
+    {
+      "name": "session.bulk_delete",
+      "summary": "Local operator only: the owner runs a dashboard bulk delete or 'Delete empty' sweep through the same store path as the offline route, skipping live-lease rows.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionBulkDeleteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionBulkDeleteResult"
         }
       }
     },

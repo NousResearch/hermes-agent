@@ -248,6 +248,88 @@ _MUTATION_REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, '
                             'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
 
 
+async def _bulk_owner_rpc(profile, actor, method, call):
+    """Forward a dashboard bulk/housekeeping verb to the live gateway owner.
+
+    The bulk endpoints (bulk delete, "Delete empty", prune) only had an offline path that takes the
+    profile's exclusive-maintenance lock, so with any gateway running they died on a bare 409
+    (#138915). This mirrors :func:`_mutate_via_gateway_owner`'s discovery/ticket/503 contract for
+    the owner's store-wide verbs (``session.bulk_delete`` / ``session.prune``):
+
+    - no endpoint discovered: ``None`` so the caller keeps its offline path (the reservation
+      decides whether an owner is really absent);
+    - a transport/discovery failure after an endpoint was seen: a retryable 503, never the bare
+      409 the offline reservation would raise against that same owner;
+    - the owner's own refusal frame (``GatewayRPCError``) is passed on as a verdict.
+
+    Unlike the revision-fenced ``session.mutate``, these verbs carry no request id, so a lost
+    response is NOT safe to replay blindly; surface the 503 and let the user re-issue the explicit
+    selection rather than retrying it here.
+    """
+    from fastapi import HTTPException
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+
+    home = _session_db_path_for_profile(profile).parent
+    discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=1.5)
+    endpoint = discovery.endpoint
+    if endpoint is None:
+        return None
+    if not getattr(endpoint, 'control_home', True):
+        from dataclasses import replace
+        endpoint = replace(endpoint, control_home=str(home.expanduser().resolve()))
+    from gateway.owner_identity import host_owner_subject
+    subject = None if actor.subject == host_owner_subject() else actor.subject
+    try:
+        async with connect_gateway(endpoint=endpoint, subject=subject) as client:
+            return await client.rpc(method, **call)
+    except GatewayRPCError:
+        raise
+    except (GatewayClientError, DiscoveryError, OSError, TimeoutError) as exc:
+        _log.warning('bulk session forward for %s via %s failed: %s', home, method, exc)
+        raise HTTPException(status_code=503, detail='owner_unreachable') from exc
+
+
+async def _bulk_delete_via_gateway_owner(profile, actor, ids):
+    """Forward a bulk delete selection; ``None`` when no owner is reachable (caller goes offline)."""
+    return await _bulk_owner_rpc(profile, actor, 'session.bulk_delete', {'ids': list(ids)})
+
+
+async def _delete_empty_via_gateway_owner(profile, actor):
+    """Forward a "Delete empty" sweep as the owner's bulk-delete empty sweep.
+
+    The owner resolves the current empty, ended, unarchived set itself, so the dashboard never reads
+    the owner's store to build the selection (which the lock would refuse anyway).
+    """
+    return await _bulk_owner_rpc(profile, actor, 'session.bulk_delete', {'empty_sweep': True})
+
+
+async def _prune_via_gateway_owner(profile, actor, filters):
+    """Forward a prune through the owner's existing ``session.prune`` verb; ``None`` when offline."""
+    return await _bulk_owner_rpc(profile, actor, 'session.prune', {'filters': dict(filters)})
+
+
+def _bulk_actor_or_none(request, profile):
+    """Resolve the dashboard principal for a bulk/housekeeping route, or ``None`` when no
+    authenticated principal is present.
+
+    Unlike the revision-fenced mutation routes, bulk deletes historically ran on the offline
+    locked store with no principal at all (loopback ``serve`` tests mount a bare router with no
+    auth middleware). A missing principal must therefore fall back to that offline path, not 401:
+    only a request that actually carries a login/native ticket forwards to the owner.
+    """
+    from fastapi import HTTPException
+
+    try:
+        _authority, actor = _session_mutation_context(request, profile)
+        return actor
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        return None
+
+
 async def _mutate_session_request(request, profile, session_id, *, request_id,
                                   expected_revision, operation, payload, expected_generation=None):
     """Resolve the authenticated principal and owner; never open a second writer."""

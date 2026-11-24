@@ -497,7 +497,7 @@ async def search_sessions(
 
 
 @manage_router.post("/api/sessions/bulk-delete")
-async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions, request: Request):
     """Delete every session in ``body.ids`` in one transaction (POST: many
     clients refuse a DELETE body).
 
@@ -510,18 +510,33 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     row would leave the root to resurface as the previous chain link on the
     next reload (#57543). ``deleted`` still counts the selected rows, not the
     expanded chain links.
+
+    While a gateway owns the profile's store, this process's exclusive-maintenance reservation can
+    never win, so the selection forwards to the owner's ``session.bulk_delete`` verb first; only a
+    home with no live owner takes the offline (locked) path (#138915).
     """
     # Hard cap so a runaway selection can't lock the writer for long.
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
 
+    unique_ids = list({sid for sid in body.ids or () if isinstance(sid, str) and sid})
+    if not unique_ids:
+        return {"ok": True, "deleted": 0, "skipped_active": []}
+
+    from hermes_cli.web_server_sessions import (
+        _bulk_actor_or_none, _bulk_delete_via_gateway_owner)
+    actor = _bulk_actor_or_none(request, profile)
+    if actor is not None:
+        forwarded = await _bulk_delete_via_gateway_owner(profile, actor, unique_ids)
+        if forwarded is not None:
+            # The owner ran the same delete_many path; its verdict already matches the offline shape.
+            return {"ok": True, "deleted": forwarded.get("deleted", 0),
+                    "skipped_active": forwarded.get("skipped_active", [])}
+
     def _delete(store):
         from session_retention import after_sessions_removed
 
-        unique_ids = list({sid for sid in body.ids or () if isinstance(sid, str) and sid})
-        if not unique_ids:
-            return 0, []
         outcome = store.sessions.delete_many(
             body.ids, skip_guarded=True, include_compression_chain=True, media_root=_media_root())
         after_sessions_removed(store, store.scope.profile_dir, outcome.removed_ids, reason="delete",
@@ -561,7 +576,7 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
 
 
 @manage_router.delete("/api/sessions/empty")
-async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
+async def delete_empty_sessions_endpoint(request: Request, profile: Optional[str] = None):
     """Delete every empty, ended, non-archived session in one transaction.
 
     "Empty" means NO ``messages`` rows at all — a rewound/compacted chat reads
@@ -571,8 +586,19 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     * Active sessions are skipped (``ended_at IS NULL``) so a live agent isn't yanked mid-handshake. *
     Archived sessions are skipped — the user explicitly chose to keep those rows. * Children of deleted
     parents are orphaned, not cascade-deleted. See #95868.
+
+    Forwards to the live gateway owner's ``session.bulk_delete`` empty sweep while a gateway runs;
+    the offline lock path only runs on an owner-less home (#138915).
     """
     profile = destructive_profile(profile, "DELETE /api/sessions/empty")
+
+    from hermes_cli.web_server_sessions import (
+        _bulk_actor_or_none, _delete_empty_via_gateway_owner)
+    actor = _bulk_actor_or_none(request, profile)
+    if actor is not None:
+        forwarded = await _delete_empty_via_gateway_owner(profile, actor)
+        if forwarded is not None:
+            return {"ok": True, "deleted": forwarded.get("deleted", 0)}
 
     def _delete_empty(store):
         from session_retention import after_sessions_removed
@@ -1044,7 +1070,7 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
 
 
 @manage_router.post("/api/sessions/prune")
-async def prune_sessions_endpoint(body: SessionPrune):
+async def prune_sessions_endpoint(body: SessionPrune, request: Request):
     """Delete ended sessions matching filters without blocking the event loop."""
     if body.dry_run:
         return await asyncio.to_thread(_prune_sessions, body)
@@ -1052,5 +1078,40 @@ async def prune_sessions_endpoint(body: SessionPrune):
     # keeps working unnamed (it is the preview the confirm dialog reads).
     body = body.model_copy(update={
         "profile": destructive_profile(body.profile, "POST /api/sessions/prune")})
+
+    from hermes_cli.web_server_sessions import (
+        _bulk_actor_or_none, _prune_via_gateway_owner)
+    # Build the owner verb's scalar filter dict (its whitelist rejects unknown keys), mirroring the
+    # offline route's effective cutoff: the implicit 90-day window drops once an attribute filter
+    # or explicit time window is present.
+    has_window = body.started_before is not None or body.started_after is not None
+    attr_filters_set = any(
+        getattr(body, f) is not None for f in _PRUNE_STR_FILTERS + _PRUNE_NUM_FILTERS)
+    effective_older_than = body.older_than_days
+    if has_window or (attr_filters_set and "older_than_days" not in body.model_fields_set):
+        effective_older_than = None
+    filters: dict = {}
+    if effective_older_than is not None:
+        filters["older_than_days"] = effective_older_than
+    if body.source is not None:
+        filters["source"] = body.source
+    criteria = PruneCriteria(
+        started_before=body.started_before, started_after=body.started_after,
+        archived=None if body.include_archived else False,
+        **{f: (getattr(body, f) or None) for f in _PRUNE_STR_FILTERS if f != "source"},
+        **{f: getattr(body, f) for f in _PRUNE_NUM_FILTERS})
+    from dataclasses import asdict
+    for key, value in asdict(criteria).items():
+        if value is not None:
+            filters[key] = value
+
+    actor = _bulk_actor_or_none(request, body.profile)
+    if actor is not None:
+        forwarded = await _prune_via_gateway_owner(body.profile, actor, filters)
+        if forwarded is not None:
+            # The owner's prune counts every row it removed; skipped_open is a preview-only concept,
+            # so the destructive answer reports the removed count.
+            return {"ok": True, "removed": forwarded.get("deleted", 0), "skipped_open": 0}
+
     from hermes_cli.web_server_sessions import _with_session_maintenance
     return await asyncio.to_thread(_with_session_maintenance, body.profile, _prune_sessions, body)

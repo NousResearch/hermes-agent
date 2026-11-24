@@ -4898,6 +4898,15 @@ export interface SessionPruneResult {
   routing_deleted?: number | null
   skipped?: number | null
 }
+/** A hand-picked ``ids`` selection, or ``empty_sweep`` to delete every ended, unarchived row with no messages. The two are mutually exclusive: an empty sweep carries no ids. */
+export interface SessionBulkDeleteParams {
+  ids?: string[] | null
+  empty_sweep?: boolean
+}
+export interface SessionBulkDeleteResult {
+  deleted: number
+  skipped_active?: string[] | null
+}
 export interface CommandObserveParams {
   session_id: string
   name: string
@@ -7272,6 +7281,8 @@ export interface CanonicalRpcMethods {
   'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsage }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
+  /** Local operator only: the owner runs a dashboard bulk delete or 'Delete empty' sweep through the same store path as the offline route, skipping live-lease rows. */
+  'session.bulk_delete': { params: SessionBulkDeleteParams; result: SessionBulkDeleteResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
@@ -7340,6 +7351,7 @@ export const CANONICAL_RPC_METHODS = [
   'runtime.describe',
   'session.account_usage',
   'session.automation',
+  'session.bulk_delete',
   'session.create',
   'session.detach',
   'session.events.since',

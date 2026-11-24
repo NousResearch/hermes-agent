@@ -537,7 +537,13 @@ def _cached_lease_is_current(lease) -> bool | None:
     ``desktop``/``tui``/``cli`` label cached in this process — decides who owns the chat. The
     superseding entry carries a NEW lease id, which makes this stale token's ``release()`` a no-op
     and serving a turn under it a second writer.
+
+    A token that cannot name its lease id is not a registry row at all (a borrowed or stub token),
+    so it has no entry to have been superseded: nothing to verify, and refusing here would fail a
+    session that never claimed a slot.
     """
+    if not getattr(lease, "lease_id", ""):
+        return True
     try:
         from hermes_cli.active_sessions import active_session_lease_is_current
         return active_session_lease_is_current(lease)

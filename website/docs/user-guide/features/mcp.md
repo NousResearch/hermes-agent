@@ -98,9 +98,10 @@ hermes mcp install deepwiki  # install a catalog entry by name
 The picker shows each entry with its current status:
 
 ```
-deepwiki     available              Ask questions about public GitHub repositories
-linear       enabled                Linear issue/project management (remote OAuth)
-github       installed (disabled)   GitHub repo + PR tools
+arcade-agent  available            Recover and evaluate software architecture
+deepwiki      available            Ask questions about public GitHub repositories
+linear        enabled              Linear issue/project management (remote OAuth)
+github        installed (disabled)  GitHub repo + PR tools
 ```
 
 Hit `Enter` on a row to install (and walk through any required credentials),

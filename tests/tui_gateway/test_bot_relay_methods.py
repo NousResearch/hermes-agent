@@ -316,6 +316,7 @@ def test_deliver_dispatch_preserves_delivery_identity_and_receipt(home, monkeypa
         "profile_home": str(home / "profiles" / "ops"),
         "session_id": "bot-chat",
         "message": "ping",
+        "target_state": "working",
     }
     if status == "refused":
         receipt.update(refused=True, error="queue full", reason="target_busy")

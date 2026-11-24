@@ -1267,16 +1267,23 @@ def _run_data_migrations(holder: StoreHolder, cursor: sqlite3.Cursor, current_ve
         # carries no durable field a delegate spawn cannot also leave (same parent, created_source and
         # no marker), so following children would adopt a markerless worker it spawned. A tip that
         # compressed before the upgrade, and any /resume, left no record a capture could not also
-        # leave, so neither is backfilled.
-        with contextlib.suppress(sqlite3.OperationalError):
+        # leave, so neither is backfilled. A row compression closed is not adopted either: recovery
+        # would reopen it and clear the ``end_reason`` that links it to its continuation.
+        # A missing JSON function or column skips the step; a busy or locked store raises, so the
+        # startup retry runs it again instead of recording v34 unrepaired.
+        try:
             cursor.execute(
                 "UPDATE sessions SET model_config = json_set("
                 "COALESCE(model_config, '{}'), '$._chat_adopted', json('true')) "
                 "WHERE handoff_state = 'completed' AND created_source = 'subagent' "
+                "AND COALESCE(end_reason, '') <> 'compression' "
                 "AND json_valid(COALESCE(model_config, '{}')) "
                 f"AND COALESCE({_sql_json_extract('model_config', '$._delegate_from')}, '') = '' "
                 f"AND {_sql_json_extract('model_config', '$._chat_adopted')} IS NULL"
             )
+        except sqlite3.OperationalError as exc:
+            if "no such" not in str(exc):
+                raise
     _advance_message_uid_backfill(holder, cursor)
     fts_migrations_complete = True
     if current_version < 30 and fts5_available:

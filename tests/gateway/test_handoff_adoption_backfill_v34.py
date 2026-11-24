@@ -76,9 +76,10 @@ def test_a_capture_without_a_handoff_is_still_evicted_after_upgrade(tmp_path):
         upgraded.persistence.close()
 
 
-def test_a_worker_the_handed_off_row_spawned_is_not_adopted(tmp_path):
+def test_a_handed_off_row_that_compressed_adopts_nothing(tmp_path):
     # The handed-off row spawned a markerless worker, then compressed. The worker has the same
     # parent, created_source='subagent' and no _delegate_from as the continuation: the capture shape.
+    # The compressed row itself stays unadopted: recovery would reopen it and cut it off its tip.
     store, _entry, handed = _old_route_onto_markerless_worker(tmp_path, handed_off=True)
     db = store.persistence
     spawned = seed_session(db, handed + "-spawned", "subagent", parent_session_id=handed)
@@ -93,7 +94,8 @@ def test_a_worker_the_handed_off_row_spawned_is_not_adopted(tmp_path):
     upgraded = _reopen_after_upgrade(store, tmp_path)
     try:
         sessions = upgraded.persistence.sessions
-        assert sessions.get_model_config_value(handed, "_chat_adopted") is True
+        assert sessions.get_model_config_value(handed, "_chat_adopted") is None
         assert sessions.get_model_config_value(spawned, "_chat_adopted") is None
+        assert sessions.get_model_config_value(tip, "_chat_adopted") is None
     finally:
         upgraded.persistence.close()

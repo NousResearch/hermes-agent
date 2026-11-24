@@ -216,15 +216,32 @@ function SkeletonRows({ count, subtitle = false }: { count: number; subtitle?: b
 function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () => void }) {
   const b = useBots()
   const { tone, says, open } = useAgentScreen(owner.connectionId, owner.profile)
+  // Opening waits on a route lookup: by then the page may be gone, or a second click be waiting too.
+  const page = useRef({ closed: false, shown: true })
+
+  useEffect(() => {
+    page.current.shown = true
+
+    return () => {
+      page.current.shown = false
+    }
+  }, [])
 
   if (tone === 'unsupported' || tone === 'unavailable') {
     return null
   }
 
+  const opened = (did: boolean) => {
+    if (did && page.current.shown && !page.current.closed) {
+      page.current.closed = true
+      onOpened()
+    }
+  }
+
   return (
     <SettingRow
       detail={says}
-      onClick={() => void open().then(opened => opened && onOpened())}
+      onClick={() => void open().then(opened)}
       title={b.screen.portalTitle}
     />
   )

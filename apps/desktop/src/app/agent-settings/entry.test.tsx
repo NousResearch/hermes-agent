@@ -528,10 +528,14 @@ it.each([
   expect(row.textContent).toContain(says)
 
   fireEvent.click(row)
-  expect(screenPlugin.open).toHaveBeenCalledTimes(1)
+  expect(screenPlugin.open).toHaveBeenCalled()
   expect(screenPlugin.route).toMatchObject({ profile: 'default' })
-  // The Screen is a tab beside the chat: the page steps aside once it has opened.
+  // The Screen is a tab beside the chat: the page steps aside once it has opened, and once only
+  // however many clicks were waiting on it.
+  fireEvent.click(row)
   await waitFor(() => expect(closed).toHaveBeenCalledTimes(1))
+  await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+  expect(closed).toHaveBeenCalledTimes(1)
 })
 
 it('stays on the Overview and says so when the Screen could not be opened', async () => {

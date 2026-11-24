@@ -603,14 +603,16 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
-# The commands that put entries on PATH, and the unquoted characters that end each one's value: a
-# PATH= value is one word, zsh's path array runs to ")", fish's arguments run to the end of the
-# command. Outside zsh, path=(...) is an ordinary array.
-_PATH_ASSIGNMENT = (re.compile(r"(?<![\w$])PATH(?P<append>\+?)="), " \t;&|")
+# The commands that put entries on PATH, the unquoted characters that end each one's value, and whether
+# a ":" in a value separates entries: a PATH= value is one colon list; zsh's path array runs to ")" and
+# fish_add_path takes directories, one per word; fish's set splits PATH on colons. Outside zsh,
+# path=(...) is an ordinary array.
+_PATH_ASSIGNMENT = (re.compile(r"(?<![\w$])PATH(?P<append>\+?)="), " \t;&|", True)
 _PATH_SETTERS = {
     "posix": (_PATH_ASSIGNMENT,),
-    "zsh": (_PATH_ASSIGNMENT, (re.compile(r"(?<![\w$])path\+?=\("), ";&|)")),
-    "fish": ((re.compile(r"(?<![\w$-])(?:fish_add_path\b|set\s+(?:-[-\w]*\s+)*PATH\b)"), ";&|"),),
+    "zsh": (_PATH_ASSIGNMENT, (re.compile(r"(?<![\w$])path\+?=\("), ";&|)", False)),
+    "fish": ((re.compile(r"(?<![\w$-])fish_add_path\b"), ";&|", False),
+             (re.compile(r"(?<![\w$-])set\s+(?:-[-\w]*\s+)*PATH\b"), ";&|", True)),
 }
 # Stands in for an expansion doctor can't know (another variable, PATH's old value): it names no directory.
 _UNKNOWN = "\0"
@@ -787,11 +789,12 @@ def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]
 def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], target: str) -> bool:
     comment = next((m.start() for m in _COMMENT_START.finditer(line) if not _open_quote(line, m.start())), None)
     code = line[:comment]
-    for setter, stops in setters:
+    for setter, stops, colon_lists in setters:
         for found in setter.finditer(code):
             if not _setter_counts(code, found, variables):
                 continue
-            entries = [entry for word in _setter_words(code[found.end() :], stops, variables) for entry in word.split(":")]
+            words = _setter_words(code[found.end() :], stops, variables)
+            entries = [entry for word in words for entry in word.split(":")] if colon_lists else words
             if found.groupdict().get("append"):
                 entries = entries[1:]  # PATH+=x extends the last entry; only what follows a ":" is new
             if any(entry and os.path.normpath(entry) == target for entry in entries):

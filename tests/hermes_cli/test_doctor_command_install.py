@@ -544,6 +544,8 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("bash", ".bashrc", 'echo export PATH="$HOME/.local/bin:$PATH"'),
     ("fish", ".config/fish/config.fish", "echo set -gx PATH $HOME/.local/bin $PATH"),
     ("zsh", ".zprofile", 'export PATH="$PATH:$HOME/.local/bin#backup"'),  # a # inside a word is no comment
+    ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin:/usr/local/bin"'),  # one directory
+    ("zsh", ".zprofile", 'path=("$HOME/.local/bin:/usr/local/bin" $path)'),
     ("zsh", ".zprofile", 'export PATH="/usr/bin:/bin"; export BACKUP_BIN="$HOME/.local/bin"'),  # not PATH's value
     ("zsh", ".zprofile", "export PATH=/usr/local/bin:$PATH; ls ~/.local/bin"),
     ("fish", ".config/fish/config.fish", "set -l saved_path $PATH; contains ~/.local/bin $PATH"),

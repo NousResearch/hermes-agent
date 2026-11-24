@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { group, split } from '@/components/pane-shell/tree/model'
 import {
@@ -16,6 +17,7 @@ import {
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
+import { $chatItemsOpen, CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
 import { setInterfaceMode } from '@/store/interface-mode'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
@@ -185,4 +187,30 @@ it('shows developer tools only in Advanced mode with the redesign enabled', () =
     $shellChoice.set(false)
   })
   expect(screen.queryByRole('navigation')).toBeNull()
+})
+
+// HADESK-90: on a medium window the chat's items are a sheet, like Files and Review. Their tile read
+// the docked state (lit while nothing showed) and its click only un-hid the pane, which opens no sheet.
+it('lights the Items tile for its sheet on narrow windows, and its click asks for that sheet', () => {
+  $narrowViewport.set(true)
+  $chatItemsOpen.set(true)
+  disposers.push(
+    registry.register({ area: 'panes', id: CHAT_ITEMS_PANE_ID, data: { placement: 'right' }, render: () => null })
+  )
+  $layoutTree.set(
+    split('row', [group(['workspace'], { id: 'main' }), group(['files', CHAT_ITEMS_PANE_ID], { active: CHAT_ITEMS_PANE_ID, id: 'tools' })])
+  )
+  const reveals: unknown[] = []
+  const onReveal = (event: Event) => reveals.push((event as CustomEvent).detail)
+  window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, onReveal)
+  disposers.push(() => window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onReveal))
+  mount()
+  const items = screen.getByRole('button', { name: 'Items' })
+
+  expect(items.getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(items)
+  expect(reveals).toEqual([{ id: CHAT_ITEMS_PANE_ID }])
+
+  act(() => $narrowOverlayPaneIds.set(new Set([CHAT_ITEMS_PANE_ID])))
+  expect(items.getAttribute('aria-pressed')).toBe('true')
 })

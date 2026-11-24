@@ -20,6 +20,7 @@ import { $focusedWorkspaceCwd } from '@/store/session-states'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { useChatItemsCopy } from '../chat/items/chat-items-copy'
+import { toggleChatItemsSheet } from '../chat/items/chat-items-pane-id'
 import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from '../redesign/developer-tool-panel'
 import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 import { appViewForPath } from '../routes'
@@ -93,8 +94,8 @@ function DeveloperTools() {
       label: itemsLabel,
       icon: 'folder-library',
       action: undefined,
-      active: items,
-      run: () => togglePaneVisible(CHAT_ITEMS_PANE_ID)
+      active: narrow ? overlays.has(CHAT_ITEMS_PANE_ID) : items,
+      run: () => (narrow ? toggleChatItemsSheet() : togglePaneVisible(CHAT_ITEMS_PANE_ID))
     }
   ]
 

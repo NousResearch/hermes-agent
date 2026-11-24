@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-import re
+import hermes_re as re
 import shlex
 import signal
 import stat
@@ -31,6 +31,9 @@ class GatewayLifecycleBlocked(ValueError):
 # concrete command identifier so it fires only on command-shaped strings, never prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
+    # A word boundary between two parts of a branch is spelled as the text it requires: one non-word
+    # character, then optionally more text that ends in one (`[^\w\n](?:[^\n]*[^\w\n])?`). RE2's `\b`
+    # in mid-pattern is ASCII-only: next to `ſ`, which `(?i)` reads as `s`, it would miss a command.
     # Branch A: destructive `hermes gateway` ops. `start` is excluded: starting from inside a
     # gateway is benign and a job may legitimately start a sibling profile. The lookbehind keeps
     # `hermes` from being a path component or word tail (`/docs/hermes gateway restart-notes.md`)
@@ -56,16 +59,17 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # makes an unload durable across boots. Omitting them left the bypassable approval layer
     # (tools/approval.py, skipped on force=True) as the only cover, while this hard block — documented as
     # "force=True cannot help here" — let them through (#80260).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)"
+    r"[^\w\n](?:[^\n]*[^\w\n])?hermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
-    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)[^\w\n](?:[^\n]*[^\w\n])?hermes[.\-]?gateway)"
     # Branch D: pkill/kill of the gateway process, both token orders. Leading \b keeps "skill" from
     # matching as "kill".
     # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bp?kill\b`
     # cannot reach inside `taskkill`, so they are named outright. Service-control forms (`net stop`,
     # `sc stop`) presuppose a service install this guard has no evidence of and stay uncovered.
-    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    r"|(?:\b(?:p?kill|taskkill|stop-process)[^\w\n](?:[^\n]*[^\w\n])?hermes[^\w\n](?:[^\n]*[^\w\n])?gateway)"
+    r"|(?:\b(?:p?kill|taskkill|stop-process)[^\w\n](?:[^\n]*[^\w\n])?gateway[^\w\n](?:[^\n]*[^\w\n])?hermes)"
 )
 
 # Branch E: process killers whose TARGET is the interpreter image hosting the gateway. A supervised
@@ -101,7 +105,9 @@ _KILL_VERB_RE = re.compile(r"(?i)\b(?:kill|taskkill|stop-process)\b")
 # (`python -m hermes_cli.main gateway run` / `hermes gateway run`) only through its own tokens;
 # an unrelated script that merely contains "hermes" (`hermes-polis/run.sh`, `my_hermes_bot.py`)
 # cannot match it. Same hermes+gateway pairing as Branch D, plus the module path.
-_GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|\bhermes\b[^\n]*\bgateway\b|\bgateway\b[^\n]*\bhermes\b")
+# The two inner word boundaries are spelled as in Branch D.
+_GATEWAY_CMDLINE_TOKEN_RE = re.compile(
+    r"(?i)hermes_cli|\bhermes[^\w\n](?:[^\n]*[^\w\n])?gateway\b|\bgateway[^\w\n](?:[^\n]*[^\w\n])?hermes\b")
 # Rejection text for Branch E, shared by every tool surface that runs the guard so the agent is
 # pointed at the ownership-scoped route (proc_* id / explicit PID) rather than the shell.
 HOST_INTERPRETER_KILL_REJECTION = (
@@ -250,15 +256,15 @@ _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
     r"hermes\s+"
     # Each flag has one parse: '-' plus its remainder, never two ways to split
-    # '--'. A following flag cannot also be an optional value (#129281).
-    # Possessive token/space runs avoid repartitioning whitespace on failure;
-    # whole flag groups can still backtrack to expose the profile selector.
+    # '--'. A following flag cannot also be an optional value (#129281): a value
+    # is a lone '-' or a token not starting with '-'. RE2 matches in linear time,
+    # so the token/space runs need no possessive quantifiers.
     # Do not cap the number of flags: that would silently allow long self-stops.
-    r"(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*"
+    r"(?:-\S+(?:\s+(?:[^\s\-]\S*|-))?\s+)*"
     # The selector: exactly the shapes the CLI's `_apply_profile_override` accepts.
     r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
     # Any global flags between the selector and the subcommand.
-    r"(?:\s++-\S++(?:\s++(?!-\S)\S++)?)*"
+    r"(?:\s+-\S+(?:\s+(?:[^\s\-]\S*|-))?)*"
     r"\s+gateway\s+(?:restart|stop)"
 )
 

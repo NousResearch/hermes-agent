@@ -23,7 +23,7 @@ from pm.environments import install_state_dir, runtime_facts_path, selected_venv
 from pm import paths
 from pm.lock import Facts
 from pm.package import InstallError
-from tests.pm._fixtures import isolated_python
+from tests.pm._fixtures import _wheel, isolated_python
 
 # Spawns children with a home it builds itself; the parent's must stay real.
 pytestmark = pytest.mark.real_machine_home
@@ -94,6 +94,23 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
     return root, store_python, command
 
 
+def _with_regex_engine(root, tmp_path):
+    """Give the fixture project a stand-in for google-re2, as the new target's dependencies have.
+
+    The launch guard refuses a generation without ``re2``; a launch on the target's own,
+    successfully synced dependencies runs with it.
+    """
+    wheels = tmp_path / "wheels"
+    wheels.mkdir(exist_ok=True)
+    _wheel(wheels, "re2", "1.0")
+    pyproject = root / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8").replace(
+        'requires-python = ">=3.11"\n', 'requires-python = ">=3.11"\ndependencies = ["re2==1.0"]\n',
+    )
+    pyproject.write_text(text + f"find-links = [{json.dumps(wheels.as_posix())}]\n", encoding="utf-8")
+    pm.lock_project(root, offline=True, explicit=True)
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("update", ["launch", "sync", "pm-update"])
 def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monkeypatch, update):
@@ -104,6 +121,7 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
     from tests.hermes_cli.test_source_launcher_publication import BOOT_FILES
 
     root, old_python, _ = source_launch
+    _with_regex_engine(root, tmp_path)
     repository = Path(__file__).resolve().parents[2]
     for relative in BOOT_FILES:
         destination = root / relative
@@ -366,6 +384,7 @@ def test_recorded_extra_spelled_differently_from_its_declaration_survives(source
 @pytest.mark.parametrize("mode", ["script", "module", "command"])
 def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isolated_python, mode):
     root, store_python, worker_command = source_launch
+    _with_regex_engine(root, tmp_path)
     repository = Path(__file__).resolve().parents[2]
     # Copy the real bootstrap so it owns this disposable source install. The
     # other modules remain real checkout imports; only acquisition is injected.
@@ -453,12 +472,15 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
     assert not (root / ".lazy-refresh-incomplete").exists()
 
 
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("argv", [[], ["--version"]])
-def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path, isolated_python, argv):
-    """An update whose dependency sync cannot finish (offline, bad lock) must leave a usable
-    CLI on the previous generation with a warning — and a metadata query must not even try."""
-    root, _store_python, worker_command = source_launch
+def _failed_completion_launch(root, tmp_path, worker_command, *, offline=False):
+    """A source install whose previous generation lacks google-re2 and whose updated lock cannot sync.
+
+    Models an update from a release without the engine whose dependency sync failed: the previous
+    generation stays selected. The sync fails on a broken lock, or (*offline*) on a valid lock whose
+    engine wheel cannot be fetched, as on a host without network: the same inputs as the repair.
+    Returns the launch entry, the previous generation's fact and a callable that removes the cause
+    (a later update's valid lock, or the network coming back).
+    """
     repository = Path(__file__).resolve().parents[2]
     shutil.copy2(repository / "hermes_bootstrap.py", root / "hermes_bootstrap.py")
     (root / "launch_test_tools.py").write_text(
@@ -481,26 +503,191 @@ def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path,
     )
     pm.sync_venv(["all"], explicit=True, project_root=root)
     previous = _fact(root)
-    lock = root / "uv.lock"
-    lock.write_text("version = 1\nnot valid TOML\n", encoding="utf-8")
+    assert not (site_packages(selected_venv(root)) / "re2").exists()
+    _with_regex_engine(root, tmp_path)
+    if offline:
+        wheel = next((tmp_path / "wheels").glob("re2-*.whl"))
+        unreachable = tmp_path / "unreachable" / wheel.name
+        unreachable.parent.mkdir()
+        wheel.rename(unreachable)
+
+        def remove_cause():
+            unreachable.rename(wheel)
+    else:
+        lock = root / "uv.lock"
+        valid_lock = lock.read_bytes()
+        lock.write_text("version = 1\nnot valid TOML\n", encoding="utf-8")
+
+        def remove_cause():
+            lock.write_bytes(valid_lock)
     assert not pm.venv_is_current(project_root=root)
+    return entry, previous, remove_cause
+
+
+@pytest.mark.platforms("posix")
+def test_metadata_query_after_a_failed_launch_completion_does_not_sync(source_launch, tmp_path):
+    """A metadata query on the previous generation must not even try the owed sync."""
+    root, _store_python, worker_command = source_launch
+    bare_python = worker_command[0]  # the bare interpreter the fixture's worker runs on
+    entry, previous, _ = _failed_completion_launch(root, tmp_path, worker_command)
     before_receipts = _receipts(tmp_path)
 
     result = subprocess.run(
-        [str(isolated_python), str(entry), *argv], cwd=root,
+        [str(bare_python), str(entry), "--version"], cwd=root,
         env=dict(os.environ), capture_output=True, text=True, timeout=60,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"executable": str(isolated_python), "args": argv}
+    assert json.loads(result.stdout) == {"executable": str(bare_python), "args": ["--version"]}
     assert _fact(root) == previous
-    if argv:
-        assert "source-update completion failed" not in result.stderr
-        assert _receipts(tmp_path) == before_receipts, "a metadata query attempted a dependency sync"
-    else:
-        assert "source-update completion failed" in result.stderr
-        assert "hermes update" in result.stderr
+    assert "source-update completion failed" not in result.stderr
+    assert _receipts(tmp_path) == before_receipts, "a metadata query attempted a dependency sync"
+
+
+@pytest.mark.platforms("posix")
+def test_failed_launch_completion_on_a_generation_without_the_engine_refuses_then_heals(
+        source_launch, tmp_path):
+    """An update from a release without google-re2 whose dependency sync cannot finish leaves the
+    previous generation selected: the launch refuses cleanly with the repair instead of running this
+    tree without its regex engine, and once the sync can succeed the same plain launch completes
+    the update by itself."""
+    root, store_python, worker_command = source_launch
+    bare_python = worker_command[0]  # the bare interpreter the fixture's worker runs on
+    entry, previous, remove_cause = _failed_completion_launch(root, tmp_path, worker_command)
+    generations = set((install_state_dir(root) / "environments").iterdir())
+    previous_files = sorted(p.relative_to(previous["environment"]).as_posix()
+                            for p in Path(previous["environment"]).rglob("*"))
+
+    def launch():
+        return subprocess.run(
+            [str(bare_python), str(entry)], cwd=root,
+            env=dict(os.environ), capture_output=True, text=True, timeout=60,
+            check=False,
+        )
+
+    refused = launch()
+    assert refused.returncode == 1, refused.stderr
+    assert refused.stdout == "", "the entry point ran on dependencies without the regex engine"
+    assert "hermes: cannot start:" in refused.stderr
+    assert "google-re2" in refused.stderr and "hermes pm install" in refused.stderr
+    assert "Traceback" not in refused.stderr
+    assert "source-update completion failed" in refused.stderr
+    assert _fact(root) == previous
+    assert set((install_state_dir(root) / "environments").iterdir()) == generations
+    assert sorted(p.relative_to(previous["environment"]).as_posix()
+                  for p in Path(previous["environment"]).rglob("*")) == previous_files
+
+    remove_cause()
+    healed = launch()
+    assert healed.returncode == 0, healed.stderr
+    assert json.loads(healed.stdout) == {"executable": str(store_python), "args": []}
+    assert "warning" not in healed.stderr and "cannot start" not in healed.stderr, healed.stderr
+    assert "source-update completion failed" not in healed.stderr
+    assert pm.venv_is_current(project_root=root)
+    selected = selected_venv(root)
+    assert selected != Path(previous["environment"])
+    assert (site_packages(selected) / "re2" / "__init__.py").is_file()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("failed_before", [0, venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS - 1])
+def test_offline_launch_on_a_generation_without_the_engine_heals_once_the_network_is_back(
+        source_launch, tmp_path, failed_before):
+    """An engine-less previous generation whose sync failed offline (same inputs as the repair)
+    must heal by a plain launch once the wheel is reachable: right after a single failure, and
+    also after the retry cap, which would otherwise leave a supervised gateway refused until
+    someone types a command. Past the cap the backoff still spaces the attempts."""
+    root, store_python, worker_command = source_launch
+    bare_python = worker_command[0]  # the bare interpreter the fixture's worker runs on
+    entry, previous, remove_cause = _failed_completion_launch(root, tmp_path, worker_command, offline=True)
+
+    def launch():
+        return subprocess.run(
+            [str(bare_python), str(entry)], cwd=root,
+            env=dict(os.environ), capture_output=True, text=True, timeout=60,
+            check=False,
+        )
+
+    refused = launch()
+    assert refused.returncode == 1, refused.stderr
+    assert "hermes: cannot start:" in refused.stderr and "Traceback" not in refused.stderr
+    assert _fact(root) == previous
+    record = venv_sync._completion_attempts_path(root)
+    attempts, inputs = venv_sync._read_completion_attempts(record)
+    assert attempts == 1 and inputs
+    if failed_before:
+        record.write_text(f"{attempts + failed_before}\n{inputs}\n", encoding="utf-8")
+        before_receipts = _receipts(tmp_path)
+        waiting = launch()  # inside the backoff window: refused without another sync
+        assert waiting.returncode == 1, waiting.stderr
+        assert "cannot start" in waiting.stderr and "next automatic retry" in waiting.stderr
+        assert "running with the previous dependencies" not in waiting.stderr
+        assert waiting.stderr.index("next automatic retry") < waiting.stderr.index("cannot start")
+        assert "hermes pm install" in waiting.stderr.split("cannot start")[0], waiting.stderr
+        assert _receipts(tmp_path) == before_receipts, "a launch inside the backoff window synced"
+        aged = record.stat().st_mtime - venv_sync.COMPLETION_RETRY_BACKOFF_SECONDS - 60
+        os.utime(record, (aged, aged))
+
+    remove_cause()
+    healed = launch()
+    assert healed.returncode == 0, healed.stderr
+    assert json.loads(healed.stdout) == {"executable": str(store_python), "args": []}
+    assert "warning" not in healed.stderr and "cannot start" not in healed.stderr, healed.stderr
+    assert pm.venv_is_current(project_root=root)
+    assert (site_packages(selected_venv(root)) / "re2" / "__init__.py").is_file()
+    assert not record.exists()
+
+
+@pytest.mark.platforms("posix")
+def test_gateway_stop_past_the_cap_does_not_wait_for_a_sync(source_launch, tmp_path):
+    """Past the cap, only launches the guard refuses keep retrying the sync: `gateway stop`, the
+    command that ends a supervisor's restart loop into the refusal, starts at once without one."""
+    root, _store_python, worker_command = source_launch
+    bare_python = worker_command[0]  # the bare interpreter the fixture's worker runs on
+    entry, previous, _ = _failed_completion_launch(root, tmp_path, worker_command, offline=True)
+    record = venv_sync._completion_attempts_path(root)
+    inputs = venv_sync._sync_inputs_digest(root)
+    record.write_text(f"{venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS}\n{inputs}\n", encoding="utf-8")
+    aged = record.stat().st_mtime - venv_sync.COMPLETION_RETRY_MAX_BACKOFF_SECONDS - 60
+    os.utime(record, (aged, aged))  # any refused launch would sync now
+    before_receipts = _receipts(tmp_path)
+
+    stopped = subprocess.run(
+        [str(bare_python), str(entry), "gateway", "stop"], cwd=root,
+        env=dict(os.environ), capture_output=True, text=True, timeout=60,
+        check=False,
+    )
+
+    assert stopped.returncode == 0, stopped.stderr
+    assert json.loads(stopped.stdout)["args"] == ["gateway", "stop"]
+    assert "warning" in stopped.stderr and "cannot start" not in stopped.stderr, stopped.stderr
+    assert _receipts(tmp_path) == before_receipts, "`gateway stop` waited for a dependency sync"
+    assert _fact(root) == previous
+    assert venv_sync._read_completion_attempts(record) == (venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS, inputs)
+
+
+@pytest.mark.platforms("posix")
+def test_completion_retry_window_doubles_past_the_cap(tmp_path, monkeypatch):
+    """Where the cap is lifted (capped=False), a cause that never heals costs a bounded number
+    of syncs: the first retry past the cap still waits 15 minutes, then the wait doubles per
+    failure up to 6 hours."""
+    from hermes_cli import venv_sync
+
+    monkeypatch.setattr(venv_sync, "completion_pending_path",
+                        lambda root: tmp_path / "source-completion-pending")
+    record = tmp_path / "source-completion-attempts"
+    base, bound = venv_sync.COMPLETION_RETRY_BACKOFF_SECONDS, venv_sync.COMPLETION_RETRY_MAX_BACKOFF_SECONDS
+    cap = venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS
+    now = 10_000_000.0
+    for attempts, window in ((cap - 1, base), (cap, base), (cap + 1, 2 * base), (cap + 2, 4 * base),
+                             (cap + 4, 16 * base), (cap + 5, bound), (cap + 40, bound)):
+        record.write_text(f"{attempts}\n", encoding="utf-8")
+        os.utime(record, (now - window + 60, now - window + 60))  # a minute short of the window
+        assert venv_sync.completion_retry_state(tmp_path, now=lambda: now, capped=False)[:2] == (False, attempts)
+        os.utime(record, (now - window - 1, now - window - 1))
+        assert venv_sync.completion_retry_state(tmp_path, now=lambda: now, capped=False)[:2] == (True, attempts)
+    assert bound == 6 * 60 * 60 and 32 * base > bound  # 15 -> 30 -> 60 -> 120 -> 240 -> 360 min
 
 
 @pytest.mark.platforms("posix")

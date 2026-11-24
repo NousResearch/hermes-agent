@@ -7,7 +7,7 @@ Known gap: language write APIs (open(..., 'w'), Path.write_text, shutil.copy*, f
 agent-config files surface only the low *_ref finding — static regexes cannot tie the call to a dynamic
 destination; future coverage belongs as a fourth "mechanical" tier next to agent_config_mod_shell."""
 
-import re
+import hermes_re as re
 import codecs
 import hashlib
 import io
@@ -20,10 +20,11 @@ from pathlib import Path
 from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
-from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
+from tools.threat_patterns import (
+    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, LineTail, MarkedMatcher, mask_negated_forget, only_end)
 
 
-SCANNER_VERSION = "skills-guard-v16"
+SCANNER_VERSION = "skills-guard-v17"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -70,52 +71,77 @@ class ScanResult:
 # --- Threat patterns — (regex, pattern_id, severity, category, description) --
 # File-modification verbs for the agent-config persistence tiers: a verb shortly before a config
 # filename on the same line is scored as modification; a bare mention is not.
+# No `\b` closes a verb here: _prose_modify_re spells that boundary as the text that has to follow. RE2's `\b`
+# in mid-pattern is ASCII-only, and next to `ſ` (which IGNORECASE reads as `s`) it would miss the verb.
 MODIFY_VERB_RE = (
-    r'(?:\bwrit(?:e|es|ing)\b|\bwritten\b|\bedit(?:s|ed|ing)?\b'
-    r'|\bmodif(?:y|ies|ied|ying|ication)s?\b|\bupdat(?:e|es|ed|ing)\b'
-    r'|\bappend(?:s|ed|ing)?\b|\bprepend(?:s|ed|ing)?\b'
-    r'|\binject(?:s|ed|ing)?\b|\boverwrit(?:e|es|ing)\b|\boverwritten\b'
-    r'|\breplac(?:e|es|ed|ing)\b|\balter(?:s|ed|ing)?\b|\badd(?:s|ed|ing)\b)')
+    r'(?:\bwrit(?:e|es|ing)|\bwritten|\bedit(?:s|ed|ing)?'
+    r'|\bmodif(?:y|ies|ied|ying|ication)s?|\bupdat(?:e|es|ed|ing)'
+    r'|\bappend(?:s|ed|ing)?|\bprepend(?:s|ed|ing)?'
+    r'|\binject(?:s|ed|ing)?|\boverwrit(?:e|es|ing)|\boverwritten'
+    r'|\breplac(?:e|es|ed|ing)|\balter(?:s|ed|ing)?|\badd(?:s|ed|ing))')
 
-_AGENT_CONFIG_FILES = r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)'
+# The names of _AGENT_CONFIG_FILES that open with a dot. Only these can stand directly against a verb or a
+# sed flag (`edit.cursorrules`, `sed -i.clinerules`): the dot is the word boundary. Every Hermes and
+# other-agent name opens with one.
+_AGENT_CONFIG_DOTFILES = r'(?:\.cursorrules|\.clinerules)'
+_AGENT_CONFIG_FILES = rf'(?:AGENTS\.md|CLAUDE\.md|{_AGENT_CONFIG_DOTFILES})'
 _HERMES_CONFIG_FILES = r'\.hermes/(?:config\.yaml|SOUL\.md)'
 # Path prefixes (real files are e.g. .claude/settings.json): consume trailing filename chars.
-_OTHER_AGENT_CONFIG_FILES = r'\.(?:claude/settings|codex/config)[\w.]*'
+_OTHER_AGENT_CONFIG_STEM = r'\.(?:claude/settings|codex/config)'
+_OTHER_AGENT_CONFIG_FILES = _OTHER_AGENT_CONFIG_STEM + r'[\w.]*'
+# The same names up to their last word character, which is all `<name>\b` matches (trailing dots stay out).
+# Spelled out for the prose tier: RE2 serves a closing `\b` exactly only after a definite word character.
+_OTHER_AGENT_CONFIG_WORDS = _OTHER_AGENT_CONFIG_STEM + r'(?:[\w.]*\w)?'
 
 
-def _shell_write_re(file_alt: str) -> str:
+def _shell_write_re(file_alt: str, dot_led: str) -> str:
     """Mechanical shell write into *file_alt*: ``>``/``>>``, ``sed -i``, ``tee`` (target as immediate argument, so
     ``| tee output | AGENTS.md |`` cells miss), ``cp``/``mv`` with the file as destination (source arg required, so
     ``cp AGENTS.md backup/`` misses; ``AGENTS.md.bak`` is not the file). A single ``>`` needs a preceding word/quote/
-    paren char so blockquotes (``> text``) and arrows (``-> file``) miss."""
+    paren char so blockquotes (``> text``) and arrows (``-> file``) miss. *dot_led*: the names of *file_alt* that
+    open with a dot."""
+    # "The file name is not continued by a word character, with or without a dot", as a positive lookahead at
+    # the end of each alternative; the sed alternative consumes a non-word character where it had `\b`. The
+    # regex facade (RE2) only emulates a lookahead at a pattern edge, and its `\b` inside a pattern is ASCII-only.
+    # After the in-place flag that is one non-word character and the rest of the gap, or a dot-led name at once
+    # (`sed -i.cursorrules`); a letter-led name glued to the flag (`sed -iAGENTS.md`) is no boundary.
+    end = r'(?=[^\w.]|\.(?:\W|$)|$)'
     return (
-        rf'(?:>>|[\w"\'`)\]]\s*>)\s*[~\w./-]*{file_alt}(?!\.?\w)'
-        rf'|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b[^\n]*{file_alt}(?!\.?\w)'
-        rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
-        rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)')
+        rf'(?:>>|[\w"\'`)\]]\s*>)\s*[~\w./-]*{file_alt}{end}'
+        rf'|\bsed(?:[^\w\n][^\n]*)?\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)(?:[^\w\n][^\n]*{file_alt}|{dot_led}){end}'
+        rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}{end}'
+        rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}{end}')
 
 
-def _prose_modify_re(file_alt: str) -> str:
+def _prose_modify_re(file_alt: str, dot_led: str) -> str:
     """Prose instructing modification of *file_alt*: an imperative-position verb (line start / bullet), or a mid-line
     verb with a directive marker ("you must", "please", "make sure to"). Descriptive prose ("skills that edit
-    AGENTS.md") misses; the verb→file gap forbids commas so enumerations ("Write skills, AGENTS.md, CLAUDE.md") miss."""
+    AGENTS.md") misses; the verb→file gap forbids commas so enumerations ("Write skills, AGENTS.md, CLAUDE.md") miss.
+    *dot_led*: the names of *file_alt* that open with a dot. Every name must end in a word character."""
+    # The word boundary after the verb is spelled as what follows it (RE2's mid-pattern `\b` is ASCII-only):
+    # a dot-led name at once, or one non-word character and the rest of the gap (80 characters in all).
+    target = rf'(?:{dot_led}|[^\w\n,][^\n,]{{0,79}}?{file_alt})\b'
     return (
-        rf'^\s*(?:[-*+]\s+|\d+[.)]\s+)?{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b'
+        rf'^\s*(?:[-*+]\s+|\d+[.)]\s+)?{MODIFY_VERB_RE}{target}'
         rf'|(?:\byou\s+(?:must|should|need\s+to)\s+|\bplease\s+'
         rf'|\bmake\s+sure\s+(?:to\s+|you\s+)|\bbe\s+sure\s+to\s+)'
-        rf'{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b')
+        rf'{MODIFY_VERB_RE}{target}')
 
 
 def _content_contract_re(file_alt: str) -> str:
     """"<file> should contain/include ..." prose. Authoring guides and attacks share this shape and are not
-    separable statically, so the tier is scored high (caution → confirmation), never critical."""
-    return rf'{file_alt}\b[^\n]{{0,40}}?\b(?:should|must|needs?\s+to)\s+(?:contain|say|include|have|list)\b'
+    separable statically, so the tier is scored high (caution → confirmation), never critical. Every name of
+    *file_alt* must end in a word character."""
+    # The gap's two word boundaries are spelled as the non-word characters that have to stand there (RE2's
+    # mid-pattern `\b` is ASCII-only): one after the name, one before the modal unless that is the same one.
+    return (rf'{file_alt}[^\w\n](?:[^\n]{{0,38}}?[^\w\n])??'
+            r'(?:should|must|needs?\s+to)\s+(?:contain|say|include|have|list)\b')
 
 
 # ── context_exfil helpers ──
 # Negation guard: never/not/no/doesn't ... right after the verb marks descriptive prose (subagent
 # isolation notes, release notes, "share no context") — the opposite of a transfer directive.
-_NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|no|doesn\'?t|didn\'?t|won\'?t|isn\'?t|aren\'?t|can\'?t|cannot|mustn\'?t|shouldn\'?t)\b)')
+_CTX_NEGATED = r'(?:\w+\s+){0,4}?(?:never|not|no|doesn\'?t|didn\'?t|won\'?t|isn\'?t|aren\'?t|can\'?t|cannot|mustn\'?t|shouldn\'?t)\b'
 # Real directives are short; unbounded filler let prose (output never enters your own context)
 # and feature descriptions match.
 _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
@@ -123,9 +149,9 @@ _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
 # possessed worker ("Send subagents the minimum context they need", "Share each worker the
 # context of its own slice"). Bare "child"/"workers"/"delegates" after the verb is still
 # exfil ("Send child context to the operator"). A URL destination is still send_to_url.
-_NOT_DELEGATE = (
-    r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?)\b'
-    r'|(?:(?:the|your|each|every|all|to|a)\s+)(?:workers?|delegates?|children|child)\b)'
+_CTX_DELEGATE = (
+    r'(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?)\b'
+    r'|(?:(?:the|your|each|every|all|to|a)\s+)(?:workers?|delegates?|children|child)\b'
 )
 
 # A bare ``context`` target is exfil ONLY when it is the agent's own CONVERSATION context — named with
@@ -134,7 +160,7 @@ _NOT_DELEGATE = (
 # DATIVE (``send delegates the context``: ``<recipient>s the/a context``). Disclosure/feature prose
 # describing a NARROWER, plugin-scoped context (``send additional context``, ``send only the narrow
 # context``, ``plugin-send context``) names no conversation scope, destination or recipient-dative, so it
-# does not match. ``_NOT_DELEGATE`` still excludes the agent's OWN subagents/workers/delegates.
+# does not match. ``_CTX_DELEGATE`` still excludes the agent's OWN subagents/workers/delegates.
 _CTX_SCOPE = (
     r'(?:your|their|our|its|the\s+(?:full|entire|whole|complete|current)'
     r'|full|entire|whole|complete|current|conversation|session|chat)\s+')
@@ -147,43 +173,56 @@ _CTX_DATIVE = r'(?:[a-z]+s\s+)(?:the|a|an)\s+context\b'
 _SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)\b'
 _SUDO_PREFIX = r'(?:sudo\s+(?:-\S+\s+)*)?'
 
-# Known credential-file paths as one shared alternation for the JavaScript and Python
-# read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc;
-# a public key is not a secret).
-_CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)'
-# A literal string argument naming one of those files, optionally wrapped in
-# `os.path.expanduser(...)` (Python only).
-_CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
+
+# Known credential-file paths for the JavaScript and Python read-secrets patterns (a private key,
+# .env, credentials, .netrc, .pgpass, .npmrc, .pypirc; a public key is not a secret), as a literal
+# string argument naming one of those files. The stdlib original guarded the names with `(?!\.pub)` after a
+# key name and `\b` after the others; RE2 has no lookahead (and no Unicode `\b` mid-pattern), so the literal here
+# is the original without the guards and _names_credential_file checks them.
+_CRED_FILE_NAMES = r'(?P<key>\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa))|\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc'
+_CRED_FILE_LITERAL = r'["\'][^"\'\n]*(?:' + _CRED_FILE_NAMES.replace('(?P<key>', '(?:') + r')[^"\'\n]*["\']'
+# Python only: the literal optionally wrapped in `os.path.expanduser(...)`.
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
+
+
 # Well-known PUBLIC Solana program ids (SPL Token, Token-2022, Associated Token Account, Memo,
 # System, Metaplex Token Metadata). On-chain code addresses every client hardcodes, so a
 # `TOKEN = '<id>'` constant names a program, it does not embed a credential. A CLOSED list, matched
 # case-sensitively as the WHOLE quoted value: this can only turn a hardcoded_secret flag into clean
 # for these exact ids; any other value, or one of these with a character changed, still matches.
-_PUBLIC_SOLANA_PROGRAM_IDS = r'(?-i:' + '|'.join((
+_PUBLIC_SOLANA_PROGRAM_IDS = frozenset((
     'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
     'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
     'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
     'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
     '11111111111111111111111111111111',
     'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
-)) + r')'
+))
+
+# Loopback exemption of the env_exfil_* patterns. The stdlib originals put a negative lookahead for a
+# same-line scheme-anchored loopback URL right after the command (`curl\s+(?![^\n]*<URL>)[^\n]*\$...`); RE2 has
+# no lookahead, so their table entries hold the pattern without it and _LoopbackExemptMatcher applies it.
+_LOOPBACK_URL_RE = re.compile(r'https?://(?:localhost|127\.0\.0\.1|\[::1\])', re.IGNORECASE)
+
+# destructive_root_rm: the roots under which `rm -rf` is routine cleanup (see the comment at the table entry).
+_RM_SAFE_ROOTS = r'(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
     # env_exfil_* share a loopback exemption: a same-line literal scheme-anchored loopback destination
     # (http(s)://localhost, 127.0.0.1, [::1]) cannot move data off the machine, so a secret-shaped query
     # param there is a local session token. The scheme must immediately precede the host —
-    # `evil.com/?u=localhost` does not qualify.
-    (r'curl\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
+    # `evil.com/?u=localhost` does not qualify. Each pattern is the original without its lookahead, which
+    # _LoopbackExemptMatcher applies where the pattern's first `[^\n]*` starts.
+    (r'curl\s+[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_curl", "critical", "exfiltration", "curl command interpolating secret environment variable"),
-    (r'wget\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
+    (r'wget\s+[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_wget", "critical", "exfiltration", "wget command interpolating secret environment variable"),
-    (r'fetch\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b',
+    (r'fetch\s*\([^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b',
      "env_exfil_fetch", "critical", "exfiltration", "fetch() call interpolating secret environment variable"),
-    (r'httpx?\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'httpx?\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_httpx", "critical", "exfiltration", "HTTP library call with secret variable"),
-    (r'requests\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'requests\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_requests", "critical", "exfiltration", "requests library call with secret variable"),
     # ── Exfiltration: reading credential stores ──
     (r'base64[^\n]*env', "encoded_exfil", "high", "exfiltration", "base64 encoding combined with environment access"),
@@ -196,7 +235,7 @@ THREAT_PATTERNS = [
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env',
      "hermes_env_access", "critical", "exfiltration", "directly references Hermes secrets file"),
     # `cat <secrets-file>` reads credentials; `cat >`/`cat >>` WRITES one (setup heredocs) — not exfil.
-    (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
+    (r'cat\s+(?:[^>\n][^\n]*)?(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
     (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*' + _CRED_FILE_LITERAL,
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),
@@ -204,26 +243,27 @@ THREAT_PATTERNS = [
     # `os.path.expanduser(...)`-wrapped), or the `Path(...).read_text/_bytes/lines/line(...)` chain
     # — the shapes that read a known secrets file's content in Python without going through the
     # shell `cat` pattern above. `open()`, unlike readFile/read_text, is also how a plugin WRITES
-    # its own .env/credentials/.npmrc during setup, so (mirroring the shell `cat`'s `(?!>)`)
+    # its own .env/credentials/.npmrc during setup, so (mirroring the shell `cat`'s `>` exclusion)
     # exclude a write/append/exclusive mode — a literal 2nd-arg string containing w/a/x, or a
     # `mode=` kwarg with the same, tolerating the expanduser wrapper's own `)` — from the
     # `open(...)` branch; `Path(...).read_*()` has no mode argument, so needs no exclusion.
+    # The exclusion stood as two trailing lookaheads; RE2 has none, so ExclusionMatcher applies it.
     (r'\bopen\s*\(\s*' + _PY_CRED_FILE_ARG
-     + r'(?!\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\'])(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])'
      + r'|\bPath\s*\(\s*' + _PY_CRED_FILE_ARG + r'\s*\)\.(?:read_text|read_bytes|readlines|readline)\s*\(',
      "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
     # ── Exfiltration: programmatic env access ──
     # ``env |`` must be a shell pipe to a COMMAND. A left boundary drops the ``env`` tail of
-    # ``virtualenv|venv`` in a regex word-list; ``(?!\|)`` drops JS ``env ||`` (logical or); and
-    # ``(?!\s*[{(])`` drops Python ``env | {...}`` (dict merge) and ``env | (...)``. ``printenv``
-    # is unambiguous and keeps no neighbour guard.
-    (r'printenv|(?<![A-Za-z0-9_])env\s*\|(?!\|)(?!\s*[{(])',
+    # ``virtualenv|venv`` in a regex word-list; the trailing lookahead lists what may follow the pipe,
+    # which drops JS ``env ||`` (logical or) and Python ``env | {...}`` (dict merge) and
+    # ``env | (...)``. ``printenv`` is unambiguous and keeps no neighbour guard.
+    (r'printenv|(?<![A-Za-z0-9_])env\s*\|(?=[^\s|{(]|\s+(?:[^\s{(]|\Z)|\Z)',
      "dump_all_env", "high", "exfiltration", "dumps all environment variables"),
     # Bare `os.environ` (dump/iteration) is suspicious; ANY `.get("<name>")` form is exempt — plain config
     # reads, with secret-shaped names scored medium by python_environ_get_secret below (a blanket high here
     # would swamp that). `^[^#\n]*` skips lines with a '#' anywhere before it (full-line or inline comment);
     # scan_file()'s docstring pre-filter skips triple-quoted prose.
-    (r'^[^#\n]*os\.environ\b(?!\s*\.get\s*\()',
+    # The original's `\b(?!\s*\.get\s*\()` after `os.environ` is checked by ExclusionMatcher (RE2 has no lookahead).
+    (r'^[^#\n]*os\.environ',
      "python_os_environ", "high", "exfiltration", "accesses os.environ outside comments/docstrings (potential env dump)"),
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
      "python_environ_get_secret", "medium", "exfiltration", "reads secret via os.environ.get() (normal API-key access; informational)"),
@@ -247,11 +287,13 @@ THREAT_PATTERNS = [
     # has the variable as the WHOLE name with no appended domain, and does not match. ``host`` is also
     # an English noun / HTTP header, so it keeps the stricter domain-interpolation or command-position
     # requirement (``the connected host (${id})``, ``host ${status}:``, nginx ``Host $host;`` miss).
-    (r'(?<![-/])\b(?:dig|nslookup)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$()]*'
+    # The word boundaries are spelled out (RE2's mid-pattern `\b` is ASCII-only): the one before the command
+    # name joins the lookbehind, the one after `do`/`then`/`else` is the whitespace that has to follow it.
+    (r'(?<![\-/\w])(?:dig|nslookup)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$()]*'
      r'\$(?:\{[^}\s]*\}|\([^\n]*?\)+|\w+)[\w-]*["\']?\.[a-z]'
-     r'|(?<![-/])\bhost\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$()]*'
+     r'|(?<![\-/\w])host\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$()]*'
      r'\$(?:\{[^}\s]*\}|\([^\n]*?\)+|\w+)[\w-]*\.[a-z]'
-     r'|(?:^|[;&|]|\$\(|\b(?:do|then|else)\b)\s*host\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?\$',
+     r'|(?:^|[;&|]|\$\(|\b(?:do|then|else)\s)\s*host\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?\$',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',  # no-tmp: ok — malicious-pattern regex
      "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),  # no-tmp: ok — malicious-pattern label
@@ -268,8 +310,8 @@ THREAT_PATTERNS = [
     # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
     # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
     # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!\s+to\s+["\'\u201c\u2018])'
-     r'(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)',
+    # The two exemptions stood as trailing lookaheads; RE2 has none, so a MarkedMatcher applies them.
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection", "attempts to override the system prompt"),
@@ -290,14 +332,17 @@ THREAT_PATTERNS = [
      "translate_execute", "critical", "injection", "translate-then-execute evasion technique"),
     # Injection phrasing inside the comment, not a bare keyword: `<!-- Original size, ignore container -->`
     # and `<!-- Requires SYSTEM_ALERT_WINDOW -->` are layout/doc notes.
-    (r'<!--[^>]*(?:\b(?:ignore|forget|disregard|override)\s+(?:\w+\s+)*?'
+    # Each phrase is a whole word run. RE2's mid-pattern `\b` is ASCII-only, so the boundary before a phrase is
+    # the non-word character that ends the text in front of it, and the boundary after the phrases of the
+    # second group is the non-word character that opens the rest of the comment (the first group needs none).
+    (r'<!--(?:[^>]*[^\w>])?(?:(?:(?:ignore|forget|disregard|override)\s+(?:\w+\s+)*?'
      r'(?:previous|prior|above|earlier|all|any|your|the)\s+(?:\w+\s+)*?'
      r'(?:instructions?|rules|prompts?|guidelines|directions|restrictions)'
-     r'|\bsystem\s*(?:prompt|message|instructions?|override)|\b(?:override|secret|hidden|system)\s*:'
-     r'|\b(?:ignore|override|bypass|disable)\s+(?:\w+\s+)*?(?:safety|security|guardrails|filters)\b'
-     r'|\b(?:secret|hidden|new)\s+(?:instructions?|commands?|directives?|tasks?)\b|\byou\s+are\s+now\b'
-     r'|\bdo\s+not\s+(?:tell|reveal|show|mention|inform)\b'
-     r'|\b(?:note|message)\s+(?:to|for)\s+(?:the\s+)?(?:ai|agent|assistant|model|llm)\b)[^>]*-->',
+     r'|system\s*(?:prompt|message|instructions?|override)|(?:override|secret|hidden|system)\s*:)[^>]*'
+     r'|(?:(?:ignore|override|bypass|disable)\s+(?:\w+\s+)*?(?:safety|security|guardrails|filters)'
+     r'|(?:secret|hidden|new)\s+(?:instructions?|commands?|directives?|tasks?)|you\s+are\s+now'
+     r'|do\s+not\s+(?:tell|reveal|show|mention|inform)'
+     r'|(?:note|message)\s+(?:to|for)\s+(?:the\s+)?(?:ai|agent|assistant|model|llm))(?:[^\w>][^>]*)?)-->',
      "html_comment_injection", "high", "injection", "hidden instructions in HTML comments"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
@@ -310,9 +355,10 @@ THREAT_PATTERNS = [
     # `rm -rf --no-preserve-root /`), not only the first. A later bare `//` token is a JS/JSONC
     # comment opener (`"rm -rf dist", // clean`), not the root; operands after it are still
     # checked (`rm -rf x // /etc` deletes /etc in a shell). A first-operand `//` is the root.
-    (r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?(1)(?!/(?:\s|$)))(?:'
-     r'(?!(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))(?:\b|/))'
-     r'|(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
+    # RE2 has no conditional and no lookahead: the entry is the stdlib original without them, and
+    # _destructive_root_rm_rule applies the `//` condition, the safe-root lookahead and the `..` escape at each
+    # slash the original tries.
+    (r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?:|' + _RM_SAFE_ROOTS + r'/(?:[^/\s]*/)*\.\.)',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     # ``rm`` / ``rmdir`` need a left boundary that excludes letters/digits: without it the ``rm`` in
     # English prose (``the platfoRM rOute to ~/.hermes/config.yaml``) matched a recursive home delete.
@@ -347,7 +393,9 @@ THREAT_PATTERNS = [
     # ── Network: reverse shells and tunnels ──
     # socat needs an address spec (TCP:/EXEC:/…): a bare word match hit "SOCAT", the
     # oceanographic CO2 atlas, across dozens of science skills (all patterns are IGNORECASE).
-    (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b[^\n]*\b(?:tcp|udp|openssl|ssl|exec|system|pty|unix)[\w-]*:',
+    # The gap between `socat` and the address type opens and closes with a non-word character: the two word
+    # boundaries, spelled out because RE2's mid-pattern `\b` is ASCII-only.
+    (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat[^\w\n](?:[^\n]*[^\w\n])?(?:tcp|udp|openssl|ssl|exec|system|pty|unix)[\w-]*:',
      "reverse_shell", "critical", "network", "potential reverse shell listener"),
     (r'\bngrok\b|\blocaltunnel\b|\bserveo\b|\bcloudflared\b',
      "tunnel_service", "high", "network", "uses tunneling service for external access"),
@@ -370,11 +418,14 @@ THREAT_PATTERNS = [
     # (`tail "$0" | base64 -d | tar x`) is code the scanner never sees. Decoding into a data consumer
     # (`| jq .`, `| grep`) is not. A base64 ENCODE→DECODE round-trip of a freshly-created archive over a
     # transport (`tar c… | base64 … | base64 -d | tar x`) is data movement, demoted in plugins_install_scan_context.
-    (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b|\bopenssl\s+(?:base64|enc)\b[^|;&\n]*?\s-d\b)'
-     r'[^\n]*?(?:\||;|&&)\s*(?:\w+=\S*\s+)*(?:\S*/)?'
-     r'(?:sh|bash|zsh|ksh|dash|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo'
-     r'|iex|pwsh|powershell|tar|bsdtar|unzip|cpio|gunzip|gzip|zcat|xz|unxz|bunzip2|\.(?=\s))(?![\w.-])'
-     r'|\b(?:eval|source|iex|exec)\b[^\n]*\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b',
+    # A word boundary in mid-pattern is spelled as the non-word character it requires (`[^\w\n]`): RE2's `\b`
+    # is ASCII-only. The two closing guards sit on their own alternatives (RE2: one lookahead, at the end).
+    (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)'
+     r'|\bopenssl\s+(?:base64|enc)(?:[^\w|;&\n][^|;&\n]*?)??\s-d)'
+     r'(?:[^\w\n][^\n]*?)??(?:\||;|&&)\s*(?:\w+=\S*\s+)*(?:\S*/)?'
+     r'(?:(?:sh|bash|zsh|ksh|dash|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo'
+     r'|iex|pwsh|powershell|tar|bsdtar|unzip|cpio|gunzip|gzip|zcat|xz|unxz|bunzip2)(?![\w.-])|\.(?=\s))'
+     r'|\b(?:eval|source|iex|exec)[^\w\n](?:[^\n]*[^\w\n])?base64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b',
      "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
     (r'\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}',
      "hex_encoded_string", "medium", "obfuscation", "hex-encoded string (possible obfuscation)"),
@@ -383,8 +434,8 @@ THREAT_PATTERNS = [
     # node:sqlite / better-sqlite3), never code or a shell command line.
     # A method named ``exec`` on an object (``sandbox.exec("tar", ...)``, a Docker/sandbox SDK argv call)
     # is not the Python ``exec()`` builtin running a code string, so require no ``.``/word char before ``exec``.
-    (r'(?<![.\w])exec\s*\(\s*["\'](?!(?-i:PRAGMA|BEGIN|COMMIT|ROLLBACK|CREATE|INSERT|SELECT|UPDATE|DELETE|DROP|ALTER'
-     r'|VACUUM|SAVEPOINT|RELEASE|ANALYZE|REINDEX|ATTACH|DETACH|REPLACE)\b)',
+    # The SQL exclusion stood as a trailing lookahead; RE2 has none, so ExclusionMatcher applies it.
+    (r'(?<![.\w])exec\s*\(\s*["\']',
      "exec_string", "high", "obfuscation", "exec() with string argument"),
     (rf'echo\s+[^\n]*\|\s*(?:{_SHELL_NAMES_RE}|python|perl|ruby|node)',
      "echo_pipe_exec", "critical", "obfuscation", "echo piped to interpreter for execution"),
@@ -440,9 +491,13 @@ THREAT_PATTERNS = [
     # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain", "PEP 723 inline script metadata with dependencies (verify pinning)"),
-    (r'pip\s+install\s+(?!-r\s)(?!.*==)',
+    # The original's `(?!-r\s)(?!.*==)` (a requirements file, or a pin on the rest of the line) is checked by
+    # ExclusionMatcher at each end of the `\s+` run (RE2 has no lookahead).
+    (r'pip\s+install\s+',
      "unpinned_pip_install", "medium", "supply_chain", "pip install without version pinning"),
-    (r'npm\s+install\s+(?!.*@\d)', "unpinned_npm_install", "medium", "supply_chain", "npm install without version pinning"),
+    # One positive lookahead (RE2 has no negative one): no `@` + digit on the rest of the line.
+    (r'npm\s+install\s+(?=(?:[^@\n]|@+[^@\d\n])*@*(?:\n|\Z))',
+     "unpinned_npm_install", "medium", "supply_chain", "npm install without version pinning"),
     (r'uv\s+run\s+', "uv_run", "medium", "supply_chain", "uv run (may auto-install unpinned dependencies)"),
     # ── Supply chain: remote resource fetching ──
     (r'(curl|wget|httpx?\.get|requests\.get|fetch)\s*[\(]?\s*["\']https?://',
@@ -460,7 +515,7 @@ THREAT_PATTERNS = [
     # sudo-password prompt lifecycle), not an invocation: any client plugin that relays Hermes' secure
     # prompts has to name them, and a bare ``\bsudo\b`` made every such plugin ``caution``. A dotted
     # event name (``sudo.<verb>``) is never a shell ``sudo``.
-    (r'\bsudo\b(?!\.\w)',
+    (r'\bsudo(?=[^\w.]|\.(?:\W|\Z)|\Z)',
      "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
     # Critical only in an executing shape: a set*id() call, the cap_setuid/cap_setgid capability, or a
     # chmod setting the bit (`u+s`, `g=s`, octal 2xxx-7xxx). The bare word is prose ("no setuid
@@ -468,7 +523,10 @@ THREAT_PATTERNS = [
     (r'(?<![a-z])set(?:e|re|res)?[ug]id\s*\(|\bcap_set[ug]id\b'
      r'|\bchmod\s+(?:-\w+\s+)*(?:[ugoa]*[+=][rwxXt]*s|0?[2-7][0-7]{3}\b)',
      "setuid_setgid", "critical", "privilege_escalation", "setuid/setgid (privilege escalation mechanism)"),
-    (r'(?<!cap_)set[ug]id(?!\s*\()',
+    # Not after `cap_` and not a call: RE2 serves one-character guards only, so `(?<!cap_)` is spelled per
+    # prefix (a match may start up to three characters early, on `_`, `p_` or `ap_`; its end is unchanged).
+    (r'(?<!_)set[ug]id(?=\s*(?:[^\s(]|$))|(?<!p)_set[ug]id(?=\s*(?:[^\s(]|$))'
+     r'|(?<!a)p_set[ug]id(?=\s*(?:[^\s(]|$))|(?<!c)ap_set[ug]id(?=\s*(?:[^\s(]|$))',
      "setuid_setgid", "medium", "privilege_escalation", "mentions setuid/setgid (informational)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),
@@ -482,23 +540,23 @@ THREAT_PATTERNS = [
     # (#92021). * Mechanical persistence (shell redirection, sed -i, tee, cp/mv into the file) is critical —
     # an unambiguous write path. * Prose modification intent — an imperative-position verb or an explicit
     # directive ("you must edit ...") aimed at the file.
-    (_prose_modify_re(_AGENT_CONFIG_FILES),
+    (_prose_modify_re(_AGENT_CONFIG_FILES, _AGENT_CONFIG_DOTFILES),
      "agent_config_mod", "critical", "persistence", "instructs modification of agent config files (could persist instructions across sessions)"),
-    (_shell_write_re(_AGENT_CONFIG_FILES),
+    (_shell_write_re(_AGENT_CONFIG_FILES, _AGENT_CONFIG_DOTFILES),
      "agent_config_mod_shell", "critical", "persistence", "shell write (redirect/sed -i/tee/cp/mv) targeting agent config files (persistence mechanism)"),
     (_content_contract_re(_AGENT_CONFIG_FILES),
      "agent_config_contract", "high", "persistence", "dictates agent config file contents (verify intent — authoring guides use this shape too)"),
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
      "agent_config_ref", "low", "persistence", "references agent config files (informational; only modification intent is scored)"),
-    (_prose_modify_re(_HERMES_CONFIG_FILES),
+    (_prose_modify_re(_HERMES_CONFIG_FILES, _HERMES_CONFIG_FILES),
      "hermes_config_mod", "high", "persistence", "modification language aimed at Hermes configuration files (verify intent)"),
-    (_shell_write_re(_HERMES_CONFIG_FILES),
+    (_shell_write_re(_HERMES_CONFIG_FILES, _HERMES_CONFIG_FILES),
      "hermes_config_mod_shell", "critical", "persistence", "shell write (redirect/sed -i/tee/cp/mv) targeting Hermes configuration files"),
     (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
      "hermes_config_ref", "low", "persistence", "references Hermes configuration files (informational; only modification intent is scored)"),
-    (_prose_modify_re(_OTHER_AGENT_CONFIG_FILES),
+    (_prose_modify_re(_OTHER_AGENT_CONFIG_WORDS, _OTHER_AGENT_CONFIG_WORDS),
      "other_agent_config_mod", "high", "persistence", "modifies other agents' configuration files"),
-    (_shell_write_re(_OTHER_AGENT_CONFIG_FILES),
+    (_shell_write_re(_OTHER_AGENT_CONFIG_FILES, _OTHER_AGENT_CONFIG_FILES),
      "other_agent_config_mod_shell", "critical", "persistence", "shell write (redirect/sed -i/tee/cp/mv) targeting other agents' configuration files"),
     (r'\.claude/settings|\.codex/config',
      "other_agent_config_ref", "low", "persistence", "references other agent configuration files (informational; only modification intent is scored)"),
@@ -508,10 +566,9 @@ THREAT_PATTERNS = [
     # (#116221). Scoped case-sensitive — the table compiles with IGNORECASE and a
     # lowercase snake value is the passphrase shape; requiring an underscore
     # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
-     r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
-     r'(?!' + _PUBLIC_SOLANA_PROGRAM_IDS + r'["\'])'
-     r'[A-Za-z0-9+/=_-]{20,}',
+    # RE2 has no lookahead: this regex finds the candidates, and `_HardcodedSecretMatcher` (below the
+    # table) drops the ones whose whole quoted value is an env-var NAME or a public Solana program id.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']([A-Za-z0-9+/=_-]{20,})',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'(?-i:-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)',
      "embedded_private_key", "critical", "credential_exposure", "embedded private key"),
@@ -530,7 +587,9 @@ THREAT_PATTERNS = [
      "gitlab_token_leaked", "critical", "credential_exposure", "GitLab personal access token in skill content"),
     # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now', "jailbreak_dan", "critical", "injection", "DAN (Do Anything Now) jailbreak attempt"),
-    (r'\bdeveloper\s+mode\b.*\benabled?\b', "jailbreak_dev_mode", "critical", "injection", "developer mode jailbreak attempt"),
+    # `mode\b.*\benabled?`: the gap opens and closes with a non-word character (RE2's mid-pattern `\b` is ASCII-only).
+    (r'\bdeveloper\s+mode[^\w\n](?:.*[^\w\n])?enabled?\b',
+     "jailbreak_dev_mode", "critical", "injection", "developer mode jailbreak attempt"),
     (r'hypothetical\s+scenario.*(?:ignore|bypass|override)',
      "hypothetical_bypass", "high", "injection", "hypothetical scenario used to bypass restrictions"),
     (r'for\s+educational\s+purposes?\s+only',
@@ -548,15 +607,349 @@ THREAT_PATTERNS = [
     # bounded, a negation right after the verb voids the match, and a bare ``context`` target counts
     # only under transfer verbs (print/send/share) — "include context" is window/information talk —
     # and not when the recipient is the agent's own subagent (delegation prose).
-    (rf'\b(?:include|output|print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
-     rf'|\b(?:print|send|share|output|upload|transmit)\s+{_NO_TRANSFER}{_NOT_DELEGATE}'
+    # RE2 has no lookahead, so the two guards are veto branches: each captures its guard, in the order
+    # the shapes are tried at one verb (negation, history target, delegate, context target), and
+    # _VetoGroupPattern drops a match in which a group took part. No verb that could start a match
+    # lies inside a vetoed span: a verb within the negation window is negated itself, and the
+    # delegate span holds no verb.
+    (rf'\b(?:include|output|print|send|share|upload|transmit)\s+({_CTX_NEGATED})'
+     rf'|\b(?:include|output|print|send|share)\s+{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
+     rf'|\b(?:print|send|share|output|upload|transmit)\s+({_CTX_DELEGATE})'
+     r'|\b(?:print|send|share|output|upload|transmit)\s+'
      rf'(?:(?:\w+\s+){{0,2}}?{_CTX_SCOPE}(?:\w+\s+){{0,2}}?context\b|(?:\w+\s+){{0,3}}?context\b{_CTX_DEST}|{_CTX_DATIVE})',
      "context_exfil", "high", "exfiltration", "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),
 ]
 
-_COMPILED_THREAT_PATTERNS = [(re.compile(pattern, re.IGNORECASE), *rest) for pattern, *rest in THREAT_PATTERNS]
+# The NAME shape of an environment variable, as a whole value. No IGNORECASE: see hardcoded_secret above.
+_ENV_VAR_NAME_VALUE_RE = re.compile(r'[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+')
+
+
+class _HardcodedSecretMatcher:
+    """Stands in for the compiled ``hardcoded_secret`` entry (RE2 has no lookahead): the entry's regex
+    finds each ``key = "<20+ value characters>`` candidate, and a candidate is dropped when its WHOLE
+    quoted value is an env-var NAME or a public Solana program id. A dropped candidate does not end the
+    scan: a real secret later on the same line is still returned."""
+
+    def __init__(self, pattern: str):
+        self._candidates = re.compile(pattern, re.IGNORECASE)
+
+    def finditer(self, text: str):
+        for m in self._candidates.finditer(text):
+            value = m.group(1)
+            closed = text[m.end():m.end() + 1] in ('"', "'")
+            if not (closed and (value in _PUBLIC_SOLANA_PROGRAM_IDS or _ENV_VAR_NAME_VALUE_RE.fullmatch(value))):
+                yield m
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
+class _VetoGroupPattern:
+    """A compiled rule whose capture groups are veto branches. RE2 has no lookahead, so a guard is spelled as
+    an alternative that is tried first at the same position and captures: a match in which a group took part
+    is not a finding, and the scan goes on after it. Has the two methods the scanners call on a rule."""
+
+    def __init__(self, pattern: str):
+        self._pattern = re.compile(pattern, re.IGNORECASE)
+
+    def finditer(self, line: str):
+        return (hit for hit in self._pattern.finditer(line) if hit.lastindex is None)
+
+    def search(self, line: str):
+        return next(self.finditer(line), None)
+
+
+class _LoopbackExemptMatcher:
+    """Stands in for a compiled ``env_exfil_*`` entry: the entry is its stdlib original without the negative
+    lookahead ``(?![^\\n]*https?://<loopback host>)`` that stood where the entry's first ``[^\\n]*`` starts
+    (RE2 has none). A match of the entry is dropped when a loopback URL starts between that point and the end
+    of its line, exactly the positions the lookahead examined; the search then goes on past that URL.
+
+    The lookahead point is the end of the command part (``curl\\s+``, ``fetch\\s*\\(``, ...). Where the command
+    part ends in ``\\s+``, backtracking could also place it earlier in the whitespace run, but no URL and no
+    secret starts on whitespace, and a point on an earlier line of the run leaves only whitespace before its line
+    end: the outcome is that of the run's end, which the greedy command part gives."""
+
+    def __init__(self, pattern: str):
+        command, guard, _ = pattern.partition(r'[^\n]*')
+        if not guard:
+            raise ValueError(f"no [^\\n]* lookahead point in {pattern!r}")
+        self._command = re.compile(command, re.IGNORECASE)
+        self._pattern = re.compile(pattern, re.IGNORECASE)
+
+    def _last_loopback_url(self, text: str, start: int) -> int:
+        """Start of the last loopback URL in ``text[start:]`` up to the line end, or -1."""
+        end = text.find('\n', start)
+        last = -1
+        for url in _LOOPBACK_URL_RE.finditer(text[start:] if end < 0 else text[start:end]):
+            last = start + url.start()
+        return last
+
+    def finditer(self, text: str):
+        pos = 0
+        while (m := self._pattern.search(text, pos)) is not None:
+            url = self._last_loopback_url(text, self._command.match(text, m.start()).end())
+            if url < 0:
+                yield m
+                pos = m.end()
+            else:
+                # A command starting before that URL ends before it (no command part holds `http:`/`https:`),
+                # so its lookahead sees the URL too: resume after the URL's first character.
+                pos = url + 1
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
+_WORD_CHAR = re.compile(r'\w')
+_SPACE_CHAR = re.compile(r'\s')
+
+
+def _word_char_at(text: str, i: int) -> bool:
+    """Whether ``text[i]`` is a word character (False outside the text), as stdlib's ``\\b`` reads it."""
+    return 0 <= i < len(text) and _WORD_CHAR.match(text, i) is not None
+
+
+def _never(text: str, m, end: int) -> bool:
+    return False
+
+
+def _every_end(rx):
+    """``ends`` for a rule whose greedy runs reach each hit of *rx* inside the match: stdlib tries the last first."""
+    def ends(text: str, m) -> tuple:
+        return tuple(sorted((hit.end() for hit in rx.finditer(text, m.start(), m.end())), reverse=True))
+    return ends
+
+
+# js_read_secrets_file / py_read_secrets_file: the stdlib original's `(?!\.pub)` after a key name and `\b` after
+# the other names. The literal's content holds no quote, so its end is the next quote whichever name is used.
+_QUOTE_CHAR = re.compile(r'["\']')
+_CRED_FILE_NAME = re.compile(_CRED_FILE_NAMES, re.IGNORECASE)
+_PUB_SUFFIX = re.compile(r'\.pub', re.IGNORECASE)
+
+
+def _names_credential_file(text: str, m) -> bool:
+    """Whether the match's quoted literal (the first quote in the match opens it) holds a name its guard lets
+    through. No name can start inside another, so the non-overlapping hits are every candidate."""
+    opening = _QUOTE_CHAR.search(text, m.start()).start()
+    closing = _QUOTE_CHAR.search(text, opening + 1).start()
+    return any(_PUB_SUFFIX.match(text, name.end()) is None if name['key'] is not None
+               else not _word_char_at(text, name.end())
+               for name in _CRED_FILE_NAME.finditer(text, opening + 1, closing))
+
+
+def _names_no_credential_file(text: str, m, end: int) -> bool:
+    return not _names_credential_file(text, m)
+
+
+# py_read_secrets_file: the stdlib original ended the `open(` branch in
+# `(?!\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\'])(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])`, a write/append/exclusive
+# mode as the literal 2nd argument or as a `mode=` keyword later on the line.
+_WRITE_MODE_ARG = re.compile(r'\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\']', re.IGNORECASE)
+_MODE_WORD = re.compile(r'mode', re.IGNORECASE)
+_WRITE_MODE_KWARG = re.compile(r'mode\s*=\s*["\'][^"\']*[wax]', re.IGNORECASE)
+
+
+def _open_ends(text: str, m) -> tuple:
+    """The `open(` branch ends in `<literal>\\s*\\)?` (the literal's closing quote is the next quote): stdlib
+    tries the greedy end, then without the `)`, then one whitespace character shorter at a time."""
+    if m.group()[:1] in 'pP':
+        return (m.end(),)
+    ends, end = [m.end()], m.end()
+    if text[end - 1] == ')':
+        end -= 1
+        ends.append(end)
+    while _SPACE_CHAR.match(text, end - 1):
+        end -= 1
+        ends.append(end)
+    return tuple(ends)
+
+
+def _py_read_secrets_rule():
+    """Each end of one start shares its literal, and every end but the greedy one lies in the whitespace before
+    the closing parenthesis (or before the match end, with none), where `_WRITE_MODE_ARG`'s leading `\\s*` gives
+    the answer of the run's end: both are read once per start, the `mode=` keyword once per line."""
+    facts = {}
+    write_mode_kwarg_after = LineTail(_last_write_mode_kwarg)
+
+    def reads_no_credential_or_writes(text: str, m, end: int) -> bool:
+        if (names := facts.get(m.start())) is None:
+            names = facts[m.start()] = _names_credential_file(text, m)
+        if not names:
+            return True
+        if text[m.start()] in 'pP':  # `Path(...).read_*()` has no mode argument and no exclusion
+            return False
+        run_end = m.end() if end == m.end() or text[m.end() - 1] != ')' else m.end() - 1
+        if (arg := facts.get((m.start(), run_end))) is None:
+            arg = facts[m.start(), run_end] = _WRITE_MODE_ARG.match(text, run_end) is not None
+        return arg or write_mode_kwarg_after(text, end)
+    return _open_ends, reads_no_credential_or_writes
+
+
+def _last_write_mode_kwarg(text: str, start: int, end: int) -> int:
+    return max((mode.start() for mode in _MODE_WORD.finditer(text, start, end)
+                if not _word_char_at(text, mode.start() - 1) and _WRITE_MODE_KWARG.match(text, mode.start())),
+               default=-1)
+
+
+# deception_hide: the stdlib original ended in `(?!\s+to\s+["\'“‘])` (a quoted phrase the agent should not say)
+# and `(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)` (UX guidance on the rest of the line).
+_QUOTED_PHRASE = re.compile('\\s+to\\s+["\'\u201c\u2018]', re.IGNORECASE)
+_UX_GUIDANCE_WORD = re.compile(r'unless|except|until|confirm|diagnos\w*|verify|check', re.IGNORECASE)
+# Both depend on the end alone, so the rule is a MarkedMatcher: a line of rejected `do not` starts sharing one word
+# run (`do not tell the user ` x n + `check`) is searched once, not once per start. Every `the user` is an end (no
+# two overlap); the mark goes right after `user`, inside a word, where the word runs take it as part of the word.
+_THE_USER = re.compile(r'the\s+user', re.IGNORECASE)
+_WORD_RUN_STEP = r'(?:\w+\s+)*'
+
+
+def _deception_hide_cuts(text: str) -> list:
+    ux_guidance_after = LineTail(_last_ux_guidance_word)
+    return [end for end in (hit.end() for hit in _THE_USER.finditer(text))
+            if _QUOTED_PHRASE.match(text, end) is None and not ux_guidance_after(text, end)]
+
+
+def _deception_hide_matcher(pattern: str) -> MarkedMatcher:
+    return MarkedMatcher(pattern, lambda mark: pattern.replace(_WORD_RUN_STEP, rf'(?:\w+(?:{mark}\w*)?\s+)*') + mark,
+                         _deception_hide_cuts)
+
+
+def _last_ux_guidance_word(text: str, start: int, end: int) -> int:
+    # A guidance word cannot start inside another (each is all word characters, and one must follow a non-word
+    # character), so the non-overlapping hits from the line start hold every word a later position could find.
+    return max((word.start() for word in _UX_GUIDANCE_WORD.finditer(text, start, end)
+                if not _word_char_at(text, word.start() - 1) and not _word_char_at(text, word.end())), default=-1)
+
+
+# exec_string: the stdlib original ended in `(?!(?-i:PRAGMA|...|REPLACE)\b)`: an upper-case SQL statement.
+_SQL_STATEMENTS = frozenset((
+    'PRAGMA', 'BEGIN', 'COMMIT', 'ROLLBACK', 'CREATE', 'INSERT', 'SELECT', 'UPDATE', 'DELETE', 'DROP', 'ALTER',
+    'VACUUM', 'SAVEPOINT', 'RELEASE', 'ANALYZE', 'REINDEX', 'ATTACH', 'DETACH', 'REPLACE'))
+_WORD_RUN = re.compile(r'\w*')
+
+
+def _is_sql_statement(text: str, m, end: int) -> bool:
+    """`(?-i:<word>)\\b` right after the quote: the word run there is exactly one of the statements."""
+    return _WORD_RUN.match(text, end).group() in _SQL_STATEMENTS
+
+
+# python_os_environ: the stdlib original ended in `\b(?!\s*\.get\s*\()`; its greedy `[^#\n]*` tries the last
+# `os.environ` first.
+_os_environ_ends = _every_end(re.compile(r'os\.environ', re.IGNORECASE))
+_ENVIRON_GET = re.compile(r'\s*\.get\s*\(', re.IGNORECASE)
+
+
+def _is_environ_get(text: str, m, end: int) -> bool:
+    return _word_char_at(text, end) or _ENVIRON_GET.match(text, end) is not None
+
+
+# unpinned_pip_install: the stdlib original ended in `(?!-r\s)(?!.*==)`, tried at every end of its greedy `\s+`.
+_PIP_INSTALL = re.compile(r'pip\s+install', re.IGNORECASE)
+_REQUIREMENTS_FLAG = re.compile(r'-r\s', re.IGNORECASE)
+
+
+def _pip_install_ends(text: str, m) -> range:
+    return range(m.end(), _PIP_INSTALL.match(text, m.start()).end(), -1)
+
+
+def _unpinned_pip_install_rule():
+    # `.*==` at an end: a `==` (overlapping ones included: `rfind`) starts between the end and the line end.
+    pin_after = LineTail(lambda text, start, end: text.rfind('==', start, end))
+
+    def is_pinned_or_requirements(text: str, m, end: int) -> bool:
+        return _REQUIREMENTS_FLAG.match(text, end) is not None or pin_after(text, end)
+    return _pip_install_ends, is_pinned_or_requirements
+
+
+# destructive_root_rm: the stdlib original was `rm\s+-rf\s+((?:<operand>\s+)+?)?/(?(1)(?!/(?:\s|$)))` followed by
+# `(?:(?!<safe root>(?:\b|/))|<safe root>/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))`.
+_RM_HEAD = re.compile(r'rm\s+-rf\s+', re.IGNORECASE)
+_RM_OPERAND = re.compile(r'[^\s;&|<>#][^\s;&|<>]*\s+')
+_RM_SAFE_ROOT = re.compile(_RM_SAFE_ROOTS, re.IGNORECASE)
+# A parent segment that climbs out of a safe root: `<root>/<segments>/..`.
+_RM_ROOT_ESCAPE = re.compile(_RM_SAFE_ROOTS + r'/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$)', re.IGNORECASE)
+
+
+def _destructive_root_rm_rule():
+    """The ends the original reaches, in its order. Its lazy group takes one operand, then two, ... (each operand
+    is one whitespace-separated token, so it has one end), and finally none; at each count the slash must follow.
+    Each start of `rm -rf` on a line walks the operands that follow it, so the walk is shared by the starts of one
+    scan through `_next_rm_root` (one pass per scan, not one per start)."""
+    walks = {}
+
+    def rm_root_ends(text: str, m):
+        first = pos = _RM_HEAD.match(text, m.start()).end()
+        while (found := _next_rm_root(text, pos, walks)) is not None:
+            pos, end = found
+            yield end
+        if (end := _rm_root_end(text, first, after_operand=False)) is not None:
+            yield end
+    return rm_root_ends, _never
+
+
+def _rm_root_end(text: str, slash: int, *, after_operand: bool):
+    """The end the original reaches through the slash expected at ``slash``, or None. After an operand a bare `//`
+    token is not the root; a slash not opening a safe root ends the match there; one that does needs the `..`
+    escape."""
+    if text[slash:slash + 1] != '/':
+        return None
+    if after_operand and text[slash + 1:slash + 2] == '/' and (
+            slash + 2 == len(text) or _SPACE_CHAR.match(text, slash + 2)):
+        return None
+    safe = _RM_SAFE_ROOT.match(text, slash + 1)
+    if safe is None or _word_char_at(text, safe.end()):
+        return slash + 1
+    escape = _RM_ROOT_ESCAPE.match(text, slash + 1)
+    return None if escape is None else escape.end()
+
+
+def _next_rm_root(text: str, pos: int, known: dict):
+    """``(operand end, match end)`` for the first operand end after ``pos`` (one operand or more) through which the
+    original reaches an end, or None. Every position walked is remembered in ``known`` (one scan's) with the
+    answer, so later starts that reach it stop there."""
+    walked = []
+    while pos not in known:
+        operand = _RM_OPERAND.match(text, pos)
+        if operand is None:
+            found = None
+            break
+        walked.append(pos)
+        pos = operand.end()
+        if (end := _rm_root_end(text, pos, after_operand=True)) is not None:
+            found = (pos, end)
+            break
+    else:
+        found = known[pos]
+    for walked_pos in walked:
+        known[walked_pos] = found
+    return found
+
+
+# pattern id -> the rule's ExclusionMatcher.per_scan ``rule``: a fresh ``(ends, excluded)`` for each scan.
+_LOOKAHEAD_EXCLUSIONS = {
+    "py_read_secrets_file": _py_read_secrets_rule,
+    "js_read_secrets_file": lambda: (only_end, _names_no_credential_file),
+    "exec_string": lambda: (only_end, _is_sql_statement),
+    "forget_rules": lambda: FORGET_RULES_EXCLUSION,
+    "python_os_environ": lambda: (_os_environ_ends, _is_environ_get),
+    "unpinned_pip_install": _unpinned_pip_install_rule,
+    "destructive_root_rm": _destructive_root_rm_rule,
+}
+
+
+# pattern id -> matcher built from the entry's pattern text, for an entry that needs Python beside its regex.
+# A matcher offers `search` and `finditer` (all the scanners call on a rule) and yields real match objects.
+_CUSTOM_MATCHERS = {"hardcoded_secret": _HardcodedSecretMatcher, "context_exfil": _VetoGroupPattern,
+                    "deception_hide": _deception_hide_matcher,
+                    **dict.fromkeys(("env_exfil_curl", "env_exfil_wget", "env_exfil_fetch", "env_exfil_httpx",
+                                     "env_exfil_requests"), _LoopbackExemptMatcher),
+                    **{pid: (lambda pattern, rule=rule: ExclusionMatcher.per_scan(pattern, rule))
+                       for pid, rule in _LOOKAHEAD_EXCLUSIONS.items()}}
+_COMPILED_THREAT_PATTERNS = [
+    (_CUSTOM_MATCHERS[pid](pattern) if pid in _CUSTOM_MATCHERS else re.compile(pattern, re.IGNORECASE), pid, *rest)
+    for pattern, pid, *rest in THREAT_PATTERNS]
 
 # ── Inert path references (#92478) ──
 # The bare path-token patterns (`authorized_keys`, `~/.aws`, ...) fire on the token alone, so a skill that spells
@@ -832,7 +1225,7 @@ def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Findi
 # infecting developers' machines and appending to their `vite.config.js` / `init`) is invisible to a
 # reviewer. Prose formats (Markdown tables pad cells) are exempt; across every catalog pin no other code
 # file has such a line.
-_PADDED_CODE = re.compile(r"(?<![ \t])[ \t]{200,}+(?=\S[^\n]{39})")
+_PADDED_CODE = re.compile(r"(?<![ \t])[ \t]{200,}(?=\S[^\n]{39})")
 _PADDED_CODE_EXEMPT_SUFFIXES = {".md", ".txt", ".html", ".xml", ".tex", ".css"}
 # The hidden tail must hold a word; a saved traceback's `~~~^^^` underline after its indent is not code.
 _CODE_WORD = re.compile(r"[A-Za-z_$][\w$]{2,}")

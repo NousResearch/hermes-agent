@@ -91,6 +91,9 @@ def test_pm_fix_publishes_a_generation_aware_launcher(tmp_path, monkeypatch, cap
     _pm_source(project, home)
     selected = _generation(project)
     (site_packages(selected) / "selected_probe.py").write_text("VALUE = 'selected'\n", encoding="utf-8")
+    # Stand-in for google-re2: the launch guard refuses a generation without the package.
+    (site_packages(selected) / "re2").mkdir()
+    (site_packages(selected) / "re2" / "__init__.py").write_text("", encoding="utf-8")
     stale = project / "venv" / "bin" / "hermes"
     stale.parent.mkdir(parents=True)
     stale.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")

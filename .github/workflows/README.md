@@ -171,7 +171,7 @@ GET and the commit 404s.
 |---|---|
 | `pull_request` (any branch, any path) | The classifier selects lanes from the PR diff. E2E lanes are forced **off**. |
 | `push` to `main` | Every lane is on (a push has no PR diff, so the classifier fails open). E2E lanes are forced **off**. PR-only jobs skip. |
-| `workflow_dispatch` | Every lane is on, **E2E included**. Inputs: `release` (strict gate), `strict_acceptance`. |
+| `workflow_dispatch` | Every lane is on, **E2E included**. Inputs: `release` (strict gate), `strict_acceptance`, `upgrade_base`. |
 | `workflow_call` from `stable-release.yml` or `canary-e2e.yml` | `release: true` and `commit: <claim or canary commit>`. Every lane is forced on, E2E included, with the strict gate. |
 
 There are no `paths:` filters: CI starts on every PR. The `detect` job
@@ -224,7 +224,7 @@ of every suite that reads it.
 | Python tests | `tests.yml` | `python` or `e2e` or `e2e_upgrade` | none of those lanes |
 | ↳ `Run tests (1/2, 2/2)` | | always inside `tests.yml` | |
 | ↳ `e2e` | | `e2e` lane (release or dispatch) | every PR and every push to `main` |
-| ↳ `e2e-upgrade-plan`, `e2e-upgrade (shard)` | | `e2e_upgrade` lane (release or dispatch) | every PR and every push |
+| ↳ `e2e-upgrade-plan`, `e2e-upgrade (shard)` (`(shard from <base>)` per `upgrade_base` entry) | | `e2e_upgrade` lane (release or dispatch) | every PR and every push |
 | OS-specific tests | `tests-os.yml` | `python` or `desktop_updater` or `e2e` or `e2e_upgrade` | none of those |
 | ↳ macOS (2 slices), Windows x64, Windows arm64 (2 slices) | | always inside `tests-os.yml`; the real Windows hand-off tests only with `desktop_updater` | |
 | ↳ Windows install + update E2E | `windows-install-update-e2e.yml` | `e2e_upgrade` (release or dispatch) | PRs and pushes |
@@ -244,6 +244,7 @@ of every suite that reads it.
 | Docs Site | `docs-site-checks.yml` | `site` | no site change |
 | Repository guards | `repo-guards.yml` (one job) | **always** | never |
 | ↳ No committed infographics / profile archives / case collisions / large blobs / lazy_deps imports / stale icons (steps) | | always | never |
+| ↳ Regex patterns build on RE2 (step) | | `python` | no Python change |
 | ↳ Deny unrelated histories (step) | | `pull_request` only | push, dispatch, release |
 | ↳ Check contributors (step) | | `python` or `catalog` | neither |
 | ↳ Check uv.lock (step) | | `uv_lock` | neither lockfile nor pyproject changed |
@@ -320,7 +321,20 @@ gh workflow run ci.yaml --ref my-branch -f release=true
 
 # Acceptance: let tracked known_failure gaps FAIL instead of xfail
 gh workflow run ci.yaml --ref my-branch -f strict_acceptance=upd-txn
+
+# Upgrade rehearsal: the e2e-upgrade shards once per named start version
+gh workflow run ci.yaml --ref my-branch -f upgrade_base=v0.21.6,v0.22.7,v0.23.0,v0.23.3
 ```
+
+`upgrade_base` takes release tags (or commits, or an updater generation name:
+`by-path`, `handoff`, `pre-handoff`), comma-separated. `e2e-upgrade-plan` turns
+it into one job per start for every shard whose start follows it
+(`e2e-upgrade (core from v0.23.0)`, ...), with `HERMES_E2E_UPGRADE_BASE` set per
+job; empty keeps the default start, the newest release before HEAD. Name every
+start in ONE dispatch: a second dispatch on the same branch cancels the first.
+The variable moves the start of `test_upgrade_path.py` (shard `core`), the
+`handoff` suite's `n1` column and the `git` cells that use the default base;
+`hosts` (no start), `network` and `pm` (a fixed updater generation) run once.
 
 To get the Docker and Nix slow lanes on a PR without a dispatch, add the
 `run-e2e` label (see [`label-rerun.yml`](#pr-helpers)). The label does **not**
@@ -337,7 +351,7 @@ branch protection.
 |---|---|---|---|
 | `docker.yml`, **Docker Build, Test, and Publish** | `pull_request`, `push: main`, `workflow_call` (stable) | **PR:** `mode` (phase + classification, one job) → `build` only when the `docker` slow lane is on (Docker meta, dependency manifests, `pm/`, `tests/docker/`, webapp build recipe, or the `run-e2e` label). Builds slim+desktop × amd64+arm64 and runs the docker integration tests. Never pushes. **Push to `main` on the upstream repo:** always builds, then `publish` (env `container-publish`) and `merge` push `:main` / `:main-desktop` only (never `:latest`). **Stable `release-phase: test`:** builds the claim commit, tests it (unless the claim has no `docker-tests` lane), and archives the exact image. **`release-phase: publish`:** pushes the archived bytes under the attempt ref and returns the manifest digest. No `release: published` trigger, on purpose. | none (`gh run rerun`) |
 | `nix.yml`, **Nix flake check** | `pull_request`, `push: main`, `workflow_call` | `flake-check` runs when the `nix` lane is on (`nix/`, `flake.*`, dependency/npm manifests, `.github/`, `run-e2e` label). Every push to `main` turns it on. `release: true` forces it. | none |
-| `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on linux-x64, linux-arm64, darwin-arm64, win32-x64, win32-arm64. There is no Intel macOS leg. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
+| `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, `scripts/ci/setup_toolchain.py`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on linux-x64, linux-arm64, darwin-arm64, win32-x64, win32-arm64. There is no Intel macOS leg. `musl-source-build` builds the core environment through PM inside a digest-pinned Alpine container (google-re2 has no musl wheel and is compiled there) and imports `re2._re2`. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
 | `termux-verify.yml`, **Termux verification** | `push: main` / `pull_request` on `scripts/termux/**`, `pm/**` (not `*.md`), `tests/scripts/test_termux*`, itself; `workflow_dispatch`; `workflow_call` (stable) | `contracts` and `tui` always run. `r2-provisioned` is skipped on PRs. `native-runtime` (arm64) runs only when R2 secrets exist or `release: true`. A release run fails loudly without R2. | `gh workflow run termux-verify.yml` |
 | `plugin-catalog-ci.yml`, **Plugin Catalog CI** | `pull_request` on `plugin-catalog/**` | `structural` (schema) and `pinned-source-validate` (the pinned SHA is reachable and the plugin passes `hermes plugins validate`; inner steps skip when no entry file changed). | none |
 | `sandbox-image.yml`, **Sandbox desktop image** | `pull_request` on its Dockerfile and smoke script; `workflow_run` of a successful Stable Release; weekly `schedule`; `workflow_dispatch` (`publish`) | `build`+smoke on the upstream repo only. `publish`/`merge` (push `nousresearch/hermes-sandbox:desktop`, plus `:v<version>-desktop` after a stable release) on those three, a dispatch only with `publish=true`; publishing builds skip the layer cache to pick up base and apt fixes. The weekly run rolls `:desktop` from main's Dockerfile, so a Dockerfile change reaches users within a week. Never on `main` pushes. | `gh workflow run sandbox-image.yml -f publish=true` |

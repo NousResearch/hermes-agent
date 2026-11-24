@@ -16,7 +16,7 @@ This is heuristic hardening of the in-process approval floor, not a security bou
 
 import itertools
 import os
-import re
+import hermes_re as re
 
 # Adapted from Adolanium's wrapper-operand parser in #58643.
 _WRAPPER_WORDS = frozenset({
@@ -65,7 +65,7 @@ _SUDO_LONG_FLAGS = frozenset({
 
 # A redirection before (or between) the words of a simple command (`2>/dev/null reboot`); not a heredoc or a
 # process substitution. Its target word follows.
-_LEADING_REDIRECT_RE = re.compile(r"[^\S\n]*+(?:\d+|&)?(?:>>|>&|>\||<>|<&|<<<|>|<)(?![<(])")
+_LEADING_REDIRECT_RE = re.compile(r"[^\S\n]*(?:\d+|&)?(?:>>|>&|>\||<>|<&|<<<|>|<)(?![<(])")
 
 # GNU timeout durations: optional `+`, decimal/exponent, hex integer, inf/infinity, one s/m/h/d
 # suffix (`-` is rejected); the numeric options (nice -n, ionice -n, sudo -C) take a plain integer.
@@ -355,6 +355,9 @@ def _blank_literal_heredoc_bodies(command: str) -> str:
 _MAX_RM_OPERANDS = 64
 # Quote-removing a word with one of these would turn quoted text into syntax (`"/etc;backup"`).
 _RM_OPERAND_SYNTAX = frozenset(";|&()<>`")
+# RE2 has no possessive runs, so the rm prefix can also start at `sudo -x/rm`: every word after sudo is
+# dash-led there, so sudo reads them all as its own flags and none is the command.
+_SUDO_DASH_WORDS_RE = re.compile(r'(?:`|\$\()?\s*sudo\s+(?:-[^\s]*\s+)+', re.IGNORECASE | re.DOTALL)
 
 
 def dequote_rm_operands(variant: str) -> str:
@@ -366,9 +369,13 @@ def dequote_rm_operands(variant: str) -> str:
         _RE_FLAGS, _RM_FLAG_PREFIX, _read_shell_word, _scan_shell, _splice, _strip_shell_word_syntax,
     )
 
-    edits, cursor = [], 0
-    for match in re.finditer(_RM_FLAG_PREFIX, variant, _RE_FLAGS):
-        pos = match.end()
+    edits, cursor, scan = [], 0, 0
+    rm_prefix = re.compile(_RM_FLAG_PREFIX, _RE_FLAGS)
+    while (match := rm_prefix.search(variant, scan)) is not None:
+        if _SUDO_DASH_WORDS_RE.fullmatch(match.group()):
+            scan = match.start() + 1  # a later command inside this span still counts
+            continue
+        scan = pos = match.end()
         if pos < cursor:
             continue
         for _ in range(_MAX_RM_OPERANDS):
@@ -388,7 +395,7 @@ def dequote_rm_operands(variant: str) -> str:
 
 # `cat <<'EOF'` / `tee f <<"EOF"`: a quoted delimiter makes the body literal, and these programs
 # only copy it. Any other consumer may run it (`bash`, `ssh host`, `cat <<'EOF' | sh`).
-_QUOTED_HEREDOC_RE = re.compile(r"""<<-?[ \t]*(['"])([A-Za-z0-9_.-]+)\1([^\n]*)\n""")
+_QUOTED_HEREDOC_RE = re.compile(r"""<<-?[ \t]*(?:'([A-Za-z0-9_.-]+)'|"([A-Za-z0-9_.-]+)")([^\n]*)\n""")
 _LITERAL_HEREDOC_READERS = frozenset({"cat", "tee"})
 _MAX_HEADER_CONTINUATIONS = 8
 
@@ -419,7 +426,7 @@ def literal_heredoc_bodies(command: str) -> list[tuple[int, int]]:
             header, body_start = header[:-1] + command[body_start:line_end], line_end + 1
         if re.search(r"[|;&]", header) or _continues(header) or body_start > len(command):
             continue
-        close = re.compile(r"^\t*" + re.escape(match.group(2)) + r"$", re.MULTILINE).search(command, body_start)
+        close = re.compile(r"^\t*" + re.escape(match.group(1) or match.group(2)) + r"$", re.MULTILINE).search(command, body_start)
         cursor = close.end() if close else len(command)
         spans.append((body_start, close.start() if close else cursor))
     return spans

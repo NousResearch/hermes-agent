@@ -26,6 +26,12 @@ on:
         type: string
         required: false
         default: ''
+      upgrade_base:
+        description: >-
+          Start versions of the e2e-upgrade suites (release tags, commits or updater generation names, comma-separated). Each becomes its own set of shards with HERMES_E2E_UPGRADE_BASE set; empty runs one set from the newest release before HEAD.
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -274,11 +280,18 @@ jobs:
     # directory gets its own shard without editing this file, and no shard
     # carries the whole tree's wall time against the 60-minute timeout.
     # Skipping this job skips every e2e-upgrade shard with it.
+    # ``cells``: one {shard, base} job per start version the dispatch named
+    # (upgrade_base), or base "" for the default start, so one dispatch runs
+    # every start version: a second dispatch on the same branch would cancel
+    # the first (concurrency in ci.yaml and below). Shards whose start never
+    # moves with the base (hosts: no start; network, pm: a fixed updater
+    # generation) run once with base "".
     if: inputs.e2e_upgrade
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
+      cells: ${{ steps.plan.outputs.cells }}
     steps:
       - name: Checkout code
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -288,20 +301,28 @@ jobs:
           sparse-checkout: |
             tests/e2e/core/upgrade
             .github/actions/check-clean-worktree
-      - name: List suite directories
+      - name: List suite directories and start versions
         id: plan
+        env:
+          UPGRADE_BASE: ${{ inputs.upgrade_base }}
         run: |
           set -euo pipefail
-          shards=$(python3 - <<'PY'
-          import json, pathlib
+          python3 - <<'PY' | tee -a "$GITHUB_OUTPUT"
+          import json, os, pathlib, re, sys
           root = pathlib.Path("tests/e2e/core/upgrade")
           shards = ["core"] if any(root.glob("test_*.py")) else []
           shards += sorted(d.name for d in root.iterdir()
                            if d.is_dir() and not d.name.startswith(("_", ".")) and any(d.rglob("test_*.py")))
-          print(json.dumps(shards))
+          bases = list(dict.fromkeys(b for b in re.split(r"[\s,]+", os.environ.get("UPGRADE_BASE", "")) if b))
+          bad = [b for b in bases if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+/-]*", b)]
+          if bad:
+              sys.exit(f"upgrade_base: not a tag, commit or updater generation name: {bad}")
+          fixed_start = {"hosts", "network", "pm"}
+          starts = bases or [""]
+          cells = [{"shard": s, "base": b} for s in shards for b in ([""] if s in fixed_start else starts)]
+          print(f"shards={json.dumps(shards)}")
+          print(f"cells={json.dumps(cells)}")
           PY
-          )
-          echo "shards=$shards" | tee -a "$GITHUB_OUTPUT"
 
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
@@ -317,20 +338,21 @@ jobs:
     # suites below it (pm: PM environment lifecycle across updates, ...).
     # Its own job: it needs full history + tags, bubblewrap, and one file
     # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
-    name: e2e-upgrade (${{ matrix.shard }})
+    name: e2e-upgrade (${{ matrix.shard }}${{ matrix.base && ' from ' || '' }}${{ matrix.base }})
     needs: e2e-upgrade-plan
     runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.e2e-upgrade-plan.outputs.shards) }}
+        include: ${{ fromJSON(needs.e2e-upgrade-plan.outputs.cells) }}
     steps:
       - name: Checkout code
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
-          # The upgrade start version is the newest release behind HEAD (tests/e2e/core/upgrade/_install_helpers.upgrade_base).
+          # The upgrade start version is the newest release behind HEAD, or matrix.base
+          # (tests/e2e/core/upgrade/_install_helpers.upgrade_base): both need every tag.
           fetch-depth: 0
           fetch-tags: true
 
@@ -428,6 +450,9 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
+          # Moves the start of test_upgrade_path (shard core), the handoff n1 column and the
+          # git cells that start from the default base; the other suites keep their own start.
+          HERMES_E2E_UPGRADE_BASE: ${{ matrix.base }}
           # Each file drives real installs/updaters (process trees plus uv and
           # git I/O); cpu_count of them at once starves their deadlines. A
           # shard holds at most ~7 files, so this runs each shard in one wave.

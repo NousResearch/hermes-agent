@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import base64
 import binascii
-import re
+import hermes_re as re
+from bisect import bisect_left
 from pathlib import Path
 from typing import Optional
 
 from tools.skills_guard import _COMPILED_THREAT_PATTERNS, Finding
+from tools.threat_patterns import MarkedMatcher
 
 # pattern id -> compiled regex, to locate a finding's token on its full source line.
 _PATTERN_BY_ID = {pid: rx for rx, pid, *_ in _COMPILED_THREAT_PATTERNS}
@@ -160,20 +162,17 @@ def catalog_cap(finding: Finding) -> Optional[str]:
 # ``$HOME/.hermes/plugins/*``) only gets the generic prose step (high, caution) and the same line in a ``.sh``
 # stays critical (#115353).
 _UNINSTALL_HOME = r'(?:\$HOME|\$\{HOME\}|~)/\.hermes'
+# One ``~/.hermes/<segments>/<leaf>`` operand, bare or inside one pair of matching quotes. RE2 has no
+# backreference to re-match the opening quote, so the three quotings are spelled out.
+_UNINSTALL_PATH = _UNINSTALL_HOME + r'(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?'
+_UNINSTALL_OPERAND = f"""(?:"{_UNINSTALL_PATH}"|'{_UNINSTALL_PATH}'|{_UNINSTALL_PATH})"""
 
 
-def _uninstall_operand(group: str) -> str:
-    """One ``~/.hermes/<segments>/<leaf>`` operand, optionally quoted (quote tracked by *group*)."""
-    return (rf'(?P<{group}>["\']?)' + _UNINSTALL_HOME
-            + rf'(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?(?P={group})')
-
-
-# ``rm`` plus one or more such operands on the line (``crew`` deletes a plugins dir and a roles dir):
-# distinct capture-group names so the optional-quote backreferences do not collide.
+# ``rm`` plus one or more such operands on the line (``crew`` deletes a plugins dir and a roles dir).
 _SELF_UNINSTALL_RM = re.compile(
     r'^(?:\$\s*)?rm\s+(?:-[a-zA-Z]+\s+)*'
-    + _uninstall_operand("q0")
-    + r'(?:\s+' + _uninstall_operand("q1") + r')*'
+    + _UNINSTALL_OPERAND
+    + r'(?:\s+' + _UNINSTALL_OPERAND + r')*'
     + r'\s*(?:#.*)?$'
 )
 
@@ -183,8 +182,8 @@ _SELF_UNINSTALL_RM = re.compile(
 # force-push example (``rm -rf ~/x && git push --force``) does not qualify.
 _SELF_UNINSTALL_RM_IN_SPAN = re.compile(
     r'`(?:\$\s*)?rm\s+(?:-[a-zA-Z]+\s+)*'
-    + _uninstall_operand("q2")
-    + r'(?:\s+' + _uninstall_operand("q3") + r')*\s*`'
+    + _UNINSTALL_OPERAND
+    + r'(?:\s+' + _UNINSTALL_OPERAND + r')*\s*`'
 )
 
 
@@ -321,9 +320,38 @@ def is_base64_media(line: str) -> bool:
 # data movement: the archive is CREATED on the line (``tar c…``) and the base64 is an ENCODE feeding a
 # matching DECODE (round-trip), not an opaque embedded blob. Such a line is a note. The embedded-blob
 # attack (decode only, no ``tar c``/no prior ``base64`` encode) keeps full severity.
-_B64_ROUNDTRIP = re.compile(
-    r'\bbase64\b(?![^\n|;&]*(?:-[a-z]*d[a-z]*|--decode))[^\n]*\|[^\n]*'
-    r'\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b', re.IGNORECASE)
+# "The first ``base64`` is an ENCODE" stood as the lookahead ``(?![^\n|;&]*(?:-[a-z]*d[a-z]*|--decode))``
+# right after it: no decode flag in the rest of its command. RE2 has no lookahead; the verdict depends on where the
+# match starts alone, so the rule is a MarkedMatcher: the stdlib original without the lookahead, searched once with
+# a mark before every ``base64`` the lookahead lets through (a line of ``base64 -d |`` stages is then not searched
+# again from each rejected one). The word boundary after the first and before the second ``base64`` is spelled as
+# the non-word character that has to stand there (RE2's mid-pattern ``\b`` is ASCII-only); both spellings keep the
+# original's backtracking order. A mark before the second ``base64`` (``-x;y -d`` decodes, though the lookahead stops
+# at ``;``) is taken by that non-word character; the decode flag, letters after ``-``, cannot hold one.
+_BASE64_WORD = re.compile(r'\bbase64', re.IGNORECASE)
+_DECODE_FLAG = re.compile(r'-[a-z]*d[a-z]*|--decode', re.IGNORECASE)
+_COMMAND_END = re.compile(r'[\n|;&]')
+_B64_ENCODE = r'base64(?:[^\w\n][^\n]*)?\|(?:[^\n]*[^\w\n])?'
+_B64_DECODE = r'base64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b'
+
+
+def _encoding_base64_starts(text: str) -> list:
+    """Every ``base64`` word with no decode flag starting between its end and its command's end. The only flag
+    starting inside another one's hit is the ``-decode`` in ``--decode``, which the hit's start stands for."""
+    flags = [flag.start() for flag in _DECODE_FLAG.finditer(text)]
+    command_ends = [end.start() for end in _COMMAND_END.finditer(text)]
+    starts = []
+    for word in _BASE64_WORD.finditer(text):
+        after = bisect_left(command_ends, word.end())
+        command_end = command_ends[after] if after < len(command_ends) else len(text)
+        last_flag = bisect_left(flags, command_end) - 1
+        if last_flag < 0 or flags[last_flag] < word.end():
+            starts.append(word.start())
+    return starts
+
+
+_B64_ROUNDTRIP = MarkedMatcher(r'\b' + _B64_ENCODE + _B64_DECODE,
+                               lambda mark: mark + _B64_ENCODE + _B64_DECODE, _encoding_base64_starts)
 _TAR_CREATE = re.compile(r'\btar\s+(?:-?-?create\b|-?-?c[a-z]*f?\b|c[a-z]*f?\b)', re.IGNORECASE)
 
 
@@ -402,7 +430,9 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
 # (a note), CODE files only. A bare command string (``"please run sudo id"``), a ``["sudo", "id"]`` args
 # element, a ``subprocess.run(["sudo", ...])`` call, and a real ``sudo apt-get install`` line in a shell
 # script keep full severity (the first two are handled on data files by ``is_json_prose_value``).
-_SUDO_TOKEN = re.compile(r"\bsudo\b(?!\.\w)")
+# RE2 has no ``(?!\.\w)``, so the same condition is spelled as what MAY follow the word: a non-word
+# character other than a dot, a dot that no word character follows, or the end of the line.
+_SUDO_TOKEN = re.compile(r"\bsudo(?=[^\w.]|\.(?:\W|\Z)|\Z)")
 _SUDO_ADMIN_HINT = re.compile(
     r"\bsudo\s+(?:-[A-Za-z]+\b\s+)*(?:apt|apt-get|snap|dnf|yum|pacman|zypper|apk|brew|port|emerge"
     r"|systemctl|service|launchctl|pip[0-9]*|npm|gem|-u\b|-E\b|-H\b|-n\b)", re.IGNORECASE)
@@ -453,7 +483,9 @@ def is_sudo_inert(finding: Finding, line: str, rel_path: str) -> bool:
 # nvidia-broadcast skill) — is the opposite of an env dump. When every ``dump_all_env`` hit on the line
 # is governed by a safety negation (``never``/``do not``/``no`` …), the finding is a note. A real
 # ``env | curl …`` keeps full severity (no negation governs it).
-_ENV_DUMP_TOKEN = re.compile(r"printenv|(?<![A-Za-z0-9_])env\s*\|(?!\|)(?!\s*[{(])")
+# RE2 has no ``(?!\|)(?!\s*[{(])``, so the same two conditions are spelled as what MAY follow the pipe:
+# a character other than ``|`` ``{`` ``(`` or a space; spaces and then anything but ``{`` ``(``; the end.
+_ENV_DUMP_TOKEN = re.compile(r"printenv|(?<![A-Za-z0-9_])env\s*\|(?=[^\s|{(]|\s+(?:[^\s{(]|\Z)|\Z)")
 
 
 def is_env_dump_in_safety_clause(finding: Finding, line: str) -> bool:
@@ -708,7 +740,7 @@ def is_loopback_continuation(finding: Finding, line: str, joined: str) -> bool:
 _JSON_STRING_LINE = re.compile(r'^\s*(?:"(?P<k>(?:[^"\\]|\\.)*)"\s*:\s*)?"(?P<v>(?:[^"\\]|\\.)*)"\s*,?\s*$')
 _JSON_COMMAND_KEY = re.compile(r"cmd|command|script|exec|run|shell|install|hook|arg|entry|bin|start|setup", re.IGNORECASE)
 _JSON_EXECUTED_FILES = {"package.json"}
-_COMMAND_POSITION = re.compile(r"(?:^|[;&|`(]|\$\(|\b(?:sudo|exec|eval|do|then|xargs|bash|sh|-c))\s*$", re.IGNORECASE)
+_COMMAND_POSITION = re.compile(r"(?:^|[;&|`(]|\$\(|\b(?:sudo|exec|eval|do|then|xargs|bash|sh)|\b-c)\s*$", re.IGNORECASE)
 
 
 def is_json_prose_value(finding: Finding, rel_path: str, line: str) -> bool:

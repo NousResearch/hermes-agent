@@ -1,6 +1,6 @@
 name: mrscraper
 repo: https://github.com/ai-mrscraper/hermes-mrscraper-plugin
-sha: cd1624181e50d4310eed02589339b6b5a4b50b09
+sha: 2cca4ec4a2b8f2eaef796693975bc730bf87cc3f
 description: "MrScraper status, HTML, Markdown, screenshot, brand, JSON extraction, and web search via direct HTTP APIs. Disclosure — page, brand, JSON, and search requests can consume paid account tokens; target URLs, prompts, search queries, and request options are sent to MrScraper; HTML, Markdown, screenshot, and JSON results are always saved to the MrScraper dashboard; mrscraper_status returns the MrScraper account record as the API sends it (account identity, plan, usage and billing fields), which reaches the model provider."
 maintainer: ai-mrscraper
 tier: community

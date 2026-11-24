@@ -217,6 +217,13 @@
       ]
     },
     {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached",
+      "entries": [
+        "hermes_cli.plugin_session:turn_client",
+        "hermes_cli.plugin_session:session_viewers"
+      ]
+    },
+    {
       "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
       "entries": [
         "agent.file_safety:get_read_block_error",
@@ -254,6 +261,14 @@
         "hermes_cli.session_worktree:create",
         "hermes_cli.session_worktree:restore",
         "hermes_cli.session_worktree:finish"
+      ]
+    },
+    {
+      "source": "user-guide/multi-profile-gateways.md § Profiles a plugin runs elsewhere",
+      "entries": [
+        "hermes_cli.profiles_run_elsewhere:mark_profile_run_elsewhere",
+        "hermes_cli.profiles_run_elsewhere:clear_profile_run_elsewhere",
+        "hermes_cli.profiles_run_elsewhere:run_elsewhere"
       ]
     }
   ]

@@ -222,6 +222,16 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from cron.execution_identity import current_cron_execution
         return current_cron_execution()
 
+    def cron_delivery_platforms(self, job_id: Optional[str] = None) -> Optional[tuple[str, ...]]:
+        """The platforms cron delivers a job's output to, lower-cased, in order
+        (``cron.plugin_api.delivery_platforms``). With ``job_id=None``, answers for the firing cron
+        run using that run's own settings (or ``None`` outside one); with ``job_id``, previews the
+        saved job in this plugin's profile. Reads normal delivery (``deliver``), not
+        ``failure_deliver``. Under ``plugins.isolation: host`` this runs in the gateway, in the
+        calling hook's context."""
+        from cron.plugin_api import delivery_platforms
+        return delivery_platforms(job_id)
+
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved
         with registration teardown; exceptions are logged, never propagated."""

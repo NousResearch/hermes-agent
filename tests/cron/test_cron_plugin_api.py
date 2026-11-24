@@ -313,6 +313,44 @@ def test_no_job_id_inside_a_cron_run_answers_for_that_run(home_channels):
     assert delivery_platforms() is None
 
 
+def test_no_job_id_uses_firing_job_settings_even_after_disk_edit_or_delete(home_channels):
+    from agent.delegation_context import delegated_child_context
+
+    job = jobs.create_job(prompt="p", schedule="every 1h", name="run", deliver="telegram")
+
+    token = enter_cron_execution(job, "exec-1", {"source": "direct"})
+    try:
+        jobs.update_job(job["id"], {"deliver": "local"})
+        assert delivery_platforms() == ("telegram",)
+        assert delivery_platforms(job["id"]) == ()
+
+        jobs.remove_job(job["id"])
+        assert delivery_platforms() == ("telegram",)
+        assert delivery_platforms(job["id"]) is None
+
+        with delegated_child_context("child"):
+            assert delivery_platforms() is None
+    finally:
+        exit_cron_execution(token)
+    assert delivery_platforms() is None
+
+
+def test_no_job_id_uses_firing_origin_even_if_mutated_or_edited_mid_run(home_channels):
+    job = jobs.create_job(
+        prompt="p", schedule="every 1h", name="run", deliver="origin",
+        origin={"platform": "telegram", "chat_id": TELEGRAM_CHAT},
+    )
+
+    token = enter_cron_execution(job, "exec-1", {"source": "direct"})
+    try:
+        job["origin"]["platform"] = "discord"
+        jobs.update_job(job["id"], {"deliver": "discord"})
+        assert delivery_platforms() == ("telegram",)
+        assert delivery_platforms(job["id"]) == ("discord",)
+    finally:
+        exit_cron_execution(token)
+
+
 HOSTED_HOOK_PLUGIN = '''
 from cron.plugin_api import delivery_platforms
 
@@ -320,27 +358,55 @@ from cron.plugin_api import delivery_platforms
 def register(ctx):
     def hook(**kwargs):
         run = ctx.current_cron_execution()
-        return {"no_id": delivery_platforms(), "by_id": delivery_platforms(run.job_id)}
+        firing = ctx.cron_delivery_platforms()
+        preview = ctx.cron_delivery_platforms(run.job_id) if run is not None else None
+        return {
+            "local_no_id": delivery_platforms(),
+            "firing": firing,
+            "firing_is_tuple": isinstance(firing, tuple),
+            "preview": preview,
+            "preview_is_tuple": isinstance(preview, tuple),
+        }
     ctx.register_hook("post_llm_call", hook)
 '''
 
 
 @pytest.mark.platforms("any")  # the host is a child process
-def test_a_hook_in_a_plugin_host_names_the_running_job_through_ctx(tmp_path, monkeypatch):
+def test_a_hook_in_a_plugin_host_reads_firing_delivery_platforms_through_ctx(tmp_path, monkeypatch):
     from hermes_cli.plugins import PluginManager
     from tests.hermes_cli.test_plugin_host import _home_with_plugins
 
     _home_with_plugins(tmp_path / "plugins", monkeypatch, {"hostedcron": HOSTED_HOOK_PLUGIN}, isolation="host")
-    job = jobs.create_job(prompt="p", schedule="every 1h", name="run", deliver="local", paused=True)
+    job = jobs.create_job(
+        prompt="p", schedule="every 1h", name="run", deliver="origin",
+        origin={"platform": "telegram", "chat_id": TELEGRAM_CHAT}, paused=True,
+    )
     manager = PluginManager()
     manager.discover_and_load()
-    token = enter_cron_execution(job, "exec-1", {"source": "direct"})
     try:
         assert manager._plugins["hostedcron"].error is None
-        # The host process has no run bound; the ctx call is answered by this process, which has.
-        assert manager.invoke_hook("post_llm_call", session_id="s") == [{"no_id": None, "by_id": []}]
+        token = enter_cron_execution(job, "exec-1", {"source": "direct"})
+        try:
+            jobs.update_job(job["id"], {"deliver": "local"})
+            # The host process has no run bound; ctx.cron_delivery_platforms() runs in the gateway
+            # and returns the firing run's platforms (as a tuple) even after the saved job was edited.
+            assert manager.invoke_hook("post_llm_call", session_id="s") == [{
+                "local_no_id": None,
+                "firing": ["telegram"],
+                "firing_is_tuple": True,
+                "preview": [],
+                "preview_is_tuple": True,
+            }]
+        finally:
+            exit_cron_execution(token)
+        assert manager.invoke_hook("post_llm_call", session_id="s") == [{
+            "local_no_id": None,
+            "firing": None,
+            "firing_is_tuple": False,
+            "preview": None,
+            "preview_is_tuple": False,
+        }]
     finally:
-        exit_cron_execution(token)
         manager.unload()
         manager._plugin_host().shutdown()
 
@@ -371,17 +437,40 @@ def test_result_holds_only_platform_names(home_channels):
 
 
 def test_plugin_importing_the_module_gets_no_private_import_warning(tmp_path):
+    from cron.plugin_api import CronSchedulerRegistrationError as PublicRegError
+
+    assert PublicRegError is CronSchedulerRegistrationError
     plugin = tmp_path / "follow_up"
     plugin.mkdir()
     (plugin / "plugin.yaml").write_text(
         yaml.safe_dump({"name": "follow_up", "version": "1.0.0", "description": "x"}), encoding="utf-8")
     Path(plugin / "__init__.py").write_text(
-        "from cron.plugin_api import ensure_named_job, delivery_platforms, AmbiguousJobReference\n"
+        "from cron.plugin_api import (\n"
+        "    AmbiguousJobReference, CronSchedulerRegistrationError, delivery_platforms, ensure_named_job,\n"
+        ")\n"
         "def register(ctx):\n"
-        "    return ensure_named_job, delivery_platforms, AmbiguousJobReference\n",
+        "    return ensure_named_job, delivery_platforms, AmbiguousJobReference, CronSchedulerRegistrationError\n",
         encoding="utf-8")
 
     report = validate_plugin_dir(plugin)
 
     assert report.ok, report.failures
     assert not [w for w in report.warnings if w.startswith("private core imports")]
+
+
+def test_ctx_cron_delivery_platforms_in_process(home_channels):
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    ctx = PluginContext(PluginManifest(name="demo"), PluginManager())
+    job = jobs.create_job(prompt="p", schedule="every 1h", name="run", deliver="telegram")
+    assert ctx.cron_delivery_platforms() is None
+    assert ctx.cron_delivery_platforms(job["id"]) == ("telegram",)
+
+    token = enter_cron_execution(job, "exec-1", {"source": "direct"})
+    try:
+        jobs.update_job(job["id"], {"deliver": "local"})
+        assert ctx.cron_delivery_platforms() == ("telegram",)
+        assert ctx.cron_delivery_platforms(job["id"]) == ()
+    finally:
+        exit_cron_execution(token)
+    assert ctx.cron_delivery_platforms() is None

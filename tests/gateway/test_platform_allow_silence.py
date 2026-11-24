@@ -122,14 +122,16 @@ async def _slack_followup_event(adapter):
     return event
 
 
-async def _whatsapp_group_event():
-    """The real WhatsApp adapter's event for group chatter in a free-response group."""
+async def _whatsapp_group_event(body="did anyone book the venue?"):
+    """The real WhatsApp adapter's event for a message in a free-response group. The default body
+    asks something, so the adapter cannot tell whether it was meant for the bot and the platform
+    setting decides; a caller wanting the decided case passes a plain statement."""
     from tests.gateway.test_whatsapp_group_gating import _group_message, _make_adapter
     wa = _make_adapter(require_mention=False, group_policy="open")
     wa.gateway_runner = None
     wa._owner_profile = None
-    event = await wa._build_message_event(_group_message("did anyone book the venue"))
-    assert event is not None and event.reply_expected is None
+    event = await wa._build_message_event(_group_message(body))
+    assert event is not None
     assert event.source.platform is Platform.WHATSAPP and event.source.chat_id == WA_GROUP
     return event
 
@@ -157,6 +159,7 @@ async def test_slack_thread_followup_follows_the_platform_setting(
 @pytest.mark.parametrize("setting,silent", [(True, True), (False, False), (None, False)])
 async def test_whatsapp_group_chatter_follows_the_platform_setting(monkeypatch, tmp_path, layout, setting, silent):
     event = await _whatsapp_group_event()
+    assert event.reply_expected is None  # a question in a group: it may be for the bot
     block = {} if setting is None else {"allow_silence": setting}
     runner = _runner(monkeypatch, tmp_path)
     runner.config = _loaded({"platforms": {"whatsapp": block}} if layout == "platforms" else {"whatsapp": block})
@@ -164,6 +167,21 @@ async def test_whatsapp_group_chatter_follows_the_platform_setting(monkeypatch, 
     response = await _live(runner, event)
 
     assert response == ("" if silent else _unexpected_silence_reply())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting", [True, False, None], ids=["opt-in", "opt-out", "unset"])
+async def test_whatsapp_unaddressed_group_chatter_needs_no_opt_in(monkeypatch, tmp_path, setting):
+    """Chatter the adapter knows was not addressed to the bot is silent without the opt-in, and an
+    explicit ``allow_silence: false`` does not turn that silence back into a notice: a decided
+    "not for us" outranks the room permission, as it does for Slack and Telegram."""
+    event = await _whatsapp_group_event("the meeting moved to friday")
+    assert event.reply_expected is False
+    block = {} if setting is None else {"allow_silence": setting}
+    runner = _runner(monkeypatch, tmp_path)
+    runner.config = _loaded({"platforms": {"whatsapp": block}})
+
+    assert await _live(runner, event) == ""
 
 
 @pytest.mark.asyncio

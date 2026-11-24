@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.errors import EmptyStreamError
+from session_rules.turns import is_no_arguments
 from agent.tool_history_as_text import tool_history_for_request
 
 logger = logging.getLogger(__name__)
@@ -810,10 +811,9 @@ def _replay_ordered_blocks(ordered_blocks: list) -> list[dict]:
 def _parse_tool_args(args) -> Any:
     """JSON-decode a tool-call argument string; {} on failure; non-str passes through."""
     try:
-        parsed = json.loads(args) if isinstance(args, str) else args
+        return json.loads(args) if isinstance(args, str) else args
     except (json.JSONDecodeError, TypeError):
         return {}
-    return {} if parsed is None else parsed  # JSON null = no arguments (#159689)
 
 
 def _redacted_reasoning_block(encoded) -> Optional[dict]:
@@ -1152,7 +1152,8 @@ def normalize_converse_response(response: dict) -> SimpleNamespace:
                 ordered_blocks.append({"reasoningContent": ordered_reasoning})
         elif "toolUse" in block:
             tu = block["toolUse"]
-            input_dict = _parse_tool_args(tu.get("input"))
+            # JSON null = no arguments (#159689); any other value passes through for the executor to judge.
+            input_dict = {} if is_no_arguments(tu.get("input")) else tu.get("input")
             ordered_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), input_dict))
             parts.tool_calls.append(_tool_call_ns(tu.get("toolUseId", ""), tu.get("name", ""), input_dict))
     return parts.build(
@@ -1241,7 +1242,8 @@ def stream_converse_with_callbacks(
             idx = block_index(event["contentBlockStop"])
             current_block_index = None  # a following index-less delta opens a fresh slot, not this one
             if current_tool is not None:
-                input_dict = _parse_tool_args(current_tool["input_json"])  # "" → {} via the JSON-error path
+                raw_input = current_tool["input_json"]
+                input_dict = {} if is_no_arguments(raw_input) else _parse_tool_args(raw_input)  # "" / null → {}
                 parts.tool_calls.append(_tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict))
                 if "toolUse" in stream_blocks.get(idx, {}):
                     stream_blocks[idx]["toolUse"]["input"] = input_dict

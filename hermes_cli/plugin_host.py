@@ -78,7 +78,9 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     elsewhere takes the managed overlay's launcher, expanded the same way). Under multiplexing that env is the
     launch profile's, so for a profile run here they expand through its own secrets instead
     (``owner_secret_scope``: the launch profile's env and files, any other profile's own files), never another
-    profile's values. No terminal policy: the launcher is only read here."""
+    profile's values. The launch profile is the one whose directory the process's own path keys, as
+    ``serves_routed_profile`` asks: after that link is renamed, *home* is the new name, which
+    ``owner_secret_scope`` would take for another profile. No terminal policy: the launcher is only read here."""
 
     def choose() -> list:
         from agent.secret_scope import is_multiplex_active
@@ -88,7 +90,11 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
             with _plugin_home_scope(home):
                 return host_launcher(home=home)
         from agent.runtime_scope import bind_state, scope_for_profile
-        with bind_state(scope_for_profile(home), hydrate_secrets=False, terminal=False):
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        from tui_gateway.launch_profile_policy import owner_secret_scope
+        launch = get_routing_process_hermes_home()
+        secrets = owner_secret_scope(launch if hermes_home_key(launch) == hermes_home_key(home) else home)
+        with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
             return host_launcher(home=home)
 
     return contextvars.Context().run(choose)

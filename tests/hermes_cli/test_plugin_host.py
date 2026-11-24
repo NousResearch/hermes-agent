@@ -553,6 +553,50 @@ def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_p
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script; SIGKILL
+def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env_only_launcher_keys(
+        tmp_path, monkeypatch):
+    """The process keeps naming its own profile by the path it started with. After that link is renamed the
+    manager answers to the new name, and a crash restart under multiplexing still expands the launcher from the
+    launch profile's env-only keys (systemd ``Environment=``), not from that profile's files alone."""
+    import signal
+
+    from agent import secret_scope as ss
+    from tests.waiting import wait_until
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    outside = _home_with_plugins(tmp_path / "outside", monkeypatch, {"hostprobe": PROBE_PLUGIN})
+    (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["hostprobe"], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    monkeypatch.setenv("PLUGIN_RUNNER", str(runner))
+    ss.set_multiplex_active(True)
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    try:
+        manager.discover_and_load()
+        first = manager._plugins["hostprobe"]
+        assert first.error is None and ran.read_text(encoding="utf-8").count("ran") == 1
+        (profiles / "ops").rename(profiles / "ops2")
+        os.kill(manager._plugin_host().pid, signal.SIGKILL)
+        def reloaded():
+            loaded = manager._plugins.get("hostprobe")
+            return loaded if loaded is not first else None
+
+        after = wait_until(reloaded, timeout=15, what="the crashed host's restart")
+        assert after is not None and after.error is None
+        assert ran.read_text(encoding="utf-8").count("ran") == 2
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
 def test_a_marked_profiles_managed_launcher_expands_against_the_process_env_under_multiplexing(tmp_path, monkeypatch):
     """Under multiplexing too, a profile a plugin runs elsewhere takes its launcher from the managed overlay alone,

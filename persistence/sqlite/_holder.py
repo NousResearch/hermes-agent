@@ -368,6 +368,7 @@ class StoreHolder:
         self._token_pending_marker_identity = None
         self._token_writer_uncertain: list[tuple[str, dict[str, Any]]] = []
         self._token_batch_write_context = threading.local()
+        self._write_fence_stack = threading.local()
         self._token_queue_cond = threading.Condition(threading.Lock())
         self._token_writer_thread: Optional[threading.Thread] = None
         self._token_writer_stop = self._token_writer_busy = False
@@ -855,7 +856,18 @@ class StoreHolder:
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
-                    result = attempt.execute(self._conn, fn)
+                    fence_frames = getattr(self._write_fence_stack, "frames", None)
+                    fence_ids = tuple(dict.fromkeys(sid for frame in fence_frames for sid in frame)) if fence_frames else ()
+                    if fence_ids:
+                        from persistence.sqlite._state.lineage_fence import _require_local_write
+
+                        def fenced_fn(conn):
+                            _require_local_write(conn, fence_ids)
+                            return fn(conn)
+
+                        result = attempt.execute(self._conn, fenced_fn)
+                    else:
+                        result = attempt.execute(self._conn, fn)
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -1456,10 +1468,7 @@ class StoreHolder:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
-        from persistence.sqlite._state.lineage_fence import session_write_budget
-
-        with session_write_budget(self, session_id, self._TRANSCRIPT_WRITE_PATIENCE_S):
-            self._queue_owned_token_counts(session_id, kwargs)
+        self._queue_owned_token_counts(session_id, kwargs)
 
     def _queue_owned_token_counts(self, session_id, kwargs):
         from persistence.sqlite._state.accounting_markers import hold_pending_usage, require_legacy_accounting_clear
@@ -1589,6 +1598,14 @@ class StoreHolder:
             try:
                 _apply_token_delta(self, session_id, kwargs)
             except BaseException as exc:
+                if (
+                    self.read_only
+                    and isinstance(exc, sqlite3.OperationalError)
+                    and "readonly database" in str(exc).lower()
+                    and not receipt.has_uncertain_effect()
+                ):
+                    logger.warning("async token accounting: read-only handle refused delta: %s", exc)
+                    continue
                 with self._token_queue_cond:
                     if receipt.proves_unapplied(exc):
                         self._token_queue.extendleft(reversed(coalesced[index:]))

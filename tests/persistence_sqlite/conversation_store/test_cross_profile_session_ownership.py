@@ -74,8 +74,12 @@ def test_retained_legacy_accounting_marker_refuses_direct_and_queued_usage(backe
     store = backend.open(scope_a)
     seed_session(store, "receipt-owner", "cli")
     holder = raw_holder(store)
-    directory = get_default_hermes_root() / ".session-lineage-locks" / "accounting"
-    directory.mkdir(mode=0o700, parents=True)
+    locks_root = get_default_hermes_root() / ".session-lineage-locks"
+    locks_root.mkdir(mode=0o700, exist_ok=True)
+    locks_root.chmod(0o700)
+    directory = locks_root / "accounting"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    directory.chmod(0o700)
     location = hashlib.sha256(str(holder.db_path.resolve()).encode()).hexdigest()
     marker = directory / f"usage-{location}-old-inode-retained.lock"
     marker.touch(mode=0o600)

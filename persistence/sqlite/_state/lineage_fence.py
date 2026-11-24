@@ -548,30 +548,44 @@ def session_lock_budget(holder, ids: tuple[str, ...], patience_s: float | None =
 
 @contextmanager
 def session_write_budget(holder, ids: str | Iterable[str], patience_s: float | None = None):
-    """Serialize operations that check a scoped row before starting their write."""
-    ids = (ids,) if isinstance(ids, str) else tuple(dict.fromkeys(sid for sid in ids if sid))
-    with session_lock_budget(holder, ids, patience_s) as deadline:
-        if ids:
-            with holder._read_ctx_with_timeout(max(0.0, deadline - time.monotonic())) as conn:
-                _require_local_write(conn, ids)
-        yield max(0.0, deadline - time.monotonic())
+    """Serialize operations that check a scoped row inside their write transaction."""
+    if isinstance(ids, str):
+        norm_ids: tuple[str, ...] = (ids,) if ids else ()
+    elif isinstance(ids, Iterable) and not isinstance(ids, (bytes, bytearray)):
+        norm_ids = tuple(dict.fromkeys(sid for sid in ids if isinstance(sid, str) and sid))
+    else:
+        norm_ids = ()
+    with session_lock_budget(holder, norm_ids, patience_s) as deadline:
+        stack = getattr(holder._write_fence_stack, "frames", None)
+        if stack is None:
+            stack = []
+            holder._write_fence_stack.frames = stack
+        stack.append(norm_ids)
+        try:
+            yield max(0.0, deadline - time.monotonic())
+        finally:
+            stack.pop()
 
 
-def guarded_discovered_write(holder, discover, write, *, patience_s: float):
+def guarded_discovered_write(
+    holder, discover, write, *, patience_s: float, initial_ids: Iterable[str] = (),
+):
     """Recheck the discovered write set on the actual writer before any mutation."""
     deadline = time.monotonic() + patience_s
-    ids: set[str] = set()
+    ids: set[str] = {sid for sid in initial_ids if isinstance(sid, str) and sid}
+    managed = _managed_root_and_current(holder.db_path)
     expand = object()
-    for _ in range(8):
-        with holder._read_ctx_with_timeout(max(0.0, deadline - time.monotonic())) as conn:
-            ids.update(discover(conn))
+    for attempt in range(8):
+        if attempt == 0 and managed and not ids:
+            with holder._read_ctx_with_timeout(max(0.0, deadline - time.monotonic())) as conn:
+                ids.update(discover(conn))
         if time.monotonic() >= deadline:
             break
         needed: set[str] = set()
         with session_lock_budget(holder, tuple(ids), max(0.0, deadline - time.monotonic())):
             def guarded(conn):
                 needed.update(discover(conn))
-                if needed - ids:
+                if managed and (needed - ids):
                     return expand
                 _require_local_write(conn, tuple(needed))
                 return write(conn)

@@ -225,7 +225,14 @@ def apply_worker_receipt(holder, *, epoch, execution_id, session_id, generation,
                 ids.add(child)
         return ids
 
+    initial_ids = {session_id}
+    if operation == 'compression.publish' and isinstance(frozen_payload, dict):
+        child = frozen_payload.get('child_session_id')
+        if isinstance(child, str) and 0 < len(child) <= 1024:
+            initial_ids.add(child)
     try:
-        return guarded_discovered_write(holder, write_ids, write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+        return guarded_discovered_write(
+            holder, write_ids, write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S, initial_ids=initial_ids,
+        )
     except SessionLineageError as exc:
         raise AuthorityRefusal(exc.code) from exc

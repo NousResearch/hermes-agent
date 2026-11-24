@@ -368,7 +368,7 @@ Quick reference for the most common things Nix users want to customize:
 | Add project context to the workspace | `documents."AGENTS.md"` | `./documents/AGENTS.md` |
 | Run the backend for the desktop app or the dashboard | `backend.mode` | `"serve"` or `"dashboard"` |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
-| Add an optional extra the package does not ship | `extraDependencyGroups` | `[ "google-meet" ]` |
+| Add an optional extra the package does not ship | `extraDependencyGroups` | `[ "mistral" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
@@ -887,8 +887,8 @@ The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `imp
 For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra the selected package does not already ship — on Nix, runtime installation into the read-only store is not possible.
 
 ```nix
-# Add Google Meet support on top of what the package ships
-services.hermes-agent.extraDependencyGroups = [ "google-meet" ];
+# Add the Mistral SDK on top of what the package ships
+services.hermes-agent.extraDependencyGroups = [ "mistral" ];
 ```
 
 `extraDependencyGroups` and `extraPythonPackages` **add to** the groups the selected package ships; they never replace them. The `default` package already ships `messaging`, `voice`, `exa` and the other groups in the table below, so naming one of those changes nothing. The same holds for `pkgs.hermes-agent.override { extraDependencyGroups = [ ... ]; }`. For a smaller build, start from a smaller package: `package = inputs.hermes-agent.packages.${system}.minimal;` (or `#messaging`), or `.override { defaultDependencyGroups = [ ]; }` to drop the shipped groups and list only the ones you want.
@@ -916,6 +916,8 @@ requirements can still fail that resolution. The table lists common groups;
 | `fal` | FAL image generation |
 
 Memory providers that live in the [plugin catalog](../user-guide/features/plugins.md) rather than in the Hermes tree (e.g. Hindsight) are not extras. Install them like any catalog plugin with `hermes plugins install hindsight`, or declaratively via [`extraPlugins`](#directory-plugins-extraplugins) pointing at the plugin's source tree.
+
+The same goes for Google Meet: the `google-meet` extra no longer exists, so drop it from `extraDependencyGroups`. Meet support is the [`google-meet`](https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet) catalog plugin, which brings its own Python dependencies (Playwright, `websockets`).
 
 Or use the pre-built `#messaging` or `#full` flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
 
@@ -951,7 +953,7 @@ External flakes can override the package directly:
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
     # Then:
     #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "mistral" ]; }
     # Both add to the groups the default package ships. To drop those:
     #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
   };
@@ -1122,7 +1124,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Use the selected package’s `python.pkgs` |
-| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras added to the groups `package` already ships (e.g. `["google-meet"]`). Resolved by uv — no collisions |
+| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras added to the groups `package` already ships (e.g. `["mistral"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
 | `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
 

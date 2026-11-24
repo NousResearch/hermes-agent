@@ -5,7 +5,7 @@ description: "Runbook, go-live checklist, and operator worksheet for the Microso
 
 # Operate the Teams Meeting Pipeline
 
-Use this guide after you have already enabled the feature from [Teams Meetings](../user-guide/messaging/teams-meetings.md).
+Use this guide after you have already installed the `teams-pipeline` catalog plugin (`hermes plugins install teams-pipeline`) and enabled the feature from [Teams Meetings](../user-guide/messaging/teams-meetings.md).
 
 This page covers:
 - operator CLI flows

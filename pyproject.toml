@@ -266,7 +266,6 @@ piper = [
 modal = ["modal==1.6.2"]
 daytona = ["daytona==0.225.0"]
 vercel = ["vercel==0.12.0"]
-google-meet = ["playwright==1.64.0; sys_platform != 'android'", "websockets==15.0.1; sys_platform != 'android'"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",
@@ -643,8 +642,6 @@ neutts = "python_version < '3.14'"
 # Windows ARM64 wheel.
 kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
 piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
-# no playwright on android
-google-meet = "sys_platform != 'android'"
 
 [tool.uv]
 # uv otherwise enables the dev group by default, including in payload builds.

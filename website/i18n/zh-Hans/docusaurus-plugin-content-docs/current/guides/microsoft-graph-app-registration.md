@@ -137,20 +137,14 @@ chmod 600 ~/.hermes/.env
 
 ## 步骤 6：验证令牌流程
 
-Hermes 内置了 Graph 身份验证冒烟测试。在 Hermes 安装目录下执行：
+Graph 身份验证冒烟测试随官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 提供。安装该插件后，强制获取一次令牌：
 
-```python
-python -c "
-import asyncio
-from plugins.teams_pipeline.graph_auth import MicrosoftGraphTokenProvider
-provider = MicrosoftGraphTokenProvider.from_env()
-token = asyncio.run(provider.get_access_token())
-print('Token acquired, length:', len(token))
-print(provider.inspect_token_health())
-"
+```bash
+hermes plugins install teams-pipeline
+hermes teams-pipeline token-health --force-refresh
 ```
 
-成功执行后将打印一个较长的 token（令牌）字符串，以及一个健康状态字典，其中 `cached: True`，`expires_in_seconds` 值接近 3600。失败时将抛出 `MicrosoftGraphTokenError`，并附带 Azure 错误码——最常见的错误如下：
+成功执行后将打印一个 JSON 健康状态，其中 `last_refresh_succeeded: true`，并包含 `access_token_length`，`expires_in_seconds` 值接近 3600。失败时 `last_refresh_succeeded` 为 `false`，`refresh_error` 中附带 Azure 错误码——最常见的错误如下：
 
 | Azure 错误码 | 含义 | 修复方法 |
 |-------------|---------|-----|
@@ -173,8 +167,8 @@ Azure 客户端密钥有固定的过期时间。在密钥过期前：
 
 凭据验证通过后，继续完成以下配置：
 
-- **Webhook 监听器配置**——部署接收 Graph 变更通知的 `msgraph_webhook` gateway 平台。
-- **流水线配置**——配置 Teams 会议流水线运行时及操作员 CLI。
-- **出站投递**——将摘要回传至 Teams 频道或聊天。
+- **Webhook 监听器配置**——部署接收 Graph 变更通知的 `msgraph_webhook` gateway 平台：[Microsoft Graph Webhook 监听器](../user-guide/messaging/msgraph-webhook.md)。
+- **流水线配置**——安装 `teams-pipeline` 插件，并配置会议流水线及操作员 CLI：[Teams 会议](../user-guide/messaging/teams-meetings.md)。
+- **出站投递**——将摘要回传至 Teams 频道或聊天：[Microsoft Teams → 会议摘要投递](../user-guide/messaging/teams.md#会议摘要投递teams-会议-pipeline)。
 
-上述页面将随添加对应运行时的 PR 一并发布。本凭据配置是独立的前提步骤，可提前完成。
+本凭据配置是独立的前提步骤，可提前完成。

@@ -56,7 +56,6 @@ hermes plugins disable disk-cleanup
 | 插件 | 类型 | 用途 |
 |---|---|---|
 | `disk-cleanup` | hook + 斜杠命令 | 自动追踪临时文件并在会话结束时清理 |
-| `google_meet` | 独立插件 | 加入 Meet 通话、实时字幕转录、可选实时双工音频 |
 | `image_gen/openai` | 图像后端 | OpenAI `gpt-image-2` 图像生成后端（FAL 的替代方案） |
 | `image_gen/openai-codex` | 图像后端 | 通过 Codex OAuth 使用 OpenAI 图像生成 |
 | `image_gen/xai` | 图像后端 | xAI `grok-2-image` 后端 |
@@ -125,35 +124,28 @@ hermes plugins install langfuse
 已启用 `observability/langfuse` 的配置文件会在 `hermes update`（或更新后的首次启动）时自动安装并启用该插件，
 继续向同一个 Langfuse 项目发送 trace。安装、调优和捕获模式见[插件 README](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse)。
 
-### google_meet
+### Google Meet 与 Teams 会议流水线（已移至插件目录）
 
-让 agent **加入、转录并参与 Google Meet 通话**——记录会议笔记、事后总结对话内容、跟进特定要点，并可选择通过 TTS 将回复发回通话中。
-
-**新增功能：**
-
-- 使用浏览器自动化加入 Meet URL 的无头虚拟参与者
-- 通过配置的 STT 提供者对会议音频进行实时转录
-- agent 调用的 `meet_summarize` / `meet_speak` / `meet_followup` 工具集，用于对所听内容采取行动
-- 会后产物（转录、带发言人归属的笔记、行动项）保存在 `~/.hermes/cache/google_meet/<meeting_id>/`
-
-**设置：**
+Google Meet 参与者和 Microsoft Teams 会议流水线不再随 Hermes 内置，而是作为官方目录插件
+[`google-meet`](https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet) 和
+[`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 提供。
+两者仍需手动选择启用——只安装你需要的那个：
 
 ```bash
-hermes plugins enable google_meet
-# 首次使用时会提示你通过插件的 OAuth 流程登录——
-# 需要有 Meet 访问权限的 Google 账号。如果会议强制要求
-# "仅受邀参与者可加入"，可能需要主持人批准。
+hermes plugins install google-meet      # meet_join / meet_status / meet_transcript / meet_leave / meet_say
+hermes plugins install teams-pipeline   # 基于 Graph 的 Teams 会议摘要
 ```
 
-在聊天中使用：
+已启用 `google_meet` 或 `teams_pipeline` 的配置文件会在 `hermes update`（或下一次 agent / gateway 启动）时
+自动安装并启用对应插件。旧名称在 `plugins.enabled` / `plugins.disabled` 中继续作为别名生效。
+工具名称、`google_meet` 工具集、`hermes meet` 和 `hermes teams-pipeline` 命令、`HERMES_MEET_*` 与
+`MSGRAPH_*` 环境变量、`platforms.teams.extra.meeting_pipeline` 配置以及已存储的数据
+（`workspace/meetings/`、`teams_pipeline_store.json`）均保持不变。
 
-> "加入 meet.google.com/abc-defg-hij 并记录笔记。通话结束后，给我发一份包含行动项的摘要。"
-
-agent 会启动会议加入流程，在通话进行时将转录内容流式传输到其上下文中，并在会议结束（或你告知停止）时生成结构化摘要。
-
-**适用场景：** 需要机器人转录并为异步参与者总结的定期站会；需要结构化笔记的访谈式会议；任何原本需要 Fireflies / Otter / Grain 的场景。如果你不希望有 AI 在旁监听——请勿启用。
-
-**禁用：** `hermes plugins disable google_meet`。已缓存的转录和录音保留在 `~/.hermes/cache/google_meet/`，直到你手动删除。
+`hermes-agent[google-meet]` extra 已移除：`hermes plugins install google-meet` 会自行安装 Playwright 和
+`websockets`，`hermes meet install` 仍负责安装 Chromium 和音频工具。
+[Microsoft Graph webhook 适配器](../messaging/msgraph-webhook.md)和 [Teams](../messaging/teams.md) 聊天平台仍保留在核心中；
+流水线设置参见 [Teams 会议](../messaging/teams-meetings.md)。
 
 ### hermes-achievements
 

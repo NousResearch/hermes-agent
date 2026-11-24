@@ -661,11 +661,11 @@ services.hermes-agent.extraPythonPackages = [
 对于已在 hermes-agent 的 `pyproject.toml` 中声明、但所选包尚未附带的可选 extras，使用 `extraDependencyGroups` 在构建时将其包含到封闭的 venv 中：
 
 ```nix
-# 在包已附带的组之上添加 Google Meet 支持
-services.hermes-agent.extraDependencyGroups = [ "google-meet" ];
+# 在包已附带的组之上添加 Mistral SDK
+services.hermes-agent.extraDependencyGroups = [ "mistral" ];
 ```
 
-这由 uv 与核心依赖在单次解析中完成——不需要 PYTHONPATH 补丁，没有冲突风险。可用的组与 `pyproject.toml` 中 `[project.optional-dependencies]` 的键对应（例如 `"google-meet"`、`"voice"`、`"matrix"`、`"mistral"`、`"bedrock"`）。
+这由 uv 与核心依赖在单次解析中完成——不需要 PYTHONPATH 补丁，没有冲突风险。可用的组与 `pyproject.toml` 中 `[project.optional-dependencies]` 的键对应（例如 `"voice"`、`"matrix"`、`"mistral"`、`"bedrock"`）。`google-meet` extra 已不存在，请将其从 `extraDependencyGroups` 中移除；Meet 支持由目录插件 [`google-meet`](https://github.com/NousResearch/hermes-official-plugins/tree/main/google-meet) 提供，它会自行安装所需的 Python 依赖（Playwright、`websockets`）。
 
 `extraDependencyGroups` 和 `extraPythonPackages` 是在所选包已附带的组之上**追加**，从不替换它们。`default` 包已附带 `messaging`、`voice`、`exa` 等组，因此再写这些组不会有任何变化；`pkgs.hermes-agent.override { extraDependencyGroups = [ ... ]; }` 同理。如需更小的构建，请从更小的包开始：`package = inputs.hermes-agent.packages.${system}.minimal;`（或 `#messaging`），或使用 `.override { defaultDependencyGroups = [ ]; }` 去掉附带的组，只列出你需要的组。
 
@@ -701,7 +701,7 @@ services.hermes-agent = {
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
     # 然后：
     #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "mistral" ]; }
     # 两者都是在 default 包附带的组之上追加。要去掉附带的组：
     #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
   };
@@ -861,7 +861,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户�
 | `extraPackages` | `listOf package` | `[]` | Agent 可用的额外包。添加到 hermes 用户的每用户 profile，终端命令、skills 和 cron 任务均可见 |
 | `extraPlugins` | `listOf package` | `[]` | 以符号链接方式安装到 `$HERMES_HOME/plugins/` 的目录插件包。每个包必须包含 `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | 添加到 PYTHONPATH 用于入口点插件发现的 Python 包。使用所选包的 `python.pkgs` 构建 |
-| `extraDependencyGroups` | `listOf str` | `[]` | 在 `package` 已附带的组之上追加的 pyproject.toml 可选 extras（例如 `["google-meet"]`）。由 uv 解析——无冲突 |
+| `extraDependencyGroups` | `listOf str` | `[]` | 在 `package` 已附带的组之上追加的 pyproject.toml 可选 extras（例如 `["mistral"]`）。由 uv 解析——无冲突 |
 | `restart` | `str` | `"always"` | systemd `Restart=` 策略 |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` 值 |
 

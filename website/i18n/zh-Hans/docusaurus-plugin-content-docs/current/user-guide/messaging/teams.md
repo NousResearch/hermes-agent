@@ -170,7 +170,7 @@ platforms:
 
 ### 会议摘要投递（Teams 会议 Pipeline）
 
-当 [Teams 会议 pipeline 插件](./msgraph-webhook.md)启用后，此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
+安装官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 后（`hermes plugins install teams-pipeline`；参见 [Teams 会议](./teams-meetings.md)），此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
 
 Pipeline 摘要投递在 `teams` 平台条目下与机器人配置并列配置：
 
@@ -181,7 +181,7 @@ platforms:
     extra:
       # 现有机器人配置（client_id、client_secret、tenant_id、port）...
 
-      # 会议摘要投递（仅在 teams_pipeline 插件启用时生效）
+      # 会议摘要投递（仅在安装 teams-pipeline 插件后生效）
       delivery_mode: "graph"       # 或 "incoming_webhook"
       # 对于 delivery_mode: graph — 选择其中一项：
       chat_id: "19:meeting_..."    # 发布到 Teams 聊天
@@ -197,7 +197,7 @@ platforms:
 | `incoming_webhook` | 使用 Teams 生成的静态 URL，简单地将摘要发布到某个频道。 | 不支持回复线程和表情回应，显示为 webhook 配置的身份。 |
 | `graph` | 通过 Microsoft Graph 以机器人身份发布带线程的频道帖子或 1:1/群聊消息。 | 需要完成 [Graph 应用注册](../../guides/microsoft-graph-app-registration.md)，并具备 `ChannelMessage.Send`（频道）或 `Chat.ReadWrite.All`（聊天）应用权限。 |
 
-如果 `teams_pipeline` 插件**未启用**，这些设置不会生效——它们仅在 pipeline 运行时绑定到 Graph webhook 入口时才会激活。
+如果 `teams-pipeline` 插件**未安装并启用**，这些设置不会生效——它们仅在该插件将自身绑定到 `msgraph_webhook` 入口后才会激活。
 
 ---
 

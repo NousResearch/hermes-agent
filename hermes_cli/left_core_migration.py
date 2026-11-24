@@ -273,6 +273,19 @@ def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _bundled_plugin_selected(home, "langfuse")
 
 
+def google_meet_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run Google Meet for *home*: the bundled ``google_meet`` selected
+    (:func:`_bundled_plugin_selected`). The plugin was opt-in, so its keys or a saved login alone are not use."""
+    return _bundled_plugin_selected(home, "google-meet")
+
+
+def teams_pipeline_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run the Teams meeting pipeline for *home*: the bundled ``teams_pipeline`` selected
+    (:func:`_bundled_plugin_selected`; core's gateway wiring also accepted ``teams-pipeline``). The plugin was
+    opt-in, so ``MSGRAPH_*`` credentials or a ``meeting_pipeline`` block alone are not use."""
+    return _bundled_plugin_selected(home, "teams-pipeline")
+
+
 def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core run its Singularity backend for *home*: ``terminal.backend`` (or the legacy
     ``terminal.env_type``) set to ``singularity`` in its config (managed overlay applied, as the bridge
@@ -657,6 +670,21 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         secret_env=("HERMES_LANGFUSE_SECRET_KEY",),
         private_env=("HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_BASE_URL"),
         plugin_key="observability/langfuse",
+    ),
+    LeftCoreFeature(
+        # HERMES_MEET_REALTIME_KEY stays on local_env_policy's static secret list, as core had it.
+        plugin="google-meet", label="Google Meet", in_use=google_meet_in_use, plugin_key="google_meet",
+        unchanged="the meet_* tools, `hermes meet`, HERMES_MEET_* settings and your meeting files are unchanged; "
+                  "the plugin is now `google-meet` (was google_meet)",
+        command="meet",
+    ),
+    LeftCoreFeature(
+        # MSGRAPH_CLIENT_SECRET / MSGRAPH_WEBHOOK_CLIENT_STATE stay on local_env_policy's static secret list.
+        plugin="teams-pipeline", label="Teams meeting pipeline", in_use=teams_pipeline_in_use,
+        plugin_key="teams_pipeline",
+        unchanged="`hermes teams-pipeline`, MSGRAPH_* settings, platforms.teams.extra.meeting_pipeline and "
+                  "teams_pipeline_store.json are unchanged; the plugin is now `teams-pipeline` (was teams_pipeline)",
+        command="teams-pipeline",
     ),
     LeftCoreFeature(
         # MCP clients that launch `hermes mcp serve` are configured outside Hermes, so no home shows the

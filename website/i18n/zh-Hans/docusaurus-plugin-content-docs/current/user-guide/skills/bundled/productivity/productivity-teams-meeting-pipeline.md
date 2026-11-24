@@ -50,7 +50,13 @@ description: "通过 Hermes CLI 操作 Teams 会议摘要流水线 — 总结会
 
 ## 前置条件
 
-使用流水线前，请确认以下变量已在 `~/.hermes/.env` 中设置：
+`hermes teams-pipeline` CLI 由官方目录插件 `teams-pipeline` 提供，该插件需手动选择安装，默认不安装。如果 `hermes teams-pipeline --help` 报告未知命令，请先安装它（已启用旧版内置 `teams_pipeline` 插件的配置文件会在 `hermes update` 时自动获得该插件）：
+
+```bash
+hermes plugins install teams-pipeline
+```
+
+然后确认以下变量已在 `~/.hermes/.env` 中设置：
 
 ```bash
 MSGRAPH_TENANT_ID=...

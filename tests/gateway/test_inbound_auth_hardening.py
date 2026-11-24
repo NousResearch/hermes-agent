@@ -74,12 +74,6 @@ def _bluebubbles(presented: str) -> bool:
     return asyncio.run(adapter._handle_webhook(_Request())).status != 401
 
 
-def _google_meet(presented: str) -> bool:
-    from plugins.google_meet.node import protocol
-    msg = {"type": "ping", "id": "1", "token": presented, "payload": {}}
-    return protocol.validate_request(msg, SECRET)[0]
-
-
 def _wecom_signature(presented: str) -> bool:
     return _wecom_accepts(str(int(time.time())), None if presented == SECRET else presented)
 
@@ -91,8 +85,8 @@ def _a2a(presented: str) -> bool:
     return ctx.authenticate(f"Bearer {presented}", "10.0.0.1") is not None
 
 
-@pytest.mark.parametrize("accepts", [_bluebubbles, _google_meet, _wecom_signature, _a2a],
-                         ids=["bluebubbles", "google_meet", "wecom", "a2a"])
+@pytest.mark.parametrize("accepts", [_bluebubbles, _wecom_signature, _a2a],
+                         ids=["bluebubbles", "wecom", "a2a"])
 def test_presented_secret_is_compared_timing_safe_and_fails_closed(accepts, monkeypatch):
     calls = []
     real = hmac.compare_digest

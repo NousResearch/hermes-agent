@@ -8,7 +8,7 @@ description: "Receive Microsoft Graph change notifications (meetings, calendar, 
 
 The `msgraph_webhook` gateway platform is an inbound event listener. It's how Hermes receives **change notifications** from Microsoft Graph — "a Teams meeting ended," "a new message landed in this chat," "this calendar event was updated." Different from the `teams` platform (which is a chat bot users type to) — this one is M365 telling Hermes something happened, not a person.
 
-Right now the primary consumer is the Teams meeting summary pipeline: Graph notifies when a meeting produces a transcript, the pipeline fetches it, and Hermes posts a summary back into Teams. Other Graph resources (`/chats/.../messages`, `/users/.../events`) use the same listener — the pipeline consumers land with their own PRs.
+Right now the primary consumer is the Teams meeting summary pipeline, shipped as the official [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) catalog plugin (`hermes plugins install teams-pipeline`): Graph notifies when a meeting produces a transcript, the pipeline fetches it, and Hermes posts a summary back into Teams. The listener itself stays in core; the plugin binds to it through the plugin platform-handler API (`ctx.register_platform_handler("msgraph_webhook", ...)`). Other Graph resources (`/chats/.../messages`, `/users/.../events`) use the same listener — the pipeline consumers land with their own PRs.
 
 ## Prerequisites
 
@@ -130,7 +130,7 @@ Status code table:
 |---------|---------------|
 | Graph subscription validation fails | Public URL is reachable, `/msgraph/webhook` path matches, GET with `validationToken` echoes the token verbatim as `text/plain` within 10 seconds. |
 | Notifications POST but nothing ingests | `client_state` matches what you registered the subscription with. Re-run `openssl rand -hex 32` and create a new subscription if the value drifted. Check `accepted_resources` includes the resource path Graph is sending. |
-| Every notification 403s | `clientState` mismatch (forged, or subscription registered with a different value). Re-create the subscription with `hermes teams-pipeline subscribe --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE" ...` (ships with the pipeline runtime PR). |
+| Every notification 403s | `clientState` mismatch (forged, or subscription registered with a different value). Re-create the subscription with `hermes teams-pipeline subscribe --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE" ...` (requires the `teams-pipeline` plugin). |
 | Listener refuses to start on `0.0.0.0` | Set `allowed_source_cidrs` to Microsoft's current webhook egress ranges, or bind Hermes to `127.0.0.1` / `::1` behind your tunnel or reverse proxy. |
 | Listener starts but `curl http://localhost:8646/health` hangs | Port binding collision. Check `ss -tlnp \| grep 8646` and change `port:` if needed. |
 | Real Graph requests from Microsoft get 403'd | Source IP allowlist is too narrow. Widen the list to include the current Microsoft egress ranges. If you're still validating the tunnel path, bind Hermes to loopback and let the tunnel handle public exposure. |

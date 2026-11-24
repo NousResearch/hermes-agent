@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import html
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from gateway.config import PlatformConfig
@@ -38,29 +38,19 @@ _ENV_KEYS = {"delivery_mode": "TEAMS_DELIVERY_MODE", "incoming_webhook_url": "TE
              "access_token": "TEAMS_GRAPH_ACCESS_TOKEN", "team_id": "TEAMS_TEAM_ID", "channel_id": "TEAMS_CHANNEL_ID", "chat_id": "TEAMS_CHAT_ID"}
 
 
-class _StaticAccessTokenProvider:
-    """Minimal token-provider shim so outbound Graph delivery can reuse the shared client."""
-
-    def __init__(self, access_token: str):
-        self._access_token = str(access_token or "").strip()
-
-    async def get_access_token(self, *, force_refresh: bool = False) -> str:
-        if not self._access_token:
-            raise ValueError("TEAMS_GRAPH_ACCESS_TOKEN is required for graph delivery mode.")
-        return self._access_token
-
-    def clear_cache(self) -> None:
-        return None
-
-
 class TeamsSummaryWriter:
     """Deliver a meeting summary to Teams via incoming webhook or Graph."""
 
     def __init__(
         self, platform_config: PlatformConfig | None = None, *,
         graph_client: Any | None = None, transport: httpx.AsyncBaseTransport | None = None,
+        graph_client_factory: Callable[[str], Any] | None = None,
     ) -> None:
+        # Graph delivery needs a Graph client: *graph_client*, or one *graph_client_factory* builds from
+        # the resolved access token ("" = app-only credentials). The caller owns Graph auth (the
+        # teams-pipeline plugin passes its own); without either, Graph mode fails and webhook mode works.
         self._platform_config, self._graph_client, self._transport = platform_config, graph_client, transport
+        self._graph_client_factory = graph_client_factory
 
     async def write_summary(self, payload: Any, config: dict[str, Any] | None, existing_record: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         merged = self._resolve_delivery_config(config)
@@ -122,11 +112,10 @@ class TeamsSummaryWriter:
     def _build_graph_client(self, config: dict[str, Any]) -> Any:
         if self._graph_client is not None:
             return self._graph_client
-        from plugins.teams_pipeline.graph_auth import MicrosoftGraphTokenProvider
-        from plugins.teams_pipeline.graph_client import MicrosoftGraphClient
-        access_token = str(config.get("access_token") or "").strip()
-        provider = _StaticAccessTokenProvider(access_token) if access_token else MicrosoftGraphTokenProvider.from_env()
-        return MicrosoftGraphClient(provider, transport=self._transport)
+        if self._graph_client_factory is None:
+            raise ValueError("Graph delivery mode needs a Microsoft Graph client: install the teams-pipeline "
+                             "plugin, or use delivery_mode: incoming_webhook.")
+        return self._graph_client_factory(str(config.get("access_token") or "").strip())
 
     def _render_summary_markdown(self, payload: Any) -> str:
         summary = self._text(getattr(payload, "summary", None), t("platform.teams.summary.empty"))

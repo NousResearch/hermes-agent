@@ -44,7 +44,13 @@ Multilingual trigger examples (not exhaustive):
 
 ## Prerequisites
 
-Before using the pipeline, verify these are set in `${HERMES_HOME:-~/.hermes}/.env`:
+The `hermes teams-pipeline` CLI comes from the official `teams-pipeline` catalog plugin, which is opt-in and not installed by default. If `hermes teams-pipeline --help` fails with an unknown command, install it (profiles that had the old bundled `teams_pipeline` plugin enabled get it automatically on `hermes update`):
+
+```bash
+hermes plugins install teams-pipeline
+```
+
+Then verify these are set in `${HERMES_HOME:-~/.hermes}/.env`:
 
 ```bash
 MSGRAPH_TENANT_ID=...

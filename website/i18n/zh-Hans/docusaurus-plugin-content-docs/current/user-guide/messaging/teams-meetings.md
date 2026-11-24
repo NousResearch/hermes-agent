@@ -25,7 +25,15 @@ description: "使用 Microsoft Graph webhook 配置 Microsoft Teams 会议摘要
 4. 在本地存储持久化任务状态和 sink 记录
 5. 可将摘要写入 Notion、Linear 和 Microsoft Teams
 
-运维操作通过 CLI 完成（`teams-pipeline` 子命令由 `teams_pipeline` 插件注册——通过 `hermes plugins enable teams_pipeline` 启用，或在 `config.yaml` 中设置 `plugins.enabled: [teams_pipeline]`）：
+该流水线作为官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 提供（需手动选择安装，默认不安装）。请先安装它；它会注册 `teams-pipeline` CLI，并将自身绑定到核心的 `msgraph_webhook` 适配器：
+
+```bash
+hermes plugins install teams-pipeline
+```
+
+已启用原内置 `teams_pipeline` 插件的配置文件会在 `hermes update`（或下一次 agent / gateway 启动）时自动安装并启用该目录插件；`teams_pipeline` 在 `plugins.enabled` / `plugins.disabled` 中继续作为别名生效。
+
+运维操作通过 CLI 完成：
 
 ```bash
 hermes teams-pipeline validate

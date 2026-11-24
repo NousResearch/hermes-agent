@@ -679,8 +679,11 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
     is the job of :func:`kanban_db.create_board` (which writes the metadata
     first); read paths get an actionable error instead of a resurrected board.
     """
-    if path.exists():
-        return  # existing DB: a plain open, never a resurrection
+    try:
+        if path.exists() and path.stat().st_size > 0:
+            return  # existing DB: a plain open, never a resurrection
+    except OSError:
+        return
     if board is None:
         # Default-DB and env-pinned paths never sit under a board dir, so a
         # board.json here means the current-board context resolved to that

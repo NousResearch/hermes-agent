@@ -1278,7 +1278,8 @@ def test_a_secondarys_provider_extraction_runs_under_the_launcher_its_host_start
     """With no extraction cached, a host start extracts the profile's hosted model providers while it builds the
     child's env. That extraction child runs under the launcher the start chose for the profile, its ``${VAR}``s
     read through the profile's own files, even when only the starting task is multiplexed and the host's own
-    context holds no secret scope."""
+    context holds no secret scope. An extraction there once the start is over chooses again."""
+    from hermes_cli.plugin_host import extraction_launcher
     from agent import secret_scope as ss
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -1303,10 +1304,35 @@ def test_a_secondarys_provider_extraction_runs_under_the_launcher_its_host_start
     try:
         host.ensure_started()
         assert seen.read_text(encoding="utf-8").split() == ["ops-tag", "ops-tag"]  # the extraction, then the host
+        (ops / ".env").write_text("PLUGIN_TAG=ops-tag-edited\n", encoding="utf-8")
+        assert host._base_context.run(extraction_launcher, ops) == [str(runner), "ops-tag-edited"]
     finally:
         host.shutdown()
         ss.reset_multiplex_context(context_token)
         reset_hermes_home_override(token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_launch_body_starts_provider_extraction_under_the_launcher_it_chose_for_the_host(tmp_path, monkeypatch):
+    """A host start inside a launch-profile body (the TUI gateway binds one even single-profile) reads its launcher
+    through the launch scope, the ``.env`` as it is now. A cold provider extraction that start runs takes that
+    same launcher, though the host's own context binds no scope and the process env still holds what the
+    process loaded before the ``.env`` was edited."""
+    from tui_gateway import server
+
+    monkeypatch.setenv("RUNNER_TAG", "loaded-before-the-edit")
+    host, tags, home = _tagging_launch_host(tmp_path, monkeypatch, "RUNNER_TAG=edited-since\n")
+    plugin_dir = home / "plugins" / "model-providers" / "hostmodel"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    try:
+        with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+            host.ensure_started()
+        assert tags.read_text(encoding="utf-8").split() == ["edited-since", "edited-since"]  # extraction, host
+    finally:
+        host.shutdown()
         plugins_mod._reset_plugin_managers_for_tests()
 
 

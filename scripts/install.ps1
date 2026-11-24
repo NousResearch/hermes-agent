@@ -602,6 +602,19 @@ function Remove-PinnedGitTree([string]$Path) {
     Invoke-WhileHeld { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop }
 }
 
+# PortableGit's system config names helper-selector, a credential picker window git
+# opens on every lookup: unattended git (scheduled jobs, the gateway) waits on it with
+# nobody to answer (#148552). Name the Git Credential Manager it also ships, as the Git
+# for Windows installer does. pm's Git.restage_edits makes the same edit, byte for byte,
+# so pm finds this tree current instead of re-staging it.
+function Set-PinnedGitCredentialHelper([string]$Root) {
+    $config = Join-Path $Root "etc\gitconfig"
+    if (-not (Test-Path -LiteralPath $config)) { return }
+    $shipped = [IO.File]::ReadAllText($config)
+    $fixed = [regex]::Replace($shipped, '(?m)^([ \t]*helper[ \t]*=[ \t]*)helper-selector(?=[ \t]*\r?$)', '${1}manager')
+    if ($fixed -cne $shipped) { [IO.File]::WriteAllText($config, $fixed) }
+}
+
 # Provision git for this host from the pinned pm/lock.json artifact, into
 # the same store slot (<store>\git-<version>-<target>\) pm uses. Returns the
 # git.exe path, or $null when no pinned artifact exists for this target.
@@ -646,6 +659,7 @@ function Get-PinnedGit {
             Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)" git_extract_failed
         }
         if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" git_extract_failed }
+        Set-PinnedGitCredentialHelper $extractDir
         if (Test-Path -LiteralPath $entry) { Remove-PinnedGitTree $entry }
         Invoke-WhileHeld { [IO.Directory]::Move($extractDir, $entry) }
         if (-not (Test-PinnedGitHttpsReady $gitExe)) {

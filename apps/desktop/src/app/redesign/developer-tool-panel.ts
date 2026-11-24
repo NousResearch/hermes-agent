@@ -1,4 +1,4 @@
-import { findGroupOfPane } from '@/components/pane-shell/tree/model'
+import { allPaneIds, findGroupOfPane, type GroupNode, type LayoutNode } from '@/components/pane-shell/tree/model'
 import type { PaneSizing } from '@/components/pane-shell/tree/renderer/track-model'
 import {
   $hiddenTreePanes,
@@ -82,6 +82,37 @@ export function installDeveloperToolPanelWidth(root: HTMLElement = document.docu
   }
 }
 
+// The tools gathered: a zone beside the chat that holds more than one of them. One tool alone in a
+// zone is where a classic layout (or the user) put it, and is gathered on its next reveal.
+const isToolPanel = (zone: GroupNode) => !zone.panes.includes('workspace') && zone.panes.filter(isTool).length > 1
+
+/** The redesign's one tool panel: the zone holding the most tools. Not "the zone Files is in with
+ *  every built-in tool": a tool can leave the tree (its tab's Close), and the tools that remain are
+ *  still the panel the next one joins. */
+function toolPanel(tree: LayoutNode): GroupNode | null {
+  let panel: GroupNode | null = null
+
+  for (const id of allPaneIds(tree).filter(isTool)) {
+    const zone = findGroupOfPane(tree, id)
+
+    if (zone && isToolPanel(zone) && zone.panes.filter(isTool).length > (panel?.panes.filter(isTool).length ?? 0)) {
+      panel = zone
+    }
+  }
+
+  return panel
+}
+
+/** True while `paneId` stands in the redesign's tool panel. The panel is the window's side even when
+ *  a Browser tab in it makes the pane tree read its zone as a main surface (paneRootSide), so a
+ *  side-bound closer hides the pane there instead of dismissing it. */
+export function inDeveloperToolPanel(paneId: string): boolean {
+  const tree = $portalShell.get() ? $layoutTree.get() : null
+  const zone = tree ? findGroupOfPane(tree, paneId) : null
+
+  return zone !== null && isToolPanel(zone)
+}
+
 /** A deliberate tool reveal uses one side panel, retaining every pane and shell. */
 export function prepareDeveloperToolPanel(paneId: string): void {
   if (!$portalShell.get() || $narrowViewport.get()) {
@@ -95,15 +126,13 @@ export function prepareDeveloperToolPanel(paneId: string): void {
   }
 
   const main = findGroupOfPane(tree, 'workspace')
-  const panel = findGroupOfPane(tree, 'files')
+  const panel = toolPanel(tree)
 
   if (!main) {
     return
   }
 
-  const together = panel && TOOLS.every(id => panel.panes.includes(id)) && !panel.panes.includes('workspace')
-
-  if (together) {
+  if (panel) {
     if (!panel.panes.includes(paneId) && findGroupOfPane(tree, paneId)) {
       moveTreePane(paneId, { groupId: panel.id, pos: 'center' })
     }
@@ -126,7 +155,7 @@ export function hideDeveloperToolPanel(paneId: string): boolean {
   const tree = $layoutTree.get()
   const panel = tree && findGroupOfPane(tree, paneId)
 
-  if (!panel || panel.panes.includes('workspace') || !TOOLS.every(id => panel.panes.includes(id))) {
+  if (!panel || !isToolPanel(panel)) {
     return false
   }
 

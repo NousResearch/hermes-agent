@@ -15,7 +15,11 @@ import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { bindChatToolPanels, bindChatToolRouteCollapse } from '@/app/redesign/chat-tool-panel'
-import { developerToolSizing, installDeveloperToolPanelWidth } from '@/app/redesign/developer-tool-panel'
+import {
+  developerToolSizing,
+  inDeveloperToolPanel,
+  installDeveloperToolPanelWidth
+} from '@/app/redesign/developer-tool-panel'
 import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -853,8 +857,11 @@ registerPaneOpener('sessions', () => {
     setSidebarOpen(true)
   }
 })
+// The redesign's tool panel is that side too, whatever else stands in it (developer-tool-panel.ts).
 registerPaneCloser('files', () =>
-  paneRootSide('files') === fileBrowserSide() ? setFileBrowserOpen(false) : dismissTreePane('files')
+  paneRootSide('files') === fileBrowserSide() || inDeveloperToolPanel('files')
+    ? setFileBrowserOpen(false)
+    : dismissTreePane('files')
 )
 // The redesign's conversation header stands in for chat-only tab strips in every zone.
 provideZoneHeader(usePortalZoneHeader)

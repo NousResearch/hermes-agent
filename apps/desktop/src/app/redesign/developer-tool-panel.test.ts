@@ -11,17 +11,21 @@ import {
   $userPlacedPanes,
   bindPaneVisibility,
   bindToolPaneCollapse,
+  dismissTreePane,
   isPaneVisible,
   moveTreePane,
+  paneRootSide,
   registerPaneCloser,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $shellChoice } from '@/store/shell-variant'
 
 import {
   $developerToolPanelWidth,
   hideDeveloperToolPanel,
+  inDeveloperToolPanel,
   installDeveloperToolPanelWidth,
   prepareDeveloperToolPanel
 } from './developer-tool-panel'
@@ -152,4 +156,62 @@ it('hides store-bound tools through their stores, so a later Show brings them ba
 
   registerPaneCloser('files')
   registerPaneCloser('terminal')
+})
+
+// A Browser tab registers as a main surface (it can stand as a tile), so the pane tree no longer
+// reads the panel it joined as the window's right side, and Files' closer (contrib/controller.tsx,
+// mirrored here) took its "dragged beside main" branch: it dismissed Files instead of hiding it.
+// With Files gone the tools no longer counted as gathered, and each one opened next made a panel of
+// its own beside the last (HADESK-90: one to three panels, the chat squeezed between them).
+it('keeps one panel when it is closed and reopened with a Browser tab in it', () => {
+  $shellChoice.set(true)
+  $layoutTree.set(DEFAULT_TREE)
+  const browser = 'preview-tile:browser'
+
+  const unregister = [
+    registry.register({ id: 'workspace', area: 'panes', data: { placement: 'main' }, render: () => null }),
+    registry.register({ id: browser, area: 'panes', data: { placement: 'main' }, render: () => null })
+  ]
+
+  const $files = atom(true)
+  bindPaneVisibility(
+    'files',
+    $files,
+    () => (paneRootSide('files') === 'right' || inDeveloperToolPanel('files') ? $files.set(false) : dismissTreePane('files')),
+    () => $files.set(true)
+  )
+
+  prepareDeveloperToolPanel('files')
+  const panel = findGroupOfPane($layoutTree.get()!, 'files')!
+  moveTreePane(browser, { groupId: $layoutTree.get() ? findGroupOfPane($layoutTree.get()!, 'workspace')!.id : '', pos: 'right' })
+  prepareDeveloperToolPanel(browser)
+  expect(findGroupOfPane($layoutTree.get()!, browser)?.id).toBe(panel.id)
+
+  expect(hideDeveloperToolPanel(browser)).toBe(true)
+  expect(findGroupOfPane($layoutTree.get()!, 'files')?.id).toBe(panel.id)
+
+  // Reopening any tool brings it back in that panel, not in a new one.
+  revealTreePane('review')
+  prepareDeveloperToolPanel('review')
+  expect(findGroupOfPane($layoutTree.get()!, 'review')?.id).toBe(panel.id)
+  expect(findGroupOfPane($layoutTree.get()!, browser)?.id).toBe(panel.id)
+
+  registerPaneCloser('files')
+  unregister.forEach(stop => stop())
+})
+
+// Files can still leave the tree (its tab's Close, from a layout where it stands beside main). The
+// tools that remain are still the panel: the next tool joins them.
+it('gathers into the panel that is left when Files has been dismissed', () => {
+  $shellChoice.set(true)
+  $layoutTree.set(DEFAULT_TREE)
+  prepareDeveloperToolPanel('terminal')
+  const panel = findGroupOfPane($layoutTree.get()!, 'terminal')!
+  dismissTreePane('files')
+  moveTreePane('chat-items', { groupId: findGroupOfPane($layoutTree.get()!, 'workspace')!.id, pos: 'right' })
+
+  prepareDeveloperToolPanel('chat-items')
+
+  expect(findGroupOfPane($layoutTree.get()!, 'chat-items')?.id).toBe(panel.id)
+  expect(hideDeveloperToolPanel('chat-items')).toBe(true)
 })

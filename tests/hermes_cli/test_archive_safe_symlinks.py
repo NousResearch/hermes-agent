@@ -108,12 +108,16 @@ def test_imported_env_link_becomes_an_owner_only_file(tmp_path, monkeypatch):
         info = tarfile.TarInfo("p/keys.txt")
         info.size, info.mode = 4, 0o644
         tf.addfile(info, io.BytesIO(b"K=v\n"))
+        info = tarfile.TarInfo("p/.env.import")  # an archived sibling the conversion must not clobber
+        info.size = 5
+        tf.addfile(info, io.BytesIO(b"keep\n"))
         link = tarfile.TarInfo("p/.env")
         link.type, link.linkname = L, "keys.txt"
         tf.addfile(link)
 
     env = import_profile(str(archive), name="p2") / ".env"
 
+    assert (env.parent / ".env.import").read_text() == "keep\n"
     assert not env.is_symlink()
     assert env.read_text() == "K=v\n"
     assert env.stat().st_mode & 0o777 == 0o600

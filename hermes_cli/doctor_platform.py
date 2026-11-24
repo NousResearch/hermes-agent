@@ -611,6 +611,10 @@ _PATH_SETTERS = {
 }
 # Stands in for an expansion doctor can't know (another variable, PATH's old value): it names no directory.
 _UNKNOWN = "\0"
+# A builtin whose NAME=value arguments set shell variables; otherwise a leading assignment only
+# reaches the command that follows it (PATH=x cmd).
+_DECLARATION = re.compile(r"(?:^|[\s;&|()])(?:export|declare|typeset|readonly)\s[^;&|]*$")
+_ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
 
 
 def _expand_user_path(raw: str, home: Path) -> Path:
@@ -731,12 +735,22 @@ def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]
     return [*words, word] if started else words
 
 
+def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
+    """False for PATH=x cmd, which sets PATH for that one command only."""
+    if _DECLARATION.search(code[: found.start()]):
+        return True
+    _value, *rest = _setter_words(code[found.end() :], ";&|", variables) or [""]
+    return all(_ASSIGNMENT_WORD.match(word) for word in rest)
+
+
 def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], target: str) -> bool:
     code = line.split("#", 1)[0]
     for setter, stops in setters:
         for found in setter.finditer(code):
             if _open_quote(code, found.start()):
                 continue  # inside a string: an alias body or an echo, not a PATH change
+            if "append" in found.groupdict() and not _assignment_lasts(code, found, variables):
+                continue
             entries = [entry for word in _setter_words(code[found.end() :], stops, variables) for entry in word.split(":")]
             if found.groupdict().get("append"):
                 entries = entries[1:]  # PATH+=x extends the last entry; only what follows a ":" is new

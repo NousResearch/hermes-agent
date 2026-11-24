@@ -535,6 +535,7 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin backup:$PATH"'),  # a quoted space is part of the entry
     ("zsh", ".zprofile", 'export PATH="\\$HOME/.local/bin:$PATH"'),  # an escaped $ stays literal
     ("bash", ".bashrc", 'export PATH="$HOME/.local/bi\\n:$PATH"'),  # in double quotes, \n keeps its backslash
+    ("bash", ".bashrc", 'PATH="$HOME/.local/bin:$PATH" /usr/bin/true'),  # PATH for that one command only
     ("zsh", ".zprofile", 'export PATH="/usr/bin:/bin"; export BACKUP_BIN="$HOME/.local/bin"'),  # not PATH's value
     ("zsh", ".zprofile", "export PATH=/usr/local/bin:$PATH; ls ~/.local/bin"),
     ("fish", ".config/fish/config.fish", "set -l saved_path $PATH; contains ~/.local/bin $PATH"),
@@ -566,6 +567,8 @@ def test_path_check_needs_a_line_that_puts_local_bin_on_path(tmp_path, monkeypat
     ("zsh", ".zprofile", "path=(~/.local/bin $path)"),
     ("zsh", ".zprofile", 'export PATH="${HOME}/.local/bin${PATH:+:${PATH}}"'),
     ("zsh", ".zprofile", 'export PATH=/usr/local/bin:$PATH; export PATH="$HOME/.local/bin:$PATH"'),
+    ("zsh", ".zprofile", 'PATH="$HOME/.local/bin:$PATH" EDITOR=vim'),  # assignments only: both last
+    ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin:$PATH" EDITOR'),
 ])
 def test_path_check_counts_a_line_that_puts_local_bin_on_path(tmp_path, monkeypatch, capsys, shell, rc_file, line):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)

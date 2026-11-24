@@ -138,6 +138,7 @@ export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null 
   // expanded live panel open and closed again.
   if (!todoListActive(todos)) {
     const live = getSessionTodos($todosBySession.get(), sid)
+
     // Replayed terminal snapshots must not restart an existing linger.
     const sameFinished =
       live &&

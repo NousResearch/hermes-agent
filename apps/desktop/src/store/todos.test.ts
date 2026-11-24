@@ -54,9 +54,27 @@ describe('setSessionTodos finished-list auto-clear', () => {
       restoreSessionTodosFromSnapshot('s1', { revision: 2, todos: [todo('a', 'completed')] }, true)
     }
 
-    vi.advanceTimersByTime(1_100)
+    vi.advanceTimersByTime(900)
+    expect($todosBySession.get().s1).toEqual(completed)
+
+    vi.advanceTimersByTime(200)
     expect($todosBySession.get().s1).toBeUndefined()
     expect($retainedTodosBySession.get().s1).toEqual(completed)
+  })
+
+  it('shows a changed finished snapshot for its own full linger', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')], 1)
+    setSessionTodos('s1', [todo('a', 'completed')], 2)
+    vi.advanceTimersByTime(3_000)
+
+    const changed = [todo('a', 'cancelled')]
+    restoreSessionTodosFromSnapshot('s1', { revision: 3, todos: changed }, true)
+
+    vi.advanceTimersByTime(3_900)
+    expect($todosBySession.get().s1).toEqual(changed)
+
+    vi.advanceTimersByTime(200)
+    expect($todosBySession.get().s1).toBeUndefined()
   })
 
   it('clears finished lists for session ids that collide with object prototype keys', () => {
@@ -68,6 +86,7 @@ describe('setSessionTodos finished-list auto-clear', () => {
   })
 
   it('cancels the pending clear when a new active list arrives', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')])
     setSessionTodos('s1', [todo('a', 'completed')])
     vi.advanceTimersByTime(2_000)
 

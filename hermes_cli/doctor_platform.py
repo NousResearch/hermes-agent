@@ -612,6 +612,14 @@ def _expand_user_path(raw: str, home: Path) -> Path:
     return Path(raw)
 
 
+def _resolved_path_entry(entry: str, home: Path) -> Path:
+    candidate = _expand_user_path(entry, home)
+    try:
+        return candidate.resolve()
+    except OSError:
+        return Path(os.path.normpath(str(candidate)))
+
+
 def _dir_on_path(directory: Path, path_env: str | None = None) -> bool:
     raw_path = os.environ.get("PATH", "") if path_env is None else path_env
     home = Path.home()
@@ -619,17 +627,7 @@ def _dir_on_path(directory: Path, path_env: str | None = None) -> bool:
         target = directory.resolve()
     except OSError:
         target = directory
-    for entry in raw_path.split(os.pathsep):
-        if not entry:
-            continue
-        candidate = _expand_user_path(entry, home)
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            resolved = Path(os.path.normpath(str(candidate)))
-        if resolved == target:
-            return True
-    return False
+    return any(entry and _resolved_path_entry(entry, home) == target for entry in raw_path.split(os.pathsep))
 
 
 def _shell_rc_targets() -> tuple[str, list[Path], str]:
@@ -680,13 +678,21 @@ def _display_rc_path(rc_path: Path) -> str:
 
 
 def _check_link_dir_on_path(
-    link_dir: Path, display: str, resolved_on_path: str | None, expected: Path, termux: bool, f: Finding
+    link_dir: Path, display: str, cmd_name: str, entry_point: Path, termux: bool, f: Finding
 ) -> None:
-    if _dir_on_path(link_dir):
+    # Startup puts the entry point's own directory first on PATH (pm.environments.activate_dependencies),
+    # and a new terminal won't have it, so neither lookup may count it.
+    home, own_dir = Path.home(), entry_point.parent.resolve()
+    terminal_path = os.pathsep.join(
+        entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and _resolved_path_entry(entry, home) != own_dir
+    )
+    if _dir_on_path(link_dir, terminal_path):
         return
-    if resolved_on_path:
+    found = shutil.which(cmd_name, path=terminal_path)
+    if found:
         try:
-            if Path(resolved_on_path).resolve() == expected:
+            if Path(found).resolve() == entry_point.resolve():
                 return
         except OSError:
             pass
@@ -869,4 +875,4 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             link, link_dir, display, cmd_name, venv_bin,
             project_root=PROJECT_ROOT, pm_launcher=pm_launcher, verb=verb, f=f,
         )
-    _check_link_dir_on_path(link_dir, display, shutil.which(cmd_name), expected, termux, f)
+    _check_link_dir_on_path(link_dir, display, cmd_name, venv_bin, termux, f)

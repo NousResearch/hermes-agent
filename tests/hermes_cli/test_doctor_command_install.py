@@ -2,6 +2,7 @@
 
 import json
 from argparse import Namespace
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -363,6 +364,31 @@ def test_command_installation_warns_when_local_bin_missing_from_path(tmp_path, m
     assert "~/.local/bin is not on your PATH" in out
     assert "~/.zprofile" in out
     assert 'export PATH="$HOME/.local/bin:$PATH"' in out
+
+
+def _startup_path(project: Path, inherited: str) -> str:
+    """PATH after the real startup activation of *project*, run in a child so it can't touch this process."""
+    repo = Path(__file__).resolve().parents[2]
+    code = ("import os, sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+            "activate_dependencies(Path(sys.argv[1])); print(os.environ['PATH'])")
+    done = subprocess.run([sys.executable, "-c", code, str(project)], cwd=repo, capture_output=True, text=True,
+                          env={**os.environ, "PATH": inherited, "PYTHONPATH": str(repo)}, check=True)
+    return done.stdout.strip()
+
+
+@pytest.mark.platforms("posix")
+def test_path_check_ignores_the_launcher_dir_startup_puts_on_path(tmp_path, monkeypatch, capsys):
+    project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    startup_path = _startup_path(project, "/usr/local/bin:/usr/bin:/bin")
+    assert Path(startup_path.split(os.pathsep)[0]).resolve() == launcher.parent.resolve()
+    monkeypatch.setenv("PATH", startup_path)
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "~/.local/bin is not on your PATH" in out
 
 
 @pytest.mark.platforms("posix")

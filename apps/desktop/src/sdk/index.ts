@@ -112,6 +112,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { profileBackendHost } from './profile-backend'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
@@ -748,6 +749,9 @@ export const host = {
       setActiveProfile('default')
     }
   },
+
+  // Route a profile to a backend this plugin runs on this computer (e.g. a sandbox), and back. See profile-backend.ts.
+  ...profileBackendHost,
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 

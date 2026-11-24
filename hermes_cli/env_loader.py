@@ -249,6 +249,8 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
 
         publish_secret_source_values(home, {})
         return {}
+    if _home_runs_elsewhere(home):  # that backend's sources: none is resolved on this host
+        return {}
 
     try:
         from agent.secret_scope import _is_global_env, load_env_file
@@ -610,21 +612,54 @@ def _dotenv_assignments(path: Path) -> list:
     return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
 
 
-def _bootstrap_env(home: Path | None = None, project_env: Path | None = None) -> dict:
+def _home_runs_elsewhere(home: Path) -> bool:
+    """Whether a plugin runs the profile at *home* elsewhere (``hermes_cli.profiles_run_elsewhere``).
+
+    That backend writes the home, so no dotenv load on this host takes anything from it: no
+    ``.env``, no ``.op.env``, no ``secrets:`` source. The load at the import of every ``hermes``
+    start is one of them, and it runs before any command can refuse. The backend itself is denied
+    the marker folder and loads its own files as before. A marker folder that cannot be read counts
+    as marked for every home, as it does for running a profile. For a home that is not marked this
+    is one path resolve and one listing of a folder that is not there.
+    """
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+
+    return run_elsewhere_for_home(home) is not None
+
+
+def load_launch_home_dotenv(home: Path, project_env: Path) -> bool:
+    """:func:`load_hermes_dotenv` for a process's launch home; returns whether a plugin runs that
+    home's profile elsewhere, asked once for the load and for the caller.
+
+    The backend that writes a marked home's ``.env`` writes its ``config.yaml`` too. A caller that
+    copies ``config.yaml`` settings into the process environment (``gateway.run`` at import: every
+    top-level scalar under its own name, among others) copies none of them when this is True, or
+    that backend would choose ``LD_PRELOAD`` or a proxy for this process and the programs it starts.
+    """
+    elsewhere = _home_runs_elsewhere(home)
+    load_hermes_dotenv(hermes_home=home, project_env=project_env, home_elsewhere=elsewhere)
+    return elsewhere
+
+
+def _bootstrap_env(home: Path | None = None, project_env: Path | None = None, *,
+                   home_elsewhere: bool | None = None) -> dict:
     """The process env as ``load_hermes_dotenv`` leaves it for the names its dotenv layers define:
     the home's ``.env`` (override), ``.op.env`` (fills gaps, only without a process
     ``OP_SERVICE_ACCOUNT_TOKEN``), the caller's *project_env* (fills gaps when the home has a
     ``.env``, else overrides) and the managed ``.env`` (override, last); ``${VAR}`` resolved, the
-    loader's parser. Read-only: nothing is published and no file is rewritten (sanitizing imports
+    loader's parser. A home whose profile a plugin runs elsewhere has no layer of its own here
+    (*home_elsewhere* is a caller's answer to that; None asks).
+    Read-only: nothing is published and no file is rewritten (sanitizing imports
     hermes_cli.config, whose import-time config read must not run before the backend is decided)."""
     home = Path(home) if home is not None else _process_hermes_home()
     env = dict(os.environ)
     user_env = home / ".env"
-    layers: list[tuple[Path, bool]] = [(user_env, True)]
-    if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+    elsewhere = _home_runs_elsewhere(home) if home_elsewhere is None else home_elsewhere
+    layers: list[tuple[Path, bool]] = [] if elsewhere else [(user_env, True)]
+    if not elsewhere and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         layers.append((home / ".op.env", False))
     if project_env is not None:
-        layers.append((Path(project_env), not user_env.exists()))
+        layers.append((Path(project_env), elsewhere or not user_env.exists()))
     try:
         from hermes_cli import managed_scope
 
@@ -654,7 +689,8 @@ def selected_config_backend_name(home: Path | None = None) -> str:
     return (_bootstrap_env(home).get(BACKEND_ENV) or "").strip().lower() or "file"
 
 
-def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_env: Path | None = None) -> None:
+def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_env: Path | None = None, *,
+                               home_elsewhere: bool | None = None) -> None:
     """Publish ``backend_names(kind)`` (the selected backend's deployment and credential, D26/D32) from the
     launch home's ``.env`` and the managed ``.env``, with the values ``load_hermes_dotenv`` gives
     them. Called before the first config read of a process, which can come before
@@ -669,7 +705,7 @@ def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_
     # its bootstrap supplied the process env explicitly, so nothing is published from the files.
     if worker_config_snapshot() is not None:
         return
-    env = _bootstrap_env(home, project_env)
+    env = _bootstrap_env(home, project_env, home_elsewhere=home_elsewhere)
     # The selector itself always, so a file deployment is not read as another kind meanwhile.
     names = {BACKEND_ENV} | set(backend_names((env.get(BACKEND_ENV) or "").strip().lower() or "file"))
     for name in names:
@@ -784,9 +820,11 @@ def load_hermes_dotenv(
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
     load_external_secrets: bool = True,
+    home_elsewhere: bool | None = None,
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
-    fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
+    fallback that only fills gaps when the user env exists (and overrides shell vars when it does not).
+    *home_elsewhere* is a caller's answer to :func:`_home_runs_elsewhere` for the home; None asks."""
     from agent.safe_worker_policy import worker_config_snapshot
 
     # The private bootstrap supplies credentials explicitly; do not rehydrate
@@ -836,14 +874,20 @@ def load_hermes_dotenv(
     # THIS load's layers, the project .env included, with the precedence the loads below give them.
     from hermes_cli.config_backend import bootstrap_deployment
 
-    bootstrap_deployment(home_path, project_env_path)
+    # While a plugin runs this profile elsewhere, that backend writes the home: nothing in it is
+    # loaded here. Its .env and .op.env count as absent and no secrets: source is resolved. The
+    # project .env, the managed .env and the terminal bridge below are the host's own and apply.
+    # Asked once per load, or answered by the caller; the bootstraps reuse it.
+    elsewhere = _home_runs_elsewhere(home_path) if home_elsewhere is None else home_elsewhere
+    bootstrap_deployment(home_path, project_env_path, home_elsewhere=elsewhere)
 
-    if user_env.exists():  # normalize formatting / strip NULs before parsing
+    has_user_env = not elsewhere and user_env.exists()
+    if has_user_env:  # normalize formatting / strip NULs before parsing
         _sanitize_env_file_if_needed(user_env)
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
+    if has_user_env and _load_user_dotenv(user_env, load_pass=load_pass):
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
 
@@ -851,11 +895,11 @@ def load_hermes_dotenv(
     # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters
     # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
     op_env = home_path / ".op.env"
-    if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+    if not elsewhere and op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         _load_user_dotenv(op_env, load_pass=load_pass, override=False)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
+        _load_dotenv_with_fallback(project_env_path, override=not has_user_env, load_pass=load_pass)
         loaded.append(project_env_path)
 
     # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
@@ -878,7 +922,7 @@ def load_hermes_dotenv(
     # replaced those names with the home's values, so re-publish the deployment names (only those)
     # with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
     # still applies once, last below, where it keeps its precedence over secret-source results.
-    bootstrap_deployment(home_path, project_env_path)
+    bootstrap_deployment(home_path, project_env_path, home_elsewhere=elsewhere)
     get_config_backend().boot(home_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
@@ -894,7 +938,7 @@ def load_hermes_dotenv(
     # install before importing this module. Do not remap native secret-source dependencies in that same
     # updater process or the self-lock preflight will recreate the marker and exit 2 again. Dotenv and
     # managed env still load in both cases; only external source resolution is unnecessary for the updater.
-    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
+    if load_external_secrets and not elsewhere and not _early_recovery._should_skip_external_secret_sources():
         _apply_external_secret_sources(home_path)
     _apply_managed_env(load_pass=load_pass)
 

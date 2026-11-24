@@ -46,6 +46,11 @@ const canary = /^canary\.20\d{6}T\d{6}Z-v\d+\.\d+\.\d+$/.test(process.env.HERMES
 // seven-character commit suffix also names the CLI and fits MSIX's name cap.
 const buildCommitEnv = process.env.HERMES_BUILD_COMMIT || ''
 const buildCommit = /^[a-f0-9]{40}$/.test(buildCommitEnv) ? buildCommitEnv.slice(0, 7) : null
+// A commit build's claim tag (commit.YYYYMMDDTHHMMSSZ-vX.Y.Z) names a commit build: it must carry the
+// commit identity, never fall through to the stable identity and its `latest` feed.
+if (/^commit\./.test(process.env.HERMES_PAYLOAD_TAG || '') && !buildCommit) {
+  throw new Error('A commit build tag requires HERMES_BUILD_COMMIT (the commit identity)')
+}
 const displayName = buildCommit
   ? `${name.display} ${buildCommit}`
   : canary

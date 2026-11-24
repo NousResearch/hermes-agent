@@ -4,10 +4,15 @@ A surface is a fact about ONE turn, never about the session: the same session al
 between the app window, the HUD and a spoken delegation. It is committed with the admission
 row and reaches the model as a note on the user message (api_content sidecar), so the
 persisted user row stays the words the user typed and the frozen system prefix is untouched.
+
+``client`` is the label the submitting connection announced (``client.capabilities``), stamped by
+the owner, never sent on ``prompt.submit``. It is attribution only: no note, route or permission
+reads it, so a client-only commit reaches the model exactly as no surface does.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from gateway.session_client import client_problem, normalized_client
 from persistence.core.errors import AuthorityRefusal
 
 SURFACES = frozenset({'hud', 'voice-live'})
@@ -22,9 +27,11 @@ def submit_surface_fields(params):
 
 
 def admit_surface(params):
-    """Wire ``surface`` / ``voice_context`` / ``interrupted`` / ``voice_turn`` -> committed ``surface_v1``
-    (``{}`` when absent). ``voice_turn`` marks a spoken voice-mode turn: it runs on ``auxiliary.voice_chat``."""
+    """Wire ``surface`` / ``voice_context`` / ``interrupted`` / ``voice_turn`` and the owner-stamped
+    ``client`` -> committed ``surface_v1`` (``{}`` when absent). ``voice_turn`` marks a spoken voice-mode
+    turn: it runs on ``auxiliary.voice_chat``."""
     surface, context, interrupted, voice_turn = (params.get(key) for key in _SUBMIT_FIELDS)
+    client = params.get('client')
     if surface is not None and surface not in SURFACES:
         raise AuthorityRefusal('invalid_params')
     # The spoken transcript only makes sense for a live-voice delegation; anywhere else it is
@@ -32,6 +39,8 @@ def admit_surface(params):
     if context is not None and (surface != 'voice-live' or not isinstance(context, str)):
         raise AuthorityRefusal('invalid_params')
     if any(flag is not None and type(flag) is not bool for flag in (interrupted, voice_turn)):
+        raise AuthorityRefusal('invalid_params')
+    if client is not None and client_problem(client) is not None:
         raise AuthorityRefusal('invalid_params')
     committed = {}
     if surface:
@@ -42,13 +51,15 @@ def admit_surface(params):
         committed['interrupted'] = True
     if voice_turn:
         committed['voice_turn'] = True
+    if client is not None:
+        committed['client'] = normalized_client(client)
     return {'surface_v1': committed} if committed else {}
 
 
 def restore_surface(committed):
     """A committed ``surface_v1`` arriving across a process boundary (managed worker), re-checked by
     the admission validator: only an object admission itself could have committed is accepted."""
-    if (not isinstance(committed, dict) or not committed or set(committed) - set(_SUBMIT_FIELDS)
+    if (not isinstance(committed, dict) or not committed or set(committed) - {*_SUBMIT_FIELDS, 'client'}
             or admit_surface(committed).get('surface_v1', {}) != committed):
         raise AuthorityRefusal('invalid_params')
     return committed
@@ -92,6 +103,12 @@ def surface_turn_scope(committed):
 def surface_voice_turn():
     """Whether the executing admission is a spoken voice turn (``auxiliary.voice_chat`` route)."""
     return bool((_surface_turn.get() or {}).get('voice_turn'))
+
+
+def surface_turn_client():
+    """A copy of the client label the executing admission was stamped with, or ``None``."""
+    client = (_surface_turn.get() or {}).get('client')
+    return dict(client) if client is not None else None
 
 
 def surface_turn_note(agent):

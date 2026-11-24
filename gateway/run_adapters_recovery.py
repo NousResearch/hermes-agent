@@ -180,8 +180,9 @@ class GatewaySecondaryReconnectMixin:
         to reconnect, or mid-heal), so no other profile takes the same bot meanwhile. A task owner's hold is
         released when that task finishes, however it finishes (cancelled before it ever ran included); an
         adapter owner (being connected or torn down) releases its own, so it never drops a newer hold on the
-        same platform. Unserve drops the profile's holds as it exits, however it exits, except an adapter still
-        tearing down elsewhere: that hold moves to ``_teardown_held_claims`` until the teardown releases it."""
+        same platform. Once unserve has popped the profile's adapters, it drops the profile's holds however it
+        exits, except the hold of an adapter it did not pop (a fatal teardown still running, say): that hold moves
+        to ``_teardown_held_claims`` until its owner releases it."""
         held = getattr(self, "_secondary_held_claims", None)
         if held is None:
             held = self._secondary_held_claims = {}

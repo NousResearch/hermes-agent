@@ -370,13 +370,17 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script; SIGKILL
+@pytest.mark.parametrize("beside", [None, "_backup", "default", "deleted"])
 def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_the_restarted_host(
-        tmp_path, monkeypatch):
+        beside, tmp_path, monkeypatch):
     """A rename leaves the kept manager holding a name that leads nowhere. The host restarted after the profile
-    was marked under its new name must find that marker, so the profile's own launcher stays unused."""
+    was marked under its new name must find that marker, so the profile's own launcher stays unused. Another
+    entry leading to the same directory that is not a live profile id (sorted ahead of the new name) is not
+    taken for it."""
     import signal
 
     from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_constants import mark_named_profile_deleted
     from tests.waiting import wait_until
     from tools.registry import registry
 
@@ -405,6 +409,11 @@ def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_t
     try:
         first = json.loads(served())["pid"]
         assert ran.read_text(encoding="utf-8").count("ran") == 1  # unmarked: its launcher is the profile's own
+        if beside is not None:
+            other = root / "profiles" / ("aaa" if beside == "deleted" else beside)
+            other.symlink_to(target, target_is_directory=True)
+            if beside == "deleted":
+                mark_named_profile_deleted(other)
         (root / "profiles" / "ops").rename(root / "profiles" / "ops2")
         pre.mark_profile_run_elsewhere("ops2", "sandbox-plugin", root=root)
         monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops2"))

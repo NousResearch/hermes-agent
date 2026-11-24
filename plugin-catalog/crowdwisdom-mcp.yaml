@@ -1,0 +1,19 @@
+name: crowdwisdom-mcp
+title: CrowdWisdom Trading
+repo: https://github.com/CrowdWisdomTradingx402/crowdwisdomtrading-python
+sha: 5c38cd8d2c3d30a0830ce9edb0cbc7cdbe4dc671
+subdir: plugins/mcp
+version: "1.0.0"
+description: "Crowd sentiment for US stocks, ETFs, crypto, futures and FX through CrowdWisdom Trading's official MCP server (Streamable HTTP at https://api.crowdwisdomtrading.com/mcp, no sign-in, no keys in config). Two read-only tools, get_crowd_sentiment_today and get_crowd_sentiment_week, return a score from -100 (everyone short) to +100 (everyone long) plus the number of distinct pro traders behind it. Free, 50 calls a day per IP. Agent Plugins v1 package (plugin.json + mcp.json), configuration only. Disclosure: hosted-only connector with no local code; every tool call sends the ticker to api.crowdwisdomtrading.com, which sees the caller's IP address for the daily limit. The hosted server is not open source; the package marks it untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha. Aggregated crowd opinion for research, not investment advice."
+maintainer: CrowdWisdom Trading
+tier: community
+category: tools
+docs_url: https://www.crowdwisdomtrading.com/x402
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

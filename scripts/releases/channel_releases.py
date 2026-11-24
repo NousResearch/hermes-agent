@@ -466,14 +466,13 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("role", choices=("stable", "canary"), help="Protected release policy, not a channel name")
+    parser.add_argument("role", choices=("canary",),
+                        help="Protected release policy, not a channel name. Stable publication runs only "
+                             "through the Stable Release Publication sequencer (python -m "
+                             "scripts.releases.sequencer), which checks the final release receipt")
 
     parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)
-    if args.role == "stable":
-        parser.error("stable publication runs only through the Stable Release Publication sequencer "
-                     "(advance_stable), which checks the final release receipt and serializes every "
-                     "stable writer")
     if args.root:
         result = publish_release("canary-release", dict(os.environ), args.root)
     else:

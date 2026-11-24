@@ -275,8 +275,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         # The home as the profile was named, before resolving: a marked profile whose directory is a link
         # out of the Hermes root is found by that name only, so code runs under it (discovery, a plugin's
-        # calls, the plugin host) and ``home_path`` stays the registries' key.
-        self.owner_home = Path(owner_home) if owner_home is not None else self.home_path
+        # calls, the plugin host) and ``home_path`` stays the registries' key. Made absolute now, links
+        # kept: a relative home (a symbolic profile id) must keep naming the directory ``home_path`` keys.
+        self.owner_home = Path(owner_home).expanduser().absolute() if owner_home is not None else self.home_path
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and

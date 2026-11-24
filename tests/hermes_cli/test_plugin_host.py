@@ -318,6 +318,34 @@ def test_the_host_child_takes_no_environment_from_a_marked_linked_profiles_env_f
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_working_directory_moves(
+        tmp_path, monkeypatch):
+    """A symbolic profile id bound as a home is a relative path. The manager is keyed by the directory that
+    name meant when it opened, so its plugins run there too, not wherever the name points from a later cwd."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    seen = tmp_path / "seen.txt"
+    home = _home_with_plugins(tmp_path / "opened-in", monkeypatch, {"homeprobe": (
+        "from hermes_constants import get_hermes_home\n"
+        f"def register(ctx):\n    open({str(seen)!r}, 'w').write(str(get_hermes_home().resolve()))\n")},
+        isolation="in_process")
+    (tmp_path / "later").mkdir()
+    monkeypatch.chdir(home.parent)
+    plugins_mod._reset_plugin_managers_for_tests()
+    token = set_hermes_home_override(home.name)
+    try:
+        manager = plugins_mod.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+    monkeypatch.chdir(tmp_path / "later")
+    manager.discover_and_load()
+    try:
+        assert seen.exists() and seen.read_text(encoding="utf-8") == str(home.resolve())
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""

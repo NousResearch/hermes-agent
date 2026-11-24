@@ -34,8 +34,23 @@ def installs_root() -> Path:
     return dependency_home_root() / "installs"
 
 
+def named_install_state_dir() -> Path | None:
+    """The state folder a launcher named for this process (``HERMES_INSTALL_STATE_DIR``), else ``None``.
+
+    A launcher names one when it starts Hermes on an interpreter it prepared, where the install's own
+    state cannot be used: a sandbox that may read the selected environment and nothing else of
+    ``installs/<key>`` still sees that folder, cannot read or lock it, and would end at start on it.
+    Such a process and its children keep their locks and markers in the named folder and run on the
+    interpreter they were started with (``_recorded_venv``). A value that is not an absolute path
+    names nothing.
+    """
+    # health: allow HX002 -- a launcher's fact about one process tree, read at start before any config loads
+    value = os.environ.get("HERMES_INSTALL_STATE_DIR", "").strip()
+    return Path(value) if value and Path(value).is_absolute() else None
+
+
 def install_state_dir(project_root: Path) -> Path:
-    return installs_root() / install_key(project_root)
+    return named_install_state_dir() or installs_root() / install_key(project_root)
 
 
 def owning_home_root(project_root: Path) -> Path | None:
@@ -306,6 +321,10 @@ def committed_venv(project_root: Path) -> Path | None:
 
 
 def _recorded_venv(project_root: Path) -> Path | None:
+    if named_install_state_dir() is not None:
+        # A named state folder selects nothing: its process keeps the interpreter its launcher chose,
+        # whatever is written into the folder afterwards.
+        return None
     path = runtime_facts_path(project_root)
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))

@@ -154,3 +154,11 @@ it('reads a live Screen only for the agents of this window’s machine', () => {
 
   expect(screen.getAllByTestId('screen-row').map(row => row.dataset.agent)).toEqual(['default'])
 })
+
+it('keeps that to the machine the list was read from while another machine’s agent is in front', () => {
+  // Lab box is the active connection; the list's owner, Studio, is still whose agents are listed here.
+  $connection.set({ connectionId: 'lab' } as never)
+  mount([agent('studio', 'default', 'Studio'), agent('lab', 'ops', 'Lab box')])
+
+  expect(screen.getAllByTestId('screen-row').map(row => row.dataset.agent)).toEqual(['default'])
+})

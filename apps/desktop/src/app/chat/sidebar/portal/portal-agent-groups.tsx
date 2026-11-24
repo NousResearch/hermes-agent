@@ -241,8 +241,8 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                       pending={props.pending}
                       selected={agentKey(agent) === activeAgentKey}
                     >
-                      {/* Each row reads its agent's screen once: this window's machine only. */}
-                      {botMode && machine.selected && <AgentScreenRow agent={agent} />}
+                      {/* Each row reads its agent's screen once: only for the machine the list was read from. */}
+                      {botMode && agent.connectionId === owner && <AgentScreenRow agent={agent} />}
                       {props.renderSessions(chatsOf(agent), agent)}
                     </AgentCard>
                   ))}

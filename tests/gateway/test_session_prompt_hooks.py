@@ -1,6 +1,6 @@
 """``on_session_prompt`` / ``on_session_prompt_settled``: the prompts a gateway session owner opens for a person.
 
-Real owner pieces drive every prompt: ``SessionAuthority`` over a real ``SessionDB`` with a real claim, the
+Real owner pieces drive every prompt: ``SessionAuthority`` over a real storage handle with a real claim, the
 real approval queue and clarify registry, ``PendingControls`` and the request registry
 (``gateway.session_server_requests``) with a fake viewer socket. Callbacks sit on the active home's real
 ``PluginManager`` exactly as ``ctx.register_hook`` stores them, so delivery goes through the real plugin
@@ -14,8 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.waiting import wait_until
 from tools import approval, clarify_gateway
 from tools.approval_gateway_wait import _ApprovalEntry
@@ -74,16 +74,16 @@ def plugin():
 
 @pytest.fixture()
 def owner(tmp_path):
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        db.create_session("s", source="test")
-        epoch = begin_runtime_epoch(db, instance_id="current")
-        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="bot",
-                                     instance_id="current", db=db, epoch=epoch)
-        authority.sessions["s"] = LiveSession(None, "route")
-        admit_session_input(db, epoch=epoch, principal_id="bot:alpha", session_id="s",
-                            request_id="turn", payload={"text": "go"})
-        generation = claim_session_input(db, epoch=epoch, session_id="s")["generation"]
-        yield SimpleNamespace(authority=authority, live=authority.sessions["s"], generation=generation)
+    persistence = storage_handle(tmp_path)
+    seed_session(persistence, "s", "test")
+    epoch = persistence.runtime.begin_epoch(instance_id="current")
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="bot",
+                                 instance_id="current", epoch=epoch, persistence=persistence)
+    authority.sessions["s"] = LiveSession(None, "route")
+    persistence.admissions.admit(epoch=epoch, principal_id="bot:alpha", session_id="s",
+                                 request_id="turn", payload={"text": "go"})
+    generation = persistence.admissions.claim(epoch=epoch, session_id="s").generation
+    yield SimpleNamespace(authority=authority, live=authority.sessions["s"], generation=generation)
     approval._gateway_queues.pop("route", None)
     clarify_gateway.clear_session("route")
 

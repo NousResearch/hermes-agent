@@ -591,6 +591,25 @@ describe('guardMacApplicationsLaunch', () => {
     expect(readMacApplicationsGuardPreference(userDataDir)).toBeNull()
   })
 
+  it('reports Do not ask again as remembered only when the preference was saved', async () => {
+    const { deps, app, dialog, logs, userDataDir } = makeDeps()
+    // userData below a regular file: the atomic write can't create its directory.
+    const blocked = path.join(userDataDir, 'not-a-dir')
+
+    fs.writeFileSync(blocked, '', 'utf8')
+    app.getPath = vi.fn((name: string) =>
+      name === 'exe' ? '/Volumes/Hermes Agent/Hermes Agent.app/Contents/MacOS/Hermes Agent' : path.join(blocked, 'ud')
+    ) as unknown as MacApplicationsGuardDeps['app']['getPath']
+    dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: true })
+
+    await expect(guardMacApplicationsLaunch(deps)).resolves.toMatchObject({
+      reason: 'user-declined',
+      remembered: false
+    })
+    expect(logs.some(line => line.includes('could not save /Applications move preference'))).toBe(true)
+    expect(logs.some(line => line.includes('remembered dismissal'))).toBe(false)
+  })
+
   it.each([
     ['a bare dismissal', { dismissed: true }, false],
     ['an earlier build with extra fields', { schemaVersion: 1, dismissed: true, reason: 'read-only-volume' }, false],

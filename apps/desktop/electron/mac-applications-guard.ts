@@ -621,9 +621,12 @@ function recordDeclinedMove(
   userDataDir: string,
   remember: boolean
 ): MacApplicationsGuardResult {
+  let remembered = false
+
   if (remember) {
     try {
       writeMacApplicationsGuardPreference(userDataDir)
+      remembered = true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 
@@ -632,10 +635,10 @@ function recordDeclinedMove(
   }
 
   deps.log(
-    `[install] user chose to keep running from ${location} (${bundlePath})${remember ? '; remembered dismissal' : ''}`
+    `[install] user chose to keep running from ${location} (${bundlePath})${remembered ? '; remembered dismissal' : ''}`
   )
 
-  return { action: 'continue', reason: 'user-declined', location, remembered: remember }
+  return { action: 'continue', reason: 'user-declined', location, remembered }
 }
 
 export async function guardMacApplicationsLaunch(deps: MacApplicationsGuardDeps): Promise<MacApplicationsGuardResult> {

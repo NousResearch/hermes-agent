@@ -1702,9 +1702,11 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         if path is None:
             return entry
         sync, post = self._REFRESH_VIA[path]
-        # The bearer the request SENT, not this row's (maybe older) copy: adopting it replays the 401.
-        sent = failed_key or entry.runtime_api_key or entry.agent_key or entry.access_token
         try:
+            # The bearer the request SENT, not this row's (maybe older) copy: adopting it replays the 401.
+            sent = failed_key
+            if path == "nous" and not sent:
+                sent = entry.runtime_api_key or entry.agent_key or entry.access_token
             entry = sync(self, entry, force, sent)  # a failure below recovers against the pair it POSTed
             updated = post(self, entry, force, sent)
         except _RefreshDone as done:

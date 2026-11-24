@@ -393,3 +393,18 @@ class TestRefreshFailedEntryOutcome:
 
         assert adopted is peer
         assert refreshes == []
+
+    def test_an_unreadable_nous_key_is_recovered_not_raised(self, monkeypatch):
+        row = PooledCredential(provider="nous", id="nx", label="nx", auth_type=AUTH_TYPE_OAUTH, priority=0,
+                               source="manual:device_code", access_token="nx-at-0", refresh_token="nx-rt-0")
+        pool = CredentialPool("nous", [row])
+        recovered = []
+
+        def unreadable(_entry):
+            raise OverflowError("expiry out of range")
+        monkeypatch.setattr(PooledCredential, "runtime_api_key", property(unreadable))
+        monkeypatch.setattr(pool, "_recover_failed_refresh", lambda e, exc: recovered.append(type(exc)))
+
+        pool._refresh_entry_impl(row, force=True)
+
+        assert recovered == [OverflowError]

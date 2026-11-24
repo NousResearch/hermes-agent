@@ -32,10 +32,12 @@
  *     no UI consumes them yet)
  */
 
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import https from 'node:https'
 import path from 'node:path'
+import { pipeline } from 'node:stream/promises'
 
 // Relative, not `@hermes/shared/ansi`: the electron bundle is built by esbuild
 // with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
@@ -118,7 +120,7 @@ function readExistingPinnedCommit(activeRoot: string | null | undefined): string
 function resolveMarkerPinnedCommit(
   installStamp: { commit?: string; branch?: string | null } | null | undefined,
   activeRoot: string | null | undefined,
-  opts: { resolveHead?: ResolveHeadFn } = {}
+  opts: { resolveHead?: ResolveHeadFn; stagedCommit?: string | null } = {}
 ): string | null {
   const resolveHead = opts.resolveHead || resolveCheckoutHead
 
@@ -132,7 +134,7 @@ function resolveMarkerPinnedCommit(
     return installStamp.commit
   }
 
-  return readExistingPinnedCommit(activeRoot)
+  return opts.stagedCommit || readExistingPinnedCommit(activeRoot)
 }
 
 /**
@@ -224,90 +226,72 @@ function cachedScriptPath(hermesHome, cacheKey) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${cacheKey}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(ref, destPath) {
-  // Fetch from GitHub raw at the install ref: the packaged SHA for a fresh
-  // install, the branch for an existing checkout or a non-git fallback stamp
-  // (never the all-zero placeholder, which is not a real GitHub commit).
+async function downloadInstallScript(ref, destPath, options: any = {}) {
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+  const initialUrl = options.url || `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+  const get = options.get || https.get
+  const controller = new AbortController()
+  const abort = () => controller.abort(options.signal?.reason)
 
-  return new Promise((resolve, reject) => {
+  if (options.signal?.aborted) {abort()}
+  else {options.signal?.addEventListener('abort', abort, { once: true })}
+
+  const timer = setTimeout(() => controller.abort(new Error('Installer download timed out')), options.timeoutMs ?? 60_000)
+  const tmpPath = `${destPath}.${randomUUID()}.tmp`
+  let tempCreated = false
+
+  try {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
-    const tmpPath = destPath + '.tmp'
-    const out = fs.createWriteStream(tmpPath)
-    https
-      .get(url, res => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          // GitHub raw shouldn't redirect for a SHA URL, but follow once
-          // defensively.
-          out.close()
-          fs.unlinkSync(tmpPath)
-          https
-            .get(res.headers.location, res2 => {
-              if (res2.statusCode !== 200) {
-                reject(
-                  new Error(
-                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
-                  )
-                )
+    let url = initialUrl
 
-                return
-              }
+    for (let redirects = 0; ; redirects++) {
+      controller.signal.throwIfAborted()
 
-              const out2 = fs.createWriteStream(tmpPath)
-              res2.pipe(out2)
-              out2.on('finish', () => {
-                out2.close()
-                fs.renameSync(tmpPath, destPath)
-                resolve(destPath)
-              })
-              out2.on('error', reject)
-            })
-            .on('error', reject)
-
-          return
-        }
-
-        if (res.statusCode !== 200) {
-          out.close()
-
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-
-          reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
-
-          return
-        }
-
-        res.pipe(out)
-        out.on('finish', () => {
-          out.close()
-          fs.renameSync(tmpPath, destPath)
-          resolve(destPath)
-        })
-        out.on('error', err => {
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-
-          reject(err)
-        })
+      const response: any = await new Promise((resolve, reject) => {
+        const request = get(url, { signal: controller.signal }, resolve)
+        request.on('error', reject)
       })
-      .on('error', err => {
-        try {
-          fs.unlinkSync(tmpPath)
-        } catch {
-          void 0
-        }
 
-        reject(err)
-      })
-  })
+      if (response.statusCode === 301 || response.statusCode === 302) {
+        response.resume()
+
+        if (redirects >= 3 || !response.headers.location) {throw new Error('Installer download redirect limit exceeded')}
+        const next = new URL(response.headers.location, url)
+
+        if (new URL(url).protocol === 'https:' && next.protocol !== 'https:') {throw new Error('Unsafe installer download redirect')}
+        url = next.toString()
+
+        continue
+      }
+
+      if (response.statusCode !== 200) {
+        response.resume()
+        throw new Error(`Failed to download ${scriptName}: HTTP ${response.statusCode} from ${url}`)
+      }
+
+      const output = fs.createWriteStream(tmpPath, { flags: 'wx' })
+      tempCreated = true
+      await pipeline(response, output, { signal: controller.signal })
+      controller.signal.throwIfAborted()
+      fs.renameSync(tmpPath, destPath)
+      tempCreated = false
+
+      return destPath
+    }
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', abort)
+
+    // A leftover .tmp is harmless (the cache dir is disposable), and throwing
+    // from finally would mask the real download error.
+    if (tempCreated) {
+      try {
+        fs.unlinkSync(tmpPath)
+      } catch {
+        void 0
+      }
+    }
+  }
 }
 
 async function resolveInstallScript({
@@ -316,6 +300,7 @@ async function resolveInstallScript({
   hermesHome,
   emit,
   pinCommit = true,
+  abortSignal = undefined,
   _download = downloadInstallScript
 }) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
@@ -354,7 +339,7 @@ async function resolveInstallScript({
       (installRef.pinned ? '' : ' (unpinned branch)')
   })
 
-  await _download(installRef.ref, cached)
+  await _download(installRef.ref, cached, { signal: abortSignal })
   emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
 
   return { path: cached, source: 'download', commit: resolvedCommit, kind: installScriptKind() }
@@ -438,6 +423,31 @@ function installerEnv(hermesHome) {
   return env
 }
 
+function terminateInstallerTree(child, isWindows = IS_WINDOWS): Promise<void> {
+  const uncertain = (detail: string) => Object.assign(new Error(`Installer process tree termination unverified: ${detail}`), { installTerminationUnverified: true })
+
+  if (!Number.isInteger(child.pid) || child.pid <= 0 || (isWindows && (child.exitCode !== null || child.signalCode !== null))) {
+    return Promise.reject(uncertain('installer root unavailable'))
+  }
+
+  if (!isWindows) {
+    try {
+      process.kill(-child.pid, 'SIGKILL')
+
+      return Promise.resolve()
+    } catch (error) {
+      return Promise.reject(uncertain(String(error)))
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 10_000 }, error => {
+      if (error) {reject(uncertain(error.message))}
+      else {resolve()}
+    })
+  })
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
@@ -457,15 +467,13 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
     let stdout = ''
     let stderr = ''
     let killed = false
+    let termination: Promise<void> = Promise.resolve()
 
     const onAbort = () => {
+      if (killed) {return}
       killed = true
-
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        void 0
-      }
+      termination = terminateInstallerTree(child)
+      void termination.catch(reject)
     }
 
     if (abortSignal) {
@@ -537,7 +545,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         emit && emit({ type: 'log', stage: stageName, line: stderrTail, stream: 'stderr' } as any)
       }
 
-      resolve({ stdout, stderr, code, signal, killed } as any)
+      void termination.then(() => resolve({ stdout, stderr, code, signal, killed } as any), reject)
     })
   })
 }
@@ -545,6 +553,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
 function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
+      detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: installerEnv(hermesHome)
     })
@@ -552,15 +561,13 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
     let stdout = ''
     let stderr = ''
     let killed = false
+    let termination: Promise<void> = Promise.resolve()
 
     const onAbort = () => {
+      if (killed) {return}
       killed = true
-
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        void 0
-      }
+      termination = terminateInstallerTree(child)
+      void termination.catch(reject)
     }
 
     if (abortSignal) {
@@ -630,7 +637,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
         emit && emit({ type: 'log', stage: stageName, line: stderrTail, stream: 'stderr' })
       }
 
-      resolve({ stdout, stderr, code, signal, killed })
+      void termination.then(() => resolve({ stdout, stderr, code, signal, killed }), reject)
     })
   })
 }
@@ -836,6 +843,58 @@ async function runStage({
   return ev
 }
 
+async function runProtectedCompleteStage(options): Promise<{ event: any; stagedCommit: string | null }> {
+  const source = fs.readFileSync(options.scriptPath, 'utf8')
+  const name = '.hermes-bootstrap-complete'
+  const count = source.split(name).length - 1
+  const psWrite = 'Set-Content (Join-Path $InstallDir ".hermes-bootstrap-complete") -Encoding UTF8'
+  const shWrite = '> "$INSTALL_DIR/.hermes-bootstrap-complete.tmp"'
+  const shMove = 'mv -f "$INSTALL_DIR/.hermes-bootstrap-complete.tmp" "$INSTALL_DIR/.hermes-bootstrap-complete"'
+
+  if (options.installerKind === 'posix'
+    ? count !== 3 || !source.includes(shWrite) || !source.includes(shMove)
+    : count !== 1 || !source.includes(psWrite)) {
+    throw new Error('Unrecognized installer completion marker implementation; refusing to run complete stage')
+  }
+
+  const id = randomUUID()
+  const temporaryName = `.hermes-bootstrap-pending-${id}`
+  const cache = bootstrapCacheDir(options.hermesHome)
+  fs.mkdirSync(cache, { recursive: true })
+  const copy = path.join(cache, `complete-${id}.${options.installerKind === 'posix' ? 'sh' : 'ps1'}`)
+  fs.writeFileSync(copy, source.replaceAll(name, temporaryName), { flag: 'wx' })
+  const roots = [...new Set([options.activeRoot, path.join(options.hermesHome, 'hermes-agent')].filter(Boolean))] as string[]
+  let uncertain = false
+
+  try {
+    const event = await runStage({ ...options, scriptPath: copy })
+    let stagedCommit: string | null = null
+
+    for (const root of roots) {
+      try {
+        const marker = JSON.parse(fs.readFileSync(path.join(root, temporaryName), 'utf8').replace(/^\uFEFF/, ''))
+
+        if (isPinnedCommit(marker?.pinnedCommit)) {stagedCommit = marker.pinnedCommit}
+      } catch { /* missing or invalid marker is handled by the ordinary pin fallback */ }
+    }
+
+    return { event, stagedCommit }
+  } catch (error: any) {
+    uncertain = error?.installTerminationUnverified === true
+    throw error
+  } finally {
+    if (!uncertain) {
+      for (const file of [copy, ...roots.flatMap(root => [path.join(root, temporaryName), path.join(root, `${temporaryName}.tmp`)])]) {
+        try {
+          fs.unlinkSync(file)
+        } catch {
+          void 0
+        }
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Per-run log file
 // ---------------------------------------------------------------------------
@@ -925,7 +984,7 @@ async function runBootstrap(opts) {
     }
 
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, pinCommit })
+    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, pinCommit, abortSignal })
     abortSignal?.throwIfAborted()
 
     const installerKind = scriptInfo.kind || 'powershell'
@@ -954,6 +1013,8 @@ async function runBootstrap(opts) {
     //    invoked -- install.ps1's own -NonInteractive handler in those stages
     //    emits skipped=true. We trust the protocol rather than filtering
     //    client-side.
+    let stagedCommit: string | null = null
+
     for (const stage of manifest.stages) {
       if (abortSignal && abortSignal.aborted) {
         emit({ type: 'failed', error: 'bootstrap cancelled by user' })
@@ -961,7 +1022,7 @@ async function runBootstrap(opts) {
         return { ok: false, cancelled: true }
       }
 
-      const ev = await runStage({
+      const stageOptions = {
         scriptPath: scriptInfo.path,
         installerKind,
         stage,
@@ -971,7 +1032,14 @@ async function runBootstrap(opts) {
         abortSignal,
         installStamp,
         pinCommit
-      })
+      }
+
+      const protectedResult = stage.name === 'complete' ? await runProtectedCompleteStage(stageOptions) : null
+      const ev = protectedResult ? protectedResult.event : await runStage(stageOptions)
+
+      if (protectedResult) {stagedCommit = protectedResult.stagedCommit}
+
+      abortSignal?.throwIfAborted()
 
       if (ev.state === 'failed') {
         emit({ type: 'failed', stage: stage.name, error: (ev as any).error || 'stage failed' })
@@ -980,12 +1048,15 @@ async function runBootstrap(opts) {
       }
     }
 
+    abortSignal?.throwIfAborted()
+
     // 4. Write the bootstrap-complete marker. Fallback (all-zero) stamps are
     // not real pins -- resolve HEAD from the checkout we just installed so
     // isBootstrapComplete() (pinnedCommit.length >= 7) accepts the marker
     // instead of re-running bootstrap on every launch (#50823 review).
     const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot, {
-      resolveHead: root => resolveCheckoutHead(root, { gitBinary })
+      resolveHead: root => resolveCheckoutHead(root, { gitBinary }),
+      stagedCommit
     })
 
     if (!pinnedCommit) {
@@ -1012,6 +1083,8 @@ async function runBootstrap(opts) {
 
     return { ok: true, marker }
   } catch (err) {
+    if (err?.installTerminationUnverified) {throw err}
+
     if (abortSignal?.aborted) {
       emit({ type: 'failed', error: 'bootstrap cancelled by user' })
 
@@ -1035,6 +1108,7 @@ export {
   buildPosixPinArgs,
   cachedScriptPath,
   cleanInstallerLogLine,
+  downloadInstallScript,
   hasExistingGitCheckout,
   installRefForStamp,
   isPinnedCommit,
@@ -1044,5 +1118,6 @@ export {
   resolveInstallScript,
   resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  terminateInstallerTree
 }

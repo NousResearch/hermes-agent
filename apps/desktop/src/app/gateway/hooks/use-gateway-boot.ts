@@ -17,6 +17,7 @@ import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reau
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { waitForBootConnection } from '@/lib/boot-connection-timeout'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import {
   decideLivenessForceClose,
@@ -386,6 +387,7 @@ export function useGatewayBoot({
 
   useEffect(() => {
     let cancelled = false
+    const bootWaitAbort = new AbortController()
     const desktop = window.hermesDesktop
 
     // Window-state IPC (fullscreen / traffic-light position) that lands while
@@ -1669,15 +1671,9 @@ export function useGatewayBoot({
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
         // Full peers use the source/profile Electron pinned before loading.
-        // Bounded like the reconnect path (#93454): a wedged main-process
-        // round-trip must not hang "Starting Hermes…" forever. Initial boot
-        // rides out a full backend cold spawn, so it gets the shared 45s
-        // backend-boot budget, not the 20s reconnect budget.
-        const conn = await withTimeout(
-          getWindowBackend(true),
-          BACKEND_BOOT_WAIT_TIMEOUT_MS,
-          'Timed out connecting to Hermes backend'
-        )
+        // Installer progress extends the idle deadline; the absolute deadline
+        // still bounds a noisy or permanently stalled first launch.
+        const conn = await waitForBootConnection(getWindowBackend(true), desktop, bootWaitAbort.signal)
 
         if (cancelled) {
           return
@@ -1905,6 +1901,7 @@ export function useGatewayBoot({
 
     return () => {
       cancelled = true
+      bootWaitAbort.abort()
       offSwitchLifecycle()
       endGatewaySwitch()
       clearReconnectTimer()

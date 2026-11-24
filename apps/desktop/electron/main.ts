@@ -1,5 +1,6 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
+import { createBootstrapInstallCoordinator } from './bootstrap-install-coordinator'
 import { createGlobalRemoteSessionRoute, probeRemoteAuthMode } from './global-remote-session-route'
 import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
@@ -1878,7 +1879,7 @@ const localBackendLifecycle = createLocalBackendLifecycle<ChildProcess>({
     waitForBackendExit(child, { forceKillProcessTree, isWindows: IS_WINDOWS }),
   cancelSetup: (): void => {
     firstRunSetupGate?.resetForRetry()
-    bootstrapAbortController?.abort()
+    bootstrapInstallCoordinator.cancel()
   }
 })
 
@@ -1953,9 +1954,8 @@ let backendStartFailure = null
 // the boot-failure overlay, so the "Sign in" button flickers away before it
 // can be clicked. Cleared on every recovery path and on a confirmed sign-in.
 let remoteReauthFailure = null
-// Active first-launch install, so the renderer's Cancel button (and app quit)
-// can abort the in-flight install.sh/ps1 instead of leaving it running.
-let bootstrapAbortController = null
+// A single physical installer survives connection-attempt changes until it settles.
+const bootstrapInstallCoordinator = createBootstrapInstallCoordinator<Awaited<ReturnType<typeof runBootstrap>>>()
 // Explicit "the user asked for a repair" flag. Repair used to signal intent by
 // deleting the bootstrap marker, which stranded healthy installs whose only
 // problem was a transient backend error (#72166). Intent now lives here, so
@@ -5040,6 +5040,9 @@ async function ensureRuntime(
   assertStillOwned()
 
   if (!backend.bootstrap) {
+    await bootstrapInstallCoordinator.waitForSafeRuntime()
+    localBackendLifecycle.assertCanStart()
+    assertStillOwned()
     rememberLog(`[backend] using ${backend.label}`)
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -5072,7 +5075,10 @@ async function ensureRuntime(
   if (backend.kind === 'bootstrap-needed') {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
-    if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
+    const handedOff = await handOffWindowsBootstrapRecovery('bootstrap-needed')
+    assertStillOwned()
+
+    if (handedOff) {
       const handoffError: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
         'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
       )
@@ -5082,6 +5088,8 @@ async function ensureRuntime(
       bootstrapFailure = handoffError
       throw handoffError
     }
+
+    assertStillOwned()
 
     // Eagerly flip the bootstrap UI state to 'active' so the renderer
     // shows the install overlay BEFORE the runner finishes fetching the
@@ -5100,42 +5108,45 @@ async function ensureRuntime(
     }
 
     localBackendLifecycle.assertCanStart()
-    bootstrapAbortController = new AbortController()
+    assertStillOwned()
 
-    // The repair request has been honoured by reaching the installer; clear it
-    // so a later boot isn't forced through bootstrap again.
-    bootstrapRepairRequested = false
-    bootstrapRepairAttempt = 0
+    const bootstrapResult = await bootstrapInstallCoordinator.run(signal => {
+      // Only the attempt that actually starts the installer consumes repair intent.
+      bootstrapRepairRequested = false
+      bootstrapRepairAttempt = 0
 
-    const bootstrapResult = await runBootstrap({
-      installStamp: backend.installStamp,
-      activeRoot: backend.activeRoot,
-      sourceRepoRoot: SOURCE_REPO_ROOT,
-      hermesHome: HERMES_HOME,
-      logRoot: path.join(HERMES_HOME, 'logs'),
-      abortSignal: bootstrapAbortController.signal,
-      onEvent: ev => {
-        // Tee every bootstrap event to (a) the desktop log for forensics
-        // and (b) the renderer for live progress UI. Either may be absent;
-        // tolerate both gracefully so a renderer crash doesn't stall the
-        // bootstrap and a log-write failure doesn't suppress the UI signal.
-        try {
-          rememberLog(`[bootstrap] ${JSON.stringify(ev)}`)
-        } catch {
-          void 0
-        }
+      return runBootstrap({
+        installStamp: backend.installStamp,
+        activeRoot: backend.activeRoot,
+        sourceRepoRoot: SOURCE_REPO_ROOT,
+        hermesHome: HERMES_HOME,
+        logRoot: path.join(HERMES_HOME, 'logs'),
+        abortSignal: signal,
+        onEvent: ev => {
+          try {
+            assertStillOwned()
+          } catch {
+            return
+          }
 
-        try {
-          broadcastBootstrapEvent(ev)
-        } catch {
-          void 0
-        }
-      },
-      writeMarker: writeBootstrapMarker,
-      gitBinary: resolveGitBinary()
-    })
+          try {
+            rememberLog(`[bootstrap] ${JSON.stringify(ev)}`)
+          } catch {
+            void 0
+          }
 
-    bootstrapAbortController = null
+          try {
+            broadcastBootstrapEvent(ev)
+          } catch {
+            void 0
+          }
+        },
+        writeMarker: writeBootstrapMarker,
+        gitBinary: resolveGitBinary()
+      })
+    }, assertStillOwned)
+
+    assertStillOwned()
 
     if (bootstrapResult.cancelled) {
       const cancelledError = new Error('Hermes install was cancelled.') as any
@@ -9945,7 +9956,7 @@ async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean 
 
   try {
     resetHermesConnectionState({ soft })
-    await stopping
+    await Promise.all([stopping, bootstrapInstallCoordinator.cancelAndWait()])
   } finally {
     if (soft) {
       softRehomeInProgress = false
@@ -13999,17 +14010,9 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
   // Renderer's Cancel button during first-launch install. Abort the running
   // install script (SIGTERM via the runner's abortSignal). runBootstrap
   // resolves with { cancelled: true }, which surfaces the recovery overlay.
-  if (bootstrapAbortController) {
-    try {
-      bootstrapAbortController.abort()
-    } catch {
-      void 0
-    }
+  const cancelled = bootstrapInstallCoordinator.cancel()
 
-    return { ok: true, cancelled: true }
-  }
-
-  return { ok: false, cancelled: false }
+  return { ok: cancelled, cancelled }
 })
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:local-backend:probe', async () => {
@@ -17765,13 +17768,7 @@ app.on('before-quit', event => {
   closeQuickEntryWindow()
 
   // Quitting mid-install should stop the installer, not orphan it.
-  if (bootstrapAbortController) {
-    try {
-      bootstrapAbortController.abort()
-    } catch {
-      void 0
-    }
-  }
+  bootstrapInstallCoordinator.cancel()
 
   if (desktopLogFlushTimer) {
     clearTimeout(desktopLogFlushTimer)

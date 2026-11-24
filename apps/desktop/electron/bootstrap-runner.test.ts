@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -10,12 +11,14 @@ import {
   buildPosixPinArgs,
   cachedScriptPath,
   cleanInstallerLogLine,
+  downloadInstallScript,
   hasExistingGitCheckout,
   installRefForStamp,
   isPinnedCommit,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  terminateInstallerTree
 } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
@@ -47,6 +50,176 @@ test('runBootstrap bails immediately when the signal is already aborted', async 
     events.some(ev => ev.type === 'failed' && /cancelled/i.test(ev.error)),
     'should emit a cancelled failure event'
   )
+})
+
+test('cancellation at the final stage success prevents the marker', async () => {
+  const home = mkTmpHome()
+  const controller = new AbortController()
+  let markerWrites = 0
+  fs.mkdirSync(path.join(home, 'scripts'))
+
+  const script = process.platform === 'win32'
+    ? `param([switch]$Manifest, [string]$Stage, [switch]$NonInteractive, [switch]$Json)\nif ($Manifest) { '{"stages":[{"name":"last"}]}' } else { '{"ok":true,"stage":"last"}' }\n`
+    : `#!/usr/bin/env bash\nif [ "$1" = "--manifest" ]; then echo '{"stages":[{"name":"last"}]}'; else echo '{"ok":true,"stage":"last"}'; fi\n`
+
+  fs.writeFileSync(path.join(home, 'scripts', SCRIPT_NAME), script)
+
+  try {
+    const result = await runBootstrap({
+      installStamp: null, activeRoot: home, sourceRepoRoot: home, hermesHome: home,
+      abortSignal: controller.signal,
+      writeMarker: () => { markerWrites++;
+
+ return {} },
+      onEvent: event => { if (event.type === 'stage' && event.state === 'succeeded') {controller.abort()} }
+    })
+
+    assert.equal(result.cancelled, true)
+    assert.equal(markerWrites, 0)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test.each([false, true])('cancelled complete stage preserves existing marker=%s', async existing => {
+  const home = mkTmpHome()
+  const controller = new AbortController()
+  const marker = path.join(home, '.hermes-bootstrap-complete')
+  const original = Buffer.from('prior valid marker\n')
+
+  if (existing) {fs.writeFileSync(marker, original)}
+  fs.mkdirSync(path.join(home, 'scripts'))
+
+  const script = process.platform === 'win32'
+    ? `param([switch]$Manifest, [string]$Stage, [switch]$NonInteractive, [switch]$Json)\n$InstallDir = $env:HERMES_HOME\nif ($Manifest) { '{"stages":[{"name":"complete"}]}' } else { 'new marker' | Set-Content (Join-Path $InstallDir ".hermes-bootstrap-complete") -Encoding UTF8; '{"ok":true,"stage":"complete"}' }\n`
+    : `#!/usr/bin/env bash\nINSTALL_DIR="$HERMES_HOME"\nif [ "$1" = "--manifest" ]; then echo '{"stages":[{"name":"complete"}]}'; else printf 'new marker' > "$INSTALL_DIR/.hermes-bootstrap-complete.tmp"; mv -f "$INSTALL_DIR/.hermes-bootstrap-complete.tmp" "$INSTALL_DIR/.hermes-bootstrap-complete"; echo '{"ok":true,"stage":"complete"}'; fi\n`
+
+  fs.writeFileSync(path.join(home, 'scripts', SCRIPT_NAME), script)
+
+  try {
+    const result = await runBootstrap({
+      installStamp: null, activeRoot: home, sourceRepoRoot: home, hermesHome: home,
+      abortSignal: controller.signal,
+      writeMarker: () => { throw new Error('unexpected marker write') },
+      onEvent: event => { if (event.type === 'stage' && event.state === 'succeeded') {controller.abort()} }
+    })
+
+    assert.equal(result.cancelled, true)
+
+    if (existing) {assert.deepEqual(fs.readFileSync(marker), original)}
+    else {assert.equal(fs.existsSync(marker), false)}
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('completion marker pin uses staged value before an older marker', () => {
+  const home = mkTmpHome()
+  const oldPin = 'a'.repeat(40)
+  const stagedCommit = 'b'.repeat(40)
+
+  try {
+    fs.writeFileSync(path.join(home, '.hermes-bootstrap-complete'), JSON.stringify({ pinnedCommit: oldPin }))
+    assert.equal(resolveMarkerPinnedCommit(null, home, { resolveHead: () => null, stagedCommit }), stagedCommit)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('unrecognized complete stage is refused before modifying its marker', async () => {
+  const home = mkTmpHome()
+  const marker = path.join(home, '.hermes-bootstrap-complete')
+  fs.writeFileSync(marker, 'original')
+  fs.mkdirSync(path.join(home, 'scripts'))
+
+  const script = process.platform === 'win32'
+    ? `param([switch]$Manifest, [string]$Stage, [switch]$NonInteractive, [switch]$Json)\nif ($Manifest) { '{"stages":[{"name":"complete"}]}' } else { Set-Content (Join-Path $env:HERMES_HOME '.hermes-bootstrap-complete') 'changed'; '{"ok":true,"stage":"complete"}' }\n`
+    : `#!/usr/bin/env bash\nif [ "$1" = "--manifest" ]; then echo '{"stages":[{"name":"complete"}]}'; else echo changed > "$HERMES_HOME/.hermes-bootstrap-complete"; echo '{"ok":true,"stage":"complete"}'; fi\n`
+
+  fs.writeFileSync(path.join(home, 'scripts', SCRIPT_NAME), script)
+
+  try {
+    const result = await runBootstrap({ installStamp: null, activeRoot: home, sourceRepoRoot: home, hermesHome: home })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /Unrecognized installer completion marker/)
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'original')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an exited installer root reports unverified tree termination without signaling its PID', async () => {
+  await assert.rejects(terminateInstallerTree({ pid: 1, exitCode: 0, signalCode: null }, true),
+    error => (error as Error & { installTerminationUnverified?: boolean }).installTerminationUnverified === true)
+})
+
+test.skipIf(process.platform !== 'win32')('cancelling a Windows installer kills its owned child tree', async () => {
+  const home = mkTmpHome()
+  const controller = new AbortController()
+  let childPid = 0
+  fs.mkdirSync(path.join(home, 'scripts'))
+  fs.writeFileSync(path.join(home, 'scripts', 'install.ps1'), `param([switch]$Manifest, [string]$Stage, [switch]$NonInteractive, [switch]$Json)
+if ($Manifest) { '{"stages":[{"name":"last"}]}' ; exit }
+$child = Start-Process -FilePath "$PSHOME\\powershell.exe" -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 5' -WindowStyle Hidden -PassThru
+Write-Output "child-pid=$($child.Id)"
+Start-Sleep -Seconds 5
+`)
+
+  try {
+    const result = await runBootstrap({
+      installStamp: null, activeRoot: home, sourceRepoRoot: home, hermesHome: home,
+      abortSignal: controller.signal,
+      onEvent: event => {
+        const match = String(event.line || '').match(/^child-pid=(\d+)$/)
+
+        if (match) { childPid = Number(match[1]); controller.abort() }
+      }
+    })
+
+    assert.ok(childPid > 0)
+    assert.equal(result.cancelled, true)
+    assert.throws(() => process.kill(childPid, 0))
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}, 20_000)
+
+test.each(['abort', 'timeout'])('installer download %s preserves the cached file', async mode => {
+  const home = mkTmpHome()
+  const dest = path.join(home, 'install.ps1')
+  fs.writeFileSync(dest, 'existing')
+  const controller = new AbortController()
+  let received!: () => void
+  const started = new Promise<void>(resolve => { received = resolve })
+
+  const server = http.createServer((_req, response) => {
+    response.writeHead(200)
+    response.write('partial')
+    received()
+  })
+
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+
+  try {
+    const downloading = downloadInstallScript('fixture', dest, {
+      url: `http://127.0.0.1:${address.port}/`, get: http.get,
+      signal: controller.signal, timeoutMs: mode === 'timeout' ? 100 : 5000
+    })
+
+    const rejected = assert.rejects(downloading)
+    await started
+
+    if (mode === 'abort') {controller.abort()}
+    await rejected
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'existing')
+    assert.deepEqual(fs.readdirSync(home), ['install.ps1'])
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('existing checkout detection requires git metadata', () => {

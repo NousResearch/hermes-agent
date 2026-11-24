@@ -1401,6 +1401,7 @@ agent:
                                # "unlimited"/"inf"/"infinity"/"infinite"/0/-1 = no limit
   budget_warning_ratio: null   # Optional one-time checkpoint warning, e.g. 0.75
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
+  max_rate_limit_wait_seconds: 120  # Longest a turn waits out one rate-limit window (0 = off)
   auto_recovery_cycles: 5      # Wait-and-retry cycles after retries + fallback are spent on an outage (0 = off)
 ```
 
@@ -1411,6 +1412,8 @@ agent:
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](./features/fallback-providers.md) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
 `agent.codex_request_compression` (default `true`) zstd-compresses request bodies sent to the official ChatGPT Codex `/responses` endpoint on Python 3.14 or later, as the official Codex client does. That endpoint rejects some valid zstd bodies with a bare HTTP 400 `{"detail":"Bad Request"}`; when it does, Hermes resends that request once as plain JSON, so the turn continues. Set it to `false` to always send plain JSON. Custom endpoint URLs and other providers always send plain JSON. Restart Hermes, including a running gateway, after changing this setting: existing clients keep the encoding they were built with.
+
+`agent.max_rate_limit_wait_seconds` bounds how long a turn waits on the primary for a rate-limit window the provider itself declared. The default `0` keeps the previous behaviour: a rate limit switches models eagerly, and `Retry-After` is honoured up to 600 s per retry only on the paths that wait. When set, the turn's **first** refusal with a window that fits the budget is waited out and retried on the same primary — a 55 s fair-share refusal on a free model no longer costs the turn. A window longer than the budget ends the attempt cycle immediately and the fallback chain takes the turn; a second refusal after that wait also falls back, so a widening window cannot idle the lane once per retry. Upstream-aggregator 429s and plan usage windows always fall back. For a bounded per-request pace *before* the call is made, see `fallback.primary_budget.max_window_wait_seconds`.
 
 A rate limit that names its reset (`Retry-After` or a `retry_after` body field) is waited out, capped at 600 s per retry. The live status line shows the wait and, when the provider names it, when the limit resets. One exception: on the free Nous tier (no sign-in), a session someone is watching (the Desktop app, the TUI, the `hermes` terminal chat, an ACP editor) does not sit through a cooldown longer than 60 s, because the free tier's pause covers the whole service and a retry before the reset only meets the same refusal. The turn ends at once and says when the limit lifts; a configured fallback runs first. Unattended runs (`hermes chat -q`, cron, messaging platforms, delegated subagents) keep waiting.
 

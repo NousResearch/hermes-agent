@@ -194,7 +194,12 @@ def _format_messages_as_prompt(
     transcript: list[str] = []
     for message in (m for m in messages if isinstance(m, dict)):
         role = str(message.get("role") or "unknown").strip().lower()
-        if rendered := _render_message_content(message.get("content")):
+        rendered = _render_message_content(message.get("content"))
+        # An assistant turn that only called tools has empty content; without its calls the agent
+        # sees orphan Tool results, cannot tell what it already ran, and re-issues the same calls.
+        if role == "assistant" and (calls := _render_tool_calls_for_prompt(message.get("tool_calls"))):
+            rendered = f"{rendered}\n{calls}" if rendered else calls
+        if rendered:
             transcript.append(f"{_ROLE_LABELS.get(role, 'Context')}:\n{rendered}")
     if transcript:
         sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
@@ -214,6 +219,47 @@ def _render_message_content(content: Any) -> str:
                  or (isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip())]
         return "\n".join(parts).strip()
     return str(content).strip()
+
+
+def _coerce_tool_call_arguments(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    if arguments is None:
+        return "{}"
+    try:
+        return json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(arguments)
+
+
+def _normalize_tool_call_payload(tool_call: Any) -> dict[str, Any] | None:
+    """A dict or object tool call → the OpenAI function-call shape the tool bridge teaches; None without a name."""
+    if isinstance(tool_call, dict):
+        fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        name, arguments = fn.get("name") or tool_call.get("name"), fn.get("arguments")
+        if arguments is None:
+            arguments = tool_call.get("arguments")
+        call_id, call_type = tool_call.get("id") or tool_call.get("call_id"), tool_call.get("type")
+    else:
+        fn = getattr(tool_call, "function", None)
+        name = getattr(fn, "name", None) if fn is not None else getattr(tool_call, "name", None)
+        arguments = getattr(fn, "arguments", None) if fn is not None else None
+        if arguments is None:
+            arguments = getattr(tool_call, "arguments", None)
+        call_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None)
+        call_type = getattr(tool_call, "type", None)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return {"id": str(call_id or ""), "type": call_type or "function",
+            "function": {"name": name.strip(), "arguments": _coerce_tool_call_arguments(arguments)}}
+
+
+def _render_tool_calls_for_prompt(tool_calls: Any) -> str:
+    """Assistant ``tool_calls`` → ``<tool_call>`` blocks, the same wire format the agent is told to emit."""
+    if not isinstance(tool_calls, list):
+        return ""
+    payloads = (_normalize_tool_call_payload(tc) for tc in tool_calls)
+    return "\n".join(f"<tool_call>{json.dumps(p, ensure_ascii=False)}</tool_call>" for p in payloads if p is not None)
 
 
 def _ensure_path_within_cwd(path_text: str, cwd: str, *, verb: str) -> Path:

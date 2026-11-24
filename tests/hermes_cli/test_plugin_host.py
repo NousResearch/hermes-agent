@@ -369,6 +369,34 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_marked_linked_profile_opened_by_a_relative_name_finds_its_marker_after_the_working_directory_moves(
+        tmp_path, monkeypatch):
+    """The name a manager opened by is kept absolute: once the working directory moves, a relative ``ops`` would
+    lead nowhere, and the directory outside the root it links to has no marker to find."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    seen = tmp_path / "seen.txt"
+    _marked_profile_linked_out_of_the_root(tmp_path, monkeypatch, {"markprobe": (
+        "from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal\n"
+        f"def register(ctx):\n    open({str(seen)!r}, 'w').write(str(run_elsewhere_refusal() is not None))\n")},
+        {"isolation": "in_process"})
+    (tmp_path / "later").mkdir()
+    monkeypatch.chdir(tmp_path / ".hermes" / "profiles")
+    token = set_hermes_home_override("ops")
+    try:
+        manager = plugins_mod.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+    monkeypatch.chdir(tmp_path / "later")
+    manager.discover_and_load()
+    try:
+        assert seen.read_text(encoding="utf-8") == "True"
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script; SIGKILL
 @pytest.mark.parametrize("beside", [None, "_backup", "default", "deleted", "relinked", "uppercase"])
 def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_the_restarted_host(

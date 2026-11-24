@@ -1,4 +1,4 @@
-"""Native approval buttons/reactions on Feishu, Teams, Matrix and WhatsApp Cloud honour ``approvals.approvers``.
+"""Native approval buttons/reactions on Teams, Matrix and WhatsApp Cloud honour ``approvals.approvers``.
 
 Alice's turn raised the approval; Bob (admitted to the chat) clicks. With the opt-in (``approvers: []``)
 Bob's click is refused with "Only Alice can answer this approval." and the approval stays pending; by
@@ -26,35 +26,6 @@ def _clean_queues():
     approval_mod._gateway_queues.clear()
     yield
     approval_mod._gateway_queues.clear()
-
-
-@pytest.mark.parametrize(("approvers", "allowed"), CASES)
-def test_feishu_card_click(approvers, allowed, monkeypatch):
-    import tests.gateway.test_feishu_approval_buttons as fx  # installs the lark stubs
-
-    write_approvers(approvers)
-    entry = pending_from("ou_alice", "Alice", "sess-f", platform="feishu")
-    adapter = fx._make_adapter()
-    adapter._loop = MagicMock(is_closed=MagicMock(return_value=False))
-    adapter._allowed_group_users = {"ou_alice", "ou_bob"}
-    adapter._approval_state[1] = {"session_key": "sess-f", "message_id": "m", "chat_id": "oc_1",
-                                  "request_id": entry.data["request_id"]}
-    monkeypatch.setattr(fx.feishu_module, "P2CardActionTriggerResponse", fx._FakeP2Response)
-    monkeypatch.setattr(fx.feishu_module, "CallBackCard", fx._FakeCallBackCard)
-    monkeypatch.setattr(fx.feishu_module, "CallBackToast", SimpleNamespace, raising=False)
-    data = fx._make_card_action_data({"hermes_action": "approve_once", "approval_id": 1}, chat_id="oc_1", open_id="ou_bob")
-
-    def _submit(coro, _loop):
-        asyncio.run(coro)
-        return SimpleNamespace(add_done_callback=lambda *_a, **_k: None)
-
-    with patch("asyncio.run_coroutine_threadsafe", side_effect=_submit):
-        response = adapter._on_card_action_trigger(data)
-
-    assert entry.event.is_set() is allowed
-    if not allowed:
-        assert response.toast.content == REFUSAL and response.card is None
-        assert 1 in adapter._approval_state  # Alice's card still answers
 
 
 @pytest.mark.asyncio

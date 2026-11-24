@@ -654,7 +654,7 @@ class TestMigratedPlatformWiring:
 
     _LAZY_INSTALLABLE = (
         "teams", "telegram", "discord", "slack",
-        "matrix", "dingtalk", "feishu", "wecom_callback",
+        "matrix", "dingtalk", "wecom_callback",
         "google_chat",
     )
 

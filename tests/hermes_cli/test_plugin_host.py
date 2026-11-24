@@ -467,6 +467,45 @@ def test_a_host_whose_new_home_failed_to_bind_binds_it_on_the_next_start(tmp_pat
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path, monkeypatch):
+    """One start, one home: a profile name that appears while the host starts does not give the launcher check a
+    different home from the one the host's environment and working directory were built for."""
+    from hermes_cli import plugin_isolation
+    from hermes_cli.plugin_host import PluginHost
+
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    host = manager._plugin_host()
+    (profiles / "ops").unlink()  # no name leads to the directory: this start runs under the directory itself
+    monkeypatch.setenv("HERMES_HOME", str(target))
+    build, launcher, asked = PluginHost._build_base_context, plugin_isolation.host_launcher, []
+
+    def linked_while_building(self):
+        context = build(self)
+        (profiles / "ops2").symlink_to(target, target_is_directory=True)
+        return context
+
+    def recording(*args, **kwargs):
+        asked.append(kwargs.get("home"))
+        return launcher(*args, **kwargs)
+
+    monkeypatch.setattr(PluginHost, "_build_base_context", linked_while_building)
+    monkeypatch.setattr(plugin_isolation, "host_launcher", recording)
+    try:
+        host.ensure_started()
+        assert host.home == manager.home_path
+        assert asked == [host.home]
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
 def test_a_hosted_model_provider_of_a_renamed_linked_profile_still_runs_after_a_host_crash(tmp_path, monkeypatch):
     """A hosted provider's overrides run in the host, addressed by the plugin's directory. That address must

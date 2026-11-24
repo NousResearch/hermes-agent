@@ -40,11 +40,21 @@ def load_hosted_profiles(plugin_dir: Path, module_name: str) -> tuple[list[Any],
         raise PluginHostUnavailable(str(payload["error"]))
     entries = payload.get("profiles") or []
     in_process = {str(e["name"]): str(e["in_process"]) for e in entries if e.get("in_process")}
-    # Addressed by the resolved directory: the host loads the plugin from it, so it must outlive a rename
-    # of the link the profile was opened by.
-    hosted = [_profile_proxy(ProviderProfile, str(Path(plugin_dir).resolve()), module_name, e)
+    hosted = [_profile_proxy(ProviderProfile, _host_address(Path(plugin_dir)), module_name, e)
               for e in entries if not e.get("in_process")]
     return hosted, in_process
+
+
+def _host_address(plugin_dir: Path) -> str:
+    """Where the host loads *plugin_dir* from: the profile home's own spelling resolved, so the address
+    outlives a rename of the link the profile was opened by, and the plugin's path below it as installed, so
+    a plugin installed as a link and then removed stays removed."""
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    try:
+        return str(Path(os.path.realpath(home)) / plugin_dir.relative_to(home))
+    except ValueError:  # not under the home (a project plugin): as given
+        return str(plugin_dir)
 
 
 def is_hosted_profile(profile: Any) -> bool:

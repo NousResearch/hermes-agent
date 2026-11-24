@@ -250,7 +250,6 @@ class PluginHost:
             "plugin_key": plugin_key, "load": self._loads[plugin_key], "plugin_id": ctx.plugin_id,
             "name": manifest.name,
             "path": manifest.path, "module_name": module_name, "entrypoint": entrypoint,
-            "profile_name": self._base_context.copy().run(lambda: ctx.profile_name),
             "manifest": {k: getattr(manifest, k, None) for k in (
                 "name", "version", "description", "author", "source", "path", "key", "kind",
                 "data_namespace")},
@@ -258,6 +257,8 @@ class PluginHost:
         }
         try:
             channel = self.ensure_started()
+            # After the start: a restart can move the host to another home (a renamed link's old name).
+            params["profile_name"] = self._base_context.copy().run(lambda: ctx.profile_name)
             self._loading = plugin_key
             result = channel.call("load", params)
         except BaseException:

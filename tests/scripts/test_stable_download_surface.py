@@ -287,6 +287,23 @@ def test_stable_promotion_rejects_stale_order_for_dmg_and_page(
     assert r2_server.store[STABLE_DMG_KEY][0] == newer_dmg
 
 
+def test_stable_promotion_refuses_a_canary_page_at_the_stable_key(
+    tmp_path,
+    monkeypatch,
+    r2_server,  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
+    https_origin,  # health: allow F811 -- pytest injects the imported https_origin fixture by parameter name
+):
+    """Only a newer stable page is left in place; a page from another channel fails closed."""
+    monkeypatch.setattr(urllib.request, "urlopen", https_origin.opener)
+    manifest, _ = _stage_stable_release(tmp_path, r2_server, https_origin, version="1.2.3")
+    wrong_channel = b'<meta name="hermes-build" content="canary.20261120T064609Z-v9.9.9">\n'
+    r2_server.store[STABLE_PAGE_KEY] = (wrong_channel, '"canary-page"')
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match="canary"):
+        artifacts.promote(manifest, tmp_path / "wrong-channel-page", https_origin.base)
+    assert not any(method == "PUT" for method, _, _ in r2_server.requests)
+    assert r2_server.store[STABLE_PAGE_KEY][0] == wrong_channel
+
 def test_stable_promotion_fails_closed_when_dmg_missing_from_manifest_or_r2(
     tmp_path,
     monkeypatch,

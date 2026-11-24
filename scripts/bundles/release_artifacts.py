@@ -556,16 +556,20 @@ def _check_stable_page_state(
     """The page bytes that should be live after this promotion, and the conditions for writing
     them (None: nothing to write).
 
-    A page that already describes a newer release stays as it is. Feed order is checked before
-    promotion, so that page can only come from render-builds-table's `complete` step rendering a
-    newer release while this older advance was pending; refusing would wedge the sequencer, which
-    advances oldest first."""
-    from scripts.releases.downloads_page import supersedes
+    A page that already describes a newer stable release stays as it is; a canary page at this
+    key fails closed. Feed order is checked before promotion, so a newer stable page can only come
+    from render-builds-table's `complete` step rendering a newer release while this older advance
+    was pending; refusing would wedge the sequencer, which advances oldest first."""
+    from hermes_cli.update_channel import published_canary_timestamp
+    from scripts.releases.downloads_page import recorded_build, supersedes
 
     if existing is None:
         return page_bytes, {"If-None-Match": "*"}
     existing_bytes, etag = existing
-    if not supersedes(existing_bytes.decode("utf-8", errors="replace"), tag):
+    existing_page = existing_bytes.decode("utf-8", errors="replace")
+    if not supersedes(existing_page, tag):
+        if published_canary_timestamp(recorded_build(existing_page)) is not None:
+            raise ValueError("Refusing to keep or replace a canary downloads page at the stable key")
         print(f"::warning::the stable downloads page already describes a release newer than {tag}; "
               "leaving it unchanged")
         return existing_bytes, None

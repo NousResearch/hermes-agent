@@ -375,7 +375,9 @@ export const CODICON_PIXEL: Readonly<Record<string, PixelMapping>> = {
   server: 'server',
   'server-process': 'server',
   settings: 'settings-2',
-  'settings-gear': 'settings-2', // band settings (906:19488)
+  // The app's own Settings (the rail, and every "open settings" control): a cog, so it is not the
+  // band's Agent settings, which wears Figma's settings-2 (906:19488) through `settings` above.
+  'settings-gear': 'settings-cog',
   share: 'share',
   shield: 'shield',
   'sign-in': 'login',

@@ -93,7 +93,7 @@ describe('shell-aware icons', () => {
     const svg = container.querySelector('svg')
 
     expect(container.querySelector('i')).toBeNull()
-    expect(svg?.dataset.pixelIcon).toBe('settings-2')
+    expect(svg?.dataset.pixelIcon).toBe('settings-cog')
     // The legacy classes stay so codicon sizing/spin rules keep applying.
     expect(svg?.classList.contains('codicon-settings-gear')).toBe(true)
   })

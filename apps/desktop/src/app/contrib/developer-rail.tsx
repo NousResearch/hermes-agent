@@ -57,7 +57,8 @@ function DeveloperTools() {
     {
       paneId: 'files',
       label: t.sidebar.files,
-      icon: 'files',
+      // A folder, not the rail's Library glyph (`files`): the file tree is not the library.
+      icon: 'folder',
       action: 'view.showFiles',
       active: narrow ? overlays.has('files') : files,
       run: () => (narrow ? setFileBrowserOpen(!overlays.has('files')) : togglePaneVisible('files'))

@@ -843,6 +843,7 @@ def test_reload_env_clears_a_deleted_labs_memory_provider_key(tmp_path, monkeypa
     (home / ".env").write_text("RELOAD_TEST_KEY=kept\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv(key, "deleted-from-dotenv")
+    monkeypatch.delenv("RELOAD_TEST_KEY", raising=False)  # restored after the test; reload_env sets it
 
     from hermes_cli import config as cfg
     cfg.invalidate_env_cache()

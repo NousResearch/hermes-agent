@@ -47,14 +47,7 @@ def _notify_response(response: httpx.Response) -> None:
 
 
 async def _anotify_response(response: httpx.Response) -> None:
-    from hermes_cli import plugins
-
-    try:
-        plugins.discover_plugins()
-        if plugins.has_hook("llm_http_response"):
-            await plugins.ainvoke_hook("llm_http_response", **_response_metadata(response))
-    except Exception as exc:  # health: allow BLE001 -- optional observers must not alter SDK response handling
-        logger.warning("Model response observer skipped (%s)", type(exc).__name__)
+    _notify_response(response)
 
 
 def install_llm_response_hook(client: Any) -> Any:

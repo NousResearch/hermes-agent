@@ -101,12 +101,20 @@ def _execute(client, provider="openai"):
     )
 
 
+def _response(request, forwarded, status=200, *, headers=None, **body):
+    response_id = str(uuid4())
+    forwarded[response_id] = (request.headers["traceparent"], status)
+    return httpx.Response(status, headers={**(headers or {}), "x-test-response-id": response_id}, **body)
+
+
 def _assert_response_parents(events, forwarded, *, attempts=1):
     nemo_relay.subscribers.flush()
     responses = [event for event in events if event.name == "test.http.response"]
     starts = {event.uuid: event for event in events if event.category == "llm" and event.scope_category == "start"}
     assert len(starts) == attempts
     assert len(responses) == len(forwarded)
+    assert {response.data["response_id"] for response in responses} == forwarded.keys()
+    assert {response.parent_uuid for response in responses} == starts.keys()
     for response in responses:
         model = starts[response.parent_uuid]
         traceparent, status = forwarded[response.data["response_id"]]
@@ -120,10 +128,8 @@ def test_response_observers_cover_success_and_sdk_errors(provider, status, model
     forwarded = {}
 
     def respond(request):
-        response_id = str(uuid4())
-        forwarded[response_id] = (request.headers["traceparent"], status)
         body = _body(provider) if status == 200 else {"error": {"type": "permission_error", "message": "denied"}}
-        return httpx.Response(status, json=body, headers={"x-test-response-id": response_id})
+        return _response(request, forwarded, status, json=body)
 
     with _client(provider, respond) as client:
         if status == 403:
@@ -146,11 +152,7 @@ def test_stream_response_is_observed_before_a_later_body_failure(model_events):
     forwarded = {}
 
     def respond(request):
-        response_id = str(uuid4())
-        forwarded[response_id] = (request.headers["traceparent"], 200)
-        return httpx.Response(200, stream=InterruptedBody(), headers={
-            "content-type": "text/event-stream", "x-test-response-id": response_id,
-        })
+        return _response(request, forwarded, stream=InterruptedBody(), headers={"content-type": "text/event-stream"})
 
     with _client("openai", respond) as client:
         stream = relay_llm.stream(
@@ -169,10 +171,7 @@ def test_sdk_retry_observes_both_responses_under_one_attempt(model_events, monke
 
     def respond(request):
         status = 200 if forwarded else 429
-        response_id = str(uuid4())
-        forwarded[response_id] = (request.headers["traceparent"], status)
-        return httpx.Response(status, json=_body() if status == 200 else {"error": {"message": "retry"}},
-                              headers={"x-test-response-id": response_id})
+        return _response(request, forwarded, status, json=_body() if status == 200 else {"error": {"message": "retry"}})
 
     with _client("openai", respond) as client:
         client.max_retries = 1
@@ -187,10 +186,8 @@ def test_concurrent_calls_keep_separate_response_parents(model_events):
     forwarded = {}
 
     def respond(request):
-        response_id = str(uuid4())
-        forwarded[response_id] = (request.headers["traceparent"], 403)
         gate.wait(timeout=10)
-        return httpx.Response(403, json={"error": {"message": "denied"}}, headers={"x-test-response-id": response_id})
+        return _response(request, forwarded, 403, json={"error": {"message": "denied"}})
 
     def call():
         with pytest.raises(openai.PermissionDeniedError):
@@ -224,9 +221,7 @@ def test_async_sdk_response_keeps_the_physical_model_parent(model_events):
     forwarded = {}
 
     def respond(request):
-        response_id = str(uuid4())
-        forwarded[response_id] = (request.headers["traceparent"], 200)
-        return httpx.Response(200, json=_body(), headers={"x-test-response-id": response_id})
+        return _response(request, forwarded, json=_body())
 
     async def call():
         async with openai.AsyncOpenAI(

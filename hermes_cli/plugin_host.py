@@ -71,13 +71,22 @@ def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
 
 
 def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
-    """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home* alone: a start can come from
-    a caller bound to another profile, or from a crash restart's thread, which has no binding at all. Its
-    ``${VAR}``s expand through *home*'s own secrets (``owner_secret_scope``: the launch profile's env and files,
-    any other profile's own files), so under multiplexing never through ``os.environ``. No terminal policy: the
-    launcher is only read here."""
+    """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home*: a start can come from a
+    caller bound to another profile, or from a crash restart's thread, which has no binding at all.
+
+    Its ``${VAR}``s expand against the process env, as ``host_launcher`` documents (a profile a plugin runs
+    elsewhere takes the managed overlay's launcher, expanded the same way). Under multiplexing that env is the
+    launch profile's, so for a profile run here they expand through its own secrets instead
+    (``owner_secret_scope``: the launch profile's env and files, any other profile's own files), never another
+    profile's values. No terminal policy: the launcher is only read here."""
 
     def choose() -> list:
+        from agent.secret_scope import is_multiplex_active
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if not is_multiplex_active() or run_elsewhere_refusal(home) is not None:
+            from hermes_cli.plugins_loader import _plugin_home_scope
+            with _plugin_home_scope(home):
+                return host_launcher(home=home)
         from agent.runtime_scope import bind_state, scope_for_profile
         with bind_state(scope_for_profile(home), hydrate_secrets=False, terminal=False):
             return host_launcher(home=home)

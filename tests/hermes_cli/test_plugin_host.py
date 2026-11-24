@@ -553,6 +553,41 @@ def test_a_crash_restart_under_multiplexing_runs_the_profiles_own_launcher(tmp_p
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_marked_profiles_managed_launcher_expands_against_the_process_env_under_multiplexing(tmp_path, monkeypatch):
+    """Under multiplexing too, a profile a plugin runs elsewhere takes its launcher from the managed overlay alone,
+    its ``${VAR}``s expanded against the process env as for any profile, not through a scope built for its home."""
+    from agent import secret_scope as ss
+    from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    launch = _home_with_plugins(tmp_path, monkeypatch, {})
+    ops = launch / "profiles" / "ops"
+    ops.mkdir(parents=True)
+    (ops / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host"}}), encoding="utf-8")
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=launch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": ["${PLUGIN_RUNNER}"]}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("PLUGIN_RUNNER", str(runner))
+    ss.set_multiplex_active(True)
+    plugins_mod._reset_plugin_managers_for_tests()
+    token = set_hermes_home_override(ops)
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        host.ensure_started()
+        assert ran.read_text(encoding="utf-8").count("ran") == 1
+    finally:
+        host.shutdown()
+        reset_hermes_home_override(token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
 def test_a_host_started_by_a_caller_bound_to_a_since_renamed_link_runs_the_profiles_launcher(tmp_path, monkeypatch):
     """The launcher comes from the config of the home the host starts in, not from the caller's binding: a load

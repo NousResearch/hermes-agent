@@ -430,12 +430,16 @@ class GatewayGoalsMixin:
 
     @staticmethod
     def _turn_interrupted() -> bool:
-        """Whether this turn was stopped (the user's Stop, or a restart) rather than answered.
+        """Whether this turn was stopped rather than answered.
 
-        Mirrors ``_turn_failed``: the owner's captured result carries ``interrupted`` for every
-        stop path (``run_turn_runner`` finishes an interrupt with ``{interrupted: True,
-        completed: False}``). Without this check the goal judge graded the interruption text and
-        re-admitted a continuation, so Stop could never actually stop a ``/goal`` loop.
+        Mirrors ``_turn_failed``, including its limits: this reads the owner's captured result, which
+        is set only inside the ingress authority drain (``gateway/session_ingress.py``), so a turn that
+        never ran under that drain — a classic/internal admit (a ``/loop`` tick whose
+        ``admit_route_wake`` declines, a heartbeat, an authority-less deployment) — captures nothing
+        and reads ``False`` here, exactly as ``_turn_failed`` does. The served-gateway Stop paths all
+        do capture ``interrupted`` (``run_turn_runner`` finishes an interrupt with
+        ``{interrupted: True, completed: False}``). Without this check the goal judge graded the
+        interruption text and re-admitted a continuation, so Stop could never stop a ``/goal`` loop.
         """
         from gateway.session_results import execution_result
         captured = execution_result.get() or {}

@@ -1,18 +1,18 @@
 name: aura
 repo: https://github.com/KeyArgo/hermes-aura
-sha: 8e262aa15da60e939338a9341079ffcf74ac2579
+sha: 6a87c2fb9f6133ae7255c94b1e05628cf5598c42
 title: Aura
-description: 'A film behind your work, and an app that breathes with your audio: a docked film pane for YouTube videos, playlists and direct MP4/WebM beside the chat, and a MilkDrop-compatible visualiser (140 presets) driven by what the machine is already playing, with agent moods for thinking, tools, approvals, errors and streaming. Disclosure: audio comes from system loopback only, never the microphone, and is analysed in memory, never recorded or uploaded. Films are fetched from the URLs the user chooses; keyless search reads YouTube public results pages and caches them for five minutes. No account, no telemetry, no self-updater. Audio capture is tested on Linux (PipeWire/PulseAudio) and Windows 11 (WASAPI loopback via soundcard, a Windows-only python_dependency).'
+description: 'A film pane and an audio-reactive visualiser for Hermes Desktop: YouTube videos, playlists and direct MP4/WebM in the Right panel, on the Aura page or in a floating watch window, plus internet radio, and a MilkDrop-compatible visualiser (140 presets) driven by what the machine is already playing, with agent moods for thinking, tools, approvals, errors and streaming. Disclosure: audio comes from system loopback only, never the microphone, and is analysed in memory, never recorded or uploaded. Runs a token-protected HTTP server on 127.0.0.1 while Hermes runs. Films and radio stations are fetched from the URLs the user chooses; keyless search reads YouTube public results pages and caches them for five minutes. The optional Desktop window launches a local Chrome/Chromium with its own private profile. No account, no telemetry, no self-updater. Audio capture is tested on Linux (PipeWire/PulseAudio) and Windows 11 (WASAPI loopback via soundcard, a Windows-only python_dependency).'
 maintainer: KeyArgo
 tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
 version: "1.0.0"
-docs_url: https://github.com/KeyArgo/hermes-aura/blob/8e262aa15da60e939338a9341079ffcf74ac2579/README.md
+docs_url: https://github.com/KeyArgo/hermes-aura/blob/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/README.md
 screenshots:
-  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/8e262aa15da60e939338a9341079ffcf74ac2579/assets/visualiser-tokamak-witchery.jpg
-  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/8e262aa15da60e939338a9341079ffcf74ac2579/assets/visualiser-spiral-movement.jpg
-  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/8e262aa15da60e939338a9341079ffcf74ac2579/assets/visualiser-skylight.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/assets/visualiser-tokamak-witchery.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/assets/visualiser-spiral-movement.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/assets/visualiser-skylight.jpg
 platforms: []
 known_issues:
   - macOS audio capture needs a virtual audio device (such as BlackHole).

@@ -8,7 +8,6 @@ command, append a ``CommandDef``; to add an alias, set ``aliases=("short",)``.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Optional
@@ -446,11 +445,28 @@ _LAZY_LOCALIZED_TABLES = {"COMMANDS": build_commands, "COMMANDS_BY_CATEGORY": bu
 SUBCOMMANDS: dict[str, list[str]] = {
     f"/{_cmd.name}": list(_cmd.subcommands) for _cmd in COMMAND_REGISTRY if _cmd.subcommands}
 
-_PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
+
+def _pipe_alternatives(args_hint: str) -> list[str]:
+    """Words of the first ``word|word[|word...]`` run of lowercase ASCII words in ``args_hint``; [] if none.
+
+    String code, not a regex: the table is filled at import, and importing must not need the regex engine."""
+    kept = "".join(char if "a" <= char <= "z" or char == "|" else " " for char in args_hint)
+    for chunk in kept.split():
+        run: list[str] = []
+        for word in [*chunk.split("|"), ""]:
+            if word:
+                run.append(word)
+            elif len(run) > 1:
+                return run
+            else:
+                run = []
+    return []
+
+
 for _cmd in COMMAND_REGISTRY:
-    _m = _PIPE_SUBS_RE.search(_cmd.args_hint) if _cmd.args_hint else None
-    if _m and f"/{_cmd.name}" not in SUBCOMMANDS:
-        SUBCOMMANDS[f"/{_cmd.name}"] = _m.group(0).split("|")
+    _subs = _pipe_alternatives(_cmd.args_hint or "")
+    if _subs and f"/{_cmd.name}" not in SUBCOMMANDS:
+        SUBCOMMANDS[f"/{_cmd.name}"] = _subs
 
 
 # /help sub-groups for the large "Session" category (category itself is load-bearing for gateway

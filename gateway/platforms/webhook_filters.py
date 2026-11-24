@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,28 @@ def _op_regex(value: Any, pattern: Any) -> bool:
     except re.error as exc:
         logger.warning("[webhook] Invalid webhook filter regex: %s", exc)
         return False
+
+
+def filter_regexes(spec: Any) -> Iterator[str]:
+    """Every ``regex`` operand ``route_filters_match`` can evaluate in a route's ``filters`` value."""
+    for item in spec if isinstance(spec, list) else [spec]:
+        yield from _spec_regexes(item)
+
+
+def _spec_regexes(spec: Any) -> Iterator[str]:
+    """``filter_matches``' precedence: ``all`` / ``any`` (a list), else ``not``, else the first field operator."""
+    if not isinstance(spec, dict):
+        return
+    for key in ("all", "any"):
+        if key in spec:
+            items = spec.get(key)
+            for item in items if isinstance(items, list) else ():
+                yield from _spec_regexes(item)
+            return
+    if "not" in spec:
+        yield from _spec_regexes(spec.get("not"))
+    elif spec.get("missing") is not True and next((key for key, _ in _FIELD_OPERATORS if key in spec), None) == "regex":
+        yield str(spec["regex"])
 
 
 # Field operators in precedence order: (spec key, predicate(resolved value, operand)). First key present wins.

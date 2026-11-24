@@ -100,7 +100,8 @@ exit $status
 
 # name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml, plus the
 # unconditional guards CI runs as steps of repo-guards.yml (case collisions, lazy_deps imports,
-# profile archives, blob size, /tmp literals, Bash shebangs, AGENTS.md sizes).
+# profile archives, blob size, /tmp literals, Bash shebangs, AGENTS.md sizes) and its RE2 pattern
+# gate, the one guard that imports a dependency (google-re2): run it in the repo's environment.
 _GUARDS = {
     "footguns": ["scripts/check-windows-footguns.py", "--all"],
     "shebangs": ["scripts/check_bash_shebangs.py"],
@@ -121,6 +122,7 @@ _GUARDS = {
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
     "backend-imports": ["scripts/ci/check_backend_imports.py"],
+    "re2-patterns": ["scripts/check_re2_patterns.py"],
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
 # (the blob-size step of repo-guards.yml).

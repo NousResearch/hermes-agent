@@ -1357,6 +1357,24 @@ def is_container() -> bool:
     return detect()
 
 
+def runtime_kind() -> str:
+    """``"container"`` inside a container, else ``"native"`` — the single resolver every
+    surface that DECLARES its runtime must call, so the wire values cannot drift."""
+    return "container" if is_container() else "native"
+
+
+def runtime_kind_fields() -> dict[str, str]:
+    """``{"runtime_kind": ...}`` for a state file, or ``{}`` when detection fails: the same
+    never-raises contract as the code-identity fields, so an unresolvable runtime is an absent key,
+    never a wrong one."""
+    try:
+        return {"runtime_kind": runtime_kind()}
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug("runtime kind detection failed", exc_info=True)
+        return {}
+
+
 def _detect_container() -> bool:
     """Keep the historical test seam while delegating canonical detection."""
     from hermes_platform.host.runtime import _detect_container as detect

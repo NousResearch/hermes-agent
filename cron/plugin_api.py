@@ -38,7 +38,12 @@ def _home_scope(home: _Optional[str | _Path]):
 
 
 def _expanded(home: _Optional[str | _Path]) -> _Optional[_Path]:
-    return None if home is None else _Path(home).expanduser()
+    """*home* read the way Hermes reads a home path (``~`` and environment variables expanded), so
+    the existence check, the profile bind and the cron store all name one directory."""
+    if home is None:
+        return None
+    from hermes_constants import _expand_hermes_home
+    return _expand_hermes_home(str(home))
 
 
 def ensure_named_job(
@@ -56,21 +61,22 @@ def ensure_named_job(
     Every job counts, disabled ones included. Two or more with that name raise
     ``AmbiguousJobReference`` and create nothing. An existing enabled job has its trigger registered
     with the active scheduler provider again and is returned as stored, in the shape a new job has:
-    its prompt and schedule are not updated. A new job is created and registered the way ``hermes cron add`` does it; errors from
-    either step propagate unchanged.
+    its prompt and schedule are not updated. A new job is created and registered the way ``hermes cron add`` does it. A
+    registration that fails, for a new job or an existing one, raises that command's
+    ``CronSchedulerRegistrationError`` (a ``RuntimeError`` with the saved job as ``.job``).
 
     ``name`` must be a non-empty ``str`` with no leading or trailing whitespace, since cron could
     not find any other name again; anything else raises ``ValueError`` before anything is written.
 
     ``home`` runs the call against that profile's home, cron store, secrets and settings (its
-    time zone for a schedule), all restored afterwards; ``~`` is expanded. Its secrets are read from
+    time zone for a schedule), all restored afterwards; ``~`` and environment variables are expanded. Its secrets are read from
     its own files, also when it is the profile already active. A ``home`` that is not an existing
     directory raises ``FileNotFoundError`` and is not created. Inside a hosted activity, which
     cannot act for a profile, binding one is refused. The lookup and the create are not atomic
     across processes: a caller that can race with itself serializes its own calls.
     """
     from cron.jobs import _normalize_job_record, load_jobs
-    from cron.scheduler import create_job_with_scheduler_registration
+    from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     from cron.scheduler_provider import resolve_cron_scheduler
 
     if not isinstance(name, str) or not name or name != name.strip():
@@ -86,7 +92,10 @@ def ensure_named_job(
         if matches:
             job = matches[0]
             if job.get("enabled", True):
-                resolve_cron_scheduler().register_job(job)
+                try:
+                    resolve_cron_scheduler().register_job(job)
+                except Exception as exc:
+                    raise CronSchedulerRegistrationError(job, exc) from exc
             return job
         return create_job_with_scheduler_registration(
             prompt=prompt, schedule=schedule, name=name, repeat=repeat, deliver=deliver,
@@ -101,7 +110,8 @@ def delivery_platforms(
     ``job_id=None`` answers for the cron run bound in this process's calling context, and returns
     ``None`` outside one: a hook in a plugin host has no such binding, so it passes
     ``ctx.current_cron_execution().job_id``. ``None`` also when no stored job has that id. ``()`` for
-    a job that delivers nowhere. The answer is the stored job's: an edit saved while a run is in
+    a job that delivers nowhere. It reads the normal delivery lane; a ``failure_deliver`` override
+    is not consulted. The answer is the stored job's: an edit saved while a run is in
     flight shows here, though that run delivers with the settings it started with. The
     targets come from cron's own resolver, so ``all``, the ``origin`` fallback, home channels and
     Bot Chat tokens follow cron's rules. Only platform names are returned, never chat or thread ids.

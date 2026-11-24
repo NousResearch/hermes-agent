@@ -137,7 +137,7 @@ def test_failed_first_registration_keeps_the_job_and_the_next_call_registers_it(
 
     def register(job):
         attempts.append(job["id"])
-        if len(attempts) == 1:
+        if len(attempts) <= 2:
             raise OSError("provider unreachable")
 
     provider = make_cron_provider(register_job=register)
@@ -147,11 +147,15 @@ def test_failed_first_registration_keeps_the_job_and_the_next_call_registers_it(
         ensure_named_job("follow-up", prompt="check in", schedule="every 1h")
     [stored] = _all_jobs()
     assert failed.value.job["id"] == stored["id"]
+    with pytest.raises(CronSchedulerRegistrationError) as still_down:  # the saved job, same error
+        ensure_named_job("follow-up", prompt="check in", schedule="every 1h")
+    assert still_down.value.job["id"] == stored["id"]
+    assert isinstance(still_down.value.cause, OSError)
 
     job = ensure_named_job("follow-up", prompt="check in", schedule="every 1h")
 
     assert job["id"] == stored["id"]
-    assert attempts == [stored["id"], stored["id"]]
+    assert attempts == [stored["id"]] * 3
     assert len(_all_jobs()) == 1
 
 
@@ -241,6 +245,22 @@ def test_a_tilde_home_is_the_directory_it_expands_to(tmp_path, monkeypatch, regi
     assert delivery_platforms(job["id"], home="~/other-profile") == ()
     with jobs.use_cron_store(other):
         assert [j["id"] for j in _all_jobs()] == [job["id"]]
+
+
+def test_home_is_read_the_way_hermes_reads_a_home_path(tmp_path, monkeypatch, registered):
+    monkeypatch.setenv("SEAM_PROFILE_DIR", "other-profile")
+    literal, named = tmp_path / "$SEAM_PROFILE_DIR", tmp_path / "other-profile"
+    literal.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="other-profile"):
+        ensure_named_job("follow-up", prompt="check in", schedule="every 1h", home=literal)
+    assert not named.exists()
+
+    named.mkdir()
+    job = ensure_named_job("follow-up", prompt="check in", schedule="every 1h", home=literal)
+    with jobs.use_cron_store(named):
+        assert [j["id"] for j in _all_jobs()] == [job["id"]]
+    assert not (literal / "cron").exists()
 
 
 def test_home_wins_over_a_cron_store_the_caller_is_already_inside(tmp_path, registered):

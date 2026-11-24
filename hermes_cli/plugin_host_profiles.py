@@ -107,7 +107,8 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
 
 def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     """Import the plugin in a throwaway host process with no credentials and read its profiles."""
-    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, host_launcher
+    from hermes_cli.plugin_host import extraction_launcher
+    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV
     from hermes_constants import get_hermes_home
     repo_root = project_root_str()
     # Absolute: the child starts in the home, so a relative HERMES_HOME or plugin dir would resolve twice.
@@ -120,8 +121,8 @@ def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
                **{HOST_PROCESS_ENV: "1"})
     # -P and a trusted cwd: ``-m`` otherwise puts the launch directory ahead of PYTHONPATH, so a
     # ``hermes_cli/`` package in the directory Hermes was started from would run instead of ours.
-    argv = [*host_launcher(), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child", "--extract-profiles",
-            str(plugin_dir.resolve()), module_name]
+    argv = [*extraction_launcher(get_hermes_home()), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child",
+            "--extract-profiles", str(plugin_dir.resolve()), module_name]
     try:
         done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
                               cwd=home, timeout=_EXTRACT_TIMEOUT_SECS, check=False)

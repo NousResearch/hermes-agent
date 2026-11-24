@@ -14,8 +14,9 @@
   --composer-fill: var(--portal-composer-fill);
 }
 
-/* The resting prompt is the card's heading line (16292:15681), not a dim hint. The shared composer
-   pins its hint's ink with !important (styles.css), so the redesign's line must too. */
+/* The resting prompt is the card's heading line (16292:15681), in an ink a step back from typed
+   text so it never reads as entered. The shared composer pins its hint's ink with !important
+   (styles.css), so the redesign's line must too. */
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
   color: var(--portal-composer-prompt-ink) !important;
 }

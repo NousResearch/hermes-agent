@@ -25,7 +25,7 @@
       color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background))
     )
   );
-  --portal-composer-prompt-ink: var(--portal-text-primary);
+  --portal-composer-prompt-ink: var(--portal-text-tertiary);
   /* Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT /
      RUNNING chips (856:3444, 1036:7318). */
   --portal-surface-brand-selected: var(--portal-raw-brand-25);

@@ -513,8 +513,8 @@ events during rebinding are discarded, never replayed under later consent.
 The redesigned composer is 640 × 148 on an empty landing (msg 16292:15670). In a populated native
 conversation it keeps the 148px base height, spans the shared conversation column (up to 960px) and
 docks 30px above the stage floor. Its card is navy, white .05 / blue .10 / black .80 flattened onto
-the stage (white on light), with no shadow, and its resting prompt is the card's heading line in
-full ink (16292:15681); Figma's dim second line ("Prompt suggestions or processing...") is template
+the stage (white on light), with no shadow, and its resting prompt is the card's heading line (16292:15681) in
+tertiary ink, not Figma's full ink: a hint in the ink of typed text reads as already typed; Figma's dim second line ("Prompt suggestions or processing...") is template
 copy and is not built, with model/effort as quiet right-aligned text above the input and attachment, microphone, and labeled Send
 controls below. Browser touch targets keep their larger accessibility sizing.
 Gateway menus distinguish connection from inference
@@ -749,7 +749,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-surface-brand-hover` | `color-mix(in srgb, var(--portal-surface-brand) 86%, var(--ui-base))` | ″ | A brand-filled card under the pointer (the sidebar's Create an Account): a step toward the ink. |
 | `--portal-text-brand` | `var(--portal-raw-accent-ink-dark)` | `var(--portal-raw-accent-ink-light)` |  |
 | `--portal-composer-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background)) ) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background))` | The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white (16292:27185). Its resting prompt is the card's heading line at full ink (16292:15681). |
-| `--portal-composer-prompt-ink` | `var(--portal-text-primary)` | ″ |  |
+| `--portal-composer-prompt-ink` | `var(--portal-text-tertiary)` | ″ |  |
 | `--portal-surface-brand-selected` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-12)` | Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT / RUNNING chips (856:3444, 1036:7318). |
 | `--portal-spectrum-red` | `var(--portal-raw-spectrum-red)` | ″ |  |
 | `--portal-spectrum-yellow` | `var(--portal-raw-spectrum-yellow)` | ″ |  |

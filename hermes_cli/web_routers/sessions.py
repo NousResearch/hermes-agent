@@ -311,6 +311,188 @@ def _is_compression_edge(child, parent) -> bool:
         and started_at >= parent_ended_at)
 
 
+def search_sessions_core(
+        store, *, q: str, limit: int, profile: Optional[str], source: Optional[str],
+        sources: Optional[str], exclude_sources: Optional[str]) -> dict:
+    """Search one already-opened store by session id, FTS5 message content and title.
+
+    The shared three-lane payload builder behind the dashboard route and the gateway
+    API server's ``GET /api/sessions/search`` (the gateway port fixes #159741: the
+    desktop's server-side search lane used to 404 through ``/api/sessions/{session_id}``).
+    Results are deduped by compression lineage, not raw ``session_id``: auto-compression
+    rotates a chat onto a fresh id and leaves the old segment in the FTS index. Branches
+    also use ``parent_session_id`` but are real alternate conversations — they are NOT
+    collapsed into the parent. Blocking store reads only; callers keep this off the
+    event loop.
+    """
+    if not q or not q.strip():
+        return {"results": []}
+    row_profile = _serving_profile(profile)
+    safe_limit = max(1, min(int(limit or 20), 100))
+    source_filter = source or None
+    source_list = _csv(sources)
+    include_sources = [source_filter] if source_filter else (source_list or None)
+    exclude_list = _csv(exclude_sources)
+    now = time.time()
+
+    def get_session(sid):
+        try:
+            return store.sessions.get(sid)
+        except Exception:
+            return None
+
+    # Walk parent_session_id to the compression root, memoized per
+    # chain; stops at branch/delegate edges (those stay searchable).
+    root_cache: dict = {}
+
+    def compression_root(session_id: str) -> str:
+        chain, cur, root = [], session_id, session_id
+        while cur and cur not in chain:  # ``not in chain`` guards parent cycles
+            if cur in root_cache:
+                root = root_cache[cur]
+                break
+            chain.append(cur)
+            s = get_session(cur)
+            parent = s.parent_session_id if s is not None else None
+            parent_session = get_session(parent) if parent else None
+            if not parent_session or not _is_compression_edge(s, parent_session):
+                root = cur
+                break
+            cur = parent
+        for node in chain:
+            root_cache[node] = root
+        return root
+
+    tip_cache: dict = {}
+
+    def lineage_tip(session_id: str) -> str:
+        # Resolve the tip from the MATCHED id, never from the lineage
+        # root: the forward chain walk is defensively bounded, so a
+        # lineage deeper than the bound truncates to a stale mid id
+        # when started at the root. Resuming from the matched id is
+        # what the CLI does and always reaches the live tip (#125041).
+        if session_id not in tip_cache:
+            try:
+                tip_cache[session_id] = store.lineage.tip(session_id)
+            except Exception:
+                tip_cache[session_id] = session_id
+        return tip_cache[session_id]
+
+    # One keyspace for id-hits and content-hits, keyed by lineage root;
+    # first hit wins, and ID matches run first.
+    seen: dict = {}
+
+    def add_lineage_result(raw_sid: str, payload: dict) -> None:
+        if not raw_sid:
+            return
+        root = compression_root(raw_sid)
+        if root in seen or len(seen) >= safe_limit:
+            return
+        payload = dict(payload)
+        sid = lineage_tip(raw_sid)
+        payload["session_id"] = sid
+        payload["lineage_root"] = root
+        payload["profile"] = row_profile
+        payload["is_default_profile"] = row_profile == "default"
+        try:
+            entry = store.sessions.summary(sid)
+        except Exception:
+            entry = None
+        if entry:
+            row = entry.session
+            last_active = entry.last_active or row.started_at
+            payload.update({
+                "id": row.session_id or sid,
+                "source": row.source,
+                "model": row.model,
+                "title": row.title,
+                "started_at": row.started_at,
+                "ended_at": row.ended_at,
+                "last_active": last_active,
+                "is_active": (
+                    row.ended_at is None and (now - (last_active or 0)) < 300),
+                "message_count": row.message_count or 0,
+                "tool_call_count": row.tool_call_count or 0,
+                "input_tokens": row.input_tokens or 0,
+                "output_tokens": row.output_tokens or 0,
+                "preview": entry.preview or None,
+                "parent_session_id": row.parent_session_id,
+                "profile": _serving_profile(profile),
+                "archived": row.archived})
+        else:
+            payload["id"] = sid
+        seen[root] = payload
+
+    def hit_payload(snippet: str, role, source, model, session_started, last_active=None) -> dict:
+        # `last_active` rides only on id-match rows (sessions table); FTS
+        # hits have no row recency and leave it null so the desktop can
+        # fall back to session_started instead of inventing one.
+        return {
+            "snippet": snippet, "role": role, "source": source,
+            "model": model, "session_started": session_started,
+            "last_active": last_active}
+
+    # Direct ID matches first (pasted ids never appear in message text).
+    for entry in store.sessions.search_by_id(
+        q, limit=safe_limit, include_archived=True, sources=include_sources,
+        exclude_sources=exclude_list):
+        row = entry.session
+        sid = row.session_id
+        preview = entry.preview.strip()
+        snippet = preview or f"Session ID: {sid}"
+        add_lineage_result(sid, hit_payload(
+            snippet, None, row.source, row.model, row.started_at, entry.last_active))
+
+    # Prefix wildcards so partial words match ("nimb" -> "nimb*");
+    # quoted phrases and existing wildcards are kept as-is.
+    prefix_query = " ".join(
+        tok if tok.startswith('"') or tok.endswith("*") else tok + "*"
+        for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
+    # Over-fetch so lineage dedup can still surface `limit` distinct
+    # conversations when several hits collapse onto one root.
+    matches = store.search.search_messages(
+        prefix_query, source_filter=include_sources,
+        exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
+        fields=("session_id", "role", "snippet", "source", "model", "session_started"))
+    for m in matches:
+        if len(seen) >= safe_limit:
+            break
+        add_lineage_result(
+            m.session_id,
+            hit_payload(m.snippet, m.role, m.source, m.model, m.session_started))
+
+    # Title matches fill any remaining slots (#66242): the FTS index
+    # only covers message content, so a term that lives solely in a
+    # manually-set sessions.title would otherwise return nothing. The
+    # DB layer already knows how to LIKE-match titles across the whole
+    # compression chain (the listing's ``search_text``, the same
+    # helper the sidebar listing uses), so reuse it rather than adding
+    # a second title query path here. Best-effort: an old/odd store
+    # that rejects the call just skips the lane.
+    if len(seen) < safe_limit:
+        try:
+            title_rows = store.sessions.list_sessions(
+                SessionQuery(search_text=q.strip(), include_archived=True, order=SessionOrder.LAST_ACTIVE,
+                             sources=tuple(include_sources) if include_sources else None,
+                             exclude_sources=tuple(exclude_list)),
+                SessionWindow(limit=safe_limit))
+        except Exception:  # health: allow BLE001 -- best-effort supplement lane: an old/odd store that rejects the search_query read must not fail the id+content results already collected
+            _log.debug("Title-match supplement skipped for %r", q[: 200])
+            title_rows = []
+        for entry in title_rows:
+            if len(seen) >= safe_limit:
+                break
+            row = entry.session
+            sid = row.session_id
+            if not sid:
+                continue
+            preview = entry.preview.strip()
+            add_lineage_result(
+                sid, hit_payload(preview or f"Session title matched: {q.strip()}",
+                                 None, row.source, row.model, row.started_at, entry.last_active))
+    return {"results": list(seen.values())}
+
+
 @search_router.get("/api/sessions/search")
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str | None = None,
@@ -325,172 +507,11 @@ async def search_sessions(
     if not q or not q.strip():
         return {"results": []}
     with http_failure("GET /api/sessions/search failed", 500, detail="Search failed"):
-        row_profile = _serving_profile(profile)
 
         def _search(store):
-            safe_limit = max(1, min(int(limit or 20), 100))
-            source_filter = source or None
-            source_list = _csv(sources)
-            include_sources = [source_filter] if source_filter else (source_list or None)
-            exclude_list = _csv(exclude_sources)
-            now = time.time()
-
-            def get_session(sid):
-                try:
-                    return store.sessions.get(sid)
-                except Exception:
-                    return None
-
-            # Walk parent_session_id to the compression root, memoized per
-            # chain; stops at branch/delegate edges (those stay searchable).
-            root_cache: dict = {}
-
-            def compression_root(session_id: str) -> str:
-                chain, cur, root = [], session_id, session_id
-                while cur and cur not in chain:  # ``not in chain`` guards parent cycles
-                    if cur in root_cache:
-                        root = root_cache[cur]
-                        break
-                    chain.append(cur)
-                    s = get_session(cur)
-                    parent = s.parent_session_id if s is not None else None
-                    parent_session = get_session(parent) if parent else None
-                    if not parent_session or not _is_compression_edge(s, parent_session):
-                        root = cur
-                        break
-                    cur = parent
-                for node in chain:
-                    root_cache[node] = root
-                return root
-
-            tip_cache: dict = {}
-
-            def lineage_tip(session_id: str) -> str:
-                # Resolve the tip from the MATCHED id, never from the lineage
-                # root: the forward chain walk is defensively bounded, so a
-                # lineage deeper than the bound truncates to a stale mid id
-                # when started at the root. Resuming from the matched id is
-                # what the CLI does and always reaches the live tip (#125041).
-                if session_id not in tip_cache:
-                    try:
-                        tip_cache[session_id] = store.lineage.tip(session_id)
-                    except Exception:
-                        tip_cache[session_id] = session_id
-                return tip_cache[session_id]
-
-            # One keyspace for id-hits and content-hits, keyed by lineage root;
-            # first hit wins, and ID matches run first.
-            seen: dict = {}
-
-            def add_lineage_result(raw_sid: str, payload: dict) -> None:
-                if not raw_sid:
-                    return
-                root = compression_root(raw_sid)
-                if root in seen or len(seen) >= safe_limit:
-                    return
-                payload = dict(payload)
-                sid = lineage_tip(raw_sid)
-                payload["session_id"] = sid
-                payload["lineage_root"] = root
-                payload["profile"] = row_profile
-                payload["is_default_profile"] = row_profile == "default"
-                try:
-                    entry = store.sessions.summary(sid)
-                except Exception:
-                    entry = None
-                if entry:
-                    row = entry.session
-                    last_active = entry.last_active or row.started_at
-                    payload.update({
-                        "id": row.session_id or sid,
-                        "source": row.source,
-                        "model": row.model,
-                        "title": row.title,
-                        "started_at": row.started_at,
-                        "ended_at": row.ended_at,
-                        "last_active": last_active,
-                        "is_active": (
-                            row.ended_at is None and (now - (last_active or 0)) < 300),
-                        "message_count": row.message_count or 0,
-                        "tool_call_count": row.tool_call_count or 0,
-                        "input_tokens": row.input_tokens or 0,
-                        "output_tokens": row.output_tokens or 0,
-                        "preview": entry.preview or None,
-                        "parent_session_id": row.parent_session_id,
-                        "profile": _serving_profile(profile),
-                        "archived": row.archived})
-                else:
-                    payload["id"] = sid
-                seen[root] = payload
-
-            def hit_payload(snippet: str, role, source, model, session_started, last_active=None) -> dict:
-                # `last_active` rides only on id-match rows (sessions table); FTS
-                # hits have no row recency and leave it null so the desktop can
-                # fall back to session_started instead of inventing one.
-                return {
-                    "snippet": snippet, "role": role, "source": source,
-                    "model": model, "session_started": session_started,
-                    "last_active": last_active}
-
-            # Direct ID matches first (pasted ids never appear in message text).
-            for entry in store.sessions.search_by_id(
-                q, limit=safe_limit, include_archived=True, sources=include_sources,
-                exclude_sources=exclude_list):
-                row = entry.session
-                sid = row.session_id
-                preview = entry.preview.strip()
-                snippet = preview or f"Session ID: {sid}"
-                add_lineage_result(sid, hit_payload(
-                    snippet, None, row.source, row.model, row.started_at, entry.last_active))
-
-            # Prefix wildcards so partial words match ("nimb" -> "nimb*");
-            # quoted phrases and existing wildcards are kept as-is.
-            prefix_query = " ".join(
-                tok if tok.startswith('"') or tok.endswith("*") else tok + "*"
-                for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
-            # Over-fetch so lineage dedup can still surface `limit` distinct
-            # conversations when several hits collapse onto one root.
-            matches = store.search.search_messages(
-                prefix_query, source_filter=include_sources,
-                exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
-                fields=("session_id", "role", "snippet", "source", "model", "session_started"))
-            for m in matches:
-                if len(seen) >= safe_limit:
-                    break
-                add_lineage_result(
-                    m.session_id,
-                    hit_payload(m.snippet, m.role, m.source, m.model, m.session_started))
-
-            # Title matches fill any remaining slots (#66242): the FTS index
-            # only covers message content, so a term that lives solely in a
-            # manually-set sessions.title would otherwise return nothing. The
-            # DB layer already knows how to LIKE-match titles across the whole
-            # compression chain (the listing's ``search_text``, the same
-            # helper the sidebar listing uses), so reuse it rather than adding
-            # a second title query path here. Best-effort: an old/odd store
-            # that rejects the call just skips the lane.
-            if len(seen) < safe_limit:
-                try:
-                    title_rows = store.sessions.list_sessions(
-                        SessionQuery(search_text=q.strip(), include_archived=True, order=SessionOrder.LAST_ACTIVE,
-                                     sources=tuple(include_sources) if include_sources else None,
-                                     exclude_sources=tuple(exclude_list)),
-                        SessionWindow(limit=safe_limit))
-                except Exception:  # health: allow BLE001 -- best-effort supplement lane: an old/odd store that rejects the search_query read must not fail the id+content results already collected
-                    _log.debug("Title-match supplement skipped for %r", q[: 200])
-                    title_rows = []
-                for entry in title_rows:
-                    if len(seen) >= safe_limit:
-                        break
-                    row = entry.session
-                    sid = row.session_id
-                    if not sid:
-                        continue
-                    preview = entry.preview.strip()
-                    add_lineage_result(
-                        sid, hit_payload(preview or f"Session title matched: {q.strip()}",
-                                         None, row.source, row.model, row.started_at, entry.last_active))
-            return {"results": list(seen.values())}
+            return search_sessions_core(
+                store, q=q, limit=limit, profile=profile, source=source,
+                sources=sources, exclude_sources=exclude_sources)
 
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
         return await asyncio.to_thread(_with_db, profile, _search, read_only=True)

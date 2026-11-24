@@ -224,6 +224,18 @@ def test_stable_promotion_publishes_unversioned_dmg_and_downloads_page(
     ]
 
 
+class _PublicOriginServingStalePage(dict):
+    """The public origin's view of the bucket, still serving an old stable downloads page."""
+
+    def __init__(self, bucket: dict):
+        super().__init__()
+        self.bucket = bucket
+
+    def get(self, key, default=None):
+        if key == STABLE_PAGE_KEY:
+            return (b"stale cached page", '"cdn"')
+        return self.bucket.get(key, default)
+
 def test_stable_promotion_rejects_stale_order_for_dmg_and_page(
     tmp_path,
     monkeypatch,
@@ -259,10 +271,14 @@ def test_stable_promotion_rejects_stale_order_for_dmg_and_page(
     # Only the page ahead is the state render-builds-table's `complete` step leaves when it
     # renders a newer release while an older advance is still pending. The sequencer advances
     # oldest first, so the older promotion must land and leave that page alone, not wedge.
+    # The page it leaves is not its own, so it does not read that page back either: a public copy
+    # still catching up must not fail the advance after the feeds have moved.
     del r2_server.store[STABLE_DMG_KEY]
     r2_server.metadata.pop(STABLE_DMG_KEY, None)
     r2_server.requests.clear()
+    https_origin.store = _PublicOriginServingStalePage(r2_server.store)
     artifacts.promote(older, tmp_path / "promote-older-page-ahead", https_origin.base)
+    https_origin.store = r2_server.store
     assert r2_server.store[STABLE_DMG_KEY][0] == _older_dmg
     assert r2_server.store[STABLE_PAGE_KEY][0] == newer_page
     assert not any(method == "PUT" and path == f"/hermes-releases/{STABLE_PAGE_KEY}"

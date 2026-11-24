@@ -552,9 +552,9 @@ def _check_stable_page_state(
     *,
     tag: str,
     page_bytes: bytes,
-) -> tuple[bytes, dict[str, str] | None]:
-    """The page bytes that should be live after this promotion, and the conditions for writing
-    them (None: nothing to write).
+) -> tuple[bytes | None, dict[str, str] | None]:
+    """The page bytes this promotion makes live (None: the page is not this promotion's to write
+    or read back), and the conditions for writing them (None: nothing to write).
 
     A page that already describes a newer stable release stays as it is; a canary page at this
     key fails closed. Feed order is checked before promotion, so a newer stable page can only come
@@ -572,7 +572,7 @@ def _check_stable_page_state(
             raise ValueError("Refusing to keep or replace a canary downloads page at the stable key")
         print(f"::warning::the stable downloads page already describes a release newer than {tag}; "
               "leaving it unchanged")
-        return existing_bytes, None
+        return None, None
     if existing_bytes == page_bytes:
         return page_bytes, None
     return page_bytes, {"If-Match": etag}
@@ -599,7 +599,8 @@ class StableDownloads:
     the order against the live alias and page) before any feed moves. ``promote`` calls
     ``publish_dmg`` right after the macOS feed, so a failed copy leaves the Windows and Termux
     pointers on the previous release, and ``publish_page`` after every feed pointer, so a failed
-    feed write leaves the page there too. Each object is read back through the public origin."""
+    feed write leaves the page there too. Each object this promotion writes or finds already in
+    place is read back through the public origin."""
 
     tag: str
     public_base: str
@@ -609,7 +610,7 @@ class StableDownloads:
     source_dmg: CopySource
     dmg_sha256: str
     dmg_needs_copy: bool
-    page_bytes: bytes = field(repr=False)
+    page_bytes: bytes | None = field(repr=False)
     page_conditions: dict[str, str] | None
 
     @classmethod
@@ -657,6 +658,8 @@ class StableDownloads:
     def publish_page(self) -> None:
         from scripts.releases import r2
 
+        if self.page_bytes is None:
+            return
         page_key = r2.channel_page_key_for("stable")
         if self.page_conditions is not None:
             r2.put_object(

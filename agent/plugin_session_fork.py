@@ -490,6 +490,7 @@ def _run_job(job: _ForkJob) -> None:
     from agent.side_question import trim_snapshot_for_fork
     from agent.side_question_request import _agent_provider_refusal, runtime_key
     from agent.thread_scoped_output import thread_scoped_silence
+    from agent.turn_facade import bind_detached_fork_origin
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
     capture, started = job.capture, time.monotonic()
@@ -554,7 +555,8 @@ def _run_job(job: _ForkJob) -> None:
             timer.cancel()
         clear_thread_tool_whitelist()
         if fork is not None:
-            end_loop_aux_attempt(fork, error=InterruptedError(f"plugin fork {outcome}"))
+            with bind_detached_fork_origin(fork):
+                end_loop_aux_attempt(fork, error=InterruptedError(f"plugin fork {outcome}"))
             fork._loop_aux_task = None
             usage = release_cache_parity_fork(parent, fork, task=f"{PLUGIN_FORK_TASK}:{job.plugin_id}",
                                               session_id=capture.session_id)

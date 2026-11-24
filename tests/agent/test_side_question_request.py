@@ -489,6 +489,27 @@ def test_timeout_counts_the_fork_build(provider, issued, monkeypatch):
     assert len(provider.requests) == sent
 
 
+@pytest.mark.parametrize('fails', [False, True], ids=['success', 'error'])
+def test_text_only_fork_origin_is_bound_for_auxiliary_hooks(provider, issued, monkeypatch, fails):
+    from agent import auxiliary_hooks
+    from hermes_cli.plugin_session import fork_origin
+
+    parent = _make_parent()
+    _run_parent_turn(parent, provider, tool_round=False)
+    start = auxiliary_hooks.start_aux_call_hooks
+    observed = []
+
+    def read_origin(**kwargs):
+        observed.append(fork_origin())
+        return start(**kwargs)
+
+    monkeypatch.setattr(auxiliary_hooks, 'start_aux_call_hooks', read_origin)
+    provider.replies.append(RuntimeError('upstream 500') if fails else _response('ok', usage=_usage()))
+    assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id='next-prompt') == (None if fails else 'ok')
+    assert fork_origin() == ''
+    assert observed == ['side_question']
+
+
 def test_provider_error_returns_none_without_fallback(provider, issued):
     parent = _make_parent(fallback_model={"provider": "openrouter", "model": "fallback/model"})
     _run_parent_turn(parent, provider, tool_round=False)

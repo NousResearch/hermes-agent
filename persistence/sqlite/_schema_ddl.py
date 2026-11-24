@@ -71,7 +71,8 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
 # v33: data-only — re-tag delegate subagent rows that lost ``_delegate_from`` (see _run_data_migrations).
-SCHEMA_VERSION = 33
+# v34: data-only — adopt markerless subagent rows a completed handoff moved a chat onto (same place).
+SCHEMA_VERSION = 34
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
 # state_meta key ``fts_storage_version``. The main schema version advances

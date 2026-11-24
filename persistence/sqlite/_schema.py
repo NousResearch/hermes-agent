@@ -1258,6 +1258,25 @@ def _run_data_migrations(holder: StoreHolder, cursor: sqlite3.Cursor, current_ve
                 "AND NOT EXISTS (SELECT 1 FROM sessions p WHERE p.id = sessions.parent_session_id "
                 "AND p.source = 'subagent' AND p.end_reason = 'compression')"
             )
+    if current_version < 34:
+        # v34: before the route guard read ``created_source``, a handoff onto a markerless subagent row
+        # moved the chat without stamping ``_chat_adopted``, and the guard now evicts that chat as a
+        # capture. ``handoff_state='completed'`` is the one durable proof the user chose the row: only
+        # the handoff watcher writes it, after a user asked for the handoff; the peer stamp and the
+        # completion re-pin never do. Only the handed-off row itself: its compression continuation
+        # carries no durable field a delegate spawn cannot also leave (same parent, created_source and
+        # no marker), so following children would adopt a markerless worker it spawned. A tip that
+        # compressed before the upgrade, and any /resume, left no record a capture could not also
+        # leave, so neither is backfilled.
+        with contextlib.suppress(sqlite3.OperationalError):
+            cursor.execute(
+                "UPDATE sessions SET model_config = json_set("
+                "COALESCE(model_config, '{}'), '$._chat_adopted', json('true')) "
+                "WHERE handoff_state = 'completed' AND created_source = 'subagent' "
+                "AND json_valid(COALESCE(model_config, '{}')) "
+                f"AND COALESCE({_sql_json_extract('model_config', '$._delegate_from')}, '') = '' "
+                f"AND {_sql_json_extract('model_config', '$._chat_adopted')} IS NULL"
+            )
     _advance_message_uid_backfill(holder, cursor)
     fts_migrations_complete = True
     if current_version < 30 and fts5_available:

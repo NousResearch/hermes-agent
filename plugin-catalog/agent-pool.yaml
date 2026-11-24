@@ -1,0 +1,31 @@
+name: agent-pool
+repo: https://github.com/maxcurrent420/agent-pool
+sha: 57be2c6abb5476aebd2142e1e8d1757a2cac3039
+description: "Friends form a pool of agents sharing repos — bundles propagate BLAKE3-verified and end-to-end encrypted over Iroh-over-Tor only; tasks, claims and approvals coordinate through the Hermes gateway (e.g. Discord), and a prompt-injection audit gate refuses any bundle that tries to hijack your agent. Disclosure — spawns git, bubblewrap, ClamAV and send_hermes child processes with a minimal environment; repo bundles are exchanged with pool members' gateways over Iroh-over-Tor (no relay); it stores its own keypairs and ledger under the profile's plugin-data dir. The operator-run setup scripts (scripts/install-deps.sh, scripts/install-tor.sh) use sudo to install ClamAV and Tor, add a dedicated /etc/tor/agent-pool.torrc and systemd unit, and build the third-party github.com/rahlquist/sendme fork at a pinned commit as root into /usr/local/bin; the plugin itself never runs them. Incoming bundles are audited; on hosts without bubblewrap the static audit runs unsandboxed."
+maintainer: maxcurrent420
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "2.8.1"
+screenshots:
+  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/57be2c6abb5476aebd2142e1e8d1757a2cac3039/media/pane.png
+  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/57be2c6abb5476aebd2142e1e8d1757a2cac3039/media/injection-blocked.png
+title: Agent Pool
+capabilities:
+  provides_tools:
+    - pool_status
+    - pool_report_usage
+    - pool_pane_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AGENT_POOL_ALLOWED_USERS
+    - AGENT_POOL_MAINTAINER_DISCORD_USER_ID
+    - AGENT_POOL_MAINTAINER_BOT_DISCORD_USER_ID
+    - AGENT_POOL_TASK_ALLOCATIONS
+    - AGENT_POOL_WORKTREE_ROOT
+    - AGENT_POOL_DATA_DIR
+    - HERMES_IROH_RELAY
+    - HERMES_IROH_STATE_DIR
+    - HERMES_IROH_SEND_TIMEOUT
+    - HERMES_IROH_FETCH_TIMEOUT

@@ -960,8 +960,13 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
       restart loop with nothing listening on the ingress port (#119824);
     * a `hermes dashboard` user is never handed a headless backend's URL (no SPA behind it).
 
-    Returns normally — leaving the caller to BIND — when no owner answers.
+    Returns normally — leaving the caller to BIND — when no owner answers. A profile a plugin runs
+    elsewhere (``hermes_cli.profiles_run_elsewhere``) is refused first, with exit 78: this host
+    neither attaches it nor binds for it.
     """
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+    exit_if_profile_runs_elsewhere("serve", exit_code=GATEWAY_FATAL_CONFIG_EXIT_CODE)
     if getattr(args, "isolated", False) or _is_desktop_owned_backend():
         return
     record = _host_backend_attachment()
@@ -969,7 +974,6 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         return
 
     from gateway import host_rendezvous as hr
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
     identity = hr.probe_owner(record)
     if identity is None:

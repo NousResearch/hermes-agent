@@ -151,6 +151,27 @@ def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp
         run_worker_turns(agent, forged, [])
     assert len(seen) == 2
 
+
+def test_a_client_stamp_crosses_the_bootstrap_and_reads_only_inside_its_turn(tmp_path, monkeypatch):
+    """A client-only commit reaches the child: ``surface_turn_client()`` reads it inside the turn,
+    no note or voice route is armed, and the plain turn after it reads nothing."""
+    from agent.managed_worker import validate_bootstrap
+    from gateway.session_kanban import run_worker_turns
+    from gateway.session_managed_worker import _bootstrap
+    from gateway.session_surface import surface_turn_client
+    frame, (authority, ref, row, policy, scope) = assignment(tmp_path, monkeypatch)
+    client = {'name': 'hermes-desktop', 'version': '2.1.0', 'kind': 'desktop'}
+    stamped = validate_bootstrap(json.loads(json.dumps(_bootstrap(
+        authority, ref, {'payload': {**row['payload'], 'surface_v1': {'client': client}}}, policy, scope))))
+    assert json.loads(stamped['policy']['request_json'])['turn_v1']['surface_v1'] == {'client': client}
+    seen = []
+    agent = SimpleNamespace(valid_tool_names=set(), run_conversation=lambda text, **kw: seen.append(
+        (surface_turn_client(), agent._voice_turn_pending, agent._gateway_turn_context_notes)) or {'final_response': 'ok'})
+    run_worker_turns(agent, stamped, [])
+    run_worker_turns(agent, frame, [])
+    assert seen == [(client, False, ''), (None, False, '')]
+    assert surface_turn_client() is None
+
 @pytest.mark.asyncio
 async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, monkeypatch):
     from gateway import session_managed_worker as managed

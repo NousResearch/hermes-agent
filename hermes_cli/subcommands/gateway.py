@@ -270,7 +270,8 @@ def build_gateway_parser(
     _flag(gateway_migrate, "--keep-webapp-address", dest="keep_webapp_address",
         help="With --backends --apply: retire the old backend but keep the Webapp on its current address")
     _flag(gateway_migrate, "--force-interrupt", dest="force_interrupt",
-        help="With --backends --apply: proceed although a turn is running on the old backend (it is interrupted)")
+        help="With --backends --apply: proceed although a turn is running on the old backend (it is interrupted) "
+        "or a gateway of this home runs outside its service (it is stopped)")
     gateway_migrate.add_argument("--expect", dest="expect", metavar="TOKEN",
         help="With --backends --apply: change nothing (exit 8) unless the backend found now is the one whose "
         "expect_token the --dry-run --json plan printed")

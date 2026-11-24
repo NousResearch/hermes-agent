@@ -1,0 +1,18 @@
+name: turn-timings
+title: Turn timings
+repo: https://github.com/tapresle/hermes-turn-timings
+sha: 5c67f78585dfd545533e7fa4b45b6927c2c0d563
+description: Shows a live turn timer and saves completed timings in a Hermes Desktop pane.
+maintainer: tapresle
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+platforms: [macos]
+screenshots:
+  - https://raw.githubusercontent.com/tapresle/hermes-turn-timings/5c67f78585dfd545533e7fa4b45b6927c2c0d563/docs/turn-timings.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

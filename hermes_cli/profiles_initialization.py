@@ -64,12 +64,21 @@ def prepare_imported_tree(staged: Path) -> None:
         os.chmod(env, 0o600)
 
 
+def _seed_file_if_missing(path: Path, text: str, mode: Optional[int] = None) -> None:
+    """Best-effort: write *text* to *path* unless it already exists; never raises."""
+    if path.exists():
+        return
+    with contextlib.suppress(OSError):
+        path.write_text(text, encoding="utf-8")
+        if mode is not None:
+            os.chmod(str(path), mode)
+
+
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
                            description: Optional[str], soul: Optional[str] = None) -> None:
     """Seed files a fresh profile owns from day one; runs on the staging tree before publish."""
     from hermes_cli.profiles import (
-        _seed_file_if_missing, _PLACEHOLDER_ENV, NO_BUNDLED_SKILLS_MARKER,
-        _migrate_profile_config_if_outdated, write_profile_meta,
+        _PLACEHOLDER_ENV, NO_BUNDLED_SKILLS_MARKER, _migrate_profile_config_if_outdated, write_profile_meta,
     )
     if soul is not None:
         (profile_dir / "SOUL.md").write_text(soul, encoding="utf-8")

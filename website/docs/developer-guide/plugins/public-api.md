@@ -165,6 +165,9 @@ with a name allows that one name only.
 | `hermes_cli.setup` | `prompt_choice` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.setup` | `prompt_yes_no` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.cli_output` | whole module | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.response_filters` | `is_autonomous_silence_response` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.response_filters` | `is_intentional_silence_response` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.response_filters` | `strip_trailing_silence_marker` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.platforms.session_model` | `SessionModelPickerProvider` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
 | `gateway.platforms.session_model` | `SessionModelSettings` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
 | `tools.skills_tool` | `find_all_skills` | plugins/index.md § Read the skill catalog |
@@ -177,6 +180,11 @@ with a name allows that one name only.
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
+| `hermes_cli.plugin_session` | `turn_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached |
+| `hermes_cli.plugin_session` | `session_viewers` | user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached |
+| `hermes_cli.plugin_session` | `session_source` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |
+| `hermes_cli.plugin_session` | `in_delegated_child` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |
+| `hermes_cli.plugin_session` | `fork_origin` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |
 | `agent.file_safety` | `get_read_block_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `agent.file_safety` | `raise_if_read_blocked` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `agent.file_safety` | `is_write_denied` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
@@ -192,3 +200,10 @@ with a name allows that one name only.
 | `hermes_cli.session_worktree` | `create` | user-guide/features/plugins.md § A plugin with its own chat client |
 | `hermes_cli.session_worktree` | `restore` | user-guide/features/plugins.md § A plugin with its own chat client |
 | `hermes_cli.session_worktree` | `finish` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.profiles_run_elsewhere` | `mark_profile_run_elsewhere` | user-guide/multi-profile-gateways.md § Profiles a plugin runs elsewhere |
+| `hermes_cli.profiles_run_elsewhere` | `clear_profile_run_elsewhere` | user-guide/multi-profile-gateways.md § Profiles a plugin runs elsewhere |
+| `hermes_cli.profiles_run_elsewhere` | `run_elsewhere` | user-guide/multi-profile-gateways.md § Profiles a plugin runs elsewhere |
+| `cron.plugin_api` | whole module | plugins/index.md § Schedule a job once and read where cron delivers it |
+| `agent.reasoning_effort` | `gemini_thinking_config` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
+| `agent.reasoning_effort` | `clamp_effort` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
+| `agent.reasoning_effort` | `bare_gemini_model_id` | model-provider-plugin.md § Public helpers for native Gemini reasoning |

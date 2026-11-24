@@ -324,8 +324,10 @@ function slowPnpm(delay) {
   writeFileSync(join(dir, 'pnpm'), ['#!/bin/sh',
     // Backgrounded and trapped like the signalled shim below: a Ctrl-C landing between the marker
     // and a foreground sleep's exec is caught by sh's own handler in the forked child, so the
-    // sleep would run its full delay and the job would outlive the signal.
-    `if [ "$1" = install ]; then trap 'kill $! 2>/dev/null; exit 130' INT; echo "$$" >> '${started}'; sleep ${delay} & wait $!; trap - INT; fi`,
+    // sleep would run its full delay and the job would outlive the signal. The sleep starts BEFORE
+    // the marker: a signal sent on seeing the marker then always finds `$!` set for the trap to kill
+    // (a background sleep ignores SIGINT, so one forked after the signal would run its full delay).
+    `if [ "$1" = install ]; then trap 'kill $! 2>/dev/null; exit 130' INT; sleep ${delay} & echo "$$" >> '${started}'; wait $!; trap - INT; fi`,
     `exec '${pnpmCommand()}' "$@"`, ''].join('\n'))
   chmodSync(join(dir, 'pnpm'), 0o755)
   json(join(dir, 'package.json'), { name: 'pnpm', version: execFileSync(pnpmCommand(), ['--version']).toString().trim() })
@@ -592,7 +594,8 @@ test.skipIf(process.platform === 'win32').each([['Ctrl-C reaches the job', 'grou
     roots.push(dir)
     writeFileSync(join(dir, 'pnpm'), ['#!/bin/sh', 'if [ "$1" = install ]; then',
       `  trap 'echo INT >> "${dir}/got"; kill $!; exit 130' INT`, `  trap 'echo TERM >> "${dir}/got"; kill $!; exit 143' TERM`,
-      `  touch '${dir}/started'; sleep 30 & wait $!; exit 1`,
+      // Sleep first, marker second: the test signals on seeing the marker, and the trap needs `$!`.
+      `  sleep 30 & touch '${dir}/started'; wait $!; exit 1`,
       'fi', `exec '${pnpmCommand()}' "$@"`, ''].join('\n'))
     chmodSync(join(dir, 'pnpm'), 0o755)
     json(join(dir, 'package.json'), { name: 'pnpm', version: execFileSync(pnpmCommand(), ['--version']).toString().trim() })

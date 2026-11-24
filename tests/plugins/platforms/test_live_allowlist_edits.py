@@ -487,3 +487,17 @@ def test_a_launch_profile_edit_first_seen_under_a_routed_scope_still_applies(tmp
         assert _allowed(adapter, guild, member) is True
     finally:
         reset_multiplex_context(token)
+
+
+def test_history_allowed_bots_follows_an_edit(_home, monkeypatch):
+    """The history-backfill bot allowlist reloads with the other gates, not only on restart."""
+    for var in ("DISCORD_HISTORY_ALLOWED_BOTS", "HERMES_BRIDGED_DISCORD_HISTORY_ALLOWED_BOTS"):
+        monkeypatch.setenv(var, "")
+        monkeypatch.delenv(var)
+    _write(_home, {"history_allowed_bots": "77"})
+    adapter, _guild, _member = _connected_discord()
+    assert adapter._get_history_allowed_bots() == {"77"}
+    _write(_home, {"history_allowed_bots": "88"})
+    adapter._refresh_live_gates()
+    assert adapter.config.extra.get("history_allowed_bots") == "88"  # a secondary profile reads extra
+    assert adapter._get_history_allowed_bots() == {"88"}

@@ -315,3 +315,35 @@ def test_startup_recovery_backs_off_after_a_failed_install(tmp_path, monkeypatch
     monkeypatch.setattr(mig, "_attempted", set())
     mig.recover_at_startup("hindsight")
     assert attempts == ["hindsight", "hindsight"]
+
+
+@pytest.mark.parametrize(("name", "label"), [("byterover", "ByteRover"), ("retaindb", "RetainDB")])
+def test_removed_provider_is_named_on_every_surface_and_never_fetched(tmp_path, monkeypatch, capsys, name, label):
+    """ByteRover and RetainDB were deleted, not moved: a home still configured for one is told so by
+    name at agent start, on `hermes update` and in `memory status` / `memory setup`, nothing is
+    installed or looked up in the catalog, and memory.provider stays as the user wrote it."""
+    from types import SimpleNamespace
+
+    from agent.agent_init_memory_provider import resolve_memory_provider
+    from hermes_cli import memory_setup, plugins_cmd
+    from pm import install as pm_install
+
+    config = f"memory:\n  provider: {name}\n"
+    (tmp_path / "config.yaml").write_text(config, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(mig, "catalog_source", lambda n: pytest.fail(f"catalog lookup for {n}"))
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", lambda *a, **kw: pytest.fail("install attempted"))
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: [tmp_path])
+    want = f"{label} was removed from Hermes because no one took over maintaining it."
+
+    said: list[str] = []
+    assert resolve_memory_provider(name, say=said.append) is None
+    assert mig.migrate_all_homes(say=said.append) == []
+    memory_setup.cmd_status(SimpleNamespace())
+    memory_setup.cmd_setup_provider(name)
+    assert [want in line for line in said] == [True, True]
+    assert "`hermes memory setup`" in said[0]
+    assert capsys.readouterr().out.count(want) == 2
+    assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == config

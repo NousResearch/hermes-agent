@@ -12,7 +12,6 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     memory_parser = subparsers.add_parser(
         "memory", help="Configure external memory provider",
         description="Set up and manage external memory provider plugins.\n\n"
-            "Bundled providers: retaindb, byterover.\n"
             "Catalog providers (e.g. honcho, hindsight, supermemory,\n"
             "mem0, openviking, holographic): hermes plugins install <name>.\n\n"
             "Only one external provider can be active at a time.\n"

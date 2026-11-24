@@ -181,8 +181,12 @@ def cmd_setup_provider(provider_name: str) -> None:
     match = _find_provider(_get_available_providers(), provider_name)
     if not match:
         print(f"\n  Memory provider '{provider_name}' not found.")
+        from hermes_cli.memory_provider_migration import removed_provider_notice
         install = _catalog_install_hint(provider_name)
-        if install:
+        removed = removed_provider_notice(provider_name)
+        if removed:
+            print(f"  {removed}\n")
+        elif install:
             print(f"  It is a catalog plugin that is not installed. Install it with: {install}\n")
         else:
             print("  Run 'hermes memory setup' to see available providers.\n")
@@ -429,8 +433,12 @@ def cmd_status(args) -> None:
                 print("        set any variables above in the service environment.")
         else:
             print("\n  Plugin:    NOT installed ✗")
+            from hermes_cli.memory_provider_migration import removed_provider_notice
             install = _catalog_install_hint(provider_name)
-            if install:
+            removed = removed_provider_notice(provider_name)
+            if removed:
+                print(f"  {removed}")
+            elif install:
                 print(f"  Install it with: {install}")
             else:
                 print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")

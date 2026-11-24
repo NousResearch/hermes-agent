@@ -94,7 +94,7 @@ def _memory_provider_setup_env() -> dict[str, str]:
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     home = Path.home()
-    extra_bins = [home / ".brv-cli" / "bin", home / ".local" / "bin", home / ".npm-global" / "bin", Path("/usr/local/bin")]
+    extra_bins = [home / ".local" / "bin", home / ".npm-global" / "bin", Path("/usr/local/bin")]
     prefix = os.pathsep.join(str(path) for path in extra_bins if path.exists())
     if prefix:
         env["PATH"] = prefix + os.pathsep + env.get("PATH", "")

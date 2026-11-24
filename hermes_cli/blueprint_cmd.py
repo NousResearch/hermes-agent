@@ -134,6 +134,7 @@ def build_blueprint_seed(blueprint) -> str:
         lines.append("".join(bits))
 
     lines.append("")
+    create_options = f" Include skills={list(blueprint.skills)!r} in the create call." if blueprint.skills else ""
     lines.append(
         "Once you have my answers, create the job by calling the cronjob tool "
         "with action='create'. Build the schedule as a cron expression from "
@@ -141,7 +142,7 @@ def build_blueprint_seed(blueprint) -> str:
         "(fill {minute}/{hour} from the chosen time, {dow} from the weekday "
         f"choice using {dict(WEEKDAY_PRESETS)}, {{interval_min}} from any "
         "interval). Use this exact prompt for the job (substituting my "
-        f"answers into any {{slot}} placeholders): \"{blueprint.prompt_template}\". "
+        f"answers into any {{slot}} placeholders): \"{blueprint.prompt_template}\".{create_options} "
         "Confirm the schedule and what it will do before you create it."
     )
     return "\n".join(lines)

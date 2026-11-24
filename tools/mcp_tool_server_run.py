@@ -51,9 +51,14 @@ class MCPServerRunMixin:
         return True
 
     async def _wait_for_rpc_idle(self) -> None:
-        """Wake the lifecycle loop when the active RPC releases its lock."""
-        async with self._rpc_lock:
-            pass
+        """Wake the lifecycle loop once no RPC holds the lock and no tracked call is running."""
+        while True:
+            async with self._rpc_lock:
+                pass
+            busy = [t for t in self._inflight_tasks if not t.done()]
+            if not busy:
+                return
+            await asyncio.wait(busy)
 
     async def _wait_for_lifecycle_event(self) -> str:
         """Serve until a lifecycle event: ``"shutdown"`` (exits run), ``"reconnect"`` (session torn
@@ -91,7 +96,7 @@ class MCPServerRunMixin:
                 if recycle_deadline is not None:
                     recycle_timeout = max(0.0, recycle_deadline - time.monotonic())
                     timeout = recycle_timeout if timeout is None else min(timeout, recycle_timeout)
-                elif not is_http and self._rpc_lock.locked():
+                elif not is_http and self._rpc_active():
                     # Recycle deadlines are intentionally hidden while an RPC is active. Without
                     # a default stdio keepalive timeout, lock release must wake this loop so the
                     # now-visible deadline is evaluated instead of waiting forever. (For a stdio
@@ -126,10 +131,10 @@ class MCPServerRunMixin:
                         self._mark_session_proven()
                     continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
-                # concurrent ping can wedge the stdio stream; a busy server is alive anyway).
+                # busy server is alive anyway, and the probe would queue behind its calls).
                 # Timeout — no lifecycle event fired. See #48069.
                 if self.session:
-                    if self._rpc_lock.locked() or any(not t.done() for t in self._inflight_tasks):
+                    if self._rpc_active():
                         continue
                     try:
                         async with self._rpc_lock:

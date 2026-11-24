@@ -241,6 +241,32 @@ class TestKeepaliveInterval:
         assert await asyncio.wait_for(lifecycle, timeout=2.0) == "recycle"
         session.send_ping.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_stdio_recycle_waits_for_calls_running_without_the_lock(self):
+        """Overlapping calls do not hold the lock: each one hides the deadline until the last ends."""
+        task = MCPServerTask("test")
+        task._config = {"command": "example-mcp"}
+        session = task.session = SimpleNamespace(send_ping=AsyncMock())
+        task._idle_timeout_seconds = 0.01
+        task._last_tool_call_at = task._lifecycle_started_at - 1.0
+        releases = [asyncio.Event(), asyncio.Event()]
+        calls = [asyncio.create_task(release.wait()) for release in releases]
+        task._inflight_tasks.update(calls)
+
+        lifecycle = asyncio.create_task(task._wait_for_lifecycle_event())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not lifecycle.done()
+        releases[0].set()
+        await calls[0]
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not lifecycle.done(), "recycled while a call was still running"
+        releases[1].set()
+
+        assert await asyncio.wait_for(lifecycle, timeout=2.0) == "recycle"
+        session.send_ping.assert_not_called()
+
 
 def _mcp_error(code, message="boom"):
     """Build a real MCPError carrying a JSON-RPC error code.

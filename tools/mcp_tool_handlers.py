@@ -832,16 +832,20 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
 
 @asynccontextmanager
 async def _tool_call_scope(server, parallel: bool, turn_callbacks: tuple):
-    """Keep admission behind discovery, but release the RPC lock for safe HTTP calls.
+    """Keep admission behind discovery, but release the RPC lock for safe stdio and HTTP calls.
 
     Sampling has server-wide tool-loop state and elicitation reads single-slot caller
-    context/callbacks. Neither can safely serve overlapping calls. Check the actual
-    transport on every attempt: a URL can use explicit or latched legacy SSE.
+    context/callbacks. Neither can safely serve overlapping calls. Stdio and Streamable
+    HTTP sessions match each response to its request id, so overlapping calls stay with
+    their callers. Check the actual transport on every attempt: a URL can use explicit or
+    latched legacy SSE.
     """
     async with server._rpc_lock:
-        shared = (parallel and server._is_http() is True
-                  and server._config.get("transport") != "sse" and not server._sse_fallback
-                  and server._elicitation is None and server._sampling is None)
+        shared = False
+        if parallel and server._elicitation is None and server._sampling is None:
+            is_http = server._is_http()
+            shared = is_http is False or (
+                is_http is True and server._config.get("transport") != "sse" and not server._sse_fallback)
         if not shared:
             server._pending_call_context = contextvars.copy_context()
             server._pending_call_callbacks = turn_callbacks

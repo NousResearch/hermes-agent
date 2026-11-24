@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Optional
 
+from persistence.conversation.sessions import parse_model_config
 from session_rules.session_ids import new_session_id
 
 if TYPE_CHECKING:
@@ -53,26 +54,17 @@ CHAT_ADOPTED_MARKER = "_chat_adopted"
 
 
 def is_delegate_child_row(row: dict) -> bool:
-    """A delegate subagent's row: never a chat's route or topic-binding target. A row that also carries
-    ``_reset_from`` is a /new continuation of the chat whose config picked up the marker (#109073), and
-    one carrying ``CHAT_ADOPTED_MARKER`` was chosen by the user; both stay routable (same rule as peer
+    """A subagent's row no chat owns: never a chat's route or topic-binding target, and an explicit switch
+    onto one adopts it. Marked by ``_delegate_from``, or created by a subagent (``created_source`` survives
+    the peer stamp that relabels ``source``). A ``chat_owned`` row stays routable (same rule as peer
     recovery's ``_DELEGATE_CHILD_EXCLUSION_SQL``)."""
-    from persistence.conversation.sessions import parse_model_config
     config = parse_model_config(row.get("model_config"))
-    return bool(config.get("_delegate_from")) and not chat_owned(config)
+    return (bool(config.get("_delegate_from")) or row.get("created_source") == "subagent") and not chat_owned(config)
 
 
 def chat_owned(config: dict) -> bool:
     """A /new continuation, or a row the user switched a chat onto: the chat's own conversation."""
     return "_reset_from" in config or bool(config.get(CHAT_ADOPTED_MARKER))
-
-
-def needs_chat_adoption(row: dict) -> bool:
-    """A subagent's row a chat is being switched onto: a marked delegate child, or a markerless row a
-    subagent created (the peer stamp relabels ``source``; ``created_source`` is immutable)."""
-    from persistence.conversation.sessions import parse_model_config
-    return is_delegate_child_row(row) or (
-        row.get("created_source") == "subagent" and not chat_owned(parse_model_config(row.get("model_config"))))
 
 
 def auto_continue_freshness_window() -> float:

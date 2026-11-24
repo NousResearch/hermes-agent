@@ -27,12 +27,13 @@ THREAD = "54287"
 PARENT, CHILD = "20261014_020931_3881b279", "20261014_040222_5d0bcc"
 
 
-def _seed(db_path, uid: str, key: str, leg: str, hermes_home) -> None:
+def _seed(db_path, uid: str, key: str, leg: str, hermes_home, marked: bool) -> None:
     with open_persistence(profile_scope(home=db_path.parent)) as db:
         seed_session(db, PARENT, "telegram", user_id=uid, session_key=key, chat_id=uid, chat_type="dm",
                      thread_id=THREAD)
         seed_messages(db, PARENT, {"role": "user", "content": "host apps on the cluster"})
-        seed_session(db, CHILD, "subagent", parent_session_id=PARENT, model_config={"_delegate_from": PARENT})
+        seed_session(db, CHILD, "subagent", parent_session_id=PARENT,
+                     model_config={"_delegate_from": PARENT} if marked else {})
         seed_messages(db, CHILD, {"role": "user", "content": "worker goal"})
         db.routing.record_session_peer(CHILD, source="telegram", user_id=uid, session_key=key, chat_id=uid,
                                        chat_type="dm", thread_id=THREAD)
@@ -50,8 +51,9 @@ def _seed(db_path, uid: str, key: str, leg: str, hermes_home) -> None:
             (hermes_home / "sessions" / "sessions.json").write_text(json.dumps({key: entry}))
 
 
+@pytest.mark.parametrize("marked", [True, False], ids=["marked", "markerless"])
 @pytest.mark.parametrize("leg", ["peer", "binding", "route"])
-def test_a_thread_left_naming_a_delegate_child_answers_in_its_own_conversation(tmp_path, leg):
+def test_a_thread_left_naming_a_delegate_child_answers_in_its_own_conversation(tmp_path, leg, marked):
     drv = TelegramDriver()
     drv.start()
     llm = FakeLLMServer(Director())
@@ -60,7 +62,7 @@ def test_a_thread_left_naming_a_delegate_child_answers_in_its_own_conversation(t
                           env=drv.gateway_env(), ready=drv.connected)
     uid = drv.user_id
     gw.hermes_home.mkdir(parents=True, exist_ok=True)
-    _seed(gw.db_path, uid, f"agent:main:telegram:dm:{uid}:{THREAD}", leg, gw.hermes_home)
+    _seed(gw.db_path, uid, f"agent:main:telegram:dm:{uid}:{THREAD}", leg, gw.hermes_home, marked)
     chat = {"id": int(uid), "type": "private", "first_name": "Tester", "username": f"user{uid}"}
     try:
         gw.start()

@@ -20,13 +20,14 @@ export interface MacApplicationsGuardPreference {
 }
 
 export type MacApplicationsGuardResult =
-  | { action: 'relaunching'; location: MacUnsafeBundleLocation }
+  | { action: 'relaunching'; location: MacUnsafeBundleLocation; skipCliProvision: true }
   | {
       action: 'continue'
       reason:
         | 'already-in-applications'
         | 'api-unavailable'
         | 'automated-environment'
+        | 'conflict-newer-installed'
         | 'conflict-running'
         | 'custom-writable-location'
         | 'dismissed'
@@ -40,6 +41,7 @@ export type MacApplicationsGuardResult =
         | 'user-declined'
       location?: MacUnsafeBundleLocation
       remembered?: boolean
+      skipCliProvision: boolean
       error?: string
     }
 
@@ -54,6 +56,7 @@ export interface MacApplicationsGuardDeps {
   argv?: readonly string[]
   homeDir?: string
   access?: (file: string, mode: number) => void
+  readBundleVersion?: (bundlePath: string) => string | null
   log: (message: string) => void
 }
 
@@ -217,6 +220,147 @@ export function writeMacApplicationsGuardPreference(
   }
 }
 
+interface ParsedBundleVersion {
+  major: number
+  minor: number
+  patch: number
+  prerelease: string[]
+}
+
+function parseBundleVersion(raw: string): ParsedBundleVersion | null {
+  const cleaned = raw.trim().replace(/^v/i, '')
+  const match = /^(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(cleaned)
+
+  if (!match) {
+    return null
+  }
+
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: match[3] === undefined ? 0 : Number(match[3]),
+    prerelease: match[4] ? match[4].split('.') : []
+  }
+}
+
+function comparePrerelease(a: readonly string[], b: readonly string[]): -1 | 0 | 1 {
+  if (a.length === 0 && b.length === 0) {
+    return 0
+  }
+
+  if (a.length === 0) {
+    return 1
+  }
+
+  if (b.length === 0) {
+    return -1
+  }
+
+  const len = Math.min(a.length, b.length)
+
+  for (let i = 0; i < len; i++) {
+    const left = a[i]
+    const right = b[i]
+
+    if (left === right) {
+      continue
+    }
+
+    const leftNum = /^\d+$/.test(left)
+    const rightNum = /^\d+$/.test(right)
+
+    if (leftNum && rightNum) {
+      return Number(left) < Number(right) ? -1 : 1
+    }
+
+    if (leftNum !== rightNum) {
+      return leftNum ? -1 : 1
+    }
+
+    return left < right ? -1 : 1
+  }
+
+  if (a.length === b.length) {
+    return 0
+  }
+
+  return a.length < b.length ? -1 : 1
+}
+
+export function compareBundleVersions(running: string, existing: string): -1 | 0 | 1 | null {
+  const a = parseBundleVersion(running)
+  const b = parseBundleVersion(existing)
+
+  if (!a || !b) {
+    return null
+  }
+
+  for (const [left, right] of [
+    [a.major, b.major],
+    [a.minor, b.minor],
+    [a.patch, b.patch]
+  ] as const) {
+    if (left !== right) {
+      return left < right ? -1 : 1
+    }
+  }
+
+  return comparePrerelease(a.prerelease, b.prerelease)
+}
+
+export function parseBundleShortVersionFromPlist(plistXml: string): string | null {
+  const match = /<key>\s*CFBundleShortVersionString\s*<\/key>\s*<string>([^<]+)<\/string>/.exec(plistXml)
+
+  return match?.[1]?.trim() || null
+}
+
+export function readBundleShortVersion(
+  bundlePath: string,
+  readFile: (file: string, encoding: BufferEncoding) => string = (file, encoding) => fs.readFileSync(file, encoding)
+): string | null {
+  try {
+    const plistPath = path.posix.join(path.posix.resolve(bundlePath), 'Contents', 'Info.plist')
+
+    return parseBundleShortVersionFromPlist(readFile(plistPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+export function shouldSkipMacCliProvision(location: MacUnsafeBundleLocation | undefined): boolean {
+  return location === 'app-translocation' || location === 'read-only-volume'
+}
+
+export function shouldProvisionBundledCliLinks(
+  isWindows: boolean,
+  guardResult: MacApplicationsGuardResult | null
+): boolean {
+  return !isWindows && !guardResult?.skipCliProvision
+}
+
+function readInstalledBundleVersion(
+  bundlePath: string,
+  homeDir: string,
+  readBundleVersion: (targetBundle: string) => string | null
+): string | null {
+  const bundleName = path.posix.basename(path.posix.resolve(bundlePath))
+  const candidates = [path.posix.join('/Applications', bundleName)]
+
+  if (homeDir) {
+    candidates.push(path.posix.join(path.posix.resolve(homeDir), 'Applications', bundleName))
+  }
+
+  for (const candidate of candidates) {
+    const version = readBundleVersion(candidate)
+
+    if (version) {
+      return version
+    }
+  }
+
+  return null
+}
+
 function buildMovePromptOptions(appName: string, location: MacUnsafeBundleLocation): MessageBoxOptions {
   return {
     type: 'warning',
@@ -232,25 +376,79 @@ function buildMovePromptOptions(appName: string, location: MacUnsafeBundleLocati
   }
 }
 
+function noteSkippedCliProvision(
+  log: (message: string) => void,
+  location: MacUnsafeBundleLocation,
+  skipCliProvision: boolean
+): void {
+  if (skipCliProvision) {
+    log(`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`)
+  }
+}
+
 async function attemptMoveToApplications(
-  deps: Pick<MacApplicationsGuardDeps, 'app' | 'appName' | 'dialog' | 'log'>,
+  deps: Pick<MacApplicationsGuardDeps, 'app' | 'appName' | 'dialog' | 'homeDir' | 'log' | 'readBundleVersion'>,
+  bundlePath: string,
   location: MacUnsafeBundleLocation
 ): Promise<MacApplicationsGuardResult> {
+  const skipCliProvision = shouldSkipMacCliProvision(location)
+  const readBundleVersion = deps.readBundleVersion ?? (target => readBundleShortVersion(target))
+  const homeDir = deps.homeDir ?? os.homedir()
   let conflict: 'exists' | 'existsAndRunning' | null = null
+  let downgradeBlocked: { runningVersion: string; existingVersion: string } | null = null
 
   try {
     const moved = deps.app.moveToApplicationsFolder({
       conflictHandler: conflictType => {
         conflict = conflictType
 
-        return conflictType !== 'existsAndRunning'
+        if (conflictType === 'existsAndRunning') {
+          return false
+        }
+
+        const runningVersion = readBundleVersion(bundlePath) ?? deps.app.getVersion()
+        const existingVersion = readInstalledBundleVersion(bundlePath, homeDir, readBundleVersion)
+
+        const comparison =
+          runningVersion && existingVersion ? compareBundleVersions(runningVersion, existingVersion) : null
+
+        if (comparison !== null && comparison < 0) {
+          downgradeBlocked = { runningVersion, existingVersion }
+
+          return false
+        }
+
+        return true
       }
     })
 
     if (moved) {
       deps.log(`[install] relocated ${deps.appName} into /Applications from ${location}; relaunching`)
 
-      return { action: 'relaunching', location }
+      return { action: 'relaunching', location, skipCliProvision: true }
+    }
+
+    if (downgradeBlocked) {
+      const { runningVersion, existingVersion } = downgradeBlocked
+
+      deps.log(
+        `[install] move to /Applications refused: running ${runningVersion} is older than installed ${existingVersion}`
+      )
+      await deps.dialog.showMessageBox({
+        type: 'info',
+        title: `Newer ${deps.appName} already installed`,
+        message: `A newer version of ${deps.appName} is already in Applications`,
+        detail:
+          `This copy is version ${runningVersion}, while Applications already has version ${existingVersion}. ` +
+          `Open ${deps.appName} from Applications instead to avoid downgrading.`,
+        buttons: ['Continue'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      })
+      noteSkippedCliProvision(deps.log, location, skipCliProvision)
+
+      return { action: 'continue', reason: 'conflict-newer-installed', location, skipCliProvision }
     }
 
     if (conflict === 'existsAndRunning') {
@@ -267,13 +465,15 @@ async function attemptMoveToApplications(
         cancelId: 0,
         noLink: true
       })
+      noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-      return { action: 'continue', reason: 'conflict-running', location }
+      return { action: 'continue', reason: 'conflict-running', location, skipCliProvision }
     }
 
     deps.log('[install] move to /Applications cancelled by user')
+    noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-    return { action: 'continue', reason: 'move-cancelled', location }
+    return { action: 'continue', reason: 'move-cancelled', location, skipCliProvision }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
 
@@ -290,8 +490,9 @@ async function attemptMoveToApplications(
       cancelId: 0,
       noLink: true
     })
+    noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-    return { action: 'continue', reason: 'move-failed', location, error: message }
+    return { action: 'continue', reason: 'move-failed', location, skipCliProvision, error: message }
   }
 }
 
@@ -303,38 +504,38 @@ function precheckMacApplicationsGuard(deps: MacApplicationsGuardDeps): MacGuardP
   const platform = deps.platform ?? process.platform
 
   if (platform !== 'darwin') {
-    return { prompt: false, result: { action: 'continue', reason: 'not-macos' } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-macos', skipCliProvision: false } }
   }
 
   if (!deps.isPackaged) {
-    return { prompt: false, result: { action: 'continue', reason: 'not-packaged' } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-packaged', skipCliProvision: false } }
   }
 
   if (!isMacBundleArtifact(deps.installStamp)) {
-    return { prompt: false, result: { action: 'continue', reason: 'not-mac-bundle' } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-mac-bundle', skipCliProvision: false } }
   }
 
   if (isAutomatedDesktopLaunch(deps.env ?? process.env, deps.argv ?? process.argv)) {
-    return { prompt: false, result: { action: 'continue', reason: 'automated-environment' } }
+    return { prompt: false, result: { action: 'continue', reason: 'automated-environment', skipCliProvision: false } }
   }
 
   const bundlePath = resolveMacAppBundle(deps.app.getPath('exe'), platform)
 
   if (!bundlePath) {
-    return { prompt: false, result: { action: 'continue', reason: 'not-app-bundle' } }
+    return { prompt: false, result: { action: 'continue', reason: 'not-app-bundle', skipCliProvision: false } }
   }
 
   if (
     typeof deps.app.isInApplicationsFolder !== 'function' ||
     typeof deps.app.moveToApplicationsFolder !== 'function'
   ) {
-    return { prompt: false, result: { action: 'continue', reason: 'api-unavailable' } }
+    return { prompt: false, result: { action: 'continue', reason: 'api-unavailable', skipCliProvision: false } }
   }
 
   const translocated = bundlePath.includes('/AppTranslocation/')
 
   if (!translocated && deps.app.isInApplicationsFolder()) {
-    return { prompt: false, result: { action: 'continue', reason: 'already-in-applications' } }
+    return { prompt: false, result: { action: 'continue', reason: 'already-in-applications', skipCliProvision: false } }
   }
 
   const location = classifyMacBundleLocation(bundlePath, {
@@ -343,15 +544,21 @@ function precheckMacApplicationsGuard(deps: MacApplicationsGuardDeps): MacGuardP
   })
 
   if (!location) {
-    return { prompt: false, result: { action: 'continue', reason: 'custom-writable-location' } }
+    return {
+      prompt: false,
+      result: { action: 'continue', reason: 'custom-writable-location', skipCliProvision: false }
+    }
   }
 
   const userDataDir = deps.app.getPath('userData')
 
   if (readMacApplicationsGuardPreference(userDataDir)?.dismissed) {
-    deps.log(`[install] /Applications move prompt suppressed by saved preference (${location}: ${bundlePath})`)
+    const skipCliProvision = shouldSkipMacCliProvision(location)
 
-    return { prompt: false, result: { action: 'continue', reason: 'dismissed', location } }
+    deps.log(`[install] /Applications move prompt suppressed by saved preference (${location}: ${bundlePath})`)
+    noteSkippedCliProvision(deps.log, location, skipCliProvision)
+
+    return { prompt: false, result: { action: 'continue', reason: 'dismissed', location, skipCliProvision } }
   }
 
   return { prompt: true, bundlePath, location, userDataDir }
@@ -381,20 +588,27 @@ function recordDeclinedMove(
     }
   }
 
+  const skipCliProvision = shouldSkipMacCliProvision(location)
+
   deps.log(
     `[install] user chose to keep running from ${location} (${bundlePath})${remember ? '; remembered dismissal' : ''}`
   )
+  noteSkippedCliProvision(deps.log, location, skipCliProvision)
 
-  return { action: 'continue', reason: 'user-declined', location, remembered: remember }
+  return { action: 'continue', reason: 'user-declined', location, remembered: remember, skipCliProvision }
 }
 
 export async function guardMacApplicationsLaunch(deps: MacApplicationsGuardDeps): Promise<MacApplicationsGuardResult> {
+  let detectedLocation: MacUnsafeBundleLocation | undefined
+
   try {
     const check = precheckMacApplicationsGuard(deps)
 
     if ('result' in check) {
       return check.result
     }
+
+    detectedLocation = check.location
 
     const { response, checkboxChecked } = await deps.dialog.showMessageBox(
       buildMovePromptOptions(deps.appName, check.location)
@@ -404,12 +618,19 @@ export async function guardMacApplicationsLaunch(deps: MacApplicationsGuardDeps)
       return recordDeclinedMove(deps, check.bundlePath, check.location, check.userDataDir, Boolean(checkboxChecked))
     }
 
-    return await attemptMoveToApplications(deps, check.location)
+    return await attemptMoveToApplications(deps, check.bundlePath, check.location)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    const skipCliProvision = shouldSkipMacCliProvision(detectedLocation)
 
     deps.log(`[install] /Applications launch guard skipped: ${message}`)
 
-    return { action: 'continue', reason: 'error', error: message }
+    return {
+      action: 'continue',
+      reason: 'error',
+      ...(detectedLocation ? { location: detectedLocation } : {}),
+      skipCliProvision,
+      error: message
+    }
   }
 }

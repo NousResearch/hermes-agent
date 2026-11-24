@@ -362,7 +362,7 @@ import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPat
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
-import { guardMacApplicationsLaunch, resolveMacAppBundle } from './mac-applications-guard'
+import { guardMacApplicationsLaunch, type MacApplicationsGuardResult, resolveMacAppBundle, shouldProvisionBundledCliLinks } from './mac-applications-guard'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -1912,6 +1912,7 @@ const backendPool = new Map() // scope key -> { connectionPromise, remoteBaseUrl
 // Escape hatch: a dedicated, private backend for this app instead of the host's.
 const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
 const profileDeletionGate = new ProfileDeletionGate()
+let macGuardResult: MacApplicationsGuardResult | null = null
 
 // rememberLog() state. Declared before any top-level caller that logs during
 // module evaluation; declaring these later crashed launch with `undefined.push`
@@ -4814,7 +4815,7 @@ async function resolveHermesBackend(backendArgs: string[], progress?: typeof adv
   const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
-    if (!IS_WINDOWS) {
+    if (shouldProvisionBundledCliLinks(IS_WINDOWS, macGuardResult)) {
       provisionCliLinks(payload.commands, path.join(os.homedir(), '.local', 'bin'), rememberLog)
     }
 
@@ -17306,7 +17307,7 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(async () => {
-  const macGuard = await guardMacApplicationsLaunch({
+  macGuardResult = await guardMacApplicationsLaunch({
     app,
     dialog,
     appName: APP_NAME,
@@ -17315,7 +17316,7 @@ app.whenReady().then(async () => {
     log: rememberLog
   })
 
-  if (macGuard.action === 'relaunching') {
+  if (macGuardResult.action === 'relaunching') {
     return
   }
 

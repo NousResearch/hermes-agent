@@ -6,12 +6,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   classifyMacBundleLocation,
+  compareBundleVersions,
   guardMacApplicationsLaunch,
   MAC_APPLICATIONS_GUARD_FILENAME,
   type MacApplicationsGuardDeps,
   macApplicationsGuardPreferencePath,
+  parseBundleShortVersionFromPlist,
+  readBundleShortVersion,
   readMacApplicationsGuardPreference,
-  resolveMacAppBundle
+  resolveMacAppBundle,
+  shouldProvisionBundledCliLinks,
+  shouldSkipMacCliProvision
 } from './mac-applications-guard'
 
 const tempDirs: string[] = []
@@ -66,6 +71,7 @@ function makeDeps(overrides: Partial<MacApplicationsGuardDeps> = {}) {
     argv: ['/Volumes/Hermes Agent/Hermes Agent.app/Contents/MacOS/Hermes Agent'],
     homeDir: '/Users/alice',
     access,
+    readBundleVersion: () => null,
     log: message => {
       logs.push(message)
     },
@@ -213,7 +219,8 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(inApps.deps)).resolves.toEqual({
       action: 'continue',
-      reason: 'already-in-applications'
+      reason: 'already-in-applications',
+      skipCliProvision: false
     })
     expect(inApps.dialog.showMessageBox).not.toHaveBeenCalled()
   })
@@ -231,7 +238,7 @@ describe('guardMacApplicationsLaunch', () => {
     const { deps, dialog, app } = makeDeps(overrides)
     const result = await guardMacApplicationsLaunch(deps)
 
-    expect(result).toEqual({ action: 'continue', reason: 'automated-environment' })
+    expect(result).toEqual({ action: 'continue', reason: 'automated-environment', skipCliProvision: false })
     expect(dialog.showMessageBox).not.toHaveBeenCalled()
     expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
   })
@@ -252,7 +259,8 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'continue',
-      reason: 'custom-writable-location'
+      reason: 'custom-writable-location',
+      skipCliProvision: false
     })
     expect(dialog.showMessageBox).not.toHaveBeenCalled()
     expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
@@ -305,7 +313,7 @@ describe('guardMacApplicationsLaunch', () => {
 
     const result = await guardMacApplicationsLaunch(deps)
 
-    expect(result).toEqual({ action: 'relaunching', location: expectedLocation })
+    expect(result).toEqual({ action: 'relaunching', location: expectedLocation, skipCliProvision: true })
     expect(dialog.showMessageBox).toHaveBeenCalledOnce()
     expect(dialog.showMessageBox).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -332,7 +340,8 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'relaunching',
-      location: 'app-translocation'
+      location: 'app-translocation',
+      skipCliProvision: true
     })
     expect(dialog.showMessageBox).toHaveBeenCalledOnce()
   })
@@ -346,7 +355,8 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'user-declined',
       location: 'read-only-volume',
-      remembered: false
+      remembered: false,
+      skipCliProvision: true
     })
     expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
     expect(fs.existsSync(macApplicationsGuardPreferencePath(userDataDir))).toBe(false)
@@ -355,7 +365,8 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'user-declined',
       location: 'read-only-volume',
-      remembered: false
+      remembered: false,
+      skipCliProvision: true
     })
     expect(dialog.showMessageBox).toHaveBeenCalledTimes(2)
   })
@@ -374,7 +385,8 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'user-declined',
       location: 'app-translocation',
-      remembered: true
+      remembered: true,
+      skipCliProvision: true
     })
 
     const saved = readMacApplicationsGuardPreference(userDataDir)
@@ -391,7 +403,8 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'continue',
       reason: 'dismissed',
-      location: 'app-translocation'
+      location: 'app-translocation',
+      skipCliProvision: true
     })
     expect(dialog.showMessageBox).toHaveBeenCalledTimes(1)
   })
@@ -408,7 +421,8 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(conflictCase.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'conflict-running',
-      location: 'read-only-volume'
+      location: 'read-only-volume',
+      skipCliProvision: true
     })
     expect(conflictCase.dialog.showMessageBox).toHaveBeenCalledTimes(2)
     expect(conflictCase.dialog.showMessageBox).toHaveBeenLastCalledWith(
@@ -426,7 +440,8 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(cancelCase.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'move-cancelled',
-      location: 'read-only-volume'
+      location: 'read-only-volume',
+      skipCliProvision: true
     })
     expect(cancelCase.dialog.showMessageBox).toHaveBeenCalledTimes(1)
 
@@ -440,6 +455,7 @@ describe('guardMacApplicationsLaunch', () => {
       action: 'continue',
       reason: 'move-failed',
       location: 'read-only-volume',
+      skipCliProvision: true,
       error: 'ENOSPC: no space left on device'
     })
     expect(errorCase.dialog.showMessageBox).toHaveBeenCalledTimes(2)
@@ -452,6 +468,161 @@ describe('guardMacApplicationsLaunch', () => {
     expect(readMacApplicationsGuardPreference(errorCase.userDataDir)).toBeNull()
   })
 
+  it('refuses silent downgrade when /Applications or ~/Applications holds a newer version, and allows equal or newer versions', async () => {
+    const downgrade = makeDeps({
+      readBundleVersion: target => {
+        if (target === '/Volumes/Hermes Agent/Hermes Agent.app') {
+          return '0.22.0'
+        }
+
+        if (target === '/Applications/Hermes Agent.app') {
+          return '0.24.0'
+        }
+
+        return null
+      }
+    })
+
+    let downgradeDecision: boolean | undefined
+
+    downgrade.app.moveToApplicationsFolder.mockImplementation(options => {
+      downgradeDecision = options?.conflictHandler?.('exists')
+
+      return Boolean(downgradeDecision)
+    })
+
+    await expect(guardMacApplicationsLaunch(downgrade.deps)).resolves.toEqual({
+      action: 'continue',
+      reason: 'conflict-newer-installed',
+      location: 'read-only-volume',
+      skipCliProvision: true
+    })
+    expect(downgradeDecision).toBe(false)
+    expect(downgrade.dialog.showMessageBox).toHaveBeenCalledTimes(2)
+    expect(downgrade.dialog.showMessageBox).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'A newer version of Hermes Agent is already in Applications',
+        detail: expect.stringContaining('0.22.0')
+      })
+    )
+    expect(downgrade.logs.some(line => line.includes('0.22.0') && line.includes('0.24.0'))).toBe(true)
+    expect(readMacApplicationsGuardPreference(downgrade.userDataDir)).toBeNull()
+
+    const userAppsDowngrade = makeDeps({
+      readBundleVersion: target => {
+        if (target === '/Volumes/Hermes Agent/Hermes Agent.app') {
+          return '0.24.0-rc.1'
+        }
+
+        if (target === '/Users/alice/Applications/Hermes Agent.app') {
+          return '0.24.0'
+        }
+
+        return null
+      }
+    })
+
+    let userAppsDecision: boolean | undefined
+
+    userAppsDowngrade.app.moveToApplicationsFolder.mockImplementation(options => {
+      userAppsDecision = options?.conflictHandler?.('exists')
+
+      return Boolean(userAppsDecision)
+    })
+
+    await expect(guardMacApplicationsLaunch(userAppsDowngrade.deps)).resolves.toMatchObject({
+      action: 'continue',
+      reason: 'conflict-newer-installed',
+      skipCliProvision: true
+    })
+    expect(userAppsDecision).toBe(false)
+
+    for (const [runningVersion, existingVersion] of [
+      ['0.24.0', '0.24.0'],
+      ['0.25.0', '0.24.0']
+    ] as const) {
+      const allowed = makeDeps({
+        access: () => undefined,
+        readBundleVersion: target => {
+          if (target.includes('/AppTranslocation/')) {
+            return runningVersion
+          }
+
+          if (target === '/Applications/Hermes Agent.app') {
+            return existingVersion
+          }
+
+          return null
+        }
+      })
+
+      allowed.app.getPath = vi.fn((name: string) =>
+        name === 'exe'
+          ? '/private/var/folders/aa/bb/T/AppTranslocation/DITTO-COPY/d/Hermes Agent.app/Contents/MacOS/Hermes Agent'
+          : allowed.userDataDir
+      ) as unknown as MacApplicationsGuardDeps['app']['getPath']
+
+      let decision: boolean | undefined
+
+      allowed.app.moveToApplicationsFolder.mockImplementation(options => {
+        decision = options?.conflictHandler?.('exists')
+
+        return Boolean(decision)
+      })
+
+      await expect(guardMacApplicationsLaunch(allowed.deps)).resolves.toEqual({
+        action: 'relaunching',
+        location: 'app-translocation',
+        skipCliProvision: true
+      })
+      expect(decision).toBe(true)
+    }
+  })
+
+  it('skips CLI symlink provisioning on read-only or translocated bundles, and keeps it on writable locations', async () => {
+    expect(shouldSkipMacCliProvision('app-translocation')).toBe(true)
+    expect(shouldSkipMacCliProvision('read-only-volume')).toBe(true)
+    expect(shouldSkipMacCliProvision('downloads-folder')).toBe(false)
+    expect(shouldSkipMacCliProvision('desktop-folder')).toBe(false)
+    expect(shouldSkipMacCliProvision(undefined)).toBe(false)
+
+    const dmgDecline = makeDeps()
+
+    dmgDecline.dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: true })
+
+    const dmgResult = await guardMacApplicationsLaunch(dmgDecline.deps)
+
+    expect(dmgResult).toMatchObject({ action: 'continue', reason: 'user-declined', skipCliProvision: true })
+    expect(shouldProvisionBundledCliLinks(false, dmgResult)).toBe(false)
+    expect(dmgDecline.logs.some(line => line.includes('skipping ~/.local/bin CLI symlink provisioning'))).toBe(true)
+
+    const dmgDismissed = await guardMacApplicationsLaunch(dmgDecline.deps)
+
+    expect(dmgDismissed).toMatchObject({ action: 'continue', reason: 'dismissed', skipCliProvision: true })
+    expect(shouldProvisionBundledCliLinks(false, dmgDismissed)).toBe(false)
+
+    const downloadsDecline = makeDeps({ access: () => undefined })
+
+    downloadsDecline.app.getPath = vi.fn((name: string) =>
+      name === 'exe'
+        ? '/Users/alice/Downloads/Hermes Agent.app/Contents/MacOS/Hermes Agent'
+        : downloadsDecline.userDataDir
+    ) as unknown as MacApplicationsGuardDeps['app']['getPath']
+    downloadsDecline.dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+
+    const downloadsResult = await guardMacApplicationsLaunch(downloadsDecline.deps)
+
+    expect(downloadsResult).toMatchObject({
+      action: 'continue',
+      reason: 'user-declined',
+      location: 'downloads-folder',
+      skipCliProvision: false
+    })
+    expect(shouldProvisionBundledCliLinks(false, downloadsResult)).toBe(true)
+    expect(shouldProvisionBundledCliLinks(true, downloadsResult)).toBe(false)
+    expect(shouldProvisionBundledCliLinks(false, null)).toBe(true)
+  })
+
   it('recovers cleanly from corrupt saved preferences and unexpected startup errors', async () => {
     const { deps, dialog, userDataDir } = makeDeps()
 
@@ -460,7 +631,8 @@ describe('guardMacApplicationsLaunch', () => {
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toMatchObject({
       action: 'continue',
-      reason: 'user-declined'
+      reason: 'user-declined',
+      skipCliProvision: true
     })
 
     const broken = makeDeps()
@@ -472,8 +644,46 @@ describe('guardMacApplicationsLaunch', () => {
     await expect(guardMacApplicationsLaunch(broken.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'error',
+      skipCliProvision: false,
       error: 'NSBundle unavailable'
     })
     expect(broken.logs.some(line => line.includes('NSBundle unavailable'))).toBe(true)
+  })
+})
+
+describe('bundle version parsing and comparison', () => {
+  it('parses CFBundleShortVersionString from XML Info.plist files', () => {
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0"><dict>',
+      '  <key>CFBundleShortVersionString</key>',
+      '  <string>0.24.0-canary.20261124</string>',
+      '</dict></plist>'
+    ].join('\n')
+
+    expect(parseBundleShortVersionFromPlist(xml)).toBe('0.24.0-canary.20261124')
+    expect(parseBundleShortVersionFromPlist('<plist><dict></dict></plist>')).toBeNull()
+
+    const root = makeTempUserData()
+    const bundleDir = path.join(root, 'Hermes Agent.app')
+
+    fs.mkdirSync(path.join(bundleDir, 'Contents'), { recursive: true })
+    fs.writeFileSync(path.join(bundleDir, 'Contents', 'Info.plist'), xml, 'utf8')
+
+    expect(readBundleShortVersion(bundleDir)).toBe('0.24.0-canary.20261124')
+    expect(readBundleShortVersion(path.join(root, 'Missing.app'))).toBeNull()
+  })
+
+  it('compares release, prerelease, numeric prerelease, and build-metadata versions', () => {
+    expect(compareBundleVersions('0.22.0', '0.24.0')).toBe(-1)
+    expect(compareBundleVersions('0.24.0', '0.24.0')).toBe(0)
+    expect(compareBundleVersions('0.25.0', '0.24.0')).toBe(1)
+    expect(compareBundleVersions('0.24.0-rc.1', '0.24.0')).toBe(-1)
+    expect(compareBundleVersions('0.24.0', '0.24.0-rc.1')).toBe(1)
+    expect(compareBundleVersions('0.24.0-rc.2', '0.24.0-rc.10')).toBe(-1)
+    expect(compareBundleVersions('0.24.0-rc.10', '0.24.0-rc.2')).toBe(1)
+    expect(compareBundleVersions('0.24.0+build.1', '0.24.0+build.2')).toBe(0)
+    expect(compareBundleVersions('0.24.0-canary.20261124T001400Z', '0.24.0-canary.20261124T001500Z')).toBe(-1)
+    expect(compareBundleVersions('invalid', '0.24.0')).toBeNull()
   })
 })

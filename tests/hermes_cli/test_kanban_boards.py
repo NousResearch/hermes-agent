@@ -443,7 +443,7 @@ class TestBoardResurrection:
         kb.remove_board("zarch", archive=True)
         db_path = kb.board_dir("zarch") / "kanban.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        db_path.touch()  # create the 0-byte stub
+        db_path.write_bytes(b"")  # ensure truncation to a true 0-byte stub
         assert db_path.stat().st_size == 0
 
         with pytest.raises(ValueError, match="archived"):
@@ -463,7 +463,7 @@ class TestBoardResurrection:
         # navigable but has no board.json.
         db_path = kb.board_dir("zdel") / "kanban.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        db_path.touch()
+        db_path.write_bytes(b"")  # ensure truncation to a true 0-byte stub
         assert db_path.stat().st_size == 0
 
         with pytest.raises(ValueError, match="does not exist"):
@@ -477,7 +477,7 @@ class TestBoardResurrection:
         not be accidentally refused)."""
         kb.create_board("zlive")
         db_path = kb.board_dir("zlive") / "kanban.db"
-        db_path.touch()  # simulate the 0-byte stub
+        db_path.write_bytes(b"")  # ensure truncation to a true 0-byte stub
         assert db_path.stat().st_size == 0
 
         with kbc.connect_closing(board="zlive") as conn:

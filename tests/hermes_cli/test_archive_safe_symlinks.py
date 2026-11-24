@@ -48,8 +48,12 @@ def test_exported_profile_with_symlinks_imports_with_the_links_kept(tmp_path, mo
     os.symlink("plugins", src / "plugins-link", target_is_directory=True)
     # The LSP installer links by absolute path; export must ship it as a relative link.
     os.symlink(src / "plugins" / "eng" / "engine.py", src / "lsp" / "bin" / "abs-tool")
-
-    imported = import_profile(str(export_profile("rlink", str(tmp_path / "rlink"))), name="rlink2")
+    os.symlink(src, src / "plugins" / "abs-root", target_is_directory=True)
+    (src / "plugins").chmod(0o555)  # export must not need to write its staged copy
+    try:
+        imported = import_profile(str(export_profile("rlink", str(tmp_path / "rlink"))), name="rlink2")
+    finally:
+        (src / "plugins").chmod(0o755)
 
     assert (imported / "lsp" / "bin" / "tool").is_symlink()
     assert (imported / "lsp" / "bin" / "tool").read_text() == "print('engine')\n"
@@ -58,11 +62,14 @@ def test_exported_profile_with_symlinks_imports_with_the_links_kept(tmp_path, mo
     abs_tool = imported / "lsp" / "bin" / "abs-tool"
     assert not os.path.isabs(os.readlink(abs_tool))
     assert abs_tool.resolve() == (imported / "plugins" / "eng" / "engine.py").resolve()
+    assert (imported / "plugins" / "abs-root").resolve() == imported.resolve()
 
 
 @pytest.mark.require_symlinks
 @pytest.mark.parametrize("entries", [
     pytest.param([("p/", D, ""), ("p/e", L, "/etc/passwd")], id="absolute"),
+    pytest.param([("p/sub/", D, ""), ("p/dl", L, "sub"), ("p/dl/x", L, ".")], id="link-inside-a-dir-link"),
+    pytest.param([("p/sub/", D, ""), ("p/dl/x", L, "."), ("p/dl", L, "sub")], id="dir-link-over-an-implied-dir"),
     pytest.param([("p/", D, ""), ("p/e", L, "C:\\Windows\\system32")], id="windows-drive"),
     pytest.param([("p/", D, ""), ("p/e", L, "../sibling")], id="dotdot-to-a-sibling-of-the-root"),
     # Publishing renames p, so ../p/x would then point into whatever profile is named p.

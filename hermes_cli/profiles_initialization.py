@@ -61,9 +61,12 @@ def prepare_imported_tree(staged: Path) -> None:
     drop_other_access(staged / "config.yaml")
     env = staged / ".env"
     if env.is_symlink():  # import keeps only in-tree links; a real file gets its own 0600 mode
-        content = env.read_bytes() if env.is_file() else b""
-        env.unlink()
-        env.write_bytes(content)
+        staged_env = env.with_name(".env.import")
+        if env.is_file():
+            shutil.copyfile(env, staged_env)
+        else:
+            staged_env.touch()
+        os.replace(staged_env, env)
     if env.is_file():
         os.chmod(env, 0o600)
 

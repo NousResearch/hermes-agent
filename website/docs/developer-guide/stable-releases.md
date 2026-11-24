@@ -76,7 +76,10 @@ Only the publication controller promotes stable: the standalone
 `python -m scripts.bundles.release_artifacts promote` refuses a stable candidate,
 because it would skip the published-release check and run outside the
 serialized `stable-release` group. Repair a partial stable publication by
-running Stable Release Publication again.
+running Stable Release Publication again. A rerun repeats only an unfinished
+advance (a head, candidate pointer or Docker alias still behind); it never
+re-promotes a release that finished, so the unversioned DMG and the downloads
+page change only with a full-desktop promotion.
 
 ## Run, publish, or abandon a stable release
 

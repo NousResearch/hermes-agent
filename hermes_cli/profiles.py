@@ -2181,7 +2181,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     # clears the read-only bits extraction re-applies, which a plain rmtree can't delete on Windows.
     with _create_lock(canon), tempfile.TemporaryDirectory(  # publish as create does: a racing publish wins
             prefix=f".{canon}.staging-", dir=profile_dir.parent, ignore_cleanup_errors=True) as staging_root:
-        safe_extract_targz(archive, Path(staging_root))
+        safe_extract_targz(archive, Path(staging_root), allow_symlinks=True)  # export keeps links
         extracted = Path(staging_root) / archive_root
         if not extracted.is_dir():
             raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")

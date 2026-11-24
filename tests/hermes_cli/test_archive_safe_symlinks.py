@@ -1,14 +1,14 @@
-"""Regression tests for safe_extract_targz symlink materialization (#149830).
+"""``hermes profile import`` recreates the symlinks ``hermes profile export`` keeps (#149830).
 
-A profile archive produced by ``export_profile`` keeps symlinks (``shutil.copytree(...,
-symlinks=True)`` -> ``tarfile.add``), so ``import_profile`` used to fail on any profile
-containing one (for example the LSP bundle links under ``lsp/bin``). The extractor now
-materializes links that resolve inside the destination and refuses the rest.
+Export stages with ``copytree(symlinks=True)``, so a profile with a link (the LSP bundle links
+under ``lsp/bin``) used to export fine and then fail to import. Import now recreates links that
+stay inside the imported profile and refuses every link that could reach outside it.
 """
 
 from __future__ import annotations
 
 import io
+import os
 import tarfile
 from pathlib import Path
 
@@ -16,133 +16,67 @@ import pytest
 
 from hermes_cli.archive_safe import safe_extract_targz
 
+D, F, L, H = tarfile.DIRTYPE, tarfile.REGTYPE, tarfile.SYMTYPE, tarfile.LNKTYPE
 
-def _tar_with(entries: list[tuple[str, bytes | None, int, str]]) -> io.BytesIO:
-    """Build an in-memory tar.gz. ``entries`` are (name, data, type, linkname)."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name, data, mtype, linkname in entries:
+
+def _write_archive(path: Path, entries: list[tuple[str, int, object]]) -> Path:
+    with tarfile.open(path, "w:gz") as tf:
+        for name, mtype, payload in entries:
             info = tarfile.TarInfo(name)
             info.type = mtype
-            info.linkname = linkname
-            if data is None:
-                tf.addfile(info)
+            if mtype == F:
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
             else:
-                info.size = len(data)
-                tf.addfile(info, io.BytesIO(data))
-    buf.seek(0)
-    return buf
+                info.linkname = payload
+                tf.addfile(info)
+    return path
 
 
-def _extract(buf: io.BytesIO, tmp_path: Path) -> Path:
-    archive = tmp_path / "payload.tar.gz"
-    archive.write_bytes(buf.read())
-    out = tmp_path / "out"
-    safe_extract_targz(archive, out)
-    return out
+@pytest.mark.require_symlinks
+def test_exported_profile_with_symlinks_imports_with_the_links_kept(tmp_path, monkeypatch):
+    from hermes_cli.profiles import export_profile, import_profile
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    src = home / "profiles" / "rlink"
+    (src / "lsp" / "bin").mkdir(parents=True)
+    (src / "plugins" / "eng").mkdir(parents=True)
+    (src / "plugins" / "eng" / "engine.py").write_text("print('engine')\n")
+    os.symlink(os.path.join("..", "..", "plugins", "eng", "engine.py"), src / "lsp" / "bin" / "tool")
+    os.symlink("plugins", src / "plugins-link", target_is_directory=True)
+
+    imported = import_profile(str(export_profile("rlink", str(tmp_path / "rlink"))), name="rlink2")
+
+    assert (imported / "lsp" / "bin" / "tool").is_symlink()
+    assert (imported / "lsp" / "bin" / "tool").read_text() == "print('engine')\n"
+    assert (imported / "plugins-link").is_symlink()
+    assert (imported / "plugins-link" / "eng" / "engine.py").is_file()
 
 
-def test_internal_relative_symlink_is_materialized(tmp_path):
-    buf = _tar_with([
-        ("payload/", None, tarfile.DIRTYPE, ""),
-        ("payload/lsp/", None, tarfile.DIRTYPE, ""),
-        ("payload/lsp/bin/", None, tarfile.DIRTYPE, ""),
-        ("payload/lsp/bin/tool", None, tarfile.SYMTYPE, "../../plugins/eng/engine.py"),
-        ("payload/plugins/", None, tarfile.DIRTYPE, ""),
-        ("payload/plugins/eng/", None, tarfile.DIRTYPE, ""),
-        ("payload/plugins/eng/engine.py", b"print('engine')\n", tarfile.REGTYPE, ""),
-    ])
-    out = _extract(buf, tmp_path)
-    link = out / "payload" / "lsp" / "bin" / "tool"
-    assert link.is_symlink()
-    assert link.readlink() == Path("../../plugins/eng/engine.py")
-    # The link resolves to the sibling member that was also extracted.
-    assert link.resolve() == (out / "payload" / "plugins" / "eng" / "engine.py").resolve()
+@pytest.mark.require_symlinks
+@pytest.mark.parametrize("entries", [
+    pytest.param([("p/", D, ""), ("p/e", L, "/etc/passwd")], id="absolute"),
+    pytest.param([("p/", D, ""), ("p/e", L, "C:\\Windows\\system32")], id="windows-drive"),
+    pytest.param([("p/", D, ""), ("p/e", L, "../sibling")], id="dotdot-to-a-sibling-of-the-root"),
+    # z only escapes through y, so a lexical check of z's target alone passes it.
+    pytest.param([("p/a/b/", D, ""), ("p/a/b/y", L, "../.."), ("p/a/b/z", L, "y/../../.."),
+                  ("p/a/b/z/PWNED", F, b"x")], id="chained-link-then-file-through-it"),
+    pytest.param([("p/a/", D, ""), ("p/a/y", L, "../../.."), ("p/a/y/PWNED", L, ".")],
+                 id="link-created-through-an-escaping-link"),
+    pytest.param([("p/a/b/", D, ""), ("p/a/b/z", L, "y/../../.."), ("p/a/b/y", L, "../..")],
+                 id="escape-completed-by-a-later-link"),
+    pytest.param([("p/d/", D, ""), ("p/d/x", F, b"x"), ("p/d", L, "x")], id="link-over-an-existing-dir"),
+    pytest.param([("p/", D, ""), ("p/r", F, b"r"), ("p/h", H, "p/r")], id="hardlink"),
+])
+def test_a_link_that_could_reach_outside_the_root_is_refused(tmp_path, entries):
+    dest = tmp_path / "outer" / "dest"
+    dest.mkdir(parents=True)
+    archive = _write_archive(tmp_path / "evil.tar.gz", entries)
 
+    with pytest.raises(ValueError):
+        safe_extract_targz(archive, dest, allow_symlinks=True)
 
-def test_symlink_with_dotdot_that_stays_inside_is_materialized(tmp_path):
-    buf = _tar_with([
-        ("payload/a/", None, tarfile.DIRTYPE, ""),
-        ("payload/a/b/", None, tarfile.DIRTYPE, ""),
-        ("payload/a/b/link", None, tarfile.SYMTYPE, "../target.txt"),
-        ("payload/a/target.txt", b"hi\n", tarfile.REGTYPE, ""),
-    ])
-    out = _extract(buf, tmp_path)
-    link = out / "payload" / "a" / "b" / "link"
-    assert link.is_symlink()
-    assert (out / "payload" / "a" / "target.txt").read_text() == "hi\n"
-
-
-def test_absolute_symlink_is_refused(tmp_path):
-    buf = _tar_with([
-        ("payload/", None, tarfile.DIRTYPE, ""),
-        ("payload/evil", None, tarfile.SYMTYPE, "/etc/passwd"),
-    ])
-    archive = tmp_path / "evil.tar.gz"
-    archive.write_bytes(buf.read())
-    with pytest.raises(ValueError, match="escapes the destination"):
-        safe_extract_targz(archive, tmp_path / "out")
-
-
-def test_symlink_escaping_the_destination_is_refused(tmp_path):
-    buf = _tar_with([
-        ("payload/", None, tarfile.DIRTYPE, ""),
-        ("payload/evil", None, tarfile.SYMTYPE, "../../outside.txt"),
-    ])
-    archive = tmp_path / "evil.tar.gz"
-    archive.write_bytes(buf.read())
-    with pytest.raises(ValueError, match="escapes the destination"):
-        safe_extract_targz(archive, tmp_path / "out")
-
-
-def test_windows_style_absolute_symlink_is_refused(tmp_path):
-    buf = _tar_with([
-        ("payload/", None, tarfile.DIRTYPE, ""),
-        ("payload/evil", None, tarfile.SYMTYPE, "C:\\Windows\\system32\\evil.dll"),
-    ])
-    archive = tmp_path / "evil.tar.gz"
-    archive.write_bytes(buf.read())
-    with pytest.raises(ValueError, match="escapes the destination"):
-        safe_extract_targz(archive, tmp_path / "out")
-
-
-def test_hardlink_is_still_refused(tmp_path):
-    buf = _tar_with([
-        ("payload/", None, tarfile.DIRTYPE, ""),
-        ("payload/real.txt", b"hi\n", tarfile.REGTYPE, ""),
-        ("payload/hard.txt", None, tarfile.LNKTYPE, "payload/real.txt"),
-    ])
-    archive = tmp_path / "hard.tar.gz"
-    archive.write_bytes(buf.read())
-    with pytest.raises(ValueError, match="Unsupported archive member"):
-        safe_extract_targz(archive, tmp_path / "out")
-
-
-def test_exported_profile_with_a_symlink_round_trips(tmp_path):
-    """End-to-end: export_profile keeps links, import_profile now accepts them (#149830)."""
-    import os
-
-    from hermes_cli import profiles as profiles_mod
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-    fake_home = tmp_path / "home"
-    profile_dir = fake_home / "profiles" / "rlink"
-    (profile_dir / "lsp" / "bin").mkdir(parents=True)
-    (profile_dir / "plugins" / "eng").mkdir(parents=True)
-    (profile_dir / "plugins" / "eng" / "engine.py").write_text("print('engine')\n")
-    os.symlink("../../plugins/eng/engine.py", profile_dir / "lsp" / "bin" / "tool")
-    # A real Hermes home is recognized by its marker files; export_profile resolves the
-    # profile through the default root, which reads HERMES_HOME directly.
-    (fake_home / "config.yaml").write_text("version: 1\n")
-    os.environ["HERMES_HOME"] = str(fake_home)
-
-    try:
-        archive = profiles_mod.export_profile("rlink", str(tmp_path / "rlink"))
-        assert archive.exists()
-        imported = profiles_mod.import_profile(str(archive), name="rlink2")
-    finally:
-        os.environ.pop("HERMES_HOME", None)
-
-    link = imported / "lsp" / "bin" / "tool"
-    assert link.is_symlink()
-    assert link.resolve() == (imported / "plugins" / "eng" / "engine.py").resolve()
+    # The caller discards the staging dir on error; nothing may have landed beside it.
+    assert [p.name for p in (tmp_path / "outer").iterdir()] == ["dest"]

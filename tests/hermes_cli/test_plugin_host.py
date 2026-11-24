@@ -318,6 +318,29 @@ def test_the_host_child_takes_no_environment_from_a_marked_linked_profiles_env_f
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_marked_linked_profiles_provider_extraction_child_runs_under_the_name_its_marker_is_found_by(
+        tmp_path, monkeypatch):
+    """The one-shot extraction imports a model-provider plugin in a child process; code there asks the marker
+    about the home it was given, as code in the plugin host does."""
+    import providers
+
+    seen = tmp_path / "seen.txt"
+    outside = _marked_profile_linked_out_of_the_root(
+        tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"}, {})
+    plugin_dir = outside / "plugins" / "model-providers" / "hostmodel"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal as _refusal\n"
+        f"open({str(seen)!r}, 'w').write(str(_refusal() is not None))\n" + MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    try:
+        assert providers.get_provider_profile("hostmodel") is not None
+        assert seen.read_text(encoding="utf-8") == "True"
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_working_directory_moves(
         tmp_path, monkeypatch):
     """A symbolic profile id bound as a home is a relative path. The manager is keyed by the directory that

@@ -254,7 +254,7 @@ class PluginLedgerMixin:
 
     def unload(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
         """Unload registrations while excluding discovery/deferred loading."""
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.owner_home):
             return self._unload_scoped(plugin)
 
     def _unload_scoped(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:

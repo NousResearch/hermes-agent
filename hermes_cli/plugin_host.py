@@ -75,7 +75,7 @@ class PluginHost:
 
     def __init__(self, manager: Any):
         self._manager = manager
-        self._home = Path(manager.home_path)
+        self._home = Path(manager.owner_home)
         self._lock = threading.Lock()
         self._proc: Optional[subprocess.Popen] = None
         self._channel: Optional[Channel] = None

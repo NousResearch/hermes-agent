@@ -229,6 +229,95 @@ def test_a_marked_profile_linked_out_of_the_root_does_not_get_its_own_launcher(t
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+def _marked_profile_linked_out_of_the_root(tmp_path, monkeypatch, plugins: dict, settings: dict):
+    """``<root>/profiles/ops`` links to a directory outside the root and is marked; HERMES_HOME names it."""
+    from hermes_cli import profiles_run_elsewhere as pre
+
+    outside = _home_with_plugins(tmp_path / "outside", monkeypatch, plugins)
+    (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": list(plugins), "isolation": "host", **settings}}), encoding="utf-8")
+    root = tmp_path / ".hermes"
+    (root / "profiles").mkdir(parents=True)
+    (root / "profiles" / "ops").symlink_to(outside, target_is_directory=True)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    return outside
+
+
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_plugin_discovery_for_a_marked_linked_profile_runs_under_the_name_its_marker_is_found_by(
+        tmp_path, monkeypatch):
+    """Code that runs while a manager discovers (a plugin's register, a module it imports that lists the
+    model providers and so extracts a hosted one) asks the marker about the home it is bound to."""
+    seen = tmp_path / "seen.txt"
+    _marked_profile_linked_out_of_the_root(tmp_path, monkeypatch, {"markprobe": (
+        "from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal\n"
+        f"def register(ctx):\n    open({str(seen)!r}, 'w').write(str(run_elsewhere_refusal() is not None))\n")},
+        {"isolation": "in_process"})
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        assert seen.read_text(encoding="utf-8") == "True"
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_marked_linked_profiles_provider_extraction_from_the_host_does_not_get_its_own_launcher(
+        tmp_path, monkeypatch):
+    """The host's start asks for hosted providers' ambient credentials, in the host's own context; with no
+    extraction cached yet that is where the model-provider profiles are extracted, under that home's launcher."""
+    ran = tmp_path / "launcher.ran"
+    runner = tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    outside = _marked_profile_linked_out_of_the_root(
+        tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"},
+        {"host": {"launcher": [str(runner)]}})
+    plugin_dir = outside / "plugins" / "model-providers" / "hostmodel"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        assert not ran.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_the_host_child_takes_no_environment_from_a_marked_linked_profiles_env_file(tmp_path, monkeypatch):
+    """A marked home's ``.env`` reads as empty; the host child's environment (a hosted provider's ambient
+    credential included) is built for the home as named."""
+    planted, seen = tmp_path / "planted.ran", tmp_path / "seen.txt"
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    (evil / "json.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    outside = _marked_profile_linked_out_of_the_root(tmp_path, monkeypatch, {"envprobe": (
+        f"import os\ndef register(ctx):\n    open({str(seen)!r}, 'w').write(os.environ.get('HOSTMODEL_KEY', ''))\n")}, {})
+    plugin_dir = outside / "plugins" / "model-providers" / "hostmodel"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN.replace(
+        'env_vars=("HOSTMODEL_KEY",)', 'env_vars=("HOSTMODEL_KEY",), ambient_credentials=True'), encoding="utf-8")
+    (outside / ".env").write_text(f"PYTHONPATH={evil}\nHOSTMODEL_KEY=from-the-backend\n", encoding="utf-8")
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["envprobe"].error is None and seen.read_text(encoding="utf-8") == ""
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""

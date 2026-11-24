@@ -30,12 +30,32 @@ SKILL_ONLY_PATTERNS = [(re.compile(
     "hermes_env_dotenv", "high", "exfiltration", "loads the Hermes .env (every key of the profile) into the script")]
 _ENV_READ_IDS = frozenset({"python_getenv_secret", "python_environ_get_secret"})
 # The name a getenv / environ.get / environ[...] call reads: its first argument only, so a provider name in a
-# default argument or another literal on the line does not raise the read of the skill's own key.
-_ENV_READ_NAME_RE = re.compile(r'(?:getenv|environ\s*\.\s*get|environ\s*\[)\s*\(?\s*["\']([A-Za-z_]\w*)["\']')
+# default argument or another literal on the line does not raise the read of the skill's own key. A lone surrogate
+# can sit inside the literal and is not a quote, so the range and U+FFFD are tolerated there (a wider match here
+# only ever raises the finding).
+_ENV_READ_NAME_RE = re.compile(r'(?:getenv|environ\s*\.\s*get|environ\s*\[)\s*\(?\s*["\']([A-Za-z_]\w*)[\ud800-\udfff\ufffd]*["\']')
 # Token types whose text is not code (see code_views). TSTRING_MIDDLE is the literal part of a 3.14 t-string.
 _TEXT_TOKENS = {tokenize.COMMENT, tokenize.STRING} | {
     getattr(tokenize, name) for name in ("FSTRING_MIDDLE", "TSTRING_MIDDLE") if hasattr(tokenize, name)}
 _FSTRING_PREFIX = re.compile(r"(?i)[rbu]*f")
+
+
+# A lone UTF-16 surrogate: not encodable as UTF-8, so ``tokenize`` and ``ast`` refuse the whole text with
+# ``UnicodeEncodeError`` even though the ``str`` holds it. A surrogate reaches a scanner from a non-UTF-8 source
+# decoding (``surrogateescape``, utf-7).
+LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
+def lexable_text(lines: list) -> str:
+    """``"\n".join(lines)`` with every lone surrogate replaced one-for-one by U+FFFD (see ``LONE_SURROGATE_RE``).
+
+    One *character* replaces another, so no line, column or token boundary moves: the callers' line/column
+    bookkeeping stays valid and prose detection survives instead of falling back to raw lines. Callers still
+    catch ``UnicodeError`` on top — the tokenizer is an implementation detail that may refuse something else.
+    The search runs on the joined text and skips the substitution entirely for a clean file, which is the
+    common case: only the sanitized string is handed to the tokenizer, the raw lines stay untouched."""
+    text = "\n".join(lines)
+    return LONE_SURROGATE_RE.sub("\ufffd", text) if LONE_SURROGATE_RE.search(text) else text
 
 
 def code_views(lines: list) -> tuple | None:
@@ -46,7 +66,7 @@ def code_views(lines: list) -> tuple | None:
     token and is left as code. None when the file does not tokenize; callers then use the whole line."""
     view, in_text = [list(ln) for ln in lines], [bytearray(len(ln)) for ln in lines]
     try:
-        for tok in tokenize.generate_tokens(io.StringIO("\n".join(lines)).readline):
+        for tok in tokenize.generate_tokens(io.StringIO(lexable_text(lines)).readline):
             if tok.type not in _TEXT_TOKENS or tok.type == tokenize.STRING and _FSTRING_PREFIX.match(tok.string):
                 continue
             (r0, c0), (r1, c1) = tok.start, tok.end
@@ -56,7 +76,7 @@ def code_views(lines: list) -> tuple | None:
                 a = min(c0 if r == r0 - 1 else 0, b)
                 in_text[r][a:b] = b"\x01" * (b - a)
                 row[a:b] = [" " if tok.type == tokenize.COMMENT or ch in "()" else ch for ch in row[a:b]]
-    except (tokenize.TokenError, SyntaxError):
+    except (tokenize.TokenError, SyntaxError, UnicodeError):
         return None
     return ["".join(v) for v in view], in_text
 

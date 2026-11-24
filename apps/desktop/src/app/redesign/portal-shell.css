@@ -762,10 +762,12 @@
 }
 
 /* The developer rail keeps its column too, wherever it has one (it has no compact form): a sheet
-   run to the window's end would put its rows under the rail's buttons. */
+   run to the window's end would put its rows under the rail's buttons. Between two rails, a wide
+   pane's sheet stops at the first as well. */
 @media (min-width: 640px) {
   :root[data-shell='portal'][data-developer-rail] [data-narrow-overlay-side='right'] {
     inset-inline-end: var(--portal-rail-width);
+    --portal-sheet-end-max-width: calc(100vw - 2 * var(--portal-rail-width));
   }
 }
 

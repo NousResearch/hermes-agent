@@ -1,7 +1,7 @@
 name: openconnector
 title: OpenConnector
 repo: https://github.com/ericnunes30/hermes-openconnector
-sha: 249fc987f9ac7e5fbf8b19dcae87f2c49998d950
+sha: c4ae22ce7cabfd4d09cec4355d81fbe6ce59ee51
 description: >-
   Turns a self-hosted OpenConnector runtime into Hermes connector tools: typed
   tools named openconnector__<service>__<action> built from the runtime's own input
@@ -13,10 +13,9 @@ description: >-
   plugin never talks to a vendor cloud and holds no credential store of its own.
   Write-capable actions change the external system immediately (create issue,
   send message); tools whose action is typed write or delete say so in their
-  description. oc_sync_actions downloads the runtime's full action catalogue,
-  a single document of roughly 55 MB, and caches only the actions the user listed
-  in the `actions` setting under ~/.hermes/cache/openconnector-actions.json, so it
-  is heavy and rate-relevant to the user's own server, not to a third party. The
+  description. Typed tools are built at load time from one read per action
+  (`GET /api/actions/<id>`, about 1 KB each) against the user's own server; the
+  full catalogue, a single document of roughly 55 MB, is never downloaded. The
   tool list the runtime exposes is read at run time, so the pinned commit does not
   cover it. No shell commands, no background processes, no telemetry.
 maintainer: ericnunes30
@@ -29,7 +28,7 @@ platforms: []
 known_issues:
   - "Install and run the OpenConnector backend yourself first: the plugin only points at it and does not start containers."
   - "OAuth providers (Gmail, Slack, Notion) need your own OAuth app registered with the provider; GitHub and other API-key providers work immediately."
-  - "Typed connectors__* tools appear only after oc_sync_actions fills the cache and the gateway restarts."
+  - "Typed openconnector__* tools appear on the session after a gateway restart; a wrong action id is logged by the plugin, not raised."
 capabilities:
   provides_tools:
     - oc_status
@@ -38,7 +37,6 @@ capabilities:
     - oc_search_actions
     - oc_action_guide
     - oc_execute_action
-    - oc_sync_actions
   provides_hooks: []
   provides_middleware: []
   requires_env: []

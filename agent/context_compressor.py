@@ -285,13 +285,20 @@ SUMMARY_PREFIX = (
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
+    # A promise the assistant made just before compaction is "mentioned in the summary" too, so the blanket
+    # "already addressed" rule used to bury it until the user asked twice (#159362).
+    "The exception is '## Open Commitments': those are still owed — do them, "
+    "or tell the user they are still pending. "
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
     "If no user message appears AFTER this summary, do nothing: do not "
     "resume, wrap up, or continue work from "
     f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
-    "and wait for a new user message. This handoff must never become the "
+    "and wait for a new user message — the one exception is an owed item "
+    "under '## Open Commitments', which stays owed and may be done, or "
+    "reported as still pending, without a new message. "
+    "This handoff must never become the "
     "active turn by itself. (Exception: if tool results or your own "
     "tool calls appear after this summary, you are mid-way through an "
     "in-flight exchange — continue that exchange normally.) "
@@ -301,10 +308,13 @@ SUMMARY_PREFIX = (
     f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
+    "'## Open Commitments' is the exception: it is not historical, its items "
+    "stay owed until the latest message completes or cancels them. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
-    "summary; do not re-surface it in later turns. "
+    "summary, including an owed item in '## Open Commitments'; do not "
+    "re-surface it in later turns. "
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
@@ -2009,6 +2019,11 @@ If no outstanding task exists, write "None."]""",
         "resolved_questions": (
             "[Questions the user asked that were ALREADY answered — include the answer so it is not repeated]"
         ),
+        "open_commitments": (
+            "[Promises the assistant made to the user, and user asks it acknowledged but has NOT finished yet — "
+            "one per line, each with its status (owed, or blocked on X). A promise does not age out: keep it "
+            "here until it is completed or the latest user message cancels it. 'None.' when nothing is owed.]"
+        ),
     },
     False: {
         "language": (
@@ -2028,6 +2043,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
             "[Runtime, configuration, and technical constraints only. Do not invent user preferences.]"
         ),
         "resolved_questions": "[Write exactly: None. No user-authored questions exist.]",
+        "open_commitments": "[Write exactly: None. No user-authored turns exist, so nothing was promised.]",
     },
 }
 
@@ -3387,6 +3403,14 @@ class ContextCompressor(
             )
 
         reason_text = f" Summary failure reason: {reason}." if reason else ""
+        # Nothing here can tell a finished ask from an owed one. The newest ask is already the active task
+        # above, so only the ones before it are listed, as candidates to verify (#159362).
+        owed_asks = user_asks[-3:-1]
+        open_commitments = (
+            "Possibly owed user asks — this fallback cannot tell which are done, verify before repeating:\n"
+            f"{_bullets(owed_asks, limit=3)}" if owed_asks
+            else "Nothing beyond the active task above (the fallback cannot tell what is done)."
+        )
         body = f"""{HISTORICAL_TASK_HEADING}
 {active_task}
 
@@ -3406,6 +3430,9 @@ Unknown from deterministic fallback. Inspect current repository/session state if
 
 ## Blocked
 {_bullets(anchors["blockers"], limit=5)}
+
+## Open Commitments
+{open_commitments}
 
 ## Key Decisions
 None recoverable from deterministic fallback.
@@ -3705,7 +3732,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Keep "Open Commitments" current: carry a promise forward while it is still owed, and remove it once it is done or the latest user message cancels it. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
             source_material = f"""PREVIOUS SUMMARY:
@@ -3780,6 +3807,9 @@ Be specific with file paths, commands, line numbers, and results.]
 
 ## Blocked
 [Any blockers, errors, or issues not yet resolved. Include exact error messages.]
+
+## Open Commitments
+{_section["open_commitments"]}
 
 ## Key Decisions
 [Important technical decisions and WHY they were made]

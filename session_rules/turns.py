@@ -169,6 +169,8 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
 
+# Kept byte-identical to agent/context_compressor.SUMMARY_PREFIX: handlers here and in the compressor both
+# build the carrier, and a drift would make one of them unable to detect the other's summaries.
 SUMMARY_PREFIX = (
     # The "tools remain fully active" clause keeps the REFERENCE ONLY framing from suppressing tool use after a
     # compression, and the latest message, not topic overlap, decides whether the summary's task resumes.
@@ -177,13 +179,20 @@ SUMMARY_PREFIX = (
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
+    # A promise the assistant made just before compaction is "mentioned in the summary" too, so the blanket
+    # "already addressed" rule used to bury it until the user asked twice (#159362).
+    "The exception is '## Open Commitments': those are still owed — do them, "
+    "or tell the user they are still pending. "
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
     "If no user message appears AFTER this summary, do nothing: do not "
     "resume, wrap up, or continue work from "
     f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
-    "and wait for a new user message. This handoff must never become the "
+    "and wait for a new user message — the one exception is an owed item "
+    "under '## Open Commitments', which stays owed and may be done, or "
+    "reported as still pending, without a new message. "
+    "This handoff must never become the "
     "active turn by itself. (Exception: if tool results or your own "
     "tool calls appear after this summary, you are mid-way through an "
     "in-flight exchange — continue that exchange normally.) "
@@ -193,10 +202,13 @@ SUMMARY_PREFIX = (
     f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
+    "'## Open Commitments' is the exception: it is not historical, its items "
+    "stay owed until the latest message completes or cancels them. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
-    "summary; do not re-surface it in later turns. "
+    "summary, including an owed item in '## Open Commitments'; do not "
+    "re-surface it in later turns. "
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
@@ -296,6 +308,8 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Open-Commitments era (#159362): the summary's still-owed items are exempt from the discard rule.
+    """[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:""",
     # Lacks the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "

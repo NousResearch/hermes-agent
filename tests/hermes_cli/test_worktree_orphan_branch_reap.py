@@ -11,8 +11,9 @@ gone from the session store, whatever its age; one whose owner this store cannot
 resolve (no row, or an unreadable store) is kept outright, never falling through to the
 age gate; a branch with no recorded owner at all falls back to the age gate. Either path
 that decides to delete is additionally gated on every commit on the branch being
-reachable from some remote or ``main`` — a branch holding commits nothing else holds is
-kept regardless of verdict. Reaping is destructive, so every unknown fails toward "keep".
+reachable from some remote or the local trunk — a branch holding commits nothing else
+holds is kept regardless of verdict. Reaping is destructive, so every unknown fails
+toward "keep".
 """
 
 import os
@@ -183,14 +184,17 @@ def test_an_undatable_unowned_branch_is_kept(repo, live, monkeypatch):
     assert {"hermes/hermes-fresh", "hermes/hermes-stale"} <= _branches(repo)
 
 
-# ── F1: a branch holding commits unreachable from any remote or main is kept ──
+# ── F1: a branch holding commits unreachable from any remote or the trunk is kept ──
 
 
-def _add_unreachable_commit(repo, branch):
-    """Give *branch* one commit that exists nowhere else (no remote, not on main)."""
+def _add_unreachable_commit(repo, branch, trunk="main"):
+    """Give *branch* one file-changing commit that exists nowhere else: no remote holds it
+    and it is not on *trunk*."""
     _git(repo, "checkout", "-q", "-b", branch + "-work", branch)
-    _git(repo, "commit", "-q", "--allow-empty", "-m", "unreachable work")
-    _git(repo, "checkout", "-q", "main")
+    (repo / f"{branch.replace('/', '-')}-work.txt").write_text("unique work\n")
+    _git(repo, "add", f"{branch.replace('/', '-')}-work.txt")
+    _git(repo, "commit", "-q", "-m", "unreachable work")
+    _git(repo, "checkout", "-q", trunk)
     # Move the branch ref to the new tip and drop the scratch ref used to create it.
     sha = subprocess.run(
         ["git", "rev-parse", branch + "-work"], cwd=repo, capture_output=True,
@@ -257,3 +261,39 @@ def test_a_branch_whose_reflog_is_unreadable_is_kept_by_the_age_gate(repo, live)
     worktree_ops._prune_orphaned_branches(str(repo), max_age_hours=0)
 
     assert "hermes/hermes-stale" in _branches(repo)
+
+
+# ── F4: the trunk is the repo's own, not a hardcoded ``main`` ─────────
+
+
+@pytest.fixture
+def master_repo(tmp_path):
+    """A repo whose trunk is ``master`` and which has no remote refs at all -- what a plain
+    ``git init`` produces. Hardcoding ``main`` in the reachability rev-list makes that
+    command fail here, and the fail-toward-keep branch then protects every orphan forever.
+    """
+    root = tmp_path / "master-repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "master")
+    _git(root, "config", "user.email", "test@test.com")
+    _git(root, "config", "user.name", "Test")
+    (root / "base.txt").write_text("base\n")
+    _git(root, "add", "base.txt")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "branch", "hermes/hermes-redundant")
+    _git(root, "branch", "hermes/hermes-unique")
+    return root
+
+
+def test_master_only_repo_reaps_redundant_orphans_but_keeps_unique_work(master_repo):
+    """F4: with no ``main`` ref the local trunk is ``master``. The orphan pointing at the
+    trunk commit is fully redundant and must be reaped by the orphan pass, while its
+    sibling holding the one commit that exists nowhere else must survive."""
+    _add_unreachable_commit(master_repo, "hermes/hermes-unique", trunk="master")
+
+    worktree_ops._prune_orphaned_branches(str(master_repo), max_age_hours=0)
+
+    branches = _branches(master_repo)
+    assert "master" in branches
+    assert "hermes/hermes-redundant" not in branches
+    assert "hermes/hermes-unique" in branches

@@ -1290,7 +1290,7 @@ def _branch_tip_dates(repo_root: str) -> dict:
 
 
 def _branch_has_only_reachable_commits(repo_root: str, branch: str) -> bool:
-    """True when every commit on *branch* is also reachable from a remote or ``main``.
+    """True when every commit on *branch* is reachable from a remote or local trunk.
 
     ``branch -D`` only drops the ref; a commit unreachable from anywhere else is gone
     with it. Deletion is destructive, so a git failure here is NOT "no unreachable
@@ -1298,12 +1298,19 @@ def _branch_has_only_reachable_commits(repo_root: str, branch: str) -> bool:
     """
     try:
         # One ``--not``: it toggles sign and stays negative for everything after it, so
-        # both ``--remotes`` and ``main`` are excluded. A second ``--not`` would flip back
-        # to positive for ``main``, turning it into an extra *include* root instead of an
-        # exclusion -- on a repo with no remotes that showed every commit on `branch`
-        # (even ones on `main`) as "unreachable".
-        out = _git_out(["rev-list", branch, "--not", "--remotes", "main"], repo_root,
-                       timeout=15)
+        # both ``--remotes`` and the local trunk are excluded. A second ``--not`` would
+        # flip back to positive, turning the trunk into an extra *include* root instead
+        # of an exclusion -- on a repo with no remotes that showed every commit on
+        # `branch` (even ones on the trunk) as "unreachable".
+        #
+        # Match the local-trunk fallback used by the worktree and attended pruners.
+        # Hardcoding ``main`` makes rev-list fail in a master-only repository, leaving
+        # even fully merged, ownerless orphan branches impossible to reclaim.
+        trunk = _worktree_local_trunk(repo_root)
+        exclusions = ["--remotes"]
+        if trunk:
+            exclusions.append(trunk)
+        out = _git_out(["rev-list", branch, "--not", *exclusions], repo_root, timeout=15)
     except (OSError, subprocess.SubprocessError):
         return False
     return out == ""
@@ -1323,7 +1330,7 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
     and a tree can be reaped on an earlier pass. Undatable branches are kept. Either path
     that decides to delete is additionally gated on
     :func:`_branch_has_only_reachable_commits`: a branch holding commits unreachable from
-    any remote or ``main`` is kept regardless of session/age verdict.
+    any remote or local trunk is kept regardless of session/age verdict.
     """
     try:
         listing = _git_out(["branch", "--format=%(refname:short)"], repo_root)

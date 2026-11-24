@@ -346,6 +346,45 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
+def test_a_linked_profile_renamed_while_its_manager_is_kept_gets_its_host_plugins_back_after_a_crash(
+        tmp_path, monkeypatch):
+    """A process keeps one manager per directory, so a linked profile renamed while it runs keeps the manager
+    it was opened by under the old name. The host restarted after a crash must find the profile, not the
+    link that is gone."""
+    import signal
+
+    from tests.waiting import wait_until
+    from tools.registry import registry
+
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {"whereprobe": (
+        "import json, os\ndef register(ctx):\n"
+        "    ctx.register_tool(name='whereprobe_pid', toolset='whereprobe', schema={'name': 'whereprobe_pid',\n"
+        "        'description': 'd', 'parameters': {'type': 'object', 'properties': {}}},\n"
+        "        handler=lambda args, **kw: json.dumps({'pid': os.getpid()}))\n")})
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        first = json.loads(registry.dispatch("whereprobe_pid", {}, scope=manager.scope_key))["pid"]
+        (profiles / "ops").rename(profiles / "ops2")
+        monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
+        assert plugins_mod.get_plugin_manager() is manager
+        os.kill(first, signal.SIGKILL)
+        result = wait_until(lambda: (lambda out: out if '"pid"' in out else None)(
+            registry.dispatch("whereprobe_pid", {}, scope=manager.scope_key)), timeout=15,
+            what="the restarted host to serve the plugin's tool")
+        assert json.loads(result)["pid"] not in {first, os.getpid()}
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""

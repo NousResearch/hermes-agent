@@ -337,7 +337,7 @@ function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates
   } catch {}
 }
 
-function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
+async function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
   const chatId = normalizeWhatsAppId(key?.remoteJid || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.remoteJid || '');
   const senderId = normalizeWhatsAppId(
     key?.participant
@@ -391,6 +391,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     botIds: [],
     timestamp: Math.floor(Date.now() / 1000),
   };
+  if (event.isGroup) event.chatName = await getGroupSubject(sock, chatId) || event.chatName;
   messageQueue.push(event);
   if (messageQueue.length > MAX_QUEUE_SIZE) {
     messageQueue.shift();
@@ -416,6 +417,31 @@ function enqueueDeliveryStatus(args) {
 
 let sock = null;
 let connectionState = 'disconnected';
+const groupSubjectCache = new Map();
+
+async function getGroupSubject(socket, chatId) {
+  const cached = groupSubjectCache.get(chatId);
+  if (cached) return cached;
+  let timer;
+  try {
+    // Metadata is optional context: a stalled lookup must not stop inbound delivery.
+    const metadata = await Promise.race([
+      socket.groupMetadata(chatId),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('group metadata timed out')), 5000); }),
+    ]);
+    const subject = metadata?.subject;
+    if (typeof subject === 'string' && subject.trim()) {
+      groupSubjectCache.set(chatId, subject);
+      if (groupSubjectCache.size > 256) groupSubjectCache.delete(groupSubjectCache.keys().next().value);
+      return subject;
+    }
+  } catch {
+    // A transient metadata failure must not discard the message or cache the fallback forever.
+  } finally {
+    clearTimeout(timer);
+  }
+  return null;
+}
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -459,6 +485,13 @@ async function startSocket() {
   });
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+
+  groupSubjectCache.clear();
+  sock.ev.on('groups.update', (updates) => {
+    for (const update of updates || []) {
+      if (update?.id) groupSubjectCache.delete(update.id);
+    }
+  });
 
   attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner, confirmCode: confirmPasskeyCode });
   sock.ev.on('connection.update', (update) => {
@@ -592,7 +625,7 @@ async function startSocket() {
         selectedOptions,
         aggregation,
       });
-      enqueuePollUpdateEvent({ key, update: { ...update, pollUpdates }, selectedOptions, aggregation });
+      await enqueuePollUpdateEvent({ key, update: { ...update, pollUpdates }, selectedOptions, aggregation });
     }
   });
 
@@ -795,7 +828,7 @@ async function startSocket() {
           selectedOptions,
           aggregation,
         });
-        enqueuePollUpdateEvent({
+        await enqueuePollUpdateEvent({
           key: { ...pollKey, remoteJid: pollKey.remoteJid || chatId, participant: pollKey.participant || senderId },
           update: { pollUpdates },
           selectedOptions,
@@ -856,6 +889,7 @@ async function startSocket() {
         mediaType: event.mediaType,
         mediaUrls: event.mediaUrls,
       });
+      if (event.isGroup) event.chatName = await getGroupSubject(sock, chatId) || event.chatName;
       messageQueue.push(event);
       emitDebugEvent({
         stage: 'queued',

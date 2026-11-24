@@ -114,7 +114,7 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
         # The launch profile's scope with its files read through *home*, the name that leads there now; any other
         # profile's from its own files, by ``own`` rather than by where the process's own name leads now (its
         # ``.env`` templates included).
-        secrets = (launch_secret_scope(home, frozen_templates=True) if own
+        secrets = (launch_secret_scope(home, frozen_templates=True, process_home=True) if own
                    else build_profile_secret_scope(Path(home), process_home=False))
         with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
             return host_launcher(home=home)

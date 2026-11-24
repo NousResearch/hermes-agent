@@ -220,7 +220,8 @@ def launch_terminal_env() -> dict[str, str]:
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
 
-def launch_secret_scope(launch_home: str | Path, *, frozen_templates: bool = False) -> dict[str, str]:
+def launch_secret_scope(launch_home: str | Path, *, frozen_templates: bool = False,
+                        process_home: Optional[bool] = None) -> dict[str, str]:
     """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
     (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
     its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
@@ -239,7 +240,9 @@ def launch_secret_scope(launch_home: str | Path, *, frozen_templates: bool = Fal
     *frozen_templates* resolves the ``.env``'s ``${VAR}``s against that same launch env once multiplexing
     froze it (``launch_template_env``), rather than the live one: for a caller that builds the mapping
     again later in a body (the plugin host's launcher), which must not follow a write to the live env
-    since the body bound.
+    since the body bound. *process_home* is ``build_profile_secret_scope``'s, for a caller that decided
+    *launch_home* is the launch profile's by another rule (the plugin host's launcher, by the key the
+    process remembered for its own path, where a renamed link no longer leads).
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope, is_multiplex_active
     from gateway.bridged_env import follow_bridged_env
@@ -248,7 +251,7 @@ def launch_secret_scope(launch_home: str | Path, *, frozen_templates: bool = Fal
     # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
     follow_bridged_env(scope)
     templates = launch_template_env() if frozen_templates and is_multiplex_active() else None
-    scope.update(build_profile_secret_scope(Path(launch_home), template_env=templates))
+    scope.update(build_profile_secret_scope(Path(launch_home), process_home=process_home, template_env=templates))
     return scope
 
 

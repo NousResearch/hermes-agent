@@ -68,3 +68,66 @@ def test_auth_and_billing_failures_stay_credential_wide(pool, status_code, failu
     assert pool.entries()[0].last_status == STATUS_EXHAUSTED
     assert not pool.entries()[0].model_cooldowns
     assert pool.select(model=MODEL_B) is None
+
+
+KEY_BACKUP = "sk-ant...0001"
+
+
+def _two_row_pool(tmp_path, monkeypatch, backup_cooldowns):
+    """A primary row and a backup row; the backup carries per-model cooldowns only."""
+    import time
+
+    root = tmp_path / "hermes-root"
+    root.mkdir()
+    (tmp_path / "fakehome").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "fakehome"))
+    for var in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    import hermes_constants
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    until = time.time() + 3600
+    (root / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [
+        {"id": "primary", "label": "primary", "auth_type": "api_key", "priority": 0,
+         "source": "manual", "access_token": KEY},
+        {"id": "backup", "label": "backup", "auth_type": "api_key", "priority": 1,
+         "source": "manual", "access_token": KEY_BACKUP,
+         "model_cooldowns": {model: until for model in backup_cooldowns}},
+    ]}}))
+    from agent.credential_pool import load_pool
+    return load_pool("anthropic")
+
+
+KEY_LEVEL_FAILURES = [(401, None), (402, "billing"), (429, "billing")]
+
+
+@pytest.mark.parametrize("status_code, failure_reason", KEY_LEVEL_FAILURES)
+def test_key_level_rotation_takes_a_row_cooling_down_only_for_another_model(
+    tmp_path, monkeypatch, status_code, failure_reason,
+):
+    pool = _two_row_pool(tmp_path, monkeypatch, backup_cooldowns=[MODEL_B])
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=status_code, api_key_hint=KEY, failure_reason=failure_reason, model=MODEL_A,
+    )
+    assert next_entry is not None and next_entry.id == "backup"
+
+
+@pytest.mark.parametrize("status_code, failure_reason", KEY_LEVEL_FAILURES)
+def test_key_level_rotation_skips_a_row_cooling_down_for_the_requested_model(
+    tmp_path, monkeypatch, status_code, failure_reason,
+):
+    pool = _two_row_pool(tmp_path, monkeypatch, backup_cooldowns=[MODEL_A])
+    assert pool.mark_exhausted_and_rotate(
+        status_code=status_code, api_key_hint=KEY, failure_reason=failure_reason, model=MODEL_A,
+    ) is None
+
+
+@pytest.mark.parametrize("status_code, failure_reason", KEY_LEVEL_FAILURES)
+def test_key_level_rotation_without_a_model_honours_every_cooldown(
+    tmp_path, monkeypatch, status_code, failure_reason,
+):
+    pool = _two_row_pool(tmp_path, monkeypatch, backup_cooldowns=[MODEL_B])
+    assert pool.mark_exhausted_and_rotate(
+        status_code=status_code, api_key_hint=KEY, failure_reason=failure_reason,
+    ) is None

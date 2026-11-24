@@ -1,6 +1,6 @@
 name: z0live
 repo: https://github.com/kvnloo/z0live
-sha: abc130530a6fd647dada445e9ad67874ae00440a
+sha: 23a89749d286ad04c0a67d3c6e588c9c286921b6
 version: "0.2.0"
 description: >-
   z0live is a self-hosted realtime voice stack that runs beside Hermes: GPT-Live or Grok Voice as the voice,
@@ -22,7 +22,7 @@ description: >-
 maintainer: kvnloo
 tier: community
 category: voice
-docs_url: https://github.com/kvnloo/z0live/blob/abc130530a6fd647dada445e9ad67874ae00440a/README.md
+docs_url: https://github.com/kvnloo/z0live/blob/23a89749d286ad04c0a67d3c6e588c9c286921b6/README.md
 requires_hermes: ">=0.21.5"
 platforms: []
 capabilities:

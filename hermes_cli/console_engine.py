@@ -803,13 +803,16 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 def _cron_run(_engine: HermesConsoleEngine, args: list[str]) -> str:
     from cron.constants import NOT_RUNNABLE_ERROR
-    from cron.jobs import _jobs_lock, is_job_runnable, is_terminal_job, resolve_job_ref, trigger_job
+    from cron.jobs import (
+        _jobs_lock, is_job_runnable, is_terminal_job, load_jobs, resolve_job_ref, trigger_job)
 
     def trigger_runnable_job(ref: str) -> dict | None:
-        # Keep an operator's concurrent pause between the check and scheduling from being lost.
+        # Locked so a concurrent pause is not lost; gate on the STORED record like the claim does
+        # (normalising shows a saved enabled+state=paused record as scheduled).
         with _jobs_lock():
             job = resolve_job_ref(ref)
-            if job is not None and not is_terminal_job(job) and not is_job_runnable(job):
+            stored = job and next((j for j in load_jobs() if j.get("id") == job["id"]), job)
+            if stored and not is_terminal_job(stored) and not is_job_runnable(stored):
                 raise ConsoleCommandError(NOT_RUNNABLE_ERROR)
             return trigger_job(ref)
 

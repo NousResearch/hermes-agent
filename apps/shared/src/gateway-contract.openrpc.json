@@ -7717,7 +7717,7 @@
       },
       "BotRelayDeliverResult": {
         "additionalProperties": false,
-        "description": "A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same\non the canonical door and across this relay bridge. It names its admission, unless ``refused``: the\nFIFO refused the delivery before anything was committed, a terminal ``failed`` receipt with no\nadmission that the relay settles as the sender's answer.",
+        "description": "A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same\non the canonical door and across this relay bridge. It names its admission, unless ``refused``: a\nterminal ``failed`` receipt for a delivery that was never admitted (refused by the FIFO, or settled\nas not sent), which the relay settles as the sender's answer.",
         "properties": {
           "status": {
             "title": "Status",

@@ -331,6 +331,24 @@
       }
     },
     {
+      "name": "client.activity",
+      "summary": "Whether the user is at this client, sent only when ``client.capabilities`` answered ``client_activity: true``; each report replaces the connection's last one, is kept in memory per connection and session, and grants nothing.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientActivityParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EmptyResult"
+        }
+      }
+    },
+    {
       "name": "client.capabilities",
       "summary": "What the calling client handles, sent once per connection (after gateway.ready); returns the server\u2192client request methods this backend may send.",
       "params": [
@@ -5357,6 +5375,14 @@
         "title": "AgentsListResult",
         "type": "object"
       },
+      "ApprovalAccessLevel": {
+        "enum": [
+          "read",
+          "read_write"
+        ],
+        "title": "ApprovalAccessLevel",
+        "type": "string"
+      },
       "ApprovalCancelledPayload": {
         "additionalProperties": false,
         "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
@@ -5403,6 +5429,15 @@
           "deny"
         ],
         "title": "ApprovalChoice",
+        "type": "string"
+      },
+      "ApprovalKind": {
+        "enum": [
+          "command",
+          "access",
+          "network"
+        ],
+        "title": "ApprovalKind",
         "type": "string"
       },
       "ApprovalPendingParams": {
@@ -5495,7 +5530,7 @@
       },
       "ApprovalRequestParams": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.",
+        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.\n\n``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with\n``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``\n(``host``, and an optional display ``label``). ``risk`` is one short line shown under the\nfolder or site. On those two kinds ``once`` allows until the sandbox is switched off and\n``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.\n\nAn ``access`` request without a ``path`` and a ``network`` request without a ``host`` are\nrefused: the desktop answers with an error and shows no card. A card that outlives its turn\nstays on screen only while its sender lists it in ``approval.pending``: the desktop removes\na card that list does not name.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5581,6 +5616,76 @@
             ],
             "default": null,
             "title": "Gateway Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "access": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalAccessLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Host"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Risk"
           }
         },
         "required": [
@@ -5592,7 +5697,7 @@
       },
       "ApprovalRespondParams": {
         "additionalProperties": false,
-        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest.",
+        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason`` is\nwhy the user denied an ``access`` or ``network`` card; command approvals ignore it.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5645,6 +5750,18 @@
             ],
             "default": null,
             "title": "Request Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -5669,6 +5786,7 @@
       },
       "ApprovalResult": {
         "additionalProperties": false,
+        "description": "``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it.",
         "properties": {
           "choice": {
             "$ref": "#/components/schemas/ApprovalChoice"
@@ -5684,6 +5802,18 @@
             ],
             "default": null,
             "title": "All"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -8321,7 +8451,7 @@
       },
       "CanonicalClientIdentity": {
         "additionalProperties": false,
-        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``).",
+        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and\n``mobile`` are known; another is kept off the label, not refused). Attribution only: on\n``session.create`` (owners advertising ``session-client-v1``) and in the per-connection hello\n(``client.capabilities`` ``client``).",
         "properties": {
           "name": {
             "title": "Name",
@@ -8338,6 +8468,18 @@
             ],
             "default": null,
             "title": "Version"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
           }
         },
         "required": [
@@ -8348,7 +8490,7 @@
       },
       "CanonicalClientLabel": {
         "additionalProperties": false,
-        "description": "The client a session's creator declared itself as (``session.create`` ``client``).",
+        "description": "The client a session's creator declared itself as (``session.create`` ``client``); ``kind`` only\nwhen it named one this owner knows.",
         "properties": {
           "name": {
             "title": "Name",
@@ -8365,6 +8507,18 @@
             ],
             "default": null,
             "title": "Version"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
           }
         },
         "required": [
@@ -12510,6 +12664,51 @@
         "title": "CliExecResult",
         "type": "object"
       },
+      "ClientActivityParams": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Sessions",
+            "type": "array"
+          },
+          "idle_seconds": {
+            "minimum": 0,
+            "title": "Idle Seconds",
+            "type": "number"
+          },
+          "basis": {
+            "enum": [
+              "system",
+              "page"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "can_alert": {
+            "default": true,
+            "title": "Can Alert",
+            "type": "boolean"
+          },
+          "away": {
+            "default": false,
+            "title": "Away",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessions",
+          "idle_seconds",
+          "basis"
+        ],
+        "title": "ClientActivityParams",
+        "type": "object"
+      },
       "ClientCapabilitiesParams": {
         "additionalProperties": false,
         "properties": {
@@ -12522,6 +12721,17 @@
             "default": false,
             "title": "Desktop Local",
             "type": "boolean"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "ClientCapabilitiesParams",
@@ -12545,6 +12755,11 @@
           "canonical_clarify_batch": {
             "default": false,
             "title": "Canonical Clarify Batch",
+            "type": "boolean"
+          },
+          "client_activity": {
+            "default": false,
+            "title": "Client Activity",
             "type": "boolean"
           }
         },
@@ -18712,6 +18927,12 @@
           "session_id"
         ],
         "title": "EmptyRequestParams",
+        "type": "object"
+      },
+      "EmptyResult": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyResult",
         "type": "object"
       },
       "ErrorPayload": {
@@ -51520,7 +51741,7 @@
   "x-server-requests": [
     {
       "name": "approval",
-      "summary": "A dangerous command awaits the user's decision.",
+      "summary": "A dangerous command, or a sandbox's folder or site request, awaits the user's decision.",
       "params": [
         {
           "name": "params",

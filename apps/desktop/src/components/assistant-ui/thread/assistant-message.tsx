@@ -90,7 +90,7 @@ import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
 import { useReplyAwaitingContinuation } from '@/store/paused-replies'
 import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
-import { sessionApprovalRequest } from '@/store/prompts'
+import { sessionCommandApprovalPending } from '@/store/prompts'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
@@ -247,7 +247,8 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // preview block, or this root.
   const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
   const sessionId = useStore(useSessionView().$runtimeId)
-  const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
+  // A folder or site card never collapses the turn's terminal rows.
+  const approval = useStore(useMemo(() => sessionCommandApprovalPending(sessionId), [sessionId]))
 
   const activityOnly = useAuiState(
     state =>

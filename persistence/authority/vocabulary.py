@@ -20,6 +20,7 @@ __all__ = [
     "STEERING",
     "OwnerRule",
     "admission_fingerprint",
+    "retry_input",
 ]
 
 #: Queued inputs one session holds; ``admit`` refuses the next with ``queue_full``.
@@ -68,3 +69,16 @@ def admission_fingerprint(*, canonical_target: str, payload: Any) -> str:
         allow_nan=False,
     ).encode("utf-8", errors="surrogatepass")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def retry_input(payload: Any) -> Any:
+    """The part of a session input payload that is its exact-retry identity: the payload without the
+    owner's ``surface_v1.client`` stamp (and without ``surface_v1`` when nothing else is left in it).
+    The stamp names the connection that sent the request, and an app updated between a send and its
+    retry is still the same request. The stored payload keeps the stamp; a payload without one is
+    returned as is, so the digests of rows written before the stamp existed do not change."""
+    surface = payload.get("surface_v1") if isinstance(payload, dict) else None
+    if not isinstance(surface, dict) or "client" not in surface:
+        return payload
+    rest = {key: value for key, value in surface.items() if key != "client"}
+    return {key: value for key, value in payload.items() if key != "surface_v1"} | ({"surface_v1": rest} if rest else {})

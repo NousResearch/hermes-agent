@@ -1443,6 +1443,14 @@ gateway:
   # its stack; "raise" fails the call (CI / development). Off by default.
   # sessiondb_loop_guard: off
 
+  # When true, a human message in any session titled exactly "Bot Chat" resets
+  # every bot hop chain and the messaging time-window budget, not only the chat
+  # that received it. Read from this install-root file, not a profile's copy.
+  # Off unless set. A bot message does not do this. A message in any other
+  # session title does not do this.
+  # bot_loop_guard:
+  #   reset_all_on_human: false
+
 # =============================================================================
 # Toolsets
 # =============================================================================

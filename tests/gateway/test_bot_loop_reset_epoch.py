@@ -82,7 +82,7 @@ def test_write_replaces_a_temp_file_in_the_same_directory(tmp_path: Path, monkey
 def test_read_uses_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = epoch_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes("4.5\n".encode("utf-8"))
+    path.write_bytes(b"4.5\n")
     encodings: list[object] = []
     real_read_text = Path.read_text
 
@@ -93,7 +93,14 @@ def test_read_uses_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(Path, "read_text", _read_text)
     assert read_epoch(tmp_path) == 4.5
-    assert encodings == ["utf-8"]
+    assert encodings == ["utf-8-sig"]
+
+
+def test_read_tolerates_a_windows_bom(tmp_path: Path) -> None:
+    path = epoch_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xef\xbb\xbf4.5\n")
+    assert read_epoch(tmp_path) == 4.5
 
 
 def test_module_does_not_import_config() -> None:

@@ -36,7 +36,7 @@ def epoch_path(root: Path) -> Path:
 def read_epoch(root: Path) -> float:
     """The stored epoch. Missing, garbage, non-finite, or ``<= 0`` is ``0.0``."""
     try:
-        value = float(epoch_path(root).read_text(encoding="utf-8").strip())
+        value = float(epoch_path(root).read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError, OverflowError):
         return 0.0
     if not math.isfinite(value) or value <= 0:
@@ -63,16 +63,16 @@ def write_epoch(root: Path, now: float) -> None:
 
 
 def _session_title(agent) -> str:
-    """Same two-step lookup as ``agent.conversation_loop._bot_chat_prompt_stale``."""
+    """Same two-step lookup as ``agent.conversation_loop._bot_chat_prompt_stale``.
+
+    A lookup failure propagates. ``note_human_reset`` logs it and does not write.
+    """
     title = str(getattr(agent, "_session_title_hint", "") or "").strip()
     if not title and agent._session_db and agent.session_id:
-        try:
-            from agent.agent_init_session import agent_interface
-            store = agent_interface(agent)
-            title = str((store.sessions.get_title(agent.session_id) if store is not None
-                         else agent._session_db.get_session_title(agent.session_id)) or "").strip()
-        except Exception:
-            title = ""
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        title = str((store.sessions.get_title(agent.session_id) if store is not None
+                     else agent._session_db.get_session_title(agent.session_id)) or "").strip()
     return title
 
 

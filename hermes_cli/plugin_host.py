@@ -91,9 +91,14 @@ def _launcher_for(home: Path, host_launcher: Callable[..., list]) -> list:
     from agent.secret_scope import (current_secret_scope, current_secret_scope_home, is_multiplex_active,
                                     set_multiplex_context)
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
-    own = hermes_home_key(get_routing_process_hermes_home()) == hermes_home_key(home)
-    stamp = current_secret_scope_home()
-    lent = current_secret_scope() if (hermes_home_key(stamp) == hermes_home_key(home) if stamp else own) else None
+    launch, key = get_routing_process_hermes_home(), hermes_home_key(home)
+    own = hermes_home_key(launch) == key
+    # The caller's scope was read through *source*: *home*'s only while that name leads to home's directory under
+    # the key the process remembers for it, as ``PluginManager._leads_here`` asks. A repointed link keeps its old
+    # key, and the host of the manager opened by it then starts in the old directory.
+    source = current_secret_scope_home() or launch
+    lends = hermes_home_key(source) == key == os.path.normcase(os.path.realpath(source))
+    lent = current_secret_scope() if lends else None
     multiplexed = is_multiplex_active()
 
     def choose() -> list:

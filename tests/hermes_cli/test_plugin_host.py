@@ -849,6 +849,55 @@ def test_a_launch_launchers_env_file_template_resolves_as_the_process_loaded_the
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_reload_racing_the_launch_env_freeze_cannot_split_the_frozen_env_from_its_dotenv_record(
+        tmp_path, monkeypatch):
+    """The launch env freezes once, with the dotenv publication record that peels its dotenv output back for the
+    launcher's ``.env`` templates. A ``.env`` reload racing that freeze waits for it, so the frozen env is never
+    paired with a later reload's record (which no longer recognises its values) until the process restarts."""
+    import threading
+
+    from agent import secret_scope as ss
+    from hermes_cli import env_loader
+    from tui_gateway import launch_profile_policy, server
+
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    for name in ("RUNNER_TAG", "RUNNER_BASE"):
+        monkeypatch.setenv(name, "registered-for-restore")
+        monkeypatch.delenv(name)
+    host, tags, home = _tagging_launch_host(tmp_path, monkeypatch, "RUNNER_TAG=${RUNNER_BASE:-unset}/tag\nRUNNER_BASE=/old\n")
+    env_loader.load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+    (home / ".env").write_text("RUNNER_TAG=${RUNNER_BASE:-unset}/tag\nRUNNER_BASE=/new\n", encoding="utf-8")
+    env_copied, reloaded = threading.Event(), threading.Event()
+    record = env_loader.dotenv_publication_record
+
+    def record_after_the_env_copy():
+        env_copied.set()
+        reloaded.wait(2)  # a reload not held off by the freeze lands here, between the two copies
+        return record()
+
+    def reload():
+        env_copied.wait(10)
+        env_loader.load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+        reloaded.set()
+
+    monkeypatch.setattr(env_loader, "dotenv_publication_record", record_after_the_env_copy)
+    racer = threading.Thread(target=reload, daemon=True)
+    racer.start()
+    launch_profile_policy.capture_launch_env()
+    racer.join(10)
+    assert reloaded.is_set() and os.environ["RUNNER_BASE"] == "/new"
+    context_token = ss.set_multiplex_context(True)
+    try:
+        with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
+            host.ensure_started()
+        assert tags.read_text(encoding="utf-8").split() == ["unset/tag"]
+    finally:
+        host.shutdown()
+        ss.reset_multiplex_context(context_token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # the stand-in launchers are shell scripts
 @pytest.mark.parametrize("caller", ["launch", "secondary"])
 def test_a_caller_bound_to_another_profile_lends_its_scope_to_no_other_profiles_launcher(

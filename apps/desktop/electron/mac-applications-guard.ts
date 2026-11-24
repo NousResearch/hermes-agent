@@ -5,10 +5,16 @@ import path from 'node:path'
 import type { App, Dialog, MessageBoxOptions } from 'electron'
 
 import type { InstallStamp } from './install-stamp'
+import {
+  ephemeralMacBundleLocation,
+  isAppTranslocated,
+  type MacEphemeralBundleLocation,
+  resolveMacAppBundle
+} from './mac-bundle-location'
 
 export const MAC_APPLICATIONS_GUARD_FILENAME = 'mac-applications-guard.json'
 
-export type MacUnsafeBundleLocation = 'app-translocation' | 'desktop-folder' | 'downloads-folder' | 'read-only-volume'
+export type MacUnsafeBundleLocation = MacEphemeralBundleLocation | 'desktop-folder' | 'downloads-folder'
 
 // "Don't ask again" is all startup reads, so it's all the file holds.
 export interface MacApplicationsGuardPreference {
@@ -84,20 +90,6 @@ const LOCATION_DETAILS: Readonly<Record<MacUnsafeBundleLocation, (appName: strin
         : `${appName} stops working once the volume is ejected. Moving ${appName} to Applications fixes this.`)
   }
 
-export function resolveMacAppBundle(exePath: string, platform: NodeJS.Platform = process.platform): string | null {
-  if (platform !== 'darwin' || !exePath) {
-    return null
-  }
-
-  let dir = path.posix.dirname(exePath)
-
-  for (let i = 0; i < 2; i++) {
-    dir = path.posix.dirname(dir)
-  }
-
-  return dir.endsWith('.app') ? dir : null
-}
-
 // While the move prompt waits, app.isReady() is already true, so a second launch must not open the first
 // window (and start the backend) behind it; startup opens that window once the guard lets it continue.
 export function macGuardAllowsWindows(result: MacApplicationsGuardResult | null): boolean {
@@ -137,33 +129,6 @@ function isPosixPathWithin(root: string, candidate: string): boolean {
   const rel = path.posix.relative(path.posix.resolve(root), path.posix.resolve(candidate))
 
   return rel !== '' && rel !== '..' && !rel.startsWith('../') && !path.posix.isAbsolute(rel)
-}
-
-export type MacEphemeralBundleLocation = Extract<MacUnsafeBundleLocation, 'app-translocation' | 'read-only-volume'>
-
-// A bundle macOS can take away: a translocated copy is dropped on restart, a read-only volume on eject.
-// EACCES (a root-owned folder) is left to Squirrel's admin prompt; only EROFS means a read-only mount.
-export function ephemeralMacBundleLocation(
-  target: string,
-  access: (file: string, mode: number) => void = fs.accessSync
-): MacEphemeralBundleLocation | null {
-  const normalized = path.posix.resolve(target)
-
-  if (normalized.includes('/AppTranslocation/')) {
-    return 'app-translocation'
-  }
-
-  for (const candidate of [path.posix.dirname(normalized), normalized]) {
-    try {
-      access(candidate, fs.constants.W_OK)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EROFS') {
-        return 'read-only-volume'
-      }
-    }
-  }
-
-  return null
 }
 
 export function classifyMacBundleLocation(
@@ -594,7 +559,7 @@ function precheckMacApplicationsGuard(deps: MacApplicationsGuardDeps): MacGuardP
     return { prompt: false, result: { action: 'continue', reason: 'api-unavailable' } }
   }
 
-  const translocated = bundlePath.includes('/AppTranslocation/')
+  const translocated = isAppTranslocated(bundlePath)
 
   if (!translocated && deps.app.isInApplicationsFolder()) {
     return { prompt: false, result: { action: 'continue', reason: 'already-in-applications' } }

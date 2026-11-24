@@ -7,15 +7,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   classifyMacBundleLocation,
   compareBundleVersions,
-  ephemeralMacBundleLocation,
   guardMacApplicationsLaunch,
   MAC_APPLICATIONS_GUARD_FILENAME,
   type MacApplicationsGuardDeps,
   macApplicationsGuardPreferencePath,
   parseBundleShortVersionFromPlist,
   readBundleShortVersion,
-  readMacApplicationsGuardPreference,
-  resolveMacAppBundle
+  readMacApplicationsGuardPreference
 } from './mac-applications-guard'
 
 const tempDirs: string[] = []
@@ -111,27 +109,6 @@ afterEach(() => {
   }
 })
 
-describe('resolveMacAppBundle', () => {
-  it('resolves packaged .app bundles on macOS including App Translocation paths', () => {
-    expect(resolveMacAppBundle('/Applications/Hermes Agent.app/Contents/MacOS/Hermes Agent', 'darwin')).toBe(
-      '/Applications/Hermes Agent.app'
-    )
-    expect(
-      resolveMacAppBundle(
-        '/private/var/folders/ab/cd/T/AppTranslocation/1F2E3D4C/d/Hermes Agent.app/Contents/MacOS/Hermes Agent',
-        'darwin'
-      )
-    ).toBe('/private/var/folders/ab/cd/T/AppTranslocation/1F2E3D4C/d/Hermes Agent.app')
-  })
-
-  it('returns null off macOS or for non-bundle executables', () => {
-    expect(resolveMacAppBundle('/Applications/Hermes Agent.app/Contents/MacOS/Hermes Agent', 'linux')).toBeNull()
-    expect(resolveMacAppBundle('/Applications/Hermes Agent.app/Contents/MacOS/Hermes Agent', 'win32')).toBeNull()
-    expect(resolveMacAppBundle('/usr/local/bin/electron', 'darwin')).toBeNull()
-    expect(resolveMacAppBundle('', 'darwin')).toBeNull()
-  })
-})
-
 describe('classifyMacBundleLocation', () => {
   const writable = () => undefined
 
@@ -210,17 +187,6 @@ describe('classifyMacBundleLocation', () => {
         access: writable
       })
     ).toBeNull()
-  })
-})
-
-describe('ephemeralMacBundleLocation', () => {
-  it('reports only what macOS can take away, not the prompt-only Downloads and Desktop rules', () => {
-    for (const folder of ['Downloads', 'Desktop']) {
-      const bundle = `/Users/alice/${folder}/Hermes Agent.app`
-
-      expect(classifyMacBundleLocation(bundle, { homeDir: '/Users/alice', access: () => undefined })).not.toBeNull()
-      expect(ephemeralMacBundleLocation(bundle, () => undefined)).toBeNull()
-    }
   })
 })
 

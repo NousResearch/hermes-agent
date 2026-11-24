@@ -683,10 +683,12 @@ def load_yaml_file_readonly(path: str | Path) -> Any:
     path = Path(path)
     sig = file_cache_version(path)
     key = str(path)
-    with _YAML_FILE_CACHE_LOCK:
-        cached = _YAML_FILE_CACHE.get(key)
-        if cached is not None and cached[0] == sig:
-            return cached[1]
+    # Lock-free read: a single dict lookup is atomic under the GIL, and two racers parsing the same file
+    # produce the same value for the same signature, so last-writer-wins is safe. Only the store locks, which
+    # keeps the hot hit path (the gateway's watcher hits it ~590x/min) off a process-global mutex.
+    cached = _YAML_FILE_CACHE.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
     with open(path, encoding="utf-8") as f:
         data = fast_safe_load(f)
     with _YAML_FILE_CACHE_LOCK:

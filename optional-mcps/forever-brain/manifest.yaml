@@ -1,0 +1,31 @@
+manifest_version: 1
+
+name: forever-brain
+description: >-
+  Local-first, AES-256-GCM encrypted, source-attributed, bi-temporal memory for
+  AI agents (remember, non-destructive correct, recall, trace, and bounded startup).
+source: https://github.com/NextArkDAO/forever-brain-mcp
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - "forever-brain-mcp==0.1.1"
+  version: "0.1.1"
+
+auth:
+  type: none
+
+suggest:
+  keywords:
+    - forever brain
+    - persistent memory
+    - bi-temporal memory
+
+post_install: |
+  Forever Brain stores an AES-256-GCM encrypted local vault at ~/.forever-brain/vault.
+  FOREVER_BRAIN_DIR sets the vault directory; FOREVER_BRAIN_PASSPHRASE selects passphrase mode.
+  Take consistent backups with the server stopped:
+  - Keyfile mode: retain vault.enc.json plus the original vault.key.
+  - Passphrase mode: retain vault.enc.json plus the original vault.salt and passphrase.
+  Start a new session or run /reload-mcp so tools load.

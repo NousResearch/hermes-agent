@@ -232,16 +232,13 @@ function SettingsSearchButton() {
   )
 }
 
-/** The redesign's way out of Settings where its band draws no Back to close the page with (a browser
- *  tab, a compact window): classic's close button, at the band's end. The rail's destinations, Esc
- *  and the browser's own Back leave it too, but none of them says so on the page. */
-function useSettingsBandActions(onClose: () => void): ReactNode {
-  const redesign = usePortalShell()
+/** What Settings puts at its band's end: a close button where the redesign's band draws no Back to
+ *  close the page with (a browser tab, a compact window), else nothing, since the toolbar boxes
+ *  whatever it is given. Classic's card carries its own close button. */
+function useSettingsBandActions(redesign: boolean, onClose: () => void): ReactNode {
   const compact = useStore($widthClass) === 'compact'
   const appWindow = useStore($chromiumAppWindow)
 
-  // Classic's card already carries its own close button. Nothing, not an empty element, where the
-  // band has its Back: the toolbar boxes whatever it is given.
   return redesign && !bandOffersHistory(compact, appWindow) ? <SettingsCloseButton onClose={onClose} /> : undefined
 }
 
@@ -269,7 +266,7 @@ function SettingsCloseButton({ onClose }: { onClose: () => void }) {
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const simplified = usePortalShell()
-  const bandActions = useSettingsBandActions(onClose)
+  const bandActions = useSettingsBandActions(simplified, onClose)
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
   const { t, locale } = useI18n()

@@ -40,13 +40,12 @@ export const $developerToolPanelWidth = persistentAtom<null | number>(
 /** The width every tool pane declares in the redesign. */
 export const DEVELOPER_TOOL_PANEL_WIDTH = `var(${WIDTH_PROPERTY}, var(--portal-tool-panel-width))`
 
-// Panes whose visibility an app store owns (bindPaneVisibility / bindToolPaneCollapse): bound, they
-// hide through their closer, so the store a later "Show" writes is not left claiming they are open.
-// A preview tile's closer closes its tab, so it only hides.
-const STORE_BOUND = [...TOOLS, CHAT_ITEMS_PANE_ID]
+// The tools the app ships, each with an app store owning its visibility (bindPaneVisibility /
+// bindToolPaneCollapse). Browser tabs are tools too (isTool), but each is a pane the user opens.
+const BUILT_IN_TOOLS = [...TOOLS, CHAT_ITEMS_PANE_ID]
 
 // The chat's items ride the same panel and width as a tool, like a preview tile.
-export const isTool = (paneId: string) => STORE_BOUND.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
+export const isTool = (paneId: string) => BUILT_IN_TOOLS.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
 
 /** A tool pane's sizing in the redesign: the shared width, never under the tool's own minimum (the
  *  terminal and the browser need more room than the file tree). Classic keeps each pane's own. */
@@ -88,31 +87,33 @@ export function installDeveloperToolPanelWidth(root: HTMLElement = document.docu
   }
 }
 
-const builtInTools = (zone: GroupNode) => zone.panes.filter(id => STORE_BOUND.includes(id)).length
+const builtInTools = (zone: GroupNode) => zone.panes.filter(id => BUILT_IN_TOOLS.includes(id)).length
 
 // The tools gathered: a zone beside the chat that holds more than one of them, a built-in among
 // them. One tool alone in a zone is where a classic layout (or the user) put it, and is gathered on
-// its next reveal. Browser tabs alone never make the panel: each tab is a pane of its own, and a
-// zone the user tiled with several is theirs.
+// its next reveal. A zone the user tiled with Browser tabs alone is theirs.
 const isToolPanel = (zone: GroupNode) =>
   !zone.panes.includes('workspace') && builtInTools(zone) > 0 && zone.panes.filter(isTool).length > 1
 
+const zones = (node: LayoutNode): GroupNode[] => (node.type === 'group' ? [node] : node.children.flatMap(zones))
+
 /** The redesign's one tool panel: the zone holding the most built-in tools, the first in the tree's
- *  order on a tie. Not "the zone Files is in with every built-in tool": a tool can leave the tree
- *  (its tab's Close), and the tools that remain are still the panel the next one joins. */
+ *  order on a tie. A tool can leave the tree (its tab's Close); the tools that remain are still the
+ *  panel the next one joins. */
 function toolPanel(tree: LayoutNode): GroupNode | null {
   let panel: GroupNode | null = null
 
-  for (const id of allPaneIds(tree).filter(isTool)) {
-    const zone = findGroupOfPane(tree, id)
-
-    if (zone && isToolPanel(zone) && builtInTools(zone) > (panel ? builtInTools(panel) : 0)) {
+  for (const zone of zones(tree)) {
+    if (isToolPanel(zone) && builtInTools(zone) > (panel ? builtInTools(panel) : 0)) {
       panel = zone
     }
   }
 
   return panel
 }
+
+// Where the tools are one docked panel: the redesign on a wide window. Below wide they are sheets.
+const panelDocked = () => $portalShell.get() && !$narrowViewport.get()
 
 /** True while `paneId` stands in the redesign's tool panel. The panel is the window's side even when
  *  a Browser tab in it makes the pane tree read its zone as a main surface (paneRootSide), so a
@@ -126,7 +127,7 @@ export function inDeveloperToolPanel(paneId: string): boolean {
 
 /** A deliberate tool reveal uses one side panel, retaining every pane and shell. */
 export function prepareDeveloperToolPanel(paneId: string): void {
-  if (!$portalShell.get() || $narrowViewport.get()) {
+  if (!panelDocked()) {
     return
   }
 
@@ -159,7 +160,7 @@ export function prepareDeveloperToolPanel(paneId: string): void {
  *  tools hide: a plugin pane someone stacked into the panel has no tool tile to bring it back, so
  *  it stays, fronted, and keeps the panel on screen until it leaves. */
 export function hideDeveloperToolPanel(paneId: string): boolean {
-  if (!$portalShell.get() || $narrowViewport.get()) {
+  if (!panelDocked()) {
     return false
   }
 
@@ -187,7 +188,7 @@ export function hideDeveloperToolPanel(paneId: string): boolean {
 // Bound, a tool hides through its closer, so the store a later "Show" writes is not left claiming it
 // is open. A Browser tab's closer closes the tab, so it only hides.
 function hideTool(id: string): void {
-  if (STORE_BOUND.includes(id) && $panesWithCloser.get().has(id)) {
+  if (BUILT_IN_TOOLS.includes(id) && $panesWithCloser.get().has(id)) {
     closeTreePane(id)
   } else {
     setTreePaneHidden(id, true)
@@ -205,12 +206,12 @@ const shownTools = (): string[] => {
 
   const panel = toolPanel(tree)
 
-  return allPaneIds(tree).filter(id => (STORE_BOUND.includes(id) || panel?.panes.includes(id)) && isPaneVisible(id))
+  return allPaneIds(tree).filter(id => (BUILT_IN_TOOLS.includes(id) || panel?.panes.includes(id)) && isPaneVisible(id))
 }
 
 /** Whether a tool is on screen beside the chat: what the band's right sidebar button says and flips
- *  in the redesign. Read from the pane tree, the same answer each tool's tile gives for itself.
- *  Classic never asks, so there the tree is not walked. */
+ *  in the redesign, read from the pane tree as each tool's tile reads itself. False in classic,
+ *  without a walk. */
 export const $developerToolShown = computed(
   [$portalShell, $layoutTree, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides],
   portal => portal && shownTools().length > 0
@@ -221,7 +222,7 @@ export const $developerToolShown = computed(
  *  chat), which here is whichever tool zone happens to stand last, not the panel. False where that
  *  positional toggle still applies (classic, and the medium layout's sheets). */
 export function toggleDeveloperToolPanel(): boolean {
-  if (!$portalShell.get() || $narrowViewport.get()) {
+  if (!panelDocked()) {
     return false
   }
 
@@ -230,6 +231,8 @@ export function toggleDeveloperToolPanel(): boolean {
   if (shown.length === 0) {
     restoreTreePane('files')
     prepareDeveloperToolPanel('files')
+
+    return true
   }
 
   // Every zone showing a tool, so one press leaves the side empty: the panel as a whole, and a tool

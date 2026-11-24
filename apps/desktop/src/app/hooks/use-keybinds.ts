@@ -369,17 +369,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // live tree (the Browser preview column, the files column). Falls back to
     // the terminal when nothing lives on the right (terminal-on-bottom).
     // The redesign's right side is its one tool panel (as the band's button, titlebar-controls.tsx).
-    'view.toggleRightSidebar': () => {
-      if (toggleDeveloperToolPanel()) {
-        return
-      }
-
-      if (layoutHasRightSide()) {
-        toggleRightSide()
-      } else {
-        toggleTerminalPane()
-      }
-    },
+    'view.toggleRightSidebar': () =>
+      toggleDeveloperToolPanel() || (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.toggleProfileRail': toggleProfileRailVisible,

@@ -1,0 +1,30 @@
+# First public listing, from the public edition at 4f18022. A listing lands
+# only when a maintainer merges the catalog PR.
+name: byparr-tools
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 4f1802285f452d6d7fd29ba23c2435189c3c1acb
+subdir: public/byparr-tools
+description: "First-class tools for any FlareSolverr-compatible challenge solver (Byparr, FlareSolverr): fetch solved HTML from a Cloudflare-walled page, harvest challenge cookies as a CDP payload to bridge into a browser, batch-fetch clean text for RAG, extract JSON-LD and metadata, check solver health, and retry walled web_extract or browser_exec results through the solver via fail-open middleware. Disclosure: the tools open outbound HTTP connections to the solver address you configure in Settings, to an optional CDP browser endpoint for cookie injection, and to the URLs you ask them to fetch. Challenges are solved by a solver you run yourself; the plugin does not contact a hosted solver service."
+maintainer: apoapostolov
+tier: community
+category: tools
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/byparr-tools
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/4f1802285f452d6d7fd29ba23c2435189c3c1acb/public/byparr-tools/docs/hero.png
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - solver_get
+    - solver_cookies
+    - solver_load
+    - solver_status
+    - solver_bridge
+    - solver_extract
+    - solver_fetch
+    - jar_list
+    - jar_clear
+  provides_hooks: []
+  provides_middleware:
+    - tool_execution
+  requires_env: []
+requires_hermes: ">=0.21.4"

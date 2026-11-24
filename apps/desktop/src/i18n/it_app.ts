@@ -32,6 +32,11 @@ export const itApp = {
       'Le statistiche restano su questo computer a meno che tu scelga Invia. Quelle condivise arrivano a Nous una volta al giorno con un ID casuale per questo profilo. A parte una nota una tantum che Hermes è stato installato, conteggiata solo dopo il tuo consenso, le statistiche precedenti al consenso non vengono mai inviate. Puoi cambiare questa scelta quando vuoi nelle Impostazioni.',
     stripReaskBody: 'Una domanda in più: una versione precedente poteva salvare “No, grazie” prima che vedessi questo.'
   },
+  sandbox: {
+    starting: 'Avvio della sandbox…',
+    stopping: 'Arresto della sandbox…',
+    restarting: 'Riavvio della sandbox…'
+  },
   connectors: {
     title: 'Connetti le tue app',
     connect: 'Connetti',
@@ -672,6 +677,14 @@ export const itApp = {
       approvalTitleNamed: session => `Approvazione necessaria: ${session}`,
       approveAction: 'Approva',
       rejectAction: 'Rifiuta',
+      accessTitle: 'Accesso alla cartella necessario',
+      accessTitleNamed: session => `Accesso alla cartella necessario: ${session}`,
+      accessReadBody: folder => `Sola lettura: ${folder}`,
+      accessReadWriteBody: folder => `Lettura e scrittura: ${folder}`,
+      networkTitle: 'Accesso al sito necessario',
+      networkTitleNamed: session => `Accesso al sito necessario: ${session}`,
+      allowAction: 'Consenti',
+      denyAction: 'Nega',
       inputTitle: 'Informazioni necessarie',
       inputTitleNamed: session => `È necessaria una risposta: ${session}`,
       inputBody: 'Hermes è in attesa della tua risposta.',
@@ -1272,6 +1285,8 @@ export const itApp = {
     remoteOverride: {
       menuItem: 'Connetti a un host remoto…',
       badge: (host: string) => `In esecuzione su ${host}`,
+      runHere: 'Esegui su questo computer…',
+      sandboxed: 'In sandbox',
       title: (profile: string) => `Connetti ${profile} a un host remoto`,
       description:
         'Le sessioni di questo profilo verranno eseguite sull’Hermes remoto che indichi, invece che su questo computer.',

@@ -251,10 +251,6 @@ export const itAssistant = {
       openLog: 'Apri log',
       actionLog: 'Log delle azioni',
       alreadyInstalled: (name: string) => `"${name}" è già installata`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Esplora tutto l’hub',
-      pickerHide: 'Nascondi l’esploratore dell’hub',
-      pickerHint: 'Premi "+ Aggiungi a questo agente" su qualsiasi skill: viene installata e appare nell’elenco qui sopra.',
       loadFailed: 'Impossibile caricare l’hub degli skills',
       previewFailed: 'Impossibile caricare l’anteprima della skill',
       scanFailed: 'Analisi di sicurezza non riuscita',
@@ -285,6 +281,7 @@ export const itAssistant = {
       branchNewChat: 'Ramifica in una nuova chat',
       react: 'Reagisci',
       dismissError: 'Ignora errore',
+      responseContinuing: 'Risposta in ripresa…',
       responseStopped: 'Risposta interrotta',
       contentRefusedNotice: 'Questo messaggio è stato rifiutato dal filtro di sicurezza del modello: prova una query diversa.',
       errorLayers: {
@@ -582,7 +579,30 @@ export const itAssistant = {
       alwaysTitle: 'Consentire sempre questo comando?',
       alwaysDescription: pattern =>
         `Questo aggiunge il pattern “${pattern}” alla tua allowlist permanente (~/.hermes/config.yaml). Hermes non chiederà più conferma per comandi come questo, né in questa sessione né in quelle future.`,
-      alwaysAllow: 'Consenti sempre'
+      alwaysAllow: 'Consenti sempre',
+      deny: 'Nega',
+      allow: 'Consenti',
+      allowHint: 'Finché la sandbox non viene disattivata',
+      denyReason: 'Motivo del rifiuto',
+      denyReasonPlaceholder: 'Spiega a Hermes il motivo (facoltativo)',
+      access: {
+        title: 'Accesso alla cartella',
+        readOnly: 'Sola lettura',
+        readWrite: 'Lettura e scrittura',
+        timedOut: folder =>
+          `La richiesta è scaduta: l’accesso alla cartella ${folder} non è stato concesso. Chiedi a Hermes di riprovare.`,
+        alwaysTitle: 'Consentire sempre questa cartella?',
+        alwaysDescription:
+          'La cartella viene aggiunta alla sandbox di questo profilo. Hermes non chiederà più conferma per questa cartella in nessuna chat.'
+      },
+      network: {
+        title: 'Accesso al sito',
+        timedOut: site =>
+          `La richiesta è scaduta: l’accesso a ${site} non è stato concesso. Chiedi a Hermes di riprovare.`,
+        alwaysTitle: 'Consentire sempre questo sito?',
+        alwaysDescription:
+          'Il sito viene aggiunto ai siti consentiti di questo profilo. Hermes non chiederà più conferma per questo sito in nessuna chat.'
+      }
     },
     clarify: itClarify,
     themePicker: itThemePicker,

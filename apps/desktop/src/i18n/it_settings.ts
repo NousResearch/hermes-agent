@@ -327,6 +327,19 @@ export const itSettings = {
 
     },
 
+    phonePresence: {
+      title: 'Questo computer per le notifiche sul telefono',
+      description:
+        'Cosa questa finestra comunica a Hermes sulla tua presenza. Un plugin di notifiche per il telefono decide cosa farne.',
+      unsupported: 'Le notifiche sul telefono non risentono dell’attività su questo backend.',
+      disconnected: 'Non connesso.',
+      watchingComputer: (time: string) =>
+        `Finché una conversazione è aperta in questa finestra, Hermes viene informato di quando hai usato questo computer per l’ultima volta. Ultimo input ${time} fa.`,
+      watchingWindow: (time: string) =>
+        `Finché una conversazione è aperta in questa finestra, Hermes viene informato di quando hai usato questa finestra per l’ultima volta. Ultimo input ${time} fa.`,
+      watchingWindowNoInput:
+        'Finché una conversazione è aperta in questa finestra, Hermes viene informato di quando hai usato questa finestra per l’ultima volta. Nessun input rilevato finora.'
+    },
     },
     sections: {
       model: 'Modello',

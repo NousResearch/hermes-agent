@@ -535,7 +535,11 @@ export const itWorkspace = {
       'Riseleziona le righe del terminale (Ctrl/Cmd+L) prima di inviare: questa chip non ha testo originale.',
     queuedTerminalSelectionExpiredBody:
       'Questa selezione del terminale in coda non è più disponibile. Riseleziona le righe (Ctrl/Cmd+L) e rimetti il messaggio in coda.',
-    wakingProfile: profile => `Risveglio di ${profile}…`,
+    switchingProfile: profile => `Passaggio a ${profile}…`,
+    switchingProfileSlow:
+      'Connessione ancora in corso. I messaggi che invii ora restano in attesa e verranno inviati a questo agente.',
+    switchProfileFailed: profile => `Impossibile passare a ${profile}`,
+    willSendTo: profile => `Invio a ${profile}`,
     placeholderStarting: 'Avvio di Hermes...',
     placeholderReconnecting: 'Riconnessione a Hermes…',
     placeholderFollowUp: 'Inviare un follow-up',

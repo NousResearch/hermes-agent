@@ -134,8 +134,15 @@ rows; the click target still includes the guide gutter. Reveal actions for
 hover, visible keyboard focus, or an open menu, not lingering mouse focus;
 touch controls remain visible. Only truncated titles need a tooltip.
 Screen (an agent's own desktop) is a tool rather than a conversation, and it is reached from the
-agent: with Bot Mode loaded the agent's menu carries **Open Screen** and **Open Screen when the bot
-uses it** for that agent, whichever chat is in front. **Open Screen** in the command palette stays,
+agent, with Bot Mode loaded, whichever chat is in front. The agent's menu carries **Open Screen**
+and, as a setting under it with no icon of its own, **Open Screen when the agent uses it**. While a
+screen is running, a row under the agent's card says so in the chat rows' own shape: "Screen", the
+mark green while the agent holds it and orange while a person does, and one word for the holder
+(Live, You, Viewer) where a chat has its age; an agent with no running screen has no row. The row
+reads that agent's screen status once, so it is mounted only for the agents of the machine the
+list was read from, under unfolded cards. The agent's Overview lists **Screen** among its rows with
+where it stands in a phrase (not installed, stopped, live and who holds it), and opening it leaves
+the page, since the Screen is a tab beside the chat. **Open Screen** in the command palette stays,
 for the focused owner; classic/Bot Mode entry points remain available.
 
 **Hidden agents** stays outside the agent list's scroll viewport so its count
@@ -342,7 +349,7 @@ window's traffic lights at the top of the column, so Figma starts the destinatio
 build starts them at 77px on a 45px pitch, the developer rail's own start and rhythm, so the two
 rails share their rows (the lights sit in the 60px band above either way): 30px navy tiles with
 16px glyphs at .4 ink, the open one a
-brighter tile with its glyph in full ink; the foot (usage, Settings) carries 20px glyphs 40px off the
+brighter tile with its glyph in full ink; the foot (notifications, usage, Settings) carries 20px glyphs 40px off the
 floor, and Routines draws a clock. The rail never moves between states and has no edge of its own. The redesigned chat sidebar
 (340px, "Prod - Desktop" Panel 16292:15497) opens with its header (Top 16292:15498): the "Hermes"
 wordmark in Oswald Light 30 over a mono "// NOUS RESEARCH" caption (brand marks, never translated),

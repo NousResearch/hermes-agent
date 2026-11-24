@@ -118,6 +118,11 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
         from pm.build_compilers import missing_compiler_remedy
 
         return BuildFailure("venv", cause, missing_compiler_remedy(output))
+    if "operation timed out" in lowered:
+        # uv gave up on its own HTTP timeout/retries before PM's deadline (#148262).
+        from pm.index_config import TIMEOUT_HINT
+
+        return InstallError("venv", cause, TIMEOUT_HINT)
     return InstallError("venv", cause)
 
 

@@ -11,6 +11,7 @@ here (config, provider resolution, lazy SDK importers) through ``_origin()`` at 
 from pm import install_hint
 import asyncio
 import contextlib
+import contextvars
 import datetime
 import importlib.util
 import json
@@ -193,7 +194,7 @@ def _run_edge_tts(text: str, file_str: str, tts_config: dict[str, Any]) -> None:
     try:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(run).result(timeout=60)
+            pool.submit(contextvars.copy_context().run, run).result(timeout=60)
     except RuntimeError:
         run()
 

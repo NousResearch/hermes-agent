@@ -207,6 +207,8 @@ interface PluginContext {
   os: PluginOs
   /** Lines in the core pet's speech bubble, attributed to this plugin (see "Pet bubble"). */
   pet: PluginPet
+  /** Follow Hermes's speech, read-only (see "Voice"). */
+  voice: PluginVoice
   /** Script in the preview Browser page — declared capability + per-origin user consent
    *  (see "Preview page scripts"). */
   preview: PluginPreview
@@ -1808,6 +1810,31 @@ code; the main window sends it the live lines with the rest of the pet state.
 Pointer input on the pet (drag, shift-click pop-out, overlay click) belongs to
 the host and has no plugin hook. Use a palette command, a status-bar item, or
 your own pane for actions.
+
+### Voice — `ctx.voice` {#voice}
+
+Follow what Hermes says aloud (the built-in voice or GPT-Live) without touching the audio:
+
+```ts
+const voice = ctx.voice
+if (!voice) return // older host
+
+voice.playback.subscribe(({ status, endReason }) => {
+  if (status === 'idle' && endReason === 'stopped') closeMouth()
+})
+
+ctx.setInterval(() => {
+  const now = performance.now()
+  const piece = voice.timeline.get().segments.flatMap(s => s.pieces).find(p => now >= p.startMs && now < p.endMs)
+  drawMouth(piece?.text ?? null, voice.level())
+}, 16)
+```
+
+- `playback`: `{ status, source, messageId, endReason }`. `endReason` is `finished` or `stopped`, and clears when
+  the next reply starts, so watch it with `subscribe`.
+- `timeline`: pieces of kind `word` (Edge), `fragment` (GPT-Live) or `sentence` (other voices), in
+  `performance.now()` ms at which the listener hears them.
+- `level()`: loudness 0..1. It runs `outputLatencyMs()` ahead of the listener.
 
 ### Run app actions — `ctx.runAction` {#run-app-actions}
 

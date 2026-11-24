@@ -4,6 +4,13 @@ import { openGatewaySocket } from '@/api/canonical-protocol'
 import type { OwnerScope } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
 import { directTtsConfig, type DirectTtsConfig, synthesizeSpeechClientDirect } from '@/lib/voice-client-direct'
+import {
+  extendVoiceSentence,
+  listenerMsForContextTime,
+  publishVoiceSegment,
+  setVoiceLevelSource,
+  type SpokenPiece
+} from '@/lib/voice-timeline'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
@@ -311,6 +318,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
             playing = audio
+            setVoiceLevelSource(audio)
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
             void audio.play().catch(reject)
@@ -397,6 +405,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let streamRate = 24_000
   let nextStartAt = 0
   let carry: null | Uint8Array = null
+  let analyser: AnalyserNode | null = null
+  let pending: null | { text: string; units: SpokenPiece[] } = null
   let started = false
   let settled = false
   let finished = false
@@ -484,11 +494,19 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     const source = context.createBufferSource()
     source.buffer = buffer
-    source.connect(context.destination)
+    source.connect(analyser ?? context.destination)
 
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
     source.start(startAt)
     nextStartAt = startAt + buffer.duration
+
+    // A piece's text arrives just before its first chunk, so it is heard from that chunk on.
+    if (pending) {
+      publishVoiceSegment(pending.text, pending.units, listenerMsForContextTime(context, startAt))
+      pending = null
+    }
+
+    extendVoiceSentence(listenerMsForContextTime(context, nextStartAt))
 
     if (!started) {
       started = true
@@ -507,7 +525,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       return
     }
 
-    let frame: { channels?: number; sample_rate?: number; type?: string }
+    let frame: { channels?: number; sample_rate?: number; text?: string; type?: string; units?: SpokenPiece[] }
 
     try {
       frame = JSON.parse(event.data) as typeof frame
@@ -529,6 +547,12 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       }
 
       nextStartAt = 0
+      analyser = context.createAnalyser()
+      analyser.fftSize = 512
+      analyser.connect(context.destination)
+      setVoiceLevelSource(analyser)
+    } else if (frame.type === 'segment') {
+      pending = { text: frame.text ?? '', units: frame.units ?? [] }
     } else if (frame.type === 'end') {
       finishWhenDrained()
     } else if (frame.type === 'fallback') {
@@ -590,7 +614,7 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
       // A settled session must not reset the state of a NEWER playback —
       // only write idle when no other playback started since this one.
       if (outcome === 'done' && sessionSequence === sequence) {
-        setVoicePlaybackState(currentState('idle'))
+        setVoicePlaybackState(currentState('idle'), 'finished')
       }
     })
 
@@ -621,7 +645,7 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
     // A settled session must not reset the state of a NEWER playback — only
     // write idle when no other playback started since this one was created.
     if (outcome === 'done' && sessionSequence === sequence) {
-      setVoicePlaybackState(currentState('idle'))
+      setVoicePlaybackState(currentState('idle'), 'finished')
     }
   })
 
@@ -651,6 +675,7 @@ async function playSpeechDataUrl(
   const audio = new Audio(response.data_url)
   currentAudio = audio
   setVoicePlaybackState(currentState('speaking', options, audio))
+  setVoiceLevelSource(audio)
 
   await new Promise<void>((resolve, reject) => {
     let stall: number | null = null
@@ -784,7 +809,7 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
           return false
         }
 
-        setVoicePlaybackState(currentState('idle'))
+        setVoicePlaybackState(currentState('idle'), 'finished')
 
         return true
       }
@@ -804,7 +829,7 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
           return false
         }
 
-        setVoicePlaybackState(currentState('idle'))
+        setVoicePlaybackState(currentState('idle'), 'finished')
 
         return true
       }
@@ -817,7 +842,7 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
     const played = await playSpeechDataUrl(speakableText, options, isCurrent)
 
     if (played) {
-      setVoicePlaybackState(currentState('idle'))
+      setVoicePlaybackState(currentState('idle'), 'finished')
     }
 
     return played

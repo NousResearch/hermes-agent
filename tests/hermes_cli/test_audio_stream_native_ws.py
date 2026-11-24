@@ -68,6 +68,7 @@ def test_spoken_reply_runs_in_the_grant_profile(daemon, scopes):
         assert ws.accepted_subprotocol == "hermes-gateway-v1"  # the browser fails the handshake otherwise
         ws.send_json({"text": "Hello there.", "done": True})
         assert ws.receive_json()["type"] == "start"
+        assert ws.receive_json()["type"] == "segment"
         assert ws.receive_bytes() == b"\0\0"
         assert ws.receive_json() == {"type": "end"}
     # the grant's profile, with no ?profile= selector

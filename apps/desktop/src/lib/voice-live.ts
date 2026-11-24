@@ -1,5 +1,8 @@
 import { type OwnerScope, ownerScoped, profileScoped } from '@/api/client'
 import { hermesApi } from '@/hermes'
+import { $voice } from '@/store/voice-playback'
+
+import { measureOutputLatencyMs, publishVoiceSegment, setVoiceLevelSource } from './voice-timeline'
 
 /**
  * GPT-Live voice chat: the full-duplex voice frontend that DELEGATES to Hermes.
@@ -77,6 +80,9 @@ const APPEND_CHAR_LIMIT = 1_400
 // How much conversation the backend receives per delegation.
 const CONTEXT_WINDOW_MS = 5 * 60_000
 const CONTEXT_MAX_FRAGMENTS = 80
+
+// The newest session is the one plugins follow; an older one closing late must not end it.
+let followed: null | VoiceLiveSession = null
 
 export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
   try {
@@ -230,6 +236,8 @@ export class VoiceLiveSession {
   private analyser: null | AnalyserNode = null
   private audioContext: null | AudioContext = null
   private lastSpeaking = false
+  /** Page time of `session.started`, session time 0. */
+  private startedAtMs = 0
   sessionId: null | string = null
   /** The delegation currently being answered by Hermes; late results for an
    *  older id are dropped by the conversation hook. */
@@ -359,6 +367,7 @@ export class VoiceLiveSession {
       source.connect(analyser)
       this.audioContext = context
       this.analyser = analyser
+      setVoiceLevelSource(analyser)
       const buffer = new Uint8Array(analyser.frequencyBinCount)
       let quietFrames = 0
 
@@ -376,6 +385,7 @@ export class VoiceLiveSession {
 
         if (speaking !== this.lastSpeaking) {
           this.lastSpeaking = speaking
+          this.publishState(speaking ? 'speaking' : 'idle', null)
           this.handlers.onSpeakingChange?.(speaking)
         }
       }, 100)
@@ -397,6 +407,8 @@ export class VoiceLiveSession {
       case 'session.started':
         this.started = true
         this.sessionId = event.session?.id ?? this.sessionId
+        this.startedAtMs = performance.now()
+        followed = this
 
         return
 
@@ -415,6 +427,7 @@ export class VoiceLiveSession {
           this.transcript.splice(0, this.transcript.length - 1_500)
         }
 
+        this.publishSpoken(event)
         this.handlers.onTranscript?.(fragment)
 
         return
@@ -452,6 +465,27 @@ export class VoiceLiveSession {
       default:
         return
     }
+  }
+
+  private publishState(status: 'idle' | 'speaking', endReason: 'stopped' | null): void {
+    const { source, status: current } = $voice.get()
+
+    // A spoken reply in progress is not ours to end.
+    if (followed === this && (source === 'live' || current === 'idle')) {
+      $voice.set({ endReason, messageId: null, source: 'live', status })
+    }
+  }
+
+  private publishSpoken({ delta, end_ms: endMs, start_ms: startMs, type }: LiveServerEvent): void {
+    // Without both times it would be placed at the session start, long ago.
+    if (type !== 'session.output_transcript.delta' || followed !== this || !delta || startMs == null || endMs == null) {
+      return
+    }
+
+    const delayMs = this.audioContext ? measureOutputLatencyMs(this.audioContext) : 0
+    const unit = { endMs: endMs - startMs, kind: 'fragment' as const, startMs: 0, text: delta }
+
+    publishVoiceSegment(delta, [unit], this.startedAtMs + startMs + delayMs)
   }
 
   /** Quiet progress for the live model ("Hermes is running the tests…"). */
@@ -536,6 +570,8 @@ export class VoiceLiveSession {
       window.clearInterval(this.speakingProbe)
       this.speakingProbe = null
     }
+
+    this.publishState('idle', 'stopped')
 
     this.analyser?.disconnect()
     void this.audioContext?.close().catch(() => undefined)

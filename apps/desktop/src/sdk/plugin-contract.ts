@@ -23,5 +23,10 @@ export type {
   PluginRunActionResult,
   PluginSettingsPage,
   PluginSettingsSubpage,
-  PluginStorage
+  PluginStorage,
+  PluginVoice,
+  SpokenPiece,
+  SpokenSegment,
+  VoiceState,
+  VoiceTimeline
 } from '@/contrib/plugin'

@@ -130,7 +130,7 @@ class BotLoopGuard:
         return bool(self._chains)
 
     def blocked(self, conversation: Hashable) -> bool:
-        """True while ``conversation`` is cooling down. Reads only, so callers may ask as often as they like."""
+        """True while ``conversation`` is cooling down. May clear every conversation's window, cooldown, and chain when the shared epoch is newer. Asking again is still safe."""
         if not self._settings().enabled:
             return False
         with self._lock:

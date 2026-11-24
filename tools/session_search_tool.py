@@ -240,6 +240,8 @@ def _is_recall_only_call(call: Any) -> bool:
     other nested name keeps the row as history."""
     fn = call.get("function") if isinstance(call, dict) else None
     name = fn.get("name") if isinstance(fn, dict) else None
+    if not isinstance(name, str):  # malformed stored call: history, not an echo
+        return False
     if name in _RECALL_TOOL_NAMES:
         return True
     if name != "tool_call":
@@ -250,7 +252,8 @@ def _is_recall_only_call(call: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return isinstance(nested, list) and bool(nested) and all(
-        isinstance(inner, dict) and inner.get("name") in _RECALL_TOOL_NAMES for inner in nested)
+        isinstance(inner, dict) and isinstance(inner.get("name"), str) and inner["name"] in _RECALL_TOOL_NAMES
+        for inner in nested)
 
 
 def _is_search_echo(persistence, hit: SearchHit) -> bool:
@@ -266,7 +269,10 @@ def _is_search_echo(persistence, hit: SearchHit) -> bool:
     return all(_is_recall_only_call(call) for call in row.tool_calls)
 
 
-_FTS_UNIT_RE = re.compile(r'"[^"]*"|\S+')
+# A unit is a quoted phrase or a run of characters the store keeps: it turns these
+# punctuation characters into whitespace before matching (persistence/conversation/search.py),
+# so `alpha,beta` is two implicitly ANDed words there and must be two units here.
+_FTS_UNIT_RE = re.compile(r'"[^"]*"|[^\s+{}():^@/#&|~\[\]<>,;!?$=\\\']+')
 
 
 def _any_term_query(query: str) -> Optional[str]:
@@ -574,7 +580,8 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
             # concludes the conversation never existed (#103184). Disclose it; the
             # current session's own live rows are not counted — they are already in
             # context (the same-session skip below) and hiding them is expected.
-            if raw_sid != current_session_id:
+            # A predecessor row that only *searched* holds no evidence (same rule as below).
+            if raw_sid != current_session_id and not _is_search_echo(persistence, r):
                 hidden_rows += 1
                 if raw_sid not in hidden_sessions:
                     meta = _get_session_meta(persistence, raw_sid)

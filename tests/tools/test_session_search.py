@@ -1499,3 +1499,63 @@ class TestDiscoveryMetadataFromMatchedSession:
         hit = next(r for r in result["results"] if r["session_id"] == "s_night")
         assert hit["title"] == "Night ibuprofen plan"
         assert "2025" not in hit["when"]
+
+
+def _stored_call(name, arguments):
+    return {"id": "c1", "type": "function", "function": {
+        "name": name, "arguments": json.dumps(arguments)}}
+
+
+class TestOwnEchoRetryEdges:
+    """Edges of the own-echo filter and its any-term retry."""
+
+    @pytest.mark.parametrize("bad_name", [["session_search"], {"name": "session_search"}])
+    def test_malformed_bridge_name_is_history_not_a_crash(self, db, persistence, bad_name):
+        # A stored tool_call whose nested name is not a string is not a valid invocation,
+        # but it is valid JSON; the echo classifier must treat it as history, not raise.
+        seed_session(db, "s_bad", "cli")
+        seed_messages(db, "s_bad", {"role": "assistant", "content": "", "tool_calls": [
+            _stored_call("tool_call", {"calls": [{"name": bad_name, "arguments": {"query": "xrneedle"}}]})]})
+        db.sessions.end("s_bad", "user_exit")
+        result = json.loads(session_search(query="xrneedle", db=db, persistence=persistence))
+        assert result["success"] is True, result
+        assert [r["session_id"] for r in result["results"]] == ["s_bad"], result
+
+    def test_malformed_outer_name_is_history_not_a_crash(self, db, persistence):
+        seed_session(db, "s_bad", "cli")
+        seed_messages(db, "s_bad", {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "x", "type": "function", "function": {"name": ["session_search"],
+                                                          "arguments": json.dumps({"query": "xrneedle"})}}]})
+        db.sessions.end("s_bad", "user_exit")
+        result = json.loads(session_search(query="xrneedle", db=db, persistence=persistence))
+        assert result["success"] is True, result
+
+    def test_comma_separated_terms_relax_after_own_echo(self, db, persistence):
+        # The store turns ',' into whitespace (implicit AND), so the retry must see two units.
+        seed_session(db, "s_past", "cli")
+        seed_messages(db, "s_past", {"role": "assistant", "content": "xrneoforge"})
+        db.sessions.end("s_past", "user_exit")
+        seed_session(db, "s_live", "cli")
+        seed_messages(db, "s_live", {"role": "user", "content": "xrneoforge xrspawning"})
+        result = json.loads(session_search(query="xrneoforge,xrspawning", db=db, persistence=persistence,
+                                           current_session_id="s_live"))
+        assert result.get("relaxed_from") == "xrneoforge,xrspawning", result
+        assert [r["session_id"] for r in result["results"]] == ["s_past"], result
+
+    def test_hidden_predecessor_recall_only_row_does_not_block_retry(self, db, persistence):
+        # An unended same-lineage predecessor that only *searched* holds no evidence: it must
+        # not be disclosed as hidden history nor block the any-term retry.
+        query = "xrneoforge xrspawning"
+        seed_session(db, "s_past", "cli")
+        seed_messages(db, "s_past", {"role": "assistant", "content": "xrneoforge"})
+        db.sessions.end("s_past", "user_exit")
+        seed_session(db, "s_root", "telegram", session_key="tg:user:1", end_reason="session_reset")
+        seed_session(db, "s_lost", "telegram", parent_session_id="s_root", session_key="tg:user:1",
+                     model_config={"_reset_from": "s_root"})
+        seed_messages(db, "s_lost", {"role": "assistant", "content": "", "tool_calls": [
+            _stored_call("session_search", {"query": query})]})
+        seed_session(db, "s_cur", "telegram", parent_session_id="s_lost", session_key="tg:user:1",
+                     model_config={"_reset_from": "s_lost"})
+        result = json.loads(session_search(query=query, db=db, persistence=persistence, current_session_id="s_cur"))
+        assert [r["session_id"] for r in result["results"]] == ["s_past"], result
+        assert "hidden_same_lineage" not in result, result

@@ -856,7 +856,7 @@ def test_a_launch_hosts_launcher_and_child_resolve_its_env_file_the_same_way_und
     """Under multiplexing the launch profile's launcher resolves its ``.env`` templates against the launch env frozen
     when multiplexing began. The host child's env carries that ``.env`` resolved the same way, so one start never
     gives the launcher and its child two values for one setting after a name the ``.env`` references changed in
-    the live env."""
+    the live env. A process-global key is read from the process env by both, as the reload since left it."""
     from agent import secret_scope as ss
     from hermes_cli import env_loader
     from tui_gateway import launch_profile_policy
@@ -865,21 +865,25 @@ def test_a_launch_hosts_launcher_and_child_resolve_its_env_file_the_same_way_und
     monkeypatch.setenv("RUNNER_TAG", "registered-for-restore")
     monkeypatch.delenv("RUNNER_TAG")
     monkeypatch.setenv("RUNNER_BASE", "/old")
+    monkeypatch.setenv("TERMINAL_RUNNER_TAG", "/old/term")
     seen, runner = tmp_path / "seen", tmp_path / "runner"
-    runner.write_text(f'#!/bin/sh\necho "$1|${{RUNNER_TAG:-unset}}" >> "{seen}"\nshift\nexec "$@"\n', encoding="utf-8")
+    runner.write_text(f'#!/bin/sh\necho "$1|$2|${{RUNNER_TAG:-unset}}|${{TERMINAL_RUNNER_TAG:-unset}}" >> "{seen}"\n'
+                      'shift 2\nexec "$@"\n', encoding="utf-8")
     runner.chmod(0o755)
     home = _home_with_plugins(tmp_path, monkeypatch, {})
-    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
-        "enabled": [], "isolation": "host", "host": {"launcher": [str(runner), "${RUNNER_TAG}"]}}}), encoding="utf-8")
-    (home / ".env").write_text("RUNNER_TAG=${RUNNER_BASE:-unset}/tag\n", encoding="utf-8")
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [], "isolation": "host", "host": {
+        "launcher": [str(runner), "${RUNNER_TAG}", "${TERMINAL_RUNNER_TAG}"]}}}), encoding="utf-8")
+    (home / ".env").write_text("RUNNER_TAG=${RUNNER_BASE:-unset}/tag\nTERMINAL_RUNNER_TAG=${RUNNER_BASE:-unset}/term\n",
+                               encoding="utf-8")
     ss.set_multiplex_active(True)
     launch_profile_policy.capture_launch_env()  # the launch env freezes with RUNNER_BASE=/old
     monkeypatch.setenv("RUNNER_BASE", "/new")  # written to the live env since
+    monkeypatch.setenv("TERMINAL_RUNNER_TAG", "/new/term")  # and the process-global key a reload resolved from it
     plugins_mod._reset_plugin_managers_for_tests()
     host = plugins_mod.get_plugin_manager()._plugin_host()
     try:
         host.ensure_started()
-        assert seen.read_text(encoding="utf-8").split() == ["/old/tag|/old/tag"]
+        assert seen.read_text(encoding="utf-8").split() == ["/old/tag|/new/term|/old/tag|/new/term"]
     finally:
         host.shutdown()
         plugins_mod._reset_plugin_managers_for_tests()

@@ -618,6 +618,8 @@ _UNKNOWN = "\0"
 # reaches the command that follows it (PATH=x cmd).
 _DECLARATION = re.compile(r"(?:^|[\s;&|()])(?:export|declare|typeset|readonly)\s[^;&|]*$")
 _ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+# A redirection (2>/dev/null, > file) is no command word; its target is attached or the next word.
+_REDIRECTION = re.compile(r"\d*[<>]+(.*)")
 
 
 def _expand_user_path(raw: str, home: Path) -> Path:
@@ -743,7 +745,14 @@ def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]
     if _DECLARATION.search(code[: found.start()]):
         return True
     _value, *rest = _setter_words(code[found.end() :], ";&|", variables) or [""]
-    return all(_ASSIGNMENT_WORD.match(word) for word in rest)
+    words = iter(rest)
+    for word in words:
+        redirection = _REDIRECTION.fullmatch(word)
+        if redirection and not redirection[1]:
+            next(words, None)
+        elif not redirection and not _ASSIGNMENT_WORD.match(word):
+            return False
+    return True
 
 
 def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], target: str) -> bool:

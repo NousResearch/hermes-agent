@@ -415,18 +415,31 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
 
 
-def _dotenv_lookup_env(load_pass: int | None, base: dict[str, str] | None = None) -> dict[str, str]:
-    """``os.environ`` (or *base*, a copy of it taken earlier) with every value an earlier pass (any pass,
-    for ``None``) published peeled back to its baseline — what ``${VAR}`` resolves against (see
-    ``_DOTENV_PUBLISHED``). Caller holds the lock."""
-    lookup_env = dict(os.environ if base is None else base)
-    for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
-        if published_pass != load_pass and lookup_env.get(name) == published:
+def _dotenv_lookup_env(load_pass: int | None) -> dict[str, str]:
+    """``os.environ`` with every value an earlier pass (any pass, for ``None``) published peeled back to
+    its baseline — what ``${VAR}`` resolves against (see ``_DOTENV_PUBLISHED``). Caller holds the lock."""
+    return _peel_dotenv_output(dict(os.environ), _DOTENV_PUBLISHED, load_pass)
+
+
+def _peel_dotenv_output(env: dict[str, str], published: dict[str, tuple[str | None, str, int]],
+                        load_pass: int | None) -> dict[str, str]:
+    """*env* with every value *published* records from a pass other than *load_pass* peeled back to its
+    baseline, in place."""
+    for name, (baseline, value, published_pass) in published.items():
+        if published_pass != load_pass and env.get(name) == value:
             if baseline is None:
-                del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
+                del env[name]  # absent, so ``${VAR:-default}`` takes the default again
             else:
-                lookup_env[name] = baseline
-    return lookup_env
+                env[name] = baseline
+    return env
+
+
+def dotenv_lookup_from(env: dict[str, str]) -> dict[str, str]:
+    """What ``${VAR}`` resolves against in *env*, a copy of ``os.environ`` just taken: this process's dotenv
+    output peeled back by the publication record of that moment, which a later reload replaces. For
+    ``launch_profile_policy``'s capture, under its own lock: the record is copied without the dotenv lock,
+    whose holders take that one."""
+    return _peel_dotenv_output(dict(env), dict(_DOTENV_PUBLISHED), None)
 
 
 def _resolve_dotenv_assignments(
@@ -479,15 +492,12 @@ def resolve_project_dotenv(project_env: Path, home: Path, *, removed: frozenset[
             if value is not None and (override or name not in lookup_env)}
 
 
-def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
-                        base_env: dict[str, str] | None = None) -> dict[str, str]:
+def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
-    *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
-    *base_env* stands in for the process's own environment, peeled back the same way: a copy of it taken
-    earlier, such as the launch env frozen when multiplexing began."""
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
     from hermes_cli import managed_scope
 
     managed_dir = managed_scope.get_managed_dir()
@@ -496,7 +506,7 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
         lookup_env = dict(lookup_env)
     else:
         with _DOTENV_LOCK:
-            lookup_env = _dotenv_lookup_env(None, base_env)
+            lookup_env = _dotenv_lookup_env(None)
     out: dict[str, str] = {}
     for path in layers:
         try:

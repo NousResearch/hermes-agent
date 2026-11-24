@@ -815,10 +815,13 @@ def test_a_launch_body_under_task_local_multiplexing_gives_its_launcher_no_value
 
 
 @pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
-def test_a_launch_launchers_env_file_template_resolves_as_the_process_loaded_the_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reloaded", [False, True], ids=["loaded_once", "reloaded_since_the_freeze"])
+def test_a_launch_launchers_env_file_template_resolves_as_the_process_loaded_the_file(
+        tmp_path, monkeypatch, reloaded):
     """Under multiplexing the launch profile's launcher resolves its ``.env`` templates against the frozen launch
     env with the process's own dotenv output peeled back, as the process loaded the file and the body reads it: a
-    line naming a key the file only sets later takes its default, not that later value."""
+    line naming a key the file only sets later takes its default, not that later value. A reload since the freeze
+    that changed that value does not change it."""
     from agent import secret_scope as ss
     from hermes_cli import env_loader
     from tui_gateway import server
@@ -827,13 +830,17 @@ def test_a_launch_launchers_env_file_template_resolves_as_the_process_loaded_the
     for name in ("RUNNER_TAG", "RUNNER_BASE"):
         monkeypatch.setenv(name, "registered-for-restore")
         monkeypatch.delenv(name)
-    host, tags, home = _tagging_launch_host(tmp_path, monkeypatch, "RUNNER_TAG=${RUNNER_BASE:-unset}/tag\nRUNNER_BASE=/opt\n")
+    host, tags, home = _tagging_launch_host(tmp_path, monkeypatch, "RUNNER_TAG=${RUNNER_BASE:-unset}/tag\nRUNNER_BASE=/old\n")
     env_loader.load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
     assert os.environ["RUNNER_TAG"] == "unset/tag"
     context_token = ss.set_multiplex_context(True)
     try:
         with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
             assert ss.get_secret("RUNNER_TAG") == "unset/tag"
+            if reloaded:
+                (home / ".env").write_text("RUNNER_TAG=${RUNNER_BASE:-unset}/tag\nRUNNER_BASE=/new\n", encoding="utf-8")
+                env_loader.load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+                assert os.environ["RUNNER_BASE"] == "/new"
             host.ensure_started()
         assert tags.read_text(encoding="utf-8").split() == ["unset/tag"]
     finally:

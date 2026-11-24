@@ -620,6 +620,8 @@ _DECLARATION = re.compile(r"(?:^|[\s;&|()])(?:export|declare|typeset|readonly)\s
 _ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
 # A redirection (2>/dev/null, > file) is no command word; its target is attached or the next word.
 _REDIRECTION = re.compile(r"\d*[<>]+(.*)")
+# The & and | inside >&, <&, >| and &> belong to the redirection, not a command separator: split them off.
+_REDIRECTION_OPERATOR = re.compile(r"(?<=[<>])[&|]|&(?=>)")
 
 
 def _expand_user_path(raw: str, home: Path) -> Path:
@@ -744,7 +746,8 @@ def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]
     """False for PATH=x cmd, which sets PATH for that one command only."""
     if _DECLARATION.search(code[: found.start()]):
         return True
-    _value, *rest = _setter_words(code[found.end() :], ";&|", variables) or [""]
+    command = _REDIRECTION_OPERATOR.sub(" ", code[found.end() :])
+    _value, *rest = _setter_words(command, ";&|", variables) or [""]
     words = iter(rest)
     for word in words:
         redirection = _REDIRECTION.fullmatch(word)

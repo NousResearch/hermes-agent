@@ -532,6 +532,26 @@ def test_path_check_does_not_take_a_sibling_dir_for_local_bin(tmp_path, monkeypa
 
 
 @pytest.mark.platforms("posix")
+def test_fish_path_check_reads_the_config_under_xdg_config_home(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    monkeypatch.setenv("SHELL", "/usr/bin/fish")
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    (xdg / "fish").mkdir(parents=True)
+    (xdg / "fish" / "config.fish").write_text('fish_add_path "$HOME/.local/bin"\n', encoding="utf-8")
+
+    rc_configured = doctor.run_doctor(Namespace(fix=False))
+    out_configured = capsys.readouterr().out
+    assert rc_configured == 0, out_configured
+    assert "configured in" in out_configured
+
+    (xdg / "fish" / "config.fish").unlink()
+    assert doctor.run_doctor(Namespace(fix=False)) == 1
+    assert f"add to {xdg}/fish/config.fish" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
 def test_bash_path_check_passes_over_a_login_file_bash_cannot_read(tmp_path, monkeypatch, capsys):
     if os.geteuid() == 0:
         pytest.skip("root reads a file without read permission")

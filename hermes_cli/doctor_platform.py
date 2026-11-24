@@ -643,6 +643,9 @@ def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
             return shell, [zdir / ".zprofile", zdir / ".zshrc"], f"{zdotdir_env.rstrip('/')}/.zprofile", []
         return shell, [home / ".zprofile", home / ".zshrc"], "~/.zprofile", []
     if shell == "fish":
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if os.path.isabs(xdg_config):  # the XDG spec ignores a relative value
+            return shell, [Path(xdg_config) / "fish" / "config.fish"], f"{xdg_config.rstrip('/')}/fish/config.fish", []
         return shell, [home / ".config" / "fish" / "config.fish"], "~/.config/fish/config.fish", []
     *logins, bashrc = candidates = [home / ".bash_profile", home / ".bash_login", home / ".profile", home / ".bashrc"]
     if shell != "bash":

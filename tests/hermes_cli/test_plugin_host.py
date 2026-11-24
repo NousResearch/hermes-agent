@@ -369,6 +369,48 @@ def test_a_manager_opened_by_a_relative_home_runs_plugins_there_after_the_workin
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
+def test_a_hosted_model_provider_of_a_renamed_linked_profile_still_runs_after_a_host_crash(tmp_path, monkeypatch):
+    """A hosted provider's overrides run in the host, addressed by the plugin's directory. That address must
+    outlive a rename of the link the profile was opened by, as the restarted host loads the plugin from it."""
+    import signal
+
+    import providers
+    from tests.waiting import wait_until
+
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
+    plugin_dir = target / "plugins" / "model-providers" / "hostmodel"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+
+    def body():
+        try:
+            return profile.build_extra_body(session_id="s1")
+        except Exception:
+            return None
+
+    try:
+        profile = providers.get_provider_profile("hostmodel")
+        assert profile is not None
+        first = profile.build_extra_body(session_id="s1")["pid"]
+        (profiles / "ops").rename(profiles / "ops2")
+        monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
+        os.kill(first, signal.SIGKILL)
+        after = wait_until(body, timeout=15, what="the restarted host to run the provider's override")
+        assert after["session_id"] == "s1" and after["pid"] not in {first, os.getpid()}
+    finally:
+        host = getattr(plugins_mod.get_plugin_manager(), "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink
 def test_a_recall_matched_by_the_recorded_repo_refuses_a_linked_profiles_plugin(tmp_path, monkeypatch):
     """Discovery records a linked profile's plugins under its directory while code runs under its name; the

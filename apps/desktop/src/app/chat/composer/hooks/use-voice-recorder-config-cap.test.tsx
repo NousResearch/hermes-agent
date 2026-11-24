@@ -162,9 +162,8 @@ describe('dictation cap from voice.max_recording_seconds', () => {
   it.each([
     { value: undefined, seconds: 120 },
     { value: false, seconds: 120 },
-    { value: 0, seconds: 120 },
     { value: Number.NaN, seconds: 120 },
-    { value: 900, seconds: 600 },
+    { value: 900, seconds: 900 },
     { value: 1.9, seconds: 1 }
   ])('defaults or clamps an owner cap of $value to $seconds seconds', async ({ value, seconds }) => {
     api.mockResolvedValue({ voice: { max_recording_seconds: value } })
@@ -208,6 +207,15 @@ describe('dictation cap from voice.max_recording_seconds', () => {
       await vi.advanceTimersByTimeAsync(601_000)
     })
     expect(micHandle.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([0, -5])('an owner cap of %s means no cap: the take runs until the user stops it', async value => {
+    api.mockResolvedValue({ voice: { max_recording_seconds: value } })
+    await startRecorder(600)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_600_000)
+    })
+    expect(micHandle.stop).not.toHaveBeenCalled()
   })
 
   it('uses the default when the owner config is unavailable', async () => {

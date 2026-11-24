@@ -166,11 +166,17 @@ export function applyVoiceSilenceMsFromConfig(config: ConfigPayload, defaults?: 
   $voiceSilenceMs.set(seconds !== null && seconds !== defaultSeconds ? seconds * 1_000 : DESKTOP_SILENCE_MS_DEFAULT)
 }
 
-/** Parse the dictation owner's cap, never the foreground profile's cache. */
+/** Parse the dictation owner's cap, never the foreground profile's cache.
+ *  `0` (or any explicit number <= 0) means no cap, matching the CLI and TUI
+ *  recorders; absent or non-numeric values fall back to 120 s. */
 export function voiceMaxRecordingSecondsFromConfig(config: ConfigPayload): number {
   const value = voiceValue(config, 'max_recording_seconds')
 
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 120
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 120
+  }
+
+  return value > 0 ? value : 0
 }
 
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a

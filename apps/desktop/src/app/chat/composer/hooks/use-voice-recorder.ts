@@ -210,12 +210,19 @@ export function useVoiceRecorder({ onTranscribeAudio, focusInput, onTranscript }
       recordFeatureUse('voice_dictation')
       intervalRef.current = window.setInterval(() => setElapsedSeconds((Date.now() - startedAtRef.current) / 1000), 250)
 
+      // `0` = no cap: the take runs until the user stops it (CLI/TUI parity;
+      // ChatGPT dropped its 10-minute dictation limit the same way).
       const armCap = (seconds: number) => {
-        const cap = Math.max(1, Math.min(Math.trunc(seconds), 600))
-
         if (timeoutRef.current) {
           window.clearTimeout(timeoutRef.current)
+          timeoutRef.current = null
         }
+
+        if (seconds <= 0) {
+          return
+        }
+
+        const cap = Math.max(1, Math.trunc(seconds))
 
         timeoutRef.current = window.setTimeout(
           () => void stop(),

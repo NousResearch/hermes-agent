@@ -2787,7 +2787,7 @@ The final prompt is sent to the configured STT provider alongside the audio file
 ```yaml
 voice:
   record_key: "ctrl+b"         # Push-to-talk key inside the CLI
-  max_recording_seconds: 120    # Hard stop for long recordings
+  max_recording_seconds: 120    # Hard stop for long recordings (CLI, TUI, Desktop); 0 = no limit
   auto_tts: false               # Enable automatic spoken replies in gateway chats
   auto_tts_mode: "all"          # "all" (legacy default) | "voice_only"
   beep_enabled: true            # Play record start/stop beeps in CLI voice mode

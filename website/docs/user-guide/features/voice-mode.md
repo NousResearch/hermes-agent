@@ -495,7 +495,7 @@ DISCORD_ALLOWED_USERS=284102345871466496
 # Voice recording (CLI)
 voice:
   record_key: "ctrl+b"            # Key to start/stop recording
-  max_recording_seconds: 120       # Maximum recording length
+  max_recording_seconds: 120       # Maximum recording length (CLI, TUI, Desktop); 0 = no limit
   auto_tts: false                  # Enable automatic spoken replies in gateway chats
   auto_tts_mode: "all"             # "all" (legacy default) | "voice_only"
   beep_enabled: true               # Play record start/stop beeps

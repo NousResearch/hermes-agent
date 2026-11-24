@@ -600,8 +600,8 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
-# What puts an entry on PATH in an rc line; a "#" ends the line for both families.
-_PATH_SETTERS = {"fish": r"(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)", "posix": r"(?:PATH=|path\+?=\()"}
+# What puts an entry on PATH in an rc line (PATH itself, not PYTHONPATH); a "#" ends the line for both families.
+_PATH_SETTERS = {"fish": r"(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)", "posix": r"(?:\bPATH\+?=|\bpath\+?=\()"}
 # A PATH entry ends at an optional trailing slash and then a delimiter, so ~/.local/bin-tools,
 # ~/.local/bin+x and ~/.local/bin/scripts are other directories.
 _PATH_ENTRY_END = r"/?(?=[:\"'\s;&|)}$]|$)"

@@ -526,11 +526,12 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin/scripts:$PATH"'),
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin+tools:$PATH"'),
     ("zsh", ".zprofile", 'export PATH="/opt/team/.local/bin:$PATH"'),
+    ("zsh", ".zprofile", 'export PYTHONPATH="$HOME/.local/bin:$PYTHONPATH"'),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin-tools"'),
     ("fish", ".config/fish/config.fish", "fish_add_path /opt/team/.local/bin"),
     ("fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin/scripts"'),
 ])
-def test_path_check_does_not_take_another_dir_for_local_bin(tmp_path, monkeypatch, capsys, shell, rc_file, line):
+def test_path_check_needs_a_line_that_puts_local_bin_on_path(tmp_path, monkeypatch, capsys, shell, rc_file, line):
     _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
     (link_dir / "hermes").symlink_to(launcher)
     monkeypatch.setenv("SHELL", f"/bin/{shell}")

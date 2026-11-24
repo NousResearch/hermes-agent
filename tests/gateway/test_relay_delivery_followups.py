@@ -67,7 +67,7 @@ def _record(row):
     """A session row as the storage interface's record: the fields the resolver reads, as attributes."""
     if row is None:
         return None
-    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **row})
+    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "created_source": None, "model_config": {}, **row})
 
 
 def _runner_with_rows(rows, *, switched_entry=None):

@@ -49,7 +49,7 @@ class _StoreHandle:
     async def _get(self, session_id):
         if self._row is None:
             return None
-        return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **self._row})
+        return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "created_source": None, "model_config": {}, **self._row})
 
     async def _get_tip(self, session_id):
         return self._tip

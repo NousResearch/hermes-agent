@@ -161,6 +161,18 @@ def _scan_projects() -> list[dict[str, Any]]:
             return (1, 0)
         return (0, item["last_commit_days"])
     out.sort(key=sort_key)
+
+    # 6. dedupe: same repo can appear under several names/paths (case, short
+    #    clones, junctions). Keep the most recently committed entry per
+    #    case-folded name, then re-sort so numbering stays stable.
+    best: dict[str, dict[str, Any]] = {}
+    for item in out:
+        key = item["name"].casefold()
+        prev = best.get(key)
+        if prev is None or sort_key(item) < sort_key(prev):
+            best[key] = item
+    out = list(best.values())
+    out.sort(key=sort_key)
     return out
 
 

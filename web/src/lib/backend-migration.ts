@@ -69,6 +69,10 @@ export interface BackendMigrationPlan {
   /** null: the old backend's turn activity could not be read (never 0, never idle). */
   running_turns: number | null;
   blockers: string[];
+  /** The blockers the user's consent clears (`force_interrupt`): a chat or a gateway the move would stop. */
+  forceable_blockers?: string[];
+  /** What the move stops or replaces besides the old backend, to show before the user confirms. */
+  takes_over?: string[];
   unsupported: { supervisor: string | null; unit: string | null; instructions: string; steps?: string[] }[];
   notices: string[];
   nothing_to_do: boolean;
@@ -198,6 +202,15 @@ export function impactLines(plan: BackendMigrationPlan): string[] {
 const RUNNING_TURNS = /^\d+ turn\(s\) are running on the old backend\. Wait for them to finish, or re-run with --force-interrupt \(they are interrupted\)\.$/;
 const UNKNOWN_TURNS = /^Cannot tell whether turns are running on the old backend: [\s\S]+\. To move it, confirm it is idle, then re-run with --force-interrupt \(any running turn is interrupted\)\.$/;
 const UNREADABLE_TURNS = /^The old backend's running turns cannot be read, so this command cannot prove no reply is being written in it\. Confirm it is idle, then re-run with --force-interrupt\. Nothing changed\.$/;
+const STRAY_GATEWAY = /^A gateway for this home (runs|started) outside its service [\s\S]+ --force-interrupt to (allow that \(or stop it first: [^()]+\)|let the move stop it)\.$/;
+
+/** Whether the user's consent (the Move confirmation) clears *blocker*: the plan's own list, else the
+ *  engine's chat and stray-gateway blockers by their whole text. */
+export function consentClears(blocker: string, plan?: Pick<BackendMigrationPlan, "forceable_blockers"> | null): boolean {
+  if (plan?.forceable_blockers?.includes(blocker)) return true;
+  return RUNNING_TURNS.test(blocker) || UNKNOWN_TURNS.test(blocker) || UNREADABLE_TURNS.test(blocker)
+    || STRAY_GATEWAY.test(blocker);
+}
 
 /** Blocker text from the engine, with what to do. Only the engine's chat blockers can be forced; their
  *  closing remedy (the CLI flag) is replaced by what this card offers, and nothing else in the text is. */
@@ -217,8 +230,7 @@ export function blockerAdvice(blocker: string, byHand = false): { text: string; 
   } else {
     text = blocker.replace(/ ?Re-run with --detach\.$/, "");
   }
-  const canForce = RUNNING_TURNS.test(blocker) || UNKNOWN_TURNS.test(blocker) || UNREADABLE_TURNS.test(blocker);
-  return { text: text.trim(), canForce };
+  return { text: text.trim(), canForce: consentClears(blocker) };
 }
 
 /** The reason of a failed or rolled-back run: the route's `reason`, else the engine's message
@@ -245,6 +257,7 @@ export function rolledBackReason(reason: string): string {
     return blocker.replace(/, then re-run with --force-interrupt \(any running turn is interrupted\)\.$/, ", then try again.")
       + stopped;
   }
+  if (STRAY_GATEWAY.test(blocker)) return blocker.replace(/; re-run with --force-interrupt to let the move stop it\.$/, "; try again.") + stopped;
   if (/^the old backend changed since the check \(/.test(body)) return body.replace(/; run this command again\.$/, "; try again.");
   return reason;
 }

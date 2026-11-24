@@ -569,7 +569,10 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
     right before a fresh launch, inside the same cross-process step, never when attaching: a profile copy
     written there can neither race another process's copy nor land under a browser that just came up; a
     message it returns is the launch's error, as is."""
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     from hermes_constants import hermes_home_key
+    if (refused := run_elsewhere_refusal()) is not None:  # that backend writes browser.executable_path
+        return None, refused
     # Loaded now, not first at teardown: stopping the browser from an atexit hook must not be this module's
     # first import (Python refuses new atexit registrations during shutdown, orphaning the browser). An
     # attacher needs it too: it is the one that stops a shared browser when it is the last holder.

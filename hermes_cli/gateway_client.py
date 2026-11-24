@@ -338,7 +338,8 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     owner also refuses the socket when the wait opens between discovery and the dial."""
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
+    from hermes_cli.gateway_runtime import (attachable, ensure_gateway_runtime, gateway_profile_home,
+                                           run_elsewhere_verdict)
     from hermes_cli.gateway_runtime_discovery import DiscoveryError
     from urllib.parse import urlsplit
 
@@ -355,10 +356,11 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
         url = remote
     else:
         # A per-task overlay home is served by the profile its symlinked lock names (#138949).
+        refused = run_elsewhere_verdict(get_hermes_home())  # as given: resolving may lead out of the root
         home = gateway_profile_home(get_hermes_home())
         # A client's own start: the daemon it may launch ends itself once idle (no client, adapter,
         # cron/kanban work or admission), and the next client starts a fresh one.
-        result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
+        result = refused or await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
         if not attachable(result) or (_REFUSE_RESTART_WAIT.get() and result.state != "ready"):
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:

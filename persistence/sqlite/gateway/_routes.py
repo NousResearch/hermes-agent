@@ -11,6 +11,7 @@ from persistence.gateway.routing import route_namespace
 
 from .._schema import _rebuild_table
 from .._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract
+from ..conversation._store.sql_common import _DELEGATE_CHILD_SQL
 from ..conversation._store.retirement import RETIRED_PREFIX, _mark_retired, entry_session_id
 
 # Accidental end reasons recovery treats as resumable: superseded_by_resume = sentinel-parked runtime replaced
@@ -153,12 +154,7 @@ _COMPRESSION_LINEAGE_CTE = f"""
 # delegate marker (#109073), and one carrying ``_chat_adopted`` is a delegate row the user explicitly
 # switched the chat onto: both ARE the conversation, so they keep their route. A markerless row a
 # subagent created (``created_source``, which the peer stamp never rewrites) is excluded the same way.
-_DELEGATE_CHILD_EXCLUSION_SQL = (
-    f"AND ((COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
-    " AND COALESCE(s.created_source, '') <> 'subagent')"
-    f" OR {_sql_json_extract('s.model_config', '$._reset_from')} IS NOT NULL"
-    f" OR {_sql_json_extract('s.model_config', '$._chat_adopted')} IS NOT NULL)"
-)
+_DELEGATE_CHILD_EXCLUSION_SQL = f"AND NOT {_DELEGATE_CHILD_SQL.format(a='s')}"
 
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).
 _PEER_SELECT_HEAD = """

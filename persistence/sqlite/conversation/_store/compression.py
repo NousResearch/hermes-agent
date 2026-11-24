@@ -12,7 +12,8 @@ from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract
 from persistence.sqlite.conversation._store.core import _session_row_dict
 from persistence.sqlite.conversation._store.messages import _carry_parent_timestamps, _clone_message_rows, _execute_transcript_write, _insert_message_rows, _is_explicit_fork_child_row, _tail_rows_after_watermark
 from persistence.sqlite.conversation._store.sql_common import (
-    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _non_continuation_child_sql, _sql_session_last_active,
+    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _DELEGATE_CHILD_SQL, _ENDED_ROW_SQL, _non_continuation_child_sql,
+    _sql_session_last_active,
 )
 from persistence.sqlite._holder import StoreHolder
 
@@ -25,6 +26,8 @@ _COOLDOWN_ROW_SQL = (
 )
 
 
+# A chat's continuation is never a row its subagent created; a worker's own segments continue each other
+# (compression copies ``created_source`` from the parent, so a subagent parent's continuation is one too).
 _CHAIN_STEP_SQL = f"""
                     SELECT child.id
                     FROM sessions parent
@@ -35,6 +38,8 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
+                      AND NOT (COALESCE(parent.created_source, '') <> 'subagent'
+                               AND {_DELEGATE_CHILD_SQL.format(a='child')})
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0

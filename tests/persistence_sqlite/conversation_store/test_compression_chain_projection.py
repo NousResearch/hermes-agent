@@ -1,4 +1,4 @@
-"""Compression lineage in the conversation store on a backend store's StoreHolder: ``get_compression_tip`` and ``get_compression_lineage`` walk the chain and stop at reset forks, the routing lineage CTE agrees with that walk, and ``list_sessions_rich`` surfaces each compressed conversation as its live tip in one batched fetch."""
+"""Compression lineage in the conversation store on a backend store's StoreHolder: ``get_compression_tip`` and ``get_compression_lineage`` walk the chain and stop at reset forks and at a chat's subagent rows, the routing lineage CTE agrees with that walk, and ``list_sessions_rich`` surfaces each compressed conversation as its live tip in one batched fetch."""
 
 import time
 
@@ -8,6 +8,7 @@ from persistence.sqlite.conversation._store import portability as store_portabil
 from persistence.sqlite.conversation._store import session_list as store_session_list
 from persistence.sqlite.conversation._store.compression import (
     _is_compression_child_row,
+    publish_compression_child,
     get_compression_lineage,
     get_compression_tip,
 )
@@ -29,6 +30,50 @@ def store(backend, scope_a):
 def db(store):
     """The store's StoreHolder, shared with its repositories."""
     return store.holder()
+
+from tests.fixtures.storage_seed import seed_session
+
+
+ROUTE = dict(user_id="u1", session_key="agent:main:telegram:dm:42", chat_id="42", chat_type="dm")
+
+
+def _compress(db, parent, child, source):
+    publish_compression_child(db, parent_session_id=parent, child_session_id=child, source=source, system_prompt="p",
+                              messages=[{"role": "user", "content": "summary"}], require_compression_lease=False)
+
+
+def _worker_row(store, parent, sid):
+    """A markerless row a subagent created, relabelled onto the chat by the peer stamp."""
+    seed_session(store, sid, "subagent", parent_session_id=parent)
+    store.routing.record_session_peer(sid, source="telegram", **ROUTE)
+
+
+class TestChainStepSkipsSubagentRows:
+    def test_a_chat_never_continues_into_its_markerless_worker_row(self, store):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        _worker_row(store, "chat", "worker")
+        store.sessions.end("chat", "compression")
+        assert store.lineage.tip("chat") == "chat"
+
+    def test_a_newer_worker_row_does_not_outrank_the_chat_continuation(self, store, db):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        _compress(db, "chat", "chat-c1", "telegram")
+        _worker_row(store, "chat", "worker")
+        assert store.lineage.tip("chat") == "chat-c1"
+
+    def test_a_chat_the_user_adopted_a_worker_row_onto_still_continues(self, store):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        seed_session(store, "adopted", "subagent", parent_session_id="chat", model_config={"_chat_adopted": True})
+        store.sessions.end("chat", "compression")
+        assert store.lineage.tip("chat") == "adopted"
+
+    def test_a_workers_own_compression_chain_still_resolves(self, store, db):
+        seed_session(store, "worker", "subagent")
+        _compress(db, "worker", "worker-c1", "subagent")
+        store.routing.record_session_peer("worker-c1", source="telegram", **ROUTE)
+        _compress(db, "worker-c1", "worker-c2", "subagent")
+        assert store.lineage.tip("worker") == "worker-c2"
+        assert store.lineage.lineage("worker-c2") == ("worker", "worker-c1", "worker-c2")
 
 
 class TestCompressionChainProjection:

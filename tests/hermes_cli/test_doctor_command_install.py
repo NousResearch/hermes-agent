@@ -194,3 +194,264 @@ def test_remedies_and_launcher_repairs_respect_install_owner(tmp_path, monkeypat
     else:
         assert not command.exists()
         assert "hermes pm repair" not in out
+
+
+def _bundled_tree(tmp_path, monkeypatch, *, app_dir: Path | None = None, cli_name: str = "hermes",
+                  with_manifest: bool = True, with_runtime_stamp: bool = True, on_path: bool = True):
+    home = tmp_path / "data"
+    home.mkdir(exist_ok=True)
+    user_home = tmp_path / "user"
+    user_home.mkdir(exist_ok=True)
+    payload_root = (app_dir or (tmp_path / "Applications" / "Hermes Agent Canary.app" / "Contents" / "Resources")) / "agent-payload"
+    project = payload_root / "hermes-agent"
+    project.mkdir(parents=True)
+    (project / "hermes").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    (project / "hermes").chmod(0o755)
+    bin_dir = payload_root / "bin"
+    bin_dir.mkdir(parents=True)
+    launcher = bin_dir / cli_name
+    launcher.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    if cli_name != "hermes":
+        (bin_dir / "hermes").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        (bin_dir / "hermes").chmod(0o755)
+    runtime = {
+        "repoDir": "hermes-agent",
+        "toolsDir": "tools",
+        "storePython": "tools/python-fixture/bin/python3",
+        "sitePackages": "venv/lib/python3.14/site-packages",
+        "commands": {"hermes": f"bin/{cli_name}"},
+    }
+    stamp = {"payload": "bundled", "distribution": "desktop-app", "updateMechanism": "electron-updater"}
+    if with_runtime_stamp:
+        stamp["runtime"] = runtime
+    (project / "install-stamp.json").write_text(json.dumps(stamp), encoding="utf-8")
+    if with_manifest:
+        (payload_root / "manifest.json").write_text(
+            json.dumps({"schema": 1, "repo": "hermes-agent", "venv": "venv", "store": "tools", "runtime": runtime}),
+            encoding="utf-8",
+        )
+    interpreter = payload_root / "tools" / "python-fixture" / "bin" / "python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.symlink_to(Path(sys._base_executable).resolve())
+    (payload_root / "tools" / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-fixture"}}}), encoding="utf-8"
+    )
+    venv_dir = payload_root / "venv"
+    site_packages(venv_dir).mkdir(parents=True)
+    (venv_dir / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(payload_root / "tools"))
+    monkeypatch.delenv("PREFIX", raising=False)
+    monkeypatch.delenv("ZDOTDIR", raising=False)
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    monkeypatch.setattr(doctor, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "DOCTOR_CHECKS", ((None, doctor_platform._check_command_installation),))
+    link_dir = user_home / ".local" / "bin"
+    link_dir.mkdir(parents=True)
+    monkeypatch.setenv("PATH", str(link_dir) if on_path else "/usr/local/bin:/usr/bin:/bin")
+    return project, launcher, link_dir
+
+
+@pytest.mark.platforms("posix")
+def test_bundled_payload_accepts_bundle_bin_symlink_macos_layout(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch)
+    (link_dir / "hermes").symlink_to(launcher)
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "All checks passed" in out
+    assert "points to wrong target" not in out
+    assert str(launcher) in out
+    assert "~/.local/bin/hermes → correct target" in out
+
+
+@pytest.mark.platforms("posix")
+def test_bundled_payload_accepts_minimal_stamp_without_manifest(tmp_path, monkeypatch, capsys):
+    app_dir = tmp_path / "local" / "share" / "hermes" / "bundles" / "v0.23.1-abc123"
+    _project, launcher, link_dir = _bundled_tree(
+        tmp_path, monkeypatch, app_dir=app_dir, with_manifest=False, with_runtime_stamp=False,
+    )
+    (link_dir / "hermes").symlink_to(launcher)
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "All checks passed" in out
+    assert "points to wrong target" not in out
+    assert "~/.local/bin/hermes → correct target" in out
+
+
+@pytest.mark.platforms("posix")
+def test_bundled_payload_respects_qualified_canary_command_name(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, cli_name="hermes-canary")
+    other = tmp_path / "stable-hermes"
+    other.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    (link_dir / "hermes").symlink_to(other)
+    (link_dir / "hermes-canary").symlink_to(launcher)
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "All checks passed" in out
+    assert "~/.local/bin/hermes-canary → correct target" in out
+    assert (link_dir / "hermes").resolve() == other.resolve()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("prior", ["missing", "dangling_bundle", "superseded_appimage"])
+def test_bundled_payload_fix_symlinks_bundle_trampoline(tmp_path, monkeypatch, capsys, prior):
+    bundles = tmp_path / "bundles"
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, app_dir=bundles / "build-2")
+    command = link_dir / "hermes"
+    if prior == "dangling_bundle":
+        command.symlink_to(tmp_path / "Old.app" / "Contents" / "Resources" / "agent-payload" / "bin" / "hermes")
+    elif prior == "superseded_appimage":
+        old = bundles / "build-1" / "agent-payload" / "bin" / "hermes"
+        old.parent.mkdir(parents=True)
+        old.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        command.symlink_to(old)
+
+    rc = doctor.run_doctor(Namespace(fix=True))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Fixed 1 issue" in out
+    assert command.is_symlink()
+    assert command.resolve() == launcher.resolve()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("foreign_kind", ["other_tool", "other_app"])
+def test_bundled_payload_fix_preserves_live_foreign_symlink(tmp_path, monkeypatch, capsys, foreign_kind):
+    _project, _launcher, link_dir = _bundled_tree(tmp_path, monkeypatch)
+    command = link_dir / "hermes"
+    if foreign_kind == "other_tool":
+        foreign = tmp_path / "other-tool" / "hermes"
+    else:
+        foreign = tmp_path / "Other.app" / "Contents" / "Resources" / "agent-payload" / "bin" / "hermes"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    command.symlink_to(foreign)
+
+    rc = doctor.run_doctor(Namespace(fix=True))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Fixed 1 issue" not in out
+    assert command.is_symlink() and command.resolve() == foreign.resolve()
+    assert "manual" in out.lower()
+
+
+@pytest.mark.platforms("posix")
+def test_command_installation_warns_when_local_bin_missing_from_path(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "~/.local/bin/hermes → correct target" in out
+    assert "~/.local/bin is not on your PATH" in out
+    assert "~/.zprofile" in out
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in out
+
+
+@pytest.mark.platforms("posix")
+def test_command_installation_path_check_respects_zdotdir_and_configured_rc(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    zdotdir = Path.home() / ".config" / "zsh"
+    zdotdir.mkdir(parents=True)
+    monkeypatch.setenv("ZDOTDIR", str(zdotdir))
+    (Path.home() / ".zprofile").write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding="utf-8")
+    (zdotdir / ".zprofile").write_text('# export PATH="$HOME/.local/bin:$PATH"\n', encoding="utf-8")
+
+    rc_missing = doctor.run_doctor(Namespace(fix=False))
+    out_missing = capsys.readouterr().out
+    assert rc_missing == 1
+    assert f"{zdotdir}/.zprofile" in out_missing
+
+    (zdotdir / ".zprofile").write_text(
+        '# Hermes Agent command\n'
+        'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac\n',
+        encoding="utf-8",
+    )
+    rc_configured = doctor.run_doctor(Namespace(fix=False))
+    out_configured = capsys.readouterr().out
+    assert rc_configured == 0
+    assert "⚠" not in out_configured
+    assert "configured in" in out_configured
+
+
+@pytest.mark.platforms("posix")
+def test_command_installation_path_check_accepts_trailing_slash_or_other_path_symlink(tmp_path, monkeypatch, capsys):
+    _project, launcher, link_dir = _bundled_tree(tmp_path, monkeypatch, on_path=False)
+    (link_dir / "hermes").symlink_to(launcher)
+    monkeypatch.setenv("PATH", f"{link_dir}/:/usr/bin")
+
+    rc_slash = doctor.run_doctor(Namespace(fix=False))
+    assert rc_slash == 0
+    assert "is not on your PATH" not in capsys.readouterr().out
+
+    alt_bin = tmp_path / "usr-local-bin"
+    alt_bin.mkdir()
+    (alt_bin / "hermes").symlink_to(launcher)
+    monkeypatch.setenv("PATH", f"{alt_bin}:/usr/bin")
+
+    rc_alt = doctor.run_doctor(Namespace(fix=False))
+    assert rc_alt == 0
+    assert "is not on your PATH" not in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+def test_source_checkout_with_sibling_bin_is_not_treated_as_bundled(tmp_path, monkeypatch, capsys):
+    project, home, command = _tree(tmp_path, monkeypatch)
+    _pm_source(project, home)
+    _generation(project)
+    decoy = project.parent / "bin" / "hermes"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    decoy.chmod(0o755)
+    command.symlink_to(decoy)
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "points to wrong target" in out
+
+
+@pytest.mark.platforms("posix")
+def test_source_install_warns_when_local_bin_missing_from_path_even_when_launcher_exists(tmp_path, monkeypatch, capsys):
+    project, home, command = _tree(tmp_path, monkeypatch)
+    _generation(project)
+    _pm_source(project, home)
+    assert _launchers.stage_launcher("hermes", project, command.parent) == command
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    rc = doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "~/.local/bin is not on your PATH" in out
+
+    (tmp_path / ".bashrc").write_text(
+        '# Hermes Agent command\n'
+        'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac\n',
+        encoding="utf-8",
+    )
+    rc_after_rc = doctor.run_doctor(Namespace(fix=False))
+    out_after_rc = capsys.readouterr().out
+    assert rc_after_rc == 0
+    assert "⚠" not in out_after_rc
+    assert "configured in" in out_after_rc

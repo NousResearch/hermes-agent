@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -599,6 +600,212 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
+_POSIX_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*\.local/bin\b")
+_FISH_LOCAL_BIN_PATH_RE = re.compile(r"^\s*[^#\n]*(?:fish_add_path\b|set\b[^#\n]*\bPATH\b)[^#\n]*\.local/bin\b")
+
+
+def _expand_user_path(raw: str, home: Path) -> Path:
+    if raw == "~":
+        return home
+    if raw.startswith(("~/", "~\\")):
+        return home / raw[2:]
+    return Path(raw)
+
+
+def _dir_on_path(directory: Path, path_env: str | None = None) -> bool:
+    raw_path = os.environ.get("PATH", "") if path_env is None else path_env
+    home = Path.home()
+    try:
+        target = directory.resolve()
+    except OSError:
+        target = directory
+    for entry in raw_path.split(os.pathsep):
+        if not entry:
+            continue
+        candidate = _expand_user_path(entry, home)
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = Path(os.path.normpath(str(candidate)))
+        if resolved == target:
+            return True
+    return False
+
+
+def _shell_rc_targets() -> tuple[str, list[Path], str]:
+    default_shell = "/bin/zsh" if sys.platform == "darwin" else "/bin/bash"
+    shell = Path(os.environ.get("SHELL") or default_shell).name
+    home = Path.home()
+    if shell == "zsh":
+        zdotdir_env = os.environ.get("ZDOTDIR", "").strip()
+        if zdotdir_env:
+            zdir = _expand_user_path(zdotdir_env, home)
+            return shell, [zdir / ".zprofile", zdir / ".zshrc"], f"{zdotdir_env.rstrip('/')}/.zprofile"
+        return shell, [home / ".zprofile", home / ".zshrc"], "~/.zprofile"
+    if shell == "fish":
+        return shell, [home / ".config" / "fish" / "config.fish"], "~/.config/fish/config.fish"
+    candidates = [home / ".bash_profile", home / ".bash_login", home / ".profile", home / ".bashrc"]
+    preferred = "~/.bash_profile" if (home / ".bash_profile").is_file() and not (home / ".bashrc").is_file() else "~/.bashrc"
+    return shell, candidates, preferred
+
+
+def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
+    if termux:
+        pattern = re.compile(
+            rf"^\s*[^#\n]*(?:PATH=|path\+?=\()[^#\n]*(?:\$PREFIX/bin|\$\{{PREFIX\}}/bin|{re.escape(str(link_dir))})\b"
+        )
+    elif shell == "fish":
+        pattern = _FISH_LOCAL_BIN_PATH_RE
+    else:
+        pattern = _POSIX_LOCAL_BIN_PATH_RE
+    for rc_path in candidates:
+        if not rc_path.is_file():
+            continue
+        try:
+            text = rc_path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        if any(pattern.search(line) for line in text.splitlines()):
+            return rc_path
+    return None
+
+
+def _display_rc_path(rc_path: Path) -> str:
+    home = Path.home()
+    try:
+        rel = rc_path.resolve().relative_to(home.resolve())
+        return f"~/{rel.as_posix()}"
+    except (OSError, ValueError):
+        return str(rc_path)
+
+
+def _check_link_dir_on_path(
+    link_dir: Path, display: str, resolved_on_path: str | None, expected: Path, termux: bool, f: Finding
+) -> None:
+    if _dir_on_path(link_dir):
+        return
+    if resolved_on_path:
+        try:
+            if Path(resolved_on_path).resolve() == expected:
+                return
+        except OSError:
+            pass
+    shell, candidates, rc_display = _shell_rc_targets()
+    configured = _configured_shell_rc(link_dir, shell, candidates, termux=termux)
+    if configured is not None:
+        check_info(
+            f"{display} is not on this shell's PATH yet "
+            f"(configured in {_display_rc_path(configured)}; open a new terminal or reload your shell)"
+        )
+        return
+    path_var = "$PREFIX/bin" if termux else "$HOME/.local/bin"
+    path_cmd = f'fish_add_path "{path_var}"' if shell == "fish" else f'export PATH="{path_var}:$PATH"'
+    check_warn(f"{display} is not on your PATH", f"(add to {rc_display}: {path_cmd})")
+    f.manual_issues.append(f"Add {display} to your PATH (in {rc_display}: {path_cmd})")
+
+
+def _bundled_launcher_target(project_root: Path) -> Path:
+    from hermes_cli.steward import read_install_stamp
+    from pm.environments import cli_command_name, payload_command_dir
+
+    root = Path(project_root).resolve()
+    payload_root = root.parent
+    command_dir = payload_command_dir(root)
+    if command_dir is not None:
+        return command_dir / cli_command_name(root)
+    runtime = read_install_stamp(root).get("runtime")
+    commands = runtime.get("commands") if isinstance(runtime, dict) else None
+    rel = commands.get("hermes") if isinstance(commands, dict) else None
+    if isinstance(rel, str) and rel:
+        candidate = (payload_root / rel).resolve()
+        if not candidate.is_relative_to(payload_root):
+            raise RuntimeError("payload launcher escapes its root")
+        return candidate
+    return payload_root / "bin" / "hermes"
+
+
+def _is_owned_bundle_link(link: Path, expected: Path) -> bool:
+    try:
+        raw = os.readlink(link)
+    except OSError:
+        return False
+    if not os.path.isabs(raw):
+        return False
+    raw_path = Path(raw)
+    if (
+        raw_path.name != expected.name
+        or raw_path.parent.name != "bin"
+        or raw_path.parent.parent.name != "agent-payload"
+    ):
+        return False
+    if not link.exists():
+        return True
+    raw_resolved = link.resolve()
+    # AppImage unpacks each build beside its predecessor (<bundles>/<build>/agent-payload/bin/<cmd>).
+    return (
+        len(raw_resolved.parents) > 3
+        and len(expected.parents) > 3
+        and raw_resolved.parents[2] != expected.parents[2]
+        and raw_resolved.parents[3] == expected.parents[3]
+    )
+
+
+def _replace_symlink(link: Path, target: Path) -> None:
+    staged = link.with_name(f".{link.name}.doctor-{os.getpid()}.tmp")
+    staged.unlink(missing_ok=True)
+    staged.symlink_to(target)
+    try:
+        os.replace(staged, link)
+    except OSError:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _resolve_command_entry_point(project_root: Path, f: Finding) -> tuple[Path, str, bool, bool] | None:
+    from hermes_cli.steward import is_bundled_payload
+
+    if is_bundled_payload(project_root):
+        try:
+            entry = _bundled_launcher_target(project_root)
+        except (OSError, ValueError, RuntimeError) as exc:
+            check_fail("Cannot resolve bundled launcher", str(exc))
+            f.manual_issues.append("Reinstall the Hermes desktop app bundle")
+            return None
+        return entry, entry.name, True, False
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import base_venv, selected_venv
+
+    try:
+        selected = selected_venv(project_root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        check_fail("Cannot resolve selected dependencies", str(exc))
+        f.manual_issues.append(_python_repair_hint())
+        return None
+    pm_launcher = selected != base_venv(project_root) or resolve_store_python(project_root) is not None
+    entry = project_root / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    return entry, "hermes", False, pm_launcher
+
+
+def _repair_command_link(
+    link: Path, link_dir: Path, display: str, cmd_name: str, venv_bin: Path,
+    *, project_root: Path, pm_launcher: bool, verb: str, f: Finding,
+) -> None:
+    if pm_launcher:
+        from hermes_cli._launchers import stage_launcher
+
+        if stage_launcher(cmd_name, project_root, link_dir) is None:
+            check_fail("Could not publish Hermes launcher")
+            f.manual_issues.append(
+                "Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'"
+            )
+            return
+        check_ok(f"{verb} PM launcher: {display}/{cmd_name}")
+    else:
+        _replace_symlink(link, venv_bin)
+        check_ok(f"{verb} symlink: {display}/{cmd_name} → {venv_bin}")
+    f.fixed += 1
+
+
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Check the install-owned launch contract without replacing custom commands."""
@@ -617,57 +824,49 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             check_warn(f"Hermes command not on PATH ({method}-managed)")
             f.manual_issues.append(_python_repair_hint())
         return
-    from hermes_cli._launchers import resolve_store_python
-    from pm.environments import base_venv, selected_venv
-
-    try:
-        selected = selected_venv(PROJECT_ROOT)
-    except (OSError, ValueError, RuntimeError) as exc:
-        check_fail("Cannot resolve selected dependencies", str(exc))
-        return f.manual_issues.append(_python_repair_hint())
-    pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
-    venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    resolved = _resolve_command_entry_point(PROJECT_ROOT, f)
+    if resolved is None:
+        return
+    venv_bin, cmd_name, bundled, pm_launcher = resolved
     if not venv_bin.is_file():
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
     check_ok(f"Hermes entry point exists ({venv_bin})")
-    # Expected command link directory (mirrors install.sh logic).
     prefix = os.environ.get("PREFIX", "")
-    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+    termux = bool(prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix))
     link_dir, display = (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
-    link = link_dir / "hermes"
+    link, expected = link_dir / cmd_name, venv_bin.resolve()
+    verb: str | None = None
     if link.is_symlink():
-        target, expected = link.resolve(), venv_bin.resolve()
+        target = link.resolve()
         if target == expected:
-            return check_ok(f"{display}/hermes → correct target")
-        check_warn(f"{display}/hermes points to wrong target", f"(→ {target}, expected → {expected})")
-        owned_targets = {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
-        if target not in owned_targets:
-            return f.manual_issues.append(f"Review {display}/hermes manually; its target is user-managed and was not changed")
-        if not should_fix:
-            return f.issues.append(f"Broken symlink at {display}/hermes — run 'hermes doctor --fix'")
-        verb = "Fixed"
-    elif link.exists():  # regular file (wrapper script), not a symlink
-        return check_ok(f"{display}/hermes exists (non-symlink)")
+            check_ok(f"{display}/{cmd_name} → correct target")
+        else:
+            check_warn(f"{display}/{cmd_name} points to wrong target", f"(→ {target}, expected → {expected})")
+            owned = (
+                _is_owned_bundle_link(link, expected)
+                if bundled
+                else target in {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
+            )
+            if not owned:
+                f.manual_issues.append(f"Review {display}/{cmd_name} manually; its target is user-managed and was not changed")
+            elif not should_fix:
+                f.issues.append(f"Broken symlink at {display}/{cmd_name} — run '{cmd_name} doctor --fix'")
+            else:
+                verb = "Fixed"
+    elif link.exists():
+        check_ok(f"{display}/{cmd_name} exists (non-symlink)")
     else:
-        check_fail(f"{display}/hermes not found", "(hermes command may not work outside the venv)")
+        detail = f"({cmd_name} command may not work in a terminal)" if bundled else "(hermes command may not work outside the venv)"
+        check_fail(f"{display}/{cmd_name} not found", detail)
         if not should_fix:
-            return f.issues.append(f"Missing {display}/hermes symlink — run 'hermes doctor --fix'")
-        link_dir.mkdir(parents=True, exist_ok=True)
-        verb = "Created"
-    if pm_launcher:
-        from hermes_cli._launchers import stage_launcher
-
-        if stage_launcher("hermes", PROJECT_ROOT, link_dir) is None:
-            check_fail("Could not publish Hermes launcher")
-            return f.manual_issues.append("Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'")
-        check_ok(f"{verb} PM launcher: {display}/hermes")
-    else:
-        if link.is_symlink():
-            link.unlink()
-        link.symlink_to(venv_bin)
-        check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
-    f.fixed += 1
-    if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
-        check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")
-        f.manual_issues.append(f"Add {display} to your PATH")
+            f.issues.append(f"Missing {display}/{cmd_name} symlink — run '{cmd_name} doctor --fix'")
+        else:
+            link_dir.mkdir(parents=True, exist_ok=True)
+            verb = "Created"
+    if verb is not None:
+        _repair_command_link(
+            link, link_dir, display, cmd_name, venv_bin,
+            project_root=PROJECT_ROOT, pm_launcher=pm_launcher, verb=verb, f=f,
+        )
+    _check_link_dir_on_path(link_dir, display, shutil.which(cmd_name), expected, termux, f)

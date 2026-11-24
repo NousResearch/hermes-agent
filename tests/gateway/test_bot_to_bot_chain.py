@@ -117,3 +117,44 @@ def test_bot_users_marks_a_peer_on_a_platform_without_a_bot_flag():
     assert not configured_bot_user(config, HUMAN)
     assert configured_bot_user(SimpleNamespace(extra={"bot_users": "a,peer_bot"}), "peer_bot")
     assert not configured_bot_user(SimpleNamespace(extra={}), "peer_bot")
+
+
+# --- shared epoch resets the window and every gateway chain ------------------------------------
+
+
+def _force_shared_epoch(monkeypatch, tmp_path, *, enabled):
+    """Patch the flag and install root the guard imports at call time."""
+    monkeypatch.setattr(
+        "hermes_cli.config.bot_loop_reset_on_human_enabled",
+        lambda config_path=None: enabled,
+    )
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **_kwargs: tmp_path)
+
+
+def test_shared_epoch_clears_the_window_and_every_gateway_chain(clock, monkeypatch, tmp_path):
+    from gateway.bot_loop_reset import write_epoch
+
+    guard = _guard(clock, max_events=2, max_hops=1, window_seconds=300, cooldown_seconds=600)
+    assert guard.admit(CHAT) == (True, "ok")
+    assert guard.admit(CHAT) == (True, "ok")
+    assert guard.admit(CHAT)[1] == "tripped"
+    assert guard.chain_admit(CHAT, PEER, "ping", is_bot=True) == (True, "ok")
+    assert guard.chain_admit(CHAT, PEER, "pong", is_bot=True)[1] == "max_hops"
+
+    _force_shared_epoch(monkeypatch, tmp_path, enabled=True)
+    write_epoch(tmp_path, 42.0)
+
+    # blocked must apply the epoch: a cooldown a human reset must not still report as blocked.
+    assert guard.blocked(CHAT) is False
+    assert guard.admit(CHAT) == (True, "ok")
+    assert guard.chain_admit(CHAT, PEER, "fresh", is_bot=True) == (True, "ok")
+
+
+def test_epoch_file_is_ignored_when_the_flag_is_off(clock, monkeypatch, tmp_path):
+    from gateway.bot_loop_reset import write_epoch
+
+    _force_shared_epoch(monkeypatch, tmp_path, enabled=False)
+    guard = _guard(clock, max_hops=1)
+    assert guard.chain_admit(CHAT, PEER, "ping", is_bot=True) == (True, "ok")
+    write_epoch(tmp_path, 42.0)
+    assert guard.chain_admit(CHAT, PEER, "pong", is_bot=True)[1] == "max_hops"

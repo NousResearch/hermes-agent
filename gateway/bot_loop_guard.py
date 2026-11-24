@@ -117,6 +117,7 @@ class BotLoopGuard:
         self._cooldown_until: dict[Hashable, float] = {}
         self._last_sweep = 0.0
         self._chains: dict[Hashable, _Chain] = {}
+        self._applied_epoch = 0.0
 
     @property
     def tracked_conversations(self) -> int:
@@ -133,6 +134,7 @@ class BotLoopGuard:
         if not self._settings().enabled:
             return False
         with self._lock:
+            self._apply_shared_epoch()
             return self._cooldown_until.get(conversation, 0.0) > self._clock()
 
     def admit(self, conversation: Hashable) -> tuple[bool, str]:
@@ -143,6 +145,7 @@ class BotLoopGuard:
             return True, "disabled"
         now = self._clock()
         with self._lock:
+            self._apply_shared_epoch()
             self._sweep(now, settings)
             if self._cooldown_until.get(conversation, 0.0) > now:
                 return False, "cooldown"
@@ -165,6 +168,7 @@ class BotLoopGuard:
             return True, "disabled"
         now = self._clock()
         with self._lock:
+            self._apply_shared_epoch()
             self._sweep(now, settings)
             if not is_bot:
                 self._chains.pop(conversation, None)
@@ -194,6 +198,21 @@ class BotLoopGuard:
             chain = self._chains.get(conversation)
             if chain is not None:
                 chain.replied_to = recipient
+
+    def _apply_shared_epoch(self) -> None:
+        """Clear every conversation when the shared epoch advanced. Caller holds ``self._lock``."""
+        from hermes_cli.config import bot_loop_reset_on_human_enabled
+        if bot_loop_reset_on_human_enabled() is not True:
+            return
+        from gateway.bot_loop_reset import read_epoch
+        from hermes_constants import get_default_hermes_root
+        epoch = read_epoch(get_default_hermes_root())
+        if not isinstance(epoch, float) or epoch <= self._applied_epoch:
+            return
+        self._events.clear()
+        self._cooldown_until.clear()
+        self._chains.clear()
+        self._applied_epoch = epoch
 
     def _sweep(self, now: float, settings: BotLoopGuardSettings) -> None:
         """Drop idle conversations at most once per window so memory stays bounded."""

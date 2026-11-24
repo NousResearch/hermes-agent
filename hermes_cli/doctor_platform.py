@@ -618,6 +618,8 @@ _UNKNOWN = "\0"
 # NAME=value arguments set shell variables, or after a reserved word that starts a command. As anything
 # else's argument (env PATH=..., echo export PATH=...) it changes nothing.
 _COMMAND_SEPARATOR = re.compile(r"[;&|(){}`]")
+# A comment starts at an unquoted # that begins a word, not at one inside a word (bin#backup, ${#x}).
+_COMMENT_START = re.compile(r"(?:^|(?<=[\s;&|()]))#")
 _RESERVED_WORDS = frozenset({"!", "{", "if", "elif", "then", "else", "do", "while", "until", "time",
                              "and", "or", "not", "begin"})
 _DECLARATIONS = frozenset({"export", "declare", "typeset", "readonly"})
@@ -783,7 +785,8 @@ def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]
 
 
 def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], target: str) -> bool:
-    code = line.split("#", 1)[0]
+    comment = next((m.start() for m in _COMMENT_START.finditer(line) if not _open_quote(line, m.start())), None)
+    code = line[:comment]
     for setter, stops in setters:
         for found in setter.finditer(code):
             if not _setter_counts(code, found, variables):

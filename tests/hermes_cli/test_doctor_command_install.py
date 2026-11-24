@@ -543,6 +543,7 @@ def test_bash_path_check_trusts_only_the_login_file_bash_reads(tmp_path, monkeyp
     ("bash", ".bashrc", 'env PATH="$HOME/.local/bin:$PATH"'),  # an argument of another command
     ("bash", ".bashrc", 'echo export PATH="$HOME/.local/bin:$PATH"'),
     ("fish", ".config/fish/config.fish", "echo set -gx PATH $HOME/.local/bin $PATH"),
+    ("zsh", ".zprofile", 'export PATH="$PATH:$HOME/.local/bin#backup"'),  # a # inside a word is no comment
     ("zsh", ".zprofile", 'export PATH="/usr/bin:/bin"; export BACKUP_BIN="$HOME/.local/bin"'),  # not PATH's value
     ("zsh", ".zprofile", "export PATH=/usr/local/bin:$PATH; ls ~/.local/bin"),
     ("fish", ".config/fish/config.fish", "set -l saved_path $PATH; contains ~/.local/bin $PATH"),
@@ -582,6 +583,7 @@ def test_path_check_needs_a_line_that_puts_local_bin_on_path(tmp_path, monkeypat
     ("bash", ".bashrc", 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'),
     ("zsh", ".zprofile", 'if true; then export PATH="$HOME/.local/bin:$PATH"; fi'),
     ("fish", ".config/fish/config.fish", "status is-login; and fish_add_path ~/.local/bin"),
+    ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin:$PATH"  # added by the installer'),
     ("zsh", ".zprofile", 'export PATH="$HOME/.local/bin:$PATH" EDITOR'),
 ])
 def test_path_check_counts_a_line_that_puts_local_bin_on_path(tmp_path, monkeypatch, capsys, shell, rc_file, line):

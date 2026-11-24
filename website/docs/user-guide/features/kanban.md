@@ -86,6 +86,24 @@ human action is needed. Generic GitHub `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure
 conclusions and API failures are classified separately. No extra worker is spawned.
 
+`kanban.pr_required_checks` is an administrator-owned nested mapping of exact `OWNER/REPO`
+identifiers to base branch names, then required check names (or `{context, app_id}` entries):
+
+```yaml
+kanban:
+  pr_required_checks:
+    OWNER/REPO:
+      main:
+        - Build
+        - {context: Integration tests, app_id: 12345}
+```
+
+It is consulted
+only when GitHub explicitly reports that branch rules are unavailable on the repository's
+plan; it never overrides readable branch protection or rulesets. An empty/missing mapping
+fails closed, and every declared check must pass with exact-head evidence. Do not put this
+policy in task metadata.
+
 Receipt persistence and the terminal write recheck run/status/contract ownership
 under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
 the new run. The final GitHub read is a completion-time snapshot, not a distributed

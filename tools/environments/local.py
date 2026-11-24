@@ -458,8 +458,8 @@ def served_profile_child_env(
     removed last, whatever *base* or the profile overlay carried. ``own_profile`` is whether the target is the
     launch profile, for a caller that decided it by another rule (the plugin host, by the key the process
     remembered for its own path); by default ``_is_routed_home`` answers by where the process's own path
-    leads now. It decides the credential scrub, the overlay's templates, the bootstrap tokens and the bridge
-    markers; the launch-residue strip keeps its own check."""
+    leads now. It decides the launch-residue strip, the credential scrub, the overlay's templates, the
+    bootstrap tokens and the bridge markers."""
     return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials, own_profile))
 
 
@@ -485,7 +485,7 @@ def _profile_child_env(
         env["HERMES_HOME"] = target
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
         if routed:
-            strip_launch_profile_env(env, target)
+            strip_launch_profile_env(env, target, routed=True)
             _scrub_credentials(env, inherit_credentials=False)
     if inherit_credentials:
         if target:
@@ -571,7 +571,7 @@ def _is_routed_home(target_home: str | Path) -> bool:
         return True
 
 
-def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -> dict:
+def strip_launch_profile_env(env: dict, target_home: str | Path | None = None, *, routed: bool | None = None) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
     ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
     the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
@@ -580,11 +580,12 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     defaults to the active home override; no-op when there is no target or the target IS the
     launch profile. The authority test is "does this task serve a routed home", not "is the
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
-    installing a HERMES_HOME override without that flag."""
+    installing a HERMES_HOME override without that flag. *routed* is that answer from a caller that
+    decided it by another rule (``served_profile_child_env``'s *own_profile*)."""
     from agent.secret_scope import _is_global_env, load_env_file
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
-    if not target or not _is_routed_home(target):
+    if not target or not (_is_routed_home(target) if routed is None else routed):
         return env
     launch_home = get_routing_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP

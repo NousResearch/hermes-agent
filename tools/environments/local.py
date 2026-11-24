@@ -438,7 +438,7 @@ def build_subprocess_env(
 
 def served_profile_child_env(
     base: Mapping[str, str] | None = None, *, target_home: str | Path | None = None,
-    inherit_credentials: bool = False,
+    inherit_credentials: bool = False, own_profile: bool | None = None,
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
@@ -455,8 +455,12 @@ def served_profile_child_env(
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
     ``hermes_subprocess_env`` snapshot. The deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) are
-    removed last, whatever *base* or the profile overlay carried."""
-    return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials))
+    removed last, whatever *base* or the profile overlay carried. ``own_profile`` is whether the target is the
+    launch profile, for a caller that decided it by another rule (the plugin host, by the key the process
+    remembered for its own path); by default ``_is_routed_home`` answers by where the process's own path
+    leads now. It decides the credential scrub, the overlay's templates, the bootstrap tokens and the bridge
+    markers; the launch-residue strip keeps its own check."""
+    return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials, own_profile))
 
 
 def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
@@ -469,13 +473,14 @@ def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
 
 def _profile_child_env(
     base: Mapping[str, str] | None, target_home: str | Path | None, inherit_credentials: bool,
+    own_profile: bool | None = None,
 ) -> dict[str, str]:
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
     target = str(target_home or get_hermes_home_override() or "")
-    routed = bool(target) and _is_routed_home(target)
+    routed = bool(target) and (_is_routed_home(target) if own_profile is None else not own_profile)
     if target:
         env["HERMES_HOME"] = target
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
@@ -484,7 +489,7 @@ def _profile_child_env(
             _scrub_credentials(env, inherit_credentials=False)
     if inherit_credentials:
         if target:
-            secrets = build_profile_secret_scope(Path(target))
+            secrets = build_profile_secret_scope(Path(target), process_home=own_profile)
         else:
             secrets = current_secret_scope()
             if secrets is None and is_multiplex_active():
@@ -493,7 +498,7 @@ def _profile_child_env(
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
         env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
-        if not (_is_routed_home(target) if target else secrets is not None):
+        if not (routed if target else secrets is not None):
             _restore_bootstrap_tokens(env, os.environ if base is None else base)
     _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)
     return env

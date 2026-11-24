@@ -539,7 +539,7 @@ def repointed_profile_link(tmp_path, monkeypatch):
 
     def runner(name):
         ran, script = tmp_path / f"{name}.ran", tmp_path / name
-        script.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+        script.write_text(f'#!/bin/sh\necho "ran ${{OPENAI_API_KEY:-unset}}" >> "{ran}"\nexec "$@"\n', encoding="utf-8")
         script.chmod(0o755)
         return ran
 
@@ -656,6 +656,32 @@ def test_a_secondary_host_takes_no_launch_env_value_after_the_launch_link_is_rep
         with pytest.raises(FileNotFoundError, match=r"\$\{PLUGIN_RUNNER\}"):
             host.ensure_started()
     assert env.ran() == []
+
+
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
+@pytest.mark.parametrize("caller", ["bound_to_the_secondary", "none"])
+def test_a_secondary_hosts_child_takes_no_launch_only_credential_after_the_launch_link_is_repointed_at_it(
+        repointed_profile_link, tmp_path, monkeypatch, caller):
+    """The host child of another profile never inherits a credential only the launch profile's service env holds.
+    After the launch profile's own link is repointed at a secondary's directory, the secondary's host child is
+    still another profile's, whether a body bound to the secondary starts it or not."""
+    import contextlib
+
+    from hermes_constants import hermes_home_key
+    from tui_gateway import server
+
+    env = repointed_profile_link
+    monkeypatch.setenv("OPENAI_API_KEY", "the-launch-profiles-key")
+    env.point("old")
+    monkeypatch.setenv("HERMES_HOME", str(env.link))
+    hermes_home_key(env.link)  # the process served its own profile, the old directory, under this name
+    host = env.host_for(env.dirs["new"])
+    body = (server._session_profile_runtime_scope({"profile_home": str(env.dirs["new"])}, hydrate_secrets=False)
+            if caller == "bound_to_the_secondary" else contextlib.nullcontext())
+    with body:
+        env.point("new")
+        host.ensure_started()
+    assert (tmp_path / "new-runner.ran").read_text(encoding="utf-8").split() == ["ran", "unset"]
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
@@ -1061,16 +1087,21 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
     of the launch profile's sources: its env-only keys (systemd ``Environment=``) and its ``.env``, read through
     the name that now leads to it, its templates resolved as the process's own against those env-only keys. A
     start inside a launch-profile body bound since (its scope read through the old name, so without the ``.env``)
-    builds that scope again through the new name rather than borrowing the body's."""
+    builds that scope again through the new name rather than borrowing the body's. The host child's own env is
+    still the launch profile's too: a credential only the service env holds, and its ``.env`` resolved the same
+    way."""
     import signal
 
     from agent import secret_scope as ss
     from tests.waiting import wait_until
     from tui_gateway import server
 
-    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
-    runner.write_text(f'#!/bin/sh\necho "$1" >> "{ran}"\nshift\nexec "$@"\n', encoding="utf-8")
+    ran, seen, runner = tmp_path / "launcher.ran", tmp_path / "child-env.seen", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho "$1" >> "{ran}"\n'
+                      f'echo "${{RUNNER_TAG:-unset}}|${{OPENAI_API_KEY:-unset}}" >> "{seen}"\nshift\nexec "$@"\n',
+                      encoding="utf-8")
     runner.chmod(0o755)
+    child = f"{tag}|from-the-service"
     outside = _home_with_plugins(tmp_path / "outside", monkeypatch, {"hostprobe": PROBE_PLUGIN})
     (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
         "enabled": ["hostprobe"], "isolation": "host", "host": {"launcher": ["${PLUGIN_RUNNER}", "${RUNNER_TAG}"]}}}),
@@ -1082,6 +1113,7 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
     monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
     monkeypatch.setenv("PLUGIN_RUNNER", str(runner))
     monkeypatch.setenv("LAUNCH_ONLY_TAG", "from-launch-env")
+    monkeypatch.setenv("OPENAI_API_KEY", "from-the-service")  # e.g. systemd Environment=, no .env line
     ss.set_multiplex_active(True)
     plugins_mod._reset_plugin_managers_for_tests()
     manager = plugins_mod.get_plugin_manager()
@@ -1089,6 +1121,7 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
         manager.discover_and_load()
         first = manager._plugins["hostprobe"]
         assert first.error is None and ran.read_text(encoding="utf-8").split() == [tag]
+        assert seen.read_text(encoding="utf-8").split() == [child]
         (profiles / "ops").rename(profiles / "ops2")
         os.kill(manager._plugin_host().pid, signal.SIGKILL)
         def reloaded():
@@ -1098,11 +1131,13 @@ def test_a_crash_restart_after_the_launch_profiles_link_is_renamed_keeps_its_env
         after = wait_until(reloaded, timeout=15, what="the crashed host's restart")
         assert after is not None and after.error is None
         assert ran.read_text(encoding="utf-8").split() == [tag, tag]
+        assert seen.read_text(encoding="utf-8").split() == [child, child]
         manager._plugin_host().shutdown()
         with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
             assert ss.get_secret("RUNNER_TAG") is None
             manager._plugin_host().ensure_started()
         assert ran.read_text(encoding="utf-8").split() == [tag] * 3
+        assert seen.read_text(encoding="utf-8").split() == [child] * 3
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

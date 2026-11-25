@@ -115,22 +115,103 @@ def test_chrome_updates_from_another_thread_wake_the_loop(monkeypatch):
     asyncio.run(scenario())
 
 
+class _Connection:
+    def __init__(self):
+        from hermes_cli.gateway_connection import SessionState
+        self.states = {}
+        self._make = SessionState
+
+    def state(self, session_id):
+        return self.states.setdefault(session_id, self._make(session_id))
+
+
+def _agent(connection, session_id="s1", seen=None):
+    """A ``GatewayAgent`` with just the chrome wiring ``__init__`` and the CLI give it."""
+    from hermes_cli.gateway_agent import GatewayAgent
+    agent = GatewayAgent.__new__(GatewayAgent)
+    agent.connection, agent._session_id = connection, session_id
+    connection.state(session_id).chrome_listeners.append(agent._terminal_chrome)
+    if seen is not None:
+        agent.terminal_chrome_callback = lambda plugin_id, payload: seen.append((plugin_id, payload))
+    return agent
+
+
 def test_session_state_feeds_chrome_listeners_on_every_frame_even_between_turns():
     """The connection's reader applies each frame to its session state; a turn's queue pump only runs
     during a turn, so chrome rides the state listeners (like usage) to change while idle too."""
-    from hermes_cli.gateway_agent import GatewayAgent
-    from hermes_cli.gateway_connection import SessionState
-    seen = []
-    state = SessionState("s1")
-    agent = GatewayAgent.__new__(GatewayAgent)  # the listener path needs no connection
-    agent.terminal_chrome_callback = lambda plugin_id, payload: seen.append((plugin_id, payload))
-    state.chrome_listeners.append(agent._terminal_chrome)
+    connection, seen = _Connection(), []
+    agent = _agent(connection, seen=seen)
+    state = connection.state("s1")
     state.apply_event("plugin.pantheon.terminal", {"frames": ["⚒✦"]})
     state.apply_event("plugin.pantheon.scene", {"frames": ["x"]})  # not chrome
     state.apply_event("message.delta", {"text": "hi"})
     assert seen == [("pantheon", {"frames": ["⚒✦"]})]
     agent.terminal_chrome_callback = lambda *a: 1 / 0
     state.apply_event("plugin.pantheon.terminal", {})  # a failing callback never reaches the reader
+
+
+def test_a_viewer_attaching_later_starts_from_each_plugins_latest_chrome():
+    connection, seen = _Connection(), []
+    state = connection.state("s1")
+    state.apply_event("plugin.a.terminal", {"label": "a1"})
+    state.apply_event("plugin.b.terminal", {"label": "b1"})
+    state.apply_event("plugin.gone.terminal", {"label": "x"})
+    state.apply_event("plugin.gone.terminal", {"clear": True})
+    state.apply_event("plugin.a.terminal", {"label": "a2"})  # now the newest
+    _agent(connection, seen=seen)
+    assert seen == [("b", {"label": "b1"}), ("a", {"label": "a2"})]
+
+
+def test_a_retired_agent_stops_listening_and_its_successor_catches_up():
+    connection, first_seen, second_seen = _Connection(), [], []
+    first = _agent(connection, seen=first_seen)
+    first.release_clients()
+    state = connection.state("s1")
+    state.apply_event("plugin.p.terminal", {"label": "while no agent"})
+    second = _agent(connection, seen=second_seen)
+    assert first_seen == [] and second_seen == [("p", {"label": "while no agent"})]
+    second.close()
+    assert state.chrome_listeners == []
+
+
+def test_frames_from_a_session_the_agent_left_are_dropped():
+    connection, seen = _Connection(), []
+    agent = _agent(connection, seen=seen)
+    connection.state("s2").apply_event("plugin.p.terminal", {"label": "new"})
+    in_flight = agent._terminal_chrome  # the reader copied s1's listener list before the switch
+    agent._session_id = "s2"
+    in_flight("s1", "p", {"label": "stale-old-session"})
+    agent._show_chrome(reset=True)
+    assert seen == [(None, None), ("p", {"label": "new"})]
+
+
+def test_untrusted_text_is_bounded_before_escapes_are_stripped(monkeypatch):
+    lengths = []
+    real = chrome_mod.strip_ansi
+    monkeypatch.setattr(chrome_mod, "strip_ansi", lambda text: lengths.append(len(text)) or real(text))
+    entry = sanitize({"label": "\x1b]" * 100_000, "frames": ["\x1b]" * 100_000]})
+    assert lengths and max(lengths) <= chrome_mod.MAX_RAW_CHARS
+    assert "\x1b" not in entry["label"]
+
+
+def test_interval_is_clamped_to_a_ceiling():
+    chrome = TerminalChrome(clock=lambda: 0.0)
+    chrome.update("p", {"frames": ["a", "b"], "interval_ms": 10**400})
+    assert sanitize({"interval_ms": 10**400})["interval_ms"] == chrome_mod.MAX_INTERVAL_MS
+    assert chrome.next_change() == chrome_mod.MAX_INTERVAL_MS / 1000
+
+
+def test_each_plugin_animates_on_its_own_clock():
+    now = [0.0]
+    chrome = TerminalChrome(clock=lambda: now[0])
+    chrome.update("fast", {"frames": ["f0", "f1", "f2", "f3"], "interval_ms": 100, "status": "s"})
+    chrome.update("slow", {"frames": ["s0", "s1"], "interval_ms": 500, "label": "t"})
+    now[0] = 0.34
+    assert chrome.title() == "s0 t"
+    assert chrome.segments() == [("", "f3 s")]
+    assert chrome.next_change() == pytest.approx(0.06)
+    chrome.update("fast", {"status": "still"})
+    assert chrome.next_change() == pytest.approx(0.16)
 
 
 def test_classic_status_bar_shows_plugin_segments_in_skin_classes():

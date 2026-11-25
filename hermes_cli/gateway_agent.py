@@ -142,7 +142,7 @@ class GatewayAgent:
         # or loop) marks its mirrored managers stale; the dock re-reads them off this thread.
         self.control_update_callback = None
         # ``callback(plugin_id, payload)`` for ``plugin.<id>.terminal`` chrome; ``(None, None)`` = session left.
-        self.terminal_chrome_callback = None
+        self._terminal_chrome_callback = None
         self.suppress_status_output = False
         self._print_fn = None
         # Inert private attributes main's CLI writes (CALLMAP §3.2).
@@ -385,7 +385,6 @@ class GatewayAgent:
         self._session_id = value
         if previous is None or value == previous or not value:
             return
-        self._terminal_chrome(None, None)  # the old session's chrome (and its later clear) stays behind
         # The session left behind keeps its own figures: a later frame of its must not repaint this one.
         left = self.connection.state(previous)
         with suppress(ValueError):
@@ -412,6 +411,7 @@ class GatewayAgent:
             state.request_listeners.append(self._on_request_withdrawn)
         if self._terminal_chrome not in state.chrome_listeners:
             state.chrome_listeners.append(self._terminal_chrome)
+        self._show_chrome(reset=True)  # this session's chrome replaces the old one's
         self._apply_info(state.info)
         if state.usage:
             self.apply_session_usage(state.usage)
@@ -575,7 +575,8 @@ class GatewayAgent:
             self.apply_session_usage(state.usage)
 
     def release_clients(self, *a, **k):
-        return None
+        self._detach_chrome()
+
 
     def clear_interrupt(self, *a, **k):
         self._interrupt_requested = False
@@ -584,7 +585,8 @@ class GatewayAgent:
         return None
 
     def close(self, *a, **k):
-        return None
+        self._detach_chrome()
+
 
     def _restore_primary_runtime(self, *a, **k):
         return None
@@ -962,10 +964,40 @@ class GatewayAgent:
         if handler is not None:
             handler(self, payload, stream_callback, starts)
 
-    def _terminal_chrome(self, plugin_id, payload):
-        """``SessionState.chrome_listeners`` (loop thread): hand a plugin's terminal chrome
-        (``gateway_chat_chrome``) to the CLI. Never raises into the connection's reader."""
-        callback = getattr(self, "terminal_chrome_callback", None)
+    # -- plugin terminal chrome (``gateway_chat_chrome``) ------------------------------------------
+    @property
+    def terminal_chrome_callback(self):
+        return getattr(self, "_terminal_chrome_callback", None)
+
+    @terminal_chrome_callback.setter
+    def terminal_chrome_callback(self, callback):
+        """Set by the CLI after construction; it starts from the session's current chrome."""
+        self._terminal_chrome_callback = callback
+        self._show_chrome(reset=False)
+
+    def _show_chrome(self, *, reset):
+        """Hand the CLI this session's latest chrome, after dropping what it shows (``reset``)."""
+        if self.terminal_chrome_callback is None or not self.session_id:
+            return
+        if reset:
+            self._deliver_chrome(None, None)
+        for plugin_id, payload in list(self._state().chrome.items()):
+            self._deliver_chrome(plugin_id, payload)
+
+    def _detach_chrome(self):
+        """A retired agent stops listening; its successor starts from ``SessionState.chrome``."""
+        if self.session_id:
+            with suppress(ValueError):
+                self._state().chrome_listeners.remove(self._terminal_chrome)
+
+    def _terminal_chrome(self, session_id, plugin_id, payload):
+        """``SessionState.chrome_listeners`` (loop thread). A frame from a session this agent has left
+        (in flight while ``session_id`` moved) is dropped."""
+        if session_id == self.session_id:
+            self._deliver_chrome(plugin_id, payload)
+
+    def _deliver_chrome(self, plugin_id, payload):
+        callback = self.terminal_chrome_callback
         if callback is not None:
             try:
                 callback(plugin_id, payload)

@@ -78,8 +78,10 @@ class SessionState:
         # Called (loop thread) with each ``request.cancel`` payload: the agent thread may be parked in a
         # modal answering that very request (another viewer settled it), so it cannot read the queue.
         self.request_listeners: list = []
-        # Called (loop thread) with ``(plugin_id, payload)`` for each ``plugin.<id>.terminal`` frame (tab
-        # title / status chrome, ``gateway_chat_chrome``): state like usage, so idle frames count too.
+        # Each plugin's latest ``plugin.<id>.terminal`` payload (tab title / status chrome,
+        # ``gateway_chat_chrome``), newest last, for viewers that attach later; and the listeners called
+        # (loop thread) with ``(session_id, plugin_id, payload)`` for each such frame, idle ones too.
+        self.chrome: dict = {}
         self.chrome_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
@@ -147,9 +149,12 @@ class SessionState:
                 listener(payload)
         elif kind == "session.replay_gap":
             self.gaps += 1
-        elif self.chrome_listeners and (plugin_id := plugin_of(kind)) is not None:
+        elif (plugin_id := plugin_of(kind)) is not None:
+            self.chrome.pop(plugin_id, None)
+            if not (isinstance(payload, dict) and payload.get("clear") is True):
+                self.chrome[plugin_id] = payload
             for listener in list(self.chrome_listeners):
-                listener(plugin_id, payload)
+                listener(self.session_id, plugin_id, payload)
 
     def apply_usage(self, usage):
         """One session-cumulative usage dict (``session.usage`` payload or ``session.stats`` result)."""

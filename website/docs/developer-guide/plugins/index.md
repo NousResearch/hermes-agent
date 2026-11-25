@@ -2323,16 +2323,19 @@ def register(ctx):
                       lambda session_id="", **kw: session_id and ctx.emit_to_session(session_id, "terminal", {"clear": True}))
 ```
 
-- Every field is optional. The latest event from a plugin replaces its previous one, so a viewer that
-  reconnects and replays the stream settles on the current state. Send one event per state change and
-  let the client animate; never one per frame.
-- `frames`: at most 16, each at most 8 characters. `interval_ms`: 0 or a single frame is static; the
-  floor is 100 ms. `label` and `status`: at most 60 characters. `tone`: `strong`, `good`, `warn` or
+- Every field is optional. The latest event from a plugin replaces its previous one, and the client
+  keeps it, so a viewer that attaches or reconnects later starts from the current state. Send one event
+  per state change and let the client animate; never one per frame.
+- `frames`: at most 16, each at most 8 characters. `interval_ms`: 0 or a single frame is static;
+  otherwise 100 ms to 60 s, and each plugin animates on its own clock. `label` and `status`: at most 60
+  characters. `tone`: `strong`, `good`, `warn` or
   `dim`, drawn with the skin's `status-bar-<tone>` style. Keep `status` short: the bar is
   shared and trimmed to the terminal width. `{"clear": true}` removes the
-  plugin's chrome, and the terminal gets its own title back when none is left or the chat ends.
-- The text is untrusted: the client strips escape sequences and folds every other non-printable
-  character to a space. Frames apply between turns too (a `/summon`-style command can change them
+  plugin's chrome. When none is left or the chat ends, the title goes back to the terminal's own on
+  Windows; other terminals cannot report their title, so there it is cleared and the shell's next
+  prompt usually sets it again.
+- The text is untrusted: the client reads at most 512 characters of each string, strips escape
+  sequences and folds every other non-printable character to a space. Frames apply between turns too (a `/summon`-style command can change them
   while idle). Only an interactive terminal renders them; `-q`, `-z` and JSON modes ignore them. With several plugins, the most recently updated one owns the title and every
   plugin's `status` shows in the bar.
 

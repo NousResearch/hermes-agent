@@ -262,3 +262,25 @@ def test_a_catalog_platform_whose_credentials_another_platform_serves_is_not_rep
 
     assert "hermes-tag" not in pending
     assert "fluxer-platform" in pending
+
+
+def test_a_tree_a_refused_enable_left_is_owed_and_the_next_start_enables_it(standin, monkeypatch):
+    """An enable that lost to other writers of the plugin selection leaves the plugin on disk but disabled:
+    that tree used to count as installed, so no later start ever enabled it."""
+    home, calls, outcome = standin
+    (home / ".env").write_text("STANDIN_TOKEN=t\n", encoding="utf-8")
+
+    def install_into(h, consent=None):
+        def install(name, discard=None):  # places the tree either way, as the real install does
+            calls.append(name)
+            (h / "plugins" / name).mkdir(parents=True, exist_ok=True)
+            return dict(outcome)
+        return install
+    monkeypatch.setattr(lcm, "_install_into", install_into)
+    outcome.update(ok=False, raced=True, error="enable refused: plugin configuration changed; retry")
+    assert lcm.recover_at_startup(gateway_start=True) == []
+    lcm._attempted.clear()
+    outcome.clear()
+    outcome["ok"] = True  # the next start: the enable goes through, on the tree already there
+    assert lcm.recover_at_startup(gateway_start=True) == ["standin"]
+    assert calls == ["standin", "standin"]

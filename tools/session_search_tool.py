@@ -18,6 +18,8 @@ from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
 from agent.redact import redact_derived_text
+# Hidden from browsing/searching: integrations, delegate subagent runs and kanban workers are not the user's history.
+from agent.session_source import SEARCH_HIDDEN_SOURCES as _HIDDEN_SESSION_SOURCES
 from hermes_time import safe_strftime
 from persistence import RowVisibility
 from persistence.conversation.messages import MessageRecord, MessageStorageState, TranscriptRow
@@ -25,9 +27,6 @@ from persistence.conversation.search import SearchHit, SearchSort
 from persistence.conversation.sessions import BOUNDARY_END_REASONS, RecentBrowseQuery, SessionRecord
 from persistence.sqlite._state.common import _PREVIEW_MAX_CHARS
 
-# Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
-# subagent runs, kanban workers are not the user's history.
-_HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 # Searchable but DEMOTED below interactive sessions: cron vocabulary dominates bare
 # BM25 and starves out the user's own sessions ("recall blindness").
 # Automation sources that are kept searchable but DEMOTED below interactive sessions in discover ranking.

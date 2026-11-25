@@ -43,19 +43,13 @@ def summary_view(
     return [*plan[:start], *window, *plan[end:]]
 
 
-def _stored(message: dict[str, Any]) -> bool:
-    """A row the session store already holds. A compaction archives it there (``active=0``), so its exact text
-    stays reachable through ``session_search`` and the retention sweep still reads any archive it names."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-
-    return bool(message.get(_DB_PERSISTED_MARKER)) or isinstance(message.get("_row_id"), int)
-
-
 class CompactionWindowMixin:
     """Window planning shared by compress() and the background pass."""
 
     # Set by agent_init when compression.prepare_ahead is on; None leaves compress() inline as before.
     prepared_compaction: Optional[PreparedCompaction] = None
+    # False for a session session_search never returns (on_session_start, agent.session_source.SEARCH_HIDDEN_SOURCES).
+    _store_searchable: bool = True
     # Set on delegated children (tools/delegate_tool.py): their first user turn is the whole brief.
     pin_task_turn: bool = False
 
@@ -124,6 +118,14 @@ class CompactionWindowMixin:
         compress_start, compress_end = self._compress_window(plan)
         return plan, pruned_count, compress_start, compress_end
 
+    def _store_recovers(self, message: dict[str, Any]) -> bool:
+        """A row the session store already holds, where this session's search reaches it. A compaction archives
+        it there (``active=0``), so session_search returns its text and the retention sweep still reads any
+        archive it names."""
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        return self._store_searchable and (bool(message.get(_DB_PERSISTED_MARKER)) or isinstance(message.get("_row_id"), int))
+
     def _commit_window(
         self, originals: list[dict[str, Any]], plan: list[dict[str, Any]], pruned_count: int, start: int, end: int,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -137,7 +139,7 @@ class CompactionWindowMixin:
 
         session_id = getattr(self, "_session_id", "") or ""
         if len(originals) == len(plan):
-            plan = [originals[i] if start <= i < end and _stored(originals[i]) else row for i, row in enumerate(plan)]
+            plan = [originals[i] if start <= i < end and self._store_recovers(originals[i]) else row for i, row in enumerate(plan)]
         if pruned_count:
             plan, _written, kept = archive_compaction_drops(originals, plan, session_id)
             pruned_count -= kept
@@ -164,7 +166,7 @@ class CompactionWindowMixin:
         store commits none. Without a store the list is the only copy, so it carries over."""
         from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
 
-        named = pruned_archive_refs(msg for msg in messages if not _stored(msg))
+        named = pruned_archive_refs(msg for msg in messages if not self._store_recovers(msg))
         # What the committed transcript really keeps: assembly drops standalone handoffs from the head and tail.
         kept = [*self._assemble_head(messages, start), {"content": summary},
                 *self._assemble_tail(messages, end, scan.tail_start, scan.summary_indices)]
@@ -185,7 +187,7 @@ class CompactionWindowMixin:
         demoted, calls = list(plan), _tool_calls_by_id(plan)
         changed = 0
         for i in range(start, end):
-            if _stored(plan[i]):
+            if self._store_recovers(plan[i]):
                 continue
             if self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS):
                 changed += 1

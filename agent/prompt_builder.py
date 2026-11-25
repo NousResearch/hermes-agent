@@ -1509,14 +1509,13 @@ def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> li
     the agent what it lost; ``#`` lines inside fenced code blocks are comments, not headings."""
     import re
 
-    headings, offset, fenced = [], 0, False
-    for line in content.splitlines(keepends=True):
+    from agent.markdown_fences import unfenced_lines
+
+    headings = []
+    for offset, line in unfenced_lines(content):
         stripped = line.strip()
-        if stripped.startswith(("```", "~~~")):
-            fenced = not fenced
-        elif not fenced and start <= offset < end and re.match(r"#{1,6} \S", stripped):
+        if start <= offset < end and re.match(r"#{1,6} \S", stripped):
             headings.append(stripped.lstrip("#").strip())
-        offset += len(line)
     return headings[:limit] + (["..."] if len(headings) > limit else [])
 
 

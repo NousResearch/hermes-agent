@@ -149,15 +149,9 @@ def strip_lean_sections(summary: str, headings: tuple[str, ...]) -> tuple[str, d
 def _unquoted_section_spans(summary: str, headings: tuple[str, ...]) -> list[tuple[int, int, str]]:
     """``(start, end, heading)`` for each deterministic heading that stands alone on an unquoted line outside a
     fenced code block (a summary quoting one of these headings in an example must keep the example)."""
-    rows: list[tuple[int, str]] = []  # (offset, line) of every line outside a fence
-    offset, fenced = 0, False
-    for raw in summary.splitlines(keepends=True):
-        line = raw.rstrip("\r\n")
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-        elif not fenced:
-            rows.append((offset, line))
-        offset += len(raw)
+    from agent.markdown_fences import unfenced_lines
+
+    rows = [(offset, line.rstrip("\r\n")) for offset, line in unfenced_lines(summary)]
     spans: list[tuple[int, int, str]] = []
     for index, (start, line) in enumerate(rows):
         if line in headings:

@@ -916,9 +916,9 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
         "session history. If you need any detail this summary does not carry "
         "(exact command output, file contents, error text, earlier "
         "reasoning), find it with "
-        "session_search(query='<keywords>', role_filter='user,assistant,tool') "
-        f"and read a hit whole with session_search(session_id='{session_id}', "
-        "around_message_id=<its match_message_id>) — "
+        "session_search(query='<keywords>', role_filter='user,assistant,tool'); "
+        "when a hit is cut short, read it whole with session_search("
+        "session_id=<the hit's session_id>, around_message_id=<its match_message_id>) — "
         "do not guess at lost specifics when you can look them up."
     )
 
@@ -2192,6 +2192,10 @@ class ContextCompressor(
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
         super().on_session_start(session_id, **kwargs)
+        if "platform" in kwargs:
+            from agent.session_source import SEARCH_HIDDEN_SOURCES, session_source_for
+
+            self._store_searchable = session_source_for(kwargs["platform"]) not in SEARCH_HIDDEN_SOURCES
         boundary_reason = kwargs.get("boundary_reason")
         old_session_id = kwargs.get("old_session_id")
         if "session_db" in kwargs:

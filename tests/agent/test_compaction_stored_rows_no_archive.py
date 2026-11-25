@@ -96,6 +96,18 @@ def test_a_stored_row_that_already_points_at_an_archive_adds_no_list_entry(home)
     assert "s1_earlier_read_file_00" not in _summary(out)
 
 
+@pytest.mark.parametrize("platform", ["subagent", "kanban"])
+def test_a_session_search_never_returns_keeps_its_archives_and_list(home, platform):
+    """session_search hides subagent and kanban sessions, so their store copy is no way back: keep the files."""
+    c = _compressor()
+    c.on_session_start("s1", platform=platform)
+    with _no_pointer_summary():
+        out = c.compress(_transcript(), current_tokens=c.threshold_tokens + 1)
+
+    listed = pruned_archive_refs([{"content": _summary(out)}])
+    assert listed and listed <= _archived(home)
+
+
 def test_without_a_store_the_replaced_results_are_still_archived_and_listed(home):
     c = _compressor()
     with _no_pointer_summary():
@@ -156,12 +168,12 @@ def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_fil
         assert not _archived(home) - pruned_archive_refs(active)  # no file only a dropped row would name
         # The two calls the Context Recovery footer names, made from inside the session as the agent makes them.
         footer = summary.split(_LEAN_RECOVERY_HEADING, 1)[1]
-        assert "role_filter='user,assistant,tool'" in footer and f"session_id='{sid}', around_message_id=" in footer
+        assert "role_filter='user,assistant,tool'" in footer and "around_message_id=<its match_message_id>" in footer
         needle = f"NEEDLE-{replaced[0]:02d}"
         hit = json.loads(session_search(query=needle, role_filter="user,assistant,tool", persistence=db,
                                         current_session_id=sid))
-        (match,) = [r["match_message_id"] for r in hit["results"]]
-        page = json.loads(session_search(session_id=sid, around_message_id=match, persistence=db,
+        ((hit_sid, match),) = [(r["session_id"], r["match_message_id"]) for r in hit["results"]]
+        page = json.loads(session_search(session_id=hit_sid, around_message_id=match, persistence=db,
                                          current_session_id=sid))
         (original,) = [m["content"] for m in msgs if m.get("role") == "tool" and m["content"].startswith(needle)]
-        assert original in [m.get("content") for m in page["messages"]]  # byte-exact, as the file was
+        assert original in [m.get("content") for m in page["messages"]]  # the exact text the file held

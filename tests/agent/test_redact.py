@@ -1633,3 +1633,37 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+class TestPhoneRedaction:
+    """E.164 phone number redaction in text, and avoiding false positives on PEP 440 build names."""
+
+    def test_e164_phone_redacted(self):
+        text = "Call +15551234567 for help or reach out to +8613800138000."
+        res = redact_sensitive_text(text, force=True)
+        assert "+15551234567" not in res
+        assert "+8613800138000" not in res
+        assert "+155" in res
+        assert "+861" in res
+
+    def test_e164_phone_in_punctuation_and_schemes(self):
+        assert "+15551234567" not in redact_sensitive_text("tel:+15551234567", force=True)
+        assert "+15551234567" not in redact_sensitive_text("(+15551234567)", force=True)
+        assert "+15551234567" not in redact_sensitive_text("[+15551234567]", force=True)
+        assert "+15551234567" not in redact_sensitive_text('"+15551234567"', force=True)
+        assert "+15551234567" not in redact_sensitive_text("'+15551234567'", force=True)
+        assert "+15551234567" not in redact_sensitive_text("+15551234567", force=True)
+
+    def test_pep440_build_names_survive_intact(self):
+        """PEP 440 local version identifiers and build names must not be masked as phone numbers."""
+        cases = [
+            "python-3.14.9+20261021-win32-x64",
+            "python-3.14.9+20251021-win32-x64",
+            "torch-2.1.0+20240101",
+            "my_package-1.0.0+20261021",
+            "app.version+20261021.dirty",
+            "v2+20261021",
+            "build+12345678",
+        ]
+        for case in cases:
+            assert redact_sensitive_text(case, force=True) == case, case

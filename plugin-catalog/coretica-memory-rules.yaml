@@ -1,0 +1,16 @@
+name: coretica-memory-rules
+repo: https://github.com/Front-Line/coretica-plugins
+sha: 4f5e4922d63e93103d5ab1f5b4ed9d741efcb30d
+subdir: hermes/coretica-memory-rules
+description: "Load bundled Coretica memory guidance into new Hermes sessions. Requires the coretica MCP companion; relevant user information is saved as private memories."
+maintainer: Front-Line
+tier: community
+category: memory
+version: "0.1.0"
+docs_url: https://github.com/Front-Line/coretica-plugins/blob/4f5e4922d63e93103d5ab1f5b4ed9d741efcb30d/README.md#hermes
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

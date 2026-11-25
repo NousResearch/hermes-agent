@@ -353,6 +353,35 @@ async def test_a_failed_chat_restart_leaves_no_restart_notice_for_the_next_boot(
 
 
 @pytest.mark.asyncio
+async def test_a_notice_that_cannot_be_removed_does_not_stop_the_recovery(monkeypatch):
+    """A read-only home makes removing the notice raise; the rest of the recovery still runs."""
+    from gateway.restart_when_idle import force_restart
+
+    class ReadOnlyHome:
+        def __truediv__(self, _name):
+            return self
+
+        def unlink(self, missing_ok=False):
+            raise PermissionError("read-only file system")
+
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+    runner._restart_command_source = make_restart_source()
+    runner._restart_drain_timeout, runner._cron_drain_timeout = 180.0, 60.0
+    monkeypatch.setattr("gateway.restart_when_idle.get_hermes_home", ReadOnlyHome)
+
+    def units(_runner):
+        raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+    monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    assert force_restart(runner) is True
+    await asyncio.gather(runner._restart_task, return_exceptions=True)
+    assert runner._draining is False and getattr(runner, "_restart_force_event", None) is None
+    assert (runner._restart_drain_timeout, runner._cron_drain_timeout) == (180.0, 60.0)
+    assert runner._scale_to_zero_status.called
+
+
+@pytest.mark.asyncio
 async def test_a_failed_restart_keeps_an_external_drain_in_the_status(monkeypatch):
     """While an operator's external drain refuses new turns, a restart that fails before its stop does
     not report the gateway as running."""

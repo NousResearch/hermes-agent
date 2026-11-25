@@ -672,6 +672,7 @@ When scheduling jobs, you specify where the output goes:
 | `"telegram:123456"` | Specific Telegram chat by ID | Direct delivery; on the job's own origin chat it keeps the topic the job was created in (Telegram and Slack only) |
 | `"telegram:-100123:17585"` | Specific Telegram topic | `chat_id:thread_id` format |
 | `"telegram:-100123:1"` | The forum's General topic | Posts top-level even when the job was created in a topic |
+| `"slack:C0123:none"` | A chat's top level, never the origin thread | The `:none` suffix opts this one job out of keeping the thread or topic it was created in (Slack and Telegram); other jobs keep the default |
 | `"discord"` | Discord home channel | Uses `DISCORD_HOME_CHANNEL` |
 | `"discord:#engineering"` | Specific Discord channel | By channel name |
 | `"slack"` | Slack home channel | |

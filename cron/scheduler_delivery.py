@@ -580,6 +580,10 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
+# Cron-only deliver-token suffix that selects a chat's top level instead of the origin thread.
+_TOP_LEVEL_SUFFIX = ":none"
+
+
 def _origin_thread_is_stale(origin: dict) -> bool:
     """True when a Slack origin's thread is a stale creation-turn artifact. Thread-per-message
     Slack stamps each top-level message id as the session thread (a KEY, not a location); old jobs
@@ -651,6 +655,11 @@ def _resolve_single_delivery_target(
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
+        # ``<platform>:<chat>:none`` pins the chat's top level: no origin-thread inherit (#148033).
+        # Stripped here, before the platform parser, so no adapter has to know the suffix.
+        top_level = rest.lower().endswith(_TOP_LEVEL_SUFFIX) and len(rest) > len(_TOP_LEVEL_SUFFIX)
+        if top_level:
+            rest = rest[:-len(_TOP_LEVEL_SUFFIX)]
         from gateway.outbound.send import prepare_send_message_platforms, resolve_send_target
         prepare_send_message_platforms()
         # pass_unresolved_references: no model in the loop to react; an unknown-to-directory target
@@ -662,8 +671,12 @@ def _resolve_single_delivery_target(
             return None
         # Chat-only target on the origin chat adopts the origin lane where it is a durable place
         # (Telegram topic, Slack thread); Matrix/Mattermost threads are per-message ids -> top-level.
+        if top_level and thread_id is not None:
+            logger.warning("Invalid cron delivery target '%s': ':none' cannot follow a thread", deliver_value)
+            return None
         if (
             thread_id is None and platform_key in ("telegram", "slack")
+            and not top_level
             and origin
             and str(origin.get("platform") or "").lower() == platform_key
             and str(origin.get("chat_id")) == str(chat_id)
@@ -671,12 +684,15 @@ def _resolve_single_delivery_target(
             and not _origin_thread_is_stale(origin)
         ):
             thread_id = origin.get("thread_id")
-        return {
+        target = {
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
             "_resolved_from": "explicit",  # mirror-eligible only under attach_to_session opt-in
         }
+        if top_level:
+            target["_top_level"] = True  # deliberate: no "delivery target lost it" warning
+        return target
     platform_name = deliver_value
     home_provenance = None if from_broadcast else "home"
     if origin and origin.get("platform") == platform_name:
@@ -1600,7 +1616,7 @@ def _prepare_target_delivery(
 
     origin = _resolve_origin(job) or {}
     origin_thread = origin.get("thread_id")
-    if origin_thread and not thread_id:
+    if origin_thread and not thread_id and not target.get("_top_level"):
         logger.warning(
             "Job '%s': origin has thread_id=%s but delivery target lost it (deliver=%s, target=%s)",
             job["id"], origin_thread, job.get("deliver", "local"), target)

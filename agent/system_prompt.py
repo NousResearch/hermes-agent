@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_cache_scope import conversation_id
@@ -680,7 +680,7 @@ def _same_pin_key(a: str, b: str) -> bool:
     return a == b or (bool(a) and bool(b) and _same_live_dir(a, b))
 
 
-def _dir_identity(path: str) -> Optional[Tuple[int, int]]:
+def _dir_identity(path: str) -> Optional[tuple[int, int]]:
     """``(st_dev, st_ino)`` of a directory, recorded when a snapshot is pinned to it.
 
     A pathname only proves which directory a snapshot was taken in until the path
@@ -715,7 +715,7 @@ def _nearest_git_marker(path: str) -> Optional[Path]:
     return None
 
 
-def _workspace_generation(path: str) -> Optional[Tuple[int, int, Optional[Tuple[int, int]]]]:
+def _workspace_generation(path: str) -> Optional[tuple[int, int, Optional[tuple[int, int]]]]:
     """Directory identity bound to the workspace lifetime that owned it at capture:
     ``(st_dev, st_ino)`` of *path* plus the identity of the ``.git`` marker that owns it
     (None when no workspace marker sits above the path).
@@ -751,7 +751,7 @@ def _persisted_root_still_physical(root_line: str) -> bool:
         return False
 
 
-def _persisted_git_history(block: str) -> Optional[List[str]]:
+def _persisted_git_history(block: str) -> Optional[list[str]]:
     """The snapshot's git-history tip as its bytes recorded it at capture: the
     ``- Recent commits:`` entries when the block carries git state, ``[]`` for a
     repository without commits, None when the block describes a workspace without
@@ -760,7 +760,7 @@ def _persisted_git_history(block: str) -> Optional[List[str]]:
     lines = block.splitlines()
     if not any(line.startswith("- Branch: ") for line in lines):
         return None
-    history: List[str] = []
+    history: list[str] = []
     in_commits = False
     for line in lines:
         if line.startswith("- Recent commits:"):

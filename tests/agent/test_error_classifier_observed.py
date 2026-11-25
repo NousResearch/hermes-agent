@@ -31,6 +31,11 @@ AFFORD_402 = {"error": {"message": (
     "code": 402}}
 NOT_MULTIMODAL_400 = {"error": {"message": "glm-5.2-fp8 is not a multimodal model", "type": "BadRequestError",
                                 "param": None, "code": 400}}
+# DashScope / Bailian OpenAI-compatible mode, per-minute token throttle (#159948): the quota was
+# largely unused and the same model answered again within two minutes.
+_DASHSCOPE_THROTTLE = {"type": "insufficient_quota", "message": (
+    "Allocated quota exceeded, please increase your quota limit. For details, see: "
+    "https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit")}
 
 # (id, provider, exception, expected reason, retryable, should_fallback)
 OBSERVED = [
@@ -62,6 +67,17 @@ OBSERVED = [
     ("router-no-workers", "custom", _status(openai.InternalServerError, 500, {"error": {
         "message": "No available workers (all circuits open or unhealthy)"}}),
      FailoverReason.server_error, True, False),
+    ("dashscope-compat-token-throttle", "custom", _status(openai.RateLimitError, 429, {
+        "error": {**_DASHSCOPE_THROTTLE, "param": None, "code": "insufficient_quota"}}),
+     FailoverReason.rate_limit, True, True),
+    ("dashscope-compat-token-throttle-no-code", "custom", _status(openai.RateLimitError, 429, {
+        "error": _DASHSCOPE_THROTTLE}),
+     FailoverReason.rate_limit, True, True),
+    # Control: the same structured code with OpenAI's out-of-credits wording stays a billing wall.
+    ("openai-429-out-of-credits", "openai", _status(openai.RateLimitError, 429, {"error": {
+        "message": "You exceeded your current quota, please check your plan and billing details.",
+        "type": "insufficient_quota", "param": None, "code": "insufficient_quota"}}),
+     FailoverReason.billing, False, True),
 ]
 
 

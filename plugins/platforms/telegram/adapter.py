@@ -211,7 +211,7 @@ from plugins.platforms.telegram.telegram_network import (
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_flood_cooldown import TelegramFloodCooldownMixin, land_persisted_state
-from plugins.platforms.telegram.telegram_send_errors import LOST, classify_send_exception, explain_username_chat_not_found, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
+from plugins.platforms.telegram.telegram_send_errors import LOST, classify_send_exception, continuation_failure, explain_username_chat_not_found, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
 from plugins.platforms.telegram.telegram_split import (
     REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document, split_reply_anchor)
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
@@ -3666,8 +3666,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self, chat_id: str, chunk: str, reply_to_id: Optional[int], thread_kwargs: dict[str, Any],
         thread_id: Optional[str], metadata: Optional[dict[str, Any]], finalize: bool):
         """Send one continuation chunk (MarkdownV2 then plain on finalize; raw when streaming); drops the
-        reply anchor once on 'reply message not found'. Returns the sent message, the flood-cap result on
-        a flood refusal, or None."""
+        reply anchor once on 'reply message not found'. Returns the sent message, the ``continuation_failure``
+        result that ends the attempts, or None."""
         base = {**self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
         for use_markdown in (True, False) if finalize else (False,):
             try:
@@ -3692,13 +3692,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                             **retry_thread_kwargs, **base),
                             timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
                     except Exception as _retry_err:
-                        if getattr(_retry_err, "retry_after", None) is not None or "retry after" in str(_retry_err).lower():
-                            return _flood_cap_result(float(getattr(_retry_err, "retry_after", None) or 30.0))
+                        if failure := continuation_failure(_retry_err):
+                            return failure
                         logger.warning(
                             "[%s] Overflow continuation no-reply retry failed: %s", self.name, _redact_telegram_error_text(_retry_err))
                         return None
-                if getattr(send_err, "retry_after", None) is not None or "retry after" in str(send_err).lower():
-                    return _flood_cap_result(float(getattr(send_err, "retry_after", None) or 30.0))  # no plain retry into the penalty (#76494)
+                if failure := continuation_failure(send_err):
+                    return failure
                 if use_markdown:
                     continue  # try plain text on next loop iteration
                 logger.warning("[%s] Overflow continuation send failed: %s", self.name, _redact_telegram_error_text(send_err))

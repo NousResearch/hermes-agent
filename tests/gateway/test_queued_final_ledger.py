@@ -168,6 +168,19 @@ async def test_a_flood_refused_queued_final_stays_in_the_ledger_as_failed(caplog
 
 
 @pytest.mark.asyncio
+async def test_a_reconcile_edit_that_may_show_the_whole_final_is_ledgered_not_sent_again():
+    adapter = _telegram_adapter()
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="Timed out", raw_response={
+        "partial_overflow": True, "delivery_uncertain": True, "delivered_prefix": TEXT}))
+
+    await _deliver(adapter, stream_consumer=SimpleNamespace(message_id="800"))
+
+    adapter.send.assert_not_awaited()
+    rows = _rows()
+    assert len(rows) == 1 and rows[0]["state"] == "failed" and rows[0]["content"] == TEXT
+
+
+@pytest.mark.asyncio
 async def test_the_queued_final_is_sent_like_the_normal_final():
     """Reply anchor on the inbound message and a notify-worthy copy of the thread metadata."""
     adapter = _telegram_adapter()

@@ -102,6 +102,19 @@ def is_entity_parse_error(error: Exception, markers: tuple = ("parse", "markdown
     return any(marker in str(error).lower() for marker in markers) and send_error_kind(error) in (REFUSED, LOCAL)
 
 
+def continuation_failure(error: Exception):
+    """The ``SendResult`` for an overflow continuation that must not be tried again as plain text: a
+    flood refusal, or a ``LOST`` request. ``None`` when nothing was posted and another shape may land."""
+    from plugins.platforms.telegram.adapter import _flood_cap_result, _redact_telegram_error_text
+
+    retry_after = getattr(error, "retry_after", None)
+    if retry_after is not None or "retry after" in str(error).lower():
+        return _flood_cap_result(float(retry_after or 30.0))  # no plain retry into the penalty (#76494)
+    if send_error_kind(error) == LOST:
+        return maybe_delivered_result(error, _redact_telegram_error_text(error))
+    return None
+
+
 def classify_send_exception(adapter, e: Exception):
     """The failed ``SendResult`` for an exception escaping ``adapter``'s chunk loop. ``retryable`` doubles
     as "non-delivery is certain": a plain ``TimedOut`` may have reached Telegram, so it is neither re-sent

@@ -7,6 +7,7 @@
     "config-settings-configyaml": "config-配置项configyaml"
   },
   "/developer-guide/gateway-internals": {
+    "hermes-gateway-attach": null,
     "multiplexed-profiles": null
   },
   "/developer-guide/plugins": {
@@ -65,10 +66,12 @@
     "xai-grok--responses-api--prompt-caching": "xaigrok-responses-api--prompt-缓存"
   },
   "/reference/cli-commands": {
+    "--keep-host-replace-an-agent-but-keep-its-hosts-setup": null,
     "hermes-connectors": null
   },
   "/reference/environment-variables": {
     "microsoft-graph-teams-meetings": "microsoft-graphteams-会议",
+    "nemo-relay": null,
     "web-dashboard--hermes-desktop": null
   },
   "/reference/faq": {
@@ -103,6 +106,9 @@
   },
   "/user-guide/docker": {
     "webapp-behind-a-proxy": null
+  },
+  "/user-guide/features/built-in-plugins": {
+    "nemo-relay-native-integration-migration-note": null
   },
   "/user-guide/features/context-files": {
     "security-prompt-injection-protection": "安全性prompt-注入防护"

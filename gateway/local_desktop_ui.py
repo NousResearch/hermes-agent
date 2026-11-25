@@ -186,6 +186,8 @@ def _move_workspace(task_id, path):
     # The chat's current folder, as its last committed move published it; a background child's own
     # context still holds the turn it was spawned in.
     policy = local_adapter_map(authority)[Platform.LOCAL].policies.get(live.source.chat_id)
+    if policy is not None and policy.source not in ("gui", "tui"):
+        return None  # a CLI chat on the gateway keeps its folder: only the active project changes
     if policy is not None and os.path.realpath(policy.cwd) == os.path.realpath(resolved):
         live.pending_workspace = None  # already there: an earlier call's pending move is taken back
         return True

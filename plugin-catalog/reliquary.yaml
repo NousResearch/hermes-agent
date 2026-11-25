@@ -1,16 +1,16 @@
 name: reliquary
 title: Reliquary
 repo: https://github.com/Lokee86/reliquary-hermes
-sha: ad29b22861d49a94fd32f83f91af80e5b254536d
-version: "0.3.1"
+sha: 74e3f076ebeba7c062c4c96523a1fab92a057e8d
+version: "0.3.2"
 description: "Local, inspectable long-term memory with source provenance, General and project RELs, a read-only PHY identity layer, and a relationship graph. Disclosure — on Linux and macOS this package ships four CI-built native hosts. Reliquary launches the matching executable and removes the other three from its installed plugin directory after authenticated startup. The local Rust process binds authenticated loopback HTTP and can keep running after a session for recovery. It reads and writes the selected REL files, reads the selected PHY, and stores copied sources and recovery data under the active profile. Setup provisions a profile-scoped token through Hermes. Optional processing and recall send bounded queries, excerpts and Memories through configured Hermes model endpoints and can incur provider charges. Conversation capture, project routing and Desktop features depend on the Hermes host. No telemetry."
 maintainer: Lokee86
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/Lokee86/reliquary-hermes/tree/ad29b22861d49a94fd32f83f91af80e5b254536d
+docs_url: https://github.com/Lokee86/reliquary-hermes/tree/74e3f076ebeba7c062c4c96523a1fab92a057e8d
 screenshots:
-  - https://raw.githubusercontent.com/Lokee86/reliquary-hermes/ad29b22861d49a94fd32f83f91af80e5b254536d/assets/graph-overview.png
+  - https://raw.githubusercontent.com/Lokee86/reliquary-hermes/74e3f076ebeba7c062c4c96523a1fab92a057e8d/assets/graph-overview.png
 readme: true
 platforms:
   - windows

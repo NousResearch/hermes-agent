@@ -39,10 +39,9 @@ def _callback_api():
 
 def _get_tool_whitelist():
     """The thread's ``pre_tool_call`` tool whitelist as ``(allowed, deny_fmt)``, or None."""
-    from hermes_cli.plugins import _thread_tool_whitelist
+    from hermes_cli.plugins import get_thread_tool_whitelist
 
-    allowed = getattr(_thread_tool_whitelist, "allowed", None)
-    return None if allowed is None else (allowed, getattr(_thread_tool_whitelist, "fmt", None))
+    return get_thread_tool_whitelist()
 
 
 def _set_tool_whitelist(state) -> None:

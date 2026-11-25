@@ -1152,6 +1152,12 @@ def clear_thread_tool_whitelist() -> None:
     _tool_whitelist_allowed.set(None)
 
 
+def get_thread_tool_whitelist() -> Optional[tuple[frozenset[str], str]]:
+    """Snapshot the current policy for explicit callback replay across thread hops."""
+    allowed = _tool_whitelist_allowed.get()
+    return None if allowed is None else (allowed, _tool_whitelist_fmt.get())
+
+
 def _get_pre_tool_call_directive_details(
     tool_name: str, args: Optional[dict[str, Any]], task_id: str = "", session_id: str = "",
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",

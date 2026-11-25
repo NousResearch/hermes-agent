@@ -320,7 +320,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         content_text = _user_image_display_text(m.get("content")) if role == "user" else None
         if content_text is None:
             content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
-        if _is_display_hidden_marker(role, content_text):
+        # Explicit display typing wins over the legacy model-only marker convention.
+        if not m.get("display_kind") and _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)

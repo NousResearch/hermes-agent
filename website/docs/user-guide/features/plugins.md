@@ -1087,7 +1087,8 @@ after a reload. A card is display-only: people see it, and the model is told onl
 a card with a core-derived opaque reference (one line, `[<plugin id> posted a card <opaque id>]`).
 The reference is stable for that plugin and card id and saved in the row's content beside its display
 metadata, so clients can match them. The plugin-chosen `id` stays in display metadata for rendering and
-deduplication, never in model-facing content. The model never reads the card's
+deduplication, never in model-facing content. A card saved by a Hermes version that wrote the plugin's
+own id in that line keeps its row as it is, and an unchanged retry of it is still a `duplicate`. The model never reads the card's
 text, directive or attrs. Hermes also strips those fields before handing transcript rows to memory
 providers through `on_session_end()` or `on_pre_compress()`:
 

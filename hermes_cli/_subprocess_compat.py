@@ -17,12 +17,6 @@ import sys
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
-from hermes_platform.resolver.git import (
-    is_git_command,
-    is_usable_git_command,
-    resolve_usable_git,
-)
-
 __all__ = [
     "FILTER_DISCOVERY_FAILED",
     "IS_WINDOWS",
@@ -340,6 +334,32 @@ def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
 _safe_directory_cache: dict[tuple, list[str]] = {}
 
 
+def _git_resolver():
+    """Import ``hermes_platform.resolver.git`` lazily; returns None during cold bootstrap
+    when ``hermes_platform`` is not yet on ``sys.path``."""
+    try:
+        from hermes_platform.resolver import git as git_resolver
+        return git_resolver
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".", 1)[0] == "hermes_platform":
+            return None
+        raise
+
+
+def _git_usable(env: Mapping[str, str] | None = None) -> bool:
+    resolver = _git_resolver()
+    return True if resolver is None else resolver.resolve_usable_git(env) is not None
+
+
+def _git_argv0_unusable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> bool:
+    if not argv:
+        return False
+    resolver = _git_resolver()
+    if resolver is None:
+        return False
+    return resolver.is_git_command(argv[0]) and not resolver.is_usable_git_command(argv[0], env)
+
+
 def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
     """The user's configured ``safe.directory`` values, in git's own effective order.
 
@@ -359,7 +379,7 @@ def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
     marker, either of which would resurrect a revoked wildcard and widen trust. ``-z`` keeps a
     value containing whitespace or a newline as the single entry git reads it as.
     """
-    if resolve_usable_git(base_env) is None:
+    if not _git_usable(base_env):
         return []
     cache_key = _safe_directory_cache_key(base_env)
     cached = _safe_directory_cache.get(cache_key)
@@ -541,7 +561,7 @@ def noninteractive_repo_git_env(
     bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
     automatic git operation instead of running with only partial hardening.
     """
-    if resolve_usable_git(base) is None:
+    if not _git_usable(base):
         return None
     env = noninteractive_git_env(base)
     # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
@@ -879,7 +899,7 @@ def bounded_probe_run(
     ``Get-CimInstance Win32_Process`` gateway scan hit exactly this during ``hermes update`` on slow-WMI
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
-    if argv and is_git_command(argv[0]) and not is_usable_git_command(argv[0], env):
+    if _git_argv0_unusable(argv, env):
         if raise_on_spawn_failure:
             raise FileNotFoundError(errno.ENOENT, "git is unavailable", os.fspath(argv[0]))
         return None
@@ -973,7 +993,7 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: Mapping[str, 
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    if argv and is_git_command(argv[0]) and not is_usable_git_command(argv[0], env):
+    if _git_argv0_unusable(argv, env):
         return ""
     result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:

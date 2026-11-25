@@ -61,10 +61,9 @@ _GIT_TEXT_KW = {"text": True, "encoding": "utf-8", "errors": "replace"}
 def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, text: bool = True,
              git: str = "git"):
     """Read Git state without prompts, optional index writes, or inherited targeting."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    from hermes_platform.resolver.git import is_git_command, is_usable_git_command
+    from hermes_cli._subprocess_compat import _git_argv0_unusable, windows_hide_flags
 
-    if is_git_command(git) and not is_usable_git_command(git):
+    if _git_argv0_unusable([git]):
         return None
     kwargs: dict = {"creationflags": windows_hide_flags(), "env": source_git_env(), "stdin": subprocess.DEVNULL}
     try:

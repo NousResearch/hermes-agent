@@ -518,3 +518,34 @@ def test_macos_native_custom_git_works_with_absent_clt(tmp_path, monkeypatch, ca
     assert _subprocess_compat._user_safe_directories(env) == ["*", "", "/trusted/only"]
     doctor_tools._check_git_and_rg(False)
     assert "✓ git" in capsys.readouterr().out
+
+
+def test_subprocess_compat_imports_and_runs_in_cold_bootstrap_without_hermes_platform(tmp_path):
+    """Cold bootstrap (python -I -S with only hermes_cli, no hermes_platform) must import and
+    run _subprocess_compat without ModuleNotFoundError."""
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[2]
+    cold_root = tmp_path / "cold"
+    cold_root.mkdir()
+    shutil.copytree(
+        repo_root / "hermes_cli",
+        cold_root / "hermes_cli",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    script = (
+        f"import sys; sys.path.insert(0, {str(cold_root)!r}); "
+        "from hermes_cli import _subprocess_compat as sc; "
+        "sc.suppress_platform_ver_console(); "
+        "assert sc.windows_hide_flags() >= 0; "
+        "assert sc.bounded_git_probe(['git', '--version'], timeout=5, env={'PATH': ''}) == ''"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", script],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr

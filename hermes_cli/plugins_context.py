@@ -222,6 +222,16 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from cron.execution_identity import current_cron_execution
         return current_cron_execution()
 
+    def cron_delivery_platforms(self, job_id: Optional[str] = None) -> Optional[tuple[str, ...]]:
+        """The platforms cron delivers a job's output to, lower-cased, in order
+        (``cron.plugin_api.delivery_platforms``). With ``job_id=None``, answers for the firing cron
+        run using that run's own settings (or ``None`` outside one); with ``job_id``, previews the
+        saved job in this plugin's profile. Reads normal delivery (``deliver``), not
+        ``failure_deliver``. Under ``plugins.isolation: host`` this runs in the gateway, in the
+        calling hook's context."""
+        from cron.plugin_api import delivery_platforms
+        return delivery_platforms(job_id)
+
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved
         with registration teardown; exceptions are logged, never propagated."""
@@ -424,6 +434,24 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
         from hermes_cli.plugin_session import session_viewers
         return session_viewers()
+
+    def session_source(self) -> str:
+        """The label the calling local session was created with, or ``""`` (``plugin_session.session_source``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import session_source
+        return session_source()
+
+    def in_delegated_child(self, *, include_subprocesses: bool = False) -> bool:
+        """Whether the calling code runs for a ``delegate_task`` child (``plugin_session.in_delegated_child``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import in_delegated_child
+        return in_delegated_child(include_subprocesses=include_subprocesses)
+
+    def fork_origin(self) -> str:
+        """The detached fork's label, ``""`` for a regular agent (``plugin_session.fork_origin``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import fork_origin
+        return fork_origin()
 
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in

@@ -16,18 +16,23 @@ import {
   isPaneVisible,
   moveTreePane,
   registerPaneCloser,
-  revealTreePane
+  revealTreePane,
+  setTreePaneHidden
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+import { $modeShadowed, setInterfaceMode } from '@/store/interface-mode'
 import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
+import { $previewTabs, closeRightRail, openBrowserTab } from '@/store/preview'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { $shellChoice } from '@/store/shell-variant'
 
 import {
   $developerToolPanelWidth,
   hideDeveloperToolPanel,
   installDeveloperToolPanelWidth,
-  prepareDeveloperToolPanel
+  prepareDeveloperToolPanel,
+  toggleDeveloperToolPanel
 } from './developer-tool-panel'
 
 afterEach(() => {
@@ -37,6 +42,8 @@ afterEach(() => {
   $userPlacedPanes.set(new Set())
   $narrowViewport.set(false)
   $shellChoice.set(null)
+  closeRightRail()
+  setInterfaceMode('advanced')
 })
 
 it('turns the legacy bottom-right tools into one side panel without losing chats or plugins', () => {
@@ -224,4 +231,50 @@ it('never takes a zone of Browser tabs for the panel', () => {
   expect(findGroupOfPane($layoutTree.get()!, 'review')?.id).toBe(panel.id)
   // And hiding from a Browser zone is that tab's own toggle, not the panel's.
   expect(hideDeveloperToolPanel('preview-tile:a')).toBe(false)
+})
+
+// HADESK-82: Simple mode rests every built-in tool closed (SIMPLE_POLICY shadows them), so the
+// panel's reveal used to surface only Files and a Browser the user had open stayed away — with no
+// developer rail in Simple (Advanced chrome, by design) to bring it back.
+it('fronts the open Browser from the panel toggle in Simple mode, without surfacing Files or writing a preference', () => {
+  $shellChoice.set(true)
+  setInterfaceMode('simple')
+  openBrowserTab()
+  const browser = `${PREVIEW_TILE_PREFIX}:${$previewTabs.get()[0]!.id}`
+  const stop = registry.register({ id: browser, area: 'panes', data: { placement: 'main' }, render: () => null })
+
+  // Simple's resting shape for it: the tool panel beside the chat, folded, with Files resting closed.
+  $layoutTree.set(split('row', [group(['sessions']), group(['workspace']), group([browser, 'files'])]))
+  setTreePaneHidden(browser, true)
+  setTreePaneHidden('files', true)
+  $collapsedTreeSides.set(new Set(['right']))
+
+  expect(toggleDeveloperToolPanel()).toBe(true)
+
+  expect(isPaneVisible(browser)).toBe(true)
+  // The mode still decides what rests: no developer instrumentation was turned on.
+  expect(isPaneVisible('files')).toBe(false)
+  expect($modeShadowed('fileBrowserOpen').get()).toBe(true)
+  expect($fileBrowserOpen.get()).toBe(false)
+  expect($collapsedTreeSides.get().has('right')).toBe(true)
+
+  stop()
+})
+
+it('still reveals Files when no Browser is open', () => {
+  $shellChoice.set(true)
+  $layoutTree.set(split('row', [group(['sessions']), group(['workspace']), group(['files'])]))
+  setTreePaneHidden('files', true)
+
+  expect(toggleDeveloperToolPanel()).toBe(true)
+  expect(isPaneVisible('files')).toBe(true)
+})
+
+it('leaves the classic tree alone', () => {
+  $shellChoice.set(false)
+  $layoutTree.set(split('row', [group(['sessions']), group(['workspace']), group(['files'])]))
+  const tree = $layoutTree.get()
+
+  expect(toggleDeveloperToolPanel()).toBe(false)
+  expect($layoutTree.get()).toBe(tree)
 })

@@ -16,11 +16,15 @@ import {
   moveTreePane,
   moveTreePanes,
   restoreTreePane,
+  revealTreePane,
   setTreePaneHidden
 } from '@/components/pane-shell/tree/store'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
+import { $interfaceMode } from '@/store/interface-mode'
+import { $rightRailActiveTabId } from '@/store/layout'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
+import { $visiblePreviewTabs, browserTabFor, openBrowserTab } from '@/store/preview'
 import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { $portalShell } from '@/store/shell-variant'
 
@@ -219,6 +223,18 @@ export const $developerToolShown = computed(
   portal => portal && shownTools().length > 0
 )
 
+/** The Browser the panel is holding right now, if the user has one open there. A Browser tab IS a
+ *  tool of this panel (`isTool`), and in Simple mode the panel is its only door — the developer rail
+ *  is Advanced chrome — so the toggle must be able to front it rather than always landing on Files,
+ *  which Simple shadows closed (store/interface-mode.ts). Null when no Browser tab is open, or when
+ *  the user tiled one into a zone of its own (that zone is theirs, not the side). */
+function openBrowserPane(): null | string {
+  const tab = browserTabFor($visiblePreviewTabs.get(), $rightRailActiveTabId.get())
+  const paneId = tab ? `${PREVIEW_TILE_PREFIX}:${tab.id}` : null
+
+  return paneId && (inDeveloperToolPanel(paneId) || $dismissedPanes.get().has(paneId)) ? paneId : null
+}
+
 /** The band's right sidebar button and its keybind, on a wide redesign window: hide the tool panel,
  *  or show Files in it. Classic's button is positional (it folds the outermost column right of the
  *  chat), which here is whichever tool zone happens to stand last, not the panel. False where that
@@ -231,6 +247,29 @@ export function toggleDeveloperToolPanel(): boolean {
   const shown = shownTools()
 
   if (shown.length === 0) {
+    // Front what the panel already holds — a Browser the user opened there (including one dismissed
+    // via ⌘⇧L) — so Simple mode is not the one mode whose Browser has no way back. In Simple mode
+    // with no Browser yet, open a fresh Browser rather than surfacing Files (developer chrome).
+    const browser = openBrowserPane()
+
+    if (browser) {
+      revealTreePane(browser)
+      prepareDeveloperToolPanel(browser)
+
+      return true
+    }
+
+    if ($interfaceMode.get() === 'simple') {
+      openBrowserTab()
+      const opened = openBrowserPane()
+
+      if (opened) {
+        prepareDeveloperToolPanel(opened)
+      }
+
+      return true
+    }
+
     restoreTreePane('files')
     prepareDeveloperToolPanel('files')
 

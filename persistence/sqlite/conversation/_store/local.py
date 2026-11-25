@@ -7,6 +7,13 @@ from collections import OrderedDict
 
 
 POLICY_PREFIX = 'gateway.local_policy.v1:'
+# Must match idx_state_meta_local_policy_target in persistence/sqlite/_schema_ddl.py
+# structurally or SQLite silently falls back to reading and JSON-parsing each full receipt blob.
+LOCAL_POLICY_GLOB_LITERAL = "'" + POLICY_PREFIX + "*'"
+
+
+def local_policy_target_expr(value_col: str = 'value') -> str:
+    return f"(CASE WHEN json_valid({value_col}) THEN json_extract({value_col}, '$.entry.session_id') END)"
 
 
 API_BINDING_PREFIX = 'gateway.api.binding.v1.'
@@ -36,10 +43,14 @@ def retire_local_receipts(conn, session_ids):
     targets = set(session_ids)
     if not targets:
         return
-    # Prefix scans (GLOB uses the key index), not one LIKE per id: a prune retires thousands.
-    gone = [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
-                                               (POLICY_PREFIX + '*',))
-            if _policy_target(value) in targets]
+    # Covering partial index scan (idx_state_meta_local_policy_target) avoids reading
+    # tens-of-KB receipt blobs into Python and calling json.loads() on every row.
+    target_expr = local_policy_target_expr('value')
+    gone = [key for (key,) in conn.execute(
+        f"SELECT key FROM state_meta WHERE key GLOB {LOCAL_POLICY_GLOB_LITERAL} "
+        f"AND {target_expr} IN (SELECT value FROM json_each(?))",
+        (json.dumps(sorted(targets)),),
+    )]
     gone += [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
                                                 (API_DECLARED_PREFIX + '*',)) if value in targets]
     gone += [API_BINDING_PREFIX + sid for sid in targets]

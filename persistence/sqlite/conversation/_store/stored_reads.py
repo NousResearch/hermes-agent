@@ -16,7 +16,7 @@ from persistence.sqlite._schema_ddl import _sql_json_extract
 from persistence.sqlite._state.common import _shape_preview
 from persistence.sqlite.conversation._store.compaction_display import not_a_later_tool_copy_sql
 from persistence.sqlite.conversation._store.compression import _compression_tip_on
-from persistence.sqlite.conversation._store.local import POLICY_PREFIX
+from persistence.sqlite.conversation._store.local import LOCAL_POLICY_GLOB_LITERAL, POLICY_PREFIX, local_policy_target_expr
 from persistence.sqlite.conversation._store.messages import (
     _decode_content, _dedupe_display_generations, _display_rows_from_conn, _encode_content, _fetch_conversation_rows,
     _message_column_names, _resume_lineage_ids, _row_to_message_dict, _rows_to_conversation,
@@ -335,10 +335,13 @@ def session_current_segments(holder: StoreHolder, session_ids: Iterable[str]) ->
     """``{logical id: current physical segment}`` in one store checkout: a local receipt's entry (extracted in
     SQL), else the compression tip of a row compression ended. Ids with no session row are absent."""
     with holder._read_ctx() as conn:
+        target_expr = local_policy_target_expr('m.value')
         rows = conn.execute(
-            "SELECT s.id, s.end_reason, (SELECT json_extract(m.value, '$.entry.session_id') FROM state_meta m "
-            "WHERE m.key = ? || s.id AND json_valid(m.value)) AS entry FROM sessions s "
-            "WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, _ids(session_ids))).fetchall()
+            f"SELECT s.id, s.end_reason, (SELECT {target_expr} FROM state_meta m "
+            f"WHERE m.key GLOB {LOCAL_POLICY_GLOB_LITERAL} "
+            "AND m.key >= ? || s.id AND m.key <= ? || s.id) AS entry FROM sessions s "
+            "WHERE s.id IN (SELECT value FROM json_each(?))",
+            (POLICY_PREFIX, POLICY_PREFIX, _ids(session_ids))).fetchall()
         # Only a row compression ended has a tip past itself: walked on this one connection.
         return {row["id"]: row["entry"] or (_compression_tip_on(holder, conn, row["id"])
                                             if row["end_reason"] == "compression" else row["id"]) for row in rows}

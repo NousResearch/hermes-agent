@@ -442,6 +442,18 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     ON messages(session_id)
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
+-- Partial covering index for gateway.local_policy.v1:* target lookups
+-- (live_listing_facts, session_current_segments, retire_local_receipts).
+-- Each local-policy receipt embeds a tens-of-KB config/skills snapshot; without
+-- this covering index every lookup reads overflow pages and JSON-parses the full
+-- blob twice (json_valid + json_extract). Keep the expression structurally
+-- identical to local_policy_target_expr() in persistence/sqlite/conversation/_store/local.py.
+CREATE INDEX IF NOT EXISTS idx_state_meta_local_policy_target
+    ON state_meta(
+        key,
+        (CASE WHEN json_valid(value) THEN json_extract(value, '$.entry.session_id') END)
+    )
+    WHERE key GLOB 'gateway.local_policy.v1:*';
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);

@@ -100,6 +100,16 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # plain address). ``ip.ipv4_mapped`` does not read it; ``_embedded_ipv4`` handles it explicitly.
 _IPV4_TRANSLATED_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
 
+# IPv6 special-use ranges that are not general-purpose public destinations but that ipaddress
+# reports as global on some or all supported Python versions (fec0::/10 and 2001:20::/28 on every
+# 3.11-3.14 release). Listed explicitly so the verdict does not depend on the stdlib's tables.
+_BLOCKED_IPV6_SPECIAL_USE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "100::/64",      # Discard-only (RFC 6666)
+    "2001:2::/48",   # Benchmarking (RFC 5180)
+    "2001:20::/28",  # ORCHIDv2 (RFC 7343)
+    "fec0::/10",     # Deprecated site-local (RFC 3879)
+))
+
 # Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
 # none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
 # so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
@@ -116,10 +126,11 @@ _fake_ip_resolved, _cached_fake_ip_ranges = False, ()
 
 
 def _global_allow_private_urls() -> bool:
-    """True when the user has opted out of private-IP blocking. Priority: ``HERMES_ALLOW_PRIVATE_URLS``
-    env, ``security.allow_private_urls``, legacy ``browser.allow_private_urls``. Profile-scoped turns
-    (``get_hermes_home_override()`` set) bypass the process-global cache — a multiplex gateway serves
-    several profiles in one process; the first profile's opt-out must not disable blocking for later ones."""
+    """True when the user has opted out of private-IP blocking. Priority: a managed-scope pin, then
+    ``HERMES_ALLOW_PRIVATE_URLS`` env, ``security.allow_private_urls``, legacy
+    ``browser.allow_private_urls``. Profile-scoped turns (``get_hermes_home_override()`` set) bypass the
+    process-global cache — a multiplex gateway serves several profiles in one process; the first
+    profile's opt-out must not disable blocking for later ones."""
     global _allow_private_resolved, _cached_allow_private
     if get_hermes_home_override() is not None:
         return _resolve_allow_private_urls()
@@ -130,12 +141,17 @@ def _global_allow_private_urls() -> bool:
 
 def _resolve_allow_private_urls() -> bool:
     """Resolve the effective private-URL toggle from the active config scope."""
+    pinned = _managed_allow_private_urls()
+    if pinned is not None:
+        return pinned  # an administrator's pin outranks the environment variable and the profile's keys
     env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
     if env_val in {"true", "1", "yes"}:
         return True
     if env_val in {"false", "0", "no"}:
         return False  # explicit false does not fall through to config
     try:
+        # The profile's own keys, not the managed scope laid over them: it pinned neither spelling
+        # (decided above), and a null there, which pins nothing, would erase the profile's value.
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         for section in ("security", "browser"):  # preferred, then legacy
@@ -145,6 +161,40 @@ def _resolve_allow_private_urls() -> bool:
     except Exception:
         pass  # config unavailable (tests, early import) — keep default
     return False
+
+
+def _managed_allow_private_urls() -> Optional[bool]:
+    """The managed scope's own value for the toggle, or None when it pins neither spelling.
+
+    Read apart from the profile so a pin is resolved before everything the user controls:
+    ``HERMES_ALLOW_PRIVATE_URLS`` (shell or profile ``.env``) and the profile's two keys, either of
+    which opts in. ``security.allow_private_urls`` first, then the legacy
+    ``browser.allow_private_urls``; a null value pins nothing.
+    """
+    try:
+        from hermes_cli.managed_scope import apply_managed_overlay
+    except ImportError:
+        return None  # managed scope unavailable (early import): nothing is pinned
+    managed = apply_managed_overlay({})  # fail-open: {} without a scope or when its file cannot be read
+    for section in ("security", "browser"):  # preferred, then legacy
+        block = managed.get(section)
+        value = block.get("allow_private_urls") if isinstance(block, dict) else None
+        if value is not None:
+            return is_truthy_value(value, default=False)
+    return None
+
+
+def _policy_config() -> dict:
+    """config.yaml with managed scope laid on top, as ``load_config()`` lays it.
+
+    ``read_raw_config()`` alone never sees ``/etc/hermes/config.yaml``, so an operator who pinned
+    ``security.fake_ip_ranges`` or ``security.allow_private_urls`` there got the profile's own
+    value. Raises like ``read_raw_config()``; the callers keep their secure defaults on failure.
+    """
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.managed_scope import apply_managed_overlay
+
+    return apply_managed_overlay(read_raw_config())
 
 
 def _reset_allow_private_cache() -> None:
@@ -164,8 +214,7 @@ def _resolve_fake_ip_ranges() -> tuple:
     declares one, and the sentinel range keeps the ordinary private-address verdict otherwise.
     """
     try:
-        from hermes_cli.config import read_raw_config
-        block = read_raw_config().get("security", {})
+        block = _policy_config().get("security", {})
         raw = block.get("fake_ip_ranges") if isinstance(block, dict) else None
     except Exception:
         return ()  # config unavailable (tests, early import) — keep the secure default
@@ -310,7 +359,8 @@ def _is_blocked_ip(ip: _IPAddress) -> bool:
     # classified by its embedded IPv4.
     ip = _embedded_ipv4(ip)
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-            or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK)
+            or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK
+            or any(ip in net for net in _BLOCKED_IPV6_SPECIAL_USE_NETWORKS))
 
 
 def is_always_blocked_url(url: str) -> bool:

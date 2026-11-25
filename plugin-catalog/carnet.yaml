@@ -1,0 +1,33 @@
+name: carnet
+repo: https://github.com/404BugX/carnet
+sha: "137c33a830cd24b9bc54e3555eff3ec3b607179e"
+description: "A memory that stays bounded: core rules always in mind, facts recalled only when relevant, long sheets read on demand, and a memory graph inside the app. Disclosure — Carnet sends every saved fact and each turn's message to the embedding endpoint you configure (LM Studio on 127.0.0.1:1234 by default); the optional rephrase and scan features send fact text to the chat model you configure; the \"local\" backend downloads a ~310 MB model from Hugging Face only when you ask and runs it in a background Python process."
+maintainer: 404BugX
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "0.9.5"
+title: Carnet
+readme: true
+platforms: [macos, linux]
+screenshots:
+  - https://raw.githubusercontent.com/404BugX/carnet/137c33a830cd24b9bc54e3555eff3ec3b607179e/docs/screenshots/facts.png
+  - https://raw.githubusercontent.com/404BugX/carnet/137c33a830cd24b9bc54e3555eff3ec3b607179e/docs/screenshots/graph.png
+  - https://raw.githubusercontent.com/404BugX/carnet/137c33a830cd24b9bc54e3555eff3ec3b607179e/docs/screenshots/onboarding.png
+capabilities:
+  provides_tools:
+    - remember
+    - recall
+    - read_fiche
+    - forget
+    - note
+    - note_close
+  provides_hooks:
+    - prefetch
+    - queue_prefetch
+    - sync_turn
+    - on_pre_compress
+    - on_session_switch
+    - recall_status
+  provides_middleware: []
+  requires_env: []

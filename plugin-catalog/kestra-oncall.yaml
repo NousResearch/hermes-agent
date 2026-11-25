@@ -1,0 +1,61 @@
+name: kestra-oncall
+title: Kestra On-Call
+repo: https://github.com/zkasuran/hermes-kestra-oncall
+sha: "9714ac0d65ec1c887c7b250ec6f8709791ee5e25"
+description: >-
+  Puts Hermes on call for Kestra. When an execution in an allowed namespace fails, Hermes reads the failed
+  task, its error logs and what changed since the last good run, proposes the smallest fix to the flow and
+  asks you in chat. After one approval it saves the fix as a new flow revision, replays the failed execution
+  from the task that failed (tasks that already succeeded are not rerun), follows the replay and checks the
+  result. A failed replay restores the previous revision if the flow is still at the fixed one. Kestra Pause
+  tasks become chat questions you can answer from any Hermes surface. A Kestra on-call dashboard tab and Desktop
+  pane list incidents, proposals and pauses (read-only).
+  Disclosure: network: only the Kestra URL you configure (kestra_url, HTTPS required except for loopback and
+  explicitly allowed private hosts), with the Kestra credentials you give Hermes (KESTRA_USERNAME and
+  KESTRA_PASSWORD or KESTRA_API_TOKEN, read through Hermes secret scope). No other host, no telemetry.
+  Writes to Kestra: a flow update, a replay, a rollback to the previous revision and resume or kill of a
+  paused execution. Each needs a person: the typed command /kestra apply <id> <hash> (the hash must match the
+  stored proposal) or Hermes's approval card for the two write tools with the whole stored diff, bound to the
+  proposal hash. Diffs too long to read in full are refused. The write tools refuse in webhook, cron,
+  single-query and unknown surfaces and the model-driven path refuses while Hermes approvals are bypassed.
+  Fails closed: an empty namespaces setting allows nothing and protected_flows are diagnosis-only.
+  Stored data: incidents, flow sources, error logs, task outputs, diffs, proposals and decision records in the
+  plugin's profile-scoped SQLite database. Data sent elsewhere: the tools return flow sources, error logs,
+  task outputs and execution inputs to the model, so they go to the profile's LLM provider. The dashboard routes
+  under /api/plugins/kestra-oncall only read and show diffs and logs to anyone who can open the Hermes
+  dashboard. hermes kestra-oncall setup --apply adds one named webhook route to config.yaml and never deploys a
+  Kestra flow. Anyone holding WEBHOOK_SECRET can start a read-only model run against your Kestra.
+  AI-assisted implementation.
+maintainer: zkasuran
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/zkasuran/hermes-kestra-oncall#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/zkasuran/hermes-kestra-oncall/9714ac0d65ec1c887c7b250ec6f8709791ee5e25/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/zkasuran/hermes-kestra-oncall/9714ac0d65ec1c887c7b250ec6f8709791ee5e25/assets/01-chat-diagnosis.png
+  - https://raw.githubusercontent.com/zkasuran/hermes-kestra-oncall/9714ac0d65ec1c887c7b250ec6f8709791ee5e25/assets/02-kestra-replay.png
+  - https://raw.githubusercontent.com/zkasuran/hermes-kestra-oncall/9714ac0d65ec1c887c7b250ec6f8709791ee5e25/assets/03-dashboard.png
+readme: true
+platforms: []
+known_issues:
+  - "Kestra has no compare-and-set on flow updates, so the check-then-write window is narrowed by a fresh re-read and a read-back, not removed."
+  - "Slash-command writes are typed approvals (/kestra apply <id> <hash>) because ctx.dispatch_tool does not run pre_tool_call hooks on Hermes main or v0.23.0 and a plugin command has no way to raise an approval card in a chat."
+  - "Model-driven writes are refused while Hermes approvals are bypassed (--yolo, /yolo, approvals.mode: off). The check imports tools.approval.is_approval_bypass_active, which hermes plugins validate reports as one non-public import."
+  - "Built for plugins.isolation: in_process (Hermes's default). Host isolation skips CLI registration and was not tested."
+  - "Tested on Kestra 2.0.9 only. A failed Loop cannot be replayed on that version and a failed Subflow is diagnosis-only."
+  - "The end-to-end run used Hermes main at c3354ea. On v0.23.0 scenarios S1, S1b, S2 and S3 passed, as did validate, doctor and the live plugin test."
+capabilities:
+  provides_tools:
+    - kestra_status
+    - kestra_incident_open
+    - kestra_incidents
+    - kestra_propose_fix
+    - kestra_apply_fix
+    - kestra_pauses
+    - kestra_pause_decide
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

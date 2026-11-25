@@ -41,6 +41,9 @@ _EXTRA_STORES = {
     "webapp/session-token",  # the Webapp browser's credential (gateway.webapp_listener.TOKEN_PATH)
     "webapp/native-sign-in-tokens.json",  # its listener's grants to native apps (webapp_sign_in.RECORD_PATH)
     "webapp/sign-in-registration.json",  # the Portal callback its Web Access registered (webapp_access)
+    # A backend migration's .env copy, the old launcher's raw argv/environment, and the record naming them
+    "backend_migration/env.bak", "backend_migration/launcher-env.json", "backend_migration/launcher-argv.json",
+    "backend_migration.json",
 }
 # Single-file stores whose name has no dot; every other dotless store is a token directory.
 _DOTLESS_FILES = {"npmrc", "webapp/session-token"}

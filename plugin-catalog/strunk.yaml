@@ -1,0 +1,21 @@
+name: strunk
+title: Strunk
+repo: https://github.com/firstcrack-studio/strunk-plugin
+sha: c33f6a3a780e7a05a0f0676c8abf3eaf78230005
+subdir: plugin
+description: "Document review in Google Docs: publish a draft to Google Docs for review, pull reviewer comments back with the spans they anchor to, revise the doc in place, and reply to and resolve each thread. Existing comments and anchors survive a re-publish. Portable Agent Plugins v1 package (plugin.json + mcp.json) with Strunk's hosted MCP server (Streamable HTTP; OAuth 2.1 with dynamic client registration and PKCE) and two skills, one for setup and one for the review round trip. Disclosure — hosted-only connector with no local code: every tool call goes to strunk.io with the drafts you publish, and returns reviewers' comments and names, which also reach your model provider through the session. Google access uses the drive.file scope, limited to docs Strunk creates and files you pick. Write tools create and edit Google Docs and reply to and resolve comment threads under your Google account. The package marks the server untrusted so write tools ask first, but the sign-in step (`hermes mcp add strunk`) writes a config.yaml entry that replaces the package's own, trust included, unless you add `trust: untrusted` to it. Hermes stores and refreshes the Strunk OAuth token; WorkOS holds the Google refresh token on Strunk's side. The tool list comes from Strunk's server at run time, so the pinned commit does not cover it."
+maintainer: Strunk
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/firstcrack-studio/strunk-plugin/blob/c33f6a3a780e7a05a0f0676c8abf3eaf78230005/plugin/README.md
+version: "0.4.3"
+platforms: []
+known_issues:
+  - 'Sign in once: hermes mcp add strunk --url https://strunk.io/mcp --auth oauth, then add `trust: untrusted` under `mcp_servers.strunk` in config.yaml to keep the approval prompt'
+  - "The first publish or open asks you to connect Google Docs in your browser"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

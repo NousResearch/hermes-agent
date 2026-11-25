@@ -27,12 +27,13 @@ from agent.conversation_compression import (
     compress_context,
     compression_attempt_stalled,
 )
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _build_agent(tmp_path: Path, session_id: str = "STALL_INTERRUPT_96775"):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id, source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, session_id, "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -41,7 +42,7 @@ def _build_agent(tmp_path: Path, session_id: str = "STALL_INTERRUPT_96775"):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -142,11 +143,11 @@ class TestEarlyStopStaysNeutral:
 
         assert compressed == original
         assert live == original
-        assert db.get_compression_lock_holder("EARLY_STOP_96775") is None
-        assert db.get_compression_failure_cooldown("EARLY_STOP_96775") is None
+        assert db.coordination.get_compression_lock_holder(session_id="EARLY_STOP_96775") is None
+        assert db.messages.read_compression_cooldown("EARLY_STOP_96775", time.time()) is None
         assert agent.context_compressor.should_compress(50_000) is True
         assert recorded == [outcome]
-        db.append_message("EARLY_STOP_96775", "assistant", "still writable")
+        seed_messages(db, "EARLY_STOP_96775", {"role": "assistant", "content": "still writable"})
 
 
 class TestStallInterruptedBackoff:
@@ -181,11 +182,11 @@ class TestStallInterruptedBackoff:
 
         assert compressed == original
         assert live == original
-        assert db.get_compression_lock_holder("STALL_AUX_CANCEL") is None
-        state = db.get_compression_failure_cooldown("STALL_AUX_CANCEL")
+        assert db.coordination.get_compression_lock_holder(session_id="STALL_AUX_CANCEL") is None
+        state = db.messages.read_compression_cooldown("STALL_AUX_CANCEL", time.time())
         assert state is not None
-        assert STALL_INTERRUPTED_FAILURE_CLASS in str(state["error"])
-        assert "msgs=20" in str(state["error"])
+        assert STALL_INTERRUPTED_FAILURE_CLASS in str(state.error)
+        assert "msgs=20" in str(state.error)
         assert agent.context_compressor.should_compress(50_000) is False
 
         compress_calls["n"] = 0
@@ -199,7 +200,7 @@ class TestStallInterruptedBackoff:
         assert again == original
         assert compress_calls["n"] == 0
 
-        db.append_message("STALL_AUX_CANCEL", "assistant", "still writable")
+        seed_messages(db, "STALL_AUX_CANCEL", {"role": "assistant", "content": "still writable"})
 
     def test_commit_fence_cancel_after_stall_persists_backoff(
         self, tmp_path: Path, monkeypatch
@@ -233,11 +234,11 @@ class TestStallInterruptedBackoff:
 
         assert compressed == original
         assert live == original
-        state = db.get_compression_failure_cooldown("STALL_FENCE_CANCEL")
+        state = db.messages.read_compression_cooldown("STALL_FENCE_CANCEL", time.time())
         assert state is not None
-        assert STALL_INTERRUPTED_FAILURE_CLASS in str(state["error"])
+        assert STALL_INTERRUPTED_FAILURE_CLASS in str(state.error)
         assert agent.context_compressor.should_compress(50_000) is False
-        db.append_message("STALL_FENCE_CANCEL", "user", "next turn")
+        seed_messages(db, "STALL_FENCE_CANCEL", {"role": "user", "content": "next turn"})
 
     def test_commit_fence_cancel_with_fresh_progress_stays_neutral(
         self, tmp_path: Path, monkeypatch
@@ -270,7 +271,7 @@ class TestStallInterruptedBackoff:
         )
 
         assert compressed == original
-        assert db.get_compression_failure_cooldown("FRESH_FENCE_CANCEL") is None
+        assert db.messages.read_compression_cooldown("FRESH_FENCE_CANCEL", time.time()) is None
         assert agent.context_compressor.should_compress(50_000) is True
 
     def test_manual_force_bypasses_stall_backoff(
@@ -327,9 +328,9 @@ class TestStallInterruptedBackoff:
         agent.context_compressor._record_compression_failure_cooldown(
             900.0, "prior timeout"
         )
-        before = db.get_compression_failure_cooldown("MERGE_MAX_STALL")
+        before = db.messages.read_compression_cooldown("MERGE_MAX_STALL", time.time())
         assert before is not None
-        prior_until = float(before["cooldown_until"])
+        prior_until = float(before.until)
 
         fence = CompressionCommitFence()
 
@@ -349,24 +350,24 @@ class TestStallInterruptedBackoff:
             commit_fence=fence,
         )
 
-        after = db.get_compression_failure_cooldown("MERGE_MAX_STALL")
+        after = db.messages.read_compression_cooldown("MERGE_MAX_STALL", time.time())
         assert after is not None
-        assert float(after["cooldown_until"]) >= prior_until - 1.0
-        assert STALL_INTERRUPTED_FAILURE_CLASS in str(after["error"])
+        assert float(after.until) >= prior_until - 1.0
+        assert STALL_INTERRUPTED_FAILURE_CLASS in str(after.error)
 
 
 def test_session_db_cooldown_write_does_not_shorten_longer_deadline(
     tmp_path: Path,
 ):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("merge-max", source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, "merge-max", "cli")
     later = time.time() + 900.0
     sooner = time.time() + 60.0
-    db.record_compression_failure_cooldown("merge-max", later, "timeout")
-    db.record_compression_failure_cooldown(
+    db.messages.record_compression_cooldown("merge-max", later, "timeout")
+    db.messages.record_compression_cooldown(
         "merge-max", sooner, STALL_INTERRUPTED_FAILURE_CLASS
     )
-    row = db.get_compression_failure_cooldown("merge-max")
+    row = db.messages.read_compression_cooldown("merge-max", time.time())
     assert row is not None
-    assert float(row["cooldown_until"]) >= later - 1.0
-    assert row["error"] == STALL_INTERRUPTED_FAILURE_CLASS
+    assert float(row.until) >= later - 1.0
+    assert row.error == STALL_INTERRUPTED_FAILURE_CLASS

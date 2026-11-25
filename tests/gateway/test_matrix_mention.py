@@ -378,8 +378,10 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
 @pytest.mark.parametrize("existing", [None, "operator"])
 @pytest.mark.parametrize("secondary", [False, True])
 def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, secondary):
+    """A secondary profile's scope is never bridged; an operator's ``.env`` value wins (#109032)."""
     import os
     from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+    from hermes_cli import env_loader
     from plugins.platforms.matrix.adapter import _apply_yaml_config
 
     expected = {"MATRIX_REQUIRE_MENTION": "false", "MATRIX_AUTO_THREAD": "false",
@@ -390,6 +392,8 @@ def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, seco
         monkeypatch.delenv(key, raising=False)
         if existing is not None:
             monkeypatch.setenv(key, existing)
+    if existing is not None:
+        monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set(expected))  # set in .env
     token = set_secret_scope({}) if secondary else None
     set_multiplex_active(secondary)
     try:

@@ -1,0 +1,31 @@
+name: attest
+title: attest
+repo: https://github.com/pgreyy/attest
+sha: 0de5e1e49da1bb9bcd54ef28d224c2cc095e7ad6
+subdir: ""
+description: "Paper trading ledger for agents. Orders, balances and P&L live in a local SQLite ledger the plugin owns, and the agent gets its figures from get_portfolio, get_pnl and get_quote instead of stating them. Orders are priced from live public exchange quotes with slippage and a fee, after a per-order size limit, a daily loss kill switch and duplicate-order checks. No real money, no exchange account, no keys. Disclosure: network use is read-only HTTPS GETs of public ticker data, each sending only the trading pair and the User-Agent attest-paper-trading/0.6.1, with a 3 second deadline: www.okx.com /api/v5/market/ticker?instId=BTC-USDT first, then api.kraken.com /0/public/Ticker?pair=XBTUSDT, then data-api.binance.vision /api/v3/ticker/bookTicker?symbol=BTCUSDT as fallbacks. Requests happen on an order, on get_quote, when marking open positions, and for the claim check. It writes one SQLite ledger in its Hermes plugin data folder: account, trades (with the quote that priced each one, the full tool result and the optional order note), positions, risk state, each day's starting equity, and the ids of sessions that called an attest tool or the guarded tool (removed after 90 days); no other conversation text. pre_tool_call blocks only the one tool named in the intercept_tool setting (empty by default) while paper_mode is on, and simulates that order on the ledger instead; every other tool returns untouched. transform_llm_output appends one line under a reply that states a balance or P&L figure the ledger contradicts, only in sessions that used attest, and never edits the reply. /attest check runs the bundled self test in a separate Python process against a temporary database. The demo_stub_tool setting (off by default) registers a test-only demo_broker_order tool."
+maintainer: pgreyy
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/pgreyy/attest/blob/0de5e1e49da1bb9bcd54ef28d224c2cc095e7ad6/README.md
+version: "0.6.1"
+readme: true
+platforms: []
+# Network (no schema field, so stated here and in the description):
+#   www.okx.com              GET /api/v5/market/ticker?instId=<BASE>-USDT
+#   api.kraken.com           GET /0/public/Ticker?pair=<BASE>USDT (BTC sent as XBT)
+#   data-api.binance.vision  GET /api/v3/ticker/bookTicker?symbol=<BASE>USDT
+#   Sent: the pair, User-Agent attest-paper-trading/0.6.1, Accept: application/json. No keys, no cookies.
+# Data: one SQLite ledger (attest.db) in the plugin's Hermes data folder.
+capabilities:
+  provides_tools:
+    - paper_order
+    - get_quote
+    - get_portfolio
+    - get_pnl
+  provides_hooks:
+    - pre_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

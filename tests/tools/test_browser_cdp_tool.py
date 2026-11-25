@@ -200,6 +200,67 @@ def test_browser_level_redacts_secret_result(cdp_server):
     assert result["result"]["result"]["value"].startswith("sk-")
 
 
+class _FakeSupervisor:
+    """Minimal live supervisor: one OOPIF frame with its own session on a real loop."""
+
+    def __init__(self, loop, response):
+        self._loop = loop
+        self._state_lock = threading.Lock()
+        self._frames: dict = {}
+        self._response = response
+
+    def snapshot(self):
+        return type("Snap", (), {"frame_tree": {"top": {"frame_id": "oopif-1", "session_id": "child-sid"}}})()
+
+    async def _cdp(self, method, params, session_id=None, timeout=None):
+        return {"result": self._response}
+
+
+@pytest.fixture
+def fake_supervisor(monkeypatch):
+    from tools import browser_supervisor
+
+    loop = asyncio.new_event_loop()
+    running = threading.Event()
+    loop.call_soon(running.set)  # fires only once run_forever() is actually running
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    assert running.wait(timeout=5), "supervisor loop never started"
+    holder: dict = {}
+    monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: holder.get("sup"))
+
+    def install(response):
+        holder["sup"] = _FakeSupervisor(loop, response)
+
+    yield install
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5)
+    loop.close()
+
+
+def test_frame_id_route_redacts_secret_result(fake_supervisor):
+    """The OOPIF/supervisor route returns page content too; it must get the same redaction (#80755)."""
+    fake_key = "sk-" + "CDPFRAMESECRET1234567890"
+    fake_supervisor({"result": {"type": "string", "value": fake_key}})
+
+    result = json.loads(browser_cdp_tool._browser_cdp_via_supervisor(
+        task_id="default", frame_id="oopif-1", method="Runtime.evaluate", params={}, timeout=5))
+
+    assert result["success"] is True
+    assert "CDPFRAMESECRET" not in json.dumps(result)
+    assert result["result"]["result"]["value"].startswith("sk-")
+
+
+def test_frame_id_route_screenshot_base64_passes_through(fake_supervisor):
+    data = "sk-" + "LOOKSLIKEAKEYBUTISPIXELS1234567890"
+    fake_supervisor({"data": data})
+
+    result = json.loads(browser_cdp_tool._browser_cdp_via_supervisor(
+        task_id="default", frame_id="oopif-1", method="Page.captureScreenshot", params={}, timeout=5))
+
+    assert result["result"]["data"] == data
+
+
 def test_screenshot_base64_passes_through_unredacted(cdp_server):
     """The Fernet pattern matches arbitrary spans inside base64 payloads —
     a screenshot whose base64 contains "gAAAA..." must stay byte-identical

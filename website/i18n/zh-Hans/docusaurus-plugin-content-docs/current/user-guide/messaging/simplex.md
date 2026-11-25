@@ -57,7 +57,7 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 
 ## 查找联系人 ID
 
-启动守护进程后，与你的 Agent 联系人开启一段对话。联系人 ID 将出现在会话日志中，或通过 `hermes send_message action=list` 查看。
+启动守护进程后，与你的 Agent 联系人开启一段对话。联系人 ID 将出现在会话日志中（或在守护进程中运行 `/contacts`）。
 
 ## 授权
 

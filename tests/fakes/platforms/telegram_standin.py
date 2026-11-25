@@ -15,6 +15,7 @@ reserved character outside an entity must be backslash-escaped, else ``400 can't
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import re
 import time
@@ -27,6 +28,7 @@ from tests.fakes.platforms._standin import StandinServer, Visible, decode_value
 BOT_ID = 7000000001
 BOT_USERNAME = "hermes_standin_bot"
 MAX_TEXT = 4096
+RICH_MAX = 32_768  # sendRichMessage markdown cap
 # MarkdownV2 (https://core.telegram.org/bots/api#markdownv2-style): these must be escaped outside
 # entities; inside ``code``/```pre``` only ` and \ are special.
 _MDV2_RESERVED = set("_*[]()~`>#+-=|{}.!")
@@ -136,6 +138,17 @@ def _check_text(p: dict[str, Any], field: str = "text") -> str:
     return str(p.get(field) or "")
 
 
+def _check_rich(p: dict[str, Any]) -> str:
+    """``rich_message`` (an ``InputRichMessage``): its markdown, refused empty or over ``RICH_MAX``."""
+    rich = p.get("rich_message")
+    markdown = str(rich.get("markdown") or "") if isinstance(rich, dict) else ""
+    if not markdown.strip():
+        raise BotApiError("Bad Request: rich message is empty")
+    if len(markdown) > RICH_MAX:
+        raise BotApiError("Bad Request: rich message is too long")
+    return markdown
+
+
 class TelegramStandin(StandinServer):
     def __init__(self, token: str = "123456:standin-token") -> None:
         super().__init__()
@@ -178,7 +191,9 @@ class TelegramStandin(StandinServer):
             reader = await request.multipart()
             async for part in reader:
                 if part.filename:
-                    params[part.name] = {"filename": part.filename, "size": len(await part.read())}
+                    data = await part.read()
+                    params[part.name] = {"filename": part.filename, "size": len(data),
+                                         "sha256": hashlib.sha256(data).hexdigest()}
                 else:
                     params[part.name] = decode_value(await part.text())
         elif request.can_read_body:
@@ -285,6 +300,10 @@ class TelegramStandin(StandinServer):
     def _m_sendMessage(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._bot_message(p, text=_check_text(p))
 
+    def _m_sendRichMessage(self, p: dict[str, Any]) -> dict[str, Any]:
+        """Bot API 10.1 rich send: the markdown is the message text (``RICH_MAX`` chars at most)."""
+        return self._bot_message(p, text=_check_rich(p), _kind="rich")
+
     def _m_sendMessageDraft(self, p: dict[str, Any]) -> bool:
         """Animate a private-chat draft preview; not a message (no message_id)."""
         if not int(p.get("draft_id") or 0):
@@ -317,15 +336,15 @@ class TelegramStandin(StandinServer):
                                  document={"file_id": "out-doc", "file_unique_id": "od"})
 
     def _m_editMessageText(self, p: dict[str, Any]) -> dict[str, Any]:
-        _check_text(p)
+        text = _check_rich(p) if p.get("rich_message") else _check_text(p)
         chat_id, mid = str(p["chat_id"]), str(p["message_id"])
         with self._lock:
             vis = self._visible.get((chat_id, mid))
             if vis is not None:
-                vis.text = p.get("text", "")
+                vis.text = text
                 vis.edits += 1
         return {"message_id": int(mid), "date": int(time.time()), "chat": self._chat(chat_id),
-                "from": self._bot_user(), "text": p.get("text", ""), "edit_date": int(time.time())}
+                "from": self._bot_user(), "text": text, "edit_date": int(time.time())}
 
     def _m_editMessageReplyMarkup(self, p: dict[str, Any]) -> Any:
         return {"message_id": int(p["message_id"]), "date": int(time.time()), "chat": self._chat(p["chat_id"]),

@@ -20,7 +20,7 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
     ContextCompressor,
 )
-from agent.turn_context import drop_stale_api_content
+from session_rules.turns import drop_stale_api_content
 
 SUMMARY_BODY = "## Active Task\nsummarized prior work"
 SIGNATURE = "c2lnbmF0dXJl"

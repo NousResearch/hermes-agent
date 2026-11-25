@@ -1,0 +1,39 @@
+name: tradeguard
+title: TradeGuard
+repo: https://github.com/vansh-attention/hermes-tradeguard
+sha: 46434c99ce192f0fa9e3c718d91d57be20d056e4
+description: >-
+  Read-only stocks and ETF research for Hermes: evidence-aware fundamentals,
+  daily technical observations, ETF structure, comparable ranking,
+  microstructure calculations and an explicitly experimental walk-forward ML
+  baseline. It provides explainable heuristic research priority, not trade
+  execution, personalized investment advice, calibrated win probabilities,
+  price targets or position sizing. Optional ticker-only research fetches
+  historical daily bars from Yahoo Finance's unofficial public chart endpoint
+  only after explicit plugin configuration consent; it uses no API keys,
+  credentials, broker access, background processes or live orders. Supplied
+  snapshots and issuer metadata are read only from paths the user explicitly
+  requests. Disclosure: public-data requests leave the local machine for the
+  requested symbols, may fail or be stale, and are not entitled real-time
+  quotes; technical-only scores are not combined valuations and all scores are
+  unvalidated research heuristics.
+maintainer: Vansh Khosla
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/vansh-attention/hermes-tradeguard#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - tradeguard_recommend_tickers
+    - tradeguard_strategy_catalog
+    - tradeguard_equity_research
+    - tradeguard_public_history
+    - tradeguard_walk_forward
+    - tradeguard_microstructure
+    - tradeguard_rank
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

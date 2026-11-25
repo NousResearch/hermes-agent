@@ -33,6 +33,8 @@ def _update_failed_notice() -> str:
 # configured at all — no adapter will ever appear — would keep itself on disk and re-log a
 # deferred line on every poll, in every process, forever. Stop waiting past this age.
 _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
+# How long a watcher follows one /update before writing the timeout exit code.
+_UPDATE_WATCH_TIMEOUT_SECONDS = 1800.0
 
 
 def _update_output_tail(output: str, limit: int) -> str:
@@ -65,11 +67,19 @@ class GatewayUpdateNotificationsMixin:
     class _UpdateTarget:
         """Resolved delivery target for update watcher messages."""
 
-        adapter: Any
+        pinned_adapter: Any
         chat_id: Any
         session_key: Optional[str]
         metadata: Any
         platform: Any
+        # Re-runs the owner lookup: an update outlives a reconnect, whose replacement adapter must
+        # carry the prompt (the retired one has no bot and its button state would never be read).
+        resolve_adapter: Optional[Any] = None
+
+        @property
+        def adapter(self):
+            live = self.resolve_adapter() if self.resolve_adapter is not None else None
+            return live if live is not None else self.pinned_adapter
 
         def send_metadata(self):
             from gateway.run import _non_conversational_metadata
@@ -130,6 +140,25 @@ class GatewayUpdateNotificationsMixin:
         now = datetime.now(stamped.tzinfo) if stamped.tzinfo else datetime.now()
         return (now - stamped).total_seconds()
 
+    @classmethod
+    def _update_in_flight(cls) -> bool:
+        """An earlier ``/update`` has not finished: its marker is on disk with no exit code yet.
+
+        Its watcher keeps the chat and opener it read at start, so a second ``/update`` must not
+        rewrite the marker (who answers the prompt) under it. A marker older than the watcher's
+        timeout is a dead run the watcher can no longer finish, and does not block a new one."""
+        paths = cls._update_paths()
+        if paths.exit_code.exists():
+            return False
+        for path in (paths.claimed, paths.pending):
+            try:
+                marker = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            age = cls._marker_age_seconds(marker) if isinstance(marker, dict) else None
+            return age is not None and age < _UPDATE_WATCH_TIMEOUT_SECONDS
+        return False
+
     def _resolve_update_target(self, paths: _UpdatePaths) -> Optional[_UpdateTarget]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
         for path in (paths.claimed, paths.pending):
@@ -145,13 +174,15 @@ class GatewayUpdateNotificationsMixin:
                 platform = Platform(platform_str)
                 # The requester's OWN profile bot (marker ``profile``, else the ``agent:<profile>:`` key
                 # lane); a bare self.adapters lookup is the default bot under multiplex.
-                adapter = self._authorization_adapter(platform, self._marker_profile(pending))
+                profile = self._marker_profile(pending)
+                adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
                     return None
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
                 # Fallback session key if not stored (old pending files)
                 return self._UpdateTarget(
                     adapter, chat_id, session_key or f"{platform_str}:{chat_id}", metadata, platform,
+                    resolve_adapter=lambda: self._authorization_adapter(platform, profile),
                 )
         return None
 
@@ -218,7 +249,7 @@ class GatewayUpdateNotificationsMixin:
             await target.send(t("gateway.update.prompt", prompt=prompt_text, default_hint=default_hint, prefix=_p))
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
         self._session_state(target.session_key).persistent.update_prompt_pending = True
-        logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
+        logger.info("Forwarded update prompt to %s (%d chars)", target.session_key, len(prompt_text))
 
     def _clear_update_markers(self, paths: _UpdatePaths, session_key: Optional[str]) -> None:
         paths.unlink_all()
@@ -227,7 +258,7 @@ class GatewayUpdateNotificationsMixin:
             state.persistent.update_prompt_pending = False
 
     async def _watch_update_progress(
-        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = 1800.0
+        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = _UPDATE_WATCH_TIMEOUT_SECONDS
     ) -> None:
         """Watch ``hermes update --gateway``, streaming output + forwarding prompts.
 

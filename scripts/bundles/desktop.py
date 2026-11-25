@@ -52,10 +52,12 @@ def flavored_assets(icons: Path, assets: Path):
 
 
 def release_version(_repo: Path, tag: str) -> str:
-    from scripts.termux.deb_version import channel_for_tag
+    from hermes_cli.update_channel import release_version as version_for
 
-    channel_for_tag(tag)  # shared release tag grammar, not a second version parser
-    return tag[1:]
+    version = version_for(tag)
+    if version is None:
+        raise ValueError(f"Not a release tag: {tag!r}")
+    return version
 
 
 def pnpm_command(node: str) -> list[str]:
@@ -112,9 +114,12 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
         run([node, "scripts/build/tui.mjs", "--source", str(repo), "--out", str(products / "tui")], cwd=repo, env=env)
         run([node, "scripts/build/web.mjs", "--source", str(repo), "--icons", str(products / "icons"),
              "--out", str(products / "web")], cwd=repo, env=env)
+        run([node, "scripts/build/webapp.mjs", "--source", str(repo), "--out", str(products / "webapp")],
+            cwd=repo, env=env)
         if prepared.payload is None:
             raise ValueError("payload dependencies were not prepared")
-        if finish_native(prepared.payload, {"tui": products / "tui", "web": products / "web"}):
+        frontends = {name: products / name for name in ("tui", "web", "webapp")}
+        if finish_native(prepared.payload, frontends):
             raise RuntimeError("prepared payload assembly failed")
     from scripts.bundles.desktop_prepare import require_source
     require_source(repo, request.commit)
@@ -130,8 +135,10 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
              "--out", str(desktop / "dist")], cwd=repo, env=env)
         version_args = []
         if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
-            script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.HERMES_RELEASE_EPOCH)))"
-            quad = capture([node, "-e", script, request.tag], repo, env)
+            # A Store package carries the Store scheme (revision zero) even on a canary.
+            script = ("const m=require('./scripts/msix-shared.mjs');const e=Number(process.env.HERMES_RELEASE_EPOCH);"
+                      "console.log(process.argv[2]==='store'?m.storePackageVersionAt(e):m.nativeQuad(process.argv[1],e))")
+            quad = capture([node, "-e", script, request.tag, variant], repo, env)
             version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
         run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,
             env=packaging_environment(env, os.environ, request.target))

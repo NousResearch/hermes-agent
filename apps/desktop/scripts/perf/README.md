@@ -58,6 +58,15 @@ immediately. `--spawn` / `perf:serve` launch with their own `--user-data-dir`
 and their own `--remote-debugging-port`. Synthetic scenarios drive `$messages`
 directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 
+The isolated home is seeded from `~/.hermes` (`config.yaml`, `.env`, `auth.json`)
+so it skips onboarding, with every messaging platform written back as
+`enabled: false` in canonical and overriding shorthand blocks (`lib/seed-home.mjs`),
+without changing unrelated YAML scalar values. Its gateway must never open a second
+Telegram/Discord/iMessage connection: a platform sidecar on a fixed port would
+reap the live gateway's and steal inbound messages. The first Electron spawn uses
+Desktop's normal display selector, including NVIDIA, X11 overrides and forwarded
+displays, so a platform-selection relaunch cannot contend for the CDP port.
+
 ## Scenarios
 
 | scenario | tier | measures | replaces |

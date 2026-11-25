@@ -384,6 +384,41 @@
   font-size: var(--conversation-caption-font-size);
 }
 
+/* The thinking preview is a real scroller (its `max-h-40` body), but the app's scrollbars are
+   hover-only (styles.css): a long reasoning block read as text cut off at the box's edge, with
+   nothing saying the rest was below. Redesign gives that body a resting thin thumb, so overflow
+   announces itself before the pointer arrives; the transcript itself keeps the hover-only
+   treatment. Chromium 121+ (Electron) prefers the standard pair over ::-webkit-scrollbar and
+   ignores the latter when both are set, so the standard pair is gated to engines without webkit
+   scrollbar support (Firefox); the webkit rules below carry the redesign thumb. Both take the
+   same token: ink-28 holds its contrast on the navy stage and on light's near-white. Classic
+   never matches this gate. */
+@supports not selector(::-webkit-scrollbar) {
+  :root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_thinking-body'] {
+    scrollbar-width: thin;
+    scrollbar-color: var(--portal-stroke-strong) transparent;
+  }
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_thinking-body']::-webkit-scrollbar {
+  width: var(--portal-scrollbar-size);
+  height: var(--portal-scrollbar-size);
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_thinking-body']::-webkit-scrollbar-track,
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_thinking-body']::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_thinking-body']::-webkit-scrollbar-thumb {
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-stroke-strong);
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_thinking-body']::-webkit-scrollbar-button {
+  display: none;
+}
+
 /* Errors: the card language, with the destructive banner tint (877:4212) only
    when the turn is blocked. */
 :root[data-shell='portal'] [data-slot='aui_thread-content'] .aui-error-card {

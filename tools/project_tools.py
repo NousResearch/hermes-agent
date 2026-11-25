@@ -100,14 +100,23 @@ def _activated(proj, task_id: Optional[str]) -> str:
 
 def _calling_session_project_id(conn, task_id: Optional[str]) -> tuple[bool, Optional[str]]:
     """``(scoped, project_id)`` for the calling session. The GUI gateway registers each session's
-    workspace (``cwd_source``) in the terminal override table; a caller it never registered (CLI,
-    scripts) is unscoped and falls back to the profile-global pointer."""
+    workspace (``cwd_source``) in the terminal override table, and a Desktop or TUI chat the gateway
+    owns runs its turn with its frozen policy bound (its ``cwd`` is the workspace); any other caller
+    (CLI, scripts, kanban) is unscoped and falls back to the profile-global pointer."""
     from hermes_cli import projects_db as pdb
     from tools.terminal_tool import resolve_task_overrides
     overrides = resolve_task_overrides(task_id) if task_id else {}
-    if "cwd_source" not in overrides:
-        return False, None
-    cwd = overrides.get("cwd") if overrides["cwd_source"] == "session" else overrides.get("host_workspace")
+    if "cwd_source" in overrides:
+        cwd = overrides.get("cwd") if overrides["cwd_source"] == "session" else overrides.get("host_workspace")
+    else:
+        try:
+            from gateway.session_policy import active_policy
+        except ImportError:  # install without the gateway package: no gateway turn can be running
+            return False, None
+        policy = active_policy()
+        if not task_id or policy is None or policy.source not in ("gui", "tui"):
+            return False, None
+        cwd = policy.cwd
     project = pdb.project_for_path(conn, cwd) if cwd else None
     return True, project.id if project else None
 

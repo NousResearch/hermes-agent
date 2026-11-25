@@ -444,9 +444,12 @@ def test_macos_native_absent_clt_prevents_all_git_spawns_and_warns_doctor(tmp_pa
     _subprocess_compat._safe_directory_cache.clear()
     git_probe.invalidate()
 
+    # The resolver runs its own `xcode-select -p`; only its answer is replaced, with the empty
+    # developer dir a macOS upgrade leaves behind when it drops the Command Line Tools.
     missing_dev = str(tmp_path / "nonexistent-clt")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    monkeypatch.setenv("DEVELOPER_DIR", missing_dev)
+    monkeypatch.delenv("DEVELOPER_DIR", raising=False)
+    monkeypatch.setattr(git_resolver, "_probe_xcode_select_developer_dir", lambda _env=None: missing_dev)
     monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda _name: None)
     monkeypatch.setattr(host_supervisor, "_repo_root", lambda: repo)
 
@@ -506,14 +509,14 @@ def test_macos_native_working_apple_git_works_normally(tmp_path, monkeypatch, ca
     _subprocess_compat._safe_directory_cache.clear()
     git_probe.invalidate()
 
+    # No DEVELOPER_DIR: the resolver must reach the host's CLT through its own `xcode-select -p`.
     env = {
         "PATH": "/usr/bin:/bin",
-        "DEVELOPER_DIR": dev_dir,
         "GIT_CONFIG_SYSTEM": str(system_cfg),
         "GIT_CONFIG_GLOBAL": str(global_cfg),
     }
     monkeypatch.setenv("PATH", env["PATH"])
-    monkeypatch.setenv("DEVELOPER_DIR", dev_dir)
+    monkeypatch.delenv("DEVELOPER_DIR", raising=False)
     monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda _name: None)
 
     assert git_probe.branch(str(repo)) == "feature/mac-apple-git"

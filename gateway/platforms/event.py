@@ -43,6 +43,12 @@ def clean_attachment_filename(name: object) -> str:
     return base
 
 
+# The producers ``MessageEvent.turn_origin`` can name: each one only Hermes itself runs.
+# "process_notification": a background process's completion, watch match or liveness tick.
+# "delegation_result": an async delegation's result re-entering its parent session.
+TURN_ORIGINS = frozenset({"process_notification", "delegation_result"})
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -146,31 +152,23 @@ class MessageEvent:
     _admitted_before_drain: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
-    # ``internal`` as admission found it, recorded before an API turn is marked internal for trust.
-    # Also set by a producer whose ``internal`` event relays someone's message (a Bot Chat delivery).
-    _started_by_hermes: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
-    # The producer could not tell (a Bot Chat retry of a receipt that recorded no origin).
-    _origin_unknown: bool = field(default=False, init=False, repr=False, compare=False)
+    # The producer of this turn's input when Hermes produced it itself (``TURN_ORIGINS``), set by that
+    # producer (``set_turn_origin``) and carried by its committed admission; never ingress metadata.
+    _turn_origin: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
-    def mark_origin(self, started_by_hermes: Optional[bool]) -> None:
-        """Record who produced this event's input, independent of ``internal`` (execution trust)."""
-        self._started_by_hermes, self._origin_unknown = started_by_hermes, started_by_hermes is None
+    def set_turn_origin(self, origin: Any) -> None:
+        """Name the Hermes producer of this event's input; any value outside ``TURN_ORIGINS`` is none."""
+        self._turn_origin = origin if origin in TURN_ORIGINS else None
 
-    def started_by_hermes(self) -> Optional[bool]:
-        """Whether Hermes produced this turn's input itself rather than relaying someone's message.
-        ``None`` for a synthetic turn that is not internal (a goal continuation may follow a
-        person's ``/goal``) and for an API event admission did not record: the API marks every
-        turn it executes internal for trust, so there ``internal`` alone says nothing."""
+    def turn_origin(self) -> Optional[str]:
+        """The producer ``set_turn_origin`` named for this event, or for the event a plugin rewrote
+        into it; ``None`` when no producer named one. ``internal`` (execution trust) plays no part."""
         event: Optional[MessageEvent] = self
         while event is not None:
-            if getattr(event, "_origin_unknown", False):
-                return None
-            if event._started_by_hermes is not None:
-                return event._started_by_hermes
+            if event._turn_origin is not None:
+                return event._turn_origin
             event = getattr(event, "_rewritten_from", None)
-        if self.internal:
-            return None if getattr(getattr(self.source, "platform", None), "value", None) == "api_server" else True
-        return None if self.inherit_channel_pin else False
+        return None
 
     def accept_interrupt(self) -> None:
         """The runner's stop/reset handler ran (past admission and slash access): the receiving adapter

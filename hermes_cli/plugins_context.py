@@ -429,11 +429,11 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_session import turn_client
         return turn_client()
 
-    def turn_internal(self) -> bool | None:
-        """Whether Hermes itself started the running turn (``plugin_session.turn_internal``).
+    def turn_origin(self) -> str | None:
+        """The Hermes producer of the running turn (``plugin_session.turn_origin``).
         Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
-        from hermes_cli.plugin_session import turn_internal
-        return turn_internal()
+        from hermes_cli.plugin_session import turn_origin
+        return turn_origin()
 
     def session_viewers(self) -> list[dict]:
         """The clients attached to the calling session (``plugin_session.session_viewers``).

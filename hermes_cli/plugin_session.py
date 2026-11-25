@@ -56,26 +56,22 @@ def turn_client() -> dict | None:
     return surface_turn_client()
 
 
-def turn_internal() -> bool | None:
-    """Whether Hermes itself started the turn running in this context, the pair of ``turn_client()``.
-    ``True`` for a turn whose input Hermes produced: a background-process notification, a delegation
-    result, an automation or heartbeat wake, a message a plugin injected, or an event a platform
-    adapter marks as a system trigger (a webhook notification), and an unauthored report delivered
-    into the Bot Chat (cron job output). A plugin's injected message is the plugin's own output, so
-    it reads ``True`` whatever its text relays. ``False`` for a turn carrying a message someone sent:
-    typed in a client (announced or not), on a messaging chat, an API request, a ``hermes peer dm``
-    or an authored (a person's or another bot's) Bot Chat delivery, and a late steer run as the next
-    turn. ``None`` outside a turn, in a delegated child (it runs in its parent turn's context),
-    in a managed worker and a plugin's own slash command (no turn event is bound there), for a
-    synthetic turn Hermes does not mark internal (a goal continuation), and for a turn whose sender
-    is no longer known (interrupt text run as the next turn, the retry of a Bot Chat delivery whose
-    receipt recorded no origin). A steer into the running turn does not change the answer. Answers only inside the gateway process: under
-    ``plugins.isolation: host`` it is always ``None`` in the plugin's own process, where
-    ``ctx.turn_internal()`` asks the gateway instead."""
+def turn_origin() -> str | None:
+    """The Hermes producer of the turn running in this context, the pair of ``turn_client()``, named
+    only where Hermes knows it: ``"process_notification"`` for a turn a background process's
+    completion, watch match or liveness tick started, ``"delegation_result"`` for an async
+    delegation's result re-entering its parent. ``None`` for every other turn, whoever started it:
+    a message typed in a client or sent on a messaging chat, an API request, a Bot Chat delivery or
+    ``hermes peer dm``, a restart's resume of an interrupted turn, a goal continuation, cron, Kanban
+    and other automation wakes, a message a plugin injected, and a steer or interrupt text run as the
+    next turn. ``None`` too outside a turn, in a delegated child and in a managed worker. New values
+    may be added: compare against the ones you handle. A steer into the running turn does not change
+    the answer. Answers only inside the gateway process: under ``plugins.isolation: host`` it is
+    always ``None`` in the plugin's own process, where ``ctx.turn_origin()`` asks the gateway instead."""
     if _in_delegated_child():
         return None
-    from gateway.session_context import turn_started_by_hermes
-    return turn_started_by_hermes()
+    from gateway.session_context import bound_turn_origin
+    return bound_turn_origin()
 
 
 def session_viewers() -> list[dict]:

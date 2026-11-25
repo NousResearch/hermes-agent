@@ -549,41 +549,22 @@ def snapshot_automation(authority, adapter, event, identity):
     identities = event.metadata.get('automation_identities')
     if identities:
         envelope['automation']['identities'] = sorted(set(identities))
-    envelope['automation'].update(_origin_descriptor(event, identity=identity))  # no ``turn_author`` here
+    envelope['automation'].update(_origin_descriptor(event))
     return {'text': event.text, 'native_text_v1': envelope}, entry
 
 
-def _bot_chat_row(identity):
-    """A Bot Chat delivery's admission (``session_bot.deliver`` and its retry): its identity is
-    ``bot:<delivery id>``; every other producer's is a JSON list."""
-    return isinstance(identity, str) and identity.startswith('bot:')
-
-
-def _origin_descriptor(event, authored=False, identity=None):
-    """The ``started_by_hermes`` an automation row records for ``turn_internal()``: only when its
-    producer marked the input as not Hermes' own (``MessageEvent.mark_origin``: a Bot Chat delivery
-    someone sent, or one whose origin is unknown), so every other producer's row, and its retry
-    fingerprint, is unchanged. A row with a ``turn_author`` reads ``False`` from that alone. A Bot
-    Chat row records ``True`` too: one queued before the field existed reads unknown
-    (``restore_origin``), since it cannot tell a peer DM from a producer report."""
-    origin = event.started_by_hermes()
-    if authored or (origin is True and not _bot_chat_row(identity)):
-        return {}
-    return {'started_by_hermes': origin}
+def _origin_descriptor(event):
+    """The ``turn_origin`` an automation row records for ``turn_origin()``: only when its producer
+    named one (``MessageEvent.set_turn_origin``), so every other row, and its fingerprint, is unchanged."""
+    origin = event.turn_origin()
+    return {'turn_origin': origin} if origin is not None else {}
 
 
 def restore_origin(event, descriptor):
-    """Re-mark a restored automation event with the origin its row recorded (``_origin_descriptor``):
-    a ``turn_author`` (only a Bot Chat delivery carries one) is someone else's message, and a Bot
-    Chat row that recorded neither predates the field, so its origin is unknown. ``internal``,
-    execution trust, stays as it is."""
-    if descriptor.get('turn_author') is not None:
-        event.mark_origin(False)
-    elif 'started_by_hermes' in descriptor:
-        origin = descriptor['started_by_hermes']
-        event.mark_origin(origin if isinstance(origin, bool) else None)
-    elif _bot_chat_row(descriptor.get('identity')):
-        event.mark_origin(None)
+    """Re-name a restored automation event's producer from its row (``_origin_descriptor``). A row
+    queued before the field existed, or by any producer that named none, restores as ``None``.
+    ``internal``, execution trust, stays as it is."""
+    event.set_turn_origin(descriptor.get('turn_origin'))
     return event
 
 
@@ -652,7 +633,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         descriptor['identities'] = sorted(set(event.metadata['automation_identities']))
     if getattr(event, '_heartbeat_session_id', None):
         descriptor['heartbeat'] = event._heartbeat_session_id
-    descriptor.update(_origin_descriptor(event, authored='turn_author' in descriptor, identity=identity))
+    descriptor.update(_origin_descriptor(event))
     return {'text': event.text, 'local_automation_v1': descriptor}, entry
 
 

@@ -38,31 +38,6 @@ _OWNER_STATE_REFUSALS = frozenset({
     'storage_unavailable', 'runtime_coordination_required', 'session_busy', 'not_found',
 })
 _PRODUCER_MAX_CHARS = 1024 * 1024
-# The transport ``hermes peer dm`` admits through (``api_server_bot_chat.admit_peer_turn``).
-PEER_DM_TRANSPORT = 'api-peer-dm'
-
-
-def _delivery_origin(actor, author, legacy):
-    """Whether Hermes itself produced a delivery's message (``turn_internal()``), recorded on its
-    receipt as ``started_by_hermes``. The event is ``internal`` for execution trust either way.
-    ``False`` for a message someone sent: an authored one (a person's, or another bot's message,
-    which is that agent's output, not this Hermes starting a turn) and every ``hermes peer dm``.
-    ``True`` for an unauthored producer report (cron job output). A legacy ticket that recorded no
-    origin reads ``None``: its migrating caller is not its sender."""
-    if author is not None:
-        return False
-    if legacy is not None:
-        origin = legacy.get('started_by_hermes')
-        return origin if isinstance(origin, bool) else None
-    return actor.transport_id != PEER_DM_TRANSPORT
-
-
-def _retry_origin(record):
-    """``_delivery_origin`` of a receipt being retried; ``None`` for one that predates the field."""
-    if record.get('author') is not None:
-        return False
-    origin = record.get('started_by_hermes')
-    return origin if isinstance(origin, bool) else None
 
 
 def _canonical_record_error(path, record, required_strings=('admission_id', 'profile_home', 'session_id', 'principal_id')):
@@ -644,7 +619,6 @@ async def _maybe_retry(authority, home, path, record):
     event.metadata.update(automation_notification_metadata(record))
     if record.get('author') is not None:
         event.metadata['turn_author'] = dict(record['author'])
-    event.mark_origin(_retry_origin(record))
     record['retry'] = {'identity': identity}
     record.update(status='queued', reply='')
     await write_receipt(home, record)
@@ -988,14 +962,10 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     event.metadata.update(notification)
     if author is not None:
         event.metadata['turn_author'] = dict(author)
-    origin = _delivery_origin(actor, author, legacy)
-    event.mark_origin(origin)
     # Pin the physical target before committing. A process death in this
     # two-store window leaves an explicit unknown record, never a new target.
     record = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,
         principal_id=actor.subject, message=message, status='ambiguous')
-    if origin is not None:
-        record['started_by_hermes'] = origin  # the retry's origin (``_retry_origin``)
     record.update(notification)
     if 'session:operator' in actor.capabilities:
         record['operator'] = True  # admitted on operator access: its one retry keeps it (``_maybe_retry``)

@@ -111,6 +111,11 @@ describe('native Live explicit billing', () => {
               delegation: { id: 'provider-delegation', type: 'delegation', target: 'client' }
             }
 
+      if (auth === 'subscription') {
+        wire.receive({ type: 'output_transcript.added', item: { text: 'What should I read?' } })
+        wire.receive({ type: 'input_transcript.added', item: { text: 'the ' } })
+      }
+
       wire.receive(
         auth === 'subscription'
           ? { type: 'input_transcript.added', item: { text: 'project status.' } }
@@ -121,9 +126,10 @@ describe('native Live explicit billing', () => {
       expect(onDelegation).toHaveBeenCalledTimes(1)
       expect(onDelegation.mock.calls[0][0]).toBe('provider-delegation')
       expect(onDelegation.mock.calls[0][1].map((part: { text: string }) => part.text)).toEqual([
+        ...(auth === 'subscription' ? ['What should I read?'] : []),
         'Read the project status.'
       ])
-      expect(onTranscript).toHaveBeenCalledTimes(1)
+      expect(onTranscript).toHaveBeenCalledTimes(auth === 'subscription' ? 3 : 1)
 
       if (auth === 'subscription') {
         wire.receive({ type: 'output_transcript.added', item: { text: 'I will check.' } })

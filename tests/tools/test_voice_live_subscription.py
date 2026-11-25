@@ -25,7 +25,7 @@ def _configure(monkeypatch, tmp_path, **live):
 
 
 def test_subscription_request_uses_hermes_oauth_and_its_own_wire(monkeypatch, tmp_path):
-    _configure(monkeypatch, tmp_path, auth="subscription", model="api-model", voice="marin",
+    _configure(monkeypatch, tmp_path, auth="subscription", legacy_client_auth="api", model="api-model", voice="marin",
                subscription_model="gpt-live-1-codex", subscription_voice="cove")
     token = _token()
     refresh = []

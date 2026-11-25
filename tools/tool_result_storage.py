@@ -480,6 +480,14 @@ def archive_compaction_drops(
 ARCHIVE_LIST_HEADING = "Archived tool output (exact originals; read_file a path to recover one):"
 
 
+def strip_archive_list(summary: str) -> str:
+    """*summary* without the archive list(s) a compaction appended, from the FIRST heading on (a summary
+    written before lists stopped re-stacking can carry several). The lists stay on the stored rows the
+    retention sweep reads; this is the text a summarizer or the next list should not re-read."""
+    at = summary.find(ARCHIVE_LIST_HEADING)
+    return summary if at < 0 else summary[:at].rstrip()
+
+
 def _row_text(row: Any) -> str:
     content = row.get("content") if isinstance(row, dict) else None
     return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)

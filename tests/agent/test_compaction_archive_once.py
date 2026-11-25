@@ -113,3 +113,30 @@ def test_the_committed_summary_names_every_archive_the_generated_text_omits_and_
         os.utime(path, (old, old))
     assert cleanup_spillover_cache(max_age_hours=1) == 0
     assert _archived(home) == files
+
+
+def _next_batch(start, n=24, chars=12_000):
+    rows = _transcript(n, chars)[2:-2]
+    for row in rows:  # fresh call ids so each batch archives new files
+        for call in row.get("tool_calls") or ():
+            call["id"] = f"b{start}_{call['id']}"
+        if row.get("tool_call_id"):
+            row["tool_call_id"] = f"b{start}_{row['tool_call_id']}"
+    return rows + [{"role": "assistant", "content": f"batch {start} read"}, {"role": "user", "content": f"go on {start}"}]
+
+
+def test_repeated_compactions_list_only_their_own_archives_not_every_earlier_one(home):
+    """The previous handoff's archive list is not re-listed by the next summary: before the fix each
+    compaction appended every path any earlier summary listed, so the summary grew without bound."""
+    from tools.tool_result_storage import pruned_archive_refs
+    msgs = _transcript()
+    c = _compressor()
+    previous: set[str] = set()
+    for rnd in range(3):
+        with _no_pointer_summary():
+            msgs = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
+        (summary_row,) = [m for m in msgs if m.get(COMPRESSED_SUMMARY_METADATA_KEY)]
+        listed = pruned_archive_refs([summary_row])
+        assert listed and not listed & previous, (rnd, sorted(listed & previous)[:3])
+        previous = listed
+        msgs = msgs + _next_batch(rnd + 1)

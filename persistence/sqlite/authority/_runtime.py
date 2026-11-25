@@ -155,6 +155,11 @@ def settle_steer_transfers(conn, *, epoch: int, generation: int, transfers, outc
     its text reached the claim's agent (``transfers[id]``) and the claim completed; a delivered text
     under any other ending is ``interrupted`` (never replayed); an undelivered one is queued again."""
     for admission_id, delivered in (transfers or {}).items():
+        if delivered == 'cancelled':  # an unread startup follow-up was stopped before the request
+            conn.execute("UPDATE session_admissions SET outcome='cancelled' WHERE admission_id=? "
+                         "AND status='terminal' AND outcome=? AND owner_epoch=? AND generation=?",
+                         (admission_id, STEERING, epoch, generation))
+            continue
         if not delivered:
             _requeue_transfer(conn, admission_id=admission_id, epoch=epoch, generation=generation)
             continue

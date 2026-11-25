@@ -1736,6 +1736,8 @@ def _run_conversation_turn(
             break
         if _pg.action == "continue":
             continue
+        from agent.startup_followups import current_message, stage_first_request
+        startup = stage_first_request(agent, s)
         _run_phase(announce_api_call, agent, s)
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
@@ -1743,6 +1745,7 @@ def _run_conversation_turn(
         s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 
         early_result = _run_api_retry_loop(agent, s)
+        s.user_message = current_message(startup, s.user_message)
         if early_result is not None:
             return early_result
 
@@ -1833,6 +1836,10 @@ def run_conversation(
                 prelude=prelude,
             )
         finally:
+            startup = getattr(agent, "_gateway_startup_followups", None)
+            from agent.startup_followups import StartupFollowups
+            if isinstance(startup, StartupFollowups):
+                startup.finish()
             end_voice_turn_route(agent)
             # Every turn exit (early returns included): a machine session stops warming; a chat a
             # person types into keeps its budget of keep-alives while idle (prompt_cache_lifecycle).
@@ -1842,7 +1849,11 @@ def run_conversation(
     from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth
     lead_failed_turn_with_primary_auth(agent, result)
     settle_held_final(agent, result)
-    result = export_current_turn_boundary(agent, result, user_message)
+    startup = getattr(agent, "_gateway_startup_followups", None)
+    from agent.startup_followups import StartupFollowups
+    result = export_current_turn_boundary(
+        agent, result, startup.current_message(user_message) if isinstance(startup, StartupFollowups) else user_message
+    )
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
     _close_durable_failed_turn(agent, result)

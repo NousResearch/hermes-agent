@@ -91,6 +91,10 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        from agent.startup_followups import StartupFollowups
+        startup = getattr(agent, "_gateway_startup_followups", None)
+        if isinstance(startup, StartupFollowups):
+            startup.commit_request(agent, next_api_kwargs)
         if agent.api_mode == "codex_responses":
             from agent.codex_responses_adapter import drops_replay_item_ids
 

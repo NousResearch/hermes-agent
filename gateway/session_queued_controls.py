@@ -91,8 +91,14 @@ def steer_transfers(authority, session_id, generation):
     adopted_generation, agent = authority.adopted.get(session_id, (None, None))
     withdraw = getattr(agent, 'withdraw_steer', None) if adopted_generation == generation else None
     for admission_id, delivered in entry[1].items():
-        if delivered and callable(withdraw) and withdraw(admission_id):
-            entry[1][admission_id] = False
+        if delivered is True:
+            from agent.startup_followups import StartupFollowups
+            startup = getattr(agent, '_gateway_startup_followups', None)
+            unread = startup.withdraw(admission_id) if isinstance(startup, StartupFollowups) else None
+            if unread is None and callable(withdraw):
+                unread = withdraw(admission_id)
+            if unread:
+                entry[1][admission_id] = False
     return dict(entry[1])
 
 
@@ -203,7 +209,7 @@ def publish_transfers(authority, ref, generation):
         authority.steer_transfers.pop(ref.session_id, None)
     for admission_id in entry[1]:
         row = authority_persistence(authority).admissions.get(admission_id=admission_id)
-        if row is not None and row.status == 'terminal' and row.outcome in ('steered', 'interrupted'):
+        if row is not None and row.status == 'terminal' and row.outcome in ('steered', 'interrupted', 'cancelled'):
             authority._settle_cancelled(ref, admission_id,
                                         outcome='steered' if row.outcome == 'steered' else 'cancelled')
     authority._publish_pending(ref)  # an undelivered transfer is queued again

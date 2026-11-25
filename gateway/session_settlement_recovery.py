@@ -294,6 +294,7 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
             authority.pending_stops.pop(ref.session_id, None)
             authority.pending_stop_causes.pop(ref.session_id, None)
             authority.pending_steers.pop(ref.session_id, None)
+            authority.startup_pending.pop((ref.session_id, row['generation']), None)
             authority.adopted.pop(ref.session_id, None)
             from gateway.session_queued_controls import publish_transfers
             publish_transfers(authority, ref, row['generation'])

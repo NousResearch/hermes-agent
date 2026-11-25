@@ -33,7 +33,7 @@ def set_latest_user_api_content(holder: StoreHolder, session_id: str, content: A
 
 
 def set_message_api_content(
-    holder: StoreHolder, session_id: str, row_id: int, content: Any, api_content: str
+    holder: StoreHolder, session_id: str, row_id: int, content: Any, api_content: str, *, new_content: Any = None,
 ) -> int:
     """Backfill the ``api_content`` sidecar onto ONE known durable row.
 
@@ -55,6 +55,12 @@ def set_message_api_content(
     from persistence.sqlite.conversation._store.messages_sql import _scrub_surrogates
     if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
         return 0
+    if new_content is not None:
+        return holder._write_rowcount(
+            "UPDATE messages SET content = ?, api_content = ? WHERE id = ? AND session_id = ? "
+            "AND role = 'user' AND active = 1 AND content IS ?",
+            (_encode_content(new_content), _scrub_surrogates(api_content), row_id, session_id,
+             _encode_content(content)))
     return holder._write_rowcount(
         "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
         "AND role = 'user' AND active = 1 AND content IS ?",

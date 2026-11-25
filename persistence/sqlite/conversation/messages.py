@@ -446,10 +446,11 @@ class SQLiteMessageRepository:
             return bool(set_latest_user_api_content(holder, session_id, content, api_content))
 
     def set_message_api_content(self, session_id: SessionId, message_id: MessageId, content: JsonValue,
-                                api_content: str) -> bool:
+                                api_content: str, *, new_content: Optional[JsonValue] = None) -> bool:
         holder = self._store.holder()
         with _refusals(holder, session_id):
-            return bool(set_message_api_content(holder, session_id, message_id, content, api_content))
+            return bool(set_message_api_content(holder, session_id, message_id, content, api_content,
+                                                new_content=new_content))
 
     def record_compression_cooldown(self, session_id: SessionId, until: float, error: Optional[str] = None) -> None:
         holder = self._store.holder()

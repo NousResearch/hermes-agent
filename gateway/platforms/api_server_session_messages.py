@@ -1,7 +1,4 @@
 """Read and append session transcripts through the authenticated API edge."""
-import asyncio
-import sqlite3
-
 from aiohttp import web
 
 
@@ -11,8 +8,9 @@ async def append_messages(adapter, request):
     from gateway.session_api import bind_api_steps, run_steps_off_loop
     from gateway.session_append import append_messages as record_messages
     from gateway.session_contract import SessionActor, SessionRef
-    from hermes_state_external_messages import validate_messages
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.authority.external_messages import validate_messages
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import AuthorityRefusal, STORE_FAILURES
     body, error = await adapter._read_json_body(request)
     if error is not None:
         return error
@@ -22,9 +20,9 @@ async def append_messages(adapter, request):
         return _error_response('Session authority unavailable', 503, code='runtime_unavailable')
     try:
         if set(body) != {'messages'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         messages = validate_messages(body['messages'])
-        if await asyncio.to_thread(authority.db.get_session, session_id) is None:
+        if await authority_persistence(authority).aio.sessions.get(session_id) is None:
             return _error_response('Session not found', 404, code='not_found')
         # Only the authenticated API edge may bind a newly created API session.
         # Binding never creates a model turn; it retains the same API ownership
@@ -33,18 +31,20 @@ async def append_messages(adapter, request):
         actor = SessionActor('api', authority.profile_id, frozenset({'session:submit'}), 'api-append')
         result = await record_messages(authority, actor, SessionRef(authority.profile_id, session_id), messages)
         return web.json_response({'object': 'hermes.session.messages', **result})
-    except (RuntimeStoreError, sqlite3.Error, OSError) as exc:
+    except (AuthorityRefusal, *STORE_FAILURES, OSError) as exc:
         return store_error_response(_openai_error, exc)
 
+
 async def read_messages(self, request: web.Request) -> web.Response:
-    """GET /api/sessions/{session_id}/messages."""
     from gateway.platforms.api_server import _coerce_request_bool, _error_response
+    from persistence.conversation.messages import TranscriptRead, TranscriptView
+    """GET /api/sessions/{session_id}/messages."""
     session_id = request.match_info["session_id"]
     _, err = await self._get_existing_session_or_404(session_id)
     if err:
         return err
-    db = await self._ensure_session_db_async()
-    resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+    store = self._store_beside(await self._ensure_store_async())
+    resolved_id = await store.aio.lineage.resolve_resume_target(session_id)
     raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
     order = request.query.get("order")
     if order not in (None, "oldest", "latest"):
@@ -61,14 +61,13 @@ async def read_messages(self, request: web.Request) -> web.Response:
     limit = 500 if default_page else min(requested_limit, 500)
     include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
     # Compression lineage: return root→tip messages, matching the REST router (#51058).
-    messages = await asyncio.to_thread(
-        db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
-        include_compacted=include_compacted, include_ancestors=True)
+    messages = await store.aio.messages.read_transcript(resolved_id, TranscriptRead(
+        view=TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE, limit=limit, offset=offset,
+        latest=latest_page, include_lineage=True))
     return web.json_response({
         "object": "list", "session_id": resolved_id,
-        "data": [self._message_response(m) for m in messages],
+        "data": [self._message_response(m.as_wire_row()) for m in messages],
         "pagination": {
             "limit": limit, "offset": offset,
             "order": order or ("latest" if default_page else "oldest"),
             "returned": len(messages)}})
-

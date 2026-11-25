@@ -601,7 +601,7 @@ def _announce_blueprint(c: Console, skill_name: str) -> None:
     """Offer an installed skill's ``metadata.hermes.blueprint`` via /suggestions — never
     auto-scheduled (installing must not silently create a recurring job). Never raises."""
     try:
-        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
+        from cron.skill_blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
         try:
             spec = blueprint_spec_for_installed(skill_name)
         except BlueprintError as _rec_err:

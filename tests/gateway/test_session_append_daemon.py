@@ -27,6 +27,8 @@ def speech_daemon(tmp_path, *, review):
     config = {'gateway': {'multiplex_profiles': False, 'managed_workers': False},
               'model': {'provider': 'custom', 'default': 'voice-context', 'base_url': url},
               'memory': {'nudge_interval': 2 if review else 0},
+              'model_catalog': {'enabled': False},
+              'models_dev': {'url': url.removesuffix('/v1') + '/models-dev-offline'},
               'auxiliary': {'title_generation': {'enabled': False},
                             'background_review': {'enabled': review, 'defer': 'never'}}}
     (home / 'config.yaml').write_text(json.dumps(config))

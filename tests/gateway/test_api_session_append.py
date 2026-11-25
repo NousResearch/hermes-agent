@@ -1,5 +1,8 @@
 """Authenticated record-only HTTP writes use the same canonical owner as API runs."""
 import pytest
+from persistence.conversation.messages import TranscriptRead
+from tests.fixtures.storage_seed import seed_session
+from tests.fixtures.storage_holder import raw_holder
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -7,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 @pytest.mark.asyncio
 async def test_batch_append_replay_validation_and_readback(api, owner, monkeypatch):
     monkeypatch.setattr('gateway.run._load_gateway_config', lambda: {'memory': {'nudge_interval': 0}})
-    owner.db.create_session('speech', source='api_server')
+    seed_session(owner.persistence, 'speech', source='api_server')
     app = web.Application()
     app.router.add_post('/api/sessions/{session_id}/messages', api._handle_append_session_messages)
     app.router.add_get('/api/sessions/{session_id}/messages', api._handle_session_messages)
@@ -37,14 +40,14 @@ async def test_batch_append_replay_validation_and_readback(api, owner, monkeypat
         assert [row['content'] for row in (await read.json())['data']] == [m['content'] for m in batch['messages']]
         caps = await (await client.get('/v1/capabilities')).json()
         assert 'session_append_messages' in caps['endpoints']
-    assert owner.db.get_session('speech')['message_count'] == 3
-    assert owner.db._conn.execute('SELECT COUNT(*) FROM session_admissions').fetchone()[0] == 0
+    assert owner.persistence.sessions.get('speech').message_count == 3
+    assert raw_holder(owner.persistence)._conn.execute('SELECT COUNT(*) FROM session_admissions').fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
 async def test_append_auth_and_source_ownership(api, owner):
     api._api_key = 'test-key'
-    owner.db.create_session('local', source='cli')
+    seed_session(owner.persistence, 'local', source='cli')
     app = web.Application()
     app.router.add_post('/api/sessions/{session_id}/messages', api._handle_append_session_messages)
     async with TestClient(TestServer(app)) as client:
@@ -53,4 +56,4 @@ async def test_append_auth_and_source_ownership(api, owner):
         assert (await client.post(url, json=body)).status == 401
         response = await client.post(url, json=body, headers={'Authorization': 'Bearer test-key'})
         assert response.status == 409
-    assert owner.db.get_messages('local') == []
+    assert not owner.persistence.messages.read_transcript('local', TranscriptRead())

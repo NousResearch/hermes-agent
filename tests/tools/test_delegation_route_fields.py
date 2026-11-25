@@ -58,7 +58,7 @@ def _spawn(routes, *, cfg=None, parent=None, construct=_construct, provider=None
     """``(tool result, [AIAgent kwargs], [built children])`` for one task per route."""
     batches = []
     with (
-        patch("tools.delegate_tool._load_config", return_value=cfg or {}),
+        patch("tools.delegate_tool_config._load_config", return_value=cfg or {}),
         patch("tools.delegate_tool_routes._active_provider", return_value=provider or _Backend(routes)),
         patch("run_agent.AIAgent", side_effect=construct) as agent,
         patch("tools.delegate_tool._run_batch",

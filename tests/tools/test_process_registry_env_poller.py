@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.process_registry import ProcessRegistry, ProcessSession
-from tools.process_registry_env_log import parse_log_delta_reply
+from tools.process_registry_env_log import log_delta_command, parse_log_delta_reply
 
 
 @pytest.fixture()
@@ -71,7 +71,7 @@ class TestEnvPollerIncrementalRead:
         log, pid = tmp_path / "bg.log", tmp_path / "bg.pid"
         pid.write_text(f"{os.getpid()}\n")
         q = lambda p: shlex.quote(str(p))
-        command = ProcessRegistry._log_delta_command(q(log), 0, q(pid), q(tmp_path / "bg.exit"))
+        command = log_delta_command(q(log), 0, q(pid), q(tmp_path / "bg.exit"))
         for n in range(1, len(full) + 1):
             log.write_bytes(full[:n])
             out = subprocess.run(
@@ -334,6 +334,6 @@ class TestEnvPollerIncrementalRead:
         (tmp_path / "bg.exit").write_text("0\n")
         (tmp_path / "bg.pid").write_text("")  # no pid: reads as exited
         q = lambda p: shlex.quote(str(p))
-        cmd = ProcessRegistry._log_delta_command(q(log), 0, q(tmp_path / "bg.pid"), q(tmp_path / "bg.exit"))
+        cmd = log_delta_command(q(log), 0, q(tmp_path / "bg.pid"), q(tmp_path / "bg.exit"))
         out = subprocess.run(["sh", "-c", cmd], capture_output=True, timeout=30, check=False).stdout
         assert out == b"3 0 exit:0\nok\xc3"

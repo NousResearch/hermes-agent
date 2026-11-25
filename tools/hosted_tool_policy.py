@@ -19,7 +19,11 @@ until someone shows it acts only through the agent's sandbox:
   scope; each site asks this one function. They come back per agent through storage ports.
 
 A local install (no scope, or a local one) is untouched: neither set is consulted, and every
-function here answers "allowed".
+function here answers "allowed", with one exception. The features that start a command the profile's
+own files name (:data:`RUNS_PROFILE_COMMANDS`) are also off while a plugin runs this process's
+profile elsewhere (``hermes_cli.profiles_run_elsewhere``): that backend writes those files and starts
+the commands itself, so no host process does, whichever command asks (``hermes hooks test``,
+``hermes mcp test``, a process that was already running when the profile was marked).
 """
 
 from __future__ import annotations
@@ -66,8 +70,13 @@ HOST_FEATURES = frozenset({
 })
 
 
+# The host features that start a process from a command line or script in the profile's own files.
+RUNS_PROFILE_COMMANDS = frozenset({"skill_inline_shell", "cron_scripts", "shell_hooks", "mcp_stdio"})
+
+
 class HostedToolRefused(PermissionError):
-    """A hosted scope asked for something that would run or read on this host."""
+    """A hosted scope asked for something that would run or read on this host, or a profile a
+    plugin runs elsewhere asked to start one of its own commands here."""
 
 
 def _hosted() -> bool:
@@ -88,18 +97,33 @@ def hosted_tool_refusal(tool_name: str) -> Optional[str]:
     return _message(tool_name, "only tools that act solely through the agent's sandbox are enabled")
 
 
+def _home_elsewhere() -> bool:
+    """Whether a plugin runs this process's profile elsewhere (the home a multi-profile host has
+    bound for the caller). Kept per home, so asking at every hook event is cheap."""
+    from hermes_cli.profiles_run_elsewhere import home_runs_elsewhere
+    from hermes_constants import get_hermes_home
+    return home_runs_elsewhere(get_hermes_home())
+
+
 def host_feature_enabled(feature: str) -> bool:
-    """Whether *feature* (one of :data:`HOST_FEATURES`) may use this host's state now: always outside
-    a hosted scope, never inside one."""
+    """Whether *feature* (one of :data:`HOST_FEATURES`) may use this host's state now: never inside
+    a hosted scope; outside one always, except that a feature in :data:`RUNS_PROFILE_COMMANDS` is
+    off while a plugin runs this process's profile elsewhere."""
     if feature not in HOST_FEATURES:
         raise KeyError(f"unknown host feature {feature!r}")
-    return not _hosted()
+    return not _hosted() and not (feature in RUNS_PROFILE_COMMANDS and _home_elsewhere())
 
 
 def host_feature_refusal(feature: str, what: str) -> Optional[str]:
-    """:func:`host_feature_enabled` as a message for *what*: the refusal in a hosted scope, else ``None``."""
+    """:func:`host_feature_enabled` as a message for *what*: the refusal in a hosted scope, the
+    run-elsewhere message for a profile a plugin runs elsewhere, else ``None``."""
     if host_feature_enabled(feature):
         return None
+    if not _hosted():
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+        from hermes_constants import get_hermes_home
+        if (elsewhere := run_elsewhere_for_home(get_hermes_home())) is not None:
+            return elsewhere.message()
     return _message(what, f"it uses this host's {feature.replace('_', ' ')}")
 
 

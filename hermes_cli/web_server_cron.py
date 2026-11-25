@@ -103,9 +103,9 @@ def _validate_dashboard_cron_security(
     must not vouch for an endpoint that would receive another profile's key.
     """
     from hermes_cli.web_server_profiles import _config_profile_scope
-    from tools.cronjob_job_args import (
+    from cron.job_args import (
         _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
-    from tools.cronjob_prompt_scan import _scan_cron_prompt
+    from cron.prompt_scan import _scan_cron_prompt
 
     def _touched(key: str) -> bool:
         return updates is None or key in updates
@@ -142,7 +142,7 @@ def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_nam
                 detail=f"context_from job '{ref}' not found in profile '{profile_name}'")
 
 
-def _cron_profile_dicts() -> list[dict[str, Any]]:
+def _cron_profile_dicts(*, include_run_elsewhere: bool = False) -> list[dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
     from hermes_cli.web_server_profiles import _fallback_profile_dicts
@@ -150,7 +150,8 @@ def _cron_profile_dicts() -> list[dict[str, Any]]:
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True,
+                                                             include_run_elsewhere=include_run_elsewhere)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -173,7 +174,10 @@ def _cron_default_profile() -> str:
 
 
 def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
-    """Resolve a profile query value to (profile_name, HERMES_HOME)."""
+    """Resolve a profile query value to (profile_name, HERMES_HOME). A profile a plugin runs
+    elsewhere answers 409 to every request that resolves its profile here: each cron request (an
+    omitted profile is the backend's own), and a session or file request that names the profile.
+    A session or file request with no profile uses the backend's own home and does not ask here."""
     from hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
     try:
@@ -183,7 +187,11 @@ def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
         raise HTTPException(status_code=400, detail=str(e))
     if not profiles_mod.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
-    return canon, profiles_mod.get_profile_dir(canon)
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    home = profiles_mod.get_profile_dir(canon)
+    if (elsewhere := run_elsewhere_for_home(home)) is not None:  # by home: the name may be a link to a marked one
+        raise HTTPException(status_code=409, detail=elsewhere.message())
+    return canon, home
 
 
 def _annotate_cron_job(
@@ -251,7 +259,8 @@ def _notify_cron_provider_for_profile(target_profile: Optional[str]) -> None:
         with _cron_store_scope(home):
             provider = resolve_cron_scheduler()
             external = not isinstance(provider, InProcessCronScheduler)
-            if external and sum(1 for p in _cron_profile_dicts() if p.get("name")) > 1:
+            # Every installed profile counts: a marked one's jobs can sit in the same remote registry.
+            if external and sum(1 for p in _cron_profile_dicts(include_run_elsewhere=True) if p.get("name")) > 1:
                 _log.warning(
                     "Skipping cron provider reconcile for profile %s: "
                     "external provider '%s' reconcile is not "

@@ -6,7 +6,7 @@ receipt with an fsynced write (``save``). Both used to run on the owner loop: on
 (a network filesystem holding SQLite's WAL ``-shm`` lock for seconds) every poll stopped every
 socket, timer, Stop and liveness probe the gateway serves for as long as the read took.
 
-Real GatewayRunner + SessionAuthority + SessionDB; storage is slowed by wrapping the store's own
+Real GatewayRunner + SessionAuthority + store; storage is slowed by wrapping the store's own
 choke points (and the journal write), so the stall is measured as loop-tick lag, not inferred.
 """
 import asyncio
@@ -37,7 +37,6 @@ async def _owner(tmp_path, monkeypatch, run_job):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {'model': {}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'report', 'model': 'm', 'name': 'job'})
     monkeypatch.setattr(scheduler, 'run_job', run_job)
@@ -48,9 +47,10 @@ async def _owner(tmp_path, monkeypatch, run_job):
 
 
 def _slow_store(monkeypatch, slow):
-    """Every SessionDB read and write waits ``SLOW_S`` while ``slow`` is set, on whatever thread."""
-    from hermes_state import SessionDB
-    read, write = SessionDB._read_ctx, SessionDB._execute_write
+    """Every store read and write waits ``SLOW_S`` while ``slow`` is set, on whatever thread."""
+    from tests.fixtures.storage_holder import holder_type
+    holder = holder_type()
+    read, write = holder._read_ctx, holder._execute_write
 
     def _read_ctx(self, *args, **kwargs):
         if slow.is_set():
@@ -61,8 +61,8 @@ def _slow_store(monkeypatch, slow):
         if slow.is_set():
             time.sleep(SLOW_S)  # health: allow HX013 -- the slow storage write IS the stall under test
         return write(self, *args, **kwargs)
-    monkeypatch.setattr(SessionDB, '_read_ctx', _read_ctx)
-    monkeypatch.setattr(SessionDB, '_execute_write', _execute_write)
+    monkeypatch.setattr(holder, '_read_ctx', _read_ctx)
+    monkeypatch.setattr(holder, '_execute_write', _execute_write)
 
 
 @pytest.mark.asyncio

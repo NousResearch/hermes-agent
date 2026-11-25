@@ -449,9 +449,13 @@ def _stream_and_hash(url: str, creds: dict[str, str], now: str, algorithm: str):
 # ---------------------------------------------------------------------------
 
 def channel_for_tag(tag: str) -> str:
-    """Return the release channel encoded by a canonical tag."""
-    from hermes_cli.update_channel import is_canary_tag
+    """Return the release channel encoded by a canonical tag.
 
+    A commit build publishes to no channel; asking for its channel is a bug, never ``stable``."""
+    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
+
+    if is_commit_tag(tag):
+        raise ValueError(f"Commit builds publish to no release channel: {tag!r}")
     return "canary" if is_canary_tag(tag) else "stable"
 
 
@@ -822,15 +826,42 @@ def get_object(
     return response.text() if response.status < 400 else None
 
 
-def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
-    """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
-    from hermes_cli.update_channel import _CANARY_TAG_RE
+# Canary archives named by either tag shape: the current ``canary.<stamp>-vX.Y.Z`` and the retired
+# ``vX.Y.Z+canary.<stamp>``, whose archives age out through the same window.
+_CANARY_KEY_RES = (
+    re.compile(r"canary\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+"),
+    re.compile(r"v\d+\.\d+\.\d+\+canary\.(20\d{6})T\d{6}Z"),
+)
 
-    tag_re = re.compile(_CANARY_TAG_RE.pattern.strip("^$"))
+
+# A commit build's claim archive (releases/tag/commit.<stamp>-vX.Y.Z/...) is kept this long, dated
+# by the claim stamp in its key; the legacy tagless commit-build prefix (releases/commit/<sha>/)
+# carries no date, so its objects age out by upload time instead.
+COMMIT_KEEP_DAYS = 90
+_COMMIT_KEY_RE = re.compile(r"^releases/tag/commit\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+/")
+
+
+def commit_doomed_keys(keys: list[str], cutoff: str, last_modified: dict[str, float],
+                       cutoff_ms: float) -> list[str]:
+    """Commit build objects past their keep window: claim archives whose stamp date is before
+    ``cutoff`` (YYYYMMDD), and legacy releases/commit/<sha>/ objects uploaded before ``cutoff_ms``."""
     doomed = []
     for key in keys:
-        match = tag_re.search(key)
-        if match and match.group(0).split("+canary.", 1)[1][:8] < cutoff:
+        match = _COMMIT_KEY_RE.match(key)
+        if match is not None:
+            if match[1] < cutoff:
+                doomed.append(key)
+        elif key.startswith("releases/commit/") and last_modified.get(key, cutoff_ms) < cutoff_ms:
+            doomed.append(key)
+    return doomed
+
+
+def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
+    """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
+    doomed = []
+    for key in keys:
+        dates = [match[1] for pattern in _CANARY_KEY_RES if (match := pattern.search(key))]
+        if dates and dates[0] < cutoff:
             doomed.append(key)
     return doomed
 
@@ -925,6 +956,81 @@ def stale_feed_bundle_keys(
 # prune-canaries
 # ---------------------------------------------------------------------------
 
+# Live Termux APT references: a desktop-only canary can advance the canary pointer without
+# replacing the live APT index, so the pool the index names stays independent of that head.
+TERMUX_CANARY_ROOT = "releases/termux/canary/"
+_TERMUX_CANARY_INDEX = re.compile(r"releases/termux/canary/dists/[^/]+/[^/]+/binary-[^/]+/Packages(?:\.gz)?")
+
+
+def package_filename(stanza: str) -> str:
+    """Require an unambiguous deb822 record before trusting its pool reference."""
+    fields: dict[str, str] = {}
+    previous = ""
+    for line in stanza.splitlines():
+        if line.startswith((" ", "\t")) and previous not in ("", "package", "filename"):
+            continue  # Description and other multiline fields do not identify the artifact.
+        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*):[ \t]*(.*)", line)
+        if match is None or match[1].lower() in fields:
+            raise ValueError("Malformed or duplicate APT field")
+        previous = match[1].lower()
+        fields[previous] = match[2]
+    filename = relative_artifact_path(fields.get("filename", ""))
+    if not fields.get("package") or not filename.startswith("pool/") or not filename.endswith(".deb"):
+        raise ValueError("APT record must name a package and a pool .deb")
+    return filename
+
+
+def live_pool_keys(keys: list[str], read: Callable[[str], str | None]) -> set[str]:
+    """Read the uncompressed index the APT publisher emits beside Packages.gz."""
+    indices = {key.removesuffix(".gz") for key in keys if _TERMUX_CANARY_INDEX.fullmatch(key)}
+    if not indices:
+        # A staged pool with no readable repository is not evidence that its packages are dead.
+        return {key for key in keys if key.startswith(TERMUX_CANARY_ROOT + "pool/")}
+    protected = set()
+    for key in sorted(indices):
+        text = read(key)
+        try:
+            if text is None or not text.strip():
+                raise ValueError("Missing APT index")
+            stanzas = re.split(r"\n[ \t]*\n", text.replace("\r\n", "\n").strip())
+            protected.update(TERMUX_CANARY_ROOT + package_filename(stanza) for stanza in stanzas)
+        except ValueError as exc:
+            raise RuntimeError(f"Cannot establish APT references from {key}; refusing to prune") from exc
+    return protected
+
+
+def _canary_head_tag(keys: list[str], read: Callable[[str], str | None]) -> str | None:
+    """The release tag the protected canary head serves, or None with no canary head.
+
+    publish_release writes releases/canary/release-candidates.json only after this head moves, so a
+    failed pointer write leaves the pointer naming the previous canary (or, for the first canary
+    after a legacy head, no pointer at all) while the head serves the new one, whose archive the
+    pointer then no longer protects. The channel is the one record whose policy is canary-release,
+    whatever its name, as channel_releases.select_channel picks it for publication.
+    """
+    records = []
+    for key in sorted(key for key in keys if key.startswith("releases/channels/") and key.endswith(".json")):
+        text = read(key)
+        record = json.loads(text) if text is not None else None
+        if not isinstance(record, dict):
+            raise RuntimeError(f"Cannot read the protected channel record {key}; refusing to prune")
+        if record.get("policy") == "canary-release":
+            records.append(record)
+    if len(records) > 1:
+        raise RuntimeError("More than one protected canary-release channel; refusing to prune")
+    head = records[0].get("head") if records else None
+    if head is None:
+        return None
+    manifest = read(head["manifestKey"]) if isinstance(head, dict) and isinstance(head.get("manifestKey"), str) else None
+    if manifest is None or hashlib.sha256(manifest.encode()).hexdigest() != head.get("sha256"):
+        raise RuntimeError("Cannot read the protected canary head's build manifest; refusing to prune")
+    request = json.loads(manifest).get("request")
+    tag = request.get("releaseTag") if isinstance(request, dict) else None
+    if not isinstance(tag, str):
+        raise RuntimeError("The protected canary head names no release tag; refusing to prune")
+    return tag
+
+
 def prune(
     keep_days: int,
     dry_run: bool = False,
@@ -967,11 +1073,50 @@ def prune(
         for reference in darwin_module.mac_feed_references(text):
             protected.add(reference)
 
+    # The live canary's own objects (its archive, which its upgrade baseline points into, and its
+    # Termux pool) stay while it is live however old it is: releases/canary/release-candidates.json
+    # names its archive ref, which is in every one of those keys.
+    from hermes_cli.update_channel import is_canary_tag
+
+    pointer_key = "releases/canary/release-candidates.json"
+
+    def read(key: str) -> str | None:
+        return get_object(creds, base, bucket, key, now, fetcher=fetcher)
+
+    if pointer_key in keys:
+        text = get_object(creds, base, bucket, pointer_key, now, fetcher=fetcher)
+        try:
+            payload = json.loads(text) if text is not None else None
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Cannot parse {pointer_key}: {exc}; refusing to prune") from exc
+        live = payload.get("archive") if isinstance(payload, dict) else None
+        if not isinstance(live, str) or not is_canary_tag(live):
+            raise RuntimeError(f"Cannot read a valid live canary archive from {pointer_key}; refusing to prune")
+        archive_prefix = f"releases/tag/{live}/"
+        if not any(key.startswith(archive_prefix) for key in keys):
+            raise RuntimeError(f"Live canary pointer {pointer_key} names missing archive {live}; refusing to prune")
+        head = _canary_head_tag(keys, read)
+        if head != live:
+            raise RuntimeError(f"Live canary pointer {pointer_key} names {live} but the protected canary head "
+                               f"serves {head}; rerun that canary's publish-canary job; refusing to prune")
+        protected.update(key for key in keys if live in key)
+    elif is_canary_tag(head := _canary_head_tag(keys, read)):
+        raise RuntimeError(f"The protected canary head serves {head} but {pointer_key} is missing; "
+                           "rerun that canary's publish-canary job; refusing to prune")
+
+    # A desktop-only canary can advance that pointer without replacing the live APT index.
+    protected.update(live_pool_keys(
+        keys, lambda key: get_object(creds, base, bucket, key, now, fetcher=fetcher)))
+
+    # Commit builds keep 90 days whatever the canary window (keep_days) is.
+    commit_window = max(keep_days, COMMIT_KEEP_DAYS) * 86400
+    commit_cutoff_date = time.strftime("%Y%m%d", time.gmtime(current - commit_window))
     doomed = [
         key
         for key in [
             *canary_doomed_keys(keys, cutoff_date),
             *stale_feed_bundle_keys(keys, feed_xml_by_dir, last_modified, cutoff_ms),
+            *commit_doomed_keys(keys, commit_cutoff_date, last_modified, current - commit_window),
         ]
         if key not in protected
     ]

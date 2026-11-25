@@ -64,6 +64,13 @@ def test_case_variant_of_home_credential_is_not_media_deliverable(hermes_layout)
     assert gateway_base._path_under_denied_prefix((user_home / "report.pdf").resolve()) is False
 
 
+@pytest.mark.parametrize("name", [".env.\u017ftaging", ".env.te\u017ft"])
+def test_case_fold_spellings_of_project_env_are_denied(tmp_path, name):
+    """APFS folds long s to s, so ``.env.ſtaging`` opens ``.env.staging`` (CERT/CC VU#604762)."""
+    assert fs.is_project_env_basename(name)
+    assert fs.get_read_block_error(str(tmp_path / name))
+
+
 @pytest.mark.platforms("linux")
 def test_case_variants_are_distinct_files_on_linux(hermes_layout):
     root, profile, user_home = hermes_layout

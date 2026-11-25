@@ -23,10 +23,13 @@ async def cold_review_history(runner, source):
     if live is not None:
         from gateway.session_contract import SessionRef
         from gateway.session_local_recovery import transcript_target
+        from gateway.session_persistence import authority_persistence
+        from persistence.conversation.messages import ConversationRequest
 
         def load():
             target = transcript_target(authority, SessionRef(authority.profile_id, source.chat_id))
-            return target, authority.db.get_messages_as_conversation(target, include_ancestors=True)
+            rows = authority_persistence(authority).messages.read_conversation(target, ConversationRequest(include_lineage=True))
+            return target, [row.as_openai_message() for row in rows]
         return await asyncio.to_thread(load)
     entry = await runner.async_session_store.get_or_create_session(source)
     return entry.session_id, await runner.async_session_store.load_transcript(entry.session_id)
@@ -43,13 +46,13 @@ async def stored_transcript(runner, session_key):
 
 
 @contextlib.contextmanager
-def cold_review_parent(runner, source, session_key, session_id):
+def cold_review_parent(runner, source, session_key, session_id, *, agent_type=None):
     """A fresh agent on the session's next-turn route (built as ``session_execution._build_fresh_agent``
     builds one, minus the turn-only prompt pieces), inside the session's policy scope. On exit only its
     own LLM clients are released: ``close()`` would tear down the session's terminal and browser, and the
     reviewer it dispatched is detached and builds its own clients."""
     from gateway.run import _load_gateway_config, _platform_config_key
-    from gateway.session_api_turn import api_runtime_locked
+    from gateway.session_api_turn import api_runtime_locked, prepare_api_runtime
     from gateway.session_authorities import active_authority
     from gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
     from gateway.session_worker_construct import session_prefill, session_routing
@@ -69,8 +72,9 @@ def cold_review_parent(runner, source, session_key, session_id):
     with policy_scope(policy, authority=authority):
         model, runtime = runner._resolve_session_agent_runtime(
             source=source, session_key=session_key, user_config=user_config)
+        model, runtime = prepare_api_runtime(model, runtime)
         route = runner._resolve_turn_agent_config("", model, runtime, tier=tier)  # /fast request options
-        agent = AIAgent(
+        agent = (agent_type or AIAgent)(
             model=route["model"], **route["runtime"], quiet_mode=True, verbose_logging=False,
             enabled_toolsets=enabled, disabled_toolsets=disabled,
             # Launch-preloaded skills (``hermes -s``): the reviewer is told to load them too.
@@ -83,7 +87,7 @@ def cold_review_parent(runner, source, session_key, session_id):
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
             provider_data_collection=pr.get("data_collection"),
             session_id=session_id, platform=platform_key, gateway_session_key=session_key,
-            session_db=getattr(runner._session_db, "_db", runner._session_db),
+            persistence=getattr(runner, "persistence", None),
             # The session's backup providers, as its next turn would carry them: the reviewer inherits the chain.
             fallback_model=None if api_runtime_locked() else runner._refresh_fallback_model(),
             # The reviewer reads the transcript excerpt; this agent never runs a turn of its own.

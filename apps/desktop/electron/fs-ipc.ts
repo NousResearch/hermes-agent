@@ -27,6 +27,8 @@ import { registerPluginFilesIpc } from './plugin-files-ipc'
 
 export interface FsIpcDeps {
   hermesHome: string
+  /** A profile a plugin's launcher runs: its home never feeds the plugin root. */
+  isLaunchedProfile: (profile: string) => boolean
   readActiveDesktopProfile: () => null | string
   expandUserPath: (value: string) => string
   resolveRequestedPathForIpc: (value: string, options: { purpose: string }) => string
@@ -36,6 +38,7 @@ export interface FsIpcDeps {
 
 export function registerFsIpc({
   hermesHome,
+  isLaunchedProfile,
   readActiveDesktopProfile,
   expandUserPath,
   resolveRequestedPathForIpc,
@@ -147,8 +150,8 @@ export function registerFsIpc({
   // moved up once so it does not silently vanish on a profile switch.
   async function desktopPluginsRoot(): Promise<string> {
     const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
-    await migrateProfileScopedDesktopPlugins(hermesHome, root)
-    await reconcileUnifiedDesktopHalves(hermesHome, root)
+    await migrateProfileScopedDesktopPlugins(hermesHome, root, isLaunchedProfile)
+    await reconcileUnifiedDesktopHalves(hermesHome, root, isLaunchedProfile)
 
     return root
   }
@@ -162,7 +165,7 @@ export function registerFsIpc({
   ipcMain.handle('hermes:fs:reconcileDesktopPlugins', async () => {
     const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
 
-    return reconcileDesktopHalvesReport(hermesHome, root)
+    return reconcileDesktopHalvesReport(hermesHome, root, isLaunchedProfile)
   })
 
   // The LOCAL logs root (`<HERMES_HOME>/logs`, profile-aware) — the error

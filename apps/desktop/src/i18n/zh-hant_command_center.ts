@@ -370,6 +370,8 @@ export const zhHantCommandCenter = {
     remoteOverride: {
       menuItem: '連線至遠端主機…',
       badge: (host: string) => `執行於 ${host}`,
+      runHere: '在這部電腦上執行…',
+      sandboxed: '已沙箱化',
       title: (profile: string) => `將 ${profile} 連線至遠端主機`,
       description: '此設定檔中的工作階段將在你指定的遠端 Hermes 上執行，而不是這台電腦。',
       urlLabel: '遠端位址',

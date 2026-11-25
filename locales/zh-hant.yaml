@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "提示詞快取：未知（此供應商未公布其快取保留時間）。"
     cache_unknown_runtime: "提示詞快取：未知（此執行環境自行設定快取選項，Hermes 無法觀察）。"
     cache_unknown_storage: "提示詞快取：未知（無法讀取工作階段儲存）。"
+    cache_warming_off: "保活：已關閉（兩次未命中）。"
+    cache_tier_pending: "層級：首次停頓超過 5 分鐘前為 5m，之後為 1h。"
+    cache_learned: "已學習：{rule}。"
     cache_confidence:
       proven: "已證實"
       declared: "已宣告"
@@ -4021,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "大型模型：已達{name}上限（{resets}），在此之前無法執行。"
   large_notice_percent: "大型模型：每則訊息消耗更多方案用量。每月大型模型上限：已用 {percent}。"
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ 已復原回合中變更的檔案：{files}。執行 /rollback 列出檢查點並還原其中一個。"
     more: "另外 {count} 個"

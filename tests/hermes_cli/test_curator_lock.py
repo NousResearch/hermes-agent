@@ -41,7 +41,7 @@ def lock_env(tmp_path, monkeypatch):
     importlib.reload(curator_cli)
     # `lock` resolves the name through skill_manage's finder; pin its search roots to this profile.
     monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills])
-    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills)
+    monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills)
     return {"home": home, "skills": skills, "usage": skill_usage, "cli": curator_cli}
 
 

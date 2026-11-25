@@ -13,7 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 from acp_adapter.session import SessionManager
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _agent(**attrs):
@@ -24,23 +26,23 @@ def _agent(**attrs):
 
 
 def test_persist_stores_the_named_route_not_the_bare_kind(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     manager = SessionManager(db=db, agent_factory=lambda: _agent(provider_route="custom:gw"))
     state = manager.create_session(cwd=str(tmp_path))
     state.history.append({"role": "user", "content": "turn 1 on endpoint A"})
     manager.save_session(state.session_id)
-    meta = json.loads(db.get_session(state.session_id)["model_config"])
+    meta = json.loads(session_row(db, state.session_id)["model_config"])
     assert meta["provider"] == "custom:gw"
     db.close()
 
 
 def test_persist_falls_back_to_the_kind_without_a_route(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     manager = SessionManager(db=db, agent_factory=lambda: _agent())
     state = manager.create_session(cwd=str(tmp_path))
     state.history.append({"role": "user", "content": "compat"})
     manager.save_session(state.session_id)
-    assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == "custom"
+    assert json.loads(session_row(db, state.session_id)["model_config"])["provider"] == "custom"
     db.close()
 
 
@@ -72,7 +74,7 @@ def _patch_resolution(monkeypatch, *, runtime=None, error=None):
 
 def test_make_agent_stamps_the_resolved_named_route(monkeypatch, tmp_path):
     built = _patch_resolution(monkeypatch)
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     manager = SessionManager(db=db, agent_factory=None)
     agent = manager._make_agent(session_id="s-route", cwd=str(tmp_path), requested_provider="custom:gw")
     assert agent.provider_route == "custom:gw"
@@ -87,7 +89,7 @@ def test_make_agent_fails_closed_when_a_named_request_cannot_resolve(monkeypatch
         "provider 'custom' resolved without credentials (no endpoint or API key configured). "
         "If this is a named custom provider, use its real name (see providers: in config.yaml).",
         provider="custom", code="missing_api_key"))
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     manager = SessionManager(db=db, agent_factory=None)
     # The explicit request surfaces its error instead of silently rebuilding on the
     # config-default endpoint (a different endpoint, later sent the target provider's key).
@@ -105,12 +107,12 @@ def test_restore_of_a_legacy_bare_kind_row_fails_closed(monkeypatch, tmp_path):
     # lookup finds nothing and the bare kind stays unresolvable.
     monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
                         lambda _base_url: None)
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session(session_id="legacy", source="acp", model="some-model",
-                      model_config={"cwd": str(tmp_path), "provider": "custom",
-                                    "base_url": "http://127.0.0.1:9001/v1", "api_mode": "chat"},
-                      cwd=str(tmp_path))
-    db.append_message("legacy", "user", "turn 1 on endpoint A")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "legacy", "acp", model="some-model",
+                 model_config={"cwd": str(tmp_path), "provider": "custom",
+                               "base_url": "http://127.0.0.1:9001/v1", "api_mode": "chat"},
+                 cwd=str(tmp_path))
+    seed_messages(db, "legacy", {"role": "user", "content": "turn 1 on endpoint A"})
     manager = SessionManager(db=db, agent_factory=None)
     assert manager._restore("legacy") is None  # resume refuses rather than mispair key/endpoint
     db.close()
@@ -133,12 +135,12 @@ def test_restore_recovers_a_bare_kind_row_from_its_recorded_endpoint(monkeypatch
 
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
 
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session(session_id="recoverable", source="acp", model="some-model",
-                      model_config={"cwd": str(tmp_path), "provider": "custom",
-                                    "base_url": "http://a/v1", "api_mode": "chat"},
-                      cwd=str(tmp_path))
-    db.append_message("recoverable", "user", "turn 1 on endpoint A")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "recoverable", "acp", model="some-model",
+                 model_config={"cwd": str(tmp_path), "provider": "custom",
+                               "base_url": "http://a/v1", "api_mode": "chat"},
+                 cwd=str(tmp_path))
+    seed_messages(db, "recoverable", {"role": "user", "content": "turn 1 on endpoint A"})
     manager = SessionManager(db=db, agent_factory=None)
     state = manager._restore("recoverable")
     assert state is not None
@@ -190,12 +192,12 @@ def test_restore_never_pairs_the_resolved_key_with_a_foreign_recorded_endpoint(m
         "api_key": "cheap-key", "credential_pool": None, "command": None, "args": []})
     monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
                         lambda _base_url: None)
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session(session_id="poisoned", source="acp", model="some-model",
-                      model_config={"cwd": str(tmp_path), "provider": "custom",
-                                    "base_url": "https://api.x.ai/v1/", "api_mode": "chat_completions"},
-                      cwd=str(tmp_path))
-    db.append_message("poisoned", "user", "turn 1")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "poisoned", "acp", model="some-model",
+                 model_config={"cwd": str(tmp_path), "provider": "custom",
+                               "base_url": "https://api.x.ai/v1/", "api_mode": "chat_completions"},
+                 cwd=str(tmp_path))
+    seed_messages(db, "poisoned", {"role": "user", "content": "turn 1"})
     manager = SessionManager(db=db, agent_factory=None)
     assert manager._restore("poisoned") is not None
     assert built[-1]["api_key"] == "cheap-key"
@@ -223,12 +225,12 @@ def test_persist_keeps_the_resolved_built_in_provider(monkeypatch, tmp_path, con
     monkeypatch.setattr("hermes_cli.config.load_config",
                         lambda: {"model": {"default": "some-model", "provider": configured}, "agent": {}})
     monkeypatch.setattr("run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     manager = SessionManager(db=db, agent_factory=None)
     state = manager.create_session(cwd=str(tmp_path))
     state.history.append({"role": "user", "content": "turn 1"})
     manager.save_session(state.session_id)
-    assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == resolved
+    assert json.loads(session_row(db, state.session_id)["model_config"])["provider"] == resolved
     db.close()
 
 
@@ -241,7 +243,7 @@ def test_switch_model_compares_an_alias_session_by_its_resolved_provider(monkeyp
         "provider": "anthropic", "api_mode": "anthropic_messages", "base_url": "https://api.test",
         "api_key": "k", "credential_pool": None, "command": None, "args": []})
     monkeypatch.setattr("run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
-    manager = SessionManager(db=SessionDB(tmp_path / "state.db"), agent_factory=None)
+    manager = SessionManager(db=open_persistence(profile_scope(home=tmp_path)), agent_factory=None)
     live = manager._make_agent(session_id="s-alias", cwd=str(tmp_path), requested_provider="claude")
     seen: dict = {}
 

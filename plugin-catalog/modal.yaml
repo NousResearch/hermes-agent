@@ -1,6 +1,6 @@
 name: modal
 repo: https://github.com/modal-projects/modal-hermes
-sha: 4d6bfd79ff3bcdd13eec04f39681d05f0c235d3e
+sha: 6458057942b37d9d9220bf1b91f225496e2edc39
 description: Modal Endpoints for OpenAI-compatible APIs
 maintainer: modal-labs
 category: models

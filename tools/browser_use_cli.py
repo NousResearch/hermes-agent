@@ -28,6 +28,7 @@ from hermes_cli.process_identity import (
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import (
     daemon_env, daemon_identity, harness_current_target, harness_pid_file, namespace_harness_dirs)
+from tools.browser_lightpanda import merge_sane_path
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -102,8 +103,6 @@ _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
 _IMAGE_PATH_RE = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
 # http(s) URL literals in exec code, checked against the browser URL policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
-_FHS_BIN_DIRS = ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin",
-                 "/usr/bin", "/sbin", "/bin")
 
 
 def _quiet(fn: Callable[[], Any], default: Any, log_prefix: str = "") -> Any:
@@ -195,7 +194,8 @@ def _base_subprocess_env() -> dict:
         env["PYTHONPATH"] = site_dir
     else:
         env.pop("PYTHONPATH", None)
-    env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
+    # Profile workers can inherit a version-manager-only PATH; the CLI's shell helpers need /usr/bin.
+    env["PATH"] = merge_sane_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
     # The harness reuses any live daemon of a BU_NAME in its runtime dir, and that dir is per OS user:
     # every profile (served, CLI, cron) gets its own, or one drives another's attached browser (#149829).
@@ -203,18 +203,6 @@ def _base_subprocess_env() -> dict:
     # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
     env.update(spawn_env("browser-harness-daemon"))
     return env
-
-
-def _floor_subprocess_path(path: str) -> str:
-    """Keep system commands reachable from profile workers with a minimal PATH.
-
-    Browser subprocesses may launch shell helpers; version-manager-only paths
-    omit /usr/bin. Reuse the shared browser PATH floor on POSIX.
-    """
-    if os.name == "nt":
-        return path
-    parts = [p for p in (path or "").split(os.pathsep) if p]
-    return os.pathsep.join(parts + [d for d in _FHS_BIN_DIRS if d not in set(parts) and os.path.isdir(d)])
 
 
 def _read_browser_cfg() -> dict:

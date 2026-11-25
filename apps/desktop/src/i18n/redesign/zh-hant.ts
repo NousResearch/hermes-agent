@@ -382,6 +382,7 @@ export const zhHantRedesign: RedesignOverlay = {
     lockHint: '鎖定期間，智慧體無法變更此技能。你仍可自行編輯。',
     unlockedHint: '鎖定後，智慧體將無法變更此技能。你仍可自行編輯。',
     plugins: {
+      halfAgentIn: (profile: string) => `智慧體 ${profile}`,
       pageBlurb: '外掛可以擴充本應用程式、智慧體，或兩者 — 每一部分都有自己的開關。',
       autoUpdateTip: (hours: number) =>
         `Hermes 檢查時（每 ${hours} 小時）自動套用外掛更新。更新後的程式碼會在新對話中載入。`

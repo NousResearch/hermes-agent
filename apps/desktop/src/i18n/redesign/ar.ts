@@ -293,6 +293,7 @@ export const arRedesign: RedesignOverlay = {
   },
   skills: {
     plugins: {
+      halfAgentIn: (profile: string) => `الوكيل: ${profile}`,
       autoUpdateTip: (hours: number) =>
         `تطبيق تحديثات الإضافات تلقائيًا عندما يفحصها Hermes (كل ${hours} ساعة). تُحمَّل الشيفرة المحدّثة في المحادثات الجديدة.`
     },

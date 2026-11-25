@@ -344,6 +344,7 @@ export const ruRedesign: RedesignOverlay = {
   },
   skills: {
     plugins: {
+      halfAgentIn: (profile: string) => `Агент: ${profile}`,
       autoUpdateTip: (hours: number) =>
         `Автоматически применять обновления плагинов при проверке Hermes (каждые ${hours} ч). Новый код загружается в новых чатах.`
     },

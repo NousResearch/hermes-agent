@@ -281,6 +281,7 @@ export const jaRedesign: RedesignOverlay = {
   },
   skills: {
     plugins: {
+      halfAgentIn: (profile: string) => `エージェント：${profile}`,
       autoUpdateTip: (hours: number) =>
         `Hermes の確認時（${hours} 時間ごと）にプラグインの更新を自動で適用します。更新されたコードは新しいチャットで読み込まれます。`
     },

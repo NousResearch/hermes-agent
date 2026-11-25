@@ -16,7 +16,11 @@ import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { closeFilesPane } from '@/app/contrib/close-files-pane'
 import { bindChatToolPanels, bindChatToolRouteCollapse } from '@/app/redesign/chat-tool-panel'
-import { developerToolSizing, installDeveloperToolPanelWidth } from '@/app/redesign/developer-tool-panel'
+import {
+  developerToolSizing,
+  installDeveloperToolPanelWidth,
+  installScreenToolDocking
+} from '@/app/redesign/developer-tool-panel'
 import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -356,6 +360,7 @@ const toolPanes = (portal: boolean) => [
 registry.registerMany(toolPanes($portalShell.get()))
 $portalShell.listen(portal => registry.registerMany(toolPanes(portal)))
 installDeveloperToolPanelWidth()
+installScreenToolDocking()
 
 // ---------------------------------------------------------------------------
 // Chrome contributions. The title bar and status bar are fixed chrome outside

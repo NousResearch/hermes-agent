@@ -213,3 +213,19 @@ it('lights the Items tile for its sheet on narrow windows, and its click asks fo
   act(() => $narrowOverlayPaneIds.set(new Set([CHAT_ITEMS_PANE_ID])))
   expect(items.getAttribute('aria-pressed')).toBe('true')
 })
+
+it('shows a Screen tile only while a Screen is open, and not below a wide window', () => {
+  const screenPane = 'plugin-workspace:hermes-bots:screen:local::default'
+  mount()
+  expect(screen.queryByRole('button', { name: 'Screen' })).toBeNull()
+  disposers.push(registry.register({ area: 'panes', id: screenPane, data: { placement: 'main' }, render: () => null }))
+  act(() =>
+    $layoutTree.set(split('row', [group(['workspace'], { id: 'main' }), group(['files', screenPane], { id: 'tools' })]))
+  )
+  expect(screen.getByRole('button', { name: 'Screen' }).getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(screen.getByRole('button', { name: 'Screen' }))
+  expect(screen.getByRole('button', { name: 'Screen' }).getAttribute('aria-pressed')).toBe('true')
+  expect(screen.getByRole('button', { name: 'Files' }).getAttribute('aria-pressed')).toBe('false')
+  act(() => $narrowViewport.set(true))
+  expect(screen.queryByRole('button', { name: 'Screen' })).toBeNull()
+})

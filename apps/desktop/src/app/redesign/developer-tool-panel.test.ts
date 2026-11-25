@@ -27,6 +27,7 @@ import {
   $developerToolPanelWidth,
   hideDeveloperToolPanel,
   installDeveloperToolPanelWidth,
+  installScreenToolDocking,
   prepareDeveloperToolPanel
 } from './developer-tool-panel'
 
@@ -224,4 +225,45 @@ it('never takes a zone of Browser tabs for the panel', () => {
   expect(findGroupOfPane($layoutTree.get()!, 'review')?.id).toBe(panel.id)
   // And hiding from a Browser zone is that tab's own toggle, not the panel's.
   expect(hideDeveloperToolPanel('preview-tile:a')).toBe(false)
+})
+
+const SCREEN = 'plugin-workspace:hermes-bots:screen:local::default'
+const settled = () => new Promise<void>(resolve => queueMicrotask(resolve))
+
+it('gathers a Screen into the tool panel when it opens, whichever door opened it', async () => {
+  $shellChoice.set(true)
+  $layoutTree.set(DEFAULT_TREE)
+  const stop = installScreenToolDocking()
+  // The plugin opens every Screen as a tab of the chat's zone.
+  $layoutTree.set(split('row', [DEFAULT_TREE, group([SCREEN])]))
+  await settled()
+  const panel = findGroupOfPane($layoutTree.get()!, SCREEN)!
+  expect(panel.panes).toEqual(expect.arrayContaining(['files', 'review', 'terminal', SCREEN]))
+  expect(panel.panes).not.toContain('workspace')
+  expect(panel.active).toBe(SCREEN)
+  expect(hideDeveloperToolPanel(SCREEN)).toBe(true)
+  expect($hiddenTreePanes.get().has(SCREEN)).toBe(true)
+  stop()
+})
+
+it('leaves a Screen where the user dragged it after it was gathered', async () => {
+  $shellChoice.set(true)
+  const stop = installScreenToolDocking()
+  $layoutTree.set(split('row', [DEFAULT_TREE, group([SCREEN])]))
+  await settled()
+  const main = findGroupOfPane($layoutTree.get()!, 'workspace')!
+  moveTreePane(SCREEN, { groupId: main.id, pos: 'center' })
+  await settled()
+  expect(findGroupOfPane($layoutTree.get()!, SCREEN)?.id).toBe(main.id)
+  stop()
+})
+
+it('leaves classic\'s Screen where the plugin opened it', async () => {
+  $shellChoice.set(false)
+  const stop = installScreenToolDocking()
+  const tree = split('row', [DEFAULT_TREE, group([SCREEN])])
+  $layoutTree.set(tree)
+  await settled()
+  expect($layoutTree.get()).toBe(tree)
+  stop()
 })

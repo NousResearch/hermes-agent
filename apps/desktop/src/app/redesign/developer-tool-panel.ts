@@ -18,6 +18,7 @@ import {
   restoreTreePane,
   setTreePaneHidden
 } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
@@ -44,8 +45,15 @@ export const DEVELOPER_TOOL_PANEL_WIDTH = `var(${WIDTH_PROPERTY}, var(--portal-t
 // bindToolPaneCollapse). Browser tabs are tools too (isTool), but each is a pane the user opens.
 const BUILT_IN_TOOLS = [...TOOLS, CHAT_ITEMS_PANE_ID]
 
-// The chat's items ride the same panel and width as a tool, like a preview tile.
-export const isTool = (paneId: string) => BUILT_IN_TOOLS.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
+/** An agent's Screen (Bot Mode's live view of its desktop): a pane that plugin opens, one per agent. */
+export const isScreenPane = (paneId: string) => paneId.startsWith('plugin-workspace:hermes-bots:screen:')
+
+// The chat's items ride the same panel and width as a tool, like a preview tile; so does a Screen.
+export const isTool = (paneId: string) =>
+  BUILT_IN_TOOLS.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`) || isScreenPane(paneId)
+
+/** The Screens open in this window, in the tree's order. */
+export const $screenPanes = computed($layoutTree, tree => (tree ? allPaneIds(tree).filter(isScreenPane) : []))
 
 /** A tool pane's sizing in the redesign: the shared width, never under the tool's own minimum (the
  *  terminal and the browser need more room than the file tree). Classic keeps each pane's own. */
@@ -246,4 +254,46 @@ export function toggleDeveloperToolPanel(): boolean {
   }
 
   return true
+}
+
+// The plugin registers a Screen as a workspace tab, which shares its zone's room. In the panel it
+// takes the panel's one width like the other tools: the same registration, re-put with that sizing
+// (the plugin's own disposer removes it by id, so it still owns the pane).
+function dockScreen(paneId: string): void {
+  if (!panelDocked()) {
+    return
+  }
+
+  const pane = registry.getArea('panes').find(entry => entry.id === paneId)
+  const data = pane?.data as PaneSizing | undefined
+
+  if (pane) {
+    registry.register({ ...pane, data: { ...data, ...developerToolSizing(data?.minWidth ?? '0px') } })
+  }
+
+  prepareDeveloperToolPanel(paneId)
+}
+
+/** A Screen is a tool in the redesign: when its pane joins the tree it is gathered into the tool
+ *  panel, whichever door opened it (the plugin opens every Screen as a tab beside the chat, which
+ *  is where classic keeps it). Once, as it appears: a Screen the user then drags elsewhere stays
+ *  where they put it. */
+export function installScreenToolDocking(): () => void {
+  const gathered = new Set<string>()
+
+  return $screenPanes.subscribe(panes => {
+    for (const id of gathered) {
+      if (!panes.includes(id)) {
+        gathered.delete(id)
+      }
+    }
+
+    for (const id of panes) {
+      if (!gathered.has(id)) {
+        gathered.add(id)
+        // After the tree has settled on the pane's arrival: this listener runs inside that change.
+        queueMicrotask(() => dockScreen(id))
+      }
+    }
+  })
 }

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import functools
 import inspect
 import logging
 import queue
@@ -54,6 +55,8 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
 # sequence, so a still-running callback skips that session's next command, not another session's.
 _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",), "on_session_open": ("session_id",),
+    # One session's in-flight admission must not skip another's callback.
+    "post_gateway_admission": ("session_key",),
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
@@ -206,6 +209,17 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
         return False
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+
+
+def _is_coroutine_callback(callback: Callable) -> bool:
+    """True when *callback* is an ``async def``, including one ``functools.partial`` wrap.
+
+    Those stay on the caller's loop. A plain ``def`` is not, even if it returns an awaitable.
+    """
+    func = callback
+    while isinstance(func, functools.partial):
+        func = func.func
+    return inspect.iscoroutinefunction(func)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
@@ -610,16 +624,62 @@ class PluginDispatchMixin:
                 return ret, False
         return None, bool(failed)
 
+    async def _await_bounded_sync_callback(
+        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float
+    ) -> Any:
+        """Run one bounded sync callback off the caller's loop.
+
+        Returns the callback result, or ``_HOOK_SKIPPED`` when the worker could not start.
+        ``_run_hook_callback_bounded`` waits on a ``threading.Event`` and must not be called
+        on the loop thread. A dedicated daemon thread (not the loop's shared executor) does
+        that wait — the same split ``pre_command`` uses — so a callback sitting out
+        ``plugins.hook_callback_timeout`` cannot hold a worker other ``to_thread`` callers
+        need. The caller's context is copied onto that thread so profile scope survives.
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        context = contextvars.copy_context()
+        callback_name = getattr(cb, "__name__", repr(cb))
+
+        def _deliver(setter: Callable, value: Any) -> None:
+            if not future.done():
+                setter(value)
+
+        def _run() -> None:
+            try:
+                value = context.run(
+                    self._run_hook_callback_bounded, hook_name, cb, kwargs, timeout)
+            except BaseException as exc:
+                try:
+                    loop.call_soon_threadsafe(_deliver, future.set_exception, exc)
+                except RuntimeError:
+                    return
+                return
+            try:
+                loop.call_soon_threadsafe(_deliver, future.set_result, value)
+            except RuntimeError:
+                return
+
+        thread = threading.Thread(
+            target=_run, name=f"hermes-hook-offloop-{callback_name}"[:40], daemon=True)
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            logger.warning(
+                "Hook '%s' callback %s off-loop worker failed to start: %s — skipping",
+                hook_name, callback_name, exc)
+            return _HOOK_SKIPPED
+        return await future
+
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
 
-        Same payload narrowing, per-callback isolation and result contract. The difference is
-        where an ``async def`` callback runs: here it is awaited on the caller's own loop, so a
-        callback that awaits anything scheduled on that loop can make progress. Through the
-        sync path it runs on a helper thread while the caller blocks in ``done.wait()`` — on the
-        gateway that stalls the whole event loop for the callback's duration. Sync callbacks
-        run inline. Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
-        (the coroutine is cancelled, not abandoned); a timed-out ``pre_tool_call`` fails closed.
+        Same payload narrowing, per-callback isolation and result contract. An ``async def``
+        callback is awaited on the caller's own loop, so a callback that awaits anything
+        scheduled on that loop can make progress. A plain ``def`` on a bounded hook runs
+        through ``_run_hook_callback_bounded`` off the loop (abandoned on timeout, never
+        joined) and a late result is dropped. Unbounded hooks still run sync callbacks
+        inline. A timed-out ``pre_tool_call`` fails closed.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         if hook_name != "gateway_platform_event":
@@ -631,9 +691,20 @@ class PluginDispatchMixin:
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
-                if inspect.isawaitable(ret):
-                    ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                if use_timeout and not _is_coroutine_callback(cb):
+                    ret = await self._await_bounded_sync_callback(
+                        hook_name, cb, kwargs, timeout)
+                    if ret is _HOOK_SKIPPED:
+                        if fail_closed:
+                            results.append({
+                                "action": "block",
+                                "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE,
+                            })
+                        continue
+                else:
+                    ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                    if inspect.isawaitable(ret):
+                        ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:
                     results.append(ret)
             except TimeoutError:

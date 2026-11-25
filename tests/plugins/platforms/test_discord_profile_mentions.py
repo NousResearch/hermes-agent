@@ -7,12 +7,14 @@ handle other than its name) and this gateway serves it. The six acceptance cases
 the matrix below; the identity tests run the copy through the gateway's real ``resolve_identity``;
 the live tests flip the flag in a served profile's config.yaml and prove the running gateway's
 hot-serve rescan (and, for the bot's own profile, its live config refresh) applies it.
+
+These tests stop at the adapter's hand-over or at ``resolve_identity``. What actually RUNS (which
+profile's session gets a turn, or whether the gateway refuses it) is tested end to end in
+``test_discord_profile_mentions_e2e.py`` on the shared ``discord_gateway_rig``; check a change there.
 """
 
-import dataclasses
 import itertools
 import os
-import sys
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -21,40 +23,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import hermes_yaml as yaml
 import pytest
 
+from tests.plugins.platforms.discord_gateway_rig import ensure_discord_mock
 
-def _ensure_discord_mock():
-    """Install a mock discord module when discord.py isn't available."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.Client = MagicMock
-    discord_mod.File = MagicMock
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
-    discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
-    discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
-    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
-    discord_mod.Interaction = object
-    discord_mod.Embed = MagicMock
-    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
-    discord_mod.Message = type("Message", (), {})
-    discord_mod.app_commands = SimpleNamespace(
-        describe=lambda **kwargs: (lambda fn: fn),
-        choices=lambda **kwargs: (lambda fn: fn),
-        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
-    commands_mod.Bot = MagicMock
-    ext_mod.commands = commands_mod
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-
-
-_ensure_discord_mock()
+ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform
 import plugins.platforms.discord.adapter_profile_mentions as profile_mentions
@@ -399,7 +370,9 @@ async def test_two_bots_in_one_channel_dispatch_a_mention_once(adapter, served):
 
     for bot in bots:
         bot.handle_message.reset_mock()
-    for bot in reversed(bots):  # a new message, the other bot first: it is a new, separate claim
+    # A new message, the other bot first: a new, separate claim here, since this fake runner has no
+    # session lanes. A real gateway keeps a lane on the bot that carried its first turn (the e2e test).
+    for bot in reversed(bots):
         later = _message("$agent-one $agent-two again")
         later.id = 124
         await bot._handle_message(later)
@@ -481,202 +454,6 @@ async def test_a_slash_later_in_the_prompt_still_dispatches(adapter, content, pr
     (event,) = await _dispatched(adapter, content)
     assert (event.source.profile, event.source.profile_mention) == ("agent-one", True)
     assert (event.message_type, event.text, event.get_command()) == (MessageType.TEXT, prompt, None)
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("authority_cwd_in_tmp")
-async def test_a_handle_prefixed_slash_command_never_runs_in_that_profiles_session(tmp_path, monkeypatch):
-    """End to end on a really multiplexed gateway: real DiscordAdapter, real GatewayRunner with
-    ``multiplex_profiles``, the process latch on, and a session authority per served profile in a
-    multiplexed registry. Only the turn body is a stand-in; ``/new`` runs the real reset handler.
-
-    The rig can run ``/new`` in agent-one's session: a plain-TEXT event whose text is ``/new``,
-    stamped for agent-one (exactly the copy dispatch used to make of ``$agent-one /new``), resets
-    agent-one's session in agent-one's home. ``$agent-one /new`` itself must never do that: it is
-    one plain-text turn in the channel's own session. (A ``/`` later in the prompt still dispatches:
-    ``test_a_slash_later_in_the_prompt_still_dispatches``.)"""
-    from agent.secret_scope import set_multiplex_active
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session_authorities import SessionAuthorities
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
-    from hermes_constants import get_hermes_home
-    from tests.gateway.fixtures.storage_handles import storage_handle
-    from tests.waiting import async_wait_until
-
-    root = tmp_path / "hh"
-    agent_one = root / "profiles" / "agent-one"
-    agent_one_cfg = _profile_config(monkeypatch, agent_one, {"mentionable": True})
-    _write_config(root, {"model": {"default": "m"}})
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
-    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
-    for var in ("DISCORD_FREE_RESPONSE_CHANNELS", "DISCORD_ALLOWED_CHANNELS", "DISCORD_IGNORED_CHANNELS"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")  # every message reaches the gateway
-    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
-    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
-    served = [("default", root), ("agent-one", agent_one)]
-    monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: served)
-    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda n: root if n == "default" else root / "profiles" / n)
-    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda n: n in {"default", "agent-one"})
-    set_multiplex_active(True)  # the real process latch (the conftest resets it); nothing patched
-    runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
-    runner.config._runtime_profile_homes = tuple(served)  # what the server's reservation records
-    runner._served_profile_homes = dict(served)
-    runner._profile_configs = {"agent-one": agent_one_cfg}
-    launch = await initialize_session_authority(runner, profile_id=str(root), instance_id="owner",
-                                                persistence=storage_handle(root))
-    one = await initialize_session_authority(runner, profile_id=str(agent_one), instance_id="owner",
-                                             persistence=storage_handle(agent_one), register=False)
-    runner.session_authorities = SessionAuthorities(root, multiplexed=True)
-    runner.session_authorities.add(root, launch)
-    runner.session_authorities.add(agent_one, one, name="agent-one")
-    bot = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
-    bot._client = SimpleNamespace(user=SimpleNamespace(id=999))
-    bot._text_batch_delay_seconds = 0
-    sent, handed, turns, resets = [], [], [], []
-
-    async def send(chat_id, content, reply_to=None, metadata=None):
-        sent.append(content)
-        return SendResult(success=True, message_id=f"s{len(sent)}")
-
-    async def turn(event, source, quick_key, run_generation):
-        turns.append((event.text, source.profile))
-        captured = execution_result.get()
-        if captured is not None:
-            captured["result"] = {"final_response": "ok", "messages": []}
-        return "ok"
-    real_reset = runner._handle_reset_command
-
-    async def reset(event):
-        resets.append((event.text, event.source.profile, get_hermes_home()))
-        return await real_reset(event)
-    monkeypatch.setattr(bot, "send", send)
-    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
-    monkeypatch.setattr(runner, "_handle_reset_command", reset)
-    monkeypatch.setattr(runner, "_read_user_config", lambda: {"approvals": {"destructive_slash_confirm": False}})
-    bot.gateway_runner = runner
-    runner.adapters = {Platform.DISCORD: bot}
-    runner._wire_adapter_handlers(bot)
-    real_handle = bot.handle_message
-
-    async def hand_over(event):
-        handed.append((event.message_type, event.text, event.source.profile, event.get_command()))
-        return await real_handle(event)
-    monkeypatch.setattr(bot, "handle_message", hand_over)
-
-    async def settled(content, message_id):
-        handed.clear(), resets.clear(), turns.clear()
-        before = len(sent)
-        message = _message(content)
-        message.id = message_id
-        await bot._handle_message(message)
-        await async_wait_until(lambda: turns or resets or len(sent) > before, timeout=15, what=content)
-
-    # The threat is real in this rig: such a copy runs the real /new in agent-one's own home.
-    copy = MessageEvent(text="/new", message_id="900", source=dataclasses.replace(
-        bot.build_source(chat_id="555", chat_type="group", user_id="42", guild_id="777"),
-        profile="agent-one", profile_mention=True))
-    await bot.handle_message(copy)
-    await async_wait_until(lambda: resets, timeout=15, what="the copy's /new")
-    assert resets == [("/new", "agent-one", agent_one)]
-
-    await settled("$agent-one /new", 901)
-    assert handed == [(MessageType.TEXT, "$agent-one /new", None, None)]
-    assert resets == [] and turns == [("$agent-one /new", None)]  # a plain turn, channel's own session
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("authority_cwd_in_tmp")
-async def test_pin_known_gap_a_skill_slash_command_keeps_its_handle_as_text(served, monkeypatch, tmp_path):
-    """PINS A DOCUMENTED LIMITATION; a tripwire, not the behaviour we want forever.
-
-    ``$<profile>`` dispatch runs in the Discord adapter, BEFORE the gateway's skill-slash rewrite
-    (``GatewayRunner._hm_skill_slash_rewrite``, reached from ``_hm_dispatch_idle_commands`` after the
-    event is handed over). So ``/demo $agent-one summarize X`` is still a slash command when dispatch
-    looks at it: it is not re-homed, the gateway then rewrites it into the ``demo`` skill's prompt in
-    the channel's own session, and ``$agent-one`` stays in that prompt as plain text, as
-    ``discord.md#profile-mentions`` states. Real DiscordAdapter, GatewayRunner and session authority;
-    only the skill registry and the turn body are stand-ins.
-
-    If dispatch learns to route a skill command (or the rewrite moves ahead of it), this test SHOULD
-    fail: flip its assertions to "one turn in agent-one" and update the docs row, rather than
-    restoring the gap."""
-    import agent.skill_bundles as bundles
-    import agent.skill_commands as skills
-    from agent import skill_utils
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
-    from tests.waiting import async_wait_until
-
-    resolved = []
-    monkeypatch.setattr(skills, "get_skill_commands", lambda: {"/demo": {"name": "demo"}})
-    monkeypatch.setattr(skills, "resolve_skill_command_key",
-                        lambda command, **_: resolved.append(command) or ("/demo" if command == "demo" else None))
-    monkeypatch.setattr(skills, "split_stacked_skill_commands", lambda rest, **_: ([], rest))
-    monkeypatch.setattr(skills, "build_skill_invocation_message", lambda key, text="", **_: f"[demo skill] {text}")
-    monkeypatch.setattr(bundles, "resolve_bundle_command_key", lambda command: None)
-    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda **_: set())
-    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
-    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
-    for var in ("DISCORD_FREE_RESPONSE_CHANNELS", "DISCORD_ALLOWED_CHANNELS", "DISCORD_IGNORED_CHANNELS"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
-    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
-    monkeypatch.setattr(profile_mentions, "is_multiplex_active", lambda: True)
-
-    runner = GatewayRunner(GatewayConfig())
-    runner._served_profile_homes = {name: tmp_path / name for name in served.served_profile_names()}
-    runner._profile_configs = served._profile_configs
-    bot = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
-    bot._client = SimpleNamespace(user=SimpleNamespace(id=999))
-    bot._text_batch_delay_seconds = 0
-    sent, handed, turns = [], [], []
-
-    async def send(chat_id, content, reply_to=None, metadata=None):
-        sent.append(content)
-        return SendResult(success=True, message_id=f"s{len(sent)}")
-
-    async def turn(event, source, quick_key, run_generation):
-        turns.append((event.text, source.profile))
-        captured = execution_result.get()
-        if captured is not None:
-            captured["result"] = {"final_response": "ok", "messages": []}
-        return "ok"
-    monkeypatch.setattr(bot, "send", send)
-    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
-    monkeypatch.setattr(runner, "_read_user_config", lambda: {"approvals": {"destructive_slash_confirm": False}})
-    bot.gateway_runner = runner
-    runner.adapters = {Platform.DISCORD: bot}
-    await initialize_session_authority(runner, profile_id="default", instance_id="owner")
-    runner._wire_adapter_handlers(bot)
-    real_handle = bot.handle_message
-
-    async def hand_over(event):
-        # As handed over: the gateway's rewrite then edits this same event in place.
-        handed.append((event.message_type, event.text, event.source.profile, event.source.profile_mention))
-        return await real_handle(event)
-    monkeypatch.setattr(bot, "handle_message", hand_over)
-
-    # The handle is live on this bot: the same words without the leading slash would be re-homed.
-    plain = MessageEvent(text="$agent-one summarize X", source=bot.build_source(chat_id="555", chat_type="group"))
-    assert [(e.source.profile, e.text) for e in profile_mentions.mention_events(bot, plain, plain.text)] == [
-        ("agent-one", "summarize X")]
-
-    await bot._handle_message(_message("/demo $agent-one summarize X"))
-    await async_wait_until(lambda: turns or sent, timeout=15, what="the skill turn")
-    # One event, never a per-profile copy: still the typed slash command, in the channel's session.
-    assert handed == [(MessageType.COMMAND, "/demo $agent-one summarize X", None, False)]
-    assert "demo" in resolved  # the gateway took the skill-slash path, after dispatch had passed it
-    # THE GAP: the skill prompt runs in the channel's own session, the handle left in it as text.
-    assert turns == [("[demo skill] $agent-one summarize X", None)]
 
 
 # --- the opt-in: each profile's own config, served profiles only ------------------------------

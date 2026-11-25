@@ -109,10 +109,22 @@ def _find_unique_match(entries: list[str], old_text: str) -> tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
-def _no_match_error(entries: list[str], old_text: str, verb: str, **extra) -> dict[str, Any]:
+def _no_match_error(entries: list[str], old_text: str, verb: str,
+                    sibling: Optional[tuple[str, list[str]]] = None, **extra) -> dict[str, Any]:
     """Zero-match error that names the fix: the entries sharing the most words with
     *old_text* (a paraphrased or stale old_text usually still shares most of them), and a
-    pointer when old_text spans several entries joined by the delimiter."""
+    pointer when old_text spans several entries joined by the delimiter. When *old_text*
+    matches an entry in the sibling store (*sibling* = (target name, entries)), the fix is
+    a different `target`, not a different old_text — say so (#159920)."""
+    if sibling is not None:
+        sib_target, sib_entries = sibling
+        sib_hits = _substring_matches(sib_entries, old_text)
+        if sib_hits:
+            return _error(
+                f"No entry matched '{old_text}' in target='{extra.get('target', '?')}'. "
+                f"It matched an entry in target='{sib_target}' — retry with target='{sib_target}'.",
+                "no_match_other_target",
+                closest_entries=[sib_entries[i] for i in sib_hits[:3]], **extra)
     def _words(text: str) -> set:
         return set(re.findall(r"\w+", text.lower()))
     words = _words(old_text)
@@ -194,7 +206,7 @@ class MemoryStore:
         self._system_prompt_snapshot: dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
-    # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
+    # Per-turn counter of failed memory-write attempts routed through _consolidation_failure; reset at each turn boundary by
     # reset_consolidation_failures() (#42405).
     def target_enabled(self, target: str) -> bool:
         return self.user_profile_enabled if target == "user" else self.memory_enabled
@@ -216,7 +228,7 @@ class MemoryStore:
             return response
         FAILURE_CLASS.set("retry_cap")
         return {"success": False, "done": True, "error": (
-            f"Memory consolidation failed {self._consolidation_failures} times this turn. Stop retrying "
+            f"Memory write failed {self._consolidation_failures} times this turn. Stop retrying "
             "memory calls — leave memory unchanged for now and continue with your reply to the user. "
             "The fact can be saved in a later turn.")}
 
@@ -449,7 +461,7 @@ class MemoryStore:
                matched_entry: Optional[str] = None) -> dict[str, Any]:
         """Locked find-and-splice inside the matched entry (#124582)."""
         def _apply(entries, limit):
-            idx = self._locate(entries, old_text, "patch", matched_entry)
+            idx = self._locate(entries, old_text, "patch", matched_entry, target=target)
             if isinstance(idx, dict):
                 return idx
             before = entries[idx]
@@ -473,7 +485,8 @@ class MemoryStore:
             return _error("old_text cannot be empty.", "missing_old_text")
         return self._edit(target, old_text.strip(), None, matched_entry)
 
-    def _locate(self, entries: list[str], old_text: str, verb: str, matched_entry: Optional[str] = None):
+    def _locate(self, entries: list[str], old_text: str, verb: str, matched_entry: Optional[str] = None,
+                target: Optional[str] = None):
         """Index of the entry *old_text* selects, or the error dict the edit returns. A write
         staged for approval carries the FULL entry it was reviewed against (*matched_entry*):
         only that exact entry qualifies, so replay never hits a newer entry that still
@@ -487,14 +500,19 @@ class MemoryStore:
                           matches=[entries[i][:80] + ("..." if len(entries[i]) > 80 else "")
                                    for i in _substring_matches(entries, old_text)])
         if idx is None:
-            return self._consolidation_failure(_no_match_error(entries, old_text, verb, current_entries=entries))
+            sibling = None
+            if target is not None:
+                other = "user" if target == "memory" else "memory"
+                sibling = (other, self._entries_for(other))
+            return self._consolidation_failure(_no_match_error(
+                entries, old_text, verb, sibling=sibling, target=target, current_entries=entries))
         return idx
 
     def resolve_entry(self, target: str, old_text: str, verb: str) -> dict[str, Any]:
         """``{"success": True, "matched_entry": <full entry>}`` for the entry *old_text* selects
         now, read under the lock, or the error the direct edit would return."""
         def _resolve(entries, limit):
-            idx = self._locate(entries, old_text.strip(), verb)
+            idx = self._locate(entries, old_text.strip(), verb, target=target)
             return idx if isinstance(idx, dict) else {"success": True, "matched_entry": entries[idx]}
         return self._mutate(target, _resolve, skip_drift=True)
 
@@ -502,7 +520,8 @@ class MemoryStore:
               matched_entry: Optional[str] = None) -> dict[str, Any]:
         """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
         def _apply(entries, limit):
-            idx = self._locate(entries, old_text, "replace" if new_content else "remove", matched_entry)
+            idx = self._locate(entries, old_text, "replace" if new_content else "remove", matched_entry,
+                               target=target)
             if isinstance(idx, dict):
                 return idx
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]

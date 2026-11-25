@@ -514,7 +514,8 @@ def review_ship_info(cwd: str) -> dict:
     """gh availability/auth + this branch's PR. ghReady false when gh missing/unauthed."""
     if not _is_dir(cwd) or not _gh(cwd, ["auth", "status"])[0]:
         return {"ghReady": False, "pr": None}
-    pr = _gh_json(cwd, ["pr", "view", "--json", "url,state,number"])
+    # gh finds this branch and its repo by running git, so the CLT-stub guard applies to it too.
+    pr = None if _git_argv0_unusable(["git"]) else _gh_json(cwd, ["pr", "view", "--json", "url,state,number"])
     if pr and pr.get("url"):
         return {"ghReady": True, "pr": {"url": pr["url"], "state": pr.get("state"), "number": pr.get("number")}}
     return {"ghReady": True, "pr": None}
@@ -565,7 +566,7 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = No
         return not_ready
     wanted = list(dict.fromkeys(str(b) for b in (branches or []) if b))[:_PR_QUERY_BRANCH_CAP]
     by_number = list(dict.fromkeys(int(n) for n in (numbers or []) if n))[:_PR_QUERY_BRANCH_CAP]
-    if not wanted and not by_number:
+    if (not wanted and not by_number) or _git_argv0_unusable(["git"]):  # gh reads the repo from git
         return not_ready
     repo_ok, repo_out, _repo_err = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
     owner, _, name = repo_out.strip().partition("/")

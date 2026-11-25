@@ -340,6 +340,28 @@ def test_clt_stub_plugin_git_falls_back_to_no_git_not_to_the_stub(tmp_path, monk
 
 
 @pytest.mark.platforms("posix")
+def test_clt_stub_skips_gh_calls_that_make_gh_run_git(tmp_path, clt_stub_env):
+    """The review pane's PR refresh and the sidebar's PR badges ask gh about "this repo", which gh
+    answers by running git; ``gh auth status`` needs no repo and still runs."""
+    from hermes_cli import web_git
+
+    trap_bin, _trap_git, spawn_log = clt_stub_env
+    gh_log = tmp_path / "gh.log"
+    _make_exe(
+        trap_bin / "gh",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {str(gh_log)!r}\n"
+        "[ \"$1\" = auth ] && exit 0\ngit rev-parse --abbrev-ref HEAD >/dev/null 2>&1\nexit 1\n",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    assert web_git.review_ship_info(str(repo)) == {"ghReady": True, "pr": None}
+    assert web_git.review_pr_list(str(repo), ["main"]) == {"ghReady": False, "prs": []}
+    assert gh_log.read_text().splitlines() == ["auth status"]
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

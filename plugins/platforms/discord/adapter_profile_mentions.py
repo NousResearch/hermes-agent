@@ -17,8 +17,10 @@ config: the bot's own profile from its live-refreshed ``config.extra`` (the allo
 ``adapter_live_gates.py``), every other served profile from the config the hot-serve reconcile
 (``gateway/run_profile_reconcile.py``) last loaded for it. That reconcile reloads a served profile
 whose ``config.yaml`` changed and drops a deleted one, so flipping the flag takes effect without a
-restart; nothing here polls. A profile that is not served, did not opt in, or claims a handle
-another profile also claims is unreachable.
+restart; nothing here polls. Known gap (documented, pinned by a test): when the bot belongs to a
+secondary profile, the LAUNCH profile's flag comes from ``runner.config``, which the reconcile
+never reloads, so switching it off keeps that profile reachable until a restart. A profile that
+is not served, did not opt in, or claims a handle another profile also claims is unreachable.
 
 Each copy is the event's own source with ``profile`` stamped, exactly what ``build_source`` does
 for a ``profile_routes`` match, so the gateway's single identity seam (``resolve_identity``) keys,

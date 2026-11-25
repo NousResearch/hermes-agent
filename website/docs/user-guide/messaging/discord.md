@@ -1016,7 +1016,21 @@ hermes profile create agent-one --discord-mention        # $agent-one
 hermes profile create agent-two --discord-mention=a2     # $a2
 ```
 
-The bot answers to the handles of the profiles this gateway serves whose own config sets `mentionable: true`. Only a real YAML boolean counts: `"true"` in quotes or `1` leaves the profile unreachable. If two profiles claim the same handle, neither gets it, and a WARNING names both. Editing the flag needs no restart. The gateway re-scans a served profile whose `config.yaml` changed (within about 30 seconds) and re-reads the bot's own profile on its next message. A profile created or deleted while the gateway runs is picked up the same way. One exception: when the bot belongs to a different profile, the profile the gateway was started from re-reads its own flag only on the next gateway restart.
+The bot answers to the handles of the profiles this gateway serves whose own config sets `mentionable: true`. Only a real YAML boolean counts: `"true"` in quotes or `1` leaves the profile unreachable. If two profiles claim the same handle, neither gets it, and a WARNING names both.
+
+Editing `mentionable` or `mention_handle` normally needs no restart, whether you turn a profile on or off:
+
+- **The profile that owns the bot** re-reads its own flag on the bot's next message.
+- **Every other served profile** is re-read when the gateway re-scans a `config.yaml` that changed (within about 30 seconds). A profile created or deleted while the gateway runs is picked up the same way.
+
+:::warning One exception: the launch profile, when another profile owns the bot
+The *launch profile* is the profile the gateway process was started from (usually `default`, the host of a multiplexing gateway). Its own flag is read only when the gateway starts, if the Discord bot belongs to a **different** profile (that profile's own bot token). The re-scan never reloads the launch profile, and the bot's own refresh only covers the bot's profile. In that setup:
+
+- **Turning the launch profile's flag off does not take effect until you restart the gateway.** Until then, `$<launch-profile>` stays reachable to everyone the bot accepts messages from. To revoke it right away, restart the gateway process (`hermes gateway restart`, run as the launch profile). Restarting only the bot's profile (`hermes -p <name> gateway restart`) is not enough.
+- Turning it on, or changing its `mention_handle`, also waits for a restart.
+
+When the launch profile owns the bot (the usual single-bot setup), its flag follows edits live in both directions, like every other profile.
+:::
 
 | Message | What happens |
 |---|---|

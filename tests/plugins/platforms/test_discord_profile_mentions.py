@@ -638,6 +638,83 @@ def test_the_bots_own_profile_flag_follows_its_config_yaml(tmp_path, monkeypatch
     assert profile_mentions.addresses_profile(bot, "$host hi") is False
 
 
+@pytest.mark.asyncio
+async def test_pin_known_gap_launch_profile_flag_needs_a_restart_when_another_profile_owns_the_bot(
+        tmp_path, monkeypatch):
+    """PINS A DOCUMENTED LIMITATION; this is not the behaviour we want forever.
+
+    When the bot belongs to a secondary profile (``gamma``), the profile the gateway was launched
+    from (``default``) is read from ``runner.config``, loaded once at startup: the hot-serve
+    reconcile never rebuilds the launch profile, and the bot's live refresh only covers ``gamma``.
+    So switching ``default``'s own ``discord.mentionable`` OFF on disk leaves ``$default``
+    reachable until the gateway restarts (revocation fails open), as ``discord.md#profile-mentions``
+    states. Switching it ON is likewise ignored until a restart.
+
+    If the reconcile (or the plugin) is changed to re-read the launch profile's own config live,
+    this test SHOULD fail: flip its assertions to "unreachable after the edit" and update the docs
+    paragraph, rather than restoring the gap."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+
+    home = tmp_path / ".hermes"
+    (home / "profiles").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr(profile_mentions, "is_multiplex_active", lambda: True)
+    _write_config(home, {"model": {"default": "m"}, "discord": {"mentionable": True}})
+    runner = object.__new__(GatewayRunner)
+    runner.config = load_gateway_config()  # the launch profile's config, as the gateway starts
+    runner.config.multiplex_profiles = True
+    runner.session_authorities = None
+    runner._running = True
+    runner._primary_profile_name = "default"
+    runner._profile_adapters, runner._profile_failed_platforms, runner._failed_platforms = {}, {}, {}
+    runner._agent_cache, runner._agent_cache_lock = {}, None
+    runner.pairing_store, runner.pairing_stores = MagicMock(), {}
+    runner._adapter_disconnect_timeout_secs = lambda: 0.5
+    runner._register_config_hooks = lambda *a, **kw: None
+    runner._busy_text_modes_by_profile, runner._busy_input_modes_by_profile = {}, {}
+    runner.session_runtime_descriptor = {"state": "ready", "served_profiles": [], "capabilities": []}
+    runner.session_ticket_store = None
+    runner.adapters = {}
+
+    async def _no_added(profiles):
+        pass
+
+    runner._after_profiles_added = _no_added
+    gamma = home / "profiles" / "gamma"
+    _write_config(gamma, {"model": {"default": "m"}})
+    (gamma / ".env").write_text("", encoding="utf-8")
+    bot = DiscordAdapter(PlatformConfig(enabled=True, token="gamma-token", extra={}))
+    bot.gateway_runner = runner
+
+    def _mentions(text):
+        source = bot.build_source(chat_id="555", chat_type="group", user_id="42")
+        event = MessageEvent(text=text, source=source, message_id="1")
+        return [(e.source.profile, e.text) for e in profile_mentions.mention_events(bot, event, text)]
+
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        runner._profile_adapters["gamma"] = {Platform.DISCORD: bot}  # the bot is gamma's, not default's
+        assert runner.served_profile_names() == ["default", "gamma"]
+        assert profile_mentions._owner_profile(bot, runner) == "gamma"
+        assert profile_mentions.mentionable_handles(bot) == {"default": "default"}
+
+        _write_config(home, {"model": {"default": "m"}, "discord": {"mentionable": False}})
+        assert (await runner.reconcile_served_profiles(reason="watcher"))["rescanned"] == []
+        # THE GAP: still reachable after the flag was turned off, until the gateway restarts.
+        assert profile_mentions.mentionable_handles(bot) == {"default": "default"}
+        assert _mentions("$default status?") == [("default", "status?")]
+
+        runner.config = load_gateway_config()  # what a restart loads: now the edit applies
+        runner.config.multiplex_profiles = True
+        assert _mentions("$default status?") == [(None, "$default status?")]
+        _write_config(home, {"model": {"default": "m"}, "discord": {"mentionable": True}})
+        assert (await runner.reconcile_served_profiles(reason="watcher"))["rescanned"] == []
+        assert _mentions("$default status?") == [(None, "$default status?")]  # ON waits for a restart too
+    assert runner._profile_adapters["gamma"][Platform.DISCORD] is bot
+
+
 # --- the re-homed copy through the gateway's identity seam --------------------------------------
 
 

@@ -40,3 +40,29 @@ def test_user_platform_plugins_inject_env_metadata_but_non_platforms_do_not(monk
     finally:
         for key in keys:
             config_mod.OPTIONAL_ENV_VARS.pop(key, None)
+
+
+def test_reload_drops_a_removed_line_for_a_platform_plugin_loaded_after_import(tmp_path, monkeypatch):
+    """A platform plugin installed in-process (its manifest was not on disk when hermes_cli.config read them at
+    import) gets its declared env names into reload_env's known set when it loads, so /reload drops a removed
+    .env line for them as it did when core shipped QQ Bot (QQ_SANDBOX, QQ_PORTAL_HOST)."""
+    import os
+    from hermes_cli import config
+    from hermes_cli.plugins import PluginManager
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "lateplat"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        "name: lateplat\nkind: platform\nrequires_env: [LATEPLAT_TOKEN]\noptional_env:\n  - name: LATEPLAT_SANDBOX\n")
+    (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [lateplat]\n")
+    (home / ".env").write_text("LATEPLAT_TOKEN=t\nLATEPLAT_SANDBOX=true\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    PluginManager().discover_and_load()
+    for key in ("LATEPLAT_TOKEN", "LATEPLAT_SANDBOX"):
+        monkeypatch.delenv(key, raising=False)
+    config.reload_env()
+    assert os.environ.get("LATEPLAT_SANDBOX") == "true"
+    (home / ".env").write_text("LATEPLAT_TOKEN=t\n")
+    config.reload_env()
+    assert "LATEPLAT_SANDBOX" not in os.environ and os.environ.get("LATEPLAT_TOKEN") == "t"

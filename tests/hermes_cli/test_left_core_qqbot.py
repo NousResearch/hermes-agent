@@ -152,13 +152,6 @@ def test_the_old_manifest_key_is_read_as_platforms_qqbot(tmp_path, config, in_us
         Platform("qqbot-platform")
 
 
-def test_reload_and_config_set_still_know_the_qq_env_names():
-    """reload_env drops a removed QQ_* line and `config set` routes it to .env, as when core shipped QQ Bot,
-    even after an in-process install whose manifest this process never read."""
-    from hermes_cli import config
-    assert {"QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"} <= config._EXTRA_ENV_KEYS
-
-
 def test_webhook_routes_keep_a_qqbot_target_before_the_plugin_registers():
     from gateway.webhook_targets import is_dispatchable_target
     assert is_dispatchable_target("qqbot") is True

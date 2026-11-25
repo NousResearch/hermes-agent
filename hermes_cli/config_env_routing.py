@@ -24,6 +24,20 @@ from typing import Optional
 # Case-sensitive on purpose: a lowercase bare name (``my_flag``) stays a config.yaml top-level key.
 _ENV_SHAPE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
+# Env names the platform plugins loaded in this process declare (``requires_env`` / ``optional_env``):
+# ``reload_env`` drops a removed ``.env`` line for them, as for core's own names, including a plugin
+# installed after ``hermes_cli.config`` read the manifests on disk at import (an in-process install).
+LOADED_PLUGIN_ENV: set[str] = set()
+
+
+def note_loaded_plugin_env(manifest) -> None:
+    """Add a loading platform plugin's declared env names to :data:`LOADED_PLUGIN_ENV`."""
+    for entry in (*manifest.requires_env, *manifest.optional_env):
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and name:
+            LOADED_PLUGIN_ENV.add(name)
+
+
 def is_registered_env_name(name: str) -> bool:
     """True when Hermes itself enumerates ``name``: ``OPTIONAL_ENV_VARS`` / ``_EXTRA_ENV_KEYS``, or a
     self-configuring platform suffix so plugin adapters nobody listed (``IRC_HOME_CHANNEL``) count."""

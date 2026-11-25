@@ -28,12 +28,28 @@ login's tokens therefore work only as that login's cookies and end with it. The 
 token (``HERMES_DASHBOARD_SESSION_TOKEN``) also works as a bearer or ``?token=`` while the
 session-token provider is registered (:func:`access_token_works_alone`): no browser login holds it,
 and it has no refresh.
+
+A token Nous Portal minted by RFC 8693 token exchange also works on its own there. The hosted dashboard
+signs the user in on its own host, exchanges that sign-in for a token whose audience is this agent,
+and relays the browser's requests here with it as a bearer. Portal marks every exchanged token with an
+``act`` claim naming the client that asked for it (RFC 8693 §4.1). A browser login on this listener
+gets its tokens from the authorization-code grant, which never sets ``act``, and a token cannot gain
+the claim without Portal's signature over it. So :func:`access_token_works_alone` lets a token through
+when its claims, decoded without verification, carry an ``act`` object, and leaves the verdict to the
+providers: the gate then verifies it like any bearer (signature, ``aud``, issuer and agent instance,
+in the Nous provider), and a token no provider verifies gets nothing. Only a well-formed signed JWT
+counts: a token of another shape (the password provider's, whose decoder skips characters it does
+not know) is never read as one. The refresh route keeps :func:`token_works_alone`: an exchanged token
+is an access token, and the dashboard host exchanges again rather than refreshing here.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
+import re
 import logging
 import threading
 import time
@@ -124,12 +140,43 @@ def token_works_alone(request: Request, token: str) -> bool:
     return expires is not None and expires > time.time()
 
 
+#: A compact JWS: three base64url segments with no padding (RFC 7515 §7.1).
+_COMPACT_JWS = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+#: Signature algorithms a token-exchange issuer signs with: asymmetric only, so no listener secret
+#: could have signed one.
+_EXCHANGE_ALGORITHMS = frozenset({"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384",
+                                  "ES512", "EdDSA"})
+
+
+def _segment(part: str) -> object:
+    try:
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (binascii.Error, ValueError):
+        return None
+
+
+def is_exchanged_token(token: str) -> bool:
+    """Whether *token* reads as one minted by RFC 8693 token exchange: a compact JWS, signed with an
+    asymmetric algorithm, whose claims carry an ``act`` object naming its actor. Read WITHOUT
+    verifying anything: it only decides whether the token may be presented alone, and the providers
+    verify it afterwards like any other bearer."""
+    if not token or len(token) > 16384 or not _COMPACT_JWS.fullmatch(token):
+        return False
+    header_part, claims_part, _signature = token.split(".")
+    header, claims = _segment(header_part), _segment(claims_part)
+    if not isinstance(header, dict) or header.get("alg") not in _EXCHANGE_ALGORITHMS:
+        return False
+    actor = claims.get("act") if isinstance(claims, dict) else None
+    return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
+
+
 def access_token_works_alone(request: Request, token: str) -> bool:
     """Whether *token* may be used on its own as an access token (a bearer header, a socket's
-    ``?token=``): as :func:`token_works_alone` (looked up at call time, so a patch of it applies), or
-    when it is the deployment session token the registered session-token provider holds. The refresh
-    route keeps :func:`token_works_alone`: the deployment session token has no refresh."""
-    return token_works_alone(request, token) or _is_deployment_token(token)
+    ``?token=``): as :func:`token_works_alone` (looked up at call time, so a patch of it applies), when
+    it is an exchanged token (:func:`is_exchanged_token`), which the providers then verify, or when it
+    is the deployment session token the registered session-token provider holds. The refresh route
+    keeps :func:`token_works_alone`: neither of those has a refresh."""
+    return token_works_alone(request, token) or is_exchanged_token(token) or _is_deployment_token(token)
 
 
 def _is_deployment_token(token: str) -> bool:

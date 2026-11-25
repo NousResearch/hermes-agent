@@ -126,6 +126,36 @@ async def test_a_receipt_that_recorded_no_origin_retries_as_unknown_never_true(b
         ('bot:' + key, False), ('bot:' + key + ':retry', None)]
 
 
+@pytest.mark.asyncio
+async def test_a_bot_chat_row_queued_before_the_origin_field_reads_unknown(bot_chat, monkeypatch):
+    """A row the pre-field writer committed carries neither ``started_by_hermes`` nor a
+    ``turn_author``: restored and drained on this code, it cannot tell a peer DM from a producer
+    report, so it reads unknown, never True. It still runs once."""
+    from gateway import session_automation
+    monkeypatch.setattr(session_automation, '_origin_descriptor', lambda *_a, **_k: {})  # the old writer
+    bot_chat.gate = asyncio.Event()
+    await _deliver(bot_chat, '3' * 32, PEER_DM_TRANSPORT)
+    await _deliver(bot_chat, '4' * 32, 'native')
+    bot_chat.gate.set()
+    await async_wait_until(lambda: len(bot_chat.seen) == 2, timeout=10, what='both old rows to run')
+    assert bot_chat.seen == [('bot:' + '3' * 32, None), ('bot:' + '4' * 32, None)]
+
+
+def test_an_old_row_of_another_producer_still_reads_hermes_own():
+    """Only a Bot Chat row is read as unknown without the field: a cron, completion, delegation,
+    heartbeat or route wake row never recorded it and stays Hermes' own (True)."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_automation import restore_origin
+    from gateway.session import SessionSource
+    from gateway.config import Platform
+    source = SessionSource(platform=Platform.LOCAL, chat_id='c')
+    for identity in ('["cron","job",1]', '["heartbeat","s",0,1]'):
+        event = restore_origin(MessageEvent(text='x', source=source, internal=True), {'identity': identity})
+        assert event.started_by_hermes() is True
+    event = restore_origin(MessageEvent(text='x', source=source, internal=True), {'identity': 'bot:' + '5' * 32})
+    assert event.started_by_hermes() is None
+
+
 KEY = "agent:main:telegram:group:-100"
 
 

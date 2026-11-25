@@ -319,12 +319,12 @@ async def test_queued_ack_follows_the_commit(monkeypatch, command, agent, ack):
 
     real, held = ingress.admit_message, asyncio.Event()
 
-    async def released_early(authority, event):
+    async def released_early(authority, event, *, startup=None):
         accepted = ingress.busy_acceptance.get()
         if event.message_id == 'C' and accepted is not None:
             accepted.set_result(None)
             await held.wait()
-        return await real(authority, event)
+        return await real(authority, event, startup=startup)
     monkeypatch.setattr(ingress, 'admit_message', released_early)
     rig = await _start_a(monkeypatch, 'queue', agent=agent)
     await rig.adapter.handle_message(MessageEvent(text=command, message_type=MessageType.COMMAND,

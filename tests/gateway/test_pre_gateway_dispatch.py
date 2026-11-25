@@ -215,7 +215,8 @@ async def test_hook_fires_once_at_messaging_ingress_and_never_when_an_admission_
         fired.append(kwargs["event"].text)
         return [{"action": "skip"}] if kwargs["event"].text == "drop me" else []
 
-    async def admit(_authority, event):
+    async def admit(_authority, event, *, startup=None):
+        assert startup is None
         admitted.append(event.text)
         return "admitted"
 

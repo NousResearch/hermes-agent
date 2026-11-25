@@ -305,6 +305,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         const sessionId = await ensureSessionId(ctx.sessionHint, ctx.command)
 
         if (!sessionId) {
+          submitted = false
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
           return null

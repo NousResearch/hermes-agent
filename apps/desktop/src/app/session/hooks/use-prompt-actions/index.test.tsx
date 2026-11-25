@@ -685,6 +685,30 @@ describe('usePromptActions slash session targeting', () => {
     expect(calls[1]?.params).toEqual({ command: 'goal status', session_id: RECOVERED_SESSION_ID })
   })
 
+  it('reports a fresh slash draft as unsent when session creation fails', async () => {
+    const createBackendSessionForSend = vi.fn(async () => null)
+    const requestGateway = vi.fn(async (_method: string) => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={{ current: null }}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={{ current: null }}
+        storedSessionId={null}
+      />
+    )
+
+    await expect(handle!.submitText('/goal status')).resolves.toBe(false)
+    expect(createBackendSessionForSend).toHaveBeenCalledOnce()
+    expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('slash.exec')
+    expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('command.dispatch')
+  })
+
   it('does not fork the chat when the routed session cannot be rebound', async () => {
     const calls: string[] = []
     const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')

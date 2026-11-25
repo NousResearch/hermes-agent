@@ -99,6 +99,32 @@ def test_preload_boots_the_server_when_this_process_has_not_and_then_loads(super
     assert sup.loads == ["a"]
 
 
+def test_two_requests_racing_the_boot_both_get_the_server_this_process_started(supervisor, monkeypatch):
+    sup = FakeSupervisor({"a": "unloaded"}, models_max=1)
+    supervisor({}, models_max=1)  # also arranges the in-flight set's cleanup
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    booting = threading.Event()
+
+    def slow_boot(config, force=False):
+        booting.set()
+        # health: allow HX013 -- the delay is the behaviour under test: the second request must arrive mid-boot
+        threading.Event().wait(0.3)
+        monkeypatch.setattr(bootstrap, "_SUPERVISOR", sup)
+        return sup
+
+    monkeypatch.setattr(bootstrap, "ensure_local_runtime", slow_boot)
+    verdicts: list[str] = []
+    first = threading.Thread(target=lambda: verdicts.append(bootstrap.preload_model("a")))
+    first.start()
+    assert booting.wait(timeout=5)
+    verdicts.append(bootstrap.preload_model("a"))
+    first.join(timeout=10)
+
+    assert sorted(verdicts) == ["held", "started"]
+    wait_until(_settled, what="preload thread to finish")
+    assert sup.loads == ["a"]
+
+
 def test_preload_leaves_a_server_another_process_owns_alone(supervisor, monkeypatch):
     # Booting finds the server another process already supervises and returns no supervisor: its
     # cap is unknown here, so it is left alone.

@@ -7,6 +7,7 @@ export const zhHantChat = {
     switchingProfileSlow: '仍在連線。現在傳送的訊息會等待連線完成後送給此代理。',
     switchProfileFailed: profile => `無法切換到 ${profile}`,
     willSendTo: profile => `將傳送給 ${profile}`,
+    loadingLocalModel: model => `正在載入 ${model}…`,
     placeholderStarting: '正在啟動 Hermes...',
     placeholderReconnecting: '正在重新連線至 Hermes…',
     placeholderFollowUp: '傳送後續訊息',

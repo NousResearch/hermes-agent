@@ -366,14 +366,16 @@ def _preload(model_id: str) -> PreloadVerdict:
     gates that; an empty router holds no memory). The load itself runs on a daemon thread and is
     logged, never raised, so the caller (a keystroke) is never blocked for a 20 GB read.
     """
-    sup = _SUPERVISOR
-    if sup is None:
-        from hermes_cli.config import load_config
-
-        sup = ensure_local_runtime(load_config())
-        if sup is None:
-            return "no_supervisor"
     with _PRELOAD_LOCK:
+        # Booted under the lock: a second request racing the first would otherwise find the server
+        # the first one is starting ("already running, another process") and be told it has none.
+        sup = _SUPERVISOR
+        if sup is None:
+            from hermes_cli.config import load_config
+
+            sup = ensure_local_runtime(load_config())
+            if sup is None:
+                return "no_supervisor"
         statuses = sup.models(timeout_s=5)
         if model_id not in statuses:
             return "not_staged"
@@ -387,7 +389,7 @@ def _preload(model_id: str) -> PreloadVerdict:
     def _load() -> None:
         try:
             sup.load_model(model_id)
-            logger.info("preload of %s finished", model_id)
+            logger.info("preload of %s: load requested; the router loads it in the background", model_id)
         except (OSError, ValueError) as exc:  # router unreachable, refused, or a malformed reply
             logger.warning("preload of %s failed: %s", model_id, exc)
         finally:

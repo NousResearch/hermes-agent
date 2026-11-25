@@ -29,9 +29,9 @@ Download the package for your platform from the
   open it with Windows App Installer to install the signed MSIX bundle and
   register its update source. Microsoft Store packages have separate Store
   ownership.
-- **macOS (macOS 13 Ventura or later, Apple Silicon M1–M4):** open the DMG
-  (~948 MB), then copy `Hermes Agent.app` to Applications. The ZIP artifact
-  (~983 MB) carries the signed app used by the automatic updater.
+- **macOS (macOS 13 Ventura or later, Apple Silicon M1–M4):** open the DMG,
+  then copy `Hermes Agent.app` to Applications. The ZIP artifact carries the
+  signed app used by the automatic updater.
 
 Bundled packages contain the agent, Python, supported dependencies, and prebuilt
 interfaces. First launch does not build that base runtime. Provider access and

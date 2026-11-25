@@ -59,7 +59,7 @@ Windows 10 源码安装支持不代表 MSIX 支持 Windows 10：在 Windows 10 �
 侧载版通过桌面 Update 控件交给 App Installer 更新。
 Hermes 先下载本地描述文件，再停止自己的后端、退出并等待包替换。
 它不依赖 `ms-appinstaller:` URL 协议。商店版本由 Microsoft Store 更新。
-分架构完整 MSIX 包约为 1.89 GB（ARM64）至 2.86 GB（x64）；App Installer 与 Microsoft Store 仅下载当前主机架构并应用差分块更新，整体更新耗时取决于下载速度以及本地包部署与重启时间。
+软件包体积与更新耗时见 [捆绑桌面应用更新](../getting-started/updating.md#bundled-desktop-updates)。
 
 `Hermes-Setup.exe` 是另一种引导安装程序，会下载并配置源码安装。
 不要把它与自包含 MSIX 混为一谈。

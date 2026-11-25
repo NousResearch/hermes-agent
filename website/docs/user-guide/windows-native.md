@@ -71,11 +71,9 @@ controls the aliases.
 Sideload updates use the app's Update control and Windows App Installer.
 Hermes downloads a local descriptor before teardown and registers automatic
 relaunch. It does not require the `ms-appinstaller:` URL protocol. An unknown
-update-check result is not a claim that the package is current. Full
-per-architecture MSIX packages are ~1.89 GB (ARM64) to ~2.86 GB (x64); App
-Installer and the Microsoft Store fetch only your host architecture and apply
-differential block updates between releases, so total update time depends on
-download speed plus local package deployment and relaunch.
+update-check result is not a claim that the package is current. See
+[Bundled desktop updates](../getting-started/updating.md#bundled-desktop-updates)
+for package sizes and update timing.
 
 The Microsoft Store variant uses its Partner Center package identity and Store
 updates. It does not use the sideload feed. `hermes update` inside either

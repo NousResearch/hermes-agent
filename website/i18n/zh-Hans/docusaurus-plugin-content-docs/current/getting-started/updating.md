@@ -27,7 +27,7 @@ hermes update --set-channel stable   # 恢复为仅正式版本
 `hermes update` 会自动检测新的配置选项并提示你添加。如果跳过了该提示，可手动运行 `hermes config check` 查看缺失的选项，再运行 `hermes config migrate` 以交互方式添加。
 :::
 
-### 捆绑桌面应用更新
+### 捆绑桌面应用更新 {#bundled-desktop-updates}
 
 自包含桌面软件包要求 **macOS 13 Ventura 或更新版本（Apple Silicon M1–M4，`Hermes Agent.app`）** 或 **Windows 11 22H2 或更新版本（`10.0.22621.0`，x64 或 ARM64，涵盖 Microsoft Store 与 `.appinstaller` MSIX）**。Intel Mac 和 macOS 12 及更早版本请使用源码安装脚本（`install.sh`）；Windows 10 和低于 22H2 的 Windows 11 请使用 `install.ps1` 或 [WSL2](../user-guide/windows-wsl-quickstart.md)。
 

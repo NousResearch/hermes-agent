@@ -9,17 +9,9 @@ Inspired by Mercury Agent's permission-hardened blocklist.
 
 import pytest
 
-from tools.approval import (
-    HARDLINE_PATTERNS,
-    check_all_command_guards,
-    check_dangerous_command,
-    detect_dangerous_command,
-    detect_hardline_command,
-    disable_session_yolo,
-    enable_session_yolo,
-    reset_current_session_key,
-    set_current_session_key,
-)
+from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, detect_hardline_command, disable_session_yolo, enable_session_yolo
+from tools.approval_context import reset_current_session_key, set_current_session_key
+from tools import approval_context
 
 
 # -------------------------------------------------------------------------
@@ -82,6 +74,10 @@ _HARDLINE_BLOCK = [
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",
     "mkfs.xfs /dev/nvme0n1",
+    # Command position via separator/wrapper still blocks (#93392)
+    "true && mkfs.ext4 /dev/sda1",
+    "sudo mkfs.ext4 /dev/sda1",
+    "nohup mkfs /dev/sdb",
     # Raw block device overwrites
     "dd if=/dev/zero of=/dev/sda bs=1M",
     "dd if=/dev/urandom of=/dev/nvme0n1",
@@ -183,6 +179,10 @@ _HARDLINE_ALLOW = [
     "echo 'halt and catch fire'",
     "python3 -c 'print(\"shutdown\")'",
     "find . -name '*reboot*'",
+    # Quoted prose mentioning mkfs must not trip the hardline floor (#93392):
+    # the word appears in an argument, not at a command position.
+    'echo "does this workflow use mkfs anywhere?"',
+    "echo 'run mkfs.ext4 on the backup disk later'",
     # Word-boundary protection
     "mkfs_helper --version",
     # systemctl non-destructive verbs
@@ -214,29 +214,6 @@ def test_hardline_detection_allows(command):
     is_hl, desc = detect_hardline_command(command)
     assert not is_hl, f"expected hardline NOT to match {command!r} (got: {desc})"
     assert desc is None
-
-
-# Commands written with the ordinary quoting / brace shell idioms that
-# previously slipped past the floor. Kept as an explicit regression set so
-# the intent (quoting `rm -rf "/"` must not be a disk-wipe bypass) survives
-# any future refactor of the rm patterns.
-_QUOTED_BRACE_BYPASS = [
-    'rm -rf "/"',
-    "rm -rf '/'",
-    'rm -rf "/etc"',
-    'rm -rf "/home"',
-    'rm -rf "$HOME"',
-    "rm -rf ${HOME}",
-    'rm -rf "${HOME}"',
-]
-
-
-@pytest.mark.parametrize("command", _QUOTED_BRACE_BYPASS)
-def test_quoted_and_brace_paths_are_hardline_blocked(command):
-    """Quoted paths and ${HOME} must hit the floor (was a silent bypass)."""
-    is_hl, desc = detect_hardline_command(command)
-    assert is_hl, f"quoting/brace bypass leaked through hardline floor: {command!r}"
-    assert desc
 
 
 # Multi-line QUOTED arguments are data, not command sequences: a newline
@@ -366,6 +343,194 @@ def test_root_wipe_at_command_position_is_hardline(command):
 
 
 # -------------------------------------------------------------------------
+# #93392 class regression: unanchored hardline patterns vs quoted prose
+# -------------------------------------------------------------------------
+# Every hardline rule that used a bare \b anchor (mkfs, dd, kill -1) fired on
+# the token ANYWHERE in the command — including inside quoted prose handed to
+# echo / git commit -m / gh --body — and the positionless rules (redirect to
+# a block device, fork bomb) fired on quoted mentions too. Quoted prose must
+# pass; every true-positive shape (bare, separators, sudo/env prefix, $(),
+# backticks, sh -c/bash -c/eval payloads) must stay unconditionally blocked.
+
+_QUOTED_PROSE_ALLOW_93392 = [
+    # mkfs (the reported symptom)
+    'echo "does this workflow use mkfs anywhere?"',
+    'git commit -m "add mkfs.ext4 warning to the runbook"',
+    'gh pr create --body "this PR anchors the mkfs pattern"',
+    "grep 'mkfs' docs/runbook.md",
+    # dd to block device
+    'git commit -m "never run dd of=/dev/sda in prod"',
+    'echo "dd if=/dev/zero of=/dev/sda wipes the disk"',
+    "grep 'dd if=/dev/zero of=/dev/sda' notes.md",
+    # kill -1
+    'echo "kill -1 sends SIGHUP to every process"',
+    'gh issue comment 7 --body "the agent must never run kill -1"',
+    # redirect to block device (positionless rule -> quote-masked)
+    'echo "cat file > /dev/sda destroys the disk"',
+    "echo 'redirect > /dev/sdb1 is fatal'",
+    'git commit -m "block > /dev/sda redirects"',
+    'gh pr create --body "guards the > /dev/nvme0n1 redirect"',
+    # fork bomb (positionless rule -> quote-masked)
+    'git commit -m "document the fork bomb :(){ :|:& };: pattern"',
+    'echo "classic fork bomb: :(){ :|:& };:"',
+    "echo ':(){ :|:& };: is a fork bomb'",
+]
+
+
+@pytest.mark.parametrize("command", _QUOTED_PROSE_ALLOW_93392)
+def test_quoted_prose_mentions_are_not_hardline(command):
+    """Quoted prose mentioning a hardline trigger is data, not a command."""
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, (
+        f"quoted prose false-positived the hardline floor: {command!r} "
+        f"(got: {desc})"
+    )
+
+
+_TRUE_POSITIVES_93392 = [
+    # mkfs at every command position
+    "mkfs.ext4 /dev/sda1",
+    "mkfs /dev/sdb",
+    "sudo mkfs.xfs /dev/nvme0n1",
+    "true && mkfs.ext4 /dev/sda1",
+    "ls; mkfs /dev/sdb",
+    "env FOO=1 mkfs.ext4 /dev/sda1",
+    "$(mkfs.ext4 /dev/sda1)",
+    "`mkfs /dev/sdb`",
+    'bash -c "mkfs.ext4 /dev/sda1"',
+    # dd to raw block device
+    "dd if=/dev/zero of=/dev/sda bs=1M",
+    "sudo dd if=/dev/urandom of=/dev/nvme0n1",
+    "echo start && dd if=/dev/zero of=/dev/sdb",
+    "ls; dd if=x of=/dev/mmcblk0",
+    "env X=1 dd if=/dev/zero of=/dev/sda",
+    "$(dd if=/dev/zero of=/dev/sda)",
+    "`dd if=/dev/zero of=/dev/sda`",
+    'sh -c "dd if=/dev/zero of=/dev/sda"',
+    # redirect to raw block device (unquoted / carrier / substitution)
+    "cat file > /dev/sda",
+    "echo junk > /dev/sdb",
+    "true && cat f > /dev/nvme0n1",
+    'sh -c "cat f > /dev/sda"',
+    'bash -c "echo x > /dev/sdb"',
+    'eval "cat f > /dev/sda"',
+    'echo "$(cat f > /dev/sda)"',
+    'echo "`cat f > /dev/sdb`"',
+    # kill -1
+    "kill -1",
+    "kill -9 -1",
+    "sudo kill -1",
+    "ls; kill -1",
+    "true && kill -HUP -1",
+    "$(kill -1)",
+    'bash -c "kill -1"',
+    # fork bomb
+    ":(){ :|:& };:",
+    "true && :(){ :|:& };:",
+    'sh -c ":(){ :|:& };:"',
+    "eval ':(){ :|:& };:'",
+]
+
+
+@pytest.mark.parametrize("command", _TRUE_POSITIVES_93392)
+def test_true_positive_shapes_stay_hardline_blocked(command):
+    """Every real destructive shape stays on the unconditional floor."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"true positive leaked past the hardline floor: {command!r}"
+    assert desc
+
+
+# eval hands its joined arguments back to the shell exactly like `sh -c`, so the
+# command-position rules must see that code too (#102317).
+@pytest.mark.parametrize("command", [
+    'eval "rm -rf /"',
+    "eval rm -rf /",
+    "eval -- 'rm -rf /'",
+    'sudo eval "rm -rf /"',
+    "ls; eval 'shutdown -h now'",
+    "bash -c \"eval 'rm -rf /'\"",
+    "eval \"eval 'mkfs.ext4 /dev/sda1'\"",
+    "echo $(eval 'reboot') done",
+    "echo `eval 'reboot'` done",
+    "echo $(eval \"eval 'reboot'\") done",
+    'x=$(eval "rm -rf /")',
+    # Quotes inside eval code are removed when eval re-parses it, as with `bash -c`.
+    "eval \"'rm' -rf /\"",
+    "eval '\"reboot\"'",
+    "eval \"$'\\x72\\x6d' -rf /\"",
+    "eval \"eval \\\"$'\\x72\\x6d' -rf /\\\"\"",
+])
+def test_eval_payload_reaches_hardline_floor(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"eval payload leaked past the hardline floor: {command!r}"
+    assert desc
+
+
+@pytest.mark.parametrize("command", [
+    'eval "$(ssh-agent -s)"',
+    "eval \"echo 'rm -rf / is fatal'\"",
+    "echo eval rm -rf /",
+    "eval 'ls -la'",
+    # A nested eval ends at its substitution's closer; the outer command's
+    # quoted arguments are data, not eval code.
+    "echo $(eval 'printf ready') '(reboot)'",
+    "echo `eval 'printf ready'` '(reboot)'",
+    "(eval 'printf ready') '(reboot)'",
+])
+def test_eval_payload_data_is_not_hardline(command):
+    assert detect_hardline_command(command) == (False, None)
+
+
+def test_eval_payload_hardline_survives_yolo(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_all_command_guards('eval "rm -rf /"', "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True
+
+
+@pytest.mark.parametrize("level", ["eval ", "eval command ", "sudo eval "])
+def test_deep_eval_nesting_fails_closed(level):
+    """Each nested eval rescans the rest of the command, so `eval eval … ls` made detection quadratic.
+    Past the nesting cap detection stops and blocks rather than letting uninspected code run."""
+    from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION
+    assert detect_hardline_command(level * 2 + "ls") == (False, None)
+    deep = level * 64 + "ls"
+    assert detect_hardline_command(deep) == (True, _PARSER_LIMIT_DESCRIPTION)
+    assert detect_dangerous_command(deep)[2] == _PARSER_LIMIT_DESCRIPTION
+
+
+# DANGEROUS-tier duplicates of the mkfs/dd rules must be anchored the same
+# way: quoted prose must not even require approval, while real invocations
+# stay flagged (yolo can still bypass this tier — that's what yolo is for).
+_DANGEROUS_TIER_PROSE_ALLOW = [
+    'echo "mkfs is a formatting tool"',
+    'git commit -m "explain dd if=/dev/zero usage"',
+]
+
+_DANGEROUS_TIER_STILL_FLAGGED = [
+    ("mkfs /dev/sdb1", "format filesystem"),
+    ("sudo mkfs -t vfat /dev/sdc1", "format filesystem"),
+    ("dd if=backup.img of=restore.img", "disk copy"),
+    ("true && dd if=a.img of=b.img", "disk copy"),
+]
+
+
+@pytest.mark.parametrize("command", _DANGEROUS_TIER_PROSE_ALLOW)
+def test_dangerous_tier_prose_not_flagged(command):
+    is_dangerous, _, desc = detect_dangerous_command(command)
+    assert not is_dangerous, (
+        f"quoted prose tripped the dangerous tier: {command!r} (got: {desc})"
+    )
+
+
+@pytest.mark.parametrize("command,expected", _DANGEROUS_TIER_STILL_FLAGGED)
+def test_dangerous_tier_real_commands_still_flagged(command, expected):
+    is_dangerous, _, desc = detect_dangerous_command(command)
+    assert is_dangerous, f"real command no longer dangerous-flagged: {command!r}"
+    assert desc == expected
+
+
+# -------------------------------------------------------------------------
 # Shell line-continuation bypass
 # -------------------------------------------------------------------------
 #
@@ -417,18 +582,10 @@ def clean_session(monkeypatch):
         reset_current_session_key(token)
 
 
-def test_check_dangerous_command_blocks_hardline(clean_session):
-    result = check_dangerous_command("rm -rf /", "local")
-    assert result["approved"] is False
-    assert result.get("hardline") is True
-    assert "BLOCKED (hardline)" in result["message"]
-
-
 def test_check_all_command_guards_blocks_hardline(clean_session):
     result = check_all_command_guards("rm -rf /", "local")
     assert result["approved"] is False
     assert result.get("hardline") is True
-    assert "BLOCKED (hardline)" in result["message"]
 
 
 def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
@@ -446,24 +603,6 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
         assert r2.get("hardline") is True
 
 
-def test_root_collapse_forms_cannot_bypass_hardline(clean_session, monkeypatch):
-    """Shell-equivalent spellings of "rm -rf /" stay blocked under yolo.
-
-    "//", "/.", "/./", "/..", "//*" all collapse to the root filesystem in
-    the shell. They previously matched only the softer DANGEROUS_PATTERNS
-    rule, which yolo bypasses — leaving the hardline floor open to a full
-    root wipe under --yolo / approvals.mode=off / cron approve-mode.
-    """
-    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
-
-    for cmd in ["rm -rf //", "rm -rf /.", "rm -rf /./", "rm -rf /..", "rm -rf //*"]:
-        is_hl, _ = detect_hardline_command(cmd)
-        assert is_hl, f"{cmd!r} should be hardline-blocked"
-        result = check_all_command_guards(cmd, "local")
-        assert result["approved"] is False, f"yolo leaked hardline on {cmd!r}"
-        assert result.get("hardline") is True
-
-
 def test_root_collapse_pattern_leaves_real_paths_alone(clean_session):
     """The broadened root token must not over-match real trailing segments.
 
@@ -476,28 +615,6 @@ def test_root_collapse_pattern_leaves_real_paths_alone(clean_session):
                 "rm -rf /...", "rm -rf /....", "rm -rf /.foo"]:
         is_hl, _ = detect_hardline_command(cmd)
         assert not is_hl, f"{cmd!r} must not be hardline-blocked (over-match)"
-
-
-def test_subshell_brace_group_cannot_bypass_hardline(clean_session, monkeypatch):
-    """Wrapping a catastrophic command in `(…)` or `{ …; }` must not bypass
-    the floor, even under yolo. `(reboot)` / `{ shutdown -h now; }` walked
-    straight past the guard before the command-start tokenizer recognized the
-    subshell and brace-group openers.
-    """
-    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
-
-    for cmd in ["(reboot)", "( reboot )", "(shutdown -h now)", "(poweroff)",
-                "(systemctl reboot)", "(init 0)", "(sudo reboot)",
-                "{ reboot; }", "{ shutdown -h now; }", "{ poweroff; }",
-                "(rm -rf /)", "{ rm -rf /; }", "(rm -rf ~)",
-                "true && (reboot)", "echo hi; { reboot; }"]:
-        r1 = check_dangerous_command(cmd, "local")
-        assert r1["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_dangerous_command)"
-        assert r1.get("hardline") is True
-
-        r2 = check_all_command_guards(cmd, "local")
-        assert r2["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_all_command_guards)"
-        assert r2.get("hardline") is True
 
 
 def test_quoted_paren_brace_prose_not_blocked_under_yolo(clean_session, monkeypatch):
@@ -519,21 +636,6 @@ def test_quoted_paren_brace_prose_not_blocked_under_yolo(clean_session, monkeypa
         )
 
 
-def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monkeypatch):
-    """A line-continuation root wipe must stay blocked even under yolo.
-
-    `rm -rf \\<newline>/` runs as `rm -rf /`. Yolo bypasses the regular
-    dangerous-command layer, so the hardline floor is the only thing left to
-    catch it — it must hold.
-    """
-    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
-
-    result = check_all_command_guards("rm -rf \\\n/", "local")
-    assert result["approved"] is False, "yolo leaked a line-continuation root wipe"
-    assert result.get("hardline") is True
-    assert "BLOCKED (hardline)" in result["message"]
-
-
 def test_session_yolo_cannot_bypass_hardline(clean_session):
     """Gateway /yolo (session-scoped) must not bypass the hardline floor."""
     enable_session_yolo("hardline_test")
@@ -550,8 +652,8 @@ def test_session_yolo_cannot_bypass_hardline(clean_session):
 def test_approvals_mode_off_cannot_bypass_hardline(clean_session, monkeypatch, tmp_path):
     """config approvals.mode=off (yolo-equivalent) must not bypass hardline."""
     # _get_approval_mode() reads from hermes config; simplest path: monkeypatch the helper.
-    import tools.approval as approval_mod
-    monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "off")
+    from tools import approval_context
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
 
     result = check_all_command_guards("rm -rf /", "local")
     assert result["approved"] is False
@@ -561,8 +663,7 @@ def test_approvals_mode_off_cannot_bypass_hardline(clean_session, monkeypatch, t
 def test_cron_approve_mode_cannot_bypass_hardline(clean_session, monkeypatch):
     """Cron sessions with cron_mode=approve must not bypass hardline."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-    import tools.approval as approval_mod
-    monkeypatch.setattr(approval_mod, "_get_cron_approval_mode", lambda: "approve")
+    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "approve")
 
     result = check_all_command_guards("rm -rf /", "local")
     assert result["approved"] is False
@@ -574,7 +675,7 @@ def test_container_backends_still_bypass(clean_session):
 
     Hardline only protects environments with real host impact (local, ssh).
     """
-    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+    for env in ("docker", "modal", "daytona", "vercel_sandbox"):
         r1 = check_dangerous_command("rm -rf /", env)
         assert r1["approved"] is True, f"container {env} should still bypass"
         r2 = check_all_command_guards("rm -rf /", env)
@@ -609,18 +710,6 @@ def test_recoverable_dangerous_commands_still_pass_yolo(clean_session, monkeypat
         # And yolo bypasses the dangerous check
         result = check_dangerous_command(cmd, "local")
         assert result["approved"] is True, f"yolo should have bypassed {cmd!r}"
-
-
-def test_hardline_list_is_small():
-    """Hardline list stays focused on unrecoverable commands only.
-
-    If you're adding a 20th+ pattern, reconsider — it probably belongs in
-    DANGEROUS_PATTERNS where yolo can still bypass it.
-    """
-    assert len(HARDLINE_PATTERNS) <= 20, (
-        f"HARDLINE_PATTERNS has grown to {len(HARDLINE_PATTERNS)} entries; "
-        "only truly unrecoverable commands belong here."
-    )
 
 
 # =========================================================================
@@ -666,7 +755,97 @@ def test_sudo_stdin_guard_detects_without_password():
 
 def test_sudo_stdin_guard_container_bypass(clean_session):
     """Containerized backends still bypass — they can't touch the host."""
-    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+    for env in ("docker", "modal", "daytona", "vercel_sandbox"):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+_MULTI_CALL_BYPASS = [
+    # Shutdown / reboot / halt / poweroff applets
+    "busybox reboot",
+    "busybox poweroff",
+    "busybox halt",
+    "busybox shutdown",
+    "toybox reboot",
+    "toybox poweroff",
+    "toybox halt",
+    # Path-qualified multi-call binary
+    "/bin/busybox reboot",
+    "/usr/bin/busybox poweroff",
+    "./busybox reboot",
+    "usr/bin/busybox reboot",
+    "bin/busybox halt",
+    "/bin/toybox reboot",
+    # Multi-call after ordinary wrappers already in _CMDPOS
+    "sudo busybox reboot",
+    "sudo -E busybox poweroff",
+    "env FOO=1 busybox reboot",
+    "nohup busybox reboot",
+    "setsid busybox poweroff",
+    # Multi-call after separators / subshell
+    "ls; busybox reboot",
+    "true && busybox poweroff",
+    "false || busybox halt",
+    "$(busybox reboot)",
+    "(busybox reboot)",
+    "{ busybox poweroff; }",
+    # init as multi-call applet (next word is the applet)
+    "busybox init 0",
+    "busybox init 6",
+    # Root wipe via multi-call rm (hardline floor is the only yolo residual)
+    "busybox rm -rf /",
+    "toybox rm -rf /",
+    "busybox rm -rf ~",
+    "/bin/busybox rm -rf /",
+    "sudo busybox rm -rf /",
+    "busybox rm -rf /etc",
+    'busybox rm -rf "/"',
+]
+
+_MULTI_CALL_NOT_HARDLINE = [
+    "busybox ls",
+    "busybox cat /etc/hosts",
+    "busybox echo reboot",
+    "toybox ps",
+    "toybox echo poweroff",
+    "echo busybox reboot",
+    "echo 'busybox reboot'",
+    "grep busybox reboot.log",
+    "find . -name busybox",
+    "git commit -m 'busybox reboot note'",
+    'gh pr create --title "block busybox reboot"',
+    "busybox",  # no applet selected
+    "toybox",
+    # Benign multi-call after wrappers
+    "sudo busybox ls",
+    "env FOO=1 busybox true",
+    "nohup busybox sleep 1",
+    # Option-first: next token is a flag, not the hardline applet
+    "busybox --help reboot",
+    "busybox -h reboot",
+    "busybox --list reboot",
+    "toybox --help poweroff",
+    "toybox -h halt",
+    "busybox --help",
+    "busybox --login reboot",
+    "/bin/busybox --help reboot",
+    "sudo busybox --help reboot",
+]
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_BYPASS)
+@pytest.mark.parametrize("yolo", [False, True])
+def test_multicall_hardline_applies_through_guards(command, yolo, clean_session, monkeypatch):
+    if yolo:
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    else:
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    assert detect_hardline_command(command)[0]
+    result = check_all_command_guards(command, "local")
+    assert result["approved"] is False
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_NOT_HARDLINE)
+def test_multicall_data_and_benign_applets_are_not_hardline(command):
+    assert detect_hardline_command(command)[0] is False

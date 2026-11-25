@@ -41,6 +41,7 @@ def _clean_queue_and_context(monkeypatch):
     for var in sc._VAR_MAP.values():
         var.set(sc._UNSET)
     sc._SESSION_ASYNC_DELIVERY.set(sc._UNSET)
+    sc._SESSION_HISTORY_DELIVERY.set(sc._UNSET)
     # set_current_session_id (invoked by the clobber-reproducing fake child
     # build) writes os.environ directly — scrub it so it can't leak into
     # other test modules.
@@ -103,7 +104,7 @@ def _patch_delegate(monkeypatch):
 
     monkeypatch.setattr(dt, "_build_child_agent", clobbering_build_child)
     monkeypatch.setattr(dt, "_run_single_child", fast_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     return dt
 
 
@@ -118,6 +119,7 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
         chat_id="raw-sid-7",
         session_key="raw-sid-7",
         session_id="raw-sid-7",
+        session_history_delivery="1",
         async_delivery=False,
     )
 

@@ -3,7 +3,7 @@
 Timing out a git probe must not leave helper descendants (credential helpers,
 ``git-remote-https``, hook children) running after the probe returns. The
 probe spawns the child in its own process group (``process_group=0``) and
-``_kill_git_process_tree`` signals the whole group with ``os.killpg`` — but
+``kill_process_tree`` signals the whole group with ``os.killpg`` — but
 only when the child actually leads its own group, so a shared-group spawn can
 never take down unrelated processes.
 
@@ -20,11 +20,10 @@ import time
 import pytest
 
 from hermes_cli import _subprocess_compat
-from hermes_cli._subprocess_compat import _kill_git_process_tree, bounded_git_probe
+from hermes_cli._subprocess_compat import bounded_git_probe, kill_process_tree
+from tests.waiting import wait_until
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX process-group semantics"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX process-group semantics
 
 
 def _write_forking_script(tmp_path, marker_name="child.pid"):
@@ -34,7 +33,7 @@ def _write_forking_script(tmp_path, marker_name="child.pid"):
     script.write_text(
         textwrap.dedent(
             f"""\
-            #!/bin/bash
+            #!/usr/bin/env bash
             sleep 300 &
             echo $! > {marker}
             sleep 300
@@ -84,7 +83,7 @@ def test_timeout_kills_descendants(tmp_path):
 def test_posix_spawn_uses_own_process_group(tmp_path):
     """The probe child must lead its own process group (killpg precondition)."""
     script = tmp_path / "pgid.sh"
-    script.write_text("#!/bin/bash\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\"\n")
+    script.write_text("#!/usr/bin/env bash\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\"\n")
     script.chmod(0o755)
 
     out = bounded_git_probe([str(script)], timeout=5.0)
@@ -94,7 +93,7 @@ def test_posix_spawn_uses_own_process_group(tmp_path):
 
 
 def test_group_kill_skipped_when_child_shares_our_group():
-    """_kill_git_process_tree must never killpg a group the child doesn't lead.
+    """kill_process_tree must never killpg a group the child doesn't lead.
 
     Spawn WITHOUT process_group=0 (child inherits OUR group): the ownership
     check (pgid == pid) must skip the group signal, or the test process itself
@@ -107,11 +106,36 @@ def test_group_kill_skipped_when_child_shares_our_group():
         stdin=subprocess.DEVNULL,
     )
     assert os.getpgid(proc.pid) == os.getpgid(0)  # shared group precondition
-    _kill_git_process_tree(proc)
+    kill_process_tree(proc)
     proc.wait(timeout=5)
     # We are alive to make this assertion — killpg on our own group would have
     # taken the test runner down. The direct child is still killed.
     assert proc.returncode is not None
+
+
+def test_grace_kill_takes_a_term_ignoring_member_once_the_leader_exits(tmp_path):
+    """``grace`` returns as soon as the leader exits on SIGTERM; a group member that ignores
+    SIGTERM must not outlive it (the leader-only wait used to orphan it)."""
+    marker = tmp_path / "member.pid"
+    script = tmp_path / "leader.sh"
+    # A separate `sh -c` (not `$BASHPID`, which macOS's bash 3.2 lacks): `$$` is the member's own
+    # pid, and the ignored TERM disposition survives the exec into sleep.
+    script.write_text("#!/bin/sh\n"
+                      f"sh -c 'trap \"\" TERM; echo $$ > {marker}; exec sleep 300' &\n"
+                      "sleep 300\n")
+    script.chmod(0o755)
+    proc = subprocess.Popen([str(script)], process_group=0, stdin=subprocess.DEVNULL)
+    member = _wait_marker(marker)
+
+    kill_process_tree(proc, grace=5.0)
+
+    try:
+        assert proc.returncode is not None
+        wait_until(lambda: not _pid_alive(member), timeout=3.0,
+                   what=f"SIGTERM-ignoring member {member} to die with the graced kill")
+    finally:
+        if _pid_alive(member):  # reparented out of our subtree: the live-system guard refuses os.kill
+            subprocess.run(["kill", "-9", str(member)], check=False)
 
 
 def test_fast_path_unaffected(tmp_path):
@@ -132,4 +156,4 @@ def test_kill_helper_swallow_all_failures():
         def kill(self):
             raise OSError("already reaped")
 
-    _kill_git_process_tree(_Dead())  # must not raise
+    kill_process_tree(_Dead())  # must not raise

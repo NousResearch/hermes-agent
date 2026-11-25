@@ -1,0 +1,21 @@
+name: evidence-history
+repo: https://github.com/1anter/hermes-research-plugins
+sha: 48befeaf71f0bfed7916553d1a511c81a37a9c4b
+subdir: plugins/evidence-history
+description: Local immutable evidence snapshots with explicit observation and publication
+  cutoffs.
+maintainer: 1anter
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+version: 0.2.1
+capabilities:
+  provides_tools:
+  - evidence_capture
+  - evidence_as_of
+  - evidence_history
+  - evidence_compare
+  - evidence_verify_support
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

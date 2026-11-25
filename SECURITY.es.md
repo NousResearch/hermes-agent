@@ -16,7 +16,7 @@ Un informe útil incluye:
 - Una descripción concisa y evaluación de severidad.
 - El componente afectado, identificado por ruta de archivo y rango de líneas
   (ej. `path/to/file.py:120-145`).
-- Detalles del entorno (`hermes version`, SHA del commit, SO, versión de Python).
+- Detalles del entorno (`hermes --version`, SHA del commit, SO, versión de Python).
 - Una reproducción contra `main` o el último release.
 - Una declaración de qué límite de confianza del §2 se cruza.
 

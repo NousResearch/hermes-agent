@@ -1,0 +1,24 @@
+name: local-system-one-hermes
+title: Local System One
+repo: https://github.com/NMTZ-z/system-one-benchmark-lab
+sha: da9f0d474aa4d5d7baa19b13d338cc1d8a0cbd8e
+subdir: integrations/hermes/local-system-one-hermes
+description: "Local System One observes selected Hermes decisions through a separate local sidecar. Installation defaults to OFF; the first Shadow enables Search only. Shadow does not change provider requests. The default loopback sidecar uses a private per-profile token; processes owned by the same user may access it. Search can send a bounded task and recent context to the sidecar. Other Gates require opt-in and may send bounded response or failure context. A remote HTTPS sidecar requires explicit configuration and receives no local token; remote-sidecar security is outside this pilot's verified support. Canary request changes require separate explicit acknowledgement; production Canary has not been authorized or accepted in this pilot. Disclosure — executes nothing and does not start the sidecar; installs with mode off. In Shadow/Canary mode, Search and Model Tier may POST the current task (up to 4000 chars) plus bounded recent conversation context; Notification Shadow (opt-in) may POST the completed turn's final assistant response (up to 6000 chars) plus lifecycle metadata; Completion Gate (opt-in) may POST the task plus the final result (up to 6000 chars); Retry Gate (opt-in, post_tool_call) sends only typed tool-failure metadata, never tool arguments or output. The default sidecar is loopback 127.0.0.1:8787, authenticated with a private per-profile token read from ~/Library/Application Support/Local System One/profiles/<profile>/access-token after an identity handshake; a remote sidecar requires allow_remote_sidecar plus HTTPS and receives no token. The plugin persists decision metadata, not raw task or response text, and imports Hermes' private kanban modules read-only to resolve a kanban worker's task. Its only request mutations, in acknowledged Canary mode, are removing web_search/web_extract tools for audited no-Web rules and (off by default) lowering reasoning_effort on audited hard-fast rules. The sidecar (same repo, separate install, Apple-Silicon MLX/CoreML) is a text classifier that downloads a pinned Hugging Face model."
+maintainer: NMTZ-z
+tier: community
+category: automation
+requires_hermes: ">=0.21.4"
+version: "0.10.0"
+docs_url: https://github.com/NMTZ-z/system-one-benchmark-lab/tree/da9f0d474aa4d5d7baa19b13d338cc1d8a0cbd8e/integrations/hermes/local-system-one-hermes
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - post_tool_call
+    - on_session_end
+  provides_middleware:
+    - llm_request
+  requires_env: []

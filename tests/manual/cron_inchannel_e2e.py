@@ -45,10 +45,11 @@ def _fresh_home():
 HOME = _fresh_home()
 
 # Import AFTER HERMES_HOME is set.
-import cron.scheduler as sched  # noqa: E402
-import gateway.mirror as mirror  # noqa: E402
-from gateway.config import GatewayConfig, Platform  # noqa: E402
-from gateway.session import SessionStore, SessionSource, build_session_key  # noqa: E402
+import cron.scheduler as sched
+from cron import scheduler_delivery as sched_delivery
+from gateway import mirror
+from gateway.config import GatewayConfig, Platform
+from gateway.session import SessionStore, SessionSource, build_session_key
 
 # Force mirror.py's module-level index path to our temp home (it may have bound
 # a different get_hermes_home() at import if something imported it earlier).
@@ -74,7 +75,7 @@ def _run_scenario(name, chat_id, is_dm, reply_chat_type):
     class _Adapter:
         _session_store = store
 
-    ok = sched._seed_cron_channel_session(
+    ok = sched_delivery._seed_cron_channel_session(
         {"id": "brief-job", "name": "PR review brief"},
         _Adapter(), "slack", chat_id, BRIEF,
         is_dm=is_dm, user_id="U_HUMAN", chat_name="test",
@@ -121,9 +122,10 @@ def _brief_in_transcript(store, sid):
     """Best-effort read of the session transcript to confirm the brief landed."""
     # Try the SQLite DB first (the mirror writes both JSONL + SQLite).
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        msgs = db.get_messages(sid)
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import transcript_rows
+        with open_persistence(profile_scope()) as db:
+            msgs = transcript_rows(db, sid)
         for m in msgs:
             if "PRs need review" in str(m.get("content", "")):
                 return True

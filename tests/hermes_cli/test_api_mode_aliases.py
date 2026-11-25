@@ -12,7 +12,7 @@ and an unrecognized value was silently ignored at BOTH consumption sites:
 * ``hermes_cli.runtime_provider._parse_api_mode`` returned None, with the
   same fall-through.
 
-For a host with a detection rule (e.g. api.actual.inc -> codex_responses)
+For a host with a detection rule (e.g. api.router.com -> codex_responses)
 the provider silently switched transports after an update and broke:
 observed live as every reasoning-bearing request to a relay's untested
 /v1/responses endpoint failing while chat_completions worked. See the

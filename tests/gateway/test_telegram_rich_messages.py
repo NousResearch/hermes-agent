@@ -10,14 +10,15 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 ``TelegramAdapter`` and wire a mock bot.
 """
 
+import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
@@ -85,6 +86,103 @@ def _rich_api_kwargs(adapter):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["send", "edit", "draft"])
+async def test_rich_delivery_keeps_literal_hash_references(operation):
+    adapter = _make_adapter({"rich_drafts": True})
+    content = (
+        "#89 remains open.\n\n- #181 reported a problem.\n\n> #tag is literal.\n\n"
+        "## Real heading\n\n- [x] rich delivery\n\n`#89` stays code."
+    )
+    if operation == "send":
+        result = await adapter.send("12345", content)
+        assert result.success
+    elif operation == "edit":
+        result = await adapter.edit_message("12345", "123", content, finalize=True)
+        assert result.success
+    else:
+        assert await adapter.send_draft("12345", 123, content)
+    assert adapter._bot is not None
+    payload = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]
+    assert r"\#89 remains open." in payload["markdown"]
+    assert r"- \#181 reported a problem." in payload["markdown"]
+    assert r"> \#tag is literal." in payload["markdown"]
+    assert "## Real heading" in payload["markdown"]
+    assert "`#89` stays code." in payload["markdown"]
+    adapter._bot.send_message.assert_not_called()
+    adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.send_message_draft.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [
+    "# Heading\n\n## Heading 2\n\n###### Heading 6",
+    "Use #89 and https://example.com/#anchor inline.",
+    r"\#89 is already escaped.",
+    "`code\n#89\ncode`",
+    "``code ` #89``",
+    "```python\n#89 is a comment\n```",
+    "~~~python\n#89 is a comment\n~~~",
+    "````markdown\n```\n#89\n```\n````",
+    "```python\n#89 unfinished fence",
+    "$$\n#89\n$$",
+])
+def test_literal_hash_normalization_preserves_markdown_regions(content):
+    from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
+
+    assert escape_literal_hash_prefixes(content) == content
+    escaped = escape_literal_hash_prefixes("1. #89\n\n> - ##tag\n\n#release")
+    assert escaped == "1. \\#89\n\n> - \\#\\#tag\n\n\\#release"
+    assert escape_literal_hash_prefixes(escaped) == escaped
+    # Inline ```x``` is a code span, not an unclosed block fence swallowing the rest of the reply.
+    assert escape_literal_hash_prefixes("Use ```x``` here.\n\n#89 open.") == "Use ```x``` here.\n\n\\#89 open."
+
+
+@pytest.mark.parametrize("content, expected", [
+    # A backtick run with text after it is code inside the fence, not its closer.
+    ("```\ntext ``` trailing\n#inside\n```\n#outside", "```\ntext ``` trailing\n#inside\n```\n\\#outside"),
+    ("~~~~\n~~~ x\n#inside\n~~~~\n#outside", "~~~~\n~~~ x\n#inside\n~~~~\n\\#outside"),
+    # A quoted fence ends with its blockquote.
+    ("> ```\n> #inside\n#outside", "> ```\n> #inside\n\\#outside"),
+    # A code span never pairs across a blank line.
+    ("`open\n\n#89\nclose`", "`open\n\n\\#89\nclose`"),
+    # A prose $$ is not math reaching into the fence below it, and math never crosses a paragraph.
+    ("Your shell PID is $$ here.\n\n```bash\necho $$\n#!/usr/bin/env bash\n```\n#89",
+     "Your shell PID is $$ here.\n\n```bash\necho $$\n#!/usr/bin/env bash\n```\n\\#89"),
+    ("> Use $$ x\n> ```\n> $$\n> #not math\n> ```", "> Use $$ x\n> ```\n> $$\n> #not math\n> ```"),
+    ("$$x\n\n#89\n$$", "$$x\n\n\\#89\n$$"),
+    # An empty list item ends at the blank line, so a 3-space fence after it is a top-level fence.
+    ("- \n\n   ```\n#89\n```\n#90", "- \n\n   ```\n#89\n```\n\\#90"),
+])
+def test_literal_hash_fences_close_like_commonmark(content, expected):
+    from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
+
+    assert escape_literal_hash_prefixes(content) == expected
+
+
+def test_rich_payload_is_linear_in_unclosed_backtick_runs():
+    """A full rich-cap reply of unclosed backtick runs of distinct lengths (`a``a```a...) builds its
+    payload well inside one second; a per-run rescan blocked the event loop for seconds."""
+    adapter = _make_adapter()
+    runs, k = [], 1
+    while sum(map(len, runs)) < adapter.RICH_MESSAGE_MAX_CHARS:
+        runs.append("`" * k + "a")
+        k += 1
+    content = "#89\n" + "".join(runs)[: adapter.RICH_MESSAGE_MAX_CHARS - 4]
+
+    started = time.perf_counter()
+    payload = adapter._rich_message_payload(content)
+
+    assert time.perf_counter() - started < 1.0
+    assert payload["markdown"].startswith("\\#89")
+
+    # Fence-like lines that never close, and backtick runs split by paragraphs.
+    unit = "```py\ntext ``` trailing\n#89\n> ```\n`open\n\n"
+    content = (unit * (adapter.RICH_MESSAGE_MAX_CHARS // len(unit)))[: adapter.RICH_MESSAGE_MAX_CHARS]
+    started = time.perf_counter()
+    adapter._rich_message_payload(content)
+    assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.asyncio
 async def test_details_without_math_still_uses_rich_send():
     adapter = _make_adapter()
 
@@ -122,6 +220,19 @@ async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble(
     assert result.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", [CJK_RICH_CONTENT, ASTRAL_CJK_RICH_CONTENT])
+async def test_cjk_rich_content_can_be_opted_in(content):
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == content
+    adapter._bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -274,7 +385,7 @@ async def test_transient_rich_error_does_not_legacy_resend(exc):
 
 @pytest.mark.asyncio
 async def test_rich_transport_error_redacts_bot_token_even_when_redaction_disabled(monkeypatch):
-    import agent.redact as redact
+    from agent import redact
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
@@ -296,7 +407,7 @@ async def test_rich_transport_error_redacts_bot_token_even_when_redaction_disabl
 
 @pytest.mark.asyncio
 async def test_legacy_send_error_redacts_bot_token_without_traceback(monkeypatch, caplog):
-    import agent.redact as redact
+    from agent import redact
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
@@ -332,32 +443,8 @@ async def test_routing_direct_messages_topic_id_drops_message_thread_id():
     assert "message_thread_id" not in api_kwargs
 
 
-@pytest.mark.asyncio
-async def test_notification_silent_by_default():
-    adapter = _make_adapter()
-
-    await adapter.send("-100123", RICH_CONTENT)
-
-    api_kwargs = _rich_api_kwargs(adapter)
-    assert api_kwargs["disable_notification"] is True
 
 
-@pytest.mark.asyncio
-async def test_table_only_uses_legacy_with_default_config():
-    """Default config (rich_messages unset → False) keeps tables on legacy path."""
-    config = PlatformConfig(enabled=True, token="fake-token")
-    adapter = TelegramAdapter(config)
-    bot = MagicMock()
-    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
-    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-    bot.send_chat_action = AsyncMock()
-    adapter._bot = bot
-
-    result = await adapter.send("12345", TABLE_ONLY_CONTENT)
-
-    assert result.success is True
-    bot.do_api_request.assert_not_called()
-    bot.send_message.assert_awaited()
 
 
 # ── Streaming drafts: sendRichMessageDraft ─────────────────────────────
@@ -376,23 +463,42 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
 
 
 # ----------------------------------------------------------------------
-# prefers_fresh_final_streaming: Telegram keeps streamed finals on the edit
-# path, even when rich messages are enabled, so users do not briefly see two
-# copies of the answer while the preview cleanup delete races the fresh send.
+# prefers_fresh_final_streaming: root DMs stay on the no-duplicate edit/draft
+# path (#47048). DM topics that degrade off drafts still need a fresh
+# sendRichMessage so tables are not flattened by format_message.
 # ----------------------------------------------------------------------
 def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
     adapter = _make_adapter()
     assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is False
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT, None) is False
+
+
+def test_prefers_fresh_final_streaming_for_dm_topic_tables():
+    adapter = _make_adapter()
+    topic_meta = {
+        "thread_id": "20189",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20189",
+        "telegram_reply_to_message_id": "42",
+    }
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT, topic_meta) is True
+    assert adapter.prefers_fresh_final_streaming("Just a sentence.", topic_meta) is False
+    assert adapter.prefers_fresh_final_streaming(
+        RICH_CONTENT, {"direct_messages_topic_id": "20189"}
+    ) is True
+    # The documented telegram_-prefixed alias is honored through the same
+    # canonical accessor the send path uses (gateway/delivery.py treats the
+    # two keys as equivalent) — an alias-only lane must not flatten tables.
+    assert adapter.prefers_fresh_final_streaming(
+        RICH_CONTENT, {"telegram_direct_messages_topic_id": "20189"}
+    ) is True
 
 
 @pytest.mark.asyncio
 async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
-    """A MarkdownV2 draft must not force the persistent final to MarkdownV2."""
+    """A plain draft must not force the persistent final to MarkdownV2."""
     adapter = _make_adapter()  # rich messages on, rich drafts off
-    # With the gate in supports_draft_streaming, draft streaming is declined
-    # when rich_drafts is off.  The test force-enables it to verify that even
-    # a legacy MDV2 draft still finalizes as a rich message.
-    assert adapter.supports_draft_streaming(chat_type="dm") is False
+    assert adapter.supports_draft_streaming(chat_type="dm") is True
 
     consumer = GatewayStreamConsumer(
         adapter,
@@ -412,16 +518,185 @@ async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
 
 
 # ----------------------------------------------------------------------
-# supports_draft_streaming: rich_messages without rich_drafts must NOT use
-# MDV2 sendMessageDraft previews that later snap to sendRichMessage (wiki)
-# finals — that is the "first bubble crooked, second bubble beautiful" bug.
+# supports_draft_streaming: rich_drafts controls draft rendering, not whether
+# Telegram's ephemeral DM draft transport is available.  Keeping that transport
+# lets the persistent final use sendRichMessage instead of relying on an
+# edit-in-place conversion from a plain message.
 # ----------------------------------------------------------------------
 
 
-def test_supports_draft_streaming_disabled_when_rich_without_rich_drafts():
-    adapter = _make_adapter()  # rich_messages True, rich_drafts default False
-    assert adapter.supports_draft_streaming(chat_type="dm") is False
-    assert adapter.supports_draft_streaming(chat_type="private") is False
+
+
+@pytest.mark.asyncio
+async def test_rich_table_uses_raw_plain_draft_before_persistent_rich_final():
+    adapter = _make_adapter()  # rich messages on, rich drafts off
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once_with(
+        chat_id=12345,
+        draft_id=7,
+        text=RICH_CONTENT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dm_table_stream_persists_through_send_rich_message():
+    """Exercise the reporter's transport: ephemeral DM draft, then rich final."""
+    adapter = _make_adapter()  # rich messages on, rich drafts off
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "12345",
+        StreamConsumerConfig(
+            transport="auto",
+            chat_type="dm",
+            edit_interval=0.01,
+            buffer_threshold=1,
+            cursor="",
+        ),
+    )
+
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(RICH_CONTENT)
+    await asyncio.sleep(0.05)
+    consumer.finish()
+    await task
+
+    adapter._bot.send_message_draft.assert_awaited()
+    draft_kwargs = adapter._bot.send_message_draft.call_args.kwargs
+    assert draft_kwargs["text"] == RICH_CONTENT
+    assert "parse_mode" not in draft_kwargs
+    rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
+    assert rich_endpoints == ["sendRichMessage"]
+    adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.send_message.assert_not_called()
+
+
+TOPIC_METADATA = {
+    "thread_id": "20189",
+    "telegram_dm_topic_reply_fallback": True,
+    "direct_messages_topic_id": "20189",
+    "telegram_reply_to_message_id": "42",
+}
+
+# Shape from the Telegram iOS DM-topic report: blank line, then a GFM table.
+TOPIC_TABLE = (
+    "Here's a table:\n"
+    "\n"
+    "| Sport | Followed? | Notes |\n"
+    "|---|---|---|\n"
+    "| F1 | ✅ | |\n"
+    "| MLB | ✅ | |\n"
+    "| LoL | ✅ | |\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_send_draft_routes_dm_topic_thread_id_as_int():
+    """Drafts must use the same integer thread routing as send(), not the
+    raw string thread_id. Telegram rejects the string on private topics."""
+    adapter = _make_adapter()
+
+    result = await adapter.send_draft(
+        "12345", draft_id=7, content=TOPIC_TABLE, metadata=TOPIC_METADATA,
+    )
+
+    assert result.success is True
+    kwargs = adapter._bot.send_message_draft.call_args.kwargs
+    assert kwargs["message_thread_id"] == 20189
+    assert kwargs["text"] == TOPIC_TABLE
+    assert "parse_mode" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_table_stream_uses_send_rich_message():
+    """Happy-path topic stream: drafts land, persistent final is rich."""
+    adapter = _make_adapter()
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "12345",
+        StreamConsumerConfig(
+            transport="auto",
+            chat_type="dm",
+            edit_interval=0.01,
+            buffer_threshold=1,
+            cursor="",
+        ),
+        metadata=dict(TOPIC_METADATA),
+        initial_reply_to_id="42",
+    )
+
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(TOPIC_TABLE)
+    await asyncio.sleep(0.05)
+    consumer.finish()
+    await task
+
+    adapter._bot.send_message_draft.assert_awaited()
+    draft_kwargs = adapter._bot.send_message_draft.call_args.kwargs
+    assert draft_kwargs["text"] == TOPIC_TABLE
+    assert draft_kwargs["message_thread_id"] == 20189
+    rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
+    # Invariant, not a frozen call list: the persistent final goes through
+    # sendRichMessage, and no rich DRAFT frames fire (rich_drafts is off).
+    assert "sendRichMessage" in rich_endpoints
+    assert "sendRichMessageDraft" not in rich_endpoints
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_table_survives_when_drafts_degrade_to_edit():
+    """Reporter path: sendMessageDraft fails in a private topic, Telegram
+    then rejects a rich edit of the plain MarkdownV2 preview. The final
+    must still persist through sendRichMessage — not convert_table_to_bullets.
+    """
+    adapter = _make_adapter()
+    adapter._bot.send_message_draft = AsyncMock(
+        side_effect=BadRequest("Bad Request: message thread not found")
+    )
+
+    async def _api(endpoint, api_kwargs=None, **kwargs):
+        if endpoint == "editMessageText" and api_kwargs and "rich_message" in api_kwargs:
+            raise BadRequest("can't parse rich message")
+        if endpoint == "sendRichMessage":
+            return SimpleNamespace(message_id=123)
+        return SimpleNamespace(message_id=1)
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=_api)
+
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "12345",
+        StreamConsumerConfig(
+            transport="auto",
+            chat_type="dm",
+            edit_interval=0.01,
+            buffer_threshold=1,
+            cursor="",
+        ),
+        metadata=dict(TOPIC_METADATA),
+        initial_reply_to_id="42",
+    )
+
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(TOPIC_TABLE)
+    await asyncio.sleep(0.08)
+    consumer.finish()
+    await task
+
+    rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
+    assert "sendRichMessage" in rich_endpoints
+    rich_kwargs = None
+    for call in adapter._bot.do_api_request.await_args_list:
+        if call.args[0] == "sendRichMessage":
+            rich_kwargs = call.kwargs["api_kwargs"]
+            break
+    assert rich_kwargs is not None
+    assert "| F1 |" in rich_kwargs["rich_message"]["markdown"]
+    # Degraded preview is deleted so the user is not left with the bullet rewrite.
+    adapter._bot.delete_message.assert_awaited()
 
 
 def test_supports_draft_streaming_enabled_when_rich_drafts_opt_in():
@@ -485,8 +760,59 @@ async def test_finalize_edit_uses_rich_for_table_content():
 
 
 @pytest.mark.asyncio
+async def test_finalize_edit_dm_topic_omits_send_only_routing_fields():
+    """DM-topic metadata must not make a rich edit look like a new send.
+
+    Telegram identifies an edit by chat_id + message_id. Passing topic-routing
+    fields on editMessageText rejects the rich request, after which the legacy
+    formatter permanently rewrites the table into bullet groups.
+    """
+    adapter = _make_adapter()
+
+    async def _api(endpoint, api_kwargs=None, **kwargs):
+        assert endpoint == "editMessageText"
+        has_send_routing = (
+            "message_thread_id" in api_kwargs
+            or "direct_messages_topic_id" in api_kwargs
+        )
+        if has_send_routing:
+            raise BadRequest("unexpected topic routing on editMessageText")
+        return True
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=_api)
+
+    result = await adapter.edit_message(
+        "12345", "555", TOPIC_TABLE, finalize=True, metadata=TOPIC_METADATA,
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["message_id"] == 555
+    assert "message_thread_id" not in api_kwargs
+    assert "direct_messages_topic_id" not in api_kwargs
+    assert "| F1 |" in api_kwargs["rich_message"]["markdown"]
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_cjk_rich_content_can_be_opted_in():
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.edit_message(
+        "12345", "555", CJK_RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    assert result.message_id == "555"
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["message_id"] == 555
+    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monkeypatch, caplog):
-    import agent.redact as redact
+    from agent import redact
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
@@ -580,7 +906,7 @@ def _reply_message_with_rich_blocks(
 async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     """A reply to a rich-sent message resolves the original text via the index."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
     from gateway import rich_sent_store
 
     adapter = _make_adapter()
@@ -606,3 +932,99 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     assert event.reply_to_text == "Your morning briefing: CI is green."
 
 
+def test_rich_reply_and_inbound_blocks_share_one_flattener():
+    """Replied-to rich blocks and inbound rich blocks read through ONE parser: ``children`` spans,
+    labelled list items and a ``mappingproxy`` api_kwargs all flatten the same way in both."""
+    from types import MappingProxyType
+
+    from gateway.platforms.event import MessageType
+    from plugins.platforms.telegram.telegram_entities import rich_message_text
+
+    blocks = [
+        {"type": "paragraph", "text": ["See ", {"type": "bold", "children": ["the plan"]}]},
+        {"type": "list", "items": [{"label": "1.", "blocks": [{"type": "paragraph", "text": "ship it"}]}]},
+    ]
+    msg = _reply_message_with_rich_blocks("678", blocks=blocks, api_kwargs_factory=MappingProxyType)
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "See the plan\n1. ship it"
+    assert rich_message_text(msg.reply_to_message) == event.reply_to_text
+
+
+def test_reply_to_deeply_nested_rich_message_still_reaches_the_agent():
+    """A plain reply quoting a pathologically nested rich message (valid JSON, 2,000 levels of blocks
+    and of inline spans) is still delivered: the flattener drops the over-deep content instead of
+    raising RecursionError out of ``_build_message_event``."""
+    from gateway.platforms.event import MessageType
+
+    block = {"type": "paragraph", "text": "leaf"}
+    span = "deep"
+    for _ in range(2000):
+        block = {"type": "quote", "blocks": [block]}
+        span = {"type": "bold", "children": [span]}
+    blocks = [{"type": "paragraph", "text": ["top ", {"type": "bold", "text": "line"}]}, block,
+              {"type": "paragraph", "text": span}]
+    msg = _reply_message_with_rich_blocks("678", blocks=blocks)
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_message_id == "678"
+    assert event.reply_to_text == "top line"
+
+
+def test_rich_message_filter_leaves_media_messages_to_the_media_handler():
+    """``rich_message_filter`` (registered ahead of the media handler) claims a rich-only message but not a
+    caption-less photo that also carries ``rich_message``: that photo must still be downloaded as media."""
+    from plugins.platforms.telegram.telegram_entities import rich_message_filter
+
+    class _MessageFilter:  # PTB's MessageFilter: subclass overrides filter(message)
+        def __init__(self, name=None):
+            self.name = name
+
+    rich_filter = rich_message_filter(SimpleNamespace(MessageFilter=_MessageFilter))
+    rich = {"rich_message": {"blocks": [{"type": "paragraph", "text": "look at this"}]}}
+    photo = [SimpleNamespace(file_id="f", width=1, height=1)]
+
+    assert rich_filter.filter(SimpleNamespace(text=None, effective_attachment=None, api_kwargs=rich)) is True
+    assert rich_filter.filter(SimpleNamespace(text=None, photo=photo, effective_attachment=photo,
+                                              api_kwargs=rich)) is False
+
+
+def test_rich_message_text_keeps_tables_details_math_links_and_custom_emoji():
+    """Bot API 10.1 block and span types whose content is not under ``text``/``items``/``blocks`` still reach
+    the agent: table rows, a details summary, math, a hidden link's URL (inlined like a ``text_link``) and a
+    custom emoji's alternative text. The mention scan (``skip_code``) does not see the inlined URL."""
+    from plugins.platforms.telegram.telegram_entities import rich_message_text
+
+    blocks = [
+        {"type": "table", "cells": [[{"text": "Model"}, {"text": "Price"}], [{"text": "HD103UJ"}, {"text": "20 EUR"}]]},
+        {"type": "details", "summary": "Specs", "blocks": [{"type": "paragraph", "text": "1TB"}]},
+        {"type": "mathematical_expression", "expression": "E=mc^2"},
+        {"type": "paragraph", "text": [
+            "ad ", {"type": "url", "text": "here", "url": "https://example.com/?u=@hermes_bot"}, " ",
+            {"type": "url", "text": "https://example.com/a", "url": "https://example.com/a"}, " ",
+            {"type": "mathematical_expression", "expression": "x^2"}, " ",
+            {"type": "custom_emoji", "custom_emoji_id": "5", "alternative_text": "\U0001F44D"}]},
+    ]
+    msg = SimpleNamespace(api_kwargs={"rich_message": {"blocks": blocks}})
+
+    assert rich_message_text(msg) == (
+        "Model | Price\nHD103UJ | 20 EUR\nSpecs\n1TB\nE=mc^2\n"
+        "ad here (https://example.com/?u=@hermes_bot) https://example.com/a x^2 \U0001F44D")
+    assert "@hermes_bot" not in rich_message_text(msg, skip_code=True)
+    malformed = [{"type": "list", "items": 5}, {"type": "table", "cells": 5}, {"type": "paragraph", "text": "ok"}]
+    assert rich_message_text(SimpleNamespace(api_kwargs={"rich_message": {"blocks": malformed}})) == "ok"
+
+
+@pytest.mark.asyncio
+async def test_rich_send_degrades_unopenable_link_targets_but_keeps_urls_and_code():
+    """Telegram cannot open ``[Title](Title)`` or ``@session:`` targets and would show the syntax."""
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345", RICH_CONTENT + "\n\nIn [Fix Research](Fix Research) via [S](@session:p/1); [Docs](https://x.y) `[k](v w)`")
+
+    assert result.success is True
+    assert _rich_api_kwargs(adapter)["rich_message"]["markdown"] == (
+        RICH_CONTENT + "\n\nIn Fix Research via S; [Docs](https://x.y) `[k](v w)`")

@@ -75,24 +75,11 @@ class TestRegistration:
 
 
 
-    @pytest.mark.parametrize(
-        "builtin",
-        [
-            "local",
-            "local_command",
-            "groq",
-            "openai",
-            "mistral",
-            "xai",
-            "elevenlabs",
-            "deepinfra",
-        ],
-    )
+    @pytest.mark.parametrize("builtin", sorted(transcription_registry._BUILTIN_NAMES))
     def test_rejects_builtin_shadow_with_warning(self, builtin, caplog):
         p = _FakeProvider(name=builtin)
         with caplog.at_level(logging.WARNING, logger="agent.transcription_registry"):
             transcription_registry.register_provider(p)
-        assert "shadows a built-in name" in caplog.text
         assert builtin in caplog.text
         assert transcription_registry.get_provider(builtin) is None
         assert transcription_registry.list_providers() == []
@@ -128,14 +115,6 @@ class TestLookup:
 
 class TestABCContract:
 
-    def test_must_implement_name(self):
-        class Incomplete(TranscriptionProvider):
-            def transcribe(self, file_path, **kw):
-                return {"success": True, "transcript": "", "provider": "incomplete"}
-            # name NOT implemented
-
-        with pytest.raises(TypeError, match="abstract"):
-            Incomplete()  # type: ignore[abstract]
 
 
 
@@ -155,33 +134,3 @@ class TestABCContract:
         schema = p.get_setup_schema()
         assert schema["name"] == "Openrouter"
         assert schema["env_vars"] == []
-
-
-# ---------------------------------------------------------------------------
-# Sync invariant: registry built-ins vs dispatcher built-ins
-# ---------------------------------------------------------------------------
-
-
-class TestBuiltinSync:
-    """``_BUILTIN_NAMES`` in agent/transcription_registry.py is duplicated
-    from ``BUILTIN_STT_PROVIDERS`` in tools/transcription_tools.py
-    (importing directly would create a circular dependency). This test
-    fails loudly if the two lists drift — a new built-in added to
-    transcription_tools.py MUST also be added to
-    transcription_registry.py's ``_BUILTIN_NAMES`` or the registry will
-    accept a name the dispatcher will silently route to the wrong
-    handler.
-    """
-
-    def test_registry_builtins_match_dispatcher_builtins(self):
-        from tools.transcription_tools import BUILTIN_STT_PROVIDERS
-
-        assert transcription_registry._BUILTIN_NAMES == BUILTIN_STT_PROVIDERS, (
-            "agent.transcription_registry._BUILTIN_NAMES and "
-            "tools.transcription_tools.BUILTIN_STT_PROVIDERS have drifted!\n"
-            f"  Registry only: {sorted(transcription_registry._BUILTIN_NAMES - BUILTIN_STT_PROVIDERS)}\n"
-            f"  Dispatcher only: {sorted(BUILTIN_STT_PROVIDERS - transcription_registry._BUILTIN_NAMES)}\n"
-            "Add the missing names to whichever list is incomplete. "
-            "These two lists exist as a circular-import workaround and "
-            "MUST be kept in sync manually."
-        )

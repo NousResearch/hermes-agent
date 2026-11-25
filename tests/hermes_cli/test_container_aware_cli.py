@@ -5,8 +5,6 @@ writes a .container-mode metadata file. The host CLI detects this and
 execs into the container instead of running locally.
 """
 import os
-import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,14 +50,8 @@ def test_get_container_exec_info_returns_metadata(container_env):
     assert info["hermes_bin"] == "/data/current-package/bin/hermes"
 
 
-
-
-
-
-
-
 # =============================================================================
-# _exec_in_container
+# exec_in_container (hermes_cli/main_container.py)
 # =============================================================================
 
 
@@ -73,20 +65,10 @@ def docker_container_info():
     }
 
 
-@pytest.fixture
-def podman_container_info():
-    return {
-        "backend": "podman",
-        "container_name": "hermes-agent",
-        "exec_user": "hermes",
-        "hermes_bin": "/data/current-package/bin/hermes",
-    }
-
-
 def test_exec_in_container_calls_execvp(docker_container_info):
     """Verifies os.execvp is called with correct args: runtime, tty flags,
     user, env vars, container name, binary, and CLI args."""
-    from hermes_cli.main import _exec_in_container
+    from hermes_cli.main_container import exec_in_container
 
     with patch("shutil.which", return_value="/usr/bin/docker"), \
          patch("subprocess.run") as mock_run, \
@@ -97,7 +79,7 @@ def test_exec_in_container_calls_execvp(docker_container_info):
         mock_stdin.isatty.return_value = True
         mock_run.return_value = MagicMock(returncode=0)
 
-        _exec_in_container(docker_container_info, ["chat", "-m", "opus"])
+        exec_in_container(docker_container_info, ["chat", "-m", "opus"])
 
     mock_execvp.assert_called_once()
     cmd = mock_execvp.call_args[0][1]

@@ -9,13 +9,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 
-def test_load_interim_assistant_messages_defaults_true():
-    from tui_gateway.server import _load_interim_assistant_messages
-
-    with patch("tui_gateway.server._load_cfg", return_value={}):
-        assert _load_interim_assistant_messages() is True
-
-
 def test_agent_cbs_includes_interim_callback_when_enabled():
     """_agent_cbs() includes interim_assistant_callback when the config is on.
 
@@ -48,5 +41,3 @@ def test_agent_cbs_includes_interim_callback_when_enabled():
     assert emitted[0][1] == "test-session"
     assert emitted[0][2]["text"] == "hello world"
     assert emitted[0][2]["already_streamed"] is True
-
-

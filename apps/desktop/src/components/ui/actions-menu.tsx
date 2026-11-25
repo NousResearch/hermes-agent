@@ -1,4 +1,5 @@
 import type * as React from 'react'
+import { useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -111,6 +112,12 @@ interface ActionsMenuProps extends Pick<
   onOpenChange?: (open: boolean) => void
 }
 
+// Let the existing presence boundary decide when item construction is needed.
+// Calling `items` in the wrapper builds every closed row menu on each refresh.
+function ActionItems({ items, kit }: { items: ActionsMenuProps['items']; kit: MenuKit }) {
+  return <>{items(kit)}</>
+}
+
 /**
  * A kebab dropdown menu. Pair it with `ActionsContextMenu` using the same
  * `items` render function so the two menus stay identical. No tip on the
@@ -139,7 +146,7 @@ export function ActionsMenu({
         side={side}
         sideOffset={sideOffset}
       >
-        {items(DROPDOWN_KIT)}
+        <ActionItems items={items} kit={DROPDOWN_KIT} />
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -154,6 +161,9 @@ interface ActionsContextMenuProps {
   contentClassName?: string
   /** Skip the wrapper (render children bare) — e.g. nothing is actionable yet. */
   disabled?: boolean
+  /** Vetoes an open request, e.g. a touch hold the browser owns. Radix opens
+   *  on a touch hold from pointer timers, with no contextmenu event to stop. */
+  allowOpen?: () => boolean
   onCloseAutoFocus?: (event: Event) => void
 }
 
@@ -162,6 +172,7 @@ interface ActionsContextMenuProps {
  * kebab's `items` render function so both surfaces mirror each other.
  */
 export function ActionsContextMenu({
+  allowOpen,
   ariaLabel,
   children,
   contentClassName,
@@ -169,15 +180,17 @@ export function ActionsContextMenu({
   items,
   onCloseAutoFocus
 }: ActionsContextMenuProps) {
+  const [open, setOpen] = useState(false)
+
   if (disabled) {
     return <>{children}</>
   }
 
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={next => setOpen(next && (allowOpen?.() ?? true))} open={open}>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent aria-label={ariaLabel} className={contentClassName} onCloseAutoFocus={onCloseAutoFocus}>
-        {items(CONTEXT_KIT)}
+        <ActionItems items={items} kit={CONTEXT_KIT} />
       </ContextMenuContent>
     </ContextMenu>
   )

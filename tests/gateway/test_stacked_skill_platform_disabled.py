@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -71,7 +71,6 @@ def _make_runner():
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -100,8 +99,7 @@ def skills_env(tmp_path, monkeypatch):
     import tools.skills_tool as skills_tool_module
     monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
     import agent.skill_commands as skill_commands_mod
-    skill_commands_mod._skill_commands = {}
-    skill_commands_mod._skill_commands_platform = None
+    skill_commands_mod._skill_commands_by_key = {}
     return skills_dir
 
 

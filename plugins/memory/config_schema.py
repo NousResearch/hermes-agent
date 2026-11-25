@@ -1,22 +1,12 @@
-"""Declarative configuration schema for memory provider plugins.
-
-Each memory provider plugin *declares* its configurable surface in a
-``config_schema.py`` next to its ``__init__.py`` — the fields, their types,
-which values are secrets, and (for selects) the allowed options. A single
-generic renderer in the desktop UI and a single generic ``GET/PUT
-/api/memory/providers/{name}/config`` endpoint pair drive the whole
-experience, so adding a provider config surface is pure declaration with no
-bespoke UI components.
-
-Schema files are loaded by path (like the provider plugins themselves), never
-via package import: plugin ``__init__.py`` files pull in the agent runtime,
-which must not load into the web server. A ``config_schema.py`` may only
-import from this module.
-
-This module is intentionally pure data: it imports nothing from the
-config/env layer. ``web_server`` owns the generic read/write logic that
-interprets these declarations, dispatching on ``ProviderConfigSchema.storage``
-to the matching backend.
+"""Declarative config schema for memory provider plugins: each declares its fields in
+a ``config_schema.py`` beside ``__init__.py``; one generic renderer and one
+``GET/PUT /api/memory/providers/{name}/config`` pair drive the UI. Schema files are
+loaded by path, never imported as a package, so DISCOVERING a panel never pulls the
+provider's runtime into the web server; they may import only this pure-data module.
+Only ``STORAGE_PROVIDER`` reads/writes load the provider itself (in the plugin host when
+``plugins.isolation`` is ``host``). ``web_server`` owns read/write, dispatching on ``storage``: a flat JSON file
+core reads and writes, or ``provider``, where the provider's ``read_config_fields`` /
+``write_config_fields`` own the file layout (``agent.memory_provider.MemoryProvider``).
 """
 
 from __future__ import annotations
@@ -37,7 +27,7 @@ KIND_JSON = "json"
 
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
-STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
+STORAGE_PROVIDER = "provider"
 
 
 @dataclass(frozen=True)
@@ -51,20 +41,10 @@ class ProviderFieldOption:
 
 @dataclass(frozen=True)
 class ProviderField:
-    """One configurable field on a memory provider.
-
-    A field is stored in exactly one place, decided by ``kind``:
-
-    * non-secret kinds — persisted to the provider's config via its storage
-      backend under ``key``.
-    * ``secret`` — persisted to the env store under ``env_key`` and never read
-      back out over the API (only an ``is_set`` flag is surfaced).
-
-    ``aliases`` and ``env_fallbacks`` let a field read legacy values written by
-    earlier CLI/env setup without re-introducing per-provider code. ``inline``
-    marks the curated subset shown in the compact panel; the rest surface only
-    in the full-config modal. ``group`` buckets fields within that modal.
-    """
+    """One configurable field. Non-secret kinds live under ``key`` in the provider's storage;
+    ``secret`` in the env store under ``env_key`` (a ``STORAGE_PROVIDER`` writer also receives it
+    and may persist it too), never read back (only ``is_set``). ``aliases``/``env_fallbacks`` read
+    legacy values; ``inline`` marks the compact-panel subset (rest: modal, by ``group``)."""
 
     key: str
     label: str
@@ -80,7 +60,8 @@ class ProviderField:
     group: str = ""
     # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
-    # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
+    # Placement hint a STORAGE_PROVIDER provider may read from its own schema; core ignores it (the
+    # "host" default keeps existing schema files valid).
     scope: str = "host"
 
     @property
@@ -107,17 +88,12 @@ class ProviderConfigSchema:
 
 
 _SCHEMA_CACHE: dict[str, ProviderConfigSchema] = {}
+_SCHEMA_FAILURES_LOGGED: set[str] = set()
 
 
 def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
-    """Return the ``CONFIG_SCHEMA`` declared by the provider plugin ``name``.
-
-    Providers without a ``config_schema.py`` (e.g. ``builtin``) return ``None``
-    and simply render no config panel. The cache keys on the resolved schema
-    file, not the name: user-installed plugins are per-profile, so one
-    profile's lookup must never answer for another's.
-    """
-
+    """``CONFIG_SCHEMA`` of provider ``name``; None (no panel) without a ``config_schema.py``.
+    Cached by resolved file path, not name: user plugins are per-profile."""
     from plugins.memory import find_provider_dir
 
     provider_dir = find_provider_dir(name)
@@ -130,15 +106,38 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         return _SCHEMA_CACHE[key]
 
     try:
-        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        schema = getattr(module, "CONFIG_SCHEMA", None)
+        from plugins.memory import _is_bundled
+        from hermes_cli.plugin_isolation import user_plugin_host
+        host = None if _is_bundled(provider_dir) else user_plugin_host()
+        if host is not None:  # plugins.isolation: host — a user schema file is user code too
+            schema = _schema_from_record(host.config_schema(path))
+        else:
+            spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            schema = getattr(module, "CONFIG_SCHEMA", None)
     except Exception:
-        # Never cache a failed load: it would pin an empty panel until restart.
-        _log.exception("failed to load config schema for memory provider %r", name)
+        # Never cache a failed load: it would pin an empty panel until restart. Log the traceback
+        # once per file, though: the panel polls, and an outdated plugin fails the same way each time.
+        if key in _SCHEMA_FAILURES_LOGGED:
+            _log.debug("failed to load config schema for memory provider %r", name, exc_info=True)
+        else:
+            _SCHEMA_FAILURES_LOGGED.add(key)
+            _log.exception("failed to load config schema for memory provider %r", name)
         return None
 
     if schema is not None:
         _SCHEMA_CACHE[key] = schema
     return schema
+
+
+def _schema_from_record(record) -> ProviderConfigSchema | None:
+    """Rebuild a schema that crossed the plugin-host boundary as plain data."""
+    if not record:
+        return None
+    fields = tuple(
+        ProviderField(**{**f, "options": tuple(ProviderFieldOption(**o) for o in f.get("options") or ()),
+                         "aliases": tuple(f.get("aliases") or ()),
+                         "env_fallbacks": tuple(f.get("env_fallbacks") or ())})
+        for f in record.get("fields") or ())
+    return ProviderConfigSchema(**{**record, "fields": fields})

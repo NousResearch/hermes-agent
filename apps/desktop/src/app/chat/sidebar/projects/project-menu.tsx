@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
@@ -20,8 +21,10 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
-import { $panesFlipped, dismissAutoProject } from '@/store/layout'
+import { $panesFlipped, dismissAutoProject, restoreAutoProject } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import {
   copyPath,
   deleteProject,
@@ -31,6 +34,8 @@ import {
   setActiveProject,
   setProjectAppearance
 } from '@/store/projects'
+
+import { SIDEBAR_FOCUS_VISIBLE } from '../chrome'
 
 import { ProjectAppearancePicker } from './project-appearance'
 import type { SidebarProjectTree } from './workspace-groups'
@@ -58,11 +63,24 @@ function useProjectActions({
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
   const removeAuto = () => {
-    dismissAutoProject(project.id)
+    // Capture the id now: the row unmounts (and, when scoped, the scope exits)
+    // the moment we dismiss, so Undo can't read it back off live menu state.
+    const id = project.id
+
+    dismissAutoProject(id)
 
     if (scoped) {
       onExitScope?.()
     }
+
+    // The hide is persisted and otherwise irreversible — there is no other
+    // restore control — so offer a short undo window (mirrors restoreWorktree).
+    notify({
+      action: { label: p.undoHide, onClick: () => restoreAutoProject(id) },
+      durationMs: 8_000,
+      kind: 'success',
+      message: p.hiddenFromSidebar
+    })
   }
 
   const confirmDelete = async () => {
@@ -95,14 +113,25 @@ function useProjectActions({
         }
       ]
 
+  // The OS file manager needs the local filesystem; a remote backend's
+  // project is not on this computer (the file trees hide reveal the same way).
+  // Another gateway's project names its own machine: one on This device opens
+  // even from a remote window; one elsewhere stays listed but disabled, as no
+  // file manager here can show it.
+  const onThisComputer = project.connectionId ? project.connectionId === LOCAL_CONNECTION_ID : !isDesktopFsRemoteMode()
+
   const pathItems: ActionItemSpec[] = [
-    {
-      disabled: !project.path,
-      icon: 'folder-opened',
-      key: 'reveal',
-      label: p.reveal,
-      onSelect: () => void revealPath(project.path)
-    },
+    ...(!project.connectionId && isDesktopFsRemoteMode()
+      ? []
+      : [
+          {
+            disabled: !project.path || !onThisComputer,
+            icon: 'folder-opened',
+            key: 'reveal',
+            label: p.reveal,
+            onSelect: () => void revealPath(project.path)
+          } satisfies ActionItemSpec
+        ]),
     {
       disabled: !project.path,
       icon: 'copy',
@@ -199,7 +228,8 @@ export function ProjectMenu({
       <button
         aria-label={p.menu}
         className={cn(
-          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:opacity-100',
+          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 data-[state=open]:opacity-100',
+          SIDEBAR_FOCUS_VISIBLE,
           // In the project header reveal on the whole header hover; in overview
           // rows reveal on the row hover.
           scoped ? 'group-hover/section:opacity-100' : 'group-hover/workspace:opacity-100'

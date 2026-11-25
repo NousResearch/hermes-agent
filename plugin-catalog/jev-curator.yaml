@@ -1,0 +1,31 @@
+name: jev-curator
+repo: https://github.com/anpicasso/hermes-jev-curator
+sha: ed2f40d33743c315f3e9de9579841750a28f5b78
+subdir: plugin
+description: >-
+  TypeSafe Jev semantic governance for Hermes' native Curator: classifies
+  relationships between complete skill packages, produces content-hash-bound,
+  fail-closed consolidation plans, and locally guards background destructive
+  skill_manage calls while Hermes retains control of backups and mutations. A
+  profile-scoped 60-second lifecycle debounce coalesces skill changes into dry
+  refreshes. Disclosure — no egress occurs by default; after
+  allow_content_egress is explicitly enabled, redacted bounded skill content is
+  sent to the configured TypeSafe, OpenRouter, or custom Jev endpoint and may
+  spend provider credits. Automatic refreshes never apply mutations, and
+  missing, stale, or incomplete evidence fails closed.
+maintainer: anpicasso
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/anpicasso/hermes-jev-curator/blob/ed2f40d33743c315f3e9de9579841750a28f5b78/README.md
+image: https://raw.githubusercontent.com/anpicasso/hermes-jev-curator/ed2f40d33743c315f3e9de9579841750a28f5b78/docs/banner.png
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - jev_skill_relations
+  provides_hooks:
+    - on_skill_lifecycle
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

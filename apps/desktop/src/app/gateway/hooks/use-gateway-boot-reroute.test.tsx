@@ -848,6 +848,11 @@ describe('a plugin re-routes one profile', () => {
     vi.useRealTimers()
     await ensureGatewayProfile('work')
 
+    // The first redial's wait before asking again is a zero-length timer, so it
+    // always wakes while the second lookup is still held, whatever the runner's load.
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    const drawsBefore = random.mock.calls.length
+
     sandboxed = true
     act(() => connectionApplied?.({ profile: 'work' }))
     // The second move lands while the first redial waits to ask again. A
@@ -855,8 +860,14 @@ describe('a plugin re-routes one profile', () => {
     // the first redial then rightly asks again before the profile moves.
     await firstLookup
     act(() => connectionApplied?.({ profile: 'work' }))
-    // Longer than the first redial waits before it would ask again.
-    await pause(350)
+
+    // The first redial has started its wait; a later timer fires only after it woke.
+    for (let i = 0; i < 100 && random.mock.calls.length === drawsBefore; i += 1) {
+      await pause(1)
+    }
+
+    await pause(50)
+    random.mockRestore()
 
     const askedWhileSecondIsOut = lookups
 

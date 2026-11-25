@@ -17,10 +17,12 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { MoreHorizontal } from '@/lib/icons'
 import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
 import { coarseElapsed } from '@/lib/time'
-import { useStoreSelector } from '@/lib/use-session-slice'
+import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $projectOwnerBySessionId, $projects } from '@/store/projects'
 import { $activeSessionId, knownSessionOwner, ownerLookupSessionRows, sessionPinId } from '@/store/session'
+import { $sessionColorById, $sessionColorOverrides, sessionColorFor } from '@/store/session-color'
 import { $sessionDotStateById } from '@/store/session-dot-state'
 import { $focusedSessionIsTile } from '@/store/session-focus'
 import { canOpenSessionOwner } from '@/store/session-owner-open'
@@ -81,11 +83,24 @@ const PIN_METRIC = {
 function SessionRowMark({ row }: { row: SessionInfo }) {
   const state = useStoreSelector($sessionDotStateById, states => states[row.id] ?? 'idle')
 
+  // A settled row leads with the session's resolved color — the user's override
+  // or the inherited project color, the same resolution classic's
+  // `SessionStatusDot` makes — so picking a color is visible here too (HADESK-73).
+  // Subscribed to every store the resolver reads, and re-resolved on each
+  // notification: a color set from the row menu (or a project color landing
+  // later) repaints the mark in place. Reading it through `sessionColorFor` from
+  // a subscription that only watched the map would go stale for a row the map
+  // misses. With no color the CSS ink stands, keeping the shared row inset.
+  const color = useStoresSelector(
+    [$sessionColorById, $projects, $projectOwnerBySessionId, $sessionColorOverrides],
+    () => sessionColorFor(row)
+  )
+
   if (state === 'idle') {
     return (
       <span aria-hidden className="portal-row-mark" data-slot="session-status" data-state="idle">
         <span>
-          <span />
+          <span style={color ? { backgroundColor: color } : undefined} />
         </span>
       </span>
     )

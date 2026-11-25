@@ -1119,7 +1119,8 @@ def _resolve_workspace_key() -> Optional[str]:
     neither can be determined — callers fall back to the global MRU then.
     """
     from hermes_cli._subprocess_compat import bounded_git_probe
-    top = bounded_git_probe(["git", "rev-parse", "--show-toplevel"], timeout=5)
+    # The user's own environment: a GIT_DIR/GIT_WORK_TREE pair names the workspace they resume in.
+    top = bounded_git_probe(["git", "rev-parse", "--show-toplevel"], timeout=5, env=os.environ)
     if top:
         return os.path.abspath(top)
     try:

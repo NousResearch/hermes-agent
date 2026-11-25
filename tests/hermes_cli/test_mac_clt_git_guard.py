@@ -271,6 +271,25 @@ def test_clt_stub_doctor_reports_honest_warning_and_install_hint(tmp_path, monke
     assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
 
 
+@pytest.mark.platforms("posix")
+def test_resume_workspace_key_keeps_users_git_dir_and_work_tree(tmp_path, monkeypatch):
+    """``--resume latest`` groups by the repo root git reports for the user's own environment:
+    a dotfiles-style ``GIT_DIR``/``GIT_WORK_TREE`` pair must still name the work tree."""
+    from hermes_cli import main as hermes_main
+
+    work_tree = _init_repo(tmp_path / "work-tree")
+    git_dir = tmp_path / "separate.git"
+    (work_tree / ".git").rename(git_dir)
+    subdir = work_tree / "nested"
+    subdir.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(git_dir))
+    monkeypatch.setenv("GIT_WORK_TREE", str(work_tree))
+    monkeypatch.chdir(subdir)
+
+    key = hermes_main._resolve_workspace_key()
+    assert key is not None and os.path.realpath(key) == os.path.realpath(work_tree)
+
+
 # ── Case 2: Working Apple git (<dev_dir>/usr/bin/git) -> normal branch + ordered safe.directory ──
 
 

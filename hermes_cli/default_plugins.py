@@ -291,19 +291,28 @@ def _run_child() -> int:
         return 1
 
 
+def _mtime_ns(path: Path) -> Optional[int]:
+    try:
+        return path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
 def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.0) -> dict:
     """The one coordinator (update tail and detached child): :func:`install_defaults_all_homes` again until
     no rescan was requested meanwhile (a profile created during the pass), then the outcome the boot step
     reads: a failure begins the backoff, a clean pass marks this revision settled."""
-    import time
     from hermes_cli.memory_provider_migration import _note_failure, _note_success
     from pm.environments import dependency_home_root
     root = Path(dependency_home_root())
     rerun = _state(root, "rerun")
     while True:
-        started = time.time()
+        # A request is a touch during the pass, so compare the marker with itself rather than with the
+        # clock: a marker dated ahead of the clock would otherwise read as new until the clock caught up (#159934).
+        before = _mtime_ns(rerun)
         outcome = install_defaults_all_homes(say=say, wait=wait)
-        if not (rerun.exists() and rerun.stat().st_mtime >= started):
+        after = _mtime_ns(rerun)
+        if after is None or after == before:
             break
     if outcome["owed"]:
         _note_failure(root, _BACKOFF)

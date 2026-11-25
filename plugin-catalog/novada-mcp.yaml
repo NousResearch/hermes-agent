@@ -1,0 +1,18 @@
+name: novada-mcp
+title: Novada
+repo: https://github.com/Novada-proxy/novada-hermes-plugin
+sha: a916d9443f8332de8a98fbb5699136ba7464887d
+version: "1.0.0"
+description: "Novada's hosted MCP server (Streamable HTTP at https://mcp.novada.com/mcp, OAuth sign-in with your Novada account, no keys in config): web search, page extraction, multi-source research with citations, structured SERP and platform data, and account tools. Package is configuration only (plugin.json + mcp.json), no local code. Disclosure: hosted-only connector; every tool call goes to mcp.novada.com, and public page requests are forwarded to the target websites through Novada's network. Requests are billed to the connected Novada account. Some tools can spend balance or change account resources (proxy sub-accounts, static IPs), so the package marks the server untrusted and Hermes asks before write-capable tools run. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Novada
+tier: community
+category: web
+docs_url: https://www.novada.com/products/novada-mcp/
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

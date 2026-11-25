@@ -13,11 +13,17 @@ import time
 
 import pytest
 
-from tools.approval import detect_dangerous_command
+from tools import approval
+from tools.approval import detect_dangerous_command, detect_hardline_command
 
 
 def _is_dangerous(cmd: str) -> bool:
     res = detect_dangerous_command(cmd)
+    return bool(res[0]) if isinstance(res, tuple) else bool(res)
+
+
+def _is_hardline(cmd: str) -> bool:
+    res = detect_hardline_command(cmd)
     return bool(res[0]) if isinstance(res, tuple) else bool(res)
 
 
@@ -223,3 +229,225 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         start = time.perf_counter()
         assert not _is_dangerous(command)
         assert time.perf_counter() - start < 2, command[:30]
+
+
+class TestDriveLetterRoots:
+    """A drive letter is a filesystem root: `rm X:/f` and `rm -rf C:\\` must gate like `rm /f` / `rm -rf /` (#38964)."""
+
+    @pytest.mark.parametrize("cmd", [
+        "rm X:/PROJECTs/test/test.txt",
+        r"rm X:\test.txt",
+        "rm -f c:/notes.txt",
+    ])
+    def test_delete_under_drive_root_needs_approval(self, cmd):
+        assert detect_dangerous_command(cmd)[2] == "delete in root path", cmd
+
+    @pytest.mark.parametrize("cmd", [
+        'rm "X:/PROJECTs/test/test.txt"',
+        "rm -f 'c:/notes.txt'",
+    ])
+    def test_quoted_drive_file_delete_needs_approval(self, cmd):
+        assert detect_dangerous_command(cmd)[2] == "delete in root path", cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf C:/",
+        "rm -rf C:\\",
+        "rm -rf c:/*",
+        "rm -rf 'D:/'",
+        "rm -rf 'C:/'*",
+        "rm -rf \"C:/\"../",
+        "rm -rf 'C:/'..",
+        "(rm -rf 'C:/')",
+        "rm -rf C:/ *",
+        "sudo rm -rf C:/./",
+        # Backslash root after a separator: only the marked Windows-path variant keeps both the
+        # command start and the root slash.
+        r"echo ready && rm -rf C:\*",
+        r"echo ready; rm -rf C:\ ",
+        r"(rm -rf C:\)",
+    ])
+    def test_drive_root_wipe_is_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (True, "recursive delete of drive root"), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf C:/Users/me/build",
+        "rm -rf c:",
+        "git commit -m 'rm -rf C:/'",
+        # A quoted root prefix glued to the rest of the word deletes a subdirectory.
+        'rm -rf "C:/"Users/me/build',
+        "rm -rf 'C:/'Users/me/build",
+        'rm -rf "$HOME"/build',
+        'rm -rf "/"tmp/x',
+        'rm -rf "/usr"/local/build',
+    ])
+    def test_drive_subdirectory_or_prose_is_not_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None), cmd
+
+    @pytest.mark.parametrize("cmd, rule", [
+        # Quoted root-collapse segments glued after a quoted root still name the root.
+        ("rm -rf \"$HOME\"'/'", "recursive delete of home directory"),
+        ("rm -rf '/root'\"/\"", "recursive delete of system directory"),
+        ("rm -rf \"C:\"'/'", "recursive delete of drive root"),
+        ("rm -rf \"C:/\"'./'\"..\"", "recursive delete of drive root"),
+        ("rm -rf \"/\"'/'", "recursive delete of root filesystem"),
+        ("rm -rf \"/\"'./'\"/\"'/'*", "recursive delete of root filesystem"),
+        # Bare dots before a quoted slash: `/../`, `/./`.
+        ("rm -rf \"/\"..'/'", "recursive delete of root filesystem"),
+        ("rm -rf \"C:/\".\"/\"", "recursive delete of drive root"),
+        ("rm -rf \"$HOME\"/..'/'", "recursive delete of home directory"),
+    ])
+    def test_quoted_root_collapse_segments_stay_hardline(self, monkeypatch, cmd, rule):
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_hardline_command(cmd) == (True, rule), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf \"$HOME\"'/build'",
+        "rm -rf \"C:\"'/build'",
+        "rm -rf \"C:\"",
+        # A quoted `*` is a literal file name, not a glob.
+        'rm -rf "$HOME"/"*"',
+        "rm -rf \"/\"'*'",
+        # `/../build`, and dots that join a quoted segment's dots into a literal `...` name.
+        "rm -rf \"/\"..'/build'",
+        "rm -rf \"/\"..'./'",
+        "rm -rf \"/\"...'/'",
+    ])
+    def test_quoted_subdirectory_segments_are_not_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf \"/\"" + "'/'" * 1300 + "x",
+        "rm -rf \"/\"" + "'./" * 1300 + "x",
+        "rm -rf \"C:\"" + "\"/." * 1300 + "x",
+    ])
+    def test_quoted_collapse_tail_scans_in_linear_time(self, cmd):
+        start = time.perf_counter()
+        assert detect_hardline_command(cmd) == (False, None)
+        assert time.perf_counter() - start < 2, cmd[:30]
+
+    @pytest.mark.parametrize("cmd", ["rm -r C:\\* -Include *.tmp", "rm -r C:/ -Include:*.log -Force"])
+    def test_rm_alias_with_narrowing_include_stays_approvable(self, cmd):
+        # PowerShell's `rm` alias: a literal -Include deletes only the matching items (#155280 shares this veto).
+        assert detect_hardline_command(cmd) == (False, None), cmd
+        assert _is_dangerous(cmd), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -r C:\\* -Include *",
+        "rm -r C:/* -Include *.tmp,*",
+        "rm -r C:/* -Include *$x",
+        "rm -rf -- C:/ -Include x",
+        "rm -r C:/* -- -Include x",
+        "rm -r C:/ # -Include *.tmp",
+        # The -Include belongs to the outer command, not to the rm inside the substitution.
+        "echo $(rm -rf C:/) -Include x",
+        "ls $(rm -rf C:/*) -Include *.tmp",
+    ])
+    def test_rm_alias_with_wildcard_or_non_include_stays_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (True, "recursive delete of drive root"), cmd
+
+    def test_pre_drive_letter_root_approval_key_still_matches(self, monkeypatch):
+        """An "always" saved under the old regex-derived key keeps approving `rm /tmp/file`."""
+        monkeypatch.setattr(approval, "_permanent_approved", set())
+        approval.load_permanent({"rm" + r"\s+(-[^\s]*\s+)*/"})
+        _, key, _ = detect_dangerous_command("rm /tmp/file")
+        assert approval.is_approved("drive-root-legacy", key)
+
+    @pytest.mark.parametrize("cmd", ["rm build/C:/x", "rm foo:/bar", "rm a:b"])
+    def test_relative_paths_with_colons_stay_quiet(self, cmd):
+        assert not _is_dangerous(cmd), cmd
+
+
+class TestHardlineWindowsDestructiveTier:
+    """The Windows destructive tier above (#69472) added Restart-Computer /
+    Stop-Computer and Format-Volume / format.com to the bypassable
+    DANGEROUS_PATTERNS only. Both are the direct Windows analogues of two
+    POSIX HARDLINE_PATTERNS rules — shutdown/reboot/halt/poweroff (system
+    power state, no recovery path) and mkfs (filesystem format, no recovery
+    path) — that ARE unconditionally blocked, even under yolo. Before this
+    fix Restart-Computer/Stop-Computer had NO detection at all (not even a
+    bypassable prompt), and Format-Volume/format.com could be waved through
+    with --yolo despite being exactly the kind of no-recovery-path
+    operation the hardline floor exists to stop.
+    """
+
+    @pytest.mark.parametrize("cmd", [
+        "Restart-Computer",
+        "Restart-Computer -Force",
+        "restart-computer -force",
+        "Stop-Computer",
+        "Stop-Computer -Force",
+    ])
+    def test_power_state_commands_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        "Format-Volume -DriveLetter D",
+        "format d: /fs:ntfs",
+        "format D: /y",
+    ])
+    def test_format_commands_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        # Not the destructive cmdlets at all.
+        "restart the computer manually",
+        "Get-Service | Restart-Service -Name spooler",
+        # diskpart is interactive and has non-destructive subcommands
+        # (list disk); it stays in DANGEROUS_PATTERNS only, matching how
+        # fdisk/parted are not in the POSIX hardline list either.
+        "diskpart /s wipe.txt",
+        # Bare "format" with no drive letter is cmd.exe's own usage/help
+        # invocation, not a format-in-progress.
+        "format",
+        "format /?",
+    ])
+    def test_benign_or_non_hardline_commands_not_flagged(self, cmd):
+        assert not _is_hardline(cmd), f"should NOT be hardline-blocked: {cmd}"
+
+
+class TestHardlineWindowsWipesAndDriveRootDeletes:
+    """Windows filesystem wipes and drive-root recursive deletes are hardline (#87419), anchored
+    to command position (directly or behind a powershell/pwsh/cmd launcher) like the POSIX rules."""
+
+    @pytest.mark.parametrize("cmd", [
+        "format.com C: /q",
+        "cmd /c format d: /y",
+        "ls; format c:",
+        'powershell -NoProfile -ExecutionPolicy Bypass "Format-Volume -DriveLetter D"',
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c Stop-Computer",
+        "pwsh -c Clear-Disk -Number 0 -RemoveData",
+        r"del /F /S /Q C:\*",
+        r"erase /s /q c:\*.*",
+        "rd /s /q C:\\",
+        r"rmdir /s /q D:/",
+        r'cmd /c "rd /s /q C:\"',
+        "Remove-Item -Recurse -Force C:\\",
+        r"Remove-Item C:\* -Recurse -Force",
+        r"ri -r -fo C:\ ",
+        r"Get-Date; Remove-Item -Recurse C:\*.*",
+        r"rm -rf C:/",
+        # A comma glued to the root ends the operand: PowerShell binds `-Path C:\*,D:\x` as an array.
+        r"Remove-Item -Recurse -Force -Path C:\*,D:\x",
+        r"Remove-Item -Recurse -Force C:\, D:\x",
+    ])
+    def test_windows_wipes_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        'git commit -m "docs: never run format c: here"',
+        'grep -r "format c:" docs',
+        "echo Restart-Computer",
+        # Deeper paths and non-recursive forms stay in the (approvable) DANGEROUS tier.
+        r"rd /s /q C:\build",
+        r"del /s /q C:\Users\me\build\*.tmp",
+        r"Remove-Item -Recurse -Force C:\temp\x",
+        r"Remove-Item C:\ ",
+        r"del C:\*",
+        r"rm -rf C:/work",
+        # A comma ends the operand only for PowerShell; bash reads `C:/,x` as one file name.
+        r"rm -rf C:/,x",
+        r"Remove-Item -Recurse C:\build,D:\x",
+        r"Get-ChildItem -Recurse C:\ ",
+    ])
+    def test_prose_and_non_root_targets_not_hardline(self, cmd):
+        assert not _is_hardline(cmd), f"should NOT be hardline-blocked: {cmd}"

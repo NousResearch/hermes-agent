@@ -1,6 +1,9 @@
 """session.create with seeded messages: the seed is durable before the first prompt, and durable once."""
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway import server
 
 
@@ -21,7 +24,7 @@ def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, t
     """A client that opens a chat with its first turns already written (no parent) gets a durable row and
     transcript at create: a restart before the first prompt resumes it, the hidden runbook stays out of the
     transcript on the wire, and the seed is not written a second time by the first-submit path."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     _quiet_create(monkeypatch, db)
     sids = []
     try:
@@ -40,8 +43,8 @@ def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, t
         live = server.handle_request({"id": "live", "method": "session.resume", "params": {"session_id": key, "cols": 96}})["result"]
         assert (live["message_count"], len(live["messages"])) == (2, 2)  # the reuse-live path counts the wire too
 
-        assert db.get_session(key)["title"] == "Welcome to Hermes"
-        rows = db.get_messages_as_conversation(key)
+        assert db.sessions.get(key).title == "Welcome to Hermes"
+        rows = conversation(db, key)
         assert [r["content"] for r in rows] == ["Private setup runbook", "Welcome to Hermes", "Second question"]
         assert rows[0]["display_kind"] == "hidden"
         assert rows[2].get("display_kind") is None
@@ -55,9 +58,9 @@ def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, t
         assert [m["role"] for m in resumed["result"]["messages"]] == ["assistant", "user"]
 
         assert server._persist_session_row_for_submit("rid", server._sessions[sids[-1]]) is None  # the first prompt.submit
-        assert len(db.get_messages_as_conversation(key)) == 3
-        assert [hit["session_id"] for hit in db.search_messages("Second question")] == [key]
-        assert db.search_messages("Private setup runbook") == []  # the hidden row is not searchable either
+        assert len(conversation(db, key)) == 3
+        assert [hit.session_id for hit in db.search.search_messages("Second question")] == [key]
+        assert db.search.search_messages("Private setup runbook") == ()  # the hidden row is not searchable either
     finally:
         for sid in sids:
             server._sessions.pop(sid, None)
@@ -67,20 +70,20 @@ def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, t
 def test_branch_child_seed_is_written_once(monkeypatch, tmp_path):
     """A seeded branch child persists its copied transcript at create (#93959); the first prompt's seed
     persist is the fallback for a failed create-time copy, not a second copy."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     _quiet_create(monkeypatch, db)
     seed = [{"role": "user", "content": "hello from parent"}, {"role": "assistant", "content": "parent reply"}]
-    db.create_session("parent-1", source="desktop")
-    db.append_messages_batch("parent-1", seed)
-    db.set_session_title("parent-1", "Parent chat")
+    seed_session(db, "parent-1", "desktop")
+    db.messages.append_batch("parent-1", [NewMessage.from_live(m) for m in seed])
+    db.sessions.set_title("parent-1", "Parent chat")
     sid = None
     try:
         result = _create({"cols": 96, "source": "desktop", "parent_session_id": "parent-1", "messages": seed})
         sid, key = result["session_id"], result["stored_session_id"]
-        assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hello from parent", "parent reply"]
+        assert [r["content"] for r in conversation(db, key)] == ["hello from parent", "parent reply"]
 
         assert server._persist_session_row_for_submit("rid", server._sessions[sid]) is None  # the first prompt.submit
-        assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hello from parent", "parent reply"]
+        assert [r["content"] for r in conversation(db, key)] == ["hello from parent", "parent reply"]
     finally:
         if sid:
             server._sessions.pop(sid, None)
@@ -90,9 +93,11 @@ def test_branch_child_seed_is_written_once(monkeypatch, tmp_path):
 def test_partial_seed_copy_is_rolled_back_not_duplicated(monkeypatch, tmp_path):
     """A seed copy that fails after the row exists leaves no row behind: the first prompt's retry copies the
     whole seed again, so a kept partial copy would double it."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     _quiet_create(monkeypatch, db)
-    real_append, calls = db.append_messages_batch, []
+    with server._persistence_for(db) as persistence:
+        messages_type = type(persistence.messages)
+    real_append, calls = messages_type.append_batch, []
 
     def flaky_append(*args, **kwargs):
         calls.append(1)
@@ -100,16 +105,16 @@ def test_partial_seed_copy_is_rolled_back_not_duplicated(monkeypatch, tmp_path):
             raise RuntimeError("copy failed after the row was committed")
         return real_append(*args, **kwargs)
 
-    monkeypatch.setattr(db, "append_messages_batch", flaky_append)
+    monkeypatch.setattr(messages_type, "append_batch", flaky_append)
     sid = None
     try:
         result = _create({"cols": 96, "source": "desktop", "title": "Welcome",
                           "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]})
         sid, key = result["session_id"], result["stored_session_id"]
-        assert db.get_session(key) is None  # rolled back, so the first prompt starts clean
+        assert db.sessions.get(key) is None  # rolled back, so the first prompt starts clean
 
         assert server._persist_session_row_for_submit("rid", server._sessions[sid]) is None
-        assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hi", "hello"]
+        assert [r["content"] for r in conversation(db, key)] == ["hi", "hello"]
         assert server._sessions[sid]["pending_title"] == "Welcome"  # still queued: the turn applies it, as for any lazy row
     finally:
         if sid:

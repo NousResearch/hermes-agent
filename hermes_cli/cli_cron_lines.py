@@ -51,9 +51,11 @@ def cron_list_lines(*, include_disabled: bool = False) -> list[str]:
     from hermes_cli.cron import _next_run_row
     out = ["", _t("cron.list_header"), "-" * 80]
     for job in jobs:
+        # A pinned zone is part of what the expression means (`0 9 * * 1-5` is 09:00 THERE).
+        schedule = f"{job['schedule']} [{job['timezone']}]" if job.get("timezone") else job["schedule"]
         out += [f"  {_t('cron.id', job_id=job['job_id'])}", f"  {_t('cron.name', name=job['name'])}",
                 f"  {_t('cron.state', state=job.get('state', '?'))}",
-                f"  {_t('cron.schedule_repeat', schedule=job['schedule'], repeat=job.get('repeat', '?'))}",
+                f"  {_t('cron.schedule_repeat', schedule=schedule, repeat=job.get('repeat', '?'))}",
                 "  {}: {}".format(*_next_run_row(job)) if job.get("next_run_at") else f"  {_t('cron.next_run_na')}"]
         if job.get("skills"):
             out.append(f"  {_t('cron.skills', skills=', '.join(job['skills']))}")

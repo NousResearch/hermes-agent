@@ -97,11 +97,11 @@ def harness(monkeypatch, tmp_path):
         return child
 
     monkeypatch.setattr(dt, "_build_child_agent", build_child)
-    monkeypatch.setattr(dt, "_load_config", dict)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", dict)
     monkeypatch.setattr(dt, "_get_max_concurrent_children", lambda: 2)
-    monkeypatch.setattr(dt, "_get_worktree_isolation", lambda: False)
-    monkeypatch.setattr(dt, "_get_child_timeout", lambda: 4)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *_a, **_k: {
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 4)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *_a, **_k: {
         "model": "test-model", "provider": None, "base_url": None,
         "api_key": None, "api_mode": None, "command": None, "args": None,
     })
@@ -153,7 +153,7 @@ def test_finite_batch_returns_success_and_child_failure(harness, outcome):
 
 def test_finite_batch_returns_timeout_while_child_unwinds(harness, monkeypatch):
     _parent, children, dispatch = harness
-    monkeypatch.setattr(dt, "_get_child_timeout", lambda: 0.5)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 0.5)
     result = dispatch("completed", "slow")
     _joined(result, ["completed", "timeout"])
     assert "timed out" in result["results"][1]["error"]

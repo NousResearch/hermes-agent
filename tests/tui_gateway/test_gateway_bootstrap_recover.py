@@ -172,3 +172,34 @@ def test_restart_wait_owner_is_attachable_on_start_and_recover(monkeypatch, tmp_
 
     assert result["instance_id"] == "draining-owner"
     assert ensured == ([home] if start else [])
+
+
+def test_recover_starts_no_gateway_for_a_marked_profile_whose_directory_is_a_link(monkeypatch, tmp_path):
+    """An open TUI runs this script again whenever its gateway is gone, and no command line refusal
+    runs before it. A profile a plugin has taken over since is refused here, also when its directory is
+    a link that leads out of the Hermes root: the home is asked about as the environment names it."""
+    import os
+
+    from hermes_cli import profiles_run_elsewhere as pre
+
+    module = _load_bootstrap()
+    root = tmp_path / ".hermes"
+    outside = tmp_path / "other-disk" / "ops"
+    outside.mkdir(parents=True)
+    link = root / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        if os.name != "nt":
+            pytest.skip(f"cannot create a directory symlink here: {exc}")
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(link))
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: link)
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda *a, **k: pytest.fail("discovered"))
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", lambda *a, **k: pytest.fail("ensured"))
+
+    with pytest.raises(RuntimeError, match="gateway inaccessible: profile_runs_elsewhere"):
+        module.bootstrap(True, recover=True)

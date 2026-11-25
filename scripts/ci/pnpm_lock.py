@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import re
 
-_KEY = re.compile(r"^  (\S.*?):(?: .*)?$")
 # A key (quoted, or plain up to the first ``: ``) and its inline value, if any.
 _ENTRY = re.compile(r"""^('(?:[^']|'')*'|"(?:[^"\\]|\\.)*"|[^'"\s].*?):(?: (.*))?$""")
 # Any top-level key (plain, or quoted as pnpm's emitter quotes ambiguous keys) ends
@@ -49,14 +48,19 @@ def _section_lines(text: str, name: str) -> list[str]:
     """The lines of top-level section ``name`` (empty when the lock has none).
 
     The section runs to the next top-level key or the end of the file; any other
-    line that is not indented by spaces is refused.
+    line that is not indented by spaces is refused. pnpm writes a key longer than
+    1024 characters (a long peer suffix) as an explicit ``? key`` / ``: value``
+    pair, which is folded back into the usual ``key:`` lines.
     """
     lines = _document_lines(text)
     if f"{name}:" not in lines:
         return []
     body = []
     for line in lines[lines.index(f"{name}:") + 1:]:
-        if line.startswith(" ") or not line.strip():
+        if body and body[-1].startswith("  ? ") and line.startswith("  : "):
+            key, value = body.pop()[4:], line[4:]
+            body += [f"  {key}: {{}}"] if value == "{}" else [f"  {key}:", f"    {value}"]
+        elif line.startswith(" ") or not line.strip():
             body.append(line)
         elif _TOP_LEVEL.match(line):
             break
@@ -121,7 +125,7 @@ def section_keys(text: str, name: str) -> list[str]:
     for line in _section_lines(text, name):
         if not line.strip() or line.startswith("   "):
             continue  # blank separators and each entry's own fields
-        match = _KEY.match(line)
+        match = _ENTRY.match(line[2:]) if line.startswith("  ") else None
         if not match:
             raise ValueError(f"pnpm-lock.yaml: unreadable {name} line: {line}")
         keys.append(_unquote(match[1]))

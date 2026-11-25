@@ -1,4 +1,4 @@
-"""Read-only diagnostics for saved toolsets and bundled platform selections."""
+"""Read-only diagnostics for saved toolsets, bundled platform selections and voice values."""
 
 from __future__ import annotations
 
@@ -18,7 +18,12 @@ def config_check_diagnostics(config: dict[str, Any], get_env_value: Callable[[st
     from hermes_cli.plugins_discovery import _get_disabled_plugins
     from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
 
+    from hermes_cli.config_value_checks import _validate_voice
+
     diagnostics = validate_platform_toolsets(config.get("platform_toolsets"), saved_toolset_resolver(config))
+    voice_issues: list = []
+    _validate_voice(config, voice_issues)
+    diagnostics += [f"{issue.message}. {issue.hint}." for issue in voice_issues]
 
     disabled = _get_disabled_plugins()
     for name, manifest in _platform_plugin_manifests(source="bundled"):

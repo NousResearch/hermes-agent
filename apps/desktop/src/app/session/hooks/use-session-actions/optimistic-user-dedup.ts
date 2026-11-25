@@ -1,6 +1,8 @@
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, sameAttachmentTurn } from '@/lib/chat-messages'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
+
+import { conflictingTranscriptIdentity } from './pending-turn-identity'
 
 /**
  * A live-turn row — the gateway's text-only `inflight` projection, a
@@ -89,5 +91,20 @@ export function optimisticUserAlreadyRepresented(
   return refusedCounterparts.some(
     refused =>
       textWithoutReferenceLines(chatMessageText(refused)) === textWithoutReferenceLines(chatMessageText(message))
+  )
+}
+
+/**
+ * Whether a committed user row already represents an optimistic `user-*` prompt.
+ * #122079: the tolerant text/attachment arms stay inside the identity gate so a
+ * rowId-bearing optimistic row is never swallowed by a committed row it provably
+ * is not; matching `submissionId` pairs the same send even when stored text differs.
+ */
+export function optimisticUserMatchesCommitted(message: ChatMessage, candidate: ChatMessage): boolean {
+  return (
+    !conflictingTranscriptIdentity(message, candidate) &&
+    ((candidate.submissionId !== undefined && message.id === `user-${candidate.submissionId}`) ||
+      textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message)) ||
+      sameAttachmentTurn(candidate, message))
   )
 }

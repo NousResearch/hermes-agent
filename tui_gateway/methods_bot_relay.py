@@ -1,8 +1,8 @@
 """Bot-relay JSON-RPC handlers — the gateway side of cross-connection A2A. Connections ARE the
 peer set: the Desktop owns every gateway socket and relays between them via four doors on EACH
 gateway: ``roster.sync`` (push OTHER connections' agents so ``message_agent`` resolves them),
-``outbox.drain`` (collect envelopes queued here for other connections), ``deliver`` (one-turn Bot
-Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the reply/error back on
+``outbox.drain`` (collect envelopes queued here for other connections), ``deliver`` (forward one
+identified DM to the TARGET profile's authority, returns its delivery receipt), ``reply`` (write the reply/error back on
 the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
@@ -140,10 +140,40 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
         return _err(rid, 5095, str(e))
 
 
+@method("bot_delivery.list")
+def _(rid, params: dict, _root=_relay_root) -> dict:
+    """Read-only list of the ``profile`` bot's unsettled teammate deliveries (contract:
+    ``bot_delivery.list``). This sidecar holds no target authority, so rows carry the durable
+    admission state only; ``waiting_on_you`` needs the owner (``gateway/session_teammate_waits.py``).
+    Each target's store is read under that target's own profile scope, never this process's."""
+    from tools.bot_delivery_status import list_sender_deliveries, stored_live_state
+    from tools.bot_mode_probe import _profile_for_handle, _roster
+
+    profile = params.get("profile") or "default"
+    root = _root()
+    roster = _roster(root)
+    resolved = _profile_for_handle(profile, {name for name, _home in roster})
+    if resolved not in dict(roster):
+        return _err(rid, 4092, f"no profile '{profile}' on this gateway", data={"reason": "unknown_profile"})
+
+    def scoped_state(name, home, record):
+        from gateway.run import _profile_runtime_scope
+        with _profile_runtime_scope(home, hydrate_secrets=False):
+            return stored_live_state(name, home, record)
+
+    try:
+        rows = list_sender_deliveries(root, resolved, live_state=scoped_state, profiles=roster)
+    except Exception as exc:  # the RPC boundary: answer the error, keep the traceback
+        logging.getLogger(__name__).debug("bot_delivery.list for %s failed", resolved, exc_info=True)
+        return _err(rid, 5096, str(exc))
+    return _ok(rid, {"sender": resolved, "deliveries": rows})
+
+
 def register(server) -> None:
     _registry.install(server)
     from . import methods_groups
-    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS
+    # ``bot_delivery.list`` opens every teammate's store: off the RPC reader like its relay siblings.
+    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS | {"bot_delivery.list"}
     for name in (
         "get_hosted_room_service", "_WORKER_UNAVAILABLE", "_profile_name", "_requested_profile",
         "_api_server_key", "_room_link_run_storage_durable"):

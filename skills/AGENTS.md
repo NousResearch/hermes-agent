@@ -29,8 +29,8 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    and dilute attention when many skills load. State the capability, not the implementation; no
    marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name or
    the category name (the skill index already prints the category above the skill). 60 is the width
-   the index shows (`SKILL_PROMPT_DESC_LIMIT`); `skill_manage` rejects a new or changed description
-   over it.
+   the index shows by default (`SKILL_PROMPT_DESC_LIMIT`); a user's `skills.index_desc_limit` widens
+   their own index and `skill_manage` budget, never this standard.
 2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
    (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,
    `browser_exec`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →

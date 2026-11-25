@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import shutil
 
 from tests.hermes_cli.plugin_worker_support import (
     boot as boot, isolated_python as isolated_python, plugin_world as plugin_world, publish_plugins)  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
@@ -50,3 +51,23 @@ def test_a_platform_adapter_finds_dependencies_published_after_boot(plugin_world
     publish_plugins(world, {"base": ["plugin-proof-dep==1.0"], "adds": ["plugin-proof-other"]})
 
     assert registry.ensure_deps("proofchat") is True
+
+
+def test_a_process_booted_from_the_installs_own_venv_adopts_the_first_generation(plugin_world, boot):
+    """A container image runs from the venv baked into its tree until PM commits a generation (the
+    first plugin install publishes one): that venv is the install's, so the process adopts the
+    generation instead of asking for a container restart that would only boot into it."""
+    from pm.environments import runtime_facts_path
+    from pm.environments_adopt import adopt_published
+
+    world = plugin_world
+    first = publish_plugins(world, {"base": ["plugin-proof-dep==1.0"]})
+    shipped = world.core / ".venv"
+    shutil.copytree(first, shipped, symlinks=True)
+    runtime_facts_path(world.core).unlink()  # nothing committed yet: the image's venv is what boots
+    boot(shipped)
+    publish_plugins(world, {"base": ["plugin-proof-dep==1.0"], "adds": ["plugin-proof-other"]})
+    assert importlib.util.find_spec("plugin_proof_other") is None
+
+    assert adopt_published(world.core) is True
+    assert importlib.util.find_spec("plugin_proof_other") is not None

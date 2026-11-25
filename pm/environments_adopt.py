@@ -15,7 +15,8 @@ import site
 import sys
 from pathlib import Path
 
-from pm.environments import install_state_dir, selected_venv, site_packages, venv_bin_dir
+from pm.environments import (
+    install_state_dir, payload_venv, selected_venv, site_packages, venv_bin_dir, venv_python_version)
 
 
 def running_environment(project_root: Path) -> Path | None:
@@ -29,10 +30,24 @@ def running_environment(project_root: Path) -> Path | None:
         selected = selected_venv(project_root)
     except (OSError, RuntimeError, ValueError):
         return None
-    for environment in (selected, *sorted((install_state_dir(project_root) / "environments").glob("*/venv"))):
+    shipped = _shipped_environment(project_root)
+    for environment in (selected, *([shipped] if shipped else []),
+                        *sorted((install_state_dir(project_root) / "environments").glob("*/venv"))):
         if site_packages(environment).resolve() in entries:
             return environment
     return None
+
+
+def _shipped_environment(project_root: Path) -> Path | None:
+    """The environment the install carries in its own tree: a sealed payload's, or the checkout's
+    ``venv``/``.venv`` (a container image's). A process boots from it until PM commits a generation,
+    and the next boot after one is committed loads that generation, so it is this install's too.
+    Never the running interpreter's own venv elsewhere (a developer or test venv is not the install's)."""
+    root = Path(project_root).resolve()
+    payload = payload_venv(root)
+    if payload is not None:
+        return payload
+    return next((root / name for name in ("venv", ".venv") if (root / name / "pyvenv.cfg").is_file()), None)
 
 
 def _distributions(environment: Path) -> dict[str, importlib.metadata.Distribution]:
@@ -69,6 +84,8 @@ def adopt(previous: Path, selected: Path, running: Path) -> bool:
         return False  # An update landed under this process; its code no longer matches the selection.
     if selected.resolve() == previous.resolve():
         return True
+    if venv_python_version(previous) != venv_python_version(selected):
+        return False  # built for another interpreter: its compiled modules would not load here
     if _loaded_from_changed(previous, selected):
         return False
     lease_generation(selected)  # The old lease stays: loaded modules keep reading from it.

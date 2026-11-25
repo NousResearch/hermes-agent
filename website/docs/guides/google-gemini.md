@@ -179,7 +179,7 @@ to `~/.hermes/.env` (or set `base_url` on the provider) once and restart.
 
 ## Available Models
 
-The `hermes model` picker shows Gemini models maintained in Hermes' provider registry. Common choices include:
+With an AI Studio API key on Google's native endpoint, the `hermes model` picker combines Gemini chat models from Google's live catalog with Hermes' curated models. The live catalog excludes media, TTS, embedding and other special-purpose models. A picker row does not guarantee that your key can use the model. If the catalog can't be reached, the picker falls back to the curated list. Proxies and Vertex Express keep the OpenAI-compatible listing. Common choices include:
 
 | Model | ID | Notes |
 |-------|----|-------|

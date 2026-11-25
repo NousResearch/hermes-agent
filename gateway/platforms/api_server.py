@@ -251,7 +251,8 @@ def _clean_request_string(value: Any) -> Optional[str]:
 
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
-from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
+from gateway.platforms.api_server_request_options import (
+    _request_agent_overrides, _request_reasoning_config, _request_service_tier)
 
 
 def _apply_runtime_agent_overrides(
@@ -280,31 +281,6 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode", "command")},
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool")}
-
-
-def _request_agent_overrides(
-    body: Any, *, virtual_model: Optional[str] = None, allow_bare_model: bool = True
-) -> dict[str, Any]:
-    """Extract per-request model/provider/options for _run_agent.
-
-    The virtual model (``hermes-agent``) means "gateway default". A bare ``model`` without
-    ``provider`` is honored only when ``allow_bare_model`` (generic clients hardcode "gpt-4o";
-    OpenAI-compatible handlers pass the ``direct_model_requests`` opt-in, Hermes-native
-    endpoints always allow it). An explicit ``provider`` is always honored.
-    """
-    if not isinstance(body, dict):
-        return {}
-    overrides: dict[str, Any] = {}
-    provider = _clean_request_string(body.get("provider"))
-    if provider:
-        overrides["requested_provider"] = provider
-    model = _clean_request_string(body.get("model"))
-    if model and model != virtual_model and (provider or allow_bare_model):
-        overrides["requested_model"] = model
-    model_options = body.get("model_options")
-    if isinstance(model_options, dict):
-        overrides["model_options"] = dict(model_options)
-    return overrides
 
 
 def _request_relay_metadata(body: Any) -> dict[str, Any]:
@@ -2112,7 +2088,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _select_agent_runtime(
         self, runtime_kwargs: dict[str, Any], model: str, *, requested_model: Optional[str],
         requested_provider: Optional[str], route: Optional[dict[str, Any]], session_model: Optional[str],
-        confirmed_runtime_lock: bool, gateway_session_key: Optional[str], session_id: Optional[str]) -> tuple:
+        confirmed_runtime_lock: bool, gateway_session_key: Optional[str], session_id: Optional[str],
+        require_selected_provider: bool = False) -> tuple:
         """Apply the model/provider precedence chain for one agent (mutates ``runtime_kwargs``):
         confirmed Browser lock > session ``/model`` override > session-persisted model >
         model_routes alias > per-request provider/model > global defaults. A confirmed lock
@@ -2135,7 +2112,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._apply_provider_runtime(
                 runtime_kwargs,
                 _clean_request_string(session_override.get("provider")) or current_provider,
-                target_model=model)
+                target_model=model, required=require_selected_provider and not (
+                    session_override.get("api_key") and session_override.get("base_url")))
             _apply_runtime_agent_overrides(runtime_kwargs, session_override)
             if route or request_model or request_provider:
                 logger.debug(
@@ -2162,7 +2140,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # global provider's credentials.
                 applied = self._apply_provider_runtime(
                     runtime_kwargs, effective_provider, target_model=effective_model,
-                    required=bool(request_provider) or confirmed_runtime_lock)
+                    required=bool(request_provider) or confirmed_runtime_lock or require_selected_provider)
             if not applied and effective_provider and effective_provider != current_provider:
                 runtime_kwargs["provider"] = effective_provider
             model = effective_model
@@ -2197,9 +2175,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
+        # Choose the credential source before resolving auth: an unrelated default may be unavailable.
+        session_override = (None if confirmed_runtime_lock else
+                            self._session_model_override_for(gateway_session_key or session_id))
+        route_cfg = route if isinstance(route, dict) else {}
+        selected_provider = (
+            _clean_request_string(session_override.get("provider")) if session_override else
+            None if session_model and not confirmed_runtime_lock else
+            _clean_request_string(requested_provider) or _clean_request_string(route_cfg.get("provider")))
         # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps run_conversation() errors distinct.
         try:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            if selected_provider:
+                from hermes_cli.runtime_provider import _get_model_config
+                runtime_kwargs = {"provider": _get_model_config().get("provider")}
+            else:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
         # A fallback runtime's own ``model`` overrides config and must not collide with the spread.
@@ -2212,7 +2202,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             runtime_kwargs, model,
             requested_model=requested_model, requested_provider=requested_provider, route=route,
             session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
-            gateway_session_key=gateway_session_key, session_id=session_id)
+            gateway_session_key=gateway_session_key, session_id=session_id,
+            require_selected_provider=bool(selected_provider))
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
         # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``

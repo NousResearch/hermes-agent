@@ -93,7 +93,7 @@ export default async function notarizeDmg(
     await run('codesign', ['--verify', '--verbose=2', dmgPath])
 
     if (notaryAuth) {
-      const waitBudgetMs = remainingNotaryBudgetMs(event.packager, { now })
+      const waitBudgetMs = remainingNotaryBudgetMs({ now })
       const { deadline } = await submitAndStaple(dmgPath, dmgPath, notaryAuth.auth, {
         run,
         sleep,

@@ -424,6 +424,31 @@ test('a recorded app signature signs the DMG even when the signing settings woul
   }
 })
 
+test('the DMG notary budget also counts the packing and signing time before afterSign', async () => {
+  const f = await createBuilderFixture()
+  await signAppWith(f)
+  const appOutDir = path.join(f.root, 'mac-arm64')
+  fs.mkdirSync(path.join(appOutDir, `${f.packager.appInfo.productFilename}.app`), { recursive: true })
+  let elapsed = 40 * 60 * 1000
+  const calls = []
+  const run = vi.fn(async (command, args) => {
+    calls.push([command, ...args])
+    if (command === 'xcrun' && args[0] === 'notarytool') {
+      if (args[2].endsWith('.zip')) elapsed += 210 * 60 * 1000
+      return { stdout: JSON.stringify({ id: SUBMISSION_ID, status: 'Accepted' }), stderr: '' }
+    }
+    return { stdout: '', stderr: '' }
+  })
+  const deps = { run, env: f.signedEnv, sleep: vi.fn(), log: vi.fn(), now: () => elapsed }
+
+  await notarize({ electronPlatformName: 'darwin', appOutDir, packager: f.packager }, deps)
+  await notarizeDmg({ file: f.dmgPath, target: f.dmgTarget, packager: f.packager }, deps)
+
+  const dmgSubmit = calls.find(c => c[0] === 'xcrun' && c[1] === 'notarytool' && c[2] === 'submit' && c[3] === f.dmgPath)
+  const expectedSeconds = Math.ceil((COMBINED_NOTARY_BUDGET_MS - 250 * 60 * 1000 - DMG_VERIFY_RESERVE_MS) / 1000)
+  expect(dmgSubmit[dmgSubmit.indexOf('--timeout') + 1]).toBe(`${expectedSeconds}s`)
+})
+
 test('non-DMG artifacts and non-darwin packagers are ignored', async () => {
   const f = await createBuilderFixture()
   const run = vi.fn()

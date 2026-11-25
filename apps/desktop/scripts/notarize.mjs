@@ -109,21 +109,17 @@ export async function validateStapled(targetPath, {
 }
 
 export const DEFAULT_WAIT_BUDGET_MS = 4 * 60 * 60 * 1000
+// The CI Build and package step allows 330 minutes and starts electron-builder in its own process about two minutes
+// in. performance.now() counts from that process's start, so packing and signing spend this budget too.
 export const COMBINED_NOTARY_BUDGET_MS = 300 * 60 * 1000
 export const DMG_VERIFY_RESERVE_MS = 15 * 60 * 1000
 
-const notaryStartByPackager = new WeakMap()
-
-export function remainingNotaryBudgetMs(packager, {
+export function remainingNotaryBudgetMs({
   now = () => performance.now(),
   totalBudgetMs = COMBINED_NOTARY_BUDGET_MS,
   reserveMs = DMG_VERIFY_RESERVE_MS
 } = {}) {
-  if (packager && typeof packager === 'object' && notaryStartByPackager.has(packager)) {
-    const elapsed = Math.max(0, now() - notaryStartByPackager.get(packager))
-    return Math.max(0, totalBudgetMs - elapsed - reserveMs)
-  }
-  return DEFAULT_WAIT_BUDGET_MS
+  return Math.max(0, totalBudgetMs - now() - reserveMs)
 }
 
 export async function submitAndStaple(submitPath, staplePath, auth, {
@@ -240,9 +236,6 @@ export default async function notarize(context, {
   }
   const { auth, cleanup } = resolved
 
-  if (packager && typeof packager === 'object') {
-    notaryStartByPackager.set(packager, now())
-  }
   const zipPath = path.join(appOutDir, `${appName}.zip`)
   try {
     await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath])

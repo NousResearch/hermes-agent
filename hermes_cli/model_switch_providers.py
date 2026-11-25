@@ -29,7 +29,8 @@ _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencod
 def _save_discovered_models_to_config(
     api_url: str, model_ids: list[str], *, api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None, credential_identity: str | None = None) -> None:
-    """Persist a successful ``/v1/models`` probe into the matching ``custom_providers`` entry.
+    """Persist a successful ``/v1/models`` probe into the matching ``custom_providers`` list entry
+    or ``providers.<name>`` entry.
 
     Matches by base_url (slash-normalised), api_mode and headers. A failed config write is
     swallowed — the picker still shows the live models for this session."""
@@ -37,22 +38,26 @@ def _save_discovered_models_to_config(
         return
     try:
         from hermes_cli.config import load_config, save_config
+        from hermes_cli.config_providers import _normalize_custom_provider_entry
         cfg = load_config()
-        providers = cfg.get("custom_providers") or []
-        if not isinstance(providers, list):
-            return
+        # (entry written back, legacy-shaped view it is matched by): a providers.<name> entry matches
+        # through the same normalized view the picker probed, so its api/transport/key aliases count.
+        legacy = cfg.get("custom_providers")
+        candidates = [(e, e) for e in legacy if isinstance(e, dict)] if isinstance(legacy, list) else []
+        modern = cfg.get("providers")
+        if isinstance(modern, dict):
+            candidates += [(e, view) for key, e in modern.items() if isinstance(e, dict)
+                           and (view := _normalize_custom_provider_entry(e, provider_key=key)) is not None]
 
         norm_url = api_url.strip().rstrip("/").lower()
         changed = False
-        for entry in providers:
-            if not isinstance(entry, dict):
+        for entry, view in candidates:
+            entry_url = (view.get("base_url", "") or view.get("url", "")).strip()
+            if entry_url.rstrip("/").lower() != norm_url or _entry_api_mode(view) != api_mode:
                 continue
-            entry_url = (entry.get("base_url", "") or entry.get("url", "")).strip()
-            if entry_url.rstrip("/").lower() != norm_url or _entry_api_mode(entry) != api_mode:
+            if headers is not None and _extra_headers_from_config(view) != headers:
                 continue
-            if headers is not None and _extra_headers_from_config(entry) != headers:
-                continue
-            if credential_identity is not None and _entry_credentials(entry, "key_env", "api_key_env")[2] != credential_identity:
+            if credential_identity is not None and _entry_credentials(view, "key_env", "api_key_env")[2] != credential_identity:
                 continue
             if not _discovered_catalog_stale(entry, model_ids):
                 continue
@@ -61,7 +66,6 @@ def _save_discovered_models_to_config(
             changed = True
 
         if changed:
-            cfg["custom_providers"] = providers
             save_config(cfg)
     except Exception:
         pass

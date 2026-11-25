@@ -92,6 +92,16 @@ def file_cache_version(path: str | Path, st: os.stat_result | None = None, *,
     return (*sig, racy_content_digest(path, sig))
 
 
+def file_has_bytes(path: str | Path, data: bytes) -> bool:
+    """Whether ``path`` already holds exactly ``data``: a writer skips its atomic replace then,
+    since a fresh inode reads as a change to every stat-keyed detector (gateway credential
+    reconcile, config caches) and restarts what they guard."""
+    try:
+        return Path(path).read_bytes() == data
+    except OSError:
+        return False
+
+
 def preserve_file_mode(path: Path) -> int | None:
     """Permission bits of *path* if it exists, else ``None``."""
     try:

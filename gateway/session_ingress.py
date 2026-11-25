@@ -373,6 +373,7 @@ async def execute_admission(authority, ref, row):
                     # ``[Image attached ...]`` hints native transports persist), not only the caption.
                     event.text = '\n'.join(part['text'] for part in prepared['content'] if part.get('type') == 'text')
                 event.allow_gateway_control = False
+                event._started_by_hermes = event.internal is True  # a wake's row, not the caller's request
                 event.internal = True  # trust comes from the private binding and preclaim, never client JSON
             response = await authority.runner._handle_message(event)
             result = captured.get('terminal_result', captured.get('result'))

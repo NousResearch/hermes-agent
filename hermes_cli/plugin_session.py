@@ -56,6 +56,24 @@ def turn_client() -> dict | None:
     return surface_turn_client()
 
 
+def turn_internal() -> bool | None:
+    """Whether Hermes itself started the turn running in this context, the pair of ``turn_client()``.
+    ``True`` for a turn whose input Hermes produced: a background-process notification, a delegation
+    result, an automation or heartbeat wake, a message a plugin injected, or an event a platform
+    adapter marks as a system trigger (a webhook notification). ``False`` for a turn carrying a
+    message someone sent: typed in a client (announced or not), on a messaging chat, or an API
+    request. ``None`` outside a turn, in a delegated child (it runs in its parent turn's context),
+    in a managed worker and a plugin's own slash command (no turn event is bound there), and for a
+    synthetic turn Hermes does not mark internal (a goal continuation). A steer into the running turn
+    does not change the answer. Answers only inside the gateway process: under
+    ``plugins.isolation: host`` it is always ``None`` in the plugin's own process, where
+    ``ctx.turn_internal()`` asks the gateway instead."""
+    if _in_delegated_child():
+        return None
+    from gateway.session_context import turn_started_by_hermes
+    return turn_started_by_hermes()
+
+
 def session_viewers() -> list[dict]:
     """The clients attached to the calling session right now, one dict per connection:
     ``{"name", "kind"}`` (``None`` when the connection announced nothing), ``"idle_seconds"`` since the

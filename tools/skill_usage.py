@@ -244,21 +244,26 @@ def list_archived_skill_names() -> list[str]:
 
 
 def count_agent_created_skills(create_dir: Optional[Path] = None) -> int:
-    """Live curator-managed skill DIRECTORIES under the profile skills dir and *create_dir*, each counted once
-    whether its record is keyed by directory name (what ``record_created`` writes) or frontmatter name (what
-    ``curator adopt`` may write). Bundled skills and external/project dirs never count. Strict: raises when
-    ``.usage.json`` is unreadable, so a damaged sidecar cannot read as an empty library."""
+    """Live curator-managed skill DIRECTORIES under the profile skills dir and *create_dir*. Each record belongs
+    to exactly one directory: the one with that directory name (what ``record_created`` writes), else the single
+    directory whose frontmatter name it is (what ``curator adopt`` may write). So a skill never takes two slots
+    and a user skill sharing a display name never borrows a managed record. Bundled skills and external/project
+    dirs never count. Strict: raises when ``.usage.json`` is unreadable, so damage cannot read as empty."""
     usage, bundled = _load_usage_strict(), _read_bundled_names()
-    seen: set[Path] = set()
+    dirs: dict[Path, str] = {}
     for base in filter(None, (_skills_dir(), create_dir)):
-        if not base.exists():
-            continue
-        for display, skill_md in _iter_skill_mds(base, local_only=True):
-            names = {skill_md.parent.name, display}
-            if names & bundled or not any(_is_curator_managed_record(usage.get(n)) for n in names):
-                continue
-            seen.add(skill_md.parent.resolve())
-    return len(seen)
+        if base.exists():
+            dirs.update({md.parent.resolve(): display for display, md in _iter_skill_mds(base, local_only=True)})
+    by_dir_name = {d.name: d for d in dirs}
+    by_display: dict[str, list[Path]] = {}
+    for d, display in dirs.items():
+        by_display.setdefault(display, []).append(d)
+    owned: set[Path] = set()
+    for key, rec in usage.items():
+        owner = by_dir_name.get(key) or (by_display[key][0] if len(by_display.get(key, ())) == 1 else None)
+        if owner is not None and _is_curator_managed_record(rec) and not {owner.name, dirs[owner]} & bundled:
+            owned.add(owner)
+    return len(owned)
 
 
 def read_skill_name(skill_md: Path, fallback: str) -> str:

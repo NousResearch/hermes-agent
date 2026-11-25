@@ -1611,12 +1611,22 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
         (tmp_path / "config.yaml").write_text(
             "curator:\n  max_agent_created: 10\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
         # A create whose record cannot be saved is undone, or its slot would stay free.
-        skills_root = tmp_path / "skills"
-        skills_root.chmod(0o555)
-        try:
+        real_record = __import__("tools.skill_usage", fromlist=["x"]).record_created
+
+        def record_fails_after_a_sibling_write(n, **kw):  # another writer drops a file in first
+            (tmp_path / "team-skills" / n / "notes.md").write_text("theirs", encoding="utf-8")
+            with patch("tools.skill_usage.save_usage", return_value=False):
+                return real_record(n, **kw)
+        with patch("tools.skill_usage.record_created", record_fails_after_a_sibling_write):
             unrecorded = json.loads(skill_manage(action="create", name="six", content=skill("six")))
-        finally:
-            skills_root.chmod(0o755)
+        # A user skill sharing a managed skill's display name never borrows that record's slot.
+        reset_current_write_origin(token)
+        user_twin = skill("x").replace("x-display", "five")  # display name == managed skill "five"'s record key
+        assert json.loads(skill_manage(action="create", name="weekly", content=user_twin))["success"]
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 3\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        borrowed = json.loads(skill_manage(action="create", name="seven", content=skill("seven")))
         usage_path.write_text("{not json", encoding="utf-8")
         damaged = json.loads(skill_manage(action="create", name="four", content=skill("four")))
     finally:
@@ -1629,7 +1639,10 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
     assert not (tmp_path / "team-skills" / "two").exists() and not (tmp_path / "team-skills" / "three").exists()
     assert patched["success"] is True, patched
     assert counted_once["success"] is True, counted_once
-    assert unrecorded["success"] is False and not (tmp_path / "team-skills" / "six").exists(), unrecorded
+    six = tmp_path / "team-skills" / "six"
+    assert unrecorded["success"] is False and not (six / "SKILL.md").exists(), unrecorded
+    assert (six / "notes.md").read_text(encoding="utf-8") == "theirs"  # undo removes only what create wrote
+    assert borrowed["success"] is True, borrowed  # one, five, seven = 3; "weekly" (learn) takes no slot
     assert damaged["success"] is False and not (tmp_path / "team-skills" / "four").exists(), damaged  # fail closed
     assert user["success"] is True, user
 

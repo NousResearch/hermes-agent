@@ -869,8 +869,12 @@ def _cap_record_missing(name: str) -> bool:
 
 
 def _undo_uncounted_create(name: str) -> dict[str, Any]:
+    """Remove exactly what the create wrote (SKILL.md), then the dir only if nothing else landed in it."""
     if found := _find_skill(name):
-        shutil.rmtree(found["path"], ignore_errors=True)
+        with suppress(OSError):
+            (found["path"] / "SKILL.md").unlink()
+        with suppress(OSError):
+            found["path"].rmdir()
     return _err(f"Skill '{name}' was not kept: its creation record could not be saved to skills/.usage.json, "
                 "so it would not count toward curator.max_agent_created. Patch an existing skill instead.")
 

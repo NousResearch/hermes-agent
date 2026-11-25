@@ -873,6 +873,7 @@ _LATER_TASK_COLUMNS = (
     # Per-task override for the consecutive-failure circuit breaker; NULL =
     # ``kanban.failure_limit`` config, then ``DEFAULT_FAILURE_LIMIT``.
     ("max_retries", "max_retries INTEGER"),
+    ("max_worker_runs", "max_worker_runs INTEGER CHECK (max_worker_runs >= 0)"),
     ("model_override", "model_override TEXT"),
     ("provider_override", "provider_override TEXT"),
     ("reasoning_effort", "reasoning_effort TEXT"),

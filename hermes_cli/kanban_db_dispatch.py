@@ -1414,7 +1414,9 @@ def _record_task_failure(
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
-            else ("review" if row["status"] == "review" else "ready")
+            else (_kb._resume_status_from_events(conn, task_id)
+                  if row["status"] == "blocked"
+                  else ("review" if row["status"] == "review" else "ready"))
         )
         failures = int(row["consecutive_failures"]) + (0 if infrastructure else 1)
 
@@ -1452,14 +1454,14 @@ def _record_task_failure(
                 _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
             return False
 
-        # Spawn path (release_claim) is still running and also clears claim
-        # state; the timeout/crash path already did.
+        # Reclaim may already have budget-parked the task: still account the
+        # failure, without overriding an owner's done/scheduled transition.
         conn.execute(
             "UPDATE tasks SET status = 'blocked', "
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
+            "WHERE id = ? AND status IN ('running', 'ready', 'review', 'blocked')",
             (failures, error, task_id),
         )
         payload = {

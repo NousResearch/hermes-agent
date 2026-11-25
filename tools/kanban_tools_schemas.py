@@ -453,6 +453,12 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "exists, return that task's id instead of creating "
                 "a duplicate. Useful for retry-safe automation."
         )),
+        "max_worker_runs": {
+            "type": "integer", "minimum": 0,
+            "description": "Absolute total run-ID cap, including rate-limit/auth/neutral exits and launch attempts. "
+                           "0 forbids claims; omitted is unlimited. Not the failure retry threshold. "
+                           "Exhaustion blocks until the owner raises/clears the cap via CLI edit or the task API, then unblocks.",
+        },
         "max_runtime_seconds": _prop("integer", (
                 "Per-task runtime cap. When exceeded, the "
                 "dispatcher SIGTERMs the worker and re-queues the "

@@ -196,6 +196,9 @@ _SPECS = [
                   f"first failure (no retries), --max-retries 3 allows two retries. Omit to use "
                   f"the dispatcher's kanban.failure_limit config (default "
                   f"{kb.DEFAULT_FAILURE_LIMIT})."),
+        _arg("--max-worker-runs", type=int, metavar="N",
+             help="Absolute cap on total run IDs, including rate-limit/neutral exits and launch attempts; "
+                  "0 forbids claims, omitted = unlimited. Separate from --max-retries."),
         _arg("--model", dest="model_override",
              help="Pin the worker to this model (passed as -m <model>) without "
                   "changing the profile's configured model. Combine with --provider "
@@ -306,6 +309,10 @@ _SPECS = [
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,
+        _arg("--max-worker-runs", type=int, metavar="N",
+             help="Owner: set absolute total-run cap (>=0). History is not reset; unblock separately."),
+        _arg("--clear-max-worker-runs", action="store_true",
+             help="Owner: reset cap to unlimited, preserving history and parked status."),
         _arg("--title", help="Replace the task title"),
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),

@@ -31,7 +31,10 @@ def observe(target):
         return None
     deadline = time.monotonic() + 3
     facts = {}
-    for root, directories, files in os.walk(target, followlinks=False):
+    def unreadable(_error):
+        raise _changed()
+
+    for root, directories, files in os.walk(target, followlinks=False, onerror=unreadable):
         for name in directories + files:
             path = target.__class__(root) / name
             before = path.lstat()

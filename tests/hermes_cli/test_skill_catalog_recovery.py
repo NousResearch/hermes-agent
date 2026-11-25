@@ -15,6 +15,25 @@ def tree_digest(files):
                                      ensure_ascii=True, allow_nan=False).encode()).hexdigest()
 
 
+def test_unreadable_nested_directory_never_produces_recovery_digest(tmp_path, monkeypatch):
+    from hermes_cli.skill_catalog import recovery
+    target = tmp_path / 'tree'
+    nested = target / 'nested'
+    nested.mkdir(parents=True)
+    (nested / 'private.md').write_text('must not disappear')
+    original = recovery.os.scandir
+
+    def scan(path):
+        if str(path) == str(nested):
+            raise PermissionError('unreadable nested directory')
+        return original(path)
+
+    monkeypatch.setattr(recovery.os, 'scandir', scan)
+    with pytest.raises(CatalogError) as caught:
+        recovery.observe(target)
+    assert caught.value.code == 'review_changed'
+
+
 def test_post_effect_pre_marker_recovery_records_local_commit_without_second_write(tmp_path):
     with admitted(tmp_path) as (projection, owner, api, admission, op):
         target = tmp_path / 'skills/new'

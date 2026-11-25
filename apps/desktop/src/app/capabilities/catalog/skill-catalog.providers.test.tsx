@@ -126,6 +126,54 @@ it('keeps two owners with the same catalog name and item distinct', async () => 
   await waitFor(() => expect(api.mock.calls.find(([request]) => request.path.endsWith('/review'))?.[0].body.identifier).toBe(secondIdentifier))
 })
 
+it('serializes two ready providers within a profile and shows both without a busy badge', async () => {
+  const secondSource = { ...source, id: source.id.replace(source.id.split('.')[1], 'b'.repeat(64)), label: 'Other skills' }
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let active = false
+  const searches: string[] = []
+  const original = api.getMockImplementation()!
+  api.mockImplementation(async (request: { path: string }) => {
+    if (request.path.endsWith('/official')) { return { skills: [], provider_sources: [source, secondSource] } }
+
+    if (request.path.includes('/search')) {
+      const id = new URL(request.path, 'http://fixture').searchParams.get('source')!
+      searches.push(id)
+
+      if (active) { throw new Error('429 Catalog search is busy') }
+      active = true
+
+      if (id === source.id) { await gate }
+      active = false
+
+      return { results: [{ ...search.results[0], source: id, identifier: `${id}:example-skill` }], next_cursor: null }
+    }
+
+    return original(request)
+  })
+  setup()
+  await waitFor(() => expect(searches.length).toBeGreaterThan(0))
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+  const beforeRelease = [...searches]
+  await act(async () => release())
+  await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(3))
+  expect(beforeRelease).toEqual([source.id])
+  expect(searches).toEqual([source.id, secondSource.id])
+  expect(screen.queryByText(/429 Catalog search is busy/)).toBeNull()
+})
+
+it('surfaces a real provider search 429 without retrying it', async () => {
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    if (request.path.includes('/search')) { return Promise.reject(new Error('429 Catalog search is busy')) }
+
+    return original(request)
+  })
+  setup()
+  await screen.findByText('429 Catalog search is busy')
+  expect(api.mock.calls.filter(([request]) => request.path.includes('/search'))).toHaveLength(1)
+})
+
 it('renders a refused operation without offering another confirmation', async () => {
   confirmResponse = { ...completed, state: 'failed', outcome: 'refused', message: 'Provider refused this operation.' }
   setup()

@@ -1,4 +1,4 @@
-import { capabilityScoped, type ProfileScope } from '@/api/client'
+import { capabilityScoped, type ProfileScope, profileScopeKey } from '@/api/client'
 import type { SkillHubResult } from '@/types/hermes'
 import type { CatalogAction, CatalogOperation, CatalogPreview, CatalogProvider, CatalogReview } from '@/types/skill-catalog'
 
@@ -19,12 +19,24 @@ export function catalogRequest<T>(profile: ProfileScope, path: string, body?: un
   })
 }
 
+// Core admits one catalog search per profile, including searches from different query keys.
+const searchQueues = new Map<string, Promise<unknown>>()
+
 export function searchProvider(profile: ProfileScope, source: string, query: string, cursor: string | null) {
+  const pin = capabilityScoped(profile)
+  const scope = profileScopeKey(pin)
   const params = new URLSearchParams({ source, q: query, limit: '20' })
 
   if (cursor) { params.set('cursor', cursor) }
 
-  return catalogRequest<ProviderSearchPage>(profile, `search?${params}`)
+  const request = (searchQueues.get(scope) ?? Promise.resolve()).then(() => catalogRequest<ProviderSearchPage>(pin, `search?${params}`))
+  const tail = request.then(() => undefined, () => undefined)
+  searchQueues.set(scope, tail)
+  void tail.then(() => {
+    if (searchQueues.get(scope) === tail) { searchQueues.delete(scope) }
+  })
+
+  return request
 }
 
 export function previewProvider(profile: ProfileScope, identifier: string, version?: string) {

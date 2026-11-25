@@ -3606,6 +3606,8 @@ export interface Translations extends NoticeTranslations {
       messagingPlatforms: string
     }
     approvalMode: {
+      perProfile: string
+      perProfileDescription: string
       title: string
       ariaLabel: (mode: string) => string
       manual: string

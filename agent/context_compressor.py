@@ -56,9 +56,8 @@ from session_rules import turns as _turns
 from session_rules.turns import drop_stale_api_content
 from persistence.core.errors import PersistenceError
 from tools.todo_tool import TODO_INJECTION_HEADER
-from session_rules.turns import (
-    _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view,
-)
+from tools.tool_result_storage import strip_archive_list
+from session_rules.turns import _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view
 from session_rules.turns import (
     _BACKGROUND_PROCESS_NOTIFICATION_PREFIX,
     _DB_PERSISTED_MARKER,
@@ -4112,8 +4111,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # len(messages)+1 when head_end >= n) cannot trigger IndexError. (#75588)
         start = max(0, min(start, n))
         end = max(start, min(end, n))
-        return [
-            (idx, cls._strip_summary_prefix(_content_text_for_contains(messages[idx].get("content"))))
+        return [  # an earlier archive list is not summary text: it must not seed the next summarizer
+            (idx, strip_archive_list(cls._strip_summary_prefix(_content_text_for_contains(messages[idx].get("content")))))
             for idx in range(start, end) if cls._is_context_summary_message(messages[idx])
         ]
 

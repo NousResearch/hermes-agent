@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { bundleIdentity, verifyBundleStamp, verifyMacMetadata } from '../tests/install/e2e-assets/bundle-smoke-metadata.mjs'
+import { bundleIdentity, shouldVerifyMacDmg, verifyBundleStamp, verifyMacDmg, verifyMacMetadata } from '../tests/install/e2e-assets/bundle-smoke-metadata.mjs'
 import { stampAssertions } from '../tests/install/e2e-assets/mac-bundled-manifest.cjs'
 import { randomBytes } from 'node:crypto'
 import { buildStampPayload } from '../apps/desktop/scripts/write-build-stamp.mjs'
@@ -133,6 +133,60 @@ test('workspace admission rejects reuse and symlink escapes before creating anyt
     fs.symlinkSync(temp, alias, process.platform === 'win32' ? 'junction' : 'dir')
     expect(run(path.join(alias, 'fresh'), out).status).toBe(0)
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
+})
+
+test('shouldVerifyMacDmg enforces outer DMG checks on all releases/channels and signedDmg commit claims while allowing older commit claims', () => {
+  expect(shouldVerifyMacDmg({ tag: 'v1.2.3', stamp: {} })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: 'canary.20261125T000000Z-v1.2.3', stamp: {} })).toBe(true)
+  expect(shouldVerifyMacDmg({ channelRequest: { channel: 'preview' }, stamp: {} })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: 'commit.20261125T000000Z-v1.2.3', stamp: { signedDmg: true } })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: '', stamp: { signedDmg: true } })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: 'commit.20261125T000000Z-v1.2.3', stamp: {} })).toBe(false)
+  expect(shouldVerifyMacDmg({ tag: '', stamp: {} })).toBe(false)
+
+  const commit = 'b'.repeat(40)
+  const runtime = { commands: { hermes: 'bin/hermes' } }
+  expect(buildStampPayload({ commit, dirty: false }, { HERMES_DESKTOP_VARIANT: 'bundled' }, 'darwin', { runtime }).signedDmg).toBe(true)
+  expect(buildStampPayload({ commit, dirty: false }, { HERMES_DESKTOP_VARIANT: 'bundled' }, 'win32', { runtime }).signedDmg).toBeUndefined()
+  expect(buildStampPayload({ commit, dirty: false }, { HERMES_DESKTOP_VARIANT: 'light' }, 'darwin', { runtime }).signedDmg).toBeUndefined()
+})
+
+test('verifyMacDmg enforces codesign, team ID, stapler ticket, and spctl primary-signature open policy', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'dmg-smoke-'))
+  try {
+    const dmg = path.join(temp, 'HermesBundled-1.2.3-mac-arm64.dmg')
+    fs.writeFileSync(dmg, 'dmg-fixture')
+    const calls = []
+    const exec = (cmd, args) => { calls.push([cmd, ...args]) }
+    const spawn = (cmd, args) => {
+      calls.push([cmd, ...args])
+      return { status: 0, stderr: 'Authority=Developer ID Application: Nous Research (TEAM123456)\nTeamIdentifier=TEAM123456\n' }
+    }
+    expect(verifyMacDmg(dmg, { exec, spawn })).toEqual({ dmg, teamIdentifier: 'TEAM123456' })
+    expect(calls).toEqual([
+      ['/usr/bin/codesign', '--verify', '--verbose=2', dmg],
+      ['/usr/bin/codesign', '-dv', '--verbose=4', dmg],
+      ['/usr/bin/xcrun', 'stapler', 'validate', dmg],
+      ['/usr/sbin/spctl', '-a', '-vv', '-t', 'open', '--context', 'context:primary-signature', dmg],
+    ])
+
+    expect(() => verifyMacDmg(path.join(temp, 'missing.dmg'), { exec, spawn })).toThrow(/existing \.dmg/)
+    expect(() => verifyMacDmg(path.join(temp, 'app.zip'), { exec, spawn })).toThrow(/existing \.dmg/)
+    expect(() => verifyMacDmg(dmg, {
+      exec,
+      spawn: () => ({ status: 0, stderr: 'TeamIdentifier=not set\n' }),
+    })).toThrow(/signing team/)
+    expect(() => verifyMacDmg(dmg, {
+      exec,
+      spawn: () => ({ status: 1, stderr: 'code object is not signed at all' }),
+    })).toThrow(/codesign display failed/)
+    expect(() => verifyMacDmg(dmg, {
+      exec: (cmd) => { if (cmd === '/usr/sbin/spctl') throw new Error('rejected') },
+      spawn,
+    })).toThrow(/rejected/)
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true })
+  }
 })
 
 test.runIf(process.platform === 'win32')('PowerShell admits only the pinned package and native slice', () => {

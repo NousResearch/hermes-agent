@@ -839,7 +839,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     TURN_SETTLE_SECONDS (clamped to ``budget``, what the stop's watchdog leash has left, minus
     STOP_TAIL_RESERVE_SECONDS) is logged and left running for recovery. The stop sequence continues:
     the executor quiesce skips the DB close while a writer is live, and process exit releases
-    the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
+    the ownership lock, so raising here would only skip teardown until the watchdog forces the exit."""
     authorities = _authorities(runner)
     stop_managed_turns(runner, reason)
     from gateway.session_llm_oneshot import stop as stop_oneshots
@@ -866,12 +866,13 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
                            getattr(authority, 'profile_id', '?'))
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
-    from gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
         try:
+            from gateway.session_acp_lifecycle import end_idle_acp_sessions
             end_idle_acp_sessions(authority)
         except Exception:
-            # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
+            # Best-effort bookkeeping: a store that cannot answer, or a module that no longer imports
+            # (its tree replaced under this process), must not abort the stop sequence.
             import logging
             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
                                                 getattr(authority, 'profile_id', '?'), exc_info=True)

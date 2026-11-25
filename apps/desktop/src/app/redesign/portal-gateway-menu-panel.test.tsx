@@ -6,6 +6,7 @@ import { getLogs } from '@/hermes'
 import { en } from '@/i18n/en'
 import { setInterfaceMode } from '@/store/interface-mode'
 import { setDocumentHidden } from '@/test/window-state'
+import type { StatusResponse } from '@/types/hermes'
 
 const mocks = vi.hoisted(() => ({
   notifyError: vi.fn(),
@@ -178,5 +179,72 @@ describe('GatewayMenuPanel log tail polling', () => {
     window.dispatchEvent(new Event('focus'))
     await flushAsync()
     expect(getLogs).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('GatewayMenuPanel status snapshot loading', () => {
+  // A complete (if minimal) snapshot: the hook hands the panel this shape, never a partial one.
+  const connectedSnapshot: StatusResponse = {
+    active_sessions: 0,
+    config_path: '',
+    config_version: 1,
+    env_path: '',
+    gateway_exit_reason: null,
+    gateway_health_url: null,
+    gateway_pid: null,
+    gateway_platforms: {},
+    gateway_running: true,
+    gateway_state: 'running',
+    gateway_updated_at: null,
+    hermes_home: '',
+    latest_config_version: 1,
+    release_date: '',
+    version: '1.0.0'
+  }
+
+  beforeEach(() => {
+    setInterfaceMode('advanced')
+  })
+
+  afterEach(() => {
+    cleanup()
+    setInterfaceMode('advanced')
+  })
+
+  it('holds platform placeholders while connected with no snapshot, then shows the real rows', async () => {
+    const props = { inferenceStatus: null, onClose: vi.fn(), onOpenSystem: vi.fn() }
+    const view = render(<GatewayMenuPanel {...props} gatewayState="open" statusSnapshot={null} />)
+    await act(async () => undefined)
+
+    expect(screen.getByText(en.shell.gatewayMenu.messagingPlatforms)).toBeTruthy()
+    expect(view.container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(4)
+
+    view.rerender(
+      <GatewayMenuPanel
+        {...props}
+        gatewayState="open"
+        statusSnapshot={{ ...connectedSnapshot, gateway_platforms: { discord: { state: 'connected', updated_at: '' } } }}
+      />
+    )
+
+    expect(view.container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0)
+    expect(screen.getByText('discord')).toBeTruthy()
+  })
+
+  it('shows no placeholders while the gateway is offline or still connecting', () => {
+    for (const gatewayState of ['closed', 'connecting']) {
+      const view = render(
+        <GatewayMenuPanel
+          gatewayState={gatewayState}
+          inferenceStatus={null}
+          onClose={vi.fn()}
+          onOpenSystem={vi.fn()}
+          statusSnapshot={null}
+        />
+      )
+
+      expect(view.container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0)
+      view.unmount()
+    }
   })
 })

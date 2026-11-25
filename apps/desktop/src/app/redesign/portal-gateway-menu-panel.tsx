@@ -6,6 +6,7 @@ import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -240,6 +241,9 @@ export function PortalGatewayMenuPanel({
   }
 
   const platforms = Object.entries(statusSnapshot?.gateway_platforms || {}).sort(([l], [r]) => l.localeCompare(r))
+  // The snapshot arrives over RPC once the transport is up: until then a connected machine holds
+  // placeholder rows rather than empty space the platform section pops into a beat later.
+  const platformsLoading = gatewayState === 'open' && statusSnapshot === null
 
   if (offline) {
     return (
@@ -281,21 +285,25 @@ export function PortalGatewayMenuPanel({
       />
 
       <GatewayReadiness gatewayState={gatewayState} inferenceStatus={inferenceStatus} />
-      {platforms.length > 0 && (
-        <section className="space-y-1.5">
-          <SectionLabel>{copy.messagingPlatforms}</SectionLabel>
-          <ul className={cn(GATEWAY_CARD, 'space-y-0.5')}>
-            {platforms.map(([name, platform]) => (
-              <li className="flex min-h-6 items-center justify-between gap-2" key={name}>
-                <span className="truncate font-medium capitalize">{name}</span>
-                <span className="flex shrink-0 items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
-                  <StatusDot tone={platformStatusTone({ state: platform.state })} />
-                  {prettyState(platform.state)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {platformsLoading ? (
+        <PlatformsSkeleton label={copy.messagingPlatforms} />
+      ) : (
+        platforms.length > 0 && (
+          <section className="space-y-1.5">
+            <SectionLabel>{copy.messagingPlatforms}</SectionLabel>
+            <ul className={cn(GATEWAY_CARD, 'space-y-0.5')}>
+              {platforms.map(([name, platform]) => (
+                <li className="flex min-h-6 items-center justify-between gap-2" key={name}>
+                  <span className="truncate font-medium capitalize">{name}</span>
+                  <span className="flex shrink-0 items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
+                    <StatusDot tone={platformStatusTone({ state: platform.state })} />
+                    {prettyState(platform.state)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )
       )}
       {advanced ? (
         <div className="flex items-center justify-between gap-2">
@@ -548,5 +556,23 @@ const GATEWAY_CARD =
 function SectionLabel({ children }: { children: string }) {
   return (
     <div className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--portal-brand-ink)">{children}</div>
+  )
+}
+
+/** The messaging-platforms section while a connected machine's status snapshot is in flight: the
+ *  same card and row geometry as the real rows, filled with pulsing placeholders. */
+function PlatformsSkeleton({ label }: { label: string }) {
+  return (
+    <section className="space-y-1.5">
+      <SectionLabel>{label}</SectionLabel>
+      <ul aria-hidden className={cn(GATEWAY_CARD, 'space-y-0.5')}>
+        {Array.from({ length: 2 }, (_, row) => (
+          <li className="flex min-h-6 items-center justify-between gap-2" key={row}>
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-3 w-14 shrink-0" />
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

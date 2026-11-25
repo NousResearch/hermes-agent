@@ -7,37 +7,6 @@ import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
-const shownText = (meta: TranscriptRow['display_metadata']) =>
-  typeof meta?.display_text === 'string' ? meta.display_text : undefined
-
-const agentsFinished = (meta: TranscriptRow['display_metadata']) => {
-  const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
-
-  return count === undefined
-    ? t('libText.messages.backgroundAgentWorkFinished')
-    : t(
-        count === 1 ? 'libText.messages.backgroundAgentsFinishedOne' : 'libText.messages.backgroundAgentsFinishedOther',
-        count
-      )
-}
-
-// Display-only events never enter the user's prompt/rewind ordinal space.
-const TIMELINE_EVENT_TEXT = new Map<string, (row: TranscriptRow, text: string) => string>([
-  ['async_delegation_complete', row => shownText(row.display_metadata) ?? agentsFinished(row.display_metadata)],
-  ['auto_continue', () => t('libText.messages.resumedInterruptedTurn')],
-  [
-    'internal_notification',
-    (row, text) => {
-      const shown = shownText(row.display_metadata)
-
-      return shown?.trim() ? shown : text.replace(INTERNAL_NOTIFICATION_FOOTER_RE, '')
-    }
-  ],
-  ['model_switch', () => t('libText.messages.modelChanged')],
-  ['personality_switch', () => t('libText.messages.personalityChanged')],
-  ['process_complete', row => shownText(row.display_metadata) ?? t('libText.messages.backgroundProcessFinished')]
-])
-
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
 export const userDisplay = (text: string) => {
@@ -50,6 +19,39 @@ export const userDisplay = (text: string) => {
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
   return t('libText.messages.longMessage', prefix || t('libText.messages.messageFallback'))
+}
+
+type TimelineEventText = (row: TranscriptRow, text: string) => string
+
+const backgroundFinished: TimelineEventText = ({ display_kind, display_metadata: meta }) => {
+  const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
+
+  const label =
+    display_kind === 'process_complete'
+      ? t('libText.messages.backgroundProcessFinished')
+      : count === undefined
+        ? t('libText.messages.backgroundAgentWorkFinished')
+        : t(
+            count === 1
+              ? 'libText.messages.backgroundAgentsFinishedOne'
+              : 'libText.messages.backgroundAgentsFinishedOther',
+            count
+          )
+
+  return typeof meta?.display_text === 'string' ? meta.display_text : label
+}
+
+/** The system line each display-only row kind renders as. */
+const TIMELINE_EVENTS: Record<string, TimelineEventText> = {
+  async_delegation_complete: backgroundFinished,
+  auto_continue: () => t('libText.messages.resumedInterruptedTurn'),
+  model_switch: () => t('libText.messages.modelChanged'),
+  personality_switch: () => t('libText.messages.personalityChanged'),
+  internal_notification: ({ display_metadata: meta }, text) =>
+    typeof meta?.display_text === 'string' && meta.display_text.trim()
+      ? meta.display_text
+      : text.replace(INTERNAL_NOTIFICATION_FOOTER_RE, ''),
+  process_complete: backgroundFinished
 }
 
 /** A resumed user row's durable message row (backtrack browsing finds its prompt by it). */
@@ -104,7 +106,8 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const eventText = display_kind ? TIMELINE_EVENT_TEXT.get(display_kind) : undefined
+    const eventText =
+      display_kind && Object.hasOwn(TIMELINE_EVENTS, display_kind) ? TIMELINE_EVENTS[display_kind] : undefined
 
     if (eventText) {
       out.push({ kind: 'event', role: 'system', text: eventText(row as TranscriptRow, text) })

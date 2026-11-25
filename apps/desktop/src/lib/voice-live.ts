@@ -522,12 +522,19 @@ export class VoiceLiveSession {
       }
     })
 
-    this.microphone = await navigator.mediaDevices.getUserMedia({
+    const microphone = await navigator.mediaDevices.getUserMedia({
       audio: { autoGainControl: true, echoCancellation: true, noiseSuppression: true }
     })
 
-    for (const track of this.microphone.getAudioTracks()) {
-      connection.addTrack(track, this.microphone)
+    if (this.finalized || this.peer !== connection) {
+      microphone.getTracks().forEach(track => track.stop())
+
+      return
+    }
+
+    this.microphone = microphone
+    for (const track of microphone.getAudioTracks()) {
+      connection.addTrack(track, microphone)
     }
 
     // Register the data channel before the offer so its m-line is negotiated.

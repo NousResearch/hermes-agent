@@ -172,6 +172,24 @@ describe('native Live explicit billing', () => {
     }
   )
 
+  it('releases every late track when closed during microphone permission', async () => {
+    media()
+    const tracks = [{ stop: vi.fn() }, { stop: vi.fn() }]
+    const permission = Promise.withResolvers<MediaStream>()
+    vi.spyOn(navigator.mediaDevices, 'getUserMedia').mockReturnValueOnce(permission.promise)
+    const addTrack = vi.spyOn(RTCPeerConnection.prototype, 'addTrack')
+    const onClosed = vi.fn()
+    const session = new VoiceLiveSession({ onDelegation: vi.fn(), onClosed, onError: vi.fn() })
+    const started = session.start([])
+    session.close()
+    permission.resolve({ getTracks: () => tracks, getAudioTracks: () => tracks } as unknown as MediaStream)
+    await started
+    for (const track of tracks) {expect(track.stop).toHaveBeenCalledOnce()}
+    expect(addTrack).not.toHaveBeenCalled()
+    expect(hermesApiAs).not.toHaveBeenCalled()
+    expect(onClosed).toHaveBeenCalledOnce()
+  })
+
   it('expires subscription transcript context during silence before a delayed delegation', async () => {
     const wire = media()
     const onDelegation = vi.fn()

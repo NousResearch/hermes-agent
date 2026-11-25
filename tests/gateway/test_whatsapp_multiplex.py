@@ -254,3 +254,15 @@ async def test_launch_startup_and_standalone_send_agree_after_role_change(tmp_pa
     monkeypatch.setattr(default_like, "_preflight", lambda: False)
     await default_like.connect()
     assert default_like._bridge_port == 3000 == standalone_bridge_port(fresh, None)  # no record: unchanged
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_secondary_bridge_port_refuses_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """A late port allocation for a dead secondary fails instead of recreating it (#155595 U3)."""
+    from plugins.platforms.whatsapp.bridge_ownership import secondary_bridge_port
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        secondary_bridge_port(home, None)
+    assert not home.exists()

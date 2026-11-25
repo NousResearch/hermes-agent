@@ -24,6 +24,8 @@ KEPT_ON_LOOP = {
     ('gateway/session_local_recovery.py', '_checked_entry'),
     ('gateway/session_local_recovery.py', '_with_untracked_compression'),
     ('gateway/session_local_recovery.py', 'restore_local_session'),
+    # On-demand restore validates then publishes without yielding; startup calls this helper in a worker.
+    ('gateway/session_local_recovery.py', 'prepare_local_session'),
     # Compression-lineage lookups used by the synchronous route helpers.
     ('gateway/session_authority.py', 'logical_owner'), ('gateway/session_authority.py', 'physical_target'),
     # Registered in the same step as the delivery waiter: an await here lets a settled drain hand the

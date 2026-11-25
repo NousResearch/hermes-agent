@@ -115,7 +115,7 @@ class _BoundedOutputCollector:
         line_end = pending.find("\n", close + len(self._control_marker)) if close != -1 else -1
         if line_end == -1:
             return final or len(pending) > self._CONTROL_SCAN_CHARS
-        self.control_value = pending[len(opener):close].strip() or None
+        self.control_value = pending[len(opener):close] or None  # a directory name may end in a space
         self._pending = pending[line_end + 1:]
         return True
 

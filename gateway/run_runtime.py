@@ -469,7 +469,7 @@ async def serve_profile_runtime(runner, name, home):
     queued native rows are recovered once its adapters connect (``recover_served_native_rows``)."""
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
-    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_local_startup import recover_local_sessions_async
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
@@ -488,7 +488,7 @@ async def serve_profile_runtime(runner, name, home):
         with owner_scope(authority):
             _drop_retired_local_adapter(authority)
             await recover_bot_mailbox(authority)
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions_async(authority, schedule=True)
             await recover_webhook_finalizations(authority)
             _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
@@ -586,7 +586,8 @@ async def recover_bot_mailbox(authority):
 async def start_gateway_runtime_api(runner):
     from gateway import run_api
     from gateway.webapp_listener import (
-        STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
+        STARTING, BrowserCredentialError, bind_origin, browser_session_token, dial_origin, listener_plan,
+        register_control_verbs,
     )
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
@@ -616,8 +617,17 @@ async def start_gateway_runtime_api(runner):
         elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
             reason = f"could not use {exc.filename} ({exc.strerror or exc})"
         else:
+            import errno
+            from gateway.webapp_listener import loopback_companion
             cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
-            reason = f"could not listen on {host}:{port} ({cause})"
+            # Only the specific address itself; a loopback socket that cannot bind (``::1`` with IPv6
+            # loopback off) keeps the OS's words.
+            if (loopback_companion(host) and isinstance(exc, OSError) and exc.errno == errno.EADDRNOTAVAIL
+                    and not isinstance(exc, run_api.ListenerAddressError)):
+                cause = "the address is not assigned to any network interface on this machine"
+            # A specific address's loopback socket names its own address (run_api.ListenerAddressError).
+            address = getattr(exc, "address", None) or f"{host}:{port}"
+            reason = f"could not listen on {address} ({cause})"
         logger.error("Webapp unavailable: %s", reason)
         runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
         # Open tabs keep sending their credential to whatever answers on the Webapp's port, and that
@@ -631,6 +641,8 @@ async def start_gateway_runtime_api(runner):
     else:
         if webapp is not None:
             runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
+            if own := bind_origin(host, port):  # a specific address: the one a browser opens
+                runner.webapp_status["address"] = own
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
     for authority in _authorities(runner):
         await _recover_profile_bot_mailbox(runner, authority)
@@ -679,31 +691,27 @@ async def recover_gateway_native_sessions(runner):
         return {}
     from gateway.session_hosted_service import ensure_hosted_service
     await ensure_hosted_service(runner)
-    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_local_startup import recover_local_sessions_async
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     results = {}
     for authority in authorities:
         with owner_scope(authority):
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions_async(authority, schedule=True)
             await recover_webhook_finalizations(authority)
         results.update(await recover_profile_native_sessions(runner, authority))
     return results
 
 
-def _prime_recovered_egress(bindings):
-    """Warm a Relay's per-chat egress routing for every session recovery may run. Those caches fill
-    only on live inbound, so after a restart a recovered turn's reply would leave without the
-    scope/user discriminators the connector requires (or on the primary's platform) and be declined."""
-    from gateway.platforms.event import MessageEvent
-    for _sid, origin, adapter in bindings:
-        prime = getattr(adapter, 'prime_routing_cache', None)
-        if callable(prime):
-            # Verified provenance restores the relay marker too, but no live inbound warmed this chat.
-            prime(MessageEvent(text='', source=origin))
+def _native_recovery_bindings(runner, authority):
+    """An authority's queued rows and the live routes that can carry them.
 
-
-async def recover_profile_native_sessions(runner, authority):
-    """Bind one authority's queued native rows to the adapters connected now."""
+    A store read per profile: the admission scan, the route list, one lineage walk per route
+    (``logical_owner``) and the newest native admission that names the route's verified receiving
+    bot (``recovered_native_source``). It runs in a worker thread -- a large or slow profile store
+    must not park the loop past the startup watchdog, whose exit 75 restarts into the same pass
+    (#148023). Only reads happen here; the sources it restores are fresh copies, and the adapter
+    egress caches are primed on the loop (``_prime_recovered_egress``).
+    """
     from gateway.session_authorities import owner_scope
     from gateway.session_native_recovery_routes import recovered_native_source
     from gateway.session_persistence import authority_persistence
@@ -716,9 +724,32 @@ async def recover_profile_native_sessions(runner, authority):
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
                     for owner in [authority.logical_owner(entry.session_id)] if owner in pending
                     for origin in [recovered_native_source(runner, authority, entry, owner)]]
+    return pending, bindings
+
+
+def _prime_recovered_egress(bindings):
+    """Warm a Relay's per-chat egress routing for every session recovery may run. Those caches fill
+    only on live inbound, so after a restart a recovered turn's reply would leave without the
+    scope/user discriminators the connector requires (or on the primary's platform) and be declined.
+    Adapter state: called on the owner loop, never from the binding worker."""
+    from gateway.platforms.event import MessageEvent
+    for _sid, origin, adapter in bindings:
+        prime = getattr(adapter, 'prime_routing_cache', None)
+        if callable(prime):
+            # Verified provenance restores the relay marker too, but no live inbound warmed this chat.
+            prime(MessageEvent(text='', source=origin))
+
+
+async def recover_profile_native_sessions(runner, authority):
+    """Bind one authority's queued native rows to the adapters connected now."""
+    from gateway.session_authorities import owner_scope
+    pending, bindings = await asyncio.to_thread(_native_recovery_bindings, runner, authority)
+    from gateway.session_detached import recover_detached_sessions
+    # Recovery still performs per-session validation reads; egress priming, live-session
+    # publication and task creation stay on the owner loop, under the same scope as the scan.
+    with owner_scope(authority):
         _prime_recovered_egress(bindings)
         outcome = await authority.recover_native_sessions(bindings)
-        from gateway.session_detached import recover_detached_sessions
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
@@ -808,7 +839,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     TURN_SETTLE_SECONDS (clamped to ``budget``, what the stop's watchdog leash has left, minus
     STOP_TAIL_RESERVE_SECONDS) is logged and left running for recovery. The stop sequence continues:
     the executor quiesce skips the DB close while a writer is live, and process exit releases
-    the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
+    the ownership lock, so raising here would only skip teardown until the watchdog forces the exit."""
     authorities = _authorities(runner)
     stop_managed_turns(runner, reason)
     from gateway.session_llm_oneshot import stop as stop_oneshots
@@ -835,12 +866,13 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
                            getattr(authority, 'profile_id', '?'))
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
-    from gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
         try:
+            from gateway.session_acp_lifecycle import end_idle_acp_sessions
             end_idle_acp_sessions(authority)
         except Exception:
-            # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
+            # Best-effort bookkeeping: a store that cannot answer, or a module that no longer imports
+            # (its tree replaced under this process), must not abort the stop sequence.
             import logging
             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
                                                 getattr(authority, 'profile_id', '?'), exc_info=True)

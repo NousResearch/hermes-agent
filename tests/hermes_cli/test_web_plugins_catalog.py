@@ -67,6 +67,77 @@ def test_catalog_endpoint_merges_installed_state_from_sidecar(client):
     assert data["removed"][0]["reason"] == "exfiltrated env vars"
 
 
+def test_catalog_endpoint_does_not_match_bundled_or_entrypoint_plugins_by_name(client, tmp_path, monkeypatch):
+    """A bundled plugin (e.g. ``plugins/cron_providers/chronos``) or pip entry-point plugin that
+    shares a bare name with an unrelated catalog entry must never mark that catalog entry as
+    installed — only user-dir installs can satisfy catalog entries."""
+    from hermes_cli import plugins_cmd
+
+    catalog_dir = tmp_path / "catalog_collision"
+    catalog_dir.mkdir()
+    for name in ("chronos", "pip-twin"):
+        (catalog_dir / f"{name}.yaml").write_text(yaml.safe_dump({
+            "name": name, "repo": f"https://github.com/example/{name}", "sha": VALID_SHA,
+            "description": f"community {name}", "maintainer": "Example", "tier": "community"}))
+    monkeypatch.setattr(pc_cat, "get_catalog_dir", lambda: catalog_dir)
+
+    bundled_dir = tmp_path / "bundled" / "cron_providers" / "chronos"
+    bundled_dir.mkdir(parents=True)
+    ep_dir = tmp_path / "site-packages" / "pip_twin"
+    ep_dir.mkdir(parents=True)
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [
+        ("chronos", "1.0.0", "Bundled cron provider", "bundled", bundled_dir, "cron_providers/chronos"),
+        ("pip-twin", "1.0.0", "Entry-point plugin", "entrypoint", ep_dir, "pip-twin"),
+    ])
+
+    by_name = {e["name"]: e for e in client.get("/api/dashboard/plugins/catalog").json()["entries"]}
+    assert by_name["chronos"]["installed"] is False
+    assert by_name["chronos"]["runtime_status"] is None
+    assert by_name["pip-twin"]["installed"] is False
+    assert by_name["pip-twin"]["runtime_status"] is None
+
+    # Direct calls to installed_catalog_state also ignore non-catalog sources if passed.
+    from hermes_cli.plugins_cmd_catalog import installed_catalog_state
+    direct = {e["name"]: e for e in installed_catalog_state({
+        "chronos": {"dir": str(bundled_dir), "source": "bundled", "runtime_status": "inactive"},
+        "pip-twin": {"dir": str(ep_dir), "source": "entrypoint", "runtime_status": "enabled"},
+    })["entries"]}
+    assert direct["chronos"]["installed"] is False
+    assert direct["pip-twin"]["installed"] is False
+
+    # Installing the actual catalog plugin in the user plugins dir marks it installed cleanly.
+    _install("chronos", {"catalog_name": "chronos", "sha": VALID_SHA, "tier": "community"})
+    from hermes_constants import get_hermes_home
+    user_dir = get_hermes_home() / "plugins" / "chronos"
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [
+        ("chronos", "1.0.0", "Bundled cron provider", "bundled", bundled_dir, "cron_providers/chronos"),
+        ("chronos", "1.0.0", "Community chronos", "git", user_dir, "chronos"),
+    ])
+    by_name = {e["name"]: e for e in client.get("/api/dashboard/plugins/catalog").json()["entries"]}
+    assert by_name["chronos"]["installed"] is True
+    assert by_name["chronos"]["installed_sha"] == VALID_SHA
+    assert by_name["chronos"]["runtime_status"] == "inactive"
+
+
+def test_catalog_install_with_different_manifest_name_does_not_claim_second_entry(client, tmp_path, monkeypatch):
+    """If catalog entry ``alpha-plugin`` installs with manifest name ``beta``, its installer-owned
+    sidecar pins it to ``alpha-plugin`` so it must not also fall back to claim an unrelated catalog
+    entry named ``beta``."""
+    catalog_dir = tmp_path / "catalog_two"
+    catalog_dir.mkdir()
+    for name in ("alpha-plugin", "beta"):
+        (catalog_dir / f"{name}.yaml").write_text(yaml.safe_dump({
+            "name": name, "repo": f"https://github.com/example/{name}", "sha": VALID_SHA,
+            "description": name, "maintainer": "Example", "tier": "community"}))
+    monkeypatch.setattr(pc_cat, "get_catalog_dir", lambda: catalog_dir)
+
+    _install("beta", {"catalog_name": "alpha-plugin", "sha": VALID_SHA, "tier": "community"})
+    by_name = {e["name"]: e for e in client.get("/api/dashboard/plugins/catalog").json()["entries"]}
+    assert by_name["alpha-plugin"]["installed"] is True
+    assert by_name["beta"]["installed"] is False
+    assert by_name["beta"]["runtime_status"] is None
+
+
 def test_install_endpoint_refuses_removed_plugins_with_no_bypass(client, monkeypatch):
     from hermes_cli import plugins_cmd
     monkeypatch.setattr(plugins_cmd, "_install_plugin_core", lambda *a, **k: pytest.fail("kill-listed install ran"))

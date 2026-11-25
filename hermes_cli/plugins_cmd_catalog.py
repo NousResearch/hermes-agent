@@ -921,19 +921,34 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
 
 # ── Dashboard / TUI payloads ─────────────────────────────────────────────────
 
+NON_CATALOG_INSTALL_SOURCES = frozenset({"bundled", "entrypoint", "project"})
+
+
 def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Catalog entries merged with local state for the dashboard. *installed* maps every alias (name
-    and registry key) of a discovered plugin to ``{"dir", "runtime_status"}``. A catalog name rarely
-    equals the manifest name (``hermes-plugin-x`` vs ``x``), so installs are matched through the
-    sidecar's ``catalog_name`` first and by name only as a fallback."""
+    and registry key) of a discovered plugin to ``{"dir", "runtime_status"}`` (and optional
+    ``"source"``). A catalog name rarely equals the manifest name (``hermes-plugin-x`` vs ``x``),
+    so installs are matched through the sidecar's ``catalog_name`` first and by name only as a
+    fallback for unattributed user-dir plugins — never bundled/entrypoint/project plugins or
+    installs whose sidecar already identifies a different catalog entry."""
     by_catalog_name: dict[str, dict[str, Any]] = {}
+    claimed_dirs: set[str] = set()
     for local in installed.values():
+        if local.get("source") in NON_CATALOG_INSTALL_SOURCES:
+            continue
         sidecar = catalog_install_record(local["dir"])
         if sidecar:
             by_catalog_name[str(sidecar["catalog_name"])] = {**local, "sidecar": sidecar}
+            claimed_dirs.add(str(local["dir"]))
     entries = []
     for entry in load_catalog_live():
-        local = by_catalog_name.get(entry.name) or installed.get(entry.name)
+        local = by_catalog_name.get(entry.name)
+        if local is None:
+            candidate = installed.get(entry.name)
+            if (candidate is not None
+                    and candidate.get("source") not in NON_CATALOG_INSTALL_SOURCES
+                    and str(candidate["dir"]) not in claimed_dirs):
+                local = candidate
         sidecar = local.get("sidecar") if local else None
         installed_sha = str(sidecar["sha"]) if sidecar and sidecar.get("sha") else None
         entries.append({

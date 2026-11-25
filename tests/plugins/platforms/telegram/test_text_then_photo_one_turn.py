@@ -14,6 +14,8 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_telegram_documents import _make_file_obj, _make_message, _make_photo
 from tests.waiting import async_wait_until
 
@@ -141,20 +143,19 @@ async def test_observe_only_photo_does_not_hold_the_question():
 
 
 def _topic_mode_rig(tmp_path):
-    """Topic-mode DM over a real SessionDB with real topic recovery; dispatch stops at the session seam."""
+    """Topic-mode DM over a real store with real topic recovery; dispatch stops at the session seam."""
     from gateway.config import Platform
     from gateway.session import SessionSource, build_session_key
-    from hermes_state import SessionDB
     from tests.gateway.test_telegram_topic_mode import _make_runner
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="100", user_id="1")
+    db = storage_handle(tmp_path)
+    db.routing.enable_topic_mode(chat_id="100", user_id="1")
 
     def bind(thread_id):
-        db.create_session(session_id=f"s-{thread_id}", source="telegram", user_id="1")
+        seed_session(db, f"s-{thread_id}", "telegram", user_id="1")
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="100", user_id="1", chat_type="dm", thread_id=thread_id)
-        db.bind_telegram_topic(chat_id="100", thread_id=thread_id, user_id="1",
-                               session_key=build_session_key(source), session_id=f"s-{thread_id}")
+        db.routing.bind_topic(chat_id="100", thread_id=thread_id, user_id="1",
+                              session_key=build_session_key(source), session_id=f"s-{thread_id}")
     adapter = _adapter()
     del adapter.handle_message  # real Telegram + base ingress, up to the session-processing seam
     adapter.set_message_handler(AsyncMock())

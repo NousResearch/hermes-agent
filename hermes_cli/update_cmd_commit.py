@@ -91,6 +91,7 @@ POST_MOVE_MODULES = (
     "gateway.session_context",
     "gateway.shutdown_forensics",
     "gateway.status",
+    "hermes_cli.config_backups",
     "hermes_cli.gateway",
     "hermes_cli.gateway_runtime_start",
     "hermes_cli.gateway_windows",

@@ -95,11 +95,11 @@ Use this skill when:
 
 ### Step 0.1: Explore the Repository
 
-```bash
+```
 # Understand project structure
-ls -la
-find . -name "*.py" | head -30
-find . -name "*.md" -o -name "*.txt" | xargs grep -l -i "result\|conclusion\|finding"
+search_files(pattern="*.py", target="files", path=".", limit=30)
+search_files(pattern="[Rr]esult|RESULT|[Cc]onclusion|CONCLUSION|[Ff]inding|FINDING", path=".", file_glob="*.md", output_mode="files_only")
+search_files(pattern="[Rr]esult|RESULT|[Cc]onclusion|CONCLUSION|[Ff]inding|FINDING", path=".", file_glob="*.txt", output_mode="files_only")
 ```
 
 Look for:
@@ -238,10 +238,9 @@ Author Coordination Checklist:
 
 Start from papers already referenced in the codebase:
 
-```bash
-# Via terminal:
-grep -r "arxiv\|doi\|cite" --include="*.md" --include="*.bib" --include="*.py"
-find . -name "*.bib"
+```
+search_files(pattern="arxiv|doi|cite", path=".", file_glob="*.md")   # repeat for *.bib, *.py
+search_files(pattern="*.bib", target="files", path=".")
 ```
 
 ### Step 1.2: Search for Related Work
@@ -489,9 +488,9 @@ For long-running experiments, set up periodic status checks. The cron prompt sho
 ```
 Monitor Prompt Template:
 1. Check if process is still running: ps aux | grep <pattern>
-2. Read last 30 lines of log: tail -30 <logfile>
-3. Check for completed results: ls <result_dir>
-4. If results exist, read and report: cat <result_file>
+2. Read last 30 lines of log: read_file <logfile> with offset near its end
+3. Check for completed results: search_files target="files" in <result_dir>
+4. If results exist, read and report: read_file <result_file>
 5. If all done, commit: git add -A && git commit -m "<descriptive message>" && git push
 6. Report in structured format (tables with key metrics)
 7. Answer the key analytical question for this experiment
@@ -1405,8 +1404,8 @@ Compose this skill with other Hermes skills for specific phases:
 **Experiment monitoring** (most common):
 ```
 terminal("ps aux | grep <pattern>")
-→ terminal("tail -30 <logfile>")
-→ terminal("ls results/")
+→ read_file("<logfile>", offset=<last 30 lines>)
+→ search_files(pattern="*", target="files", path="results/")
 → execute_code("analyze results JSON, compute metrics")
 → terminal("git add -A && git commit -m '<descriptive message>' && git push")
 → (final response auto-delivers "Experiment complete: <summary>"; for unattended runs, schedule via cron with a deliver: target)
@@ -1472,7 +1471,7 @@ todo("update", id=1, status="completed")
 2. memory("read")                         # Recall key decisions
 3. terminal("git log --oneline -10")      # Check recent commits
 4. terminal("ps aux | grep python")       # Check running experiments
-5. terminal("ls results/ | tail -20")     # Check for new results
+5. search_files(pattern="*", target="files", path="results/", order="modified", limit=20)  # Check for new results
 6. Report status to user, ask for direction
 ```
 
@@ -1485,8 +1484,8 @@ cronjob("create", {
   "schedule": "*/30 * * * *",  # Every 30 minutes
   "prompt": "Check experiment status:
     1. ps aux | grep run_experiment
-    2. tail -30 logs/experiment_haiku.log
-    3. ls results/haiku_baselines/
+    2. read_file the last 30 lines of logs/experiment_haiku.log
+    3. search_files target=files in results/haiku_baselines/
     4. If complete: read results, compute Borda scores, 
        git add -A && git commit -m 'Add Haiku results' && git push
     5. Report: table of results, key finding, next step

@@ -18,14 +18,14 @@ markers), a token-count drain, and ``end_session(..., "cli_close")``.
 from __future__ import annotations
 
 import os
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 import cli as cli_mod
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 @pytest.fixture(autouse=True)
 def _reset_finalize_state(monkeypatch):
@@ -33,8 +33,8 @@ def _reset_finalize_state(monkeypatch):
     monkeypatch.setattr(cli_mod, "_handed_off_session_ids", set())
     monkeypatch.setattr(cli_mod, "_cleanup_done", False, raising=False)
 
-def _make_agent(session_db, session_id="oneshot-88583"):
-    """Real AIAgent bound to a real temp SessionDB (test_860_dedup pattern)."""
+def _make_agent(store, session_id="oneshot-88583"):
+    """Real AIAgent bound to a real temp store through its storage interface handle."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -43,7 +43,7 @@ def _make_agent(session_db, session_id="oneshot-88583"):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=session_db,
+            persistence=store,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -63,7 +63,7 @@ def _fake_cli(agent):
 class TestOneShotDurableFlush:
     """#88583: the one-shot exit path must retry persistence and finalize."""
 
-    def test_finalize_single_query_persists_unflushed_turn(self, monkeypatch):
+    def test_finalize_single_query_persists_unflushed_turn(self, tmp_path, monkeypatch):
         """A turn whose in-loop flush failed must still reach state.db.
 
         Simulates the reported failure: run_conversation produced the turn's
@@ -72,123 +72,93 @@ class TestOneShotDurableFlush:
         ``_finalize_single_query`` performs no durable write and the turn
         evaporates — this test fails.
         """
-        from hermes_state import SessionDB
+        store = storage_handle(tmp_path)
+        agent = _make_agent(store)
+        # The turn as run_conversation left it: in memory, un-stamped,
+        # never written (the in-loop flush failed transiently).
+        agent._session_messages = [
+            {"role": "user", "content": "Message from 🤖 worker: hello, remember this"},
+            {"role": "assistant", "content": "ack — noted."},
+        ]
+        assert transcript_rows(store, agent.session_id) == []
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "state.db")
-            try:
-                agent = _make_agent(db)
-                # The turn as run_conversation left it: in memory, un-stamped,
-                # never written (the in-loop flush failed transiently).
-                agent._session_messages = [
-                    {"role": "user", "content": "Message from 🤖 worker: hello, remember this"},
-                    {"role": "assistant", "content": "ack — noted."},
-                ]
-                assert db.get_messages(agent.session_id) == []
+        fake = _fake_cli(agent)
+        monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **kw: None)
+        monkeypatch.setattr(
+            cli_mod, "_notify_single_query_session_finalize", lambda _c: None
+        )
 
-                fake = _fake_cli(agent)
-                monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **kw: None)
-                monkeypatch.setattr(
-                    cli_mod, "_notify_single_query_session_finalize", lambda _c: None
-                )
+        cli_mod._finalize_single_query(fake)
 
-                cli_mod._finalize_single_query(fake)
+        rows = transcript_rows(store, agent.session_id)
+        assert [r["role"] for r in rows] == ["user", "assistant"], (
+            "one-shot exit must durably flush the turn to state.db "
+            f"(#88583); got rows: {rows}"
+        )
+        assert "remember this" in rows[0]["content"]
 
-                rows = db.get_messages(agent.session_id)
-                assert [r["role"] for r in rows] == ["user", "assistant"], (
-                    "one-shot exit must durably flush the turn to state.db "
-                    f"(#88583); got rows: {rows}"
-                )
-                assert "remember this" in rows[0]["content"]
-            finally:
-                db.close()
-
-    def test_finalize_single_query_ends_session_row(self, monkeypatch):
+    def test_finalize_single_query_ends_session_row(self, tmp_path, monkeypatch):
         """The resumed/created one-shot session row is finalized on exit."""
-        from hermes_state import SessionDB
+        store = storage_handle(tmp_path)
+        agent = _make_agent(store)
+        agent._session_messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        fake = _fake_cli(agent)
+        monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **kw: None)
+        monkeypatch.setattr(
+            cli_mod, "_notify_single_query_session_finalize", lambda _c: None
+        )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "state.db")
-            try:
-                agent = _make_agent(db)
-                agent._session_messages = [
-                    {"role": "user", "content": "hi"},
-                    {"role": "assistant", "content": "hello"},
-                ]
-                fake = _fake_cli(agent)
-                monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **kw: None)
-                monkeypatch.setattr(
-                    cli_mod, "_notify_single_query_session_finalize", lambda _c: None
-                )
+        cli_mod._finalize_single_query(fake)
 
-                cli_mod._finalize_single_query(fake)
+        sess = session_row(store, agent.session_id)
+        assert sess["ended_at"] is not None
+        assert sess["end_reason"] == "cli_close"
 
-                sess = db.get_session(agent.session_id)
-                assert sess["ended_at"] is not None
-                assert sess["end_reason"] == "cli_close"
-            finally:
-                db.close()
-
-    def test_flush_is_idempotent_for_already_persisted_turns(self, monkeypatch):
+    def test_flush_is_idempotent_for_already_persisted_turns(self, tmp_path, monkeypatch):
         """A turn the in-loop flush already wrote is not duplicated."""
-        from hermes_state import SessionDB
+        store = storage_handle(tmp_path)
+        agent = _make_agent(store)
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        # Normal happy path: the in-loop flush already persisted.
+        agent._flush_messages_to_session_db(messages, [])
+        assert len(transcript_rows(store, agent.session_id)) == 2
+        agent._session_messages = messages
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "state.db")
-            try:
-                agent = _make_agent(db)
-                messages = [
-                    {"role": "user", "content": "hi"},
-                    {"role": "assistant", "content": "hello"},
-                ]
-                # Normal happy path: the in-loop flush already persisted.
-                agent._flush_messages_to_session_db(messages, [])
-                assert len(db.get_messages(agent.session_id)) == 2
-                agent._session_messages = messages
+        cli_mod._flush_one_shot_session_store(_fake_cli(agent))
 
-                cli_mod._flush_one_shot_session_store(_fake_cli(agent))
+        rows = transcript_rows(store, agent.session_id)
+        assert len(rows) == 2, f"duplicate rows written: {rows}"
 
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 2, f"duplicate rows written: {rows}"
-            finally:
-                db.close()
-
-    def test_flush_skips_handed_off_sessions(self):
+    def test_flush_skips_handed_off_sessions(self, tmp_path):
         """A session handed off to the gateway is owned there (#88234)."""
-        from hermes_state import SessionDB
+        store = storage_handle(tmp_path)
+        agent = _make_agent(store)
+        agent._session_messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        cli_mod._handed_off_session_ids.add(agent.session_id)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "state.db")
-            try:
-                agent = _make_agent(db)
-                agent._session_messages = [
-                    {"role": "user", "content": "hi"},
-                    {"role": "assistant", "content": "hello"},
-                ]
-                cli_mod._handed_off_session_ids.add(agent.session_id)
+        cli_mod._flush_one_shot_session_store(_fake_cli(agent))
 
-                cli_mod._flush_one_shot_session_store(_fake_cli(agent))
+        assert transcript_rows(store, agent.session_id) == []
+        assert session_row(store, agent.session_id)["ended_at"] is None
 
-                assert db.get_messages(agent.session_id) == []
-                assert db.get_session(agent.session_id)["ended_at"] is None
-            finally:
-                db.close()
-
-    def test_flush_skips_persist_disabled_agents(self):
+    def test_flush_skips_persist_disabled_agents(self, tmp_path):
         """Persistence-isolated forks must never write the canonical store."""
-        from hermes_state import SessionDB
+        store = storage_handle(tmp_path)
+        agent = _make_agent(store)
+        agent._persist_disabled = True
+        agent._session_messages = [
+            {"role": "user", "content": "curator harness turn"},
+        ]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "state.db")
-            try:
-                agent = _make_agent(db)
-                agent._persist_disabled = True
-                agent._session_messages = [
-                    {"role": "user", "content": "curator harness turn"},
-                ]
+        cli_mod._flush_one_shot_session_store(_fake_cli(agent))
 
-                cli_mod._flush_one_shot_session_store(_fake_cli(agent))
-
-                assert db.get_messages(agent.session_id) == []
-            finally:
-                db.close()
+        assert transcript_rows(store, agent.session_id) == []

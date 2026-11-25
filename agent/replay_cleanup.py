@@ -15,8 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
-from agent.message_metadata import drop_typed_ask
-from agent.turn_context import drop_stale_api_content
+from session_rules.turns import drop_stale_api_content, drop_typed_ask
 from hermes_cli.timefmt import coerce_epoch
 
 logger = logging.getLogger(__name__)

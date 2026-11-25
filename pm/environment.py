@@ -20,6 +20,7 @@ import time
 from typing import TextIO
 
 from pm.filesystem import native
+from pm.index_config import TIMEOUT_HINT, bridged_index_settings, is_forwarded, is_index_redirect
 from pm.package import InstallError
 from pm.progress import LiveTail, TextSink, verbose_output
 
@@ -48,6 +49,9 @@ _RESOLVER_MARKERS = (
 
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
+# uv's wording for a network fetch that failed; a bare "operation timed out" can
+# also be a local write on a network mount, which download settings cannot fix.
+_HTTP_FAILURE_MARKERS = ("failed to download", "failed to fetch", "request failed after")
 
 # The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
 # cannot date the file. uv words it as "no solution", but the index is at fault,
@@ -118,6 +122,9 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
         from pm.build_compilers import missing_compiler_remedy
 
         return BuildFailure("venv", cause, missing_compiler_remedy(output))
+    if "operation timed out" in lowered and any(marker in lowered for marker in _HTTP_FAILURE_MARKERS):
+        # uv gave up on its own HTTP timeout/retries before PM's deadline (#148262).
+        return InstallError("venv", cause, TIMEOUT_HINT)
     return InstallError("venv", cause)
 
 
@@ -247,7 +254,6 @@ def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     Index and transport settings are the exception (pm.index_config): without
     them mirrored and air-gapped networks cannot resolve anything.
     """
-    from pm.index_config import bridged_index_settings, is_forwarded
 
     source = os.environ if env is None else env
     base = {key: value for key, value in source.items()
@@ -256,6 +262,24 @@ def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     if env is None:
         base.update(bridged_index_settings(os.environ))
     return base
+
+
+def _same_executable(candidate: Path, pinned: Path) -> bool:
+    left, right = candidate.resolve(), pinned.resolve()
+    if left == right:
+        return True
+    try:
+        if left.samefile(right):
+            return True
+        if not (left.is_file() and right.is_file()) or left.stat().st_size != right.stat().st_size:
+            return False
+        with left.open("rb") as first, right.open("rb") as second:
+            while chunk := first.read(65536):
+                if chunk != second.read(len(chunk)):
+                    return False
+            return not second.read(1)
+    except OSError:
+        return False
 
 
 def managed_environment(destination: Path, *, python: Path | None = None,
@@ -271,8 +295,8 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
-    if python.resolve() == pinned_python.resolve():
-        # Only our interpreter: a separately selected one (e.g. Nix) keeps its own sysconfig.
+    if _same_executable(python, pinned_python):
+        # Staged copies (bundle payloads) share our interpreter's sysconfig; foreign ones (e.g. Nix) keep theirs.
         from pm.build_compilers import pinned_build_defaults
 
         for key, value in pinned_build_defaults(python, build_env).items():
@@ -329,10 +353,8 @@ class PythonEnvironment:
             # re-resolving its official-index lockfile against a mirror trips
             # `--locked` (#124418), and a fully-pinned graph never needs a
             # mirror to resolve. Index-REDIRECT settings are dropped; transport
-            # knobs (UV_NATIVE_TLS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
-            # — corporate networks need them to reach the pinned URLs at all.
-            from pm.index_config import is_index_redirect
-
+            # knobs (pm.index_config.FORWARDED_UV_SETTINGS minus the redirects)
+            # survive — corporate and slow networks need them to reach the pinned URLs.
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
         # uv is a child: it gets the ordinary spelling of store paths (pm.filesystem.native),
         # or the venv it writes would record the extended-length one in pyvenv.cfg.
@@ -380,8 +402,6 @@ class PythonEnvironment:
                 return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
                                       text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
             except subprocess.TimeoutExpired as exc:
-                from pm.index_config import TIMEOUT_HINT
-
                 # A silent stall against an unreachable index is the #95608 shape;
                 # name the mirror knobs instead of surfacing a raw TimeoutExpired.
                 raise InstallError("venv", f"uv {args[0]} timed out after {timeout}s", TIMEOUT_HINT) from exc

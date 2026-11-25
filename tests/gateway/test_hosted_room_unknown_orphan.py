@@ -16,10 +16,10 @@ import pytest
 
 def _hosted_turn_fenced_unknown(hosted_owner):
     """The reported state: a claimed hosted member turn, fenced ``unknown`` by an owner restart."""
-    from gateway.hosted_room_driver import TaskIdentity
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input, recover_session_inputs
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
     authority, loop, principal, _ = hosted_owner
+    store = authority.persistence
 
     def rpc():
         return HostedRoomAuthorityRPC(
@@ -28,41 +28,41 @@ def _hosted_turn_fenced_unknown(hosted_owner):
 
     coords = {'profile': 'default', 'source': 'bot_room'}
     coords['session_id'] = rpc().create(**coords, title='Group: room')['session_id']
-    rpc().submit(**coords, prompt='lost', task=TaskIdentity('room', 'lost', 'thread', 'turn'),
+    rpc().submit(**coords, prompt='lost', task=HostedTaskIdentity('room', 'lost', 'thread', 'turn'),
                  execution_generation=10, on_terminal=lambda receipt: None)
-    row = claim_session_input(authority.db, epoch=authority.epoch, session_id=coords['session_id'])
-    authority.epoch = begin_runtime_epoch(authority.db, instance_id='cold')
-    recover_session_inputs(authority.db, epoch=authority.epoch)
+    row = store.admissions.claim(epoch=authority.epoch, session_id=coords['session_id'])
+    authority.epoch = store.runtime.begin_epoch(instance_id='cold')
+    store.admissions.recover(epoch=authority.epoch)
     return authority, rpc, coords, row
 
 
 def test_a_restart_lost_room_turn_settles_at_boot_recovery(hosted_owner):
     from gateway.session_unattended_unknown import settle_recovered_unattended
-    from hermes_state_runtime import list_session_admissions
     authority, _rpc, coords, row = _hosted_turn_fenced_unknown(hosted_owner)
-    assert row['status'] == 'started' and row['request_id'].startswith('hosted:')
-    assert settle_recovered_unattended(authority.db, authority.epoch) == 1
-    settled = next(r for r in list_session_admissions(
-        authority.db, session_id=coords['session_id'], pending_only=False)
-        if r['admission_id'] == row['admission_id'])
+    store = authority.persistence
+    assert row.status == 'started' and row.request_id.startswith('hosted:')
+    assert settle_recovered_unattended(store, authority.epoch) == 1
+    settled = next(r for r in store.admissions.list(
+        session_id=coords['session_id'], pending_only=False)
+        if r.admission_id == row.admission_id)
     # Terminal and interrupted: the lost turn is never requeued or replayed.
-    assert (settled['status'], settled['outcome']) == ('terminal', 'interrupted')
+    assert (settled.status, settled.outcome) == ('terminal', 'interrupted')
 
 
 def test_the_room_admits_the_next_member_turn_after_that_settlement(hosted_owner):
     """The reported symptom: the pre-submit ``unknown`` refusal held every later generation out."""
-    from gateway.hosted_room_driver import TaskIdentity
     from gateway.session_unattended_unknown import settle_recovered_unattended
+    from persistence.core.errors import AuthorityRefusal
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
     authority, rpc, coords, _row = _hosted_turn_fenced_unknown(hosted_owner)
 
     def next_turn():
-        return rpc().submit(**coords, prompt='next', task=TaskIdentity('room', 'next', 'thread', 'next'),
+        return rpc().submit(**coords, prompt='next', task=HostedTaskIdentity('room', 'next', 'thread', 'next'),
                             execution_generation=11, on_terminal=lambda receipt: None)
 
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+    with pytest.raises(AuthorityRefusal, match='unknown_execution'):
         next_turn()
-    settle_recovered_unattended(authority.db, authority.epoch)  # the boot pass the restart runs
+    settle_recovered_unattended(authority.persistence, authority.epoch)  # the boot pass the restart runs
     receipt = next_turn()
     assert receipt['status'] in {'queued', 'started'}
 
@@ -70,17 +70,16 @@ def test_the_room_admits_the_next_member_turn_after_that_settlement(hosted_owner
 def test_a_persons_own_lost_turn_still_waits_for_them(hosted_owner):
     """The room carve-out must not widen GW-10: a viewer's turn keeps pausing for ``/discard``."""
     from gateway.session_unattended_unknown import settle_recovered_unattended
-    from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
-                                      list_session_admissions, recover_session_inputs)
+    from tests.fixtures.storage_seed import seed_session
     authority = hosted_owner[0]
-    db = authority.db
-    db.create_session('person', source='telegram')
-    admit_session_input(db, epoch=authority.epoch, principal_id='human', session_id='person',
-                        request_id='local-1', payload={'text': 'lost'})
-    person = claim_session_input(db, epoch=authority.epoch, session_id='person')
-    authority.epoch = begin_runtime_epoch(db, instance_id='cold-person')
-    recover_session_inputs(db, epoch=authority.epoch)
-    settle_recovered_unattended(db, authority.epoch)
-    row = next(r for r in list_session_admissions(db, session_id='person', pending_only=False)
-               if r['admission_id'] == person['admission_id'])
-    assert row['status'] == 'unknown'
+    store = authority.persistence
+    seed_session(store, 'person', 'telegram')
+    store.admissions.admit(epoch=authority.epoch, principal_id='human', session_id='person',
+                           request_id='local-1', payload={'text': 'lost'})
+    person = store.admissions.claim(epoch=authority.epoch, session_id='person')
+    authority.epoch = store.runtime.begin_epoch(instance_id='cold-person')
+    store.admissions.recover(epoch=authority.epoch)
+    settle_recovered_unattended(store, authority.epoch)
+    row = next(r for r in store.admissions.list(session_id='person', pending_only=False)
+               if r.admission_id == person.admission_id)
+    assert row.status == 'unknown'

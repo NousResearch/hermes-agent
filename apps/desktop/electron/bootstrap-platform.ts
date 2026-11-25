@@ -72,13 +72,13 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
     return null
   }
 
-  // Launched from an SSH session → the display is X11-forwarded or otherwise
-  // remote. Covers the common `ssh user@box` + GUI-forwarding case.
-  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {
-    return 'ssh-session'
-  }
-
   if (platform === 'linux') {
+    // SSH can forward Linux displays; on macOS/Windows these variables can
+    // be inherited by a locally displayed app and do not identify its display.
+    if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {
+      return 'ssh-session'
+    }
+
     // X11 forwarding sets DISPLAY to "<host>:N" (e.g. "localhost:10.0"); a
     // local X server is ":0"/":1" with no host part before the colon.
     // NB: WSLg deliberately isn't treated as remote — it reports

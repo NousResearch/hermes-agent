@@ -53,4 +53,53 @@ describe('stopped reply folded into its tool bubble', () => {
 
     expect(replies.map(message => message.interrupted)).toEqual([undefined])
   })
+
+  // A host plugin stopped the turn at its tool call, applied a grant and continued the reply
+  // with a hidden prompt: the stored rows close the stopped tool tail, then the reply goes on.
+  const closing: SessionMessage = {
+    id: 4,
+    role: 'assistant',
+    content: '',
+    display_kind: 'hidden',
+    timestamp: 4,
+    display_metadata: '{"interrupted": true}'
+  }
+
+  const stoppedTail = [...rows.slice(0, 2), { ...rows[2], content: '[Command interrupted]' }, closing]
+
+  it('drops the stopped mark when the reply went on after a hidden prompt', () => {
+    const continued: SessionMessage[] = [
+      ...stoppedTail,
+      { id: 5, role: 'user', content: '[Sandbox] Continue where you left off.', display_kind: 'hidden', timestamp: 5 },
+      {
+        id: 6,
+        role: 'assistant',
+        content: '',
+        timestamp: 6,
+        tool_calls: [{ id: 'call-2', type: 'function', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { id: 7, role: 'tool', content: 'ok', tool_call_id: 'call-2', timestamp: 7 },
+      { id: 8, role: 'assistant', content: 'Here it is.', timestamp: 8 }
+    ]
+
+    const replies = toChatMessages(continued).filter(message => message.role === 'assistant')
+
+    expect(chatMessageText(replies[replies.length - 1])).toContain('Here it is.')
+    expect(replies.map(message => message.interrupted ?? false)).toEqual(replies.map(() => false))
+  })
+
+  it('keeps the stopped mark when the user writes next', () => {
+    const userNext: SessionMessage[] = [
+      ...stoppedTail,
+      { id: 5, role: 'user', content: 'never mind', timestamp: 5 },
+      { id: 6, role: 'assistant', content: 'OK.', timestamp: 6 }
+    ]
+
+    const replies = toChatMessages(userNext).filter(message => message.role === 'assistant')
+
+    expect(replies.map(message => [chatMessageText(message), message.interrupted ?? false])).toEqual([
+      ['Looking.', true],
+      ['OK.', false]
+    ])
+  })
 })

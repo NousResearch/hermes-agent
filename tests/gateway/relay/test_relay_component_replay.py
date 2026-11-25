@@ -48,4 +48,4 @@ async def test_replayed_component_commits_and_runs_once(tmp_path, monkeypatch, c
                 assert turns == ['choose-once']
                 assert 'admission_conflict' not in caplog.text
     finally:
-        authority.db.close()
+        authority.persistence.close()

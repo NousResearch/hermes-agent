@@ -2,13 +2,14 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
-import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
+import { LARGE_PASTE_MAX_BYTES, LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
+import { isMessagingSource } from '@/lib/session-source'
 import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
@@ -21,6 +22,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { notify, notifyError, readableError } from '@/store/notifications'
+import { $messagingSessions, $selectedStoredSessionId, sessionMatchesStoredId } from '@/store/session'
 
 import type { ImageDetachResponse } from '../../types'
 
@@ -440,13 +442,16 @@ interface ComposerActionsOptions {
   currentCwd: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   scope?: ComposerActionsScope
+  /** The stored chat this composer sends to. Left out by the main composer, which sends to the selected chat. */
+  storedSessionId?: null | string
 }
 
 export function useComposerActions({
   activeSessionId,
   currentCwd,
   requestGateway,
-  scope = MAIN_ACTIONS_SCOPE
+  scope = MAIN_ACTIONS_SCOPE,
+  storedSessionId
 }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
@@ -754,6 +759,9 @@ export function useComposerActions({
    * Returns false (paste stays inline) when the desktop bridge is missing
    * or the write fails. A paste rejected for its size returns true after the
    * error toast: inlining it would put that oversized text in the editor.
+   * A messaging-platform chat also keeps the paste inline: the gateway
+   * refuses `file.attach` for a session that is not local, so the chip
+   * could never be sent, while the same text sends as a message.
    */
   const attachPastedText = useCallback(
     async (text: string) => {
@@ -761,6 +769,21 @@ export function useComposerActions({
 
       if (!text || !save) {
         return false
+      }
+
+      // Read at paste time: the list can load after this composer mounts.
+      const storedId = storedSessionId === undefined ? $selectedStoredSessionId.get() : storedSessionId
+      const messagingRow = storedId && $messagingSessions.get().find(row => sessionMatchesStoredId(row, storedId))
+
+      if (messagingRow && isMessagingSource(messagingRow.source)) {
+        if (new TextEncoder().encode(text).length <= LARGE_PASTE_MAX_BYTES) {
+          return false
+        }
+
+        // Over savePastedText's cap: drop it after the toast, as an attachable chat does.
+        notifyError(new Error(`Pasted text is too large (${pasteSizeLabel(text)})`), copy.pasteAttachFailed)
+
+        return true
       }
 
       try {
@@ -789,7 +812,7 @@ export function useComposerActions({
         return /too large/i.test(err instanceof Error ? err.message : String(err))
       }
     },
-    [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd]
+    [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd, storedSessionId]
   )
 
   const attachContextFolderPath = useCallback(

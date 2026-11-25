@@ -435,6 +435,20 @@ gateway:
       provider_usage_plus_estimate: "данные провайдера + оценка новых сообщений"
     source_line: "Источник: {source}; значения по категориям — локальные оценки."
     hint_all: "Используйте /context all, чтобы увидеть стоимость каждого навыка и набора инструментов."
+    cache_warm: "Кэш промпта: активен до {until} (осталось {remaining}; {ttl}, {confidence})."
+    cache_expired: "Кэш промпта: истёк {ago} назад ({ttl}, {confidence}); следующее сообщение заново обработает весь промпт."
+    cache_maybe_warm: "Кэш промпта: может быть ещё активен до {until} (не более {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Кэш промпта: неизвестно (маршрут, сессия или контекст изменились после последнего кэшированного запроса)."
+    cache_unknown_route: "Кэш промпта: неизвестно (этот провайдер не публикует срок хранения кэша)."
+    cache_unknown_runtime: "Кэш промпта: неизвестно (эта среда выполнения задаёт собственные параметры кэша, которые Hermes не видит)."
+    cache_unknown_storage: "Кэш промпта: неизвестно (не удалось прочитать хранилище сессии)."
+    cache_warming_off: "Keep-alive: выкл. (два промаха)."
+    cache_tier_pending: "Уровень: 5m до первой паузы дольше 5 минут, затем 1h."
+    cache_learned: "Изучено: {rule}."
+    cache_confidence:
+      proven: "подтверждено"
+      declared: "запрошено"
+      assumed: "предположительно"
   status:
     header: "📊 **Состояние Hermes Gateway**"
     matrix_scope_header: "**Область Matrix:**"
@@ -3328,6 +3342,10 @@ cli:
     total: "📚 Доступно навыков: {count}"
     added_header: "➕ Добавленные навыки:"
     removed_header: "➖ Удалённые навыки:"
+  gateway_restart:
+    waiting: "Hermes перезапускается, чтобы завершить обновление или перезапуск; ждём его возвращения…"
+    timed_out: "Hermes не вернулся после перезапуска вовремя. Проверьте `hermes gateway status`, затем снова запустите `hermes`."
+    stopped: "Ожидание перезапуска Hermes прервано; ничего не запущено."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Хранилище сеансов недоступно[/bold yellow] — этот разговор [bold]НЕ будет сохранён[/bold], и возобновить его позже не получится. Поиск по прошлым сеансам тоже отключён.\n  Причина: {reason}.\n  {action}\n  [dim]Подробности: {details}[/dim]"
     unavailable_plain: "ПРЕДУПРЕЖДЕНИЕ: хранилище сеансов недоступно — этот разговор НЕ будет сохранён, и возобновить его позже не получится. Причина: {reason}. {action}"
@@ -4006,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "Крупная модель: достигнут {name} ({resets}), до сброса она не запустится."
   large_notice_percent: "Крупная модель: расходует больше лимита плана на сообщение. Месячный лимит крупных моделей: использовано {percent}."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Файлы, изменённые в отменённых ходах: {files}. Выполните /rollback, чтобы увидеть контрольные точки и восстановить одну."
     more: "ещё {count}"

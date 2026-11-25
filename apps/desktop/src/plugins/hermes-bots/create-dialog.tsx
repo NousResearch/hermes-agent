@@ -15,6 +15,7 @@ import {
   GlyphSpinner,
   host,
   Input,
+  PROFILE_ID_ARG_RE,
   queryClient,
   RowButton,
   SearchField,
@@ -83,11 +84,8 @@ import type {
 import { CapabilitiesView, capabilitiesViewRoutesConnections, CheckList } from './profile-config'
 import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
-import { HubSkillsSection } from './skills-hub'
 import { composeSoul } from './soul'
 import type { BotMeta, ConnectionRow, RosterRow } from './types'
-
-const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
 /** Share one in-flight async operation across concurrent callers. Failures
  * clear the slot so a later attempt can retry. */
@@ -403,7 +401,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const [error, setError] = useState<null | string>(null)
   const { slug, title: botTitle } = botProfileIdentity(name, title)
   const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
-  const valid = slug.length > 0 && NAME_RE.test(slug)
+  const valid = slug.length > 0 && PROFILE_ID_ARG_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
   // shows up in the roster — its OWN slug must not read as "taken".
@@ -557,9 +555,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
         no_skills: noSkills,
         // Shared (not copied) auth keeps ONE OAuth/token pool with the default
-        // profile, so refreshes can't invalidate each other. From a named launch
-        // profile the gateway copies its logins instead (single-use OAuth still
-        // read from the default profile). Older gateways ignore the param and copy.
+        // profile, so refreshes can't invalidate each other. A named clone source (for a
+        // fresh profile: a named launch profile) with its own auth.json has its logins copied
+        // instead (single-use OAuth still read from the default profile). Older gateways
+        // ignore the param and copy.
         share_auth: shareAuth,
         soul: composeSoul({
           name: slug,
@@ -1056,24 +1055,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                     <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
                       {b.editor.catalogHint(caps.source)}
                     </div>
-                    <HubSkillsSection
-                      onInstalled={name =>
-                        setCaps(prev =>
-                          !prev || prev.skills.some(s => s.name === name)
-                            ? prev
-                            : {
-                                ...prev,
-                                skills: [
-                                  ...prev.skills,
-                                  {
-                                    name,
-                                    enabled: true
-                                  }
-                                ]
-                              }
-                        )
-                      }
-                    />
                   </div>
                 )
               ) : advTab === 'toolsets' ? (

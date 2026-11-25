@@ -14,14 +14,14 @@ result, so ``run_plugin_injection``'s wake heuristic must keep yielding to it. O
 paths (:func:`is_room_member_turn`) treat it like the automation it is.
 
 Such a row settles through the same fenced resolution a person's Discard uses
-(``resolve_unknown_session_input``): terminal ``interrupted``, never requeued or replayed, with a
+(``admissions.resolve_unknown``): terminal ``interrupted``, never requeued or replayed, with a
 Hermes transcript notice committed in the same transaction. No second recovery store.
 """
 from __future__ import annotations
 
 import logging
 
-from hermes_state_keys import CRON_PRINCIPAL_ID
+from persistence.authority.vocabulary import CRON_PRINCIPAL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -47,31 +47,28 @@ def is_room_member_turn(row) -> bool:
     return str(row.get('request_id') or '').startswith('hosted:')
 
 
-def _unattended_unknown(rows):
-    return [row for row in rows
+def _unattended_unknown(records):
+    from gateway.session_authority import admission_row
+    return [row for row in map(admission_row, records)
             if row['status'] == 'unknown' and (is_unattended(row) or is_room_member_turn(row))]
 
 
-def settle_recovered_unattended(db, epoch) -> int:
-    """Boot recovery, right after ``recover_session_inputs`` fenced lost turns ``unknown`` and before
-    any FIFO is scheduled: settle every unattended one. Synchronous; runs off the owner loop."""
+def settle_recovered_unattended(store, epoch) -> int:
+    """Boot recovery, right after ``admissions.recover`` fenced lost turns ``unknown`` and before
+    any FIFO is scheduled: settle every unattended one. Synchronous; runs off the owner loop.
+    *store* is the profile's storage interface handle."""
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     from gateway.session_ingress_media import release_admission_media
-    from gateway.session_results import close_discarded_turn
-    from hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
-    with db._read_ctx() as conn:
-        rows = [_row(r) for r in conn.execute(
-            "SELECT * FROM session_admissions WHERE status='unknown' ORDER BY seq").fetchall()]
+    from persistence.core.errors import AuthorityRefusal
     settled = 0
-    for row in _unattended_unknown(rows):
+    for row in _unattended_unknown(store.admissions.list_unknown()):
         try:
-            resolve_unknown_session_input(
-                db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],
-                _terminal_write=lambda conn, lost: close_discarded_turn(db, conn, lost, AUTOMATION_INTERRUPTED_NOTICE))
-        except RuntimeStoreError as exc:
+            store.admissions.resolve_unknown(epoch=epoch, admission_id=row['admission_id'],
+                                             generation=row['generation'], notice=AUTOMATION_INTERRUPTED_NOTICE)
+        except AuthorityRefusal as exc:
             logger.warning('Lost automation admission %s left unknown: %s', row['admission_id'], exc.reason)
             continue
-        release_admission_media(db, row['admission_id'])
+        release_admission_media(store, row['admission_id'])
         settled += 1
         logger.info('Lost automation admission %s on session %s settled interrupted (not replayed)',
                     row['admission_id'], row['target_session_id'])
@@ -85,14 +82,15 @@ async def settle_unattended_unknown(authority, ref) -> bool:
     import asyncio
 
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
-    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=ref.session_id)
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import AuthorityRefusal
+    rows = await asyncio.to_thread(authority_persistence(authority).admissions.list, session_id=ref.session_id)
     settled = False
     for row in _unattended_unknown(rows):
         try:
             await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'],
                                                      notice=AUTOMATION_INTERRUPTED_NOTICE)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             logger.warning('Lost automation admission %s left unknown: %s', row['admission_id'], exc.reason)
             continue
         settled = True

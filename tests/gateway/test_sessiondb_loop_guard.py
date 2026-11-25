@@ -20,9 +20,12 @@ KEPT_ON_LOOP = {
     # The pending/handle snapshot published under ``event_stream.lock`` with the stream's own state.
     ('gateway/session_authority.py', '_handle'), ('gateway/session_authority.py', '_pending_rows'),
     # Restores mutate ``authority.sessions`` and the SessionStore's entries, which only the loop mutates.
-    ('gateway/session_local_recovery.py', 'owned_receipt'), ('gateway/session_local_recovery.py', '_checked_entry'),
+    ('gateway/session_local_recovery.py', 'owned_receipt'), ('gateway/session_local_recovery.py', '_stored_receipt'),
+    ('gateway/session_local_recovery.py', '_checked_entry'),
     ('gateway/session_local_recovery.py', '_with_untracked_compression'),
     ('gateway/session_local_recovery.py', 'restore_local_session'),
+    # On-demand restore validates then publishes without yielding; startup calls this helper in a worker.
+    ('gateway/session_local_recovery.py', 'prepare_local_session'),
     # Compression-lineage lookups used by the synchronous route helpers.
     ('gateway/session_authority.py', 'logical_owner'), ('gateway/session_authority.py', 'physical_target'),
     # Registered in the same step as the delivery waiter: an await here lets a settled drain hand the
@@ -37,7 +40,8 @@ KEPT_ON_LOOP = {
 # turn). Their direct reads (the innermost caller of the store) must never be on the loop again.
 MOVED_OFF_LOOP = {('gateway/session_cron.py', 'operation'), ('gateway/session_cron.py', '_read_admission'),
                   ('gateway/session_authority.py', '_claim_next'), ('gateway/session_results.py', 'admission_result')}
-HOT_READS = {('hermes_state_runtime.py', 'get_session_admission'), ('hermes_state_runtime.py', 'list_session_admissions'),
+HOT_READS = {('persistence/sqlite/authority/_admission_store.py', 'get_session_admission'),
+             ('persistence/sqlite/authority/_admission_store.py', 'list_session_admissions'),
              ('gateway/session_results.py', 'admission_result')}
 
 
@@ -59,8 +63,9 @@ def _site(record):
 
 def test_guard_is_inert_until_installed(tmp_path):
     from hermes_state import SessionDB
+    from persistence.sqlite._holder import StoreHolder
     guard.uninstall()
-    assert not getattr(SessionDB, '_loop_guard_installed', False)
+    assert not getattr(StoreHolder, '_loop_guard_installed', False)
     db = SessionDB(tmp_path / 'state.db')
 
     async def on_loop():
@@ -92,6 +97,40 @@ def test_raise_mode_refuses_on_the_loop_thread_and_allows_workers(tmp_path):
         db.close()
 
 
+def test_a_backend_repository_call_on_the_loop_is_flagged_at_its_caller(tmp_path, recording):
+    from persistence import ProfileScope
+    from persistence.sqlite import SQLiteBackend
+    scope = ProfileScope(profile_dir=tmp_path, name='default')
+    backend = SQLiteBackend({scope.hermes_home_key: tmp_path / 'state.db'})
+    store = backend.open(scope)
+
+    async def repository_calls_on_loop():
+        assert store.sessions.get('missing') is None
+        store.runtime.begin_epoch(instance_id='owner')
+    try:
+        asyncio.run(repository_calls_on_loop())
+        records = recording.recorded()
+        assert asyncio.run(asyncio.to_thread(store.sessions.get, 'missing')) is None  # a worker is fine
+        assert len(recording.recorded()) == len(records)
+    finally:
+        backend.close()
+    assert {record['kind'] for record in records} == {'read', 'write'}
+    assert {_site(record) for record in records} == {
+        ('tests/gateway/test_sessiondb_loop_guard.py', 'repository_calls_on_loop')}
+
+
+def test_uninstall_leaves_the_session_db_members_forwarding_to_the_holder():
+    from persistence.sqlite._holder import StoreHolder
+    guard.uninstall()
+    before = StoreHolder.__dict__['_read_ctx'], StoreHolder.__dict__['_execute_write']
+    guard.install('record')
+    try:
+        assert StoreHolder.__dict__['_read_ctx'] is not before[0]
+    finally:
+        guard.uninstall()
+    assert (StoreHolder.__dict__['_read_ctx'], StoreHolder.__dict__['_execute_write']) == before
+
+
 def test_gateway_startup_installs_the_guard_from_config_yaml(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gateway import run
@@ -102,12 +141,12 @@ def test_gateway_startup_installs_the_guard_from_config_yaml(tmp_path, monkeypat
     loop = asyncio.new_event_loop()
     try:
         start_loop_liveness_guards(owner, loop)
-        from hermes_state import SessionDB
-        assert SessionDB._loop_guard_installed and guard._state['mode'] == 'warn'
+        from persistence.sqlite._holder import StoreHolder
+        assert StoreHolder._loop_guard_installed and guard._state['mode'] == 'warn'
         guard.uninstall()
         (tmp_path / 'config.yaml').write_text('gateway: {}\n', encoding='utf-8')
         start_loop_liveness_guards(owner, loop)
-        assert not getattr(SessionDB, '_loop_guard_installed', False)  # unset: nothing wrapped
+        assert not getattr(StoreHolder, '_loop_guard_installed', False)  # unset: nothing wrapped
     finally:
         guard.uninstall()
         loop.close()

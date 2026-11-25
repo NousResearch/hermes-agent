@@ -1183,6 +1183,14 @@ def test_router_never_builds_a_child_handler_under_a_lock_logging_shutdown_takes
         "lock while the router built a child handler (which needs logging._lock)")
 
 
+def test_quiet_noisy_loggers_covers_httpx2():
+    """mcp SDK >= 2.0 rides on ``httpx2``, whose INFO request lines interpolate the
+    full URL (query credentials included) — it must be pinned at WARNING like httpx
+    (issue #133713)."""
+    hermes_logging._quiet_noisy_loggers()
+    assert logging.getLogger("httpx2").level == logging.WARNING
+
+
 @pytest.mark.asyncio
 async def test_aiohttp_access_line_never_writes_a_query_credential_to_disk(hermes_home):
     """The listener serving multiplexed profiles logs every request target with aiohttp's default
@@ -1205,14 +1213,13 @@ async def test_aiohttp_access_line_never_writes_a_query_credential_to_disk(herme
     assert secret not in log
 
 
-def test_strict_url_pass_stays_off_ordinary_log_lines():
-    """Only aiohttp's access line gets the strict pass: magic-link / OAuth URLs in other lines are
-    meant to survive (the redactor's documented web-URL policy)."""
+def test_strict_url_pass_covers_absolute_urls_on_every_log_line():
+    """A log file is a persistence sink (#133713): an absolute URL's credential params are masked on
+    every logger, not only aiohttp's access line (whose relative request target keeps its own pass)."""
     from agent.redact import RedactingFormatter
 
     fmt = RedactingFormatter("%(message)s")
     line = "open https://example.com/magic?token=abcdef123456 to continue"
-    formatted = {name: fmt.format(logging.LogRecord(name, logging.INFO, __file__, 1, line, None, None))
-                 for name in ("aiohttp.access", "gateway.run")}
-    assert "magic?token=***" in formatted["aiohttp.access"]
-    assert "magic?token=abcdef123456" in formatted["gateway.run"]
+    for name in ("aiohttp.access", "gateway.run"):
+        formatted = fmt.format(logging.LogRecord(name, logging.INFO, __file__, 1, line, None, None))
+        assert formatted == "open https://example.com/magic?token=*** to continue", name

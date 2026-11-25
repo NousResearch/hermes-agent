@@ -80,7 +80,7 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
 
     @staticmethod
     def _dispatch_recorder(dispatched):
-        def dispatch(function_name, function_args, task_id=None, user_task=None):
+        def dispatch(function_name, function_args, task_id=None, user_task=None, **_identity):
             dispatched.append((function_name, function_args))
             return _mock_handle_function_call(
                 function_name,

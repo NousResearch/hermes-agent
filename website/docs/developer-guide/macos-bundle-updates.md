@@ -24,7 +24,7 @@ Existing tagged clients retain their native feed URLs. The generic
 register channels. The builder writes the legacy URL into `app-update.yml`;
 `updates.desktop_feed_base_url` can supply an explicit bucket-base URL.
 
-- Stable: `releases/darwin/stable/stable-mac.yml`
+- Stable: `releases/darwin/stable/stable-mac.yml` (and the unversioned Apple Silicon DMG alias at `releases/darwin/stable/HermesBundled-mac-arm64.dmg`, updated during stable desktop promotion with `Cache-Control: no-store`)
 - Canary: `releases/darwin/canary/canary-mac.yml`
 - Light: the same paths with `light/` between `darwin/` and the channel.
 - Artifacts: `releases/tag/TAG/FILENAME`, shared by download links and feeds.

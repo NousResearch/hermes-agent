@@ -532,7 +532,8 @@ def _install_blocked(c: Console, bundle, message: str, verdict: str, detail: str
     """Print the blocked-install line, drop the quarantine copy, append the audit row."""
     c.print(f"{lead}[bold red]{label}[/] {message}")
     if q_path is not None:
-        shutil.rmtree(q_path, ignore_errors=True)
+        from tools.skills_hub_install import discard_quarantine
+        discard_quarantine(q_path)
     from tools.skills_hub import append_audit_log
     append_audit_log("BLOCKED", bundle.name, bundle.source, bundle.trust_level, verdict, detail)
 
@@ -600,7 +601,7 @@ def _announce_blueprint(c: Console, skill_name: str) -> None:
     """Offer an installed skill's ``metadata.hermes.blueprint`` via /suggestions — never
     auto-scheduled (installing must not silently create a recurring job). Never raises."""
     try:
-        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
+        from cron.skill_blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
         try:
             spec = blueprint_spec_for_installed(skill_name)
         except BlueprintError as _rec_err:
@@ -736,6 +737,12 @@ _INSTALL_PANELS = {
         "It ships with hermes-agent but is not activated by default.\n"
         "Installing will copy it to your skills directory where the agent can use it.\n\n",
         "Official Skill", "bright_cyan"),
+    "upstream": (
+        "[bold yellow]This catalog entry installs third-party content from "
+        "[cyan]https://github.com/{repo}[/] (live default branch).[/]\n\n"
+        "It is listed in the Hermes optional-skills catalog but is not maintained by Nous Research.\n"
+        "Review the installed files before use.\n\n",
+        "Third-Party Skill", "yellow"),
     "external": (
         "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
         "External skills can contain instructions that influence agent behavior,\n"
@@ -744,10 +751,18 @@ _INSTALL_PANELS = {
         "Disclaimer", "yellow")}
 
 
+def _upstream_repo(bundle) -> Optional[str]:
+    """The live third-party repo an official catalog stub installs from, or None for vendored content."""
+    return (getattr(bundle, "metadata", None) or {}).get("upstream_repo") if bundle.source == "official" else None
+
+
 def _confirm_install(c: Console, bundle, category: str, official: bool) -> bool:
     """Source-appropriate disclaimer panel + `Install '<name>'?` prompt."""
     files_at = f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]"
-    body, title, style = _INSTALL_PANELS["official" if official else "external"]
+    upstream_repo = _upstream_repo(bundle) if official else None
+    kind = "upstream" if upstream_repo else "official" if official else "external"
+    body, title, style = _INSTALL_PANELS[kind]
+    body = body.replace("{repo}", str(upstream_repo or ""))
     c.print()
     c.print(Panel(body + files_at, title=title, border_style=style))
     return _confirm_or_cancel(c, f"[bold]Install '{bundle.name}'?[/]",
@@ -838,20 +853,36 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     The CLI router turns False into a non-zero exit — the Desktop Hub toasts failures off that
     exit code, so an exit-0 failure reads as "the button did nothing" (only the action log).
     """
+    from contextlib import ExitStack
+
     from tools.skills_hub import HubLockFile
-    fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
-    attempt: dict = {}
-    try:
-        bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
-                                                    skip_confirm, invalidate_cache, name_override, source_id,
-                                                    attempt=attempt, reinstall_existing=reinstall_existing)
-    except Exception as exc:
-        if fresh:
-            _record_skill_install(identifier, None, "failed", attempt, error=exc)
-        raise
-    if fresh and outcome:
-        _record_skill_install(identifier, bundle, outcome, attempt)
-    return installed
+    from tools.skills_hub_install import hub_install_lock
+
+    with ExitStack() as stack:
+        # Held fetch→lock.json so a concurrent CLI/dashboard install can't swap the target between
+        # this install's scan and its move. A filesystem without flock degrades to unlocked, like
+        # HubLockFile._update; a held lock queues this install behind the running one.
+        try:
+            stack.enter_context(hub_install_lock())
+        except TimeoutError as exc:
+            (console or _console).print(f"[bold red]Not installed:[/] {exc}\n")
+            return False
+        except OSError:
+            logging.getLogger(__name__).warning("Installing %s without the hub install lock", identifier,
+                                                exc_info=True)
+        fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
+        attempt: dict = {}
+        try:
+            bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
+                                                        skip_confirm, invalidate_cache, name_override, source_id,
+                                                        attempt=attempt, reinstall_existing=reinstall_existing)
+        except Exception as exc:
+            if fresh:
+                _record_skill_install(identifier, None, "failed", attempt, error=exc)
+            raise
+        if fresh and outcome:
+            _record_skill_install(identifier, bundle, outcome, attempt)
+        return installed
 
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
@@ -864,7 +895,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     attempt = attempt if attempt is not None else {}
     attempt["registry"] = "none"
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
-    from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
+    from tools.skills_hub_install import discard_quarantine, install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
     ensure_hub_dirs()
     from tools.skills_sync_bundled_ops import bundled_skill_for_install
@@ -927,36 +958,46 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         _invalid_path(c, bundle, exc)
         attempt["failure_class"] = "invalid_bundle"
         return bundle, failed, False
-    c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
+    c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parents[3])}[/]")
 
-    result = _scan_quarantined(c, q_path, bundle, meta, identifier, _matched_source)
-    allowed, _reason = should_allow_install(result, force=force)
-    if not allowed:
-        _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
-                         f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
-        attempt["failure_class"] = "scan_blocked"
-        return bundle, failed, False
-    # Advisory second opinion — warn-and-continue by design (PII-class findings are
-    # informational); the install confirmation below is where the user decides.
-    _print_tier1_advisory(q_path, c)
-    metadata_lines = _format_extra_metadata_lines(extra_metadata)
-    if metadata_lines:
-        c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
-
-    # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
-    if not force and not skip_confirm and not _confirm_install(c, bundle, category, official):
-        shutil.rmtree(q_path, ignore_errors=True)
-        return bundle, None, None
-
+    # Each quarantine is a unique staging dir; drop it on every exit (scan error, Ctrl-C at the
+    # prompt) so leftovers don't pile up as "pending review" in ``hermes doctor``.
     try:
-        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
-    except ValueError as exc:
-        _invalid_path(c, bundle, exc, q_path)
-        attempt["failure_class"] = "invalid_bundle"
-        return bundle, failed, False
+        result = _scan_quarantined(c, q_path, bundle, meta, identifier, _matched_source)
+        allowed, _reason = should_allow_install(result, force=force)
+        if not allowed:
+            _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
+                             f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
+            attempt["failure_class"] = "scan_blocked"
+            return bundle, failed, False
+        # Advisory second opinion — warn-and-continue by design (PII-class findings are
+        # informational); the install confirmation below is where the user decides.
+        _print_tier1_advisory(q_path, c)
+        metadata_lines = _format_extra_metadata_lines(extra_metadata)
+        if metadata_lines:
+            c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
+
+        # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
+        if not force and not skip_confirm and not _confirm_install(c, bundle, category, official):
+            return bundle, None, None
+
+        try:
+            install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+        except ValueError as exc:
+            _invalid_path(c, bundle, exc, q_path)
+            attempt["failure_class"] = "invalid_bundle"
+            return bundle, failed, False
+    finally:
+        discard_quarantine(q_path)
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
-    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]")
+    # Unprompted installs never showed the Third-Party panel; print its notice last, so a log view that
+    # keeps only the tail (the dashboard's action log) still shows it after a long file list.
+    if official and (upstream_repo := _upstream_repo(bundle)) and (force or skip_confirm):
+        c.print(f"[yellow]Third-party content:[/] '{bundle.name}' installs the live default branch of "
+                f"[cyan]https://github.com/{upstream_repo}[/] (not maintained by Nous Research).")
+    c.print()
     _announce_blueprint(c, bundle.name)
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
     return bundle, None if existing else "success", True

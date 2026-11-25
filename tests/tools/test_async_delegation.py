@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
 
 import pytest
 
@@ -66,61 +67,48 @@ def _drain_for(delegation_id, timeout=5.0):
     return None
 
 
-def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
-    """The delegation ledger is a guest in state.db, not its mode owner."""
-    conn = sqlite3.connect(tmp_path / "state.db")
-    try:
-        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+@pytest.mark.parametrize("mode", ["delete", "wal"])
+def test_ledger_write_keeps_configured_state_db_journal_mode(tmp_path, monkeypatch, mode):
+    """The ledger opens state.db through its store owner, which keeps the configured journal mode."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(f"database:\n  journal_mode: {mode}\n", encoding="utf-8")
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn:
+        assert conn.execute(f"PRAGMA journal_mode={mode}").fetchone()[0] == mode
+        conn.execute("CREATE TABLE seed (x)")
 
-        ad._initialize_schema(conn)
+    ad.claim_completion_delivery("nope", "claim-1")
 
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == mode
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='async_delegations'"
         ).fetchone() == ("async_delegations",)
-    finally:
-        conn.close()
-
-
-def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
-    """Schema initialization must not replace an existing WAL mode."""
-    conn = sqlite3.connect(tmp_path / "state.db")
-    try:
-        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-
-        ad._initialize_schema(conn)
-
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='async_delegations'"
-        ).fetchone() == ("async_delegations",)
-    finally:
-        conn.close()
 
 
 @pytest.mark.platforms("macos")
-def test_connect_preserves_wal_and_applies_macos_durability_barriers(
+def test_ledger_store_preserves_wal_and_applies_macos_durability_barriers(
     tmp_path, monkeypatch
 ):
-    """Each ledger connection must carry the macOS write barriers."""
+    """The ledger's state.db connection must carry the macOS write barriers."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    seed = sqlite3.connect(tmp_path / "state.db")
-    try:
+    with closing(sqlite3.connect(tmp_path / "state.db")) as seed:
         assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-    finally:
-        seed.close()
+    opened, real_connect = [], sqlite3.connect
 
-    conn = ad._connect()
-    try:
+    def tracking_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, **kwargs)
+        if str(database) != ":memory:":
+            opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+    with ad._DB_LOCK, ad._ledger() as store:
+        store.ready()
+        (conn,) = opened
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
         assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
-    finally:
-        conn.close()
-
-
 
 
 def test_async_executor_workers_are_daemon_threads():
@@ -542,7 +530,8 @@ print(json.dumps(evt, sort_keys=True))
 
     acker = f'''
 from tools import async_delegation as ad
-assert ad.mark_completion_delivered({delegation_id!r})
+assert ad.claim_completion_delivery({delegation_id!r}, 'acker')
+assert ad.complete_completion_delivery({delegation_id!r}, 'acker')
 '''
     subprocess.run(
         [sys.executable, "-c", acker], cwd=repo, env=env,
@@ -594,7 +583,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     # remain active while the background worker runs.
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(dt, "_run_single_child", slow_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     out = dt.delegate_task(
         goal="the real task", context="ctx",
         background=True, parent_agent=parent,
@@ -650,7 +639,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
         "api_mode": None, "command": None, "args": None,
     }
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     monkeypatch.setattr(
         dt,
         "_run_single_child",
@@ -954,7 +943,7 @@ def _grouped_fanout(monkeypatch, tasks, gates):
              "args": None}
     monkeypatch.setattr(dt, "_build_child_agent", build)
     monkeypatch.setattr(dt, "_run_single_child", child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     return json.loads(dt.delegate_task(tasks=tasks, background=True, parent_agent=parent))
 
 
@@ -962,7 +951,7 @@ def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch
     """With delegation.independent_completions on, a finished ungrouped task must not wait for its siblings;
     tasks sharing a `group` must."""
     import tools.delegate_tool as dt
-    monkeypatch.setattr(dt, "_load_config", lambda: {"independent_completions": True})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"independent_completions": True})
     gates = [threading.Event() for _ in range(4)]
     tasks = [
         {"goal": "review PR 1 thoroughly and report"},
@@ -1013,7 +1002,7 @@ def test_multi_task_call_is_one_completion_unless_independent_completions(monkey
     """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
     is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
     import tools.delegate_tool as dt
-    monkeypatch.setattr(dt, "_load_config", dict)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", dict)
     gates = [threading.Event() for _ in range(3)]
     tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
              {"goal": "review PR 3 thoroughly and report", "group": "g"}]
@@ -1069,6 +1058,7 @@ def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):
 import os, sys, time
 from unittest.mock import MagicMock
 import tools.delegate_tool as dt
+import tools.delegate_tool_routes as routes
 parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
 parent._active_children = []; parent._active_children_lock = None
 def child(task_index, goal, child=None, parent_agent=None, **kw):
@@ -1079,7 +1069,7 @@ def child(task_index, goal, child=None, parent_agent=None, **kw):
 def build(**kw):
     c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
 creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
-dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+dt._build_child_agent = build; dt._run_single_child = child; routes._resolve_delegation_credentials = lambda *a, **k: creds
 dt.delegate_task(tasks=[{"goal": "fast member of the group task", "group": "g"},
                         {"goal": "slow member of the group task", "group": "g"}], background=True, parent_agent=parent)
 time.sleep(2.0)
@@ -1116,6 +1106,7 @@ def test_one_child_unit_keeps_its_finished_child_when_the_owner_dies(tmp_path):
 import os, sys, time
 from unittest.mock import MagicMock
 import tools.delegate_tool as dt
+import tools.delegate_tool_routes as routes
 import tools.delegate_tool_dispatch as dtd
 parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
 parent._active_children = []; parent._active_children_lock = None
@@ -1125,7 +1116,7 @@ def child(task_index, goal, child=None, parent_agent=None, **kw):
 def build(**kw):
     c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
 creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
-dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+dt._build_child_agent = build; dt._run_single_child = child; routes._resolve_delegation_credentials = lambda *a, **k: creds
 def held_finalize(*a, **k):
     # The child's result exists; the owner still has host-owned finalize + transcripts + manifest + the durable
     # write to do. Block HERE so the driver kills the owner inside that window: deterministic, no race.
@@ -1162,17 +1153,16 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
 
 
 @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
-def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
-    """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh
+def test_ledger_write_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
+    """The ledger shares state.db with every other store user -- a fresh
     HERMES_HOME must land the file (and its WAL sidecar, if created) at 0o600
-    even under a permissive process umask, not the SessionDB-only path."""
+    after a ledger write, even under a permissive process umask."""
     import stat
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     old_umask = os.umask(0o022)
     try:
-        conn = ad._connect()
-        conn.close()
+        ad.claim_completion_delivery("nope", "claim-1")
     finally:
         os.umask(old_umask)
 

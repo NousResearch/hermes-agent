@@ -1,0 +1,30 @@
+name: clawcall
+title: ClawCall
+repo: https://github.com/ClawCall-Dev/ClawCall
+sha: cff7495099f4a13ed1ca4110ea57297614a03c4a
+subdir: hermes
+description: "Place and manage real US +1 phone calls from Hermes Agent without a Twilio, Bland, or Vapi account. ClawCall dials US numbers, navigates phone menus, waits on hold, leaves voicemail when instructed, can ring you in for live decisions, and returns captured transcript evidence when present, for a flat $8.99/mo after a free trial of 30 calls or 30 minutes. Disclosure: talks only over HTTPS to api.clawcall.dev (REST API at https://api.clawcall.dev or remote MCP at https://api.clawcall.dev/mcp); sends destination numbers, call instructions, and call settings to ClawCall's servers; calls are billed to your ClawCall account ($8.99/mo Unlimited, $14.99/mo Reserve, $18.99/mo Reserve Plus, fair use, no bulk outreach, one call at a time, no SMS, 25 languages); clawcall_place_call, clawcall_hangup_call, and clawcall_update_call_settings go through Hermes's approval gate via a pre_tool_call hook showing the full destination, recipient, goal, and authority and failing closed when nobody can approve; unattended cron runs refuse numbers outside allowed_numbers; non-US, emergency/N11, and premium-rate (900/976) numbers are refused locally before any network request; stores no transcripts, recordings, or call logs on local disk (ClawCall deletes recordings after 10 minutes and transcripts after 7 days; no HIPAA/PCI/SOC 2 claims; the voice agent says it is an AI when asked); secrets are read through Hermes's agent.secret_scope.get_secret; zero third-party Python dependencies; no shell commands, child processes, telemetry, or self-updater."
+maintainer: ClawCall-Dev
+tier: community
+category: voice
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://clawcall.dev/guides/hermes-mcp
+image: https://raw.githubusercontent.com/ClawCall-Dev/ClawCall/cff7495099f4a13ed1ca4110ea57297614a03c4a/hermes/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools:
+    - clawcall_get_balance
+    - clawcall_place_call
+    - clawcall_get_call
+    - clawcall_get_call_transcript
+    - clawcall_list_calls
+    - clawcall_get_recording
+    - clawcall_hangup_call
+    - clawcall_get_call_settings
+    - clawcall_update_call_settings
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - CLAWCALL_API_KEY

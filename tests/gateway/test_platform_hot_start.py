@@ -65,6 +65,47 @@ def test_single_profile_gateway_starts_restarts_and_stops_a_platform_live(tmp_pa
         stop(proc, expect=None)
 
 
+def _closed_port():
+    port = _free_port()  # nothing listens: an outbound API call through it is refused at once
+    return f"http://127.0.0.1:{port}"
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.spawns_gateway_lookalike
+def test_named_profile_restart_with_the_same_token_comes_back_up_live(tmp_path):
+    """A multiplexed named profile's settings-only change (same channel token, new secret) restarts its
+    adapter on the running gateway: the rebuild is not refused as a duplicate of the adapter it replaces."""
+    user, root = tmp_path / "user", tmp_path / "state"
+    user.mkdir()
+    root.mkdir(mode=0o700)
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+    named = root / "profiles" / "b"
+    named.mkdir(parents=True, mode=0o700)
+    # ``config.token`` gives the adapter a credential claim; the .env pair is what the adapter reads.
+    (named / "config.yaml").write_text("platforms:\n  line:\n    token: same-token\n", encoding="utf-8")
+    dotenv = named / ".env"
+    dotenv.write_text("LINE_CHANNEL_ACCESS_TOKEN=same-token\nLINE_CHANNEL_SECRET=first\n", encoding="utf-8")
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
+    closed = _closed_port()
+    env.update(HOME=str(user), HERMES_HOME=str(root), PYTHONPATH=str(repo), PYTHONUNBUFFERED="1",
+               HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"), HTTPS_PROXY=closed, HTTP_PROXY=closed,
+               https_proxy=closed, http_proxy=closed, NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
+    mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
+    proc, _desc = start_daemon(mux)
+    try:
+        first = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        assert first["profile"] == "b" and first["platforms"].get("line") == "connected", (first, tail(mux))
+        dotenv.write_text("LINE_CHANNEL_ACCESS_TOKEN=same-token\nLINE_CHANNEL_SECRET=second\n", encoding="utf-8")
+        answer = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        assert answer["restarted"] == ["line"], (answer, tail(mux))
+        assert answer["platforms"]["line"] == "connected", (answer, tail(mux))
+        assert "with the same credential" not in tail(mux)
+        assert proc.poll() is None, tail(mux)
+    finally:
+        stop(proc, expect=None)
+
+
 def _runner(adapter):
     """Just the state the retire path reads; the retire logic under test is the real mixin's."""
     from gateway.run_platform_reconcile import GatewayPlatformReconcileMixin

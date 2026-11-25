@@ -158,7 +158,15 @@ export function AdvancedFields({ draft, routineId, scriptOnly, set }: AdvancedFi
             </SelectContent>
           </Select>
         </Field>
-        <Field htmlFor="routine-run-limit" label={copy.runLimit}>
+        <Field
+          htmlFor="routine-run-limit"
+          label={
+            <span className="routines-label-row">
+              {copy.runLimit}
+              <InfoTip hint={copy.runLimitHint} label={copy.runLimit} />
+            </span>
+          }
+        >
           <span className="routines-when-inline">
             <span>{copy.stopAfter}</span>
             <Input

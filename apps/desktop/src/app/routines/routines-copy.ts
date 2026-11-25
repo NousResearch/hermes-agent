@@ -59,6 +59,7 @@ export interface RoutinesCopy {
   model: string
   modelDefault: string
   runLimit: string
+  runLimitHint: string
   stopAfter: string
   runsUnit: string
   rememberLastRun: string
@@ -206,6 +207,7 @@ const en: RoutinesCopy = {
   model: 'Model',
   modelDefault: 'Default model',
   runLimit: 'Run limit',
+  runLimitHint: 'Stops the routine for good after this many runs in total, over its whole life — not retries within a single run.',
   stopAfter: 'Stop after',
   runsUnit: 'runs',
   rememberLastRun: 'Remember last run',
@@ -349,6 +351,7 @@ const fr: RoutinesCopy = {
   model: 'Modèle',
   modelDefault: 'Modèle par défaut',
   runLimit: 'Limite d’exécutions',
+  runLimitHint: 'Arrête définitivement la routine après ce nombre total d’exécutions sur toute sa durée de vie — pas les nouvelles tentatives d’une même exécution.',
   stopAfter: 'Arrêter après',
   runsUnit: 'exécutions',
   rememberLastRun: 'Se souvenir de la dernière exécution',
@@ -492,6 +495,7 @@ const de: RoutinesCopy = {
   model: 'Modell',
   modelDefault: 'Standardmodell',
   runLimit: 'Laufgrenze',
+  runLimitHint: 'Beendet die Routine endgültig nach dieser Gesamtzahl von Läufen über ihre gesamte Lebensdauer – nicht die Wiederholungen innerhalb eines Laufs.',
   stopAfter: 'Beenden nach',
   runsUnit: 'Läufen',
   rememberLastRun: 'Letzten Lauf merken',
@@ -635,6 +639,7 @@ const es: RoutinesCopy = {
   model: 'Modelo',
   modelDefault: 'Modelo predeterminado',
   runLimit: 'Límite de ejecuciones',
+  runLimitHint: 'Detiene la rutina definitivamente tras este número total de ejecuciones a lo largo de su vida, no los reintentos dentro de una misma ejecución.',
   stopAfter: 'Detener tras',
   runsUnit: 'ejecuciones',
   rememberLastRun: 'Recordar la última ejecución',
@@ -778,6 +783,7 @@ const ja: RoutinesCopy = {
   model: 'モデル',
   modelDefault: 'デフォルトのモデル',
   runLimit: '実行回数の上限',
+  runLimitHint: 'ルーティンの寿命を通じた総実行回数に達すると完全に停止します。1回の実行内の再試行の上限ではありません。',
   stopAfter: '上限',
   runsUnit: '回で停止',
   rememberLastRun: '前回の実行を覚える',
@@ -921,6 +927,7 @@ const zh: RoutinesCopy = {
   model: '模型',
   modelDefault: '默认模型',
   runLimit: '运行次数上限',
+  runLimitHint: '达到这个总运行次数后，例行任务将永久停止；它指的是整个生命周期内的运行总数，而不是单次运行内的重试。',
   stopAfter: '运行',
   runsUnit: '次后停止',
   rememberLastRun: '记住上次运行',
@@ -1064,6 +1071,7 @@ const zhHant: RoutinesCopy = {
   model: '模型',
   modelDefault: '預設模型',
   runLimit: '執行次數上限',
+  runLimitHint: '達到這個總執行次數後，例行任務將永久停止；它指的是整個生命週期內的執行總數，而不是單次執行內的重試。',
   stopAfter: '執行',
   runsUnit: '次後停止',
   rememberLastRun: '記住上次執行',
@@ -1223,6 +1231,7 @@ const ru: RoutinesCopy = {
   model: 'Модель',
   modelDefault: 'Модель по умолчанию',
   runLimit: 'Лимит запусков',
+  runLimitHint: 'Полностью останавливает регулярную задачу после такого общего числа запусков за всё время её работы — это не ограничение повторов внутри одного запуска.',
   stopAfter: 'Остановить после',
   runsUnit: 'запусков',
   rememberLastRun: 'Помнить прошлый запуск',
@@ -1367,6 +1376,7 @@ const ar: RoutinesCopy = {
   model: 'النموذج',
   modelDefault: 'النموذج الافتراضي',
   runLimit: 'حد التشغيل',
+  runLimitHint: 'يوقف المهمة الروتينية نهائيًا بعد هذا العدد الإجمالي من مرات التشغيل طوال عمرها، وليس حدًّا لإعادة المحاولة داخل التشغيل الواحد.',
   stopAfter: 'الإيقاف بعد',
   runsUnit: 'مرات تشغيل',
   rememberLastRun: 'تذكّر آخر تشغيل',

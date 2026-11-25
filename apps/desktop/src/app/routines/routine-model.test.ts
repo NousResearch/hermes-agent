@@ -14,6 +14,7 @@ import {
   routineStatus,
   routineTitle,
   runChip,
+  runLimit,
   toggleDelivery,
   withRememberLastRun
 } from './routine-model'
@@ -120,6 +121,15 @@ describe('remember last run', () => {
     expect(remembersLastRun(job({ context_from: ['other-job'] }))).toBe(false)
     expect(withRememberLastRun(['other-job'], true)).toEqual(['other-job', 'self'])
     expect(withRememberLastRun(['other-job', 'self'], false)).toEqual(['other-job'])
+  })
+})
+
+describe('run limit', () => {
+  it('is the job’s lifetime run budget (repeat.times), not retries within a run; absent or ≤0 is unlimited', () => {
+    expect(runLimit(job({ repeat: { completed: 2, times: 5 } }))).toBe(5)
+    expect(runLimit(job({ repeat: { completed: 0, times: null } }))).toBeNull()
+    expect(runLimit(job({ repeat: { completed: 0, times: 0 } }))).toBeNull()
+    expect(runLimit(job({}))).toBeNull()
   })
 })
 

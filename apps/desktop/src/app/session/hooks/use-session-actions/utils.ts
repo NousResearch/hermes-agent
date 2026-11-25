@@ -85,6 +85,7 @@ import {
   conflictingTranscriptIdentity,
   transcriptRowIds
 } from './pending-turn-identity'
+import { withoutStoredPluginCards } from './plugin-card-overlay'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
 import { publishSessionUsage } from './session-usage'
 
@@ -1470,7 +1471,7 @@ export function overlayConcurrentMessageChanges(
     // id: the prompt is represented, not a new concurrent row.
     (current.role === 'user' && representedByStoredRow(current))
 
-  for (const current of currentMessages) {
+  for (const current of withoutStoredPluginCards(nextMessages, currentMessages)) {
     const baseline = baselineById.get(current.id)
     const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
 

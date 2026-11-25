@@ -170,6 +170,15 @@ class MessageEvent:
             event = getattr(event, "_rewritten_from", None)
         return None
 
+    def clear_turn_origin(self) -> None:
+        """A person's input joined this turn (an accepted steer or redirect): it no longer runs only
+        what a Hermes producer started, so ``turn_origin`` is ``None`` from now on, for this event and
+        every event it was rewritten from. Execution trust and what the model sees are untouched."""
+        event: Optional[MessageEvent] = self
+        while event is not None:
+            event._turn_origin = None
+            event = getattr(event, "_rewritten_from", None)
+
     def accept_interrupt(self) -> None:
         """The runner's stop/reset handler ran (past admission and slash access): the receiving adapter
         may cancel the session's turn. Marks every event this one was rewritten from, since the adapter

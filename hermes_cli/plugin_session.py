@@ -67,7 +67,9 @@ def turn_origin() -> str | None:
     next turn. ``None`` too outside a turn, in a delegated child, in a detached fork (``fork_origin()``
     non-empty: a plugin fork, a side question, a background review runs its own prompt in a copy of the
     turn's context) and in a managed worker. New values may be added: compare against the ones you
-    handle. A steer into the running turn does not change the answer. Answers only inside the gateway
+    handle. A person's input that joins the running turn (an accepted steer or redirect, from a client's
+    Steer, ``/steer``, ``session.steer``/``session.redirect`` or a busy chat message) makes it ``None``
+    for the rest of that turn: the reply now answers the person too. Answers only inside the gateway
     process: under ``plugins.isolation: host`` it is always ``None`` in the plugin's own process, where
     ``ctx.turn_origin()`` asks the gateway instead."""
     if _in_delegated_child() or fork_origin():

@@ -832,6 +832,8 @@ class GatewayBusySessionMixin:
         if turn.agent is not running_agent:
             return None
         running = turn.running_event()  # a drained queued follow-up's event, else the opener's
+        if running is not None:
+            running.clear_turn_origin()  # a person's input joined it: no longer only a Hermes wake's
         if running is not None and running is not event:
             running.absorb_turn_input(event)
         if turn.event is not None and turn.event is not event:

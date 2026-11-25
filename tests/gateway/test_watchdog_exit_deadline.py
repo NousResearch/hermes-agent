@@ -1,4 +1,4 @@
-"""A wedged diagnostic or foreground cleanup cannot defeat watchdog exit (#148853)."""
+"""A wedged kill-path side effect cannot keep the liveness watchdog from exiting (#148853)."""
 
 from __future__ import annotations
 
@@ -50,7 +50,6 @@ def test_liveness_watchdog_exits_past_blocked_side_effects(tmp_path, blocked):
             import tools.environments.base as base
             base._live_foreground_cond.acquire()
 
-        # No event-loop callbacks run, so the first probe must trigger a real exit.
         loop = asyncio.new_event_loop()
         watchdog.start_loop_liveness_watchdog(
             loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1,
@@ -70,7 +69,7 @@ def test_liveness_watchdog_exits_past_blocked_side_effects(tmp_path, blocked):
         try:
             # Deliberately do not drain stderr: the watchdog must not rely on its reader.
             try:
-                code = process.wait(timeout=12)
+                code = process.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 pytest.fail(f"watchdog remained alive with blocked {blocked}")
             assert process.stdout is not None

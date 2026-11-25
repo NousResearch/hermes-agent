@@ -53,6 +53,10 @@ _FIRE_SAMPLE_BUDGET_S = 2.0
 _DECISION_LOCK_S = 0.1  # commit-vs-stand-down lock: held only for a flag check
 # Bound on the pre-``os._exit`` drain of the async file-log queue (both watchdogs).
 _LOG_DRAIN_S = 1.0
+# The stderr stack copy keeps faulthandler's own caps (100 threads, 100 frames per thread), so a
+# journald/launchd log takes no more than the file copy does.
+_STDERR_STACK_THREADS = 100
+_STDERR_STACK_FRAMES = 100
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -358,7 +362,8 @@ def resolve_shutdown_watchdog_delay(
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
                          event: str = "shutdown_watchdog_fired",
                          loop_thread_id: Optional[int] = None) -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr).
+    """Best-effort metadata + all-thread stack dump before hard-exit: the file copy via
+    faulthandler, then the stderr copy rendered in Python (``_format_thread_stacks``).
 
     ``loop_thread_id`` names the monitored event loop's thread, whose own stack is written before
     the all-threads dump: that dump does not say which thread runs the loop, which is the first
@@ -386,17 +391,40 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
         fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
         # The loop section goes to stderr as well: with the disk wedged, journald/launchd keep only
-        # this copy, and its faulthandler dump is capped at 100 threads, newest first.
+        # this copy.
         sys.stderr.write(f"Gateway {event.replace('_', ' ')} after {delay_s:.0f}s "
                          f"(pid={os.getpid()}); dumping all thread stacks.\n" + loop_section)
         sys.stderr.flush()
-        # faulthandler writes with the GIL held: a full supervisor pipe would freeze even
-        # the watchdog's deadline thread. Python stream I/O releases the GIL while waiting.
-        sys.stderr.write("--- Python thread stacks (oldest call first) ---\n")
-        for ident, frame in sys._current_frames().items():
-            sys.stderr.write(f"\nThread {ident:#x} ({_thread_name(ident)}):\n")
-            traceback.print_stack(frame, file=sys.stderr)
+        # Not faulthandler: it writes with the GIL held, so a full supervisor pipe would freeze
+        # every thread, the deadline that bounds this worker included. Python stream writes
+        # release the GIL while they block (#148853).
+        sys.stderr.write(_format_thread_stacks())
         sys.stderr.flush()
+
+
+def _format_thread_stacks() -> str:
+    """Every thread's stack as ``File "<path>", line N, in <function>`` lines, innermost frame
+    last, for the stderr copy. Capped like the file copy's faulthandler dump
+    (``_STDERR_STACK_THREADS`` threads, ``_STDERR_STACK_FRAMES`` innermost frames each), and reads
+    no source files: on a host stalled enough to fire the watchdog, a linecache read of every
+    frame's source is more disk I/O on the kill path. Never raises."""
+    try:
+        frames = sys._current_frames()
+        names = {thread.ident: thread.name for thread in threading.enumerate()}
+        out = ["--- Python thread stacks (innermost frame last) ---\n"]
+        for ident, frame in list(frames.items())[:_STDERR_STACK_THREADS]:
+            out.append(f"\nThread {ident:#x} ({names.get(ident)}):\n")
+            stack = []
+            while frame is not None and len(stack) < _STDERR_STACK_FRAMES:
+                code = frame.f_code
+                stack.append(f'  File "{code.co_filename}", line {frame.f_lineno}, in {code.co_name}\n')
+                frame = frame.f_back
+            out.extend(reversed(stack))
+        if len(frames) > _STDERR_STACK_THREADS:
+            out.append(f"\n({len(frames) - _STDERR_STACK_THREADS} more threads not shown)\n")
+        return "".join(out)
+    except Exception as exc:  # health: allow BLE001 -- a hard-exit diagnostic path must never raise
+        return f"(thread stacks unavailable: {type(exc).__name__})\n"
 
 
 def _format_loop_thread_section(loop_thread_id: int) -> str:

@@ -13,6 +13,7 @@ import io
 import threading
 from unittest.mock import patch
 
+
 from gateway.shutdown_watchdog import get_shutdown_watchdog_dump_path, start_loop_liveness_watchdog
 
 _FILLER_THREADS = 110
@@ -83,7 +84,7 @@ def test_stderr_dump_carries_the_loop_thread_stack_too(tmp_path, monkeypatch):
     _, stderr = _wedge_loop_behind_fillers(tmp_path, monkeypatch)
     assert "wedged_loop_callback_marker" in stderr, (
         "the stderr copy (journald/launchd) must carry the loop thread's stack, not only the capped dump")
-    assert stderr.index("wedged_loop_callback_marker") < stderr.index("Python thread stacks (oldest call first)")
+    assert stderr.index("wedged_loop_callback_marker") < stderr.index("Python thread stacks (innermost frame last)")
 
 
 def test_loop_stack_section_carries_no_frame_locals(tmp_path, monkeypatch):
@@ -92,3 +93,26 @@ def test_loop_stack_section_carries_no_frame_locals(tmp_path, monkeypatch):
     dump, stderr = _wedge_loop_behind_fillers(tmp_path, monkeypatch, secret=secret)
     assert "wedged_loop_callback_marker" in dump  # the frame holding the secret IS in the dump
     assert secret not in dump and secret not in stderr
+
+
+def test_stderr_stacks_are_capped_and_read_no_source(monkeypatch):
+    """The stderr copy keeps faulthandler's thread cap and opens no source file on the kill path."""
+    import gateway.shutdown_watchdog as watchdog
+
+    monkeypatch.setattr(watchdog, "_STDERR_STACK_THREADS", 2)
+    release = threading.Event()
+    extra = [threading.Thread(target=release.wait, daemon=True) for _ in range(3)]
+    for thread in extra:
+        thread.start()
+    source_reads = []
+    try:
+        with monkeypatch.context() as patched:  # undone before the asserts: pytest reads source
+            patched.setattr("linecache.getline", lambda *args, **_: source_reads.append(args) or "")
+            patched.setattr("linecache.updatecache", lambda *args, **_: source_reads.append(args) or [])
+            text = watchdog._format_thread_stacks()
+    finally:
+        release.set()
+    assert source_reads == [], "the stderr stack renderer read a source file on the kill path"
+    assert text.count("\nThread 0x") == 2
+    assert "more threads not shown" in text
+    assert 'File "' in text and ", line " in text

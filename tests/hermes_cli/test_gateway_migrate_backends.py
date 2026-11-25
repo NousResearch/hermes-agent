@@ -180,6 +180,35 @@ def test_cgroup_without_mainpid_is_not_claimed_by_the_unit(host, no_writes):
     assert item.supervisor == "manual" and item.unit is None
 
 
+@pytest.mark.platforms("linux")
+def test_user_unit_dashboard_is_one_systemd_backend_from_a_shell_without_the_user_bus(host, no_writes,
+                                                                                    monkeypatch):
+    """A headless shell has no XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS, so `systemctl --user` fails
+    there; the user unit's dashboard was then reported twice, as a manual backend and as its unit."""
+    uid = os.getuid()  # windows-footgun: ok — linux-only test
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
+    fake_run = host.run
+
+    def run_needing_the_user_bus(cmd, *args, **kwargs):
+        if cmd[0] == "systemctl" and "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
+            host.calls.append([str(c) for c in cmd])
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No medium found")
+        return fake_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_needing_the_user_bus)
+    host.proc(4301, _argv("dashboard", "--port", "9119"), ppid=900,
+              cgroup=f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/hermes-dashboard.service")
+    host.unit("user", "hermes-dashboard.service", main_pid=4301,
+              path="/home/u/.config/systemd/user/hermes-dashboard.service")
+
+    items = gmb.collect_backends()
+
+    assert [(i.supervisor, i.pid, i.unit, i.scope) for i in items] == [
+        ("systemd", 4301, "hermes-dashboard.service", "user")]
+
+
 def test_installed_enabled_unit_that_is_not_running_is_reported_once(host, no_writes):
     host.unit("user", "hermes-dashboard.service", path="/home/u/.config/systemd/user/hermes-dashboard.service",
               env="HERMES_HOME=/srv/hermes PATH=/usr/bin")

@@ -436,3 +436,36 @@ async def test_a_watch_match_after_close_and_restart_is_noted_on_the_ended_sessi
         assert session_row(authority.persistence, target)['end_reason'] == 'cli_close'
     finally:
         authority.persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_orphan_reap_logs_arm_fire_and_ended_row(tmp_path, monkeypatch, caplog):
+    """The reap itself is a DB stamp; its arm, fire and end must be correlatable in logs (#160051)."""
+    import json
+    import logging
+    armed = _capture_timers(monkeypatch)
+    authority, finalized = await _owner(tmp_path, monkeypatch)
+    sid = _create(authority).session_id
+    viewer, _ = await _attach(authority, sid)
+
+    def events():
+        return [json.loads(rec.getMessage().split('orphan_reap ', 1)[1])
+                for rec in caplog.records if rec.getMessage().startswith('orphan_reap ')]
+
+    with caplog.at_level(logging.INFO, logger='gateway.session_viewer_close'):
+        await viewer.close()
+        assert [event['event'] for event in events()] == ['armed']
+        arm = events()[0]
+        assert arm['reason'] == 'ws_orphan_reap' and arm['phase'] == 'detached'
+        assert arm['grace_s'] == 300.0 and arm['viewers'] == 0
+        assert arm['source'] == authority.sessions[sid].source.platform.value
+        assert arm['instance'] == authority.instance_id
+        armed[-1][1]()
+        await async_wait_until(lambda: finalized == ['ws_orphan_reap'])
+        assert [event['event'] for event in events()] == ['armed', 'fired', 'ended']
+        ended = events()[-1]
+        assert ended['reason'] == 'ws_orphan_reap'
+        row = session_row(authority.persistence, sid)
+        assert row is not None
+        assert ended['source'] == row['source']
+        assert ended['ended_at'] > ended['started_at'] > 0

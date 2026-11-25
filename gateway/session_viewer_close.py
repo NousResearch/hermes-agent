@@ -50,6 +50,34 @@ ORPHAN_REASONS = frozenset({'ws_orphan_reap', 'startup_orphan_reap'})
 STARTUP_IDLE_S = 6 * 3600.0
 
 
+def _orphan_phase(reason):
+    return 'startup' if reason == 'startup_orphan_reap' else 'detached'
+
+
+def _log_orphan_event(event, authority, session_id, reason, *, grace=None, source='', **fields):
+    """One JSON line per orphan-close state change, for correlation with gateway lifecycle logs.
+
+    The reap itself is only a DB stamp (#160051); without these lines no log ties it to the
+    detach/boot that armed it, the owner that fired it, or the row it ended.
+    """
+    live = authority.sessions.get(session_id)
+    payload = {
+        'event': event,
+        'session': session_id,
+        'reason': reason,
+        'phase': _orphan_phase(reason),
+        'instance': getattr(authority, 'instance_id', ''),
+        'profile': getattr(authority, 'profile_id', ''),
+        'viewers': len(live.subscribers) if live is not None else None,
+        'source': source or (live.source.platform.value if live is not None and live.source else ''),
+        'stopping': _stopping(authority),
+    }
+    if grace is not None:
+        payload['grace_s'] = grace
+    payload.update(fields)
+    logger.info('orphan_reap %s', json.dumps(payload, sort_keys=True, default=str))
+
+
 class _PendingClose:
     """One viewer close; identity, not the reason, tells a settler its close is still the pending one.
     ``record`` is its ``state_meta`` value: a unique operation id plus the reason."""
@@ -208,10 +236,14 @@ def arm_orphan_close(authority, session_id, reason, grace):
     stopping owner arms nothing; the next boot does (``recover_local_sessions``)."""
     live = authority.sessions.get(session_id)
     if not grace or live is None or live.subscribers or is_history_mount(live) or _stopping(authority):
+        skipped = ('grace' if not grace else 'no_live' if live is None else 'viewer' if live.subscribers
+                   else 'history' if is_history_mount(live) else 'stopping')
+        _log_orphan_event('arm_skipped', authority, session_id, reason, grace=grace, skipped=skipped)
         return
     cancel_orphan_close(authority, session_id)
     authority.orphan_closes[session_id] = _call_later(
         asyncio.get_running_loop(), grace, partial(_fire_orphan_close, authority, session_id, reason))
+    _log_orphan_event('armed', authority, session_id, reason, grace=grace)
 
 
 async def arm_detached_orphan_close(authority, session_id):
@@ -254,7 +286,11 @@ def _fire_orphan_close(authority, session_id, reason):
     authority.orphan_closes.pop(session_id, None)
     live = authority.sessions.get(session_id)
     if live is None or live.subscribers or session_id in authority.pending_closes or _stopping(authority):
+        skipped = ('no_live' if live is None else 'viewer' if live.subscribers
+                   else 'pending' if session_id in authority.pending_closes else 'stopping')
+        _log_orphan_event('fire_skipped', authority, session_id, reason, skipped=skipped)
         return
+    _log_orphan_event('fired', authority, session_id, reason)
     # The persisted pending close a viewer's own close uses: it completes once the turn settles, and
     # survives a restart. Never ``close_viewer_session``: that would interrupt the delegations.
     authority.pending_closes[session_id] = close = _PendingClose(reason)
@@ -296,6 +332,11 @@ async def settle_viewer_close(authority, session_id):
     if live.subscribers:
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row.source if row is not None else None) or (live.source.platform.value if live.source else '')
+    if close.reason in ORPHAN_REASONS:
+        stamped = await asyncio.to_thread(authority_persistence(authority).sessions.get, target)
+        _log_orphan_event('ended', authority, session_id, close.reason, source=platform,
+                          started_at=stamped.started_at if stamped is not None else None,
+                          ended_at=stamped.ended_at if stamped is not None else None)
     from gateway.session_vault_prompt import release_unlocks
     release_unlocks(session_id)
     await _run_close_lifecycle(authority, live, target, platform, close.reason)

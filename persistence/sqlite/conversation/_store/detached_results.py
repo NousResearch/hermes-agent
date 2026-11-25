@@ -15,8 +15,20 @@ _LINEAGE_MATCH_SQL = """WITH RECURSIVE lineage(id) AS (SELECT ? UNION
 ) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id WHERE """
 
 
-_DELEGATION_DELIVERY_MATCH = ("m.display_kind IN ('async_delegation_complete', 'hidden') AND json_extract(m.display_metadata, "
-                              "'$.delegation_id') = ? AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ?")
+def _metadata_field(path: str) -> str:
+    """``json_extract`` of one ``display_metadata`` field, NULL where the column is not JSON.
+
+    Rows converted from JSONL carry ``display_metadata = ''``; ``json_extract('')`` raises
+    ``malformed JSON``, and SQLite evaluates it per row before any comparison, so one such row in a
+    session's compression lineage failed every completion note for that chain (``Admitted turn ...
+    failed``, 272-384/day). ``json_valid`` keeps the value identical for real rows and makes the
+    comparison false — read as "no such result yet" — for the rest."""
+    return f"CASE WHEN json_valid(m.display_metadata) THEN json_extract(m.display_metadata, '$.{path}') END"
+
+
+_DELEGATION_DELIVERY_MATCH = ("m.display_kind IN ('async_delegation_complete', 'hidden') AND "
+                              + _metadata_field("delegation_id") + " = ? AND coalesce("
+                              + _metadata_field("delivery_notice") + ", '') = ?")
 
 
 def append_delegation_delivery(holder: StoreHolder, session_id: str, content: str, metadata: dict[str, Any]) -> int:
@@ -34,8 +46,7 @@ def append_completion_note(holder: StoreHolder, session_id: str, admission_id: s
     """Record an unviewed completion's note once, keyed by its admission (stored as ``completion_admission``)."""
     return _append_detached_result(holder,
         session_id, content, display_kind, {**metadata, "completion_admission": admission_id},
-        "json_extract(m.display_metadata, '$.completion_admission') = ?", (admission_id,))
-
+        _metadata_field("completion_admission") + " = ?", (admission_id,))
 
 def _append_detached_result(holder: StoreHolder, session_id: str, content: str, display_kind: str, metadata: dict[str, Any],
                             match_sql: str, params: tuple) -> int:

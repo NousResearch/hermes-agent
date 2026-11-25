@@ -724,13 +724,15 @@ button.portal-section-title:hover {
   background: var(--portal-sidebar-orange);
 }
 
-/* Trailing actions take the meta label's place on hover, keyboard focus or an open menu. */
+/* Trailing actions take the meta label's place on hover, keyboard focus or an open menu. The box is a
+   pointer's 28px square on the row's end inset; the row keeps its height (30px at the tightest, the
+   compact density), and the touch target below still replaces it wholesale. */
 .portal-sidebar .portal-row-action {
   position: absolute;
   inset-inline-end: 0.375rem;
   top: 50%;
-  width: 1.375rem;
-  height: 1.375rem;
+  width: 1.75rem;
+  height: 1.75rem;
   border-radius: var(--portal-radius-control);
   color: var(--ui-text-tertiary);
   opacity: 0;
@@ -769,7 +771,9 @@ button.portal-section-title:hover {
   }
 
   .portal-session-item[data-actions] .portal-session-row {
-    padding-inline-end: 2.25rem;
+    /* 2.5rem clears the always-shown 1.75rem `.portal-row-action` plus its 0.375rem end inset
+       (2.125rem) so it never overlaps `.portal-session-meta`. */
+    padding-inline-end: 2.5rem;
   }
 
   .portal-session-item[data-actions] .portal-session-meta {
@@ -1244,7 +1248,8 @@ button.portal-section-title:hover {
 
 @media (hover: none), (pointer: coarse) {
   .portal-agent-sessions .portal-session-item[data-actions] .portal-session-row {
-    padding-inline-end: 2rem;
+    /* Same clearance as the top-level rule: the widened action plus its end inset (2.125rem). */
+    padding-inline-end: 2.5rem;
   }
 }
 

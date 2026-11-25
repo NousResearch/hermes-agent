@@ -299,9 +299,17 @@
   backdrop-filter: none;
 }
 
-/* Tooltips keep their inverted bubble; only the radius is pinned, since the root scalar shrinks it. */
-:root[data-shell='portal'] [data-slot='tooltip-content'] {
+/* Tooltips keep their inverted bubble: the radius is pinned (the root scalar shrinks it) and the label
+   reads at the redesign's 12px meta step on a 1.45 line, over a bubble a step roomier than the shared
+   one the classic shell draws (`components/ui/tooltip.tsx`: `text-[0.6875rem] leading-[1.4] px-2 py-1`),
+   which stays untouched. `:where()` zeroes this rule's specificity (the file is unlayered, so it still
+   beats Tailwind's `@layer utilities` defaults) and lets `.portal-hidden-help` (0, 1, 0) keep its own
+   card padding, 14px UI size and 1.5 line on the wide hidden-agent tooltip. */
+:where(:root[data-shell='portal'] [data-slot='tooltip-content']) {
   border-radius: var(--portal-radius-card);
+  padding: 0.375rem 0.625rem;
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.45;
 }
 
 /* ── Toasts ───────────────────────────────────────────────────────────────── */

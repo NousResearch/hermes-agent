@@ -574,6 +574,20 @@ for (const route of ROUTES) {
   })
 }
 
+test('provider review, confirm and operation keep secondary profiles on the scoped host backend', () => {
+  for (const [method, path] of [
+    ['POST', '/api/skills/hub/review'],
+    ['POST', '/api/skills/hub/confirm'],
+    ['GET', '/api/skills/hub/operation?identifier=owner%3Askill&operation_id=op-1']
+  ]) {
+    const opts = { primaryProfile: 'default', globalRemote: false, requestMethod: method, requestPath: path }
+    assert.deepEqual(resolveProfileBackendRoute('research', opts), { backend: 'primary', descriptorProfile: 'research', scopePath: true })
+    assert.equal(pathWithGlobalRemoteProfile(path, 'research', opts), `${path}${path.includes('?') ? '&' : '?'}profile=research`)
+    // A window's primary may itself be a secondary of the multiplexing owner.
+    assert.deepEqual(resolveProfileBackendRoute('research', { ...opts, primaryProfile: 'research' }), { backend: 'primary', descriptorProfile: 'research', scopePath: true })
+  }
+})
+
 test('resolveProfileBackendRoute only tags a descriptor when the backend is shared', () => {
   // A pooled backend is already scoped to its profile, so tagging it would
   // imply a second scope the caller must reconcile. Only the shared

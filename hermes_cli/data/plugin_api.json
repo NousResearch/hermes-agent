@@ -248,6 +248,15 @@
       ]
     },
     {
+      "source": "plugins/index.md § Judge a command with Hermes's own approval rules",
+      "entries": [
+        "tools.approval_judge:CommandJudgement",
+        "tools.approval_judge:judge_command",
+        "tools.approval_detection:detect_dangerous_command",
+        "tools.approval_detection:detect_hardline_command"
+      ]
+    },
+    {
       "source": "plugins/index.md § Send a credentialed HTTP request without leaking it on redirect",
       "entries": [
         "hermes_cli.urllib_security:open_credentialed_url"

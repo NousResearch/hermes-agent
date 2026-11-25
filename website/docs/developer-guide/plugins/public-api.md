@@ -193,6 +193,10 @@ with a name allows that one name only.
 | `agent.file_safety` | `get_write_denied_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_load` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_dump` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `tools.approval_judge` | `CommandJudgement` | plugins/index.md § Judge a command with Hermes's own approval rules |
+| `tools.approval_judge` | `judge_command` | plugins/index.md § Judge a command with Hermes's own approval rules |
+| `tools.approval_detection` | `detect_dangerous_command` | plugins/index.md § Judge a command with Hermes's own approval rules |
+| `tools.approval_detection` | `detect_hardline_command` | plugins/index.md § Judge a command with Hermes's own approval rules |
 | `hermes_cli.urllib_security` | `open_credentialed_url` | plugins/index.md § Send a credentialed HTTP request without leaking it on redirect |
 | `agent.retry_utils` | `parse_retry_after_seconds` | plugins/index.md § Read a Retry-After header the way Hermes does |
 | `hermes_cli.version_info` | `hermes_user_agent` | plugins/index.md § Send the Hermes User-Agent header |

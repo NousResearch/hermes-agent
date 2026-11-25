@@ -1470,6 +1470,46 @@ def wait_before_retry(response, fallback=5.0):
     time.sleep(fallback if seconds is None else seconds)
 ```
 
+### Judge a command with Hermes's own approval rules
+
+A plugin that runs a host's commands on that host — a device-side runner such as Hermes
+Tether — must judge each one with THAT machine's Hermes rules before running it, not with
+its own opinion of what is dangerous. `tools.approval_judge.judge_command(command)` answers
+with the same verdict Hermes's own command gate reaches, without prompting anyone: the
+unconditional floors first (a hardline command is final — nobody can approve it), then the
+caller's own gate approval, the approval mode and permanent allowlist, and the
+dangerous-command findings that still need a human yes. If a rule check cannot run, the
+command is refused (`"block"`), never waved through. It is at least as strict as the gate:
+it does not apply session grants, YOLO or smart-mode approvals, so it may ask where the gate
+would run. `approved_keys` must be the human's per-command answer on your channel (Hermes's
+own "approve once"), and `gate_approved=True` only when your own Hermes gate approved exactly
+this command: with the terminal command context, a stamp whose kind is `user`, `smart`,
+`pre_approved`, `batch` or `no_findings` for this exact command, never `bypass`,
+`unattended`, `forced` or `gate_skipped`. The rules are those of the Hermes profile whose context you call it in: from a
+worker thread, run it in a copied context (`contextvars.copy_context().run(...)`).
+
+| Import | What it gives you |
+|---|---|
+| `tools.approval_judge.judge_command(command, *, approved_keys=(), gate_approved=False)` | A frozen `CommandJudgement` with `verdict` `"block"` (a floor hit; `reason` carries its message), `"ask"` (the findings in `pattern_keys` / `description` still need a human yes from your channel — resend with those keys once the human answers) or `"run"`. |
+| `tools.approval_judge.CommandJudgement` | The frozen verdict record (`verdict`, `reason`, `pattern_keys`, `description`). |
+| `tools.approval_detection.detect_dangerous_command(command)` / `detect_hardline_command(command)` | The plain pattern detectors, when your plugin wants the pattern layer alone. |
+
+```python
+from tools.approval_judge import CommandJudgement, judge_command
+
+def run_on_host(command, approved_keys=()):
+    judged = judge_command(command, approved_keys=approved_keys)
+    if judged.verdict == "block":
+        return f"refused: {judged.reason}"
+    if judged.verdict == "ask":
+        return f"needs approval for: {judged.description}"
+    return execute(command)
+```
+
+Import the names themselves (`from tools.approval_judge import judge_command`), as above:
+`hermes plugins validate` accepts those spellings. The checks behind `judge_command`
+compose Hermes's private approval internals; a plugin imports only this module.
+
 ### Send the Hermes User-Agent header
 
 `hermes_cli.version_info.hermes_user_agent(product)` returns `<product>/<Hermes version>`, for

@@ -24,6 +24,7 @@ import {
   unknownStateStatus,
 } from "./BackendMigrationCard.engine.fixture";
 import {
+  UNREACHABLE_AFTER_SECONDS,
   applyOutcome,
   blockerAdvice,
   isFileNote,
@@ -661,9 +662,14 @@ describe("readPoll", () => {
   });
 
   it("reads the swap's gap as switching and a refused sign-in as sign in again, never as failure", () => {
+    expect(UNREACHABLE_AFTER_SECONDS).toBeGreaterThanOrEqual(600);
     expect(readPoll({ kind: "unreachable" }, asked, at(5)).kind).toBe("switching");
     expect(readPoll({ kind: "auth" }, asked, at(5)).kind).toBe("signInAgain");
-    expect(readPoll({ kind: "unreachable" }, asked, at(200)).kind).toBe("unreachable");
+    // Stay in switching across the backend's 240s restart handoff + 300s verify window.
+    expect(readPoll({ kind: "unreachable" }, asked, at(200)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(540)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(UNREACHABLE_AFTER_SECONDS)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(UNREACHABLE_AFTER_SECONDS + 1)).kind).toBe("unreachable");
   });
 
   it("reads a running record whose process is gone as stalled, from alive or the engine's note", () => {

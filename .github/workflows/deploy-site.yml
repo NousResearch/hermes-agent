@@ -57,7 +57,7 @@ jobs:
     timeout-minutes: 30
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy_retry.outputs.page_url || steps.deploy_last.outputs.page_url }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -284,6 +284,32 @@ jobs:
         with:
           path: _site
 
+      # deploy-pages looks the artifact up ~300 ms after the upload finalizes,
+      # and the artifact service often has not listed it yet ("Found 0
+      # artifact(s)"; actions/deploy-pages#451): it became visible 0.5-46 s
+      # later. The lookup runs before any deployment is created, so retrying in
+      # the same attempt is safe; re-running the job is not (its fresh upload
+      # makes two "github-pages" artifacts and the lookup refuses both).
       - name: Deploy to GitHub Pages
         id: deploy
+        continue-on-error: true
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1
+
+      - name: Wait for the artifact to be listed
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 15
+
+      - name: Deploy to GitHub Pages (retry)
+        id: deploy_retry
+        if: steps.deploy.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1
+
+      - name: Wait longer for the artifact to be listed
+        if: steps.deploy_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Deploy to GitHub Pages (last try)
+        id: deploy_last
+        if: steps.deploy_retry.outcome == 'failure'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

@@ -68,11 +68,15 @@ it('sends the launcher\'s client environment (LC-8, T3) only to a gateway that t
   }
 })
 
-it('marks the shell launch directory as an explicit workspace so it beats a profile terminal.cwd', () => {
+it('does not mark a bare launch directory explicit, so a remote profile terminal.cwd still wins', () => {
   const options = localCreationOptions({ HERMES_CWD: '/work/repo' } as NodeJS.ProcessEnv)
-  expect(options).toEqual({ cwd: '/work/repo', cwd_explicit: true })
+  expect(options).toEqual({ cwd: '/work/repo' })
+  expect(options).not.toHaveProperty('cwd_explicit')
   expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('cwd')
-  expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('cwd_explicit')
+})
+
+it('forwards an explicit shell or dashboard workspace and drops the flag for an older gateway', () => {
+  const options = { cwd: '/work/repo', cwd_explicit: true }
   const contract = { sources: ['tui'], parameters: ['request_id', 'source', 'cwd', 'cwd_explicit'] }
   expect(canonicalRequest('session.create', { request_id: 'owned', ...options }, contract).params).toMatchObject({
     cwd: '/work/repo', cwd_explicit: true

@@ -10,11 +10,10 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
 
   const options: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value))
 
-  // `hermes --tui` sets HERMES_CWD to the directory the process was launched from
-  // (hermes_cli/main_tui_launch.py). That is a deliberate workspace, not the Desktop's
-  // inherited app-global default: mark it explicit so a named profile's terminal.cwd
-  // does not replace it, and the shared gateway does not fall back to $HOME (#84015, #52589).
-  if (options.cwd) { options.cwd_explicit = true }
+  // HERMES_CWD is the process launch directory on every backend, including ssh.
+  // It is not a workspace pick: the launcher only exports HERMES_TUI_CWD for a
+  // local shell or dashboard, and useSessionLifecycle marks that one explicit so
+  // a named profile's terminal.cwd still wins on a remote backend (#84015, #52589).
 
   if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
 

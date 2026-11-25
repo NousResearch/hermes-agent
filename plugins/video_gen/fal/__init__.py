@@ -301,6 +301,10 @@ def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
         raise
 
 
+# The managed FAL gateway answers HTTP 413 above ~4.5 MB of request body, so the tool layer
+# downscales inlined source images to fit this many data: URL characters (same budget as image_generate).
+MAX_INLINE_IMAGE_CHARS = 3_500_000
+
 # ByteDance SeedVR2 on FAL: $0.001/megapixel of output; a 5s 720p→1440p 2x pass is roughly $0.44.
 UPSCALER_ENDPOINT = "fal-ai/seedvr/upscale/video"
 UPSCALER_FACTOR = 2
@@ -377,11 +381,13 @@ class FALVideoGenProvider(VideoGenProvider):
                     "resolutions": list(family["resolutions"] or []), "max_duration": max(durations), "min_duration": min(durations),
                     "supports_audio": bool(family["audio"]), "audio_always_on": bool(family.get("audio_native")),  # no toggle: description only
                     "supports_negative_prompt": bool(family["negative"]), "supports_seed": bool(family["seed"]),
-                    "supports_upscale": True, "max_reference_images": 0}  # SeedVR chains for any family
+                    "supports_upscale": True, "max_reference_images": 0,  # SeedVR chains for any family
+                    "max_inline_image_chars": MAX_INLINE_IMAGE_CHARS}
         spans = [m["durations"] for m in FAL_FAMILIES.values() if m["durations"]]
         return {"modalities": ["text", "image"], "aspect_ratios": ["16:9", "9:16", "1:1"], "resolutions": ["360p", "540p", "720p", "1080p"],
                 "max_duration": max([1] + [max(d) for d in spans]), "min_duration": min([min(d) for d in spans], default=1),
-                "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0}
+                "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0,
+                "max_inline_image_chars": MAX_INLINE_IMAGE_CHARS}
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,

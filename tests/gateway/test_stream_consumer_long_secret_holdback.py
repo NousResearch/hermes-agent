@@ -130,3 +130,19 @@ def test_long_double_quoted_value_holding_an_apostrophe_never_settles_raw():
         prefix = acc[:settled]
         frames.append(prefix)
     assert not _raw_runs(frames, value)
+
+
+def test_unlabelled_discord_mfa_token_body_is_held_until_complete():
+    """#117848: an unlabelled 84-char mfa secret must not be shown in stream previews."""
+    secret = "mfa." + "V" * 84
+    preface = "Result: "
+    assert secret not in redact_for_egress(preface + secret)
+
+    # The full-text redactor only recognizes an exact 84-char body. Without an
+    # early prefix hold, the stream releases up to 83 secret chars before then.
+    for partial in ("m", "mf", "mfa", "mfa.", secret[:40], secret[:-1]):
+        preview, settled = redact_settled(preface + partial, "", done=False)
+        assert preview[:settled] == preface
+
+    final, settled = redact_settled(preface + secret, preface, done=True)
+    assert secret not in final[:settled]

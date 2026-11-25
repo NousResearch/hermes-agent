@@ -87,14 +87,14 @@ async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=Fals
     await async_wait_until(agent_ready.is_set, what="the running agent")
     if fail_admit:
         async def deny(authority, event):
-            from hermes_state_runtime import RuntimeStoreError
-            raise RuntimeStoreError("admission_conflict")
+            from persistence.core.errors import AuthorityRefusal
+            raise AuthorityRefusal("admission_conflict")
 
         monkeypatch.setattr("gateway.session_ingress.admit_message", deny)
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     try:
         await adapter.handle_message(event)
-    except RuntimeStoreError as exc:  # the refusal surfaces to the caller, as on main
+    except AuthorityRefusal as exc:  # the refusal surfaces to the caller, as on main
         if not fail_admit:
             raise
         sent.append(exc.reason)

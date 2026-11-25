@@ -166,7 +166,9 @@ def test_declaring_a_key_mid_session_drops_it_from_the_live_snapshot(isolated_ho
     monkeypatch.setenv(DECLARED[0], SECRET)
     env = local.LocalEnvironment(cwd=str(isolated_home), timeout=30)
     try:
-        assert SECRET in Path(env._snapshot_path).read_text(encoding="utf-8")  # captured while undeclared
+        # Captured by the session while undeclared (in memory: the snapshot file never holds a
+        # credential-shaped export, #62336).
+        assert observe_terminal(env, [DECLARED[0]]) == {DECLARED[0]: SECRET}
         # A declared value that is no shell name must not reach the wrapper script.
         config.write_text(f"model:\n  provider: theta\n  key_env: {DECLARED[0]}\n"
                           "custom_providers:\n  - name: odd\n    key_env: \"x}; exit 7; #\"\n", encoding="utf-8")

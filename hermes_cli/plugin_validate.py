@@ -666,7 +666,7 @@ def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:
     """Run the install-time scanner at admission, so a pin a reviewer approves is one the
     installer will accept: ``dangerous`` fails the entry; ``caution`` findings surface as
     warnings for the reviewer (the installer trusts them once the pin is merged)."""
-    from tools.plugin_guard import scan_plugin
+    from hermes_cli.plugins_install_scan import scan_plugin
 
     result = scan_plugin(plugin_dir)
     flagged = [f for f in result.findings if f.severity in ("critical", "high")]

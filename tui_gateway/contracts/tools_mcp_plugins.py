@@ -809,7 +809,7 @@ class CatalogPluginPresence(Result):
 
 
 class PluginScanFinding(Result):
-    """One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked."""
+    """One security-scan finding (``hermes_cli.plugins_install_scan``) on a plugin tree the scan blocked."""
 
     pattern_id: str
     severity: str

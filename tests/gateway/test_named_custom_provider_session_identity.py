@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
-from hermes_state import SessionDB
+from persistence.gateway.routing import gateway_runtime
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway.server import _session_info, _stored_session_runtime_overrides, _runtime_model_config
 from gateway.session_local_inventory import agent_inventory
 
@@ -33,7 +36,14 @@ def _agent(*, model="beta-model", provider="custom", requested_provider="custom:
 
 
 def _runner(db):
-    return SimpleNamespace(_session_db=SimpleNamespace(_db=db))
+    return SimpleNamespace(persistence=db)
+
+
+def _route(db, session_id):
+    """The runtime route persisted on the session's row."""
+    record = db.sessions.get(session_id)
+    return gateway_runtime(record.model_config, billing_provider=record.billing_provider,
+                           billing_base_url=record.billing_base_url)
 
 
 @pytest.mark.parametrize("alpha_model", ["alpha-model", "beta-model"])
@@ -50,15 +60,15 @@ def test_named_custom_resolver_sync_row_reader_and_canonical_projection_keep_own
     assert runtime["requested_provider"] == "custom:beta"
     assert runtime["api_key"] == "sk-beta"
 
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("s1", source="telegram", model="old-model")
+        seed_session(db, "s1", "telegram", model="old-model")
         GatewayTurnPrepareMixin._sync_session_model_from_agent(_runner(db), "s1", _agent())
 
-        row = db.get_session("s1")
-        route = SessionDB.session_gateway_runtime(row)
-        assert route["provider"] == "custom:beta"
-        assert route["base_url"] == SHARED_URL
+        row = session_row(db, "s1")
+        route = _route(db, "s1")
+        assert route.provider == "custom:beta"
+        assert route.base_url == SHARED_URL
         assert "sk-beta" not in str(row["model_config"])
         assert "api_key" not in str(row["model_config"])
 
@@ -77,20 +87,36 @@ def test_named_custom_resolver_sync_row_reader_and_canonical_projection_keep_own
         db.close()
 
 
+def test_the_synced_route_names_its_model_so_resume_pairs_them_after_a_fallback(tmp_path):
+    """The model column is rewritten by whatever served the next call; the synced route keeps its own model."""
+    from hermes_cli.config import atomic_config_write, get_config_path
+    from persistence.gateway.routing import resume_route
+
+    atomic_config_write(get_config_path(), CONFIG)
+    db = open_persistence(profile_scope(home=tmp_path))
+    try:
+        seed_session(db, "s1", "telegram", model="old-model")
+        GatewayTurnPrepareMixin._sync_session_model_from_agent(_runner(db), "s1", _agent())
+        record = db.sessions.get("s1")
+        model, route = resume_route(record.model_config, model="fallback-model")
+        assert (model, route.provider) == ("beta-model", "custom:beta")
+    finally:
+        db.close()
+
+
 @pytest.mark.parametrize("requested", ["", "auto", "custom"])
 def test_bare_custom_sync_uses_canonical_endpoint_fallback(tmp_path, monkeypatch, requested):
     """Legacy/bare runtime shapes keep the existing URL-based fallback semantics."""
     from hermes_cli import runtime_provider
 
     monkeypatch.setattr(runtime_provider, "load_config", lambda: CONFIG)
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("s1", source="telegram", model="old-model")
+        seed_session(db, "s1", "telegram", model="old-model")
         GatewayTurnPrepareMixin._sync_session_model_from_agent(
             _runner(db), "s1", _agent(requested_provider=requested)
         )
-        row = db.get_session("s1")
-        assert SessionDB.session_gateway_runtime(row)["provider"] == "custom:alpha"
+        assert _route(db, "s1").provider == "custom:alpha"
     finally:
         db.close()
 
@@ -143,14 +169,13 @@ def test_non_custom_adapter_does_not_take_requested_custom_identity(tmp_path, mo
         raise AssertionError("custom identity lookup must not run for a native adapter")
 
     monkeypatch.setattr(runtime_provider, "canonical_custom_identity", fail_lookup)
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("s1", source="telegram", model="old-model")
+        seed_session(db, "s1", "telegram", model="old-model")
         GatewayTurnPrepareMixin._sync_session_model_from_agent(
             _runner(db), "s1", _agent(provider="anthropic", requested_provider="custom:beta")
         )
-        row = db.get_session("s1")
-        assert SessionDB.session_gateway_runtime(row)["provider"] == "anthropic"
+        assert _route(db, "s1").provider == "anthropic"
     finally:
         db.close()
 
@@ -191,11 +216,11 @@ def _resumed_route(row):
 
 def test_gateway_sync_does_not_pair_an_edited_entry_key_with_the_old_endpoint(tmp_path):
     agent = _edited_entry_agent()
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("s1", source="telegram", model="m")
+        seed_session(db, "s1", "telegram", model="m")
         GatewayTurnPrepareMixin._sync_session_model_from_agent(_runner(db), "s1", agent)
-        assert _resumed_route(db.get_session("s1")) == (OLD_URL, "sk-old")
+        assert _resumed_route(session_row(db, "s1")) == (OLD_URL, "sk-old")
     finally:
         db.close()
 
@@ -217,12 +242,12 @@ def test_moved_entry_with_no_old_owner_is_not_saved_beside_the_old_endpoint(tmp_
 
     agent = _edited_entry_agent(old_owner=False, old_url=old_url, new_url=new_url)
     assert _runtime_model_config(agent)["provider"] == "custom"
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("s1", source="telegram", model="m")
+        seed_session(db, "s1", "telegram", model="m")
         GatewayTurnPrepareMixin._sync_session_model_from_agent(_runner(db), "s1", agent)
-        assert SessionDB.session_gateway_runtime(db.get_session("s1"))["provider"] == "custom"
-        assert _resumed_route(db.get_session("s1")) != (old_url, "sk-new")
+        assert _route(db, "s1").provider == "custom"
+        assert _resumed_route(session_row(db, "s1")) != (old_url, "sk-new")
     finally:
         db.close()
     row = {"model": "m", "model_config": json.dumps(_runtime_model_config(agent))}

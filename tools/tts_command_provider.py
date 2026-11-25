@@ -16,6 +16,7 @@ import os
 import queue
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -197,10 +198,14 @@ def run_command_provider(
     """Run a command-provider shell command with process-tree idle cleanup.
     ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
     provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
-    while propagating delegated-child lineage markers."""
+    while propagating delegated-child lineage markers.
+    Never for a profile a plugin runs elsewhere: that backend writes the config.yaml naming *command*."""
     from agent.delegation_context import delegated_child_subprocess_env
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     from tools.env_passthrough import resolve_passthrough_value
     from tools.environments.local import hermes_subprocess_env
+    if (refused := run_elsewhere_refusal()) is not None:
+        raise RuntimeError(refused)
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
     for key in env_passthrough or []:
         # Under the multiplexer os.environ is the LAUNCH profile's .env: resolve through the served
@@ -384,12 +389,17 @@ def _generate_command_tts(
     if output.exists():
         output.unlink()
     timeout = _get_command_tts_timeout(config)
+    output_format = _get_command_tts_output_format(config, str(output))
     with tempfile.TemporaryDirectory() as tmpdir:
         text_path = Path(tmpdir) / "input.txt"
         text_path.write_text(text, encoding="utf-8")
+        # The command writes to a Hermes-named file, never the caller's ``output_path``: that path
+        # can come from the model, and quoting cannot protect a template that re-parses its
+        # placeholders (``sh -c '... {output_path}'``). The audio is moved into place afterwards.
+        staged = Path(tmpdir) / f"output.{output_format}"
         placeholders = {
-            "input_path": str(text_path), "text_path": str(text_path), "output_path": str(output),
-            "format": _get_command_tts_output_format(config, str(output)),
+            "input_path": str(text_path), "text_path": str(text_path), "output_path": str(staged),
+            "format": output_format,
             "voice": str(config.get("voice", "")), "model": str(config.get("model", "")),
             "speed": str(config.get("speed", tts_config.get("speed", ""))),
         }
@@ -402,6 +412,8 @@ def _generate_command_tts(
             raise RuntimeError(
                 f"TTS provider '{provider_name}' exited with code {exc.returncode}: {command_failure_detail(exc)}"
             ) from exc
+        if staged.is_file():
+            shutil.move(str(staged), str(output))
     if not output.exists() or output.stat().st_size <= 0:
         raise RuntimeError(f"TTS provider '{provider_name}' produced no output at {output}")
     return str(output)

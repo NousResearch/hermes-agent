@@ -157,6 +157,42 @@ class WorkerChannel:
             self.stream.flush()
 
 
+# While a turn runs, the worker tells the owner its agent is still active: a quiet tool sends no
+# other frame, and the owner's restart wait reads frame silence past agent.gateway_timeout as a
+# wedged turn. The owner picks the interval from that timeout (``activity_interval``).
+ACTIVITY_FRAME_SECONDS = 30
+ACTIVITY_FRAME = {'type': 'activity'}
+
+
+def activity_interval(wedge_timeout):
+    """Several frames inside one wedge window, so no gap between two of them reads as silence."""
+    if wedge_timeout <= 0:
+        return ACTIVITY_FRAME_SECONDS  # wedge detection off: the frames only keep the clock fresh
+    return max(0.05, min(ACTIVITY_FRAME_SECONDS, wedge_timeout / 4))
+
+
+def forward_activity(agent, channel, done, interval=ACTIVITY_FRAME_SECONDS):
+    """Send ``ACTIVITY_FRAME`` each ``interval`` in which the agent itself recorded activity
+    (``_touch_activity``: tool-loop and provider-wait heartbeats), until ``done`` is set. A wedged
+    agent stops touching, so its frames stop too; nothing here is user-visible."""
+    while not done.wait(interval):
+        idle = agent.get_activity_summary().get('seconds_since_activity')
+        if idle is not None and idle < interval:
+            try:
+                channel.send(ACTIVITY_FRAME['type'])
+            except (OSError, ValueError):
+                return  # the channel closed under a finishing turn
+
+
+def activity_frame_interval(frame):
+    """Seconds between ``ACTIVITY_FRAME``s the owner asked for in the hydrated request, or None: an
+    older owner rejects unknown frames, so it never asks and never receives one."""
+    asked = json.loads(frame['policy'].get('request_json') or '{}').get('activity_frames_v1')
+    if isinstance(asked, dict) and isinstance(asked.get('interval'), (int, float)) and asked['interval'] > 0:
+        return float(asked['interval'])
+    return None
+
+
 _INTERRUPTED = object()
 # The owner's control pipe closing under a live worker means the owner died (a closing owner
 # signals the worker itself). The agent is interrupted at once; cooperative tools get this long.
@@ -399,6 +435,7 @@ def execute(frame, channel):
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
+    turn_done = threading.Event()  # ends forward_activity
     try:
         with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
@@ -421,6 +458,11 @@ def execute(frame, channel):
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
+            interval = activity_frame_interval(frame)
+            if interval is not None:
+                from agent.memory_provider import spawn_context_thread
+                spawn_context_thread(forward_activity, name='managed-activity',
+                                     args=(agent, channel, turn_done, interval)).start()
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
@@ -440,6 +482,7 @@ def execute(frame, channel):
             # Most failed results name no provider or model; the owner's error card needs the agent's.
             result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
                       **run_worker_turns(agent, frame, history)}
+            turn_done.set()
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)
@@ -457,6 +500,7 @@ def execute(frame, channel):
             store.finish()
             channel.send('finished')
     finally:
+        turn_done.set()
         unregister_gateway_notify(frame['route'])
         if agent is not None:
             retire_agent(agent)

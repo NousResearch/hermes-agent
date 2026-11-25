@@ -41,6 +41,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import config_connected_extra
+from gateway.platforms._shared import secrets_match
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import ea_header_text
@@ -50,7 +51,7 @@ from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecre
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, mkdir_under_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -713,9 +714,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         blob_resp = await self._graph_get(temp_url, headers, "bytes", media_id)
         if blob_resp is None:
             return None, None
-        _INBOUND_MEDIA_CACHE.mkdir(parents=True, exist_ok=True)
         out_path = _INBOUND_MEDIA_CACHE / f"{media_id}{ext_hint or _ext_for_mime(mime) or '.bin'}"
         try:
+            mkdir_under_hermes_home(_INBOUND_MEDIA_CACHE)  # a dead profile home drops the media
             out_path.write_bytes(blob_resp.content)
         except OSError:
             logger.exception("[whatsapp_cloud] failed to write cached media (id=%s)", media_id)
@@ -741,8 +742,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         q = request.query
         if q.get("hub.mode", "") != "subscribe":
             return web.Response(status=400, text="bad mode")
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str.
-        if not hmac.compare_digest(q.get("hub.verify_token", "").encode(), self._verify_token.encode()):
+        if not secrets_match(q.get("hub.verify_token", ""), self._verify_token):
             return web.Response(status=403, text="verify_token mismatch")
         if not q.get("hub.challenge", ""):
             return web.Response(status=400, text="missing challenge")
@@ -784,8 +784,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not (self._app_secret and header and header.startswith("sha256=") and (expected_hex := header[7:].strip())):
             return False
         computed = hmac.new(self._app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str.
-        return hmac.compare_digest(computed.lower().encode(), expected_hex.lower().encode())
+        return secrets_match(expected_hex.lower(), computed.lower())
 
     # ------------------------------------------------------------------ dispatch
     def _dedup_wamid(self, wamid: str) -> bool:

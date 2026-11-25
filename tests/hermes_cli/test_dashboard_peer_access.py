@@ -375,7 +375,7 @@ def test_dashboard_credentials_never_open_peer_paths(peer):
     register_provider(session_token_plugin.SessionTokenProvider(token=deployment_token))
     session = _sign({"sub": "stub-user-1", "email": "stub@example.test", "name": "Stub User",
                      "org_id": "stub-org-1", "exp": 4102444800})
-    for credentials in ({"Cookie": f"hermes_session_at={session}"},
+    for credentials in ({"Cookie": f"__Host-hermes_session_at={session}"},
                         {"X-Hermes-Session-Token": deployment_token}, _bearer(deployment_token)):
         assert peer.client.get("/api/auth/me", headers=credentials).status_code == 200, credentials
         resp = peer.client.get("/api/peer/health", headers=credentials)

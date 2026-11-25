@@ -101,6 +101,9 @@ def test_a_file_url_previews_as_the_type_of_the_path_it_names(client, tmp_path, 
 
 
 class _FakeSshFs:
+    def normalize(self, path):  # identity: this fake takes the request as sent
+        return path
+
     def __init__(self, resolved):
         self.resolved = resolved
         self.reads = []

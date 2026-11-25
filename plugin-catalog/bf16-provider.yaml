@@ -1,0 +1,18 @@
+name: bf16-provider
+repo: https://github.com/BF16-AI/bf16-hermes-plugin
+sha: bd734ac6bb35f19f932430ccd3f1372bef3d41fa
+title: "bf16.ai"
+description: "bf16.ai serves uncensored open-weight models (DeepSeek V4.1 Flash, GLM-5.3, Kimi K3.1 Pro, and bf16 Auto routers) with 1M context, vision, structured tool calling, and low refusal rates for autonomous agents over an OpenAI-compatible API, prepaid per token. Live model list from the public /v1/models endpoint. Disclosure — registers one model provider and nothing else (no tools, hooks, middleware or shell commands); prompts, tool schemas and BF16_API_KEY go to https://api.bf16.ai/v1 (or BF16_BASE_URL if set) through Hermes's own client."
+maintainer: FiendSaws
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/BF16-AI/bf16-hermes-plugin#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BF16_API_KEY

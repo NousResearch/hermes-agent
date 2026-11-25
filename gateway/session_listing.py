@@ -122,8 +122,18 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
     store = authority_persistence(authority)
     own_profile = _own_profile(store)
     rule = owner_rule()
+    # Content-less rows are not conversations the picker can open: a launch that
+    # never receives a prompt, a reaped orphan and a resumed-over row each leave
+    # a zero-message row behind, and listing them fills the picker with blank
+    # titles that fail to open. They stay in the store — the listing just skips
+    # them, as the sibling human-facing listings already do. A finished cron run
+    # is the exception: it resumes from its job, not its transcript (the stored
+    # feed's TUI-8 contract offers it), and the scheduler books ``cron_complete``
+    # only on a real assistant reply, so the reason — not the source — is what
+    # keeps it listed; a suppressed cron row stays hidden with the husks.
     listing = SessionQuery(exclude_sources=_excluded_sources(), order=SessionOrder.LAST_ACTIVE,
-                           include_hidden=include_hidden, workspace_key=workspace, search_text=query)
+                           include_hidden=include_hidden, workspace_key=workspace, search_text=query,
+                           min_message_count=1, keep_empty_end_reasons=('cron_complete',))
     sessions, seen, sources, exhausted = [], set(), [], False  # sources: (first row, current segment, listed row)
     while len(sessions) < limit:
         rows = store.sessions.list_sessions(listing, SessionWindow(limit=_BATCH, offset=offset), compact_rows=True)

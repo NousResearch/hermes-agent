@@ -51,6 +51,22 @@ def _systemctl(scope: str, args: list[str], *, timeout: int = _TIMEOUT) -> subpr
                              capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
+def _gateway_verb_timeout(verb: str) -> int:
+    """``systemctl --user <verb>`` timeout in seconds, aligned with the migration's handoff/verify budgets.
+
+    ``restart`` can block across both the old gateway's in-band drain (``RESTART_HANDOFF_SECONDS``) and a
+    ``Type=notify`` startup (``VERIFY_SECONDS``); ``start`` can block on startup; ``stop`` can block on drain.
+    """
+    from hermes_cli.gateway_migrate_backends_apply import RESTART_HANDOFF_SECONDS, VERIFY_SECONDS
+    if verb == "restart":
+        return max(90, int(RESTART_HANDOFF_SECONDS + VERIFY_SECONDS))
+    if verb == "start":
+        return max(90, int(VERIFY_SECONDS))
+    if verb == "stop":
+        return max(90, int(RESTART_HANDOFF_SECONDS))
+    return 90
+
+
 def _launchctl(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
                           timeout=_TIMEOUT, check=False)
@@ -949,7 +965,8 @@ class SystemHost:
             return
         if verb == "stop":
             gw._mark_planned_stop()
-        self._require(_systemctl("user", [verb, gw.get_service_name()], timeout=90), f"{verb} the gateway service")
+        timeout = _gateway_verb_timeout(verb)
+        self._require(_systemctl("user", [verb, gw.get_service_name()], timeout=timeout), f"{verb} the gateway service")
 
     def uninstall_gateway(self) -> None:
         from hermes_cli import gateway as gw

@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
+import {
+  activateWindow,
+  ensureMainWindow,
+  shouldQuitOnLastChatClosed,
+  shouldQuitOnWindowAllClosed
+} from './main-window-lifecycle'
 
 test('recreates a destroyed primary window without focusing it', () => {
   const destroyedWindow = {
@@ -133,5 +138,40 @@ test('last-chat fallback quits only for a final non-macOS close outside a quit',
   for (const [platform, isQuittingForHandoff, remainingChatWindows, quitInProgress, expected] of cases) {
     const input = { platform, isQuittingForHandoff, remainingChatWindows, quitInProgress }
     assert.equal(shouldQuitOnLastChatClosed(input), expected, JSON.stringify(input))
+  }
+})
+
+test('ensureMainWindow does not recreate or focus a window while quitting', () => {
+  ensureMainWindow(null, {
+    isReady: true,
+    isQuitting: true,
+    createWindow: () => assert.fail('must not create window during quit'),
+    focusWindow: () => assert.fail('must not focus window during quit')
+  })
+
+  ensureMainWindow(
+    { isDestroyed: () => false },
+    {
+      isReady: true,
+      isQuitting: true,
+      createWindow: () => assert.fail('must not create window during quit'),
+      focusWindow: () => assert.fail('must not focus window during quit')
+    }
+  )
+})
+
+test('window-all-closed quits on macOS when a real quit or handoff is in progress', () => {
+  const cases: [string, boolean, boolean, boolean][] = [
+    // platform, isQuittingForHandoff, quitInProgress, expected
+    ['darwin', false, false, false],
+    ['darwin', true, false, true],
+    ['darwin', false, true, true],
+    ['win32', false, false, true],
+    ['linux', false, false, true]
+  ]
+
+  for (const [platform, isQuittingForHandoff, quitInProgress, expected] of cases) {
+    const input = { platform, isQuittingForHandoff, quitInProgress }
+    assert.equal(shouldQuitOnWindowAllClosed(input), expected, JSON.stringify(input))
   }
 })

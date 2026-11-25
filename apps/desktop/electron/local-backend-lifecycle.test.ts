@@ -144,6 +144,9 @@ test('the quit barrier cancels real first-run startup and waits for both local a
     await Promise.resolve()
   }
 
+  assert.equal(finalQuit.mock.calls.length, 0)
+  await new Promise(resolve => setTimeout(resolve, 0))
+
   assert.equal(finalQuit.mock.calls.length, 1)
   assert.equal(quit.begin([]), false)
 })

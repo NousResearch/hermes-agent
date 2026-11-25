@@ -63,18 +63,28 @@ test('one final quit waits for every required teardown branch', async () => {
     { run: sshRun, waitForCompletion: true }
   ]
 
+  assert.equal(coordinator.isFinished(), false)
   assert.equal(coordinator.begin(tasks), true)
+  assert.equal(coordinator.isFinished(), false)
   assert.equal(coordinator.begin(tasks), true, 'a re-entrant quit stays deferred while teardown is pending')
   assert.equal(backendRun.mock.calls.length, 1)
   assert.equal(sshRun.mock.calls.length, 1)
 
   backend.resolve()
   await Promise.resolve()
+  assert.equal(coordinator.isFinished(), false)
   assert.equal(requestFinalQuit.mock.calls.length, 0)
 
   ssh.resolve()
   await Promise.all([backend.promise, ssh.promise])
   await Promise.resolve()
+  assert.equal(
+    requestFinalQuit.mock.calls.length,
+    0,
+    'final quit must wait for a macrotask instead of re-entering before-quit on a microtask'
+  )
+  assert.equal(coordinator.isFinished(), true)
+  await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(requestFinalQuit.mock.calls.length, 1)
 
   assert.equal(coordinator.begin(tasks), false, 'the coordinator must not cancel its own final quit')
@@ -100,6 +110,8 @@ test('teardown failure still releases the final quit after all branches settle',
 
   await Promise.resolve()
   await Promise.resolve()
+  assert.equal(requestFinalQuit.mock.calls.length, 0)
+  await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(requestFinalQuit.mock.calls.length, 1)
 })
 
@@ -130,5 +142,7 @@ test('a synchronous reentrant quit cannot start a second teardown', async () => 
   await Promise.resolve()
   await Promise.resolve()
   assert.equal(duplicate.mock.calls.length, 0)
+  assert.equal(finalQuit.mock.calls.length, 0)
+  await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(finalQuit.mock.calls.length, 1)
 })

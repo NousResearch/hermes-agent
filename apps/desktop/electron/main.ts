@@ -384,8 +384,7 @@ import {
   runManagedSshUpdate,
   validateCorrelationId,
   waitForManagedRemoteClearance,
-  waitForManagedSshBootstrapFence,
-  waitForManagedUpdateOperations
+  waitForManagedSshBootstrapFence
 } from './managed-ssh-update'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { isMediaCapturePermission } from './media-capture-permission'
@@ -502,21 +501,15 @@ import {
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
-import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
   backendOwnedByApp,
   mergeActiveWork,
   normalizeActiveWork,
-  quitPromptFor,
   shouldGuardWindowClose
 } from './quit-guard'
-import {
-  backendQuitNeedsWait,
-  backendTeardownOptions,
-  createQuitTeardownCoordinator,
-  type QuitTeardownTask
-} from './quit-teardown'
+import { createQuitLifecycle } from './quit-lifecycle'
+import { backendTeardownOptions } from './quit-teardown'
 import {
   boundedInstallId,
   createPrimaryInstallIdResolver,
@@ -1150,7 +1143,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       return
     }
 
-    if (rendererTeardownInProgress() || quitInProgress) {
+    if (rendererTeardownInProgress() || quitLifecycle.isQuitInProgress()) {
       return
     }
 
@@ -3720,12 +3713,6 @@ async function restoreBundledBackend(): Promise<void> {
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
-
-// Quit-guard latches: one while the confirmation is on screen (a second
-// Cmd-Q must not stack dialogs), one after the user has said "quit anyway"
-// (the app.quit() that follows re-enters before-quit and must pass through).
-let quitPromptOpen = false
-let quitConfirmedWithActiveWork = false
 
 // Resolve the staged updater binary the desktop may hand an update to. On
 // Windows that binary owns ALL repo mutation — running `hermes update` +
@@ -8800,8 +8787,6 @@ const managedConnectionUpdateGate = new ManagedConnectionUpdateGate(
 const managedConnectionUpdates = new Map<string, Promise<any>>()
 const managedConnectionRecoveries = new Map<string, Promise<void>>()
 const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: any }>()
-let managedUpdateQuitWait: Promise<unknown> | null = null
-let managedUpdateQuitWaitDone = false
 
 function assertCanMutateManagedPrimaryRouting() {
   const durableIds = readManagedSshRecoveryRecords().map(record => record.connectionId)
@@ -11182,14 +11167,110 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   }
 })
 
-const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
+const quitLifecycle = createQuitLifecycle({
+  platform: process.platform,
+  skipQuitConfirm: SKIP_QUIT_CONFIRM,
+  isQuittingForHandoff: () => isQuittingForHandoff,
+  hasBackendShutdownStarted: () => backendShutdown.hasStarted(),
+  getActiveWorkReports: () => [...activeWorkByWebContents.values(), lastActiveWorkSeen],
+  quitStopsBackendWork,
+  restoreTrayBeforePrompt: () => {
+    if (minimizeToTray.status().available) {
+      minimizeToTray.restore()
+    }
+  },
+  showQuitPrompt: prompt => {
+    const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
 
-const quitFinalization = createQuitFinalization({
-  isWindows: IS_WINDOWS,
-  hardExit: code => {
-    rememberLog(`[quit] forcing Windows process exit after Electron quit finalization stalled`)
-    app.exit(code)
-  }
+    if (!parent || parent.isDestroyed()) {
+      return null
+    }
+
+    return dialog
+      .showMessageBox(parent, {
+        buttons: [...prompt.buttons],
+        cancelId: 0,
+        defaultId: 0,
+        detail: prompt.detail,
+        message: prompt.message,
+        type: 'question'
+      })
+      .then(({ response }) => response === 1)
+  },
+  setAppQuitting: quitting => {
+    appQuitting = quitting
+  },
+  onQuitAdmitted: () => {
+    nvidiaEglRecovery.cleanExit()
+    minimizeToTray.beginQuit()
+    mainProcessLagWatchdog.stop()
+  },
+  getManagedUpdateOperations: () => [...managedConnectionUpdates.values(), ...managedConnectionRecoveries.values()],
+  sealSshBootstrap: () => sshBootstrapCoordinator.shutdown(),
+  getBackendActivity: () => ({
+    connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
+    processAttached: backendConnectionState.getProcess() !== null,
+    shutdownPending: backendShutdown.isPending()
+  }),
+  hasSshTeardownWork: () =>
+    sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0 || sshTeardowns.hasPending(),
+  runBackendShutdown: () => backendShutdown.run(),
+  runSshTeardown: teardownSshForQuit,
+  onBeforeQuitCleanup: () => {
+    if ((IS_WINDOWS || process.platform === 'linux') && !windowsSandboxFallbackSticky) {
+      try {
+        writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
+      } catch {
+        void 0
+      }
+    }
+
+    if (process.platform === 'linux') {
+      clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
+    }
+
+    closePetOverlay()
+    wakeIndicatorController.close()
+    hudSnapShortcut.dispose()
+
+    if (hudWindow && !hudWindow.isDestroyed()) {
+      hudWindow.removeAllListeners('closed')
+      hudWindow.destroy()
+    }
+
+    hudWindow = null
+    closeQuickEntryWindow()
+
+    if (bootstrapAbortController) {
+      try {
+        bootstrapAbortController.abort()
+      } catch {
+        void 0
+      }
+    }
+
+    if (desktopLogFlushTimer) {
+      clearTimeout(desktopLogFlushTimer)
+      desktopLogFlushTimer = null
+    }
+
+    flushDesktopLogBufferSync()
+    closePreviewWatchers()
+    terminalIpc.disposeAllTerminalSessions()
+    void backendShutdown.run()
+  },
+  runWillQuitCleanup: () => {
+    closeGatewayTicketBridges()
+    killTimedGitChildren()
+    sshIsolatedKeepalives.stopAll()
+    destroyKeepaliveAgents()
+    nativeNotifications.dispose()
+    minimizeToTray.dispose()
+  },
+  log: rememberLog,
+  flushLogsSync: flushDesktopLogBufferSync,
+  requestQuit: () => app.quit(),
+  hardExit: code => app.exit(code)
 })
 
 async function teardownSshForQuit(): Promise<void> {
@@ -11754,7 +11835,12 @@ const minimizeToTray = createMinimizeToTray({
   // A tray click is an explicit relaunch gesture (#130810): restore with
   // activation (show + focus), not the ambient showInactive path.
   restoreMainWindow: () =>
-    ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateWindow }),
+    ensureMainWindow(mainWindow, {
+      isReady: app.isReady(),
+      isQuitting: isAppQuitUnderway(),
+      createWindow,
+      focusWindow: activateWindow
+    }),
   isQuittingForHandoff: () => isQuittingForHandoff,
   log: rememberLog
 })
@@ -11872,6 +11958,10 @@ function spawnSecondaryWindow({
 
 // Open (or focus) a standalone window for a single chat session.
 function createSessionWindow(sessionId, { connectionId = null, profile = null, watch = false } = {}) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
 }
 
@@ -11959,6 +12049,10 @@ function spawnBrowserWindow(tabId) {
 }
 
 function createBrowserWindow(tabId) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
 }
 
@@ -11999,6 +12093,10 @@ function createInstanceWindow(
   options?: DesktopProfileRoute,
   source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
 ) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   const route = resolveDesktopWindowLaunch(
     options,
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
@@ -12107,8 +12205,11 @@ let petOverlayWindow = null
 // persisted popped-out flag survives for the next boot's restorePetOverlay
 // (#55920).
 let appQuitting = false
-// Real quit proceeding; see shouldQuitOnLastChatClosed (#130810).
-let quitInProgress = false
+
+function isAppQuitUnderway(): boolean {
+  return quitLifecycle.isQuitUnderway()
+}
+
 // Set while a close is in flight: Electron's close() is async and can be
 // aborted on macOS, so the window may still be alive after closePetOverlay().
 // openPetOverlay must never reuse (or leave) a closing window — otherwise two
@@ -12242,6 +12343,10 @@ function spawnPetOverlayWindow(bounds) {
 }
 
 function openPetOverlay(bounds) {
+  if (isAppQuitUnderway()) {
+    return
+  }
+
   if (petOverlayWindow && !petOverlayWindow.isDestroyed() && !petOverlayClosing) {
     if (bounds) {
       petOverlayWindow.setBounds({
@@ -12801,6 +12906,10 @@ function destroyHudWindow(win: BrowserWindow) {
 }
 
 function openHudWindow(sessionId, profile) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
 
   if (hudWindow && !hudWindow.isDestroyed()) {
@@ -14580,6 +14689,11 @@ async function requestManagedSshUpdate(rawId) {
   }
 
   const correlationId = crypto.randomUUID()
+
+  if (isAppQuitUnderway()) {
+    return refusedManagedSshUpdate(connectionId, correlationId, 'Hermes Desktop is quitting.')
+  }
+
   const registry = readDesktopConnectionsRegistry()
   const source = registry.connections.find(connection => connection.id === connectionId)
 
@@ -16186,16 +16300,11 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
-  closeGatewayTicketBridges()
-  killTimedGitChildren()
-  sshIsolatedKeepalives.stopAll()
-  destroyKeepaliveAgents()
-  nativeNotifications.dispose()
-  quitFinalization.arm()
+  quitLifecycle.handleWillQuit()
 })
 
 app.on('quit', () => {
-  quitFinalization.cancel()
+  quitLifecycle.handleQuit()
 })
 
 // Answered synchronously so preload can publish the verdict before the
@@ -17305,6 +17414,7 @@ if (!isPrimaryInstance) {
     rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
     ensureMainWindow(mainWindow, {
       isReady: app.isReady(),
+      isQuitting: isAppQuitUnderway(),
       createWindow,
       focusWindow: activateWindow,
       // deep-link delivery focuses a live window after its renderer is ready.
@@ -17422,7 +17532,7 @@ app.whenReady().then(() => {
   installHudModifierTap({
     rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
     summon: () => {
-      if (!isQuittingForHandoff && !backendShutdown.hasStarted()) {
+      if (!isAppQuitUnderway()) {
         openHudWindow(null, null)
       }
     }
@@ -17470,16 +17580,19 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
+    const isQuitting = quitLifecycle.handleActivateWhileQuitting()
+
     // Recreate the primary window if it's gone. Guard on mainWindow directly
     // (not just total window count) so a dock click still restores the main
     // window when only secondary session windows remain open.
     // #130810: a dock/taskbar activate is explicit, so restore with
     // activation (restore + show + focus), not the ambient showInactive path.
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      createWindow()
-    } else {
-      activateWindow(mainWindow)
-    }
+    ensureMainWindow(mainWindow, {
+      isReady: app.isReady(),
+      isQuitting,
+      createWindow,
+      focusWindow: activateWindow
+    })
   })
 })
 
@@ -17538,78 +17651,6 @@ function quitStopsBackendWork(): boolean {
   return backendOwnedByApp({ ownedBackendCount, primaryRouteKind })
 }
 
-// Ask before a quit kills a turn in flight. True when the quit was intercepted
-// and the confirmation is on screen; the confirm button re-enters before-quit with
-// the latch set and falls straight through to the teardown below.
-function heldQuitForActiveWork(event: Electron.Event): boolean {
-  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || isQuittingForHandoff) {
-    return false
-  }
-
-  if (quitPromptOpen) {
-    event.preventDefault()
-
-    return true
-  }
-
-  // The per-webContents map can read empty at quit time even though a turn
-  // is live (a stream can reload its webContents mid-turn, dropping the entry
-  // before the guard runs), so merge in the last summary any renderer sent.
-  const work = mergeActiveWork([...activeWorkByWebContents.values(), lastActiveWorkSeen])
-
-  const prompt = quitPromptFor(work, isQuittingForHandoff, quitStopsBackendWork())
-
-  // A tray quit with live work still needs the ordinary visible confirmation.
-  if (prompt && minimizeToTray.status().available) {
-    minimizeToTray.restore()
-  }
-
-  // A hidden aux window must never parent the quit prompt: the dialog would
-  // be invisible and the held quit unanswerable (#116376 §E).
-  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
-
-  if (!prompt || !parent || parent.isDestroyed()) {
-    return false
-  }
-
-  event.preventDefault()
-  quitPromptOpen = true
-
-  void dialog
-    .showMessageBox(parent, {
-      buttons: [...prompt.buttons],
-      cancelId: 0,
-      defaultId: 0,
-      detail: prompt.detail,
-      message: prompt.message,
-      type: 'question'
-    })
-    .then(({ response }) => {
-      quitPromptOpen = false
-
-      if (response === 1) {
-        quitConfirmedWithActiveWork = true
-        app.quit()
-      }
-    })
-    .catch(() => {
-      // A dialog we can't show must not become a quit we can't perform.
-      quitPromptOpen = false
-      quitConfirmedWithActiveWork = true
-      app.quit()
-    })
-
-  return true
-}
-
-// Intercept the close of the LAST chat window while the window and its
-// active-work report are still alive. On Windows/Linux the primary quit
-// gesture is the title-bar close button: closing the final window destroys
-// its webContents (clearing the active-work map) BEFORE window-all-closed
-// reactively calls app.quit() — by the time before-quit runs, heldQuitForActiveWork
-// finds nothing and the app exits silently (#96139). Running the same guard
-// here, on the close event itself, catches it in time; "Quit Anyway" re-enters
-// before-quit with the latch set and falls through.
 function registerChatWindow(window: BrowserWindow) {
   chatWindows.add(window)
   window.on('close', (event: Electron.Event) => {
@@ -17626,7 +17667,7 @@ function registerChatWindow(window: BrowserWindow) {
       return
     }
 
-    heldQuitForActiveWork(event)
+    quitLifecycle.heldQuitForActiveWork(event)
   })
   window.once('closed', () => {
     chatWindows.delete(window)
@@ -17643,7 +17684,7 @@ function quitIfNoSurfaceLeft() {
       platform: process.platform,
       isQuittingForHandoff,
       remainingChatWindows: chatWindows.size + browserWindows.size,
-      quitInProgress
+      quitInProgress: quitLifecycle.isQuitInProgress()
     })
   ) {
     app.quit()
@@ -17651,151 +17692,9 @@ function quitIfNoSurfaceLeft() {
 }
 
 app.on('before-quit', event => {
-  // Runs ahead of every teardown below, so "Keep Running" leaves the app
-  // exactly as it was: a held quit is not a quit in progress, and the
-  // overlay-suppression latch must not leak into the next close (#130810).
-  if (heldQuitForActiveWork(event)) {
-    appQuitting = false
-    quitInProgress = false
-
-    return
-  }
-
-  // Quit is really proceeding: latch both before ANY teardown below closes
-  // the pet overlay — its 'closed' handler must not echo pop-in during quit,
-  // or the persisted popped-out state is wiped and the overlay never restores
-  // (#55920).
-  appQuitting = true
-  quitInProgress = true
-  nvidiaEglRecovery.cleanExit()
-
-  minimizeToTray.beginQuit()
-  mainProcessLagWatchdog.stop()
-
-  // A detached remote updater can outlive this Electron process. Do not tear
-  // down its SSH observer/restore transaction at the generic SSH shutdown
-  // deadline: join it first (BEFORE sealing the bootstrap coordinator, whose
-  // shutdown would refuse the restore dials), then re-enter before-quit for
-  // normal teardown. A crash still fails closed on next launch via the remote
-  // install-marker preflight in both POSIX and Windows lifecycle
-  // implementations.
-  if (
-    !managedUpdateQuitWaitDone &&
-    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
-  ) {
-    event.preventDefault()
-
-    if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ]).finally(() => {
-        managedUpdateQuitWaitDone = true
-        app.quit()
-      })
-    }
-
-    return
-  }
-
-  // A prevented first quit leaves the renderer alive while teardown runs.
-  // Seal the SSH coordinator before touching connections so reconnect
-  // callbacks cannot recreate a backend for a registration whose app is
-  // already quitting (#91668).
-  sshBootstrapCoordinator.shutdown()
-
-  const backendNeedsWait = backendQuitNeedsWait({
-    connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
-    processAttached: backendConnectionState.getProcess() !== null,
-    shutdownPending: backendShutdown.isPending()
-  })
-
-  const sshNeedsWait =
-    sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0 || sshTeardowns.hasPending()
-
-  const teardownTasks: QuitTeardownTask[] = [
-    { run: (): Promise<void> => backendShutdown.run(), waitForCompletion: backendNeedsWait }
-  ]
-
-  if (sshNeedsWait) {
-    teardownTasks.push({ run: teardownSshForQuit, waitForCompletion: true })
-  }
-
-  if (quitTeardown.begin(teardownTasks)) {
-    event.preventDefault()
-  }
-
-  // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).
-  // FATAL GPU aborts skip before-quit, leaving the `booting` marker in place.
-  // Keyed on sticky (not active): a manual --no-sandbox run still records a
-  // clean quit, while an engaged fallback keeps its sticky marker.
-  if ((IS_WINDOWS || process.platform === 'linux') && !windowsSandboxFallbackSticky) {
-    try {
-      writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
-    } catch {
-      void 0
-    }
-  }
-
-  // #124843: a clean quit mid-boot must not trip next-launch --disable-gpu.
-  if (process.platform === 'linux') {
-    clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
-  }
-
-  // The always-on-top overlay isn't a "real" app window; close it so a stray
-  // pet can't keep the process alive or float over a quit app.
-  closePetOverlay()
-  wakeIndicatorController.close()
-
-  // Same for the HUD — an always-on-top panel outliving the app would leave a
-  // floating composer with nothing behind it. Close it directly rather than via
-  // closeHudWindow(): that also re-shows the main window, which is wrong on the
-  // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
-  hudSnapShortcut.dispose()
-
-  if (hudWindow && !hudWindow.isDestroyed()) {
-    hudWindow.removeAllListeners('closed')
-    hudWindow.destroy()
-  }
-
-  hudWindow = null
-
-  // Same for the Quick Entry composer — and release its global accelerator so a
-  // quitting Hermes never keeps another app's chord hostage.
-  closeQuickEntryWindow()
-
-  // Quitting mid-install should stop the installer, not orphan it.
-  if (bootstrapAbortController) {
-    try {
-      bootstrapAbortController.abort()
-    } catch {
-      void 0
-    }
-  }
-
-  if (desktopLogFlushTimer) {
-    clearTimeout(desktopLogFlushTimer)
-    desktopLogFlushTimer = null
-  }
-
-  flushDesktopLogBufferSync()
-  closePreviewWatchers()
-
-  // Kill open PTYs before environment teardown to avoid the node-pty#904
-  // ThreadSafeFunction SIGABRT race.
-  terminalIpc.disposeAllTerminalSessions()
-
-  void backendShutdown.run()
+  quitLifecycle.handleBeforeQuit(event)
 })
 
 app.on('window-all-closed', () => {
-  // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
-    app.quit()
-  }
+  quitLifecycle.handleWindowAllClosed()
 })

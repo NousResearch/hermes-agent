@@ -4,7 +4,7 @@ notification mode, rich-message fast-path, albums and fallbacks. Wired as the pl
 ``standalone_sender_fn``; core reaches it only through the platform registry.
 
 ``_media_caption_split``, the media extension sets and the result/redaction helpers are small local
-copies of ``tools.send_message_senders``' (private core names a plugin may not import)."""
+copies of ``gateway.outbound.senders``' (private core names a plugin may not import)."""
 
 import asyncio
 import contextlib
@@ -129,8 +129,9 @@ def _telegram_bot(token, extra=None):
     from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, safe_proxy_url_for_log
     proxy = None
     extra = extra or {}
+    from plugins.platforms.telegram.telegram_network import bot_api_urls
     base_url = extra.get("base_url")
-    urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
+    urls = bot_api_urls(extra)
     try:
         from telegram.request import HTTPXRequest
         from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts, telegram_verify
@@ -482,7 +483,9 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
         from agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
     extra = getattr(pconfig, "extra", None) or {}
-    return await _send_telegram(
+    result = await _send_telegram(
         token, chat_id, message, media_files=media_files, thread_id=thread_id,
         disable_link_previews=bool(extra.get("disable_link_previews")), force_document=force_document,
         extra=extra, notify=notify)
+    from plugins.platforms.telegram.telegram_send_errors import explain_username_chat_not_found
+    return explain_username_chat_not_found(result, chat_id)

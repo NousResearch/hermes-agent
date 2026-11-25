@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -36,7 +37,7 @@ def _request(payload: dict, headers: dict | None = None) -> SimpleNamespace:
 
 def _signed(payload: dict, key: str) -> SimpleNamespace:
     body = json.dumps(payload).encode()
-    ts, nonce = "1700000000", "n1"
+    ts, nonce = str(int(time.time())), "n1"
     sig = hashlib.sha256(f"{ts}{nonce}{key}".encode() + body).hexdigest()
     headers = {"x-lark-request-timestamp": ts, "x-lark-request-nonce": nonce, "x-lark-signature": sig}
     return SimpleNamespace(remote=_SOURCE_IP, content_length=None, headers=headers, content=_Content(body))

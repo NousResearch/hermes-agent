@@ -149,7 +149,7 @@ async def test_command_authority_precedes_resolution_and_mutation(tmp_path, monk
     from agent import skill_commands
 
     runner = SimpleNamespace(_draining=False)
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owned', db=None, epoch=1)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owned', epoch=1, persistence=None)
     source = SessionSource(platform=Platform.LOCAL, chat_id='local-test', user_id='owner')
     authority.sessions['local-test'] = LiveSession(source, 'route')
     def forbidden(*args, **kwargs):

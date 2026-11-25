@@ -808,7 +808,7 @@ class TestToolHandler:
 
     def test_successful_call(self):
         from tools.mcp_tool_handlers import _make_tool_handler
-        from tools.mcp_tool import _servers
+        from tools.mcp_tool import _server_trust_levels, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -819,7 +819,7 @@ class TestToolHandler:
 
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
-            with self._patch_mcp_loop():
+            with self._patch_mcp_loop(), patch.dict(_server_trust_levels, {"test_srv": "full"}):
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "hello world"
             mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
@@ -829,7 +829,7 @@ class TestToolHandler:
 
     def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
         from tools.mcp_tool_handlers import _make_tool_handler
-        from tools.mcp_tool import _servers
+        from tools.mcp_tool import _server_trust_levels, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -850,7 +850,7 @@ class TestToolHandler:
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
             with patch("tools.mcp_tool_discovery._request_lazy_reconnect", side_effect=fake_lazy_reconnect) as reconnect, \
-                 self._patch_mcp_loop():
+                 self._patch_mcp_loop(), patch.dict(_server_trust_levels, {"test_srv": "full"}):
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "reconnected"
             reconnect.assert_called_once()
@@ -1689,17 +1689,7 @@ class TestReconnection:
                 self_srv.session = MagicMock()
                 self_srv._tools = []
                 self_srv._ready.set()
-                # Guarded set: MCPServerTask uses __slots__, so on pre-fix
-                # code (no ``_ever_connected`` slot) a bare assignment raises
-                # AttributeError *inside this mock* while ``_ready`` is still
-                # set — which detours run() into the reconnect ladder and lets
-                # the test pass vacuously on the buggy code. The guard keeps
-                # the regression test biting: pre-fix the flag simply doesn't
-                # exist and the misclassification fires.
-                try:
-                    self_srv._ever_connected = True
-                except AttributeError:
-                    pass
+                self_srv._ever_connected = True
                 return "reconnect"
             if run_count <= 5:
                 # Four consecutive failures on later reconnect attempts --
@@ -2623,8 +2613,7 @@ class TestMCPSelectiveToolLoading:
 
         async def run():
             with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-                 patch("tools.registry.registry", mock_registry), \
-                 patch("toolsets.create_custom_toolset"):
+                 patch("tools.registry.registry", mock_registry):
                 return await _discover_and_register_server(name, config)
 
         try:

@@ -188,6 +188,7 @@ async def test_bluebubbles_group_voice_memo_wakes_on_the_spoken_wake_word(tmp_pa
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": "secret", "require_mention": True,
         "mention_patterns": PATTERNS, "voice_mention_patterns": True, "send_read_receipts": False}))
+    adapter.set_authorization_check(lambda *a, **k: True)  # the runner wires one at startup
     clip = tmp_path / "memo.ogg"
     clip.write_bytes(OGG)
     adapter._download_attachment = AsyncMock(return_value=str(clip))
@@ -203,6 +204,36 @@ async def test_bluebubbles_group_voice_memo_wakes_on_the_spoken_wake_word(tmp_pa
 
     assert len(calls) == 1
     assert adapter.handle_message.await_count == (1 if admitted else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [False, None])
+async def test_a_bluebubbles_memo_from_an_unauthorized_sender_is_never_fetched_or_transcribed(
+        tmp_path, monkeypatch, verdict):
+    """Only the gateway's explicit True permits the fetch: a refused or unwired sender's memo is
+    neither downloaded nor sent to STT, so the spoken gate drops it even when it says the wake word."""
+    import asyncio
+    import json
+    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
+        "server_url": "http://localhost:1234", "password": "secret", "require_mention": True,
+        "mention_patterns": PATTERNS, "voice_mention_patterns": True, "send_read_receipts": False}))
+    adapter.set_authorization_check(None if verdict is None else (lambda *a, **k: verdict))
+    adapter._download_attachment = AsyncMock(return_value=str(tmp_path / "memo.ogg"))
+    adapter.handle_message = AsyncMock()
+    body = json.dumps({"type": "new-message", "data": {
+        "guid": "m1", "text": "", "handle": {"address": "+155****0100"}, "isFromMe": False, "isGroup": True,
+        "chats": [{"guid": "iMessage;+;group-chat"}], "attachments": [{"guid": "a1", "mimeType": "audio/ogg"}]}}).encode()
+    request = SimpleNamespace(query={"password": "secret"}, headers={}, read=AsyncMock(return_value=body))
+    transcribe, calls = _stt("hermes, what is on today")
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._handle_webhook(request)
+        await asyncio.sleep(0)
+
+    adapter._download_attachment.assert_not_awaited()
+    assert calls == []
+    assert adapter.handle_message.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -640,6 +671,7 @@ async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": "secret", "require_mention": True,
         "mention_patterns": PATTERNS, "voice_mention_patterns": True, "send_read_receipts": False}))
+    adapter.set_authorization_check(lambda *a, **k: True)  # the runner wires one at startup
     clip, doc = tmp_path / "memo.ogg", tmp_path / "file.bin"
     clip.write_bytes(OGG)
     doc.write_bytes(b"%PDF-1.4")

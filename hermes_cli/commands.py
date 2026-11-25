@@ -344,7 +344,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
-    CommandDef("debug", "Debug report (system info + logs): shows the privacy notice; /debug upload shares links",
+    CommandDef("debug", "Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links",
                "Info",
                args_hint="[upload|nous upload|local]"),
 

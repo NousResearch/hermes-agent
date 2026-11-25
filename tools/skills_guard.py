@@ -20,9 +20,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
+from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 
 
-SCANNER_VERSION = "skills-guard-v13"
+SCANNER_VERSION = "skills-guard-v16"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -36,7 +37,7 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # "ask" = error to the agent (retry without the flagged content); only when skills.guard_agent_created is on.
+    # "ask" = error to the agent (retry without the flagged content); when guard_agent_created is on or for background review.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 
@@ -154,6 +155,19 @@ _CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|creden
 # `os.path.expanduser(...)` (Python only).
 _CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
+# Well-known PUBLIC Solana program ids (SPL Token, Token-2022, Associated Token Account, Memo,
+# System, Metaplex Token Metadata). On-chain code addresses every client hardcodes, so a
+# `TOKEN = '<id>'` constant names a program, it does not embed a credential. A CLOSED list, matched
+# case-sensitively as the WHOLE quoted value: this can only turn a hardcoded_secret flag into clean
+# for these exact ids; any other value, or one of these with a character changed, still matches.
+_PUBLIC_SOLANA_PROGRAM_IDS = r'(?-i:' + '|'.join((
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+    'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+    '11111111111111111111111111111111',
+    'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
+)) + r')'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -263,6 +277,9 @@ THREAT_PATTERNS = [
      "role_pretend", "high", "injection", "attempts to make the agent assume a different identity"),
     (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
      "disregard_rules", "critical", "injection", "instructs agent to disregard its rules"),
+    # High, not critical: "forget" is ordinary English in migration notes ("forget your old rules for v1"), so a
+    # hit is a caution that --force can override rather than an unoverridable dangerous verdict.
+    (FORGET_RULES_RAW_RE, "forget_rules", "high", "injection", "instructs agent to forget its instructions"),
     (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt',
      "leak_system_prompt", "high", "injection", "attempts to extract the system prompt"),
     (r'(when|if)\s+no\s*one\s+is\s+(watching|looking)',
@@ -352,7 +369,7 @@ THREAT_PATTERNS = [
     # (`| gunzip | sh`, `| tee x.sh; sh x.sh`), or an archive unpacker: an embedded base64 tarball
     # (`tail "$0" | base64 -d | tar x`) is code the scanner never sees. Decoding into a data consumer
     # (`| jq .`, `| grep`) is not. A base64 ENCODE→DECODE round-trip of a freshly-created archive over a
-    # transport (`tar c… | base64 … | base64 -d | tar x`) is data movement, demoted in plugin_guard_context.
+    # transport (`tar c… | base64 … | base64 -d | tar x`) is data movement, demoted in plugins_install_scan_context.
     (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b|\bopenssl\s+(?:base64|enc)\b[^|;&\n]*?\s-d\b)'
      r'[^\n]*?(?:\||;|&&)\s*(?:\w+=\S*\s+)*(?:\S*/)?'
      r'(?:sh|bash|zsh|ksh|dash|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo'
@@ -455,7 +472,6 @@ THREAT_PATTERNS = [
      "setuid_setgid", "medium", "privilege_escalation", "mentions setuid/setgid (informational)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),
-    (r'chmod\s+[u+]?s', "suid_bit", "critical", "privilege_escalation", "sets SUID/SGID bit on a file"),
     # ── Agent config persistence ──
     # Bare mentions of config files are not threats (authoring guides, setup docs) — flagging them blocked
     # popular community skills. Tiers: mechanical shell writes = critical; prose modification intent =
@@ -494,6 +510,7 @@ THREAT_PATTERNS = [
     # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
      r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'(?!' + _PUBLIC_SOLANA_PROGRAM_IDS + r'["\'])'
      r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'(?-i:-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)',
@@ -776,9 +793,12 @@ def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Findi
     owners = _statement_owners(lines)  # per-file context for the demotion
     patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
     views = code_views(lines) if suffix == ".py" and (skill or docstring_lines) else None
+    forget_lines = mask_negated_forget("\n".join(lines)).split("\n")  # a negator may sit on the line above
     for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
-            if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
+            if pid == "forget_rules":
+                scan_line = forget_lines[i - 1]
+            elif pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
                 if suffix != ".py":
                     continue
                 # A triple-quoted token exempts its own columns, not executable code on the same line.
@@ -887,15 +907,18 @@ def _community_note(f: Finding) -> Finding:
     return f
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(skill_path: Path, source: str = "community", *, trust_level: str | None = None,
+               files: list[Path] | None = None) -> ScanResult:
     """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
     files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
-    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level."""
-    name, trust = skill_path.name, _resolve_trust_level(source)
+    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level unless the caller
+    passes the serving adapter's own *trust_level*. *files* (paths inside the skill dir) limits the per-file
+    pattern scan to them; the structural checks still cover the dir."""
+    name, trust = skill_path.name, trust_level or _resolve_trust_level(source)
     findings: list[Finding] = []
     if skill_path.is_dir():
         findings.extend(_check_structure(skill_path))
-        for f in skill_path.rglob("*"):
+        for f in skill_path.rglob("*") if files is None else files:
             if f.is_file():
                 findings.extend(scan_file(f, str(f.relative_to(skill_path)), skill=True))
     elif skill_path.is_file():
@@ -932,7 +955,7 @@ def content_hash(skill_path: Path) -> str:
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
-                      cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
+                      cache_dir: Path | None = None, trust_level: str | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
     current content under the current scanner version."""
     digest = _content_digest(skill_path)
@@ -940,7 +963,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
-                "source_url": source_url, "trust_level": _resolve_trust_level(source)}
+                "source_url": source_url, "trust_level": trust_level or _resolve_trust_level(source)}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
         cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
@@ -950,7 +973,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
                             cached.get("summary", ""))
         provenance = {**cached, "fresh": False}
     else:
-        result = scan_skill(skill_path, source=source)
+        result = scan_skill(skill_path, source=source, trust_level=trust_level)
         findings = [asdict(item) for item in result.findings]
         provenance = {**expected, "verdict": result.verdict, "trust_level": result.trust_level, "findings": findings,
                       "rules": sorted({item["pattern_id"] for item in findings}), "scanned_at": result.scanned_at,

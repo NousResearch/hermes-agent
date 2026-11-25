@@ -243,10 +243,28 @@ def _scope_values(raw_scope: Any) -> set[str]:
     return scopes
 
 
+def _nous_jwt_deadline(claims: dict[str, Any], obtained_at: Any = None) -> Optional[float]:
+    """When a JWT stops working, on THIS machine's clock (epoch seconds), or None without ``exp``.
+
+    ``exp`` is the issuer's clock. A PC clock running ahead read a fresh 15-minute token as already
+    expired and discarded every sign-in (#157720, #148580), so when the token carries ``iat`` and we
+    recorded when it arrived (``obtained_at``, local clock) the deadline is arrival + issued lifetime.
+    """
+    from hermes_cli.auth import _parse_iso_timestamp
+    exp, iat = claims.get("exp"), claims.get("iat")
+    if not isinstance(exp, (int, float)):
+        return None
+    received = _parse_iso_timestamp(obtained_at)
+    if isinstance(iat, (int, float)) and received is not None and exp > iat:
+        return received + (float(exp) - float(iat))
+    return float(exp)
+
+
 def _nous_invoke_jwt_status(
-    token: Any, *, scope: Any = None, expires_at: Any = None,
+    token: Any, *, scope: Any = None, expires_at: Any = None, obtained_at: Any = None,
     min_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS) -> Optional[str]:
-    """Return None when the token can be used for inference, else a reason."""
+    """Return None when the token can be used for inference, else a reason. *obtained_at* is when
+    the token arrived (local clock), so expiry is judged by the token's lifetime, not the clock."""
     from hermes_cli.auth import _is_expiring
     claims = _decode_jwt_claims(token)
     if not claims:
@@ -255,26 +273,28 @@ def _nous_invoke_jwt_status(
               | _scope_values(claims.get("scp")))
     if NOUS_INFERENCE_INVOKE_SCOPE not in scopes:
         return "missing_inference_invoke_scope"
-    exp = claims.get("exp")
+    deadline = _nous_jwt_deadline(claims, obtained_at)
     skew = max(0, int(min_ttl_seconds))
-    if isinstance(exp, (int, float)):
-        return "invoke_jwt_expiring" if float(exp) <= (time.time() + skew) else None
+    if deadline is not None:
+        return "invoke_jwt_expiring" if deadline <= (time.time() + skew) else None
     return "invoke_jwt_expiry_unknown_or_expiring" if _is_expiring(expires_at, skew) else None
 
 
 def _nous_invoke_jwt_is_usable(
-    token: Any, *, scope: Any = None, expires_at: Any = None,
+    token: Any, *, scope: Any = None, expires_at: Any = None, obtained_at: Any = None,
     min_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS) -> bool:
     from hermes_cli.auth import _nous_invoke_jwt_status
     return _nous_invoke_jwt_status(
-        token, scope=scope, expires_at=expires_at, min_ttl_seconds=min_ttl_seconds) is None
+        token, scope=scope, expires_at=expires_at, obtained_at=obtained_at,
+        min_ttl_seconds=min_ttl_seconds) is None
 
 
 def _state_invoke_jwt_status(state: dict[str, Any], token: Any) -> Optional[str]:
     """``_nous_invoke_jwt_status`` for *token* using *state*'s scope / expires_at (patchable)."""
     from hermes_cli.auth import _nous_invoke_jwt_status
     return _nous_invoke_jwt_status(
-        token, scope=state.get("scope"), expires_at=state.get("expires_at"))
+        token, scope=state.get("scope"), expires_at=state.get("expires_at"),
+        obtained_at=state.get("obtained_at"))
 
 
 def _assert_nous_inference_jwt_usable(state: dict[str, Any], *, access_token: Any = None) -> None:
@@ -293,12 +313,12 @@ def _remaining_ttl(expires_at: Any, fallback_expires_in: Any) -> int:
     return _coerce_ttl_seconds(fallback_expires_in)
 
 
-def _nous_jwt_expires_at(token: Any, fallback_expires_at: Any = None) -> Optional[str]:
-    claims = _decode_jwt_claims(token)
-    exp = claims.get("exp")
-    if isinstance(exp, (int, float)):
+def _nous_jwt_expires_at(
+    token: Any, fallback_expires_at: Any = None, obtained_at: Any = None) -> Optional[str]:
+    deadline = _nous_jwt_deadline(_decode_jwt_claims(token), obtained_at)
+    if deadline is not None:
         with suppress(Exception):
-            return datetime.fromtimestamp(float(exp), tz=UTC).isoformat()
+            return datetime.fromtimestamp(deadline, tz=UTC).isoformat()
     return fallback_expires_at if isinstance(fallback_expires_at, str) else None
 
 
@@ -311,8 +331,8 @@ def _set_nous_agent_key_from_invoke_jwt(
     existing_obtained_at = state.get("agent_key_obtained_at")
     if not obtained_at:
         reuse = state.get("agent_key") == access_token and _nonempty_str(existing_obtained_at)
-        obtained_at = existing_obtained_at if reuse else datetime.now(UTC).isoformat()
-    expires_at = _nous_jwt_expires_at(access_token, state.get("expires_at"))
+        obtained_at = existing_obtained_at if reuse else (state.get("obtained_at") or datetime.now(UTC).isoformat())
+    expires_at = _nous_jwt_expires_at(access_token, state.get("expires_at"), state.get("obtained_at"))
     expires_in = _remaining_ttl(expires_at, state.get("expires_in"))
     if expires_at:
         state["expires_at"] = expires_at
@@ -862,7 +882,7 @@ def _agent_key_is_usable(state: dict[str, Any], min_ttl_seconds: int) -> bool:
     key = state.get("agent_key")
     return _nonempty_str(key) and _nous_invoke_jwt_is_usable(
         key, scope=state.get("scope"), expires_at=state.get("agent_key_expires_at"),
-        min_ttl_seconds=max(0, int(min_ttl_seconds)))
+        obtained_at=state.get("agent_key_obtained_at"), min_ttl_seconds=max(0, int(min_ttl_seconds)))
 
 
 def refresh_nous_oauth_pure(
@@ -1508,7 +1528,8 @@ def _nous_device_code_login(
     now = datetime.now(UTC)
     token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     resolved_inference_url = (
-        _optional_base_url(token_data.get("inference_base_url")) or requested_inference_url)
+        _validate_nous_inference_url_from_network(_optional_base_url(token_data.get("inference_base_url")))
+        or requested_inference_url)
     if resolved_inference_url != requested_inference_url:
         print(f"Using portal-provided inference URL: {resolved_inference_url}")
     auth_state = {

@@ -147,7 +147,8 @@ def _tts_lease_async(lease: str, active: bool) -> None:
             (acquire_tts_lease if active else release_tts_lease)(lease)
         except Exception as e:
             logger.debug("voice: tts lease %s active=%s failed: %s", lease, active, e)
-    threading.Thread(target=_run, name=f"tts-lease-{lease}", daemon=True).start()
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_run, name=f"tts-lease-{lease}").start()
 
 
 def _running_sessions() -> list:
@@ -182,9 +183,10 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     except Exception:
         return None
     _tts_stream_stop()
+    from agent.memory_provider import spawn_context_thread
     text_queue: queue.Queue = queue.Queue()
     stop, done = threading.Event(), threading.Event()
-    threading.Thread(target=stream_tts_to_speaker, args=(text_queue, stop, done), daemon=True).start()
+    spawn_context_thread(stream_tts_to_speaker, name="voice-tts-stream", args=(text_queue, stop, done)).start()
     global _tts_stream_state
     with _tts_stream_lock:
         _tts_stream_state = {"stop": stop, "done": done}
@@ -532,6 +534,12 @@ def _(rid, params: dict) -> dict:
     transport = _caller_transport()
     # Each call updates what it names: the Desktop sends ``desktop_local`` on its own, so a backend older
     # than the field refuses only that call and keeps the ``server_requests`` it already accepted.
+    # A refused ``client`` answers before anything else in the call takes effect.
+    if "client" in params and hasattr(transport, "client_identity"):
+        from gateway.session_client import client_problem, normalized_client
+        if problem := client_problem(params["client"]):
+            return _err(rid, 4001, f"client {problem}")
+        transport.client_identity = normalized_client(params["client"])
     if "server_requests" in params:
         server_requests.advertise(transport, bool(params.get("server_requests")))
     if "desktop_local" in params and hasattr(transport, "auth_identity"):
@@ -540,7 +548,18 @@ def _(rid, params: dict) -> dict:
             from tui_gateway import server
             server.begin_local_desktop_boot()
     return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True,
-                     "canonical_clarify_batch": True})
+                     "canonical_clarify_batch": True,
+                     "client_activity": getattr(transport, "client_presence", None) is not None})
+
+
+@method("client.activity")
+def _(rid, params: dict) -> dict:
+    """Whether the user is at the calling client, for the sessions it shows (gateway/session_presence.py).
+    A transport that keeps no presence accepts it and keeps nothing."""
+    from gateway.session_presence import report
+    if problem := report(_caller_transport(), params):
+        return _err(rid, 4001, problem)
+    return _ok(rid, {})
 
 
 @method("ping")
@@ -774,6 +793,7 @@ _VOICE_TOGGLE_ACTIONS = {
 
 
 @method("voice.toggle")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """CLI parity for ``/voice``: ``status``; ``on``/``off`` flip voice *mode* (off also tears
     down the continuous loop); ``tts`` toggles speech output (requires mode on)."""

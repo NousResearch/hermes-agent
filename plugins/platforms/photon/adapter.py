@@ -953,7 +953,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Preview art for a just-received URL must not become a second user prompt;
         # suppress before recording it as reactable or decoding image bytes.
         if self._is_recent_richlink_preview(space_id, content):
-            logger.info("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
+            logger.debug("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
             return
         # Everything past here is a real (reactable) message. Recorded before the mention
         # gate: reacting to a non-wake-word group message is valid.
@@ -1465,7 +1465,7 @@ class PhotonAdapter(BasePlatformAdapter):
         lost on restart). Soft-fails (False), never raises."""
         return await self._sidecar_try("/unreact", {"spaceId": chat_id, "messageId": message_id}, "remove_reaction")
 
-    # -- Agent-facing reactions (send_message action="react"): deliberate intents, so NOT
+    # -- Agent-facing reactions: deliberate intents, so NOT
     # gated by PHOTON_REACTIONS.
 
     async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:

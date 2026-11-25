@@ -1,15 +1,15 @@
 name: pagecast-director
 title: PageCast Director
 repo: https://github.com/flabanabba8/pagecast-director
-sha: 9267c784488b9bc4902561dd3f8252ea71405756
-version: 0.4.1
-description: "Editable cast narration with locked voices, source passage IDs, resumable synthesis and selective regeneration. Disclosure — Stores books and generated audio privately in its plugin data. On first use it lists the speech options on this computer and asks which to use; it never picks one for you, and online engines are blocked if you say no online services. To find local speech servers it sends GET /v1/models only to this computer's loopback address (ports 8000, 8880, 5002, 8020 and 8080, plus any local address you set; no redirects, 1 second timeout). Every program it starts gets a minimal environment (PATH, HOME, LANG), never your provider keys. Voices are local (an installed speech program such as espeak-ng, Flite, Piper or say, or a speech server already running on this computer) unless you choose hosted Inworld, ElevenLabs or Google Gemini, which send passage text and voice choices to that provider with your own key and use your credits; the optional Gemini Vertex route uses a Google sign-in that Hermes holds for your own OAuth client (hermes auth add pagecast-director:google; the plugin never sees the token), sent only to aiplatform.googleapis.com. Runs local FFmpeg/ffprobe and adb; mpv only plays a preview aloud when you approve it. The optional Android tools check the author's GitHub releases (flabanabba8/PageCast) for the PageCast app and can download the latest APK (checked against that release's own SHA256SUMS); installing it on a phone with adb, replacing a locked voice and playing a preview aloud each ask for your approval (one pre_tool_call hook). No background processes beyond a render or preview you start."
+sha: 8f70411e9d542f93ce65440ffbe2197510a31637
+version: 0.5.0
+description: "Editable cast narration with locked voices, source passage IDs, resumable synthesis and selective regeneration. Disclosure — Stores books and generated audio privately in its plugin data. On first use it lists the speech options on this computer and asks which to use; it never picks one for you, and online engines are blocked if you say no online services. To find local speech servers it sends GET /v1/models only to this computer's loopback address (ports 8000, 8880, 5002, 8020 and 8080, plus any local address you set; no redirects, 1 second timeout). Every program it starts gets a minimal environment (PATH, HOME, LANG), never your provider keys. Voices are local (an installed speech program such as espeak-ng, Flite, Piper or say, or a speech server already running on this computer) unless you choose hosted Inworld, ElevenLabs or Google Gemini, which send passage text and voice choices to that provider with your own key and use your credits; the optional Gemini Vertex route uses a Google sign-in that Hermes holds for your own OAuth client (hermes auth add pagecast-director:google; the plugin never sees the token), sent only to aiplatform.googleapis.com. Can render a short captioned video clip (audiogram) of a finished chapter span into plugin data, with a cover image you point to. Runs local FFmpeg/ffprobe and adb; mpv only plays a preview aloud when you approve it. The optional Android tools check the author's GitHub releases (flabanabba8/PageCast) for the PageCast app and can download the latest APK (checked against that release's own SHA256SUMS); installing it on a phone with adb, replacing a locked voice and playing a preview aloud each ask for your approval (one pre_tool_call hook). No background processes beyond a render or preview you start."
 maintainer: flabanabba8
 tier: community
 category: voice
 requires_hermes: '>=0.22.3'
-docs_url: https://github.com/flabanabba8/pagecast-director/blob/9267c784488b9bc4902561dd3f8252ea71405756/README.md
-image: https://raw.githubusercontent.com/flabanabba8/pagecast-director/9267c784488b9bc4902561dd3f8252ea71405756/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/pagecast-director/blob/8f70411e9d542f93ce65440ffbe2197510a31637/README.md
+image: https://raw.githubusercontent.com/flabanabba8/pagecast-director/8f70411e9d542f93ce65440ffbe2197510a31637/assets/thumbnail.jpg
 platforms:
 - linux
 capabilities:
@@ -44,6 +44,7 @@ capabilities:
   - pagecast_timeline
   - pagecast_usage
   - pagecast_inworld_voices
+  - pagecast_audiogram
   provides_hooks:
   - pre_tool_call
   provides_middleware: []

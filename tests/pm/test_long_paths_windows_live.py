@@ -132,7 +132,8 @@ def test_store_lifecycle_beyond_max_path_with_long_paths_disabled(tmp_path):
     source_root, store_root = tmp_path / "src", tmp_path / "dst"
     source, store = Store(source_root), Store(store_root)
     lockfile = Lockfile(tmp_path / "lock.json")
-    lockfile.set_pin(package.name, version, {target: {"sha256": pin}})
+    # A real lock row (#138359): the bundled copy never fetches the url, but the reader requires one.
+    lockfile.set_pin(package.name, version, {target: {"url": "https://invalid.test/longpath-probe.zip", "sha256": pin}})
 
     files = _build_tree(source_root / entry_name,
                         len(_plain(tmp_path / "dst" / entry_name)))

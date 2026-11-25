@@ -1,0 +1,38 @@
+name: hermes-declines
+repo: https://github.com/percyhendrux123-prog/hermes-declines
+sha: "dd4f1d968a7da0a070da334bb6a38e9bff6ba96c"
+version: "0.1.0"
+title: "Declines"
+description: >-
+  Remembers when you decline a proposed scheduled job and vetoes the model's cronjob_manage
+  create or update call when it brings the same job back (same delivery target, prompt matching
+  after dates, times and numbers are stripped), with a message telling the model not to propose
+  it again. Also vetoes near-duplicates of an existing active or paused job, pointing the model
+  to update or resume it. Declines expire after expire_days; /declines list, forget and clear
+  manage them. Companion to #158289's schedule cards. Disclosure — a pre_tool_call hook that
+  vetoes matching cronjob_manage create/update calls; writes decline records (normalized prompt
+  text, which can contain private details, a SHA-256 of the raw prompt, delivery target, schedule
+  kind, time, session key and surface) to <HERMES_HOME>/plugins-state/hermes-declines/ (or the
+  state_dir setting; 0700 dir, 0600 files) through an in-process daemon writer thread; reads the
+  profile's <HERMES_HOME>/cron/jobs.json read-only for the duplicate check; makes no network calls,
+  runs no subprocesses and stores no credentials.
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-declines/blob/dd4f1d968a7da0a070da334bb6a38e9bff6ba96c/README.md
+readme: true
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Declines are only recorded when Hermes shows a native schedule approval card (#158289, not yet merged). On a release where cronjob_manage never prompts there is no \"no\" to record; the duplicate-job veto still works."
+  - "Matching is by token overlap after stripping dates and times. It catches the same job on a new date, not a genuinely reworded job."
+  - "Only cronjob_manage create/update calls are checked. Jobs made with hermes cron, the dashboard or an API are not."

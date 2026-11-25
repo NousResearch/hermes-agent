@@ -12,7 +12,7 @@ from hermes_cli.nous_account import (
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
-    fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider, normalize_modal_mode,
+    coerce_modal_mode, fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider,
     resolve_modal_backend_state, resolve_openai_audio_api_key
 )
 
@@ -389,7 +389,7 @@ def _browser_feature(
 
 def _modal_feature(terminal_cfg: dict[str, object], tool_enabled: bool, managed: bool, managed_tools_flag: bool) -> NousFeatureState:
     terminal_backend = _norm(terminal_cfg.get("backend"), "local")
-    modal_mode = normalize_modal_mode(terminal_cfg.get("modal_mode"))
+    modal_mode = coerce_modal_mode(terminal_cfg.get("modal_mode"))
     direct_modal = has_direct_modal_credentials()
     modal_state = resolve_modal_backend_state(modal_mode, has_direct=direct_modal, managed_ready=managed, managed_enabled=managed_tools_flag)
     is_modal = terminal_backend == "modal"

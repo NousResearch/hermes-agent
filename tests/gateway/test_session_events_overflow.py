@@ -5,6 +5,8 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class Peer:
@@ -29,14 +31,12 @@ async def test_overflowed_subscriber_is_detached_and_told_to_resume(tmp_path):
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionRef
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
     from tui_gateway.transport import FanoutTransport
 
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    with storage_handle(tmp_path) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned', instance_id='owner', epoch=epoch, persistence=storage_handle(tmp_path))
         live = authority.sessions['s'] = LiveSession(None, 'route')
         ref = SessionRef('owned', 's')
         gate = threading.Event()

@@ -497,3 +497,18 @@ def test_login_device_flow_validates_before_persisting(
     assert photon_auth.load_photon_token() == "good-token"
 
 
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_save_auth_refuses_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """A late token write fails instead of recreating the profile with only auth.json (#155595 U3)."""
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(photon_auth, "get_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_cli.auth._auth_file_path", lambda: home / "auth.json")
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        photon_auth._store_pool_record("photon", {"access_token": "t"})  # takes the auth lock first
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        photon_auth._save_auth({"photon": {}})
+    assert not home.exists()

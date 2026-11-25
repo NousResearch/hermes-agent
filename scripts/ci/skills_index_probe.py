@@ -29,6 +29,11 @@ SOURCE_FLOORS = {
 }
 
 
+def _one_line(value) -> str:
+    """Flatten remote text for ``$GITHUB_OUTPUT``, where a newline starts a new ``key=value``."""
+    return str(value).replace("\r", " ").replace("\n", " ")
+
+
 def evaluate(data, now: datetime) -> list[str]:
     """Return the ``key=value`` output lines for a decoded index."""
     generated_at = data.get("generated_at", "")
@@ -40,7 +45,7 @@ def evaluate(data, now: datetime) -> list[str]:
             f"detail=skills field is not a list (got {type(skills).__name__})",
         ]
 
-    by_src = Counter(s.get("source", "") for s in skills)
+    by_src = Counter(_one_line(s.get("source", "")) for s in skills)
 
     age_hours = None
     try:
@@ -67,7 +72,7 @@ def evaluate(data, now: datetime) -> list[str]:
     by_summary = ", ".join(f"{k}={v}" for k, v in by_src.most_common(8))
     return [
         "status=ok",
-        f"detail=Index OK — {total} skills, generated {generated_at}",
+        f"detail=Index OK — {total} skills, generated {_one_line(generated_at)}",
         f"summary={by_summary}",
     ]
 
@@ -77,7 +82,7 @@ def judge_file(path: str, now: datetime) -> list[str]:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
-        return ["status=parse-failed", f"detail=JSON decode error: {e}"]
+        return ["status=parse-failed", f"detail=JSON decode error: {_one_line(e)}"]
     return evaluate(data, now)
 
 

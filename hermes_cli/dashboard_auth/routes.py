@@ -46,7 +46,7 @@ from hermes_cli.dashboard_auth.login_page import (
     render_login_html, render_native_provider_choice_html)
 from hermes_cli.dashboard_auth.refresh_singleflight import forget as forget_refresh, refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path)
+    access_token_max_age, client_ip as _client_ip, is_safe_next_path, is_same_origin_path)
 
 _log = logging.getLogger(__name__)
 
@@ -165,7 +165,9 @@ def _externalize_post_login_target(target: str, prefix: str) -> str:
         return target
     if target == prefix or target.startswith(f"{prefix}/"):
         return target
-    return f"{prefix}{target}"
+    # The browser consumes the composed string, so validate that, not just its validated parts.
+    composed = f"{prefix}{target}"
+    return composed if is_same_origin_path(composed) else target
 
 
 def _complete_login(request: Request, provider: str, session: Session, *, broker_state: str,

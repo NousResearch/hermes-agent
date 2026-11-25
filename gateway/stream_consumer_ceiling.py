@@ -95,7 +95,10 @@ class StreamCeilingMixin:
         ``final``: the reply is already complete (its final text is in the stream ledger)."""
         logger.warning("Reply needs more than %d messages: it will be sent as a file", self._reply_cap)
         self._ceiling_hit, self._handoff_due = True, final
-        self._handoff_consumed = len(self._stream_ledger) - len(self._accumulated)
+        # The live tail is redacted in place (#56039): when it is no longer the ledger's raw suffix,
+        # no raw offset maps to it, and the reply resumes whole (-1) instead of mid-text.
+        self._handoff_consumed = (len(self._stream_ledger) - len(self._accumulated)
+                                  if self._stream_ledger.endswith(self._accumulated) else -1)
         live = self._message_id if self._message_id and self._message_id != "__no_edit__" else None
         self._handoff_live = (live, self._last_sent_text if live else "")
         self._accumulated = ""
@@ -200,7 +203,7 @@ class StreamCeilingMixin:
         logger.warning("Long reply file failed; delivering the rest as messages")
         consumed, (live_id, live_text) = self._handoff_consumed, self._handoff_live
         self._ceiling_hit, self._handoff_failed = False, True
-        if not final.startswith(self._stream_ledger[:consumed]):  # the final rewrote the sealed heads
+        if consumed < 0 or not final.startswith(self._stream_ledger[:consumed]):  # heads rewritten or unmappable
             consumed, live_id, live_text = 0, None, ""
         self._stream_ledger, self._accumulated = final, final[consumed:].lstrip("\n")
         self._message_id, self._last_sent_text = live_id, live_text

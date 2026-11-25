@@ -14,11 +14,12 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from tests.e2e.core.platforms._drv_telegram import TelegramDriver
 from tests.e2e.core.platforms._helpers import Director, GatewayUnderTest
 from tests.fakes.fake_llm_provider import FakeLLMServer
 from tests.fakes.platforms._standin import wait_until
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 pytestmark = [pytest.mark.spawns_gateway_lookalike, pytest.mark.platforms("posix")]
 
@@ -27,29 +28,26 @@ PARENT, CHILD = "20261014_020931_3881b279", "20261014_040222_5d0bcc"
 
 
 def _seed(db_path, uid: str, key: str, leg: str, hermes_home) -> None:
-    db = SessionDB(db_path=db_path)
-    try:
-        db.create_session(PARENT, "telegram", user_id=uid, session_key=key, chat_id=uid, chat_type="dm",
-                          thread_id=THREAD)
-        db.append_message(PARENT, "user", "host apps on the cluster")
-        db.create_session(CHILD, "subagent", parent_session_id=PARENT, model_config={"_delegate_from": PARENT})
-        db.append_message(CHILD, "user", "worker goal")
-        db.record_gateway_session_peer(CHILD, source="telegram", user_id=uid, session_key=key, chat_id=uid,
+    with open_persistence(profile_scope(home=db_path.parent)) as db:
+        seed_session(db, PARENT, "telegram", user_id=uid, session_key=key, chat_id=uid, chat_type="dm",
+                     thread_id=THREAD)
+        seed_messages(db, PARENT, {"role": "user", "content": "host apps on the cluster"})
+        seed_session(db, CHILD, "subagent", parent_session_id=PARENT, model_config={"_delegate_from": PARENT})
+        seed_messages(db, CHILD, {"role": "user", "content": "worker goal"})
+        db.routing.record_session_peer(CHILD, source="telegram", user_id=uid, session_key=key, chat_id=uid,
                                        chat_type="dm", thread_id=THREAD)
         if leg == "binding":
-            db.enable_telegram_topic_mode(chat_id=uid, user_id=uid)
-            db.bind_telegram_topic(chat_id=uid, thread_id=THREAD, user_id=uid, session_key=key, session_id=CHILD)
+            db.routing.enable_topic_mode(chat_id=uid, user_id=uid)
+            db.routing.bind_topic(chat_id=uid, thread_id=THREAD, user_id=uid, session_key=key, session_id=CHILD)
         if leg == "route":
             now = datetime.datetime.now().isoformat()
             entry = {"session_key": key, "session_id": CHILD, "created_at": now, "updated_at": now,
                      "platform": "telegram", "chat_type": "dm",
                      "origin": {"platform": "telegram", "chat_id": uid, "chat_type": "dm", "user_id": uid,
                                 "thread_id": THREAD}}
-            db.save_gateway_routing_entry(key, json.dumps(entry))
+            db.routing.upsert_routing_entry(key, json.dumps(entry))
             (hermes_home / "sessions").mkdir(parents=True, exist_ok=True)
             (hermes_home / "sessions" / "sessions.json").write_text(json.dumps({key: entry}))
-    finally:
-        db.close()
 
 
 @pytest.mark.parametrize("leg", ["peer", "binding", "route"])

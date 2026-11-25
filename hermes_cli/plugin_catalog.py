@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
 from datetime import UTC
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,8 @@ class PluginCatalogEntry:
     docs_url: str = ""
     version: str = ""            # human label for the pinned sha ("1.4.0"); cosmetic, never parsed
     image: str = ""              # https image URL on a GitHub host; shown on catalog cards
-    screenshots: list[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
-    readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
+    screenshots: list[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /marketplace/<name>
+    readme: bool = False         # the Marketplace renders the README from the pinned commit on the entry's page
     platforms: list[str] = field(default_factory=list)  # empty = all OSes
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
     onboarding: bool = False     # curated: offered on the desktop onboarding card
@@ -142,7 +143,7 @@ class PluginCatalogEntry:
 
 def get_catalog_dir() -> Path:
     """The ``plugin-catalog/`` directory shipped with this checkout."""
-    return Path(__file__).resolve().parent.parent / "plugin-catalog"
+    return Path(project_root_str()) / "plugin-catalog"
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
@@ -285,11 +286,12 @@ def _normalize_repo(url: str) -> str:
     scp = _SCP_URL_RE.match(text)
     if scp:
         host, path = scp.group(1), scp.group(2)
-    elif "://" in text:
-        parts = urlsplit(text)
-        host, path = parts.hostname or "", parts.path
     else:
-        host, path = "", text
+        try:
+            parts = urlsplit(text) if "://" in text else None
+        except ValueError:  # a malformed URL (``https://[bad``) is compared as plain text
+            parts = None
+        host, path = (parts.hostname or "", parts.path) if parts else ("", text)
     host = host.lower().removeprefix("www.")
     path = path.strip("/").removesuffix(".git").rstrip("/").lower()
     return f"{host}/{path}" if host else path
@@ -372,11 +374,14 @@ def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
     """A previously fetched copy still beats the in-tree one when the network is down — for
     :data:`LIVE_CATALOG_MAX_STALE_SECONDS`. Past that its pins may trail the checkout's own catalog
     (a 90-day-old cache outranked a freshly updated in-tree pin), so the entries are dropped and the
-    caller falls back to in-tree; the removals are kept."""
+    caller falls back to in-tree; the removals are kept. A file holding any JSON value other than an
+    object (only an object is ever written) counts as no cached copy."""
     try:
         if not cache.is_file():
             return None
         data = json.loads(cache.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            return None
         if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
             data = {**data, "entries": []}
         return data

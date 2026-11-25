@@ -4,6 +4,7 @@ import { atom } from 'nanostores'
 import {
   type ComposerAttachment,
   draftHasTerminalChips,
+  isFreshDraftScope,
   revokeAttachmentPreviewUrls,
   revokeDiscardedAttachmentPreviews
 } from './composer'
@@ -471,6 +472,21 @@ export const removeQueuedPrompt = (
 
   return true
 }
+
+/**
+ * Remove an entry its send has delivered. A new chat's queue (a fresh draft key) moves to the chat's
+ * stored id the moment `session.create` assigns it (use-composer-draft's announced handoff), while the
+ * send that creates the session is still in flight. When that send is the queue's own entry, the
+ * entry has moved too: it is removed from whichever queue holds it now, or it would be sent again.
+ */
+export const removeSentQueuedPrompt = (
+  drainedFrom: string,
+  id: string,
+  options?: RemoveQueuedPromptOptions
+): boolean =>
+  isFreshDraftScope(drainedFrom)
+    ? Object.keys(current()).filter(sid => removeQueuedPrompt(sid, id, options)).length > 0
+    : removeQueuedPrompt(drainedFrom, id, options)
 
 /** Count one more rejected auto-drain attempt against a queued entry and
  *  persist it with the queue (#98015). The in-process retry ladder stays

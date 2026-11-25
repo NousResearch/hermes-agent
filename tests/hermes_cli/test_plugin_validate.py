@@ -61,7 +61,7 @@ def test_portable_validation_fails_orphan_and_reports_availability(tmp_path: Pat
         tmp_path / "declared",
         {"worker": {"type": "stdio", "command": "python"}},
         {"worker": {
-            "app": {"darwin": {"presence": "executable", "location": str(app)}},
+            "app": {"darwin": {"presence": "executable", "location": "/" + app.relative_to(app.anchor).as_posix()}},
             "requires": {"app": True},
         }},
     )

@@ -1,0 +1,24 @@
+name: calibre-library
+title: calibre Library
+repo: https://github.com/nftpoetrist/hermes-calibre-library
+sha: 60f11e0e25a58beac19bca9ea31b7de93de2c846
+description: "Lets the agent search your calibre e-book libraries and read their EPUB and TXT books, from the metadata.db and book folders calibre leaves on disk; calibre need not be installed or running. calibre_search matches titles, authors, series, tags, publishers and identifiers (ISBN, ASIN, ...) ignoring case and accents, with author, series, tag, format and language filters; calibre_book shows everything calibre records about a book and its files; calibre_read returns an EPUB in reading order with chapter offsets, or a TXT decoded as UTF-8 or Windows-1252, in parts. Standard library only. Not affiliated with calibre. Disclosure — reads only the library folders you configure: metadata.db, opened read-only per call (mode=ro, or immutable=1 for a WAL-mode database, which is refused while its -wal holds changes), and the one book file asked for, which must lie inside the library folder. EPUBs are read in place, never extracted; a package declaring a DTD or entities, a document over 32 MB unpacked or a book over 128 MB is refused. Writes nothing, makes no network calls, needs no credentials and runs no commands. Book text and descriptions are returned to the model as they are, with scripts and styles stripped."
+maintainer: nftpoetrist
+tier: community
+category: tools
+requires_hermes: ">=0.23.4"
+version: "0.1.0"
+docs_url: https://github.com/nftpoetrist/hermes-calibre-library#readme
+readme: true
+known_issues:
+  - "Only EPUB and TXT are read as text; PDF, MOBI, AZW3, CBR and other formats are listed but not read."
+  - "Custom columns are not shown yet."
+  - "Search covers book metadata, not descriptions or the books' full text."
+capabilities:
+  provides_tools:
+    - calibre_search
+    - calibre_book
+    - calibre_read
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

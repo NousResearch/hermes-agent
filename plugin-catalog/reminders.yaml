@@ -1,0 +1,19 @@
+name: reminders
+repo: https://github.com/MrCrin/hermes-reminders
+sha: c8139dd5797f6d0a132e564d68c181dc9bf32169
+description: "A simple reminder plugin that won't clutter your cron."
+maintainer: Michael Crinnion
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+version: "0.3.1"
+docs_url: https://github.com/MrCrin/hermes-reminders#readme
+title: Reminders
+capabilities:
+  provides_tools:
+    - reminders_add
+    - reminders_list
+    - reminders_cancel
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -11,7 +13,9 @@ from hermes_cli.version_info import (
     _git_version_info,
     _reset_version_info_cache,
     _resolve_stamp_file,
+    _run_bounded_process,
     _stamp_version_info,
+    advertised_base_version,
     get_version_info,
 )
 
@@ -300,3 +304,67 @@ def test_a_timed_out_status_probe_never_strands_index_lock(tmp_path):
     _git_version_info(tmp_path, include_untracked=True)
 
     assert not (tmp_path / ".git" / "index.lock").exists()
+
+
+def test_bounded_process_returns_when_a_grandchild_holds_the_output(tmp_path):
+    """#518: a probe whose child leaves a surviving grandchild behind must still return.
+
+    ``capture_output`` reads a pipe, and a pipe reaches EOF only when EVERY holder of its
+    write end has exited, so ``subprocess.run(timeout=...)`` blocks forever in its
+    post-timeout ``communicate()`` retry while the grandchild lives. The identity probe hung
+    Codex client construction that way, for minutes, inside a worker's boot.
+    """
+    child = (
+        "import subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', 'import threading; threading.Event().wait(30)'])\n"
+        "print('version-probe-output')\n"
+    )
+    started = time.monotonic()
+    result = _run_bounded_process([sys.executable, "-c", child], cwd=tmp_path, timeout=3)
+    elapsed = time.monotonic() - started
+
+    assert result is not None
+    returncode, stdout = result
+    assert returncode == 0
+    assert stdout.strip() == "version-probe-output"
+    assert elapsed < 10, f"the bounded probe waited {elapsed:.1f}s on a grandchild that outlived its child"
+
+
+def test_bounded_process_kills_a_probe_that_overruns_its_budget(tmp_path):
+    """An overrunning probe is killed and reported as a failure, never waited on."""
+    child = "import threading; threading.Event().wait(30)"
+    started = time.monotonic()
+    assert _run_bounded_process([sys.executable, "-c", child], cwd=tmp_path, timeout=1) is None
+    assert time.monotonic() - started < 10
+
+
+def test_advertised_base_version_uses_the_stamp_without_a_git_probe(monkeypatch):
+    """#518: request identity reads the build stamp. The stamp's live-commit check is
+    provenance hygiene for ``get_version_info``, not a reason to run git while a client for a
+    worker is being constructed."""
+    from hermes_cli import version_info
+
+    stamp = {"commit": "a" * 40, "baseVersion": "0.19.0", "source": "git"}
+    monkeypatch.setattr(version_info, "read_install_stamp", lambda root: stamp)
+
+    def _no_git(*args, **kwargs):
+        raise AssertionError("advertised_base_version ran git")
+
+    monkeypatch.setattr(version_info, "_run_git", _no_git)
+    assert advertised_base_version() == "0.19.0"
+
+
+def test_advertised_base_version_falls_back_to_a_warm_identity_then_unknown(monkeypatch):
+    """No stamp: reuse the identity this process already resolved, else say unknown —
+    never resolve one just to fill a User-Agent."""
+    from hermes_cli import version_info
+
+    monkeypatch.setattr(version_info, "read_install_stamp", lambda root: {})
+    monkeypatch.setattr(
+        version_info, "_cached_version_info",
+        VersionInfo("0.21.5", "0.21.5", 0, "a" * 40, "main", "git"),
+    )
+    assert advertised_base_version() == "0.21.5"
+
+    monkeypatch.setattr(version_info, "_cached_version_info", None)
+    assert advertised_base_version() == "unknown"

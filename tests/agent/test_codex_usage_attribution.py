@@ -12,7 +12,7 @@ import httpx
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import advertised_base_version
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -109,7 +109,7 @@ def wire(profile, monkeypatch):
 
 def _assert_identity(request, account_id="acct-attribution-test"):
     assert request.headers["originator"] == "hermes-agent"
-    assert request.headers["user-agent"] == f"HermesAgent/{get_version_info().base_version}"
+    assert request.headers["user-agent"] == f"HermesAgent/{advertised_base_version()}"
     assert request.headers["chatgpt-account-id"] == account_id
     assert "extra_headers" not in json.loads(request.content)
 
@@ -141,7 +141,7 @@ def test_new_identity_is_limited_to_the_official_endpoint(base_url, attributed):
 
     assert headers["originator"] == ("hermes-agent" if attributed else "codex_cli_rs")
     assert headers["User-Agent"] == (
-        f"HermesAgent/{get_version_info().base_version}"
+        f"HermesAgent/{advertised_base_version()}"
         if attributed else "codex_cli_rs/0.0.0 (Hermes Agent)"
     )
 

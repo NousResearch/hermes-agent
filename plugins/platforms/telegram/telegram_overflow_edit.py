@@ -51,11 +51,17 @@ async def edit_overflow_split(
     continuation_ids: list[str] = []
     delivered_chunks = [first_chunk]
     prev_id = message_id
+    uncertain: Optional[SendResult] = None
     thread_id = adapter._metadata_thread_id(metadata)
     for chunk in chunks[1:]:
         reply_to_id = int(prev_id) if prev_id else None
         thread_kwargs = adapter._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id)
         sent_msg = await adapter._send_overflow_continuation(chat_id, chunk, reply_to_id, thread_kwargs, thread_id, metadata, finalize)
+        if isinstance(sent_msg, SendResult) and (sent_msg.raw_response or {}).get("delivery_uncertain"):
+            # May be in the chat: counted as shown, so neither it nor the rest of the reply is sent twice.
+            uncertain = sent_msg
+            delivered_chunks.append(chunk)
+            continue
         flood = sent_msg if isinstance(sent_msg, SendResult) else None  # flood-refused: the caller holds off
         if sent_msg is None or flood:
             # Partial delivery: do NOT report success — the consumer would treat it as final delivery.
@@ -65,6 +71,8 @@ async def edit_overflow_split(
                 "partial_overflow": True, "delivered_chunks": 1 + len(continuation_ids),
                 "total_chunks": len(chunks), "last_message_id": prev_id, "delivered_prefix": delivered_prefix,
                 "continuation_message_ids": tuple(continuation_ids)}
+            if uncertain:
+                raw["delivery_uncertain"] = True
             if flood and finalize:
                 # A flood refusal posted nothing, so the rest is certain-undelivered: hand it over in the
                 # shape _resume_partial_send sends (the MarkdownV2 continuation text), as send() does.
@@ -82,5 +90,12 @@ async def edit_overflow_split(
         delivered_chunks.append(chunk)
         prev_id = new_id
     last_id = continuation_ids[-1] if continuation_ids else message_id
+    if uncertain:
+        return SendResult(
+            success=False, message_id=last_id, error=uncertain.error, continuation_message_ids=tuple(continuation_ids),
+            raw_response={
+                "partial_overflow": True, "delivery_uncertain": True, "delivered_chunks": 1 + len(continuation_ids),
+                "total_chunks": len(chunks), "last_message_id": last_id, "delivered_prefix": content,
+                "continuation_message_ids": tuple(continuation_ids)})
     logger.debug("[%s] Overflow split delivered %d chunks; last_id=%s", adapter.name, 1 + len(continuation_ids), last_id)
     return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids))

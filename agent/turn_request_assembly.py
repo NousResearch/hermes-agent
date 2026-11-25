@@ -105,6 +105,15 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
 
 
 
+def _composed_session_prompt(agent: Any) -> Any:
+    """``_cached_system_prompt`` with the per-turn stamp composed in (API-time only)."""
+    prompt = getattr(agent, "_cached_system_prompt", None)
+    if not isinstance(prompt, str):
+        return prompt
+    from agent.turn_context import compose_effective_system_tail
+    return compose_effective_system_tail(agent, prompt)
+
+
 def plan_request_cache(agent: Any, api_messages: Any, tools: Any) -> Any:
     """The request-local cache sections (``PromptCachePlan``) for *agent*'s destination."""
     from agent.prompt_caching import envelope_tool_part_cache_markers_supported
@@ -121,7 +130,10 @@ def plan_request_cache(agent: Any, api_messages: Any, tools: Any) -> Any:
         ),
         native_anthropic=agent._use_native_cache_layout,
         static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
-        session_system_prompt=agent._cached_system_prompt,
+        # The session prompt the plan compares against must be the same API-time prompt the
+        # wire carries, per-turn stamp included: otherwise the stamp lands in the "extra"
+        # part and the cached tail loses it.
+        session_system_prompt=_composed_session_prompt(agent),
         direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
         # LiteLLM-style envelope routes forward part-level markers into
         # tool_result.content[] → non-retryable 400.

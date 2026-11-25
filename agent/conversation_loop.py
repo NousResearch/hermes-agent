@@ -1300,7 +1300,7 @@ def _redecorate_prompt_cache_for_provider(
                                           auto=getattr(agent, "_cache_ttl_auto", False)),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
-            session_system_prompt=agent._cached_system_prompt,
+            session_system_prompt=compose_effective_system_tail(agent, agent._cached_system_prompt),
             direct_native_tool_cache=getattr(
                 agent, "_direct_native_anthropic_tool_cache_capability", lambda: False
             )(),
@@ -1670,6 +1670,23 @@ def _run_conversation_turn(
     agent._held_transforms = held_stream_transforms()
     agent._hold_stream = bool(agent._held_transforms)
 
+    # ── Per-turn clock ──
+    # Stamp the current time ONCE per turn as a transient attribute (never
+    # persisted, never cached). The system prompt itself must stay
+    # byte-stable for the provider prefix cache, so the timestamp rides on
+    # the ephemeral tail (appended AFTER the cached prefix at API-call
+    # time by compose_effective_system_tail). Dedicated attribute — do NOT
+    # mutate agent.ephemeral_system_prompt: on a cached gateway agent that
+    # would stack "ts2\nts1\nbase" across turns.
+    try:
+        from hermes_time import now as _hermes_now
+        _ts = _hermes_now()
+        agent._turn_wallclock_line = (
+            f"Current time: {_ts.strftime('%A %Y-%m-%d %H:%M %Z')}"
+        )
+    except Exception:
+        agent._turn_wallclock_line = ""
+
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
         _ctx = build_turn_context(
@@ -1712,23 +1729,6 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
-
-    # ── Per-turn clock ──
-    # Stamp the current time ONCE per turn as a transient attribute (never
-    # persisted, never cached). The system prompt itself must stay
-    # byte-stable for the provider prefix cache, so the timestamp rides on
-    # the ephemeral tail (appended AFTER the cached prefix at API-call
-    # time by compose_effective_system_tail). Dedicated attribute — do NOT
-    # mutate agent.ephemeral_system_prompt: on a cached gateway agent that
-    # would stack "ts2\nts1\nbase" across turns.
-    try:
-        from hermes_time import now as _hermes_now
-        _ts = _hermes_now()
-        agent._turn_wallclock_line = (
-            f"Current time: {_ts.strftime('%A %Y-%m-%d %H:%M %Z')}"
-        )
-    except Exception:
-        agent._turn_wallclock_line = ""
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

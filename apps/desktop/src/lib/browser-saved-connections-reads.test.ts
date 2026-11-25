@@ -83,10 +83,30 @@ describe('reading the saved connections', () => {
     gets[1]!.resolve(registryOf('alpha'))
     gets[2]!.resolve(stored())
 
-    expect(ids(await before)).toEqual(['alpha'])
+    // The poll's caller gets the list the save answered with, not the older one it read.
+    expect(ids(await before)).toEqual(['alpha', 'beta'])
     expect(ids(await after)).toEqual(['alpha', 'beta'])
     // The save's own answer added Beta; the older poll's answer did not take it away again.
     expect(changes).toEqual(['beta:saved'])
     expect(connections.gateway('beta')).toBeTruthy()
+  })
+
+  it('gives a consumer that publishes what it reads the newest list, whichever read lands last', async () => {
+    const { connections, gets, stored } = gatewayList()
+    const seen: string[][] = []
+    const seed = connections.connections.list()
+    gets[0]!.resolve(registryOf('alpha'))
+    await seed
+
+    // Settings starts a read, a save lands, a read after the save finishes first, the older last.
+    const older = connections.connections.list().then(registry => seen.push(ids(registry)))
+    await connections.connections.save({ kind: 'remote', label: 'beta', url: 'https://beta.example' })
+    const newer = connections.connections.list().then(registry => seen.push(ids(registry)))
+    gets[2]!.resolve(stored())
+    await newer
+    gets[1]!.resolve(registryOf('alpha'))
+    await older
+
+    expect(seen.at(-1)).toEqual(['alpha', 'beta'])
   })
 })

@@ -174,7 +174,7 @@ export function createBrowserSavedConnections({
       : undefined
 
   // Bumped by every write this page makes. A read that went out before a write answers for the
-  // list before it, so it neither publishes nor serves a caller that asks after the write.
+  // list before it, so it neither publishes nor serves anyone that older list.
   let generation = 0
 
   // Every read publishes what changed since the last one, so this tab follows an edit made in
@@ -195,7 +195,10 @@ export function createBrowserSavedConnections({
       throw new Error('Hermes did not return the saved connections')
     }
 
-    return started === generation ? publish(read) : read
+    // A write landed while this read was out: the list the write answered with is newer, so every
+    // caller of this read gets that one, not the older list (a consumer that publishes what it reads
+    // would otherwise undo the write on screen).
+    return started === generation ? publish(read) : (snapshot ?? read)
   }
 
   // Readers that start while a read is in flight share it: a roster, a dial and Settings often ask

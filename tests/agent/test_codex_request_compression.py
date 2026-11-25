@@ -144,12 +144,14 @@ def test_other_errors_are_not_resent(answer):
 
 
 @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
-def test_keepalive_client_uses_the_replay_client_for_official_codex(async_mode):
+@pytest.mark.parametrize("follow_redirects", [False, True])
+def test_keepalive_client_uses_the_replay_client_for_official_codex(async_mode, follow_redirects):
     pytest.importorskip("compression.zstd")
-    client = build_keepalive_http_client(OFFICIAL, async_mode=async_mode)
+    client = build_keepalive_http_client(OFFICIAL, async_mode=async_mode, follow_redirects=follow_redirects)
     try:
         assert isinstance(client, codex_zstd_replay_client_cls(async_mode))
-        assert len(client.event_hooks["request"]) == 1
+        assert client.follow_redirects is follow_redirects
+        assert len(client.event_hooks["request"]) == 1 + int(follow_redirects)
     finally:
         if async_mode:
             asyncio.run(client.aclose())

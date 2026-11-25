@@ -59,7 +59,7 @@ class _Harness:
         self._patchers = []
 
     def __enter__(self):
-        def _fake_create(kwargs, *, reason, shared):
+        def _fake_create(kwargs, *, reason, shared, _follow_redirects=None):
             # Only record per-request wire clients; teardown tests can also
             # trigger a shared-client rebuild via _ensure_primary_openai_client.
             if not shared:

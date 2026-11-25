@@ -23,6 +23,10 @@ async function submitThrough(capabilities: Record<string, unknown> | null, dial 
       if (frame.method === 'client.capabilities') {
         if (frame.params.server_requests) { advertised++ }
 
+        if (frame.params.canonical_clarify_projection_v1) {
+          setTimeout(() => reply({ canonical_clarify_projection_v1: true }), 80)
+          return
+        }
         return capabilities
           ? reply({ server_requests: ['clarify'], ...capabilities })
           : socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, error: { code: -32601, message: 'unknown method' } }))
@@ -61,6 +65,11 @@ async function submitThrough(capabilities: Record<string, unknown> | null, dial 
 test('every turn declares clarify_batch to an owner advertising canonical_clarify_batch', async () => {
   const submits = await submitThrough({ declines_not_shown: true, canonical_clarify_batch: true })
   expect(submits.map(params => params.clarify_batch)).toEqual([true, true])
+})
+
+test('acknowledged canonical projection is selected on each submit', async () => {
+  const submits = await submitThrough({ canonical_clarify_batch: true, canonical_clarify_projection_v1: true })
+  expect(submits.map(params => params.clarify_projection)).toEqual(['canonical_batch_v1', 'canonical_batch_v1'])
 })
 
 test('an older owner (no field, or no client.capabilities at all) never sees the key', async () => {

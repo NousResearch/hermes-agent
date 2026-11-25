@@ -8304,6 +8304,160 @@
         "title": "CanonicalAttachment",
         "type": "object"
       },
+      "CanonicalBatchLockParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "request_id": {
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/CanonicalClarifyIdentity"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "question_id": {
+            "minLength": 1,
+            "title": "Question Id",
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "identity",
+          "question_id",
+          "answer"
+        ],
+        "title": "CanonicalBatchLockParams",
+        "type": "object"
+      },
+      "CanonicalBatchRespondParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "request_id": {
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/CanonicalClarifyIdentity"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "result": {
+            "$ref": "#/components/schemas/CanonicalBatchTerminal"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "identity",
+          "result"
+        ],
+        "title": "CanonicalBatchRespondParams",
+        "type": "object"
+      },
+      "CanonicalBatchRespondResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "CanonicalBatchRespondResult",
+        "type": "object"
+      },
+      "CanonicalBatchTerminal": {
+        "additionalProperties": false,
+        "properties": {
+          "answers": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Answers",
+            "type": "object"
+          },
+          "outcome": {
+            "enum": [
+              "submitted",
+              "cancelled",
+              "timed_out"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "answers",
+          "outcome"
+        ],
+        "title": "CanonicalBatchTerminal",
+        "type": "object"
+      },
       "CanonicalBotCancelParams": {
         "additionalProperties": false,
         "properties": {
@@ -8438,6 +8592,104 @@
           "id"
         ],
         "title": "CanonicalBotDeliverParams",
+        "type": "object"
+      },
+      "CanonicalClarifyBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/CanonicalClarifyIdentity"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/ClarifyQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
+          },
+          "answers": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Answers",
+            "type": "object"
+          },
+          "replayed": {
+            "title": "Replayed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "request_id",
+          "identity",
+          "questions",
+          "answers",
+          "replayed"
+        ],
+        "title": "CanonicalClarifyBatch",
+        "type": "object"
+      },
+      "CanonicalClarifyBatchWatermark": {
+        "additionalProperties": false,
+        "properties": {
+          "replay_epoch": {
+            "title": "Replay Epoch",
+            "type": "string"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "replay_epoch",
+          "last_sequence"
+        ],
+        "title": "CanonicalClarifyBatchWatermark",
+        "type": "object"
+      },
+      "CanonicalClarifyIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "minLength": 1,
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "minimum": 1,
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "stream_id": {
+            "minLength": 1,
+            "title": "Stream Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "minimum": 1,
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile_id",
+          "authority_epoch",
+          "stream_id",
+          "execution_generation"
+        ],
+        "title": "CanonicalClarifyIdentity",
         "type": "object"
       },
       "CanonicalClientIdentity": {
@@ -9345,6 +9597,32 @@
             ],
             "default": null,
             "title": "Open Requests"
+          },
+          "clarify_batches": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalClarifyBatch"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clarify Batches"
+          },
+          "clarify_batch_watermark": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClarifyBatchWatermark"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -11366,6 +11644,32 @@
             ],
             "default": null,
             "title": "Open Requests"
+          },
+          "clarify_batches": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalClarifyBatch"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clarify Batches"
+          },
+          "clarify_batch_watermark": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClarifyBatchWatermark"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -12101,6 +12405,19 @@
             "default": false,
             "title": "Clarify Batch",
             "type": "boolean"
+          },
+          "clarify_projection": {
+            "anyOf": [
+              {
+                "const": "canonical_batch_v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clarify Projection"
           }
         },
         "required": [
@@ -12703,6 +13020,11 @@
       "ClientCapabilitiesParams": {
         "additionalProperties": false,
         "properties": {
+          "canonical_clarify_projection_v1": {
+            "default": false,
+            "title": "Canonical Clarify Projection V1",
+            "type": "boolean"
+          },
           "server_requests": {
             "default": false,
             "title": "Server Requests",
@@ -12731,6 +13053,11 @@
       "ClientCapabilitiesResult": {
         "additionalProperties": false,
         "properties": {
+          "canonical_clarify_projection_v1": {
+            "default": false,
+            "title": "Canonical Clarify Projection V1",
+            "type": "boolean"
+          },
           "server_requests": {
             "items": {
               "type": "string"
@@ -35398,6 +35725,17 @@
           "reason": {
             "title": "Reason",
             "type": "string"
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClarifyIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -50827,6 +51165,42 @@
       }
     },
     {
+      "name": "clarify.batch.lock",
+      "summary": "Exact-identity per-question lock against the existing native batch waiter.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBatchLockParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarifyLockResult"
+        }
+      }
+    },
+    {
+      "name": "clarify.batch.respond",
+      "summary": "Exact-identity full ClarifyResult settlement against the existing native batch waiter.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBatchRespondParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBatchRespondResult"
+        }
+      }
+    },
+    {
       "name": "clarify.lock",
       "summary": "Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock.",
       "params": [
@@ -50859,6 +51233,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "client.capabilities",
+      "summary": "Advertise support, then explicitly select canonical batch projection v1 per connection.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientCapabilitiesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClientCapabilitiesResult"
         }
       }
     },
@@ -52112,6 +52504,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SideAgentCompletePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "clarify.batch.request",
+      "summary": "",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalClarifyBatch"
           }
         }
       ]

@@ -10,6 +10,7 @@ from .base import JsonValue, Params, Result
 from .common import CanonicalClientIdentity, ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
 from .sessions import OpenRequestEntry, TodoState
+from .server_requests import CanonicalClarifyBatch
 from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
                         SessionInventoryFields)
 from .registry import canonical_method
@@ -141,6 +142,11 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     config_warning: str | None = None
 
 
+class CanonicalClarifyBatchWatermark(Result):
+    replay_epoch: str
+    last_sequence: int
+
+
 class CanonicalSnapshot(Result):
     session_id: str
     stored_session_id: str
@@ -166,6 +172,8 @@ class CanonicalSnapshot(Result):
     todo_state: TodoState | None = None
     # The owner's server→client requests still unanswered (``session_server_requests.open_requests``).
     open_requests: list[OpenRequestEntry] | None = None
+    clarify_batches: list[CanonicalClarifyBatch] | None = None
+    clarify_batch_watermark: CanonicalClarifyBatchWatermark | None = None
 
 
 class CanonicalListParams(ProfileParams):
@@ -264,6 +272,7 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     # The submitter answers the clarify tool's whole batch in one ``clarify`` server request (main's
     # batch panel); without it the turn's viewers get one ``clarify.request`` card per question.
     clarify_batch: bool = False
+    clarify_projection: Literal['canonical_batch_v1'] | None = None
 
 
 class CanonicalVoiceStopped(Result):
@@ -351,6 +360,8 @@ class CanonicalEventsResult(Result):
     snapshot_required: bool
     count: int
     open_requests: list[OpenRequestEntry] | None = None
+    clarify_batches: list[CanonicalClarifyBatch] | None = None
+    clarify_batch_watermark: CanonicalClarifyBatchWatermark | None = None
 
 
 for _name, _params, _result in (

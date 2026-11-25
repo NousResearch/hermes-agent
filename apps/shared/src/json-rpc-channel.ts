@@ -163,6 +163,7 @@ export interface JsonRpcRequestChannelOptions {
    * A self-declared label for attribution only. A host that names none (the default) sends nothing.
    */
   clientIdentity?: () => CanonicalClientIdentity | null | Promise<CanonicalClientIdentity | null>
+  canonicalClarifyProjection?: () => boolean
 }
 
 export type HeartbeatLiveness = 'any-inbound' | 'response'
@@ -229,6 +230,9 @@ export class JsonRpcRequestChannel {
   private backendCountsDeclines = false
   /** The bound generation's canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
   private backendClarifyBatch = false
+  private projectionSelected = false
+  private capabilityReady: Promise<void> = Promise.resolve()
+  private capabilityTransport: JsonRpcTransport | null = null
   /** The generation the client label was announced on: once per connection, not per `gateway.ready`. */
   private announcedTo: JsonRpcTransport | null = null
   /** The bound generation's backend keeps `client.activity` reports (`client.capabilities`). */
@@ -242,6 +246,7 @@ export class JsonRpcRequestChannel {
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
       clientIdentity: options.clientIdentity ?? (() => null),
+      canonicalClarifyProjection: options.canonicalClarifyProjection ?? (() => false),
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
@@ -263,6 +268,8 @@ export class JsonRpcRequestChannel {
   }
 
   /** Whether the bound generation's canonical owner admits `clarify_batch` on `prompt.submit`. */
+  get canonicalClarifyProjection(): boolean { return this.projectionSelected }
+
   get clarifyBatch(): boolean {
     return this.backendClarifyBatch
   }
@@ -283,7 +290,11 @@ export class JsonRpcRequestChannel {
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
     this.backendClarifyBatch = false
+    this.projectionSelected = false
+    this.capabilityTransport = null
     this.backendClientActivity = false
+
+    if (this.options.canonicalClarifyProjection()) this.advertiseCapabilities()
 
     // First on the socket, before the owner's own requests: the backend reads frames in order, and its
     // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
@@ -291,6 +302,24 @@ export class JsonRpcRequestChannel {
     if (this.options.desktopLocal()) {
       this.request('client.capabilities', { desktop_local: true }).catch(() => undefined)
     }
+  }
+
+  /** Recovery must not expose legacy raw snapshots before representation selection is acknowledged. */
+  async waitForCapabilities(timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    const transport = this.transport
+    if (signal?.aborted) throw new DOMException('Aborted','AbortError')
+    await new Promise<void>((resolve,reject) => {
+      const timer = timeoutMs > 0 ? setTimeout(() => finish(new Error('Capability negotiation timed out')),timeoutMs) : undefined
+      const abort = () => finish(new DOMException('Aborted','AbortError'))
+      const finish = (error?: Error) => {
+        if (timer) clearTimeout(timer)
+        signal?.removeEventListener('abort',abort)
+        if (error) reject(error); else resolve()
+      }
+      signal?.addEventListener('abort',abort,{once:true})
+      void this.capabilityReady.then(() => finish(),error => finish(error))
+    })
+    if (this.transport !== transport) throw new Error('Capability connection changed')
   }
 
   /** Drop the transport and fail every in-flight call with `error`. */
@@ -583,12 +612,18 @@ export class JsonRpcRequestChannel {
   private advertiseCapabilities(): void {
     const transport = this.transport
 
-    this.request<Partial<ClientCapabilitiesResult> | null>('client.capabilities', { server_requests: true })
-      .then(result => {
+    if (this.options.canonicalClarifyProjection() && this.capabilityTransport === transport) return
+    this.capabilityTransport = transport
+    this.capabilityReady = this.request<Partial<ClientCapabilitiesResult> | null>('client.capabilities', { server_requests: true })
+      .then(async result => {
         if (this.transport === transport) {
           this.backendCountsDeclines = result?.declines_not_shown === true
           this.backendClarifyBatch = result?.canonical_clarify_batch === true
           this.backendClientActivity = result?.client_activity === true
+          if (result?.canonical_clarify_projection_v1 === true && this.options.canonicalClarifyProjection()) {
+            const selected = await this.request<Partial<ClientCapabilitiesResult>>('client.capabilities', { canonical_clarify_projection_v1: true })
+            if (this.transport === transport && selected?.canonical_clarify_projection_v1 === true) { this.projectionSelected = true }
+          }
         }
       })
       .catch(() => undefined)

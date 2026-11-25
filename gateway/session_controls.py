@@ -306,6 +306,10 @@ class AuthorityConnection:
         handlers['message.react'] = partial(react, self)
         from gateway.session_clarify_lock import clarify_lock
         handlers['clarify.lock'] = partial(clarify_lock, self)
+        from gateway.session_clarify_batch import batch_capabilities, batch_lock, batch_respond
+        handlers.update({'client.capabilities': partial(batch_capabilities, self),
+                         'clarify.batch.lock': partial(batch_lock, self),
+                         'clarify.batch.respond': partial(batch_respond, self)})
         from gateway.session_connections import handlers as connection_handlers
         handlers.update(connection_handlers(self))
         from gateway.session_handoff import handlers as handoff_handlers
@@ -761,7 +765,7 @@ class AuthorityConnection:
             if opening is not None:  # not fired (a refusal, a messaging lane, a history mount): nothing waits
                 opening.release()
         from gateway.session_connections import pending_connection
-        from gateway.session_server_requests import open_requests
+        from gateway.session_clarify_batch import batch_snapshot
         history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
@@ -778,8 +782,8 @@ class AuthorityConnection:
                 'prompts': list(snapshot.prompts), 'info': info,
                 'pending_connection': pending_connection(self.authority, ref.session_id),
                 # Still-waiting server→client requests: the event ring cannot say "still open".
-                'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
-                                               snapshot.handle.ref.session_id)}
+                **batch_snapshot(self, self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+                                 snapshot.handle.ref.session_id)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
@@ -821,9 +825,11 @@ class AuthorityConnection:
         epoch = params.get('replay_epoch')
         if type(sequence) is not int or sequence < 0 or (epoch is not None and not isinstance(epoch, str)):
             raise AuthorityRefusal('invalid_params')
-        from gateway.session_server_requests import open_requests
+        from gateway.session_clarify_batch import batch_snapshot
         stream = self.authority.sessions[ref.session_id].event_stream
-        replay = stream.since(epoch, sequence)
+        with stream.lock:
+            replay = stream.since(epoch, sequence)
+            recovery = batch_snapshot(self, stream, ref.session_id)
         # A read by a viewer holding the session (clarify recovery), or one this connection itself
         # detached (a backgrounded tab's probe), is no reconnect: its next resume is a real open. A
         # read from a connection that never held it cannot be told from a reconnect's, and counts as one.
@@ -832,7 +838,7 @@ class AuthorityConnection:
         if not replay['snapshot_required']:
             self.replay_cursors[ref.session_id] = (
                 replay['replay_epoch'], max((frame['seq'] for frame in replay['events']), default=sequence))
-        return {**replay, 'open_requests': open_requests(stream, ref.session_id)}
+        return {**replay, **recovery}
 
     async def submit(self, ref, params):
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
@@ -900,8 +906,10 @@ class AuthorityConnection:
             raise AuthorityRefusal('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
                                    'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
-                                   'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                                   'turn_author', 'api_text', 'model_override', 'clarify_batch', 'clarify_projection'}
         if forbidden:
+            raise AuthorityRefusal('invalid_params')
+        if params.get('clarify_projection') is not None and not getattr(self.transport, 'canonical_clarify_projection', False):
             raise AuthorityRefusal('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
@@ -994,7 +1002,7 @@ class AuthorityConnection:
 
     def _resolve_response(self, frame):
         from gateway.session_presence import seen
-        from gateway.session_server_requests import may_settle, resolve
+        from gateway.session_server_requests import canonical_peer, may_settle, resolve
         asked, settler = [], []
 
         def entitled(session_id, events):
@@ -1007,7 +1015,8 @@ class AuthorityConnection:
             settler.append(connection)
             return connection is not None
         # A person's answer is their input on this connection, for the profile that asked.
-        if not resolve(frame, session_ok=entitled, answered=lambda session_id: seen(settler[-1], session_id)):
+        if not resolve(frame, session_ok=entitled, answered=lambda session_id: seen(settler[-1], session_id),
+                       allow_projected=not canonical_peer(self.transport)):
             import logging
             what = 'a server request this connection may not settle' if asked else 'unknown server request'
             logging.getLogger(__name__).debug('dropping response for %s id=%r', what, frame.get('id'))

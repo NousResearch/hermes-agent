@@ -12,7 +12,7 @@ from contextvars import ContextVar
 
 from persistence.core.errors import AuthorityRefusal
 
-_SUBMIT_FIELDS = ('turn_author', 'api_text', 'model_override', 'clarify_batch')
+_SUBMIT_FIELDS = ('turn_author', 'api_text', 'model_override', 'clarify_batch', 'clarify_projection')
 _API_TEXT_LIMIT = 1_000_000
 _cli_turn: ContextVar[tuple | None] = ContextVar('cli_turn', default=None)
 
@@ -59,6 +59,11 @@ def admit_cli_turn(params):
         # request (main's batch panel: classic CLI, Ink TUI). Viewers that never set it (an ACP
         # editor, a raw WebSocket client) answer per-question cards.
         committed['clarify_batch'] = True
+    projection = params.get('clarify_projection')
+    if projection is not None:
+        if projection != 'canonical_batch_v1' or batch is not True:
+            raise AuthorityRefusal('invalid_params')
+        committed['clarify_projection'] = projection
     return {'cli_turn_v1': committed} if committed else {}
 
 

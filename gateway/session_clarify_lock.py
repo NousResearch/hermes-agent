@@ -13,7 +13,7 @@ from persistence.core.errors import AuthorityRefusal
 
 
 async def clarify_lock(connection, ref, params):
-    from gateway.session_server_requests import lock_answer, may_settle
+    from gateway.session_server_requests import canonical_peer, lock_answer, may_settle
     # The dispatcher already refused unknown keys and mistyped fields against the declared
     # ``ClarifyLockParams`` (``tui_gateway/contracts/canonical.py``); a missing or empty id is ours to refuse.
     # ``profile`` naming another served profile was routed to its owner by ``dispatch``.
@@ -29,7 +29,8 @@ async def clarify_lock(connection, ref, params):
         # The same rule the closing response frame for this request id goes through.
         return may_settle(authority, actor, session_id, events)
     try:
-        remaining = lock_answer(request_id, question_id, answer, session_ok=entitled)
+        remaining = lock_answer(request_id, question_id, answer, session_ok=entitled,
+                                allow_projected=not canonical_peer(connection.transport))
     except ValueError:
         raise AuthorityRefusal('invalid_params') from None
     if remaining is None:

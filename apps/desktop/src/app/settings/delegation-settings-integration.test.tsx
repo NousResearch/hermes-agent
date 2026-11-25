@@ -153,6 +153,28 @@ async function debounce() {
 }
 
 describe('real settings route and autosave integration', () => {
+  it('saves automatic subagent resume on and off for the selected profile only', async () => {
+    config = { delegation: { auto_resume: false, max_iterations: 50 } }
+    mount()
+    const toggle = await screen.findByRole('switch', { name: 'Automatically resume subagents' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(saves).toHaveLength(1))
+    expect(saves[0]).toMatchObject({ profile: 'B', connectionId: 'connection-A' })
+    expect(saves[0].body).toEqual({ config: { delegation: { auto_resume: true } } })
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(saves).toHaveLength(2))
+    expect(saves[1]).toMatchObject({ profile: 'B', connectionId: 'connection-A' })
+    expect(saves[1].body).toEqual({ config: { delegation: { auto_resume: false } } })
+  })
+
+  it('omits automatic subagent resume when the backend does not expose it', async () => {
+    mount()
+    await screen.findByLabelText('Subagent Provider')
+    expect(screen.queryByRole('switch', { name: 'Automatically resume subagents' })).toBeNull()
+  })
+
   it('active A/settings B reads and saves B, never autosaves an unfinished route', async () => {
     mount()
     await pick('Subagent Provider', 'Anthropic')

@@ -566,6 +566,8 @@ A resumable child's worktree (where its terminal was when it stopped, plus any w
 
 ### Automatic resume (`delegation.auto_resume`, opt-in)
 
+In Hermes Desktop, open **Settings → Model → Subagents** and toggle **Automatically resume subagents** for the selected profile. The switch is shown when the connected gateway exposes the setting.
+
 With `delegation.auto_resume: true` the gateway continues stopped background children on its own, through the same claim and `continue` path as `action='continue'`, on the child's own conversation and worktree, with a message naming the real cause ("Your run was stopped by a provider limit; continue where you left off."). A gateway checks every profile it serves every 15 seconds, each under that profile's own configuration, credentials and `state.db`.
 
 - **What resumes:** `AUTO_AT` children once their limit's reset time has passed, and `AUTO_ON_BOOT` children (gateway shutdown, crash, hard kill) once the gateway is back up.

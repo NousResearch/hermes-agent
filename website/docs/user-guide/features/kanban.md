@@ -1023,6 +1023,18 @@ kanban:
   default_workdir: ~/work/active-project
 ```
 
+### Aging cards (diagnostics thresholds)
+
+`hermes kanban diagnostics` and the dashboard flag cards that are waiting with nobody acting on them. A blocked card is flagged when it goes `blocked_stale_hours` without a comment: a comment restarts that timer, it does not silence the card for good. A todo card is flagged after `todo_stale_hours`, with the open parents it is waiting on. However often they were touched, waiting cards escalate to `error` after `stale_error_days` and `critical` after `stale_critical_days`, and the diagnostic quotes the block reason and last error so the actual cause is visible.
+
+| Config key | Default | What it does |
+|------------|---------|--------------|
+| `kanban.diagnostics.blocked_stale_hours` | `24` | Hours a blocked card may go without a comment before `stuck_in_blocked` warns. |
+| `kanban.diagnostics.blocked_ignore_comment_authors` | `[]` | Comment authors (automation) whose comments do not restart the blocked timer. |
+| `kanban.diagnostics.todo_stale_hours` | `72` | Hours in `todo` before `stuck_in_todo` warns. |
+| `kanban.diagnostics.stale_error_days` | `7` | Total days blocked or in todo before the diagnostic becomes `error`, regardless of comments. |
+| `kanban.diagnostics.stale_critical_days` | `30` | Total days blocked or in todo before the diagnostic becomes `critical`. |
+
 ### Scheduled task starts (`scheduled_at`)
 
 Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.

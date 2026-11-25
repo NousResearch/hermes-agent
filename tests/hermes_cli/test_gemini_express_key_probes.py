@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL
+from agent.gemini_urls import VERTEX_EXPRESS_BASE_URL
 
 _STUDIO_MODELS = "https://generativelanguage.googleapis.com/v1beta/models"
 

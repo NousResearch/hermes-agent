@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from agent.gemini_native_adapter import (
+from plugins.model_providers.google.native_adapter import (
     gemini_http_error,
     is_standard_key_auth_error,
 )

@@ -13,16 +13,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 
 _SCRIPT = r"""
 import json, sys
 import httpx
 import providers
 
+for name in ("gemini", "solstice"):
+    profile = providers.get_provider_profile(name)
+    assert type(profile).__module__.startswith("_hermes_user_provider_"), (name, type(profile).__module__)
+    assert providers.provider_source(name) == "user", (name, providers.provider_source(name))
+    assert providers.plugin_load_error(name) == "", providers.plugin_load_error(name)
+
 profile = providers.get_provider_profile("solstice")
-assert type(profile).__module__.startswith("_hermes_user_provider_"), type(profile).__module__
-assert providers.plugin_load_error("solstice") == "", providers.plugin_load_error("solstice")
 sent = []
 
 def handler(request):
@@ -43,9 +47,9 @@ print(json.dumps({"module": type(client).__module__, "text": unary.choices[0].me
 """
 
 
-def test_a_profile_local_solstice_plugin_creates_a_client_and_completes_a_turn(tmp_path):
+def test_a_profile_local_google_plugin_overrides_both_profiles_and_completes_a_turn(tmp_path):
     home = tmp_path / "home"
-    shutil.copytree(ROOT / "plugins" / "model-providers" / "solstice", home / "plugins" / "model-providers" / "solstice",
+    shutil.copytree(ROOT / "plugins" / "model-providers" / "google", home / "plugins" / "google",
                     ignore=shutil.ignore_patterns("__pycache__"))
     env = {**os.environ, "HERMES_HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
 
@@ -54,5 +58,5 @@ def test_a_profile_local_solstice_plugin_creates_a_client_and_completes_a_turn(t
 
     assert result.returncode == 0, result.stderr[-3000:]
     out = json.loads(result.stdout.strip().splitlines()[-1])
-    assert out["module"].startswith("_hermes_user_provider_") and out["module"].endswith(".transport")
+    assert out["module"].startswith("_hermes_user_provider_") and out["module"].endswith(".account_client")
     assert out == {**out, "text": "hello", "finish": "stop", "store": [False, False]}

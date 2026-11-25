@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from openai import OpenAI
 
 from agent.agent_runtime_helpers import create_openai_client
-from agent.gemini_native_adapter import GeminiNativeClient
+from plugins.model_providers.google.native_adapter import GeminiNativeClient
 from providers import get_provider_profile
 
 

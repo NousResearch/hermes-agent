@@ -130,7 +130,7 @@ class TestGeminiAgentInit:
     def test_gemini_resolve_provider_client_uses_native_client(self, monkeypatch):
         """resolve_provider_client('gemini') should build GeminiNativeClient."""
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
-        from agent.gemini_native_adapter import GeminiNativeClient
+        from plugins.model_providers.google.native_adapter import GeminiNativeClient
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             from agent.auxiliary_client import resolve_provider_client
             client, _ = resolve_provider_client("gemini")

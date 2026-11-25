@@ -14,7 +14,7 @@ from threading import Thread
 
 import pytest
 
-from agent.gemini_native_adapter import GeminiNativeClient, probe_gemini_tier
+from plugins.model_providers.google.native_adapter import GeminiNativeClient, probe_gemini_tier
 
 KEY = "AQ.placement-test-key"
 

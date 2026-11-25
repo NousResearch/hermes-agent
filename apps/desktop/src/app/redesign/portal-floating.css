@@ -290,12 +290,26 @@
 /* Every floating surface stays inside the window: no wider or taller than the room Radix measured
    on its side, less a 16px gutter, and scrolling inside when its content is taller. */
 :root[data-shell='portal'] :is([data-slot='dropdown-menu-content'], [data-slot='dropdown-menu-sub-content']) {
+  min-width: 14rem;
   max-width: calc(var(--radix-dropdown-menu-content-available-width, 100vw) - 1rem);
   max-height: calc(var(--radix-dropdown-menu-content-available-height, 100dvh) - 1rem);
   overflow-y: auto;
 }
 
+/* Redesign menu rows use 14px text and a 10px gap, which squeezes model names out of the shared
+   w-72 model menu whenever effort, window-plan, reset, or pricing tags render. Widen the model
+   catalog menu (and widen further when pricing is visible); the available-width cap above still
+   keeps narrow viewports inside the window. */
+:root[data-shell='portal'] [data-slot='dropdown-menu-content']:has([data-slot='model-catalog-menu']) {
+  width: 21rem;
+}
+
+:root[data-shell='portal'] [data-slot='dropdown-menu-content']:has([data-slot='model-price']) {
+  width: 24rem;
+}
+
 :root[data-shell='portal'] :is([data-slot='context-menu-content'], [data-slot='context-menu-sub-content']) {
+  min-width: 16rem;
   max-width: calc(var(--radix-context-menu-content-available-width, 100vw) - 1rem);
   max-height: calc(var(--radix-context-menu-content-available-height, 100dvh) - 1rem);
   overflow-y: auto;

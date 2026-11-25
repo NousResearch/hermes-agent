@@ -1,5 +1,6 @@
 """Tests for Google Workspace gws bridge and CLI wrapper."""
 
+import base64
 import importlib.util
 import json
 import os
@@ -289,3 +290,31 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+def _b64(text):
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
+def _alternative(plain, html):
+    return {
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64(plain)}},
+                {"mimeType": "text/html", "body": {"data": _b64(html)}},
+            ],
+        }
+    }
+
+
+def test_extract_message_body_prefers_html_over_plain_stub(api_module):
+    html = "<table><tr><td>Electricity 19.86p per kWh, standing charge 40.73p a day</td></tr></table>"
+    msg = _alternative("Your bill is ready", html)
+    assert api_module._extract_message_body(msg) == html
+
+
+def test_extract_message_body_keeps_full_plain_text(api_module):
+    plain = "Electricity 19.86p per kWh, standing charge 40.73p a day"
+    msg = _alternative(plain, f"<p>{plain}</p>")
+    assert api_module._extract_message_body(msg) == plain

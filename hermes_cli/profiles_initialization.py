@@ -3,6 +3,7 @@ import contextlib
 import errno
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -52,7 +53,7 @@ def prepare_imported_tree(staged: Path) -> None:
     # A failed removal must abort import rather than install a stale PM selection.
     for child in staged.iterdir():
         if child.name in PM_RUNTIME_ROOT_DIRS:
-            if child.is_dir():
+            if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
             else:
                 child.unlink()
@@ -60,7 +61,14 @@ def prepare_imported_tree(staged: Path) -> None:
     # .env owner-only, as a clone and `hermes import` do (#59726).
     drop_other_access(staged / "config.yaml")
     env = staged / ".env"
-    if env.is_file() and not env.is_symlink():
+    if env.is_symlink():  # import keeps only in-tree links; a real file gets its own 0600 mode
+        fd, staged_env = tempfile.mkstemp(dir=staged, prefix=".env.")  # fresh, owner-only
+        with os.fdopen(fd, "wb") as dst:
+            if env.is_file():
+                with open(env, "rb") as src:
+                    shutil.copyfileobj(src, dst)
+        os.replace(staged_env, env)
+    if env.is_file():
         os.chmod(env, 0o600)
 
 

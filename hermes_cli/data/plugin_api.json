@@ -176,7 +176,10 @@
         "hermes_cli.setup:prompt",
         "hermes_cli.setup:prompt_choice",
         "hermes_cli.setup:prompt_yes_no",
-        "hermes_cli.cli_output"
+        "hermes_cli.cli_output",
+        "gateway.response_filters:is_autonomous_silence_response",
+        "gateway.response_filters:is_intentional_silence_response",
+        "gateway.response_filters:strip_trailing_silence_marker"
       ]
     },
     {
@@ -221,6 +224,14 @@
       "entries": [
         "hermes_cli.plugin_session:turn_client",
         "hermes_cli.plugin_session:session_viewers"
+      ]
+    },
+    {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks",
+      "entries": [
+        "hermes_cli.plugin_session:session_source",
+        "hermes_cli.plugin_session:in_delegated_child",
+        "hermes_cli.plugin_session:fork_origin"
       ]
     },
     {
@@ -269,6 +280,20 @@
         "hermes_cli.profiles_run_elsewhere:mark_profile_run_elsewhere",
         "hermes_cli.profiles_run_elsewhere:clear_profile_run_elsewhere",
         "hermes_cli.profiles_run_elsewhere:run_elsewhere"
+      ]
+    },
+    {
+      "source": "plugins/index.md § Schedule a job once and read where cron delivers it",
+      "entries": [
+        "cron.plugin_api"
+      ]
+    },
+    {
+      "source": "model-provider-plugin.md § Public helpers for native Gemini reasoning",
+      "entries": [
+        "agent.reasoning_effort:gemini_thinking_config",
+        "agent.reasoning_effort:clamp_effort",
+        "agent.reasoning_effort:bare_gemini_model_id"
       ]
     }
   ]

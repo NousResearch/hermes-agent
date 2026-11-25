@@ -27,8 +27,8 @@ _SCAN_TIMEOUT_SECONDS = 5.0
 
 def _serves_this_home(item, home: Path, host) -> bool:
     if not item.running and item.unit and item.scope and item.supervisor in ("systemd", "nix-systemd"):
-        # A system unit must also name this home in its own `Environment=`: the planner does not read an
-        # `env HERMES_HOME=...` launcher in ExecStart, and naming another home's backend is worse than missing one.
+        # A system unit must also name this home in its own `Environment=`: naming another home's backend is
+        # worse than missing one (the planner refuses an `env` launcher that may set the home).
         if item.scope != "user" and not item.this_home:
             return False
         from hermes_cli.gateway_migrate_backends_plan import _for_this_home

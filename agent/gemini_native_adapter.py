@@ -23,6 +23,7 @@ from agent.bounded_response import read_streaming_error_body
 from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
 from agent.retry_utils import parse_retry_after_seconds
 from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
+from agent.reasoning_effort import bare_gemini_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -94,15 +95,6 @@ _MISSING_KEY_ERROR = (
     "environment / ~/.hermes/.env (get one at https://aistudio.google.com/app/apikey), or run `hermes setup` to "
     "configure the Google provider."
 )
-
-
-def bare_gemini_model_id(model: str) -> str:
-    """Strip Gemini's own provider prefix from an aggregator-style model id."""
-    name = (model or "").strip()
-    for prefix in ("google/", "gemini/"):
-        if name.lower().startswith(prefix):
-            return name[len(prefix):].strip() or name
-    return name
 
 
 def gemini_requires_tool_call_ids(model: str) -> bool:

@@ -1166,6 +1166,14 @@ class LocalEnvironment(BaseEnvironment):
         declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
         return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
 
+    def _plain_shell_vars(self) -> dict[str, str]:
+        """The dispatcher-owned worker's own session expands ``$HERMES_KANBAN_TASK`` — the worker
+        protocol documents the var to shells (done-when receipts, evidence naming; #160138) — as a
+        plain shell variable, so nothing the command starts (a ``hermes`` child first of all)
+        inherits worker identity and the descendant scrub's contract stays intact (#90782)."""
+        from agent.delegation_context import worker_plain_shell_vars
+        return worker_plain_shell_vars()
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
         self._secret_handoff = SecretHandoff()

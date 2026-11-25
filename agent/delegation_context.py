@@ -141,6 +141,22 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
     return cleaned
 
 
+def worker_plain_shell_vars() -> dict[str, str]:
+    """Plain (non-exported) shell variables for the dispatcher-owned worker's own terminal.
+
+    The worker protocol documents ``$HERMES_KANBAN_TASK`` to shells — done-when receipts and
+    evidence names expand it — but :func:`scrub_kanban_env` deliberately keeps worker identity
+    away from every child PROCESS so a ``hermes`` run started by the worker can never promote
+    itself to the owner (#90782, #112817). Exporting the var in the worker's terminal env would
+    undo exactly that. A plain shell variable threads the needle: the command and its subshells
+    expand it, child processes inherit nothing. Consumed by ``LocalEnvironment`` only.
+    """
+    task = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task or not is_dispatcher_owned_worker_context():
+        return {}
+    return {"HERMES_KANBAN_TASK": task}
+
+
 def kanban_path_is_fenced(path: os.PathLike[str] | str) -> bool:
     """Whether Kanban mutations at *path* (a board DB or board-metadata root) are denied for this
     process: always for an in-process delegate child (the parent's own board); for a spawned

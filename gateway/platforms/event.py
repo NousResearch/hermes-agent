@@ -137,6 +137,9 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Process-local claims carry a dispatched flag and async release(); they survive rewrites
+    # and batching but never enter the persisted envelope.
+    _ingress_claims: list[Any] = field(default_factory=list, repr=False, compare=False)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -166,8 +169,22 @@ class MessageEvent:
         actor: ``user_id`` "" exports none, so a narrowed approval binds to approvers and admins only
         instead of to the first sender while it carries the second sender's text."""
         self.absorb_reply_expected(other)
+        if self._ingress_claims is not other._ingress_claims:
+            self._ingress_claims.extend(other._ingress_claims)
         if self.sender_id() != other.sender_id():
             self.user_id = self.user_name = ""
+
+    def _mark_ingress_dispatched(self) -> None:
+        for claim in self._ingress_claims:
+            claim.dispatched = True
+
+    def _retain_ingress_claims(self) -> None:
+        self._ingress_claims.clear()
+
+    async def _release_unadmitted_claims(self) -> None:
+        claims, self._ingress_claims[:] = self._ingress_claims[:], []
+        for claim in claims:
+            await claim.release()
 
     def sender_id(self) -> Optional[str]:
         """Who sent this input: ``user_id``, else the source's (a shared observed-group source has

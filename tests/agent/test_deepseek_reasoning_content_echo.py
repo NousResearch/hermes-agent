@@ -84,6 +84,46 @@ class TestNeedsDeepSeekToolReasoning:
 
 
 
+class TestNeedsNimToolReasoning:
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "z-ai/glm5.1",
+            "deepseek-ai/deepseek-v4",
+            "moonshotai/kimi-k2.5",
+            "qwen/qwen3.5-397b-a17b",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+        ],
+    )
+    def test_nim_thinking_families_require_reasoning_echo(self, model) -> None:
+        agent = _make_agent(
+            provider="nvidia",
+            model=model,
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        setattr(agent, "reasoning_config", {"enabled": True, "effort": "high"})
+
+        assert agent._needs_thinking_reasoning_pad() is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "z-ai/glm5.1",
+            "deepseek-ai/deepseek-v4",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+        ],
+    )
+    def test_disabled_nim_reasoning_is_not_padded(self, model) -> None:
+        agent = _make_agent(
+            provider="nvidia",
+            model=model,
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        setattr(agent, "reasoning_config", {"enabled": False, "effort": "high"})
+
+        assert agent._needs_thinking_reasoning_pad() is False
+
+
 class TestCopyReasoningContentForApi:
     """_copy_reasoning_content_for_api pads reasoning_content for DeepSeek tool-calls."""
 

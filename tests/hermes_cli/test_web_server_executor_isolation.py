@@ -80,7 +80,10 @@ def test_profiles_route_survives_default_executor_starvation(monkeypatch):
     response = asyncio.run(_request_with_wedged_default_executor("/api/profiles"))
 
     assert response.status_code == 200
-    assert response.json() == {"profiles": []}
+    assert response.json() == {
+        "profiles": [],
+        "provenance": {"source": "canonical", "degraded": False},
+    }
 
 
 def test_toolsets_route_survives_default_executor_starvation(monkeypatch):

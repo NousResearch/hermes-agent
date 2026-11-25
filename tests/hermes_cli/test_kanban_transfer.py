@@ -17,6 +17,7 @@ with it":
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import tarfile
 import time
@@ -300,6 +301,51 @@ def test_explicit_slug_is_honoured(kanban_root, tmp_path):
     assert result["board"] == "renamed-board"
     assert result["renamed"] is False
     assert kb.get_current_board() == "renamed-board"
+
+
+def _event_generation(slug: str) -> str:
+    with kbc.connect_closing(board=slug) as conn:
+        return kb.event_generation(conn)
+
+
+def test_import_rotates_the_event_generation(kanban_root, tmp_path):
+    """An imported board is a new event history (scrubbed rows, appended ``imported`` events,
+    ids that may repeat a board once at this slug). Signal clients key resets on the generation,
+    so the import must never carry the exporter's generation, nor share one between imports."""
+    _seed_board()
+    source = _event_generation("alpha")
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    kanban_root("target")
+    first = kt.import_board(archive)
+    second = kt.import_board(archive)
+
+    generations = [_event_generation(first["board"]), _event_generation(second["board"])]
+    assert source not in generations
+    assert generations[0] != generations[1]
+
+
+def test_import_generation_rotation_shares_the_relocation_transaction(kanban_root, tmp_path):
+    """If the generation cannot rotate, none of the relocation commits either."""
+    _seed_board()
+    with kbc.connect_closing(board="alpha") as conn:
+        source = kb.event_generation(conn)
+        conn.execute(
+            "CREATE TRIGGER reject_generation BEFORE UPDATE ON kanban_metadata "
+            "BEGIN SELECT RAISE(ABORT, 'generation unavailable'); END"
+        )
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    kanban_root("target")
+    with pytest.raises(sqlite3.IntegrityError, match="generation unavailable"):
+        kt.import_board(archive)
+
+    with kbc.connect_closing(board="alpha") as conn:
+        assert kb.event_generation(conn) == source
+        imported = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE kind = 'imported'"
+        ).fetchone()[0]
+    assert imported == 0
 
 
 # ---------------------------------------------------------------------------

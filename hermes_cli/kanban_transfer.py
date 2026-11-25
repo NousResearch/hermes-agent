@@ -281,6 +281,12 @@ def _relocate_imported_rows(conn: sqlite3.Connection, slug: str) -> tuple[dict[s
                 (row["id"], json.dumps({"board": slug, "parked": row["id"] in parked}, ensure_ascii=False), now),
             )
 
+        # The archive carries the exporter's event generation. This board's
+        # history is new (rows rewritten, events appended, ids that may repeat
+        # a board once at this slug): give it its own identity in the same
+        # transaction so signal clients reset instead of resuming a stale cursor.
+        kb._rotate_event_generation(conn)
+
     return {"attachments": rehomed, "parked": len(parked)}, warnings
 
 

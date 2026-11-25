@@ -43,14 +43,6 @@ export function ensureMainWindow<T extends MainWindowLike>(
   }
 }
 
-/**
- * Whether `window-all-closed` must call `app.quit()`.
- *
- * macOS normally keeps the process in the Dock when the last window closes,
- * EXCEPT when a real quit or update handoff is already in progress: if all
- * windows finish closing after a deferred `before-quit` teardown was admitted,
- * staying alive strands the process with permanently aborted backend lifecycles.
- */
 export function shouldQuitOnWindowAllClosed({
   platform,
   isQuittingForHandoff,

@@ -12,7 +12,6 @@ export interface QuitTeardownCoordinator {
    * settles; the coordinator then requests exactly one final quit.
    */
   begin: (tasks: readonly QuitTeardownTask[]) => boolean
-  /** Whether teardown has finished and final quit may proceed. */
   isFinished: () => boolean
 }
 
@@ -62,7 +61,7 @@ function runTask(task: QuitTeardownTask): Promise<unknown> {
  * Coordinates Electron's before-quit teardown without cancelling a quit that
  * has no asynchronous work to wait for.
  *
- * `scheduleFinalQuit` defaults to a macrotask (`setTimeout(..., 0)`) so a
+ * The final quit is deferred to a macrotask (`setTimeout(..., 0)`) so a
  * fast-settling teardown never calls `app.quit()` re-entrantly inside the
  * microtask checkpoint of the prevented `before-quit` event. On macOS
  * Electron, re-entering `app.quit()` before the outer `before-quit` finishes
@@ -71,12 +70,7 @@ function runTask(task: QuitTeardownTask): Promise<unknown> {
  * process alive at `window-all-closed` with backend lifecycles permanently
  * aborted.
  */
-export function createQuitTeardownCoordinator(
-  requestFinalQuit: () => void,
-  scheduleFinalQuit: (run: () => void) => void = run => {
-    setTimeout(run, 0)
-  }
-): QuitTeardownCoordinator {
+export function createQuitTeardownCoordinator(requestFinalQuit: () => void): QuitTeardownCoordinator {
   let started = false
   let finished = false
 
@@ -105,7 +99,7 @@ export function createQuitTeardownCoordinator(
 
       void Promise.allSettled(executions.map(task => task.promise)).then(() => {
         finished = true
-        scheduleFinalQuit(requestFinalQuit)
+        setTimeout(requestFinalQuit, 0)
       })
 
       return true

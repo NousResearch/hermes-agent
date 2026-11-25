@@ -12123,9 +12123,6 @@ let appQuitting = false
 // Real quit proceeding; see shouldQuitOnLastChatClosed (#130810).
 let quitInProgress = false
 
-// True once an actual app exit/handoff/shutdown has begun. Deliberately
-// excludes `appQuitting`, which Windows/Linux also sets when closing the
-// primary window while another chat window may still keep the app alive.
 function isAppQuitUnderway(): boolean {
   return quitInProgress || isQuittingForHandoff || backendShutdown.hasStarted()
 }
@@ -17492,15 +17489,11 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
-    if (isAppQuitUnderway()) {
-      // Never recreate a window on top of a permanently aborted backend
-      // lifecycle; if teardown already finished, re-request the final quit.
-      if (quitTeardown.isFinished()) {
-        quitFinalization.arm()
-        setTimeout(() => app.quit(), 0)
-      }
+    const isQuitting = isAppQuitUnderway()
 
-      return
+    if (isQuitting && quitTeardown.isFinished()) {
+      quitFinalization.arm()
+      setTimeout(() => app.quit(), 0)
     }
 
     // Recreate the primary window if it's gone. Guard on mainWindow directly
@@ -17508,11 +17501,12 @@ app.whenReady().then(() => {
     // window when only secondary session windows remain open.
     // #130810: a dock/taskbar activate is explicit, so restore with
     // activation (restore + show + focus), not the ambient showInactive path.
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      createWindow()
-    } else {
-      activateWindow(mainWindow)
-    }
+    ensureMainWindow(mainWindow, {
+      isReady: app.isReady(),
+      isQuitting,
+      createWindow,
+      focusWindow: activateWindow
+    })
   })
 })
 

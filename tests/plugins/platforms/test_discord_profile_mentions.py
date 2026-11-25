@@ -447,6 +447,96 @@ async def test_a_slash_command_is_never_rerouted_by_a_handle(adapter, monkeypatc
     assert native.source.profile is None and native.text == "/stop $agent-one $agent-two"
 
 
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("authority_cwd_in_tmp")
+async def test_pin_known_gap_a_skill_slash_command_keeps_its_handle_as_text(served, monkeypatch, tmp_path):
+    """PINS A DOCUMENTED LIMITATION; a tripwire, not the behaviour we want forever.
+
+    ``$<profile>`` dispatch runs in the Discord adapter, BEFORE the gateway's skill-slash rewrite
+    (``GatewayRunner._hm_skill_slash_rewrite``, reached from ``_hm_dispatch_idle_commands`` after the
+    event is handed over). So ``/demo $agent-one summarize X`` is still a slash command when dispatch
+    looks at it: it is not re-homed, the gateway then rewrites it into the ``demo`` skill's prompt in
+    the channel's own session, and ``$agent-one`` stays in that prompt as plain text, as
+    ``discord.md#profile-mentions`` states. Real DiscordAdapter, GatewayRunner and session authority;
+    only the skill registry and the turn body are stand-ins.
+
+    If dispatch learns to route a skill command (or the rewrite moves ahead of it), this test SHOULD
+    fail: flip its assertions to "one turn in agent-one" and update the docs row, rather than
+    restoring the gap."""
+    import agent.skill_bundles as bundles
+    import agent.skill_commands as skills
+    from agent import skill_utils
+    from gateway.platforms.base import SendResult
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_results import execution_result
+    from tests.waiting import async_wait_until
+
+    resolved = []
+    monkeypatch.setattr(skills, "get_skill_commands", lambda: {"/demo": {"name": "demo"}})
+    monkeypatch.setattr(skills, "resolve_skill_command_key",
+                        lambda command, **_: resolved.append(command) or ("/demo" if command == "demo" else None))
+    monkeypatch.setattr(skills, "split_stacked_skill_commands", lambda rest, **_: ([], rest))
+    monkeypatch.setattr(skills, "build_skill_invocation_message", lambda key, text="", **_: f"[demo skill] {text}")
+    monkeypatch.setattr(bundles, "resolve_bundle_command_key", lambda command: None)
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda **_: set())
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    for var in ("DISCORD_FREE_RESPONSE_CHANNELS", "DISCORD_ALLOWED_CHANNELS", "DISCORD_IGNORED_CHANNELS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
+    monkeypatch.setattr(profile_mentions, "is_multiplex_active", lambda: True)
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._served_profile_homes = {name: tmp_path / name for name in served.served_profile_names()}
+    runner._profile_configs = served._profile_configs
+    bot = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
+    bot._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    bot._text_batch_delay_seconds = 0
+    sent, handed, turns = [], [], []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        return SendResult(success=True, message_id=f"s{len(sent)}")
+
+    async def turn(event, source, quick_key, run_generation):
+        turns.append((event.text, source.profile))
+        captured = execution_result.get()
+        if captured is not None:
+            captured["result"] = {"final_response": "ok", "messages": []}
+        return "ok"
+    monkeypatch.setattr(bot, "send", send)
+    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
+    monkeypatch.setattr(runner, "_read_user_config", lambda: {"approvals": {"destructive_slash_confirm": False}})
+    bot.gateway_runner = runner
+    runner.adapters = {Platform.DISCORD: bot}
+    await initialize_session_authority(runner, profile_id="default", instance_id="owner")
+    runner._wire_adapter_handlers(bot)
+    real_handle = bot.handle_message
+
+    async def hand_over(event):
+        # As handed over: the gateway's rewrite then edits this same event in place.
+        handed.append((event.message_type, event.text, event.source.profile, event.source.profile_mention))
+        return await real_handle(event)
+    monkeypatch.setattr(bot, "handle_message", hand_over)
+
+    # The handle is live on this bot: the same words without the leading slash would be re-homed.
+    plain = MessageEvent(text="$agent-one summarize X", source=bot.build_source(chat_id="555", chat_type="group"))
+    assert [(e.source.profile, e.text) for e in profile_mentions.mention_events(bot, plain, plain.text)] == [
+        ("agent-one", "summarize X")]
+
+    await bot._handle_message(_message("/demo $agent-one summarize X"))
+    await async_wait_until(lambda: turns or sent, timeout=15, what="the skill turn")
+    # One event, never a per-profile copy: still the typed slash command, in the channel's session.
+    assert handed == [(MessageType.COMMAND, "/demo $agent-one summarize X", None, False)]
+    assert "demo" in resolved  # the gateway took the skill-slash path, after dispatch had passed it
+    # THE GAP: the skill prompt runs in the channel's own session, the handle left in it as text.
+    assert turns == [("[demo skill] $agent-one summarize X", None)]
+
+
 # --- the opt-in: each profile's own config, served profiles only ------------------------------
 
 

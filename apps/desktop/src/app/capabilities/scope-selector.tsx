@@ -107,16 +107,18 @@ export function useCapabilityScope({
   const registryBridge = window.hermesDesktop?.connections
   const rosterBridge = window.hermesDesktop?.getAgentRoster
 
-  const { data: registryData } = useQuery({
+  const registryEnabled = !fixedProfile && Boolean(registryBridge) && Boolean(rosterBridge)
+
+  const { data: registryData, isPending: registryPending } = useQuery({
     queryKey: ['capabilities-connections-registry'],
     queryFn: () => registryBridge!.list(),
     staleTime: 60_000,
-    enabled: !fixedProfile && Boolean(registryBridge) && Boolean(rosterBridge)
+    enabled: registryEnabled
   })
 
   const multiConnection = (registryData?.connections.length ?? 0) > 1
 
-  const { data: rosterData } = useQuery({
+  const { data: rosterData, isPending: rosterPending } = useQuery({
     queryKey: ['capabilities-agent-roster'],
     queryFn: () => rosterBridge!(),
     staleTime: 60_000,
@@ -203,8 +205,15 @@ export function useCapabilityScope({
     options,
     profile: scopeProfile,
     // An agent picked on another machine is addressed through that machine's roster (an alias
-    // serves from another profile's home). Until the roster answers, the name is only a guess.
-    resolving: redesign && !fixedProfile && selection !== null && typeof selection === 'object' && !rosterData,
+    // serves from another profile's home). Hold switches only while a cross-connection selection
+    // actually awaits registry/roster resolution — local bare-string selections never wait, and a
+    // single-connection or settled/errored query never locks controls forever.
+    resolving:
+      redesign &&
+      !fixedProfile &&
+      selection !== null &&
+      typeof selection === 'object' &&
+      ((registryEnabled && registryPending) || (multiConnection && rosterPending)),
     value
   }
 }

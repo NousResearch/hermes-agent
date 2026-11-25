@@ -9,6 +9,11 @@ export const enPluginUpdateAll: PluginUpdateAllTranslations = {
     `Updated ${updated}` + (review ? `, ${review} need review` : '') + (failed ? `, ${failed} failed` : ''),
   updateAllNone: 'All plugins are up to date',
   updateAllFailed: 'Could not update plugins',
+  checkForUpdates: 'Check for updates',
+  checkingForUpdates: 'Checking…',
+  updatesAvailable: (count: number) => `${count} plugin update${count === 1 ? '' : 's'} available`,
+  checkFailed: 'Could not check for updates',
+  checkUnsupported: 'This backend cannot check for plugin updates. Update Hermes to enable it',
   autoUpdate: 'Auto-update',
   autoUpdateTip: (hours: number) =>
     `Apply plugin updates automatically when the gateway checks (every ${hours} h). Updated code loads in new sessions.`,

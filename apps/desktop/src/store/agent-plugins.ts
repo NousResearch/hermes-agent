@@ -1,4 +1,4 @@
-import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
+import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginCheckRow, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -686,9 +686,72 @@ export async function updateAgentPlugin(
 
     return { kind: 'failed' }
   } finally {
-    if (isCurrentAgentPluginRequest(request) && $agentPluginBusy.get() === name) {
+    if ($agentPluginBusy.get() === name) {
       $agentPluginBusy.set(null)
     }
+  }
+}
+
+/** Outcome of `checkAgentPlugins`: `supported: false` when the backend predates the action. */
+export interface AgentPluginCheckResult {
+  supported: boolean
+  checked: number
+  updatesAvailable: number
+  results: PluginCheckRow[]
+}
+
+// `_run_action`'s unknown action, and JSON-RPC's unknown method.
+const CHECK_UNSUPPORTED_CODES = new Set([4017, -32601])
+
+/** Ask the backend to check every installed plugin for updates (`plugins.manage
+ *  check`, the read-only `hermes plugins check-updates`) and refresh the shared
+ *  list from the answer. Nothing is installed or applied. A backend that predates
+ *  the action (4017 / unknown method) answers `supported: false` instead of
+ *  throwing; any other failure rejects so the caller can report it. */
+export async function checkAgentPlugins(
+  request: GatewayRequest,
+  profile?: string | null
+): Promise<AgentPluginCheckResult> {
+  const generation = loadGeneration
+
+  try {
+    const result = await request<{ check_results?: PluginCheckRow[]; plugins?: AgentPluginRow[] }>(
+      'plugins.manage',
+      withProfile({ action: 'check' }, profile),
+      // A check hits the network per plugin (git ls-remote / a feed fetch), like an install's clone.
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
+    )
+
+    const rows = result?.check_results ?? []
+
+    // Same scoping as a load: a check for another profile must not replace this one's list.
+    if (
+      result?.plugins &&
+      generation === loadGeneration &&
+      $agentPluginsOwnerKey.get() === request.ownerKey &&
+      $agentPluginsProfile.get() === (profile ?? null)
+    ) {
+      $agentPlugins.set(result.plugins.map(normalizeAgentPluginRow))
+      $agentPluginsStatus.set('ready')
+      $agentPluginsError.set(null)
+    }
+
+    const updatesAvailable = result?.plugins
+      ? result.plugins.filter(plugin => plugin.update_available === true).length
+      : rows.filter(row => row.update_available === true).length
+
+    return {
+      supported: true,
+      checked: rows.length,
+      updatesAvailable,
+      results: rows
+    }
+  } catch (e) {
+    if (e instanceof JsonRpcGatewayError && CHECK_UNSUPPORTED_CODES.has(e.code ?? 0)) {
+      return { supported: false, checked: 0, updatesAvailable: 0, results: [] }
+    }
+
+    throw e
   }
 }
 
@@ -726,7 +789,7 @@ export async function removeAgentPlugin(
 
     return false
   } finally {
-    if (isCurrentAgentPluginRequest(request) && $agentPluginBusy.get() === name) {
+    if ($agentPluginBusy.get() === name) {
       $agentPluginBusy.set(null)
     }
   }

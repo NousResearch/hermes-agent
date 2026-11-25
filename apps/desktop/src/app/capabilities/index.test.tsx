@@ -1,6 +1,6 @@
+// @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-// @vitest-environment jsdom
 import type { ComponentProps } from 'react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
@@ -323,6 +323,73 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
       })
 
       expect((await screen.findByTestId('connectors-tab')).dataset.controls).toBe('false')
+    } finally {
+      delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('releases the Connectors controls once the roster answers', async () => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      connections: {
+        list: vi.fn().mockResolvedValue({
+          version: 2,
+          primary: 'local',
+          secureTokenStorage: true,
+          connections: [
+            { id: 'local', kind: 'local', label: 'This device', tokenSet: false, tokenPreview: null },
+            { id: 'homelab', kind: 'remote', label: 'Homelab', tokenSet: true, tokenPreview: '…' }
+          ]
+        })
+      },
+      getAgentRoster: vi.fn().mockResolvedValue({
+        agents: [{ connectionId: 'homelab', connectionLabel: 'Homelab', profile: 'inbox-bot' }]
+      })
+    }
+
+    try {
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/capabilities?tab=connectors&agentProfile=inbox-bot&connection=homelab']}>
+              <CapabilitiesView />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      await waitFor(() => expect(screen.getByTestId('connectors-tab').dataset.controls).toBe('true'))
+    } finally {
+      delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('does not hold the Connectors controls when only one connection is registered', async () => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      connections: {
+        list: vi.fn().mockResolvedValue({
+          version: 2,
+          primary: 'local',
+          secureTokenStorage: true,
+          connections: [{ id: 'local', kind: 'local', label: 'This device', tokenSet: false, tokenPreview: null }]
+        })
+      },
+      // A single-connection setup never fetches the union roster: a promise that never settles must not
+      // keep the controls held.
+      getAgentRoster: vi.fn(() => new Promise(() => {}))
+    }
+
+    try {
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/capabilities?tab=connectors&agentProfile=inbox-bot&connection=local']}>
+              <CapabilitiesView />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      await waitFor(() => expect(screen.getByTestId('connectors-tab').dataset.controls).toBe('true'))
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }

@@ -600,7 +600,16 @@ function PackageRow({
 
 /** The Plugins header's actions. `install` off where the page lists only what is installed: the
  *  ways in (the catalog, a Git repository) are on the Capabilities page. */
-export function PluginActions({ profile, install = true }: { profile: ProfileScope; install?: boolean }) {
+export function PluginActions({
+  profile,
+  install = true,
+  checkForUpdates = false
+}: {
+  profile: ProfileScope
+  install?: boolean
+  /** The agent's own Plugins page: offer the on-demand update check (never the classic header). */
+  checkForUpdates?: boolean
+}) {
   const { t } = useI18n()
   const d = t.settings.plugins
   const requestGateway = useSettingsGatewayRequest()
@@ -608,7 +617,7 @@ export function PluginActions({ profile, install = true }: { profile: ProfileSco
 
   return (
     <>
-      <PluginUpdateAllActions scope={scope} />
+      <PluginUpdateAllActions checkForUpdates={checkForUpdates} scope={scope} />
       {install && (
         <Button
           onClick={() =>
@@ -734,6 +743,19 @@ export const PluginsTab = memo(function PluginsTab({
   })
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
+
+  // One update path for the detail pane's button and the installed-only row's: re-pin/pull, then rescan
+  // so a unified package's desktop half follows the agent half.
+  const handleAgentUpdate = useCallback(
+    (row: AgentPluginRow) => {
+      void runPluginUpdate(requestGateway, row, scope, p).then(outcome => {
+        if (outcome.kind === 'applied') {
+          void rescanAll(requestGateway, scope)
+        }
+      })
+    },
+    [p, requestGateway, scope]
+  )
 
   const installedEntries = useMemo(
     () =>
@@ -897,7 +919,13 @@ export const PluginsTab = memo(function PluginsTab({
       agentLayout={agentLayout}
       // Installing is the Capabilities page's, which reaches only the open machine's agents: an agent
       // on another machine keeps its one way in here.
-      headerActions={<PluginActions install={!installedOnly || settingsOwnerElsewhere(owner)} profile={profile} />}
+      headerActions={
+        <PluginActions
+          checkForUpdates={installedOnly}
+          install={!installedOnly || settingsOwnerElsewhere(owner)}
+          profile={profile}
+        />
+      }
       installedEntries={installedEntries}
       // An agent's own Plugins page is its installed plugins and nothing else, like a phone's list
       // of installed apps: switch one, or uninstall it. Installing is the Capabilities page's.
@@ -920,19 +948,35 @@ export const PluginsTab = memo(function PluginsTab({
         }
 
         const { agent, desktop } = pkg
+        // The agent's own page is its control surface: update and uninstall live on the row, not only
+        // in the detail pane (which keeps them too).
+        const canUpdate = Boolean(installedOnly && agent?.update_available)
+        const canUninstall = Boolean(installedOnly && agent && removableAgentPlugin(agent))
 
-        return installedOnly && agent && removableAgentPlugin(agent) ? (
+        return agent && (canUpdate || canUninstall) ? (
           <>
-            <Button
-              aria-label={`${p.uninstall}: ${pkg.name}`}
-              className="text-destructive hover:text-destructive"
-              disabled={agentBusy(agent)}
-              onClick={() => handleAgentRemove(agent, desktop ?? null)}
-              size="xs"
-              variant="text"
-            >
-              {p.uninstall}
-            </Button>
+            {canUpdate && (
+              <Button
+                disabled={agentBusy(agent)}
+                onClick={() => handleAgentUpdate(agent)}
+                size="xs"
+                variant="textStrong"
+              >
+                {p.updateToPin(updateTargetLabel(agent))}
+              </Button>
+            )}
+            {canUninstall && (
+              <Button
+                aria-label={`${p.uninstall}: ${pkg.name}`}
+                className="text-destructive hover:text-destructive"
+                disabled={agentBusy(agent)}
+                onClick={() => handleAgentRemove(agent, desktop ?? null)}
+                size="xs"
+                variant="text"
+              >
+                {p.uninstall}
+              </Button>
+            )}
             {packageSwitch(pkg)}
           </>
         ) : (
@@ -965,13 +1009,7 @@ export const PluginsTab = memo(function PluginsTab({
                 }
               })
             }}
-            onAgentUpdate={row => {
-              void runPluginUpdate(requestGateway, row, scope, p).then(outcome => {
-                if (outcome.kind === 'applied') {
-                  void rescanAll(requestGateway, scope)
-                }
-              })
-            }}
+            onAgentUpdate={handleAgentUpdate}
             onDesktopRemove={handleDesktopRemove}
             pkg={pkg}
             profile={profile}

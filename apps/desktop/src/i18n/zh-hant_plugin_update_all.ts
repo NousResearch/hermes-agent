@@ -9,6 +9,11 @@ export const zhHantPluginUpdateAll: PluginUpdateAllTranslations = {
     `已更新 ${updated} 個` + (review ? `，${review} 個需要審查` : '') + (failed ? `，${failed} 個失敗` : ''),
   updateAllNone: '所有外掛皆已是最新',
   updateAllFailed: '無法更新外掛',
+  checkForUpdates: '檢查更新',
+  checkingForUpdates: '正在檢查…',
+  updatesAvailable: (count: number) => `有 ${count} 個外掛更新可用`,
+  checkFailed: '無法檢查更新',
+  checkUnsupported: '此後端無法檢查外掛更新。請更新 Hermes 以啟用',
   autoUpdate: '自動更新',
   autoUpdateTip: (hours: number) =>
     `閘道檢查時（每 ${hours} 小時）自動套用外掛更新。更新後的程式碼會在新工作階段中載入。`,

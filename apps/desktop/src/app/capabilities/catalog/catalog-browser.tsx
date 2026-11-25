@@ -517,8 +517,14 @@ function AgentCatalogEmpty({
   const copy = useAgentCapabilityCopy()
   const installed = installedOnly && !searching
 
+  // The installed list failed: its notice above already says so, and an empty-state line (or a
+  // skeleton) underneath an error contradicts it.
+  if (installedOnly && failed) {
+    return null
+  }
+
   // The installed list has not answered yet: its place, not "no results".
-  if (installedOnly && pending && !failed) {
+  if (installedOnly && pending) {
     return <AgentCapabilitySkeleton />
   }
 

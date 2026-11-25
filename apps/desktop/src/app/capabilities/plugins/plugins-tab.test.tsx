@@ -7,7 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { TRANSLATIONS } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
-import { $agentPlugins, $agentPluginsOwnerKey, $agentPluginsProfile, $agentPluginsStatus } from '@/store/agent-plugins'
+import {
+  $agentPluginBusy,
+  $agentPlugins,
+  $agentPluginsError,
+  $agentPluginsOwnerKey,
+  $agentPluginsProfile,
+  $agentPluginsStatus
+} from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection, $gatewayState } from '@/store/session'
@@ -103,10 +110,12 @@ beforeEach(() => {
   $shellChoice.set(true)
   $gatewayState.set('open')
   $pluginRecords.set({})
+  $agentPluginBusy.set(null)
   $agentPlugins.set([])
   $agentPluginsProfile.set(null)
   $agentPluginsOwnerKey.set(undefined)
   $agentPluginsStatus.set('ready')
+  $agentPluginsError.set(null)
   $catalogCardView.set(false)
   seedCatalog([])
   closePluginInstallRequest()
@@ -1035,6 +1044,97 @@ describe('PluginsTab catalog UX', () => {
       expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeTruthy()
       expect(screen.getByRole('link', { name: 'Browse the plugin catalog' })).toBeTruthy()
     })
+
+    it('shows only the error when the installed list fails, never an empty state under it', async () => {
+      $agentPluginsProfile.set('error-bot')
+      $agentPlugins.set([])
+      $agentPluginsStatus.set('loading')
+      requestGateway.mockImplementation(async (_method, params) => {
+        if (params?.action === 'list') {
+          throw new Error('scan failed')
+        }
+
+        return {}
+      })
+
+      await act(async () => {
+        agentPage({ profile: 'error-bot' })
+      })
+
+      expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.loadFailed)).toBeTruthy()
+      expect(screen.getByText('scan failed')).toBeTruthy()
+      expect(screen.queryByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeNull()
+    })
+
+    it('checks for updates on demand, refreshes the list, and updates a row that has one', async () => {
+      const updated = {
+        ...installed('git'),
+        catalog_name: 'demo-weather',
+        catalog_version: '1.2.0',
+        update_available: true
+      }
+
+      $agentPluginsProfile.set('update-bot')
+      $agentPlugins.set([installed('git')])
+      requestGateway.mockImplementation(async (_method, params) => {
+        if (params?.action === 'check') {
+          return {
+            check_results: [{ name: 'demo-weather', class: 'git', update_available: true }],
+            plugins: [updated]
+          }
+        }
+
+        return params?.action === 'update' ? { ok: true, unchanged: false } : { plugins: $agentPlugins.get() }
+      })
+
+      await act(async () => {
+        agentPage({ profile: 'update-bot' })
+      })
+
+      fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.skills.plugins.checkForUpdates }))
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'check', profile: 'update-bot' }),
+          expect.any(Number)
+        )
+      )
+
+      // The check's refreshed list lands, and the row it found behind offers Update beside Uninstall.
+      ;(await screen.findByRole('button', { name: 'Update to 1.2.0' })).click()
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'update', name: 'demo-weather', profile: 'update-bot' }),
+          expect.any(Number)
+        )
+      )
+      await waitFor(() => expect($agentPluginBusy.get()).toBeNull())
+    })
+  })
+
+  it('keeps the check and inline row update off the classic header, which keeps its detail-pane update', () => {
+    $agentPlugins.set([
+      {
+        catalog_name: 'demo-weather',
+        catalog_version: '1.2.0',
+        description: '',
+        key: 'demo-weather',
+        name: 'demo-weather',
+        source: 'git',
+        status: 'enabled',
+        update_available: true,
+        version: '1.0.0'
+      }
+    ])
+
+    renderPlugins({ profile: 'workbot' })
+
+    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.skills.plugins.checkForUpdates })).toBeNull()
+    // Only the detail pane's own Update remains: the inline row action is the agent page's.
+    expect(screen.getAllByRole('button', { name: 'Update to 1.2.0' })).toHaveLength(1)
   })
 
   it('keeps Install from Git on the Capabilities page', async () => {

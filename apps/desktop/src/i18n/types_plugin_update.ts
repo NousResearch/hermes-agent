@@ -39,6 +39,12 @@ export interface PluginUpdateAllTranslations {
   updateAllDone: (updated: number, review: number, failed: number) => string
   updateAllNone: string
   updateAllFailed: string
+  checkForUpdates: string
+  checkingForUpdates: string
+  updatesAvailable: (count: number) => string
+  checkFailed: string
+  /** The backend predates `plugins.manage check`. */
+  checkUnsupported: string
   autoUpdate: string
   autoUpdateTip: (hours: number) => string
   autoUpdateFailed: string

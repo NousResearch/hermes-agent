@@ -4183,6 +4183,8 @@ export const en: Translations = {
       restartBody: 'Turns running on this gateway stop. It comes back in a few seconds and reconnects on its own.'
     },
     approvalMode: {
+      perProfile: 'Per profile',
+      perProfileDescription: 'Approval modes are set per profile. Open a bot or profile to change its mode.',
       title: 'Approval mode',
       ariaLabel: mode => `Approval mode: ${mode}`,
       manual: 'Manual',

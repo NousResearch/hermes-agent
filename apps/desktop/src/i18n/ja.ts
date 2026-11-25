@@ -3041,6 +3041,8 @@ export const jaOverrides = {
       restartBody: 'このゲートウェイで実行中の応答は停止します。数秒で復帰し、自動で再接続します。'
     },
     approvalMode: {
+      perProfile: 'プロファイルごと',
+      perProfileDescription: '承認モードはプロファイルごとに設定されます。変更するには、対象のボットまたはプロファイルを開いてください。',
       title: '承認モード',
       ariaLabel: mode => `承認モード: ${mode}`,
       manual: '手動',

@@ -434,6 +434,10 @@ export const arChrome = {
       restartTitle: 'إعادة تشغيل البوابة؟',
       restartBody: 'ستتوقف الردود الجارية على هذه البوابة. ستعود خلال ثوانٍ وتعيد الاتصال تلقائيًا.'
     },
+    approvalMode: {
+      perProfile: 'حسب الملف الشخصي',
+      perProfileDescription: 'يُضبط وضع الموافقة لكل ملف شخصي على حدة. افتح بوتًا أو ملفًا شخصيًا لتغيير وضعه.'
+    },
     statusbar: {
       unknown: 'غير معروف',
       restart: 'إعادة تشغيل',

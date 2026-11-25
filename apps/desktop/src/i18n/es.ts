@@ -4610,6 +4610,8 @@ export const esOverrides = {
       restartBody: 'Las respuestas en curso en este gateway se detendrán. Vuelve en unos segundos y se reconecta solo.'
     },
     approvalMode: {
+      perProfile: 'Por perfil',
+      perProfileDescription: 'El modo de aprobación se configura por perfil. Abre un bot o perfil para cambiar su modo.',
       title: 'Modo de aprobación',
       ariaLabel: mode => `Modo de aprobación: ${mode}`,
       manual: 'Manual',

@@ -1,8 +1,8 @@
 """Bot-relay JSON-RPC handlers — the gateway side of cross-connection A2A. Connections ARE the
 peer set: the Desktop owns every gateway socket and relays between them via four doors on EACH
 gateway: ``roster.sync`` (push OTHER connections' agents so ``message_agent`` resolves them),
-``outbox.drain`` (collect envelopes queued here for other connections), ``deliver`` (one-turn Bot
-Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the reply/error back on
+``outbox.drain`` (collect envelopes queued here for other connections), ``deliver`` (forward one
+identified DM to the TARGET profile's authority, returns its delivery receipt), ``reply`` (write the reply/error back on
 the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 

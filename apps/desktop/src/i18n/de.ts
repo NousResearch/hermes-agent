@@ -4625,6 +4625,8 @@ export const deOverrides = {
         'Laufende Antworten auf diesem Gateway werden abgebrochen. Es ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
     },
     approvalMode: {
+      perProfile: 'Pro Profil',
+      perProfileDescription: 'Genehmigungsmodi werden pro Profil festgelegt. Öffne einen Bot oder ein Profil, um den Modus zu ändern.',
       title: 'Genehmigungsmodus',
       ariaLabel: mode => `Genehmigungsmodus: ${mode}`,
       manual: 'Manuell',

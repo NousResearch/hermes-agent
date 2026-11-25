@@ -4634,6 +4634,8 @@ export const frOverrides = {
         'Les réponses en cours sur cette passerelle s’arrêtent. Elle revient en quelques secondes et se reconnecte seule.'
     },
     approvalMode: {
+      perProfile: 'Par profil',
+      perProfileDescription: 'Le mode d’approbation est défini par profil. Ouvrez un bot ou un profil pour modifier son mode.',
       title: "Mode d'approbation",
       ariaLabel: mode => `Mode d'approbation : ${mode}`,
       manual: 'Manuel',

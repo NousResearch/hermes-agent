@@ -4031,6 +4031,8 @@ export const zhOverrides = {
       restartBody: '这个网关上正在运行的回复会停止。几秒后它会恢复并自动重新连接。'
     },
     approvalMode: {
+      perProfile: '按配置档案设置',
+      perProfileDescription: '审批模式按配置档案单独设置。打开对应的机器人或配置档案以更改其模式。',
       title: '审批模式',
       ariaLabel: mode => `审批模式：${mode}`,
       manual: '手动',

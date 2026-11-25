@@ -3630,6 +3630,8 @@ export interface Translations extends NoticeTranslations {
       restartBody: string
     }
     approvalMode: {
+      perProfile: string
+      perProfileDescription: string
       title: string
       ariaLabel: (mode: string) => string
       manual: string

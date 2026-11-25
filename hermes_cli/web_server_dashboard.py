@@ -360,7 +360,7 @@ def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0)
 
 
 _THEME_DEFAULT_TYPOGRAPHY: dict[str, str] = {
-    "fontSans": 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    "fontSans": '"Mona Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     "fontMono": 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace',
     "baseSize": "15px",
     "lineHeight": "1.55",

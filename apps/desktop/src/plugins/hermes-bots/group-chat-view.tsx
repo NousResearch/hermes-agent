@@ -1828,6 +1828,7 @@ export function openGroupChat(group: string, origin: CanonicalGroupOrigin): void
       const title = canonicalGroupBindingFor($canonicalGroupBindings.get(), route, group, origin)?.roomName || group
 
       const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
+        approvalScope: 'per-profile',
         title,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} origin={origin} />,

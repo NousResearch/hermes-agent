@@ -182,6 +182,39 @@ async def test_plugin_chosen_card_id_is_not_model_content(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('threaded', [False, True], ids=['async', 'thread'])
+@pytest.mark.parametrize('failure', [RuntimeError, asyncio.CancelledError], ids=['post_failed', 'cancelled'])
+async def test_error_after_card_admission_reports_uncertain(tmp_path, monkeypatch, threaded, failure):
+    from gateway import plugin_cards
+
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        _serve(runner, monkeypatch)
+        _no_turns(runner)
+        ctx = _ctx()
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        original = plugin_cards.post
+
+        async def lose_receipt(*args, **kwargs):
+            assert (await original(*args, **kwargs))['status'] == 'queued'
+            raise failure('receipt lost after admission')
+
+        with monkeypatch.context() as patch:
+            patch.setattr(plugin_cards, 'post', lose_receipt)
+            result = (await _post(ctx, _CARD, session_key=route) if threaded
+                      else await ctx.apost_card(_CARD, session_key=route))
+        assert result['error'] == ('cancelled' if failure is asyncio.CancelledError else 'post_failed')
+        assert result.get('certain') is False
+        await authority._drain(ref)
+        assert len(_cards(authority, target)) == 1, 'an uncertain result may have landed'
+        assert (await _post(ctx, _CARD, session_key=route))['status'] == 'duplicate'
+        await authority._drain(ref)
+        assert len(_cards(authority, target)) == 1
+    finally:
+        close_stores_under(authority.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
 async def test_card_waits_for_the_input_ahead_and_a_person_still_goes_first(tmp_path, monkeypatch):
     """A person's input committed before the card runs first and does not see it; one committed after
     sees it. The card itself never starts a turn."""

@@ -128,7 +128,7 @@ def test_cancelled_task_is_a_result(tmp_path, monkeypatch):
                 task.cancel()
         gateway.call(shutdown)
         worker.join(5)
-        assert results == [{'ok': False, 'error': 'cancelled',
+        assert results == [{'ok': False, 'error': 'cancelled', 'certain': False,
                             'detail': 'the gateway stopped before answering; the card may not have landed'}]
     finally:
         gateway.stop()
@@ -145,7 +145,7 @@ def test_timeout_is_a_result_and_the_card_may_still_land(tmp_path, monkeypatch):
 
         result = thread_side.post(_ctx(tmp_path), _CARD, session_key='agent:main:local:dm:x')
 
-        assert result == {'ok': False, 'error': 'timeout',
+        assert result == {'ok': False, 'error': 'timeout', 'certain': False,
                           'detail': 'the gateway did not answer within 0s; the card may still land'}
         gateway.call(release.set)  # the admission finishes on its own, nothing is torn down
         deadline = time.monotonic() + 5
@@ -171,7 +171,7 @@ def test_apost_translates_the_gateways_cancellation_and_keeps_the_callers(tmp_pa
         for task in asyncio.all_tasks(loop):
             if task is not caller and task is not asyncio.current_task():
                 task.cancel()
-        assert await caller == {'ok': False, 'error': 'cancelled',
+        assert await caller == {'ok': False, 'error': 'cancelled', 'certain': False,
                                 'detail': 'the gateway stopped before answering; the card may not have landed'}
 
         # The caller's own cancellation is the caller's: it propagates.

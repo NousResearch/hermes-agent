@@ -5,6 +5,10 @@ bound. The target is ``session_key`` or ``origin`` (the conversations ``inject_m
 else the session bound in the calling context. Consent is the ``conversation.cards`` capability,
 read from the plugin's own profile. Admission and delivery live in ``gateway/plugin_cards.py``;
 this side checks consent and hands the call to the gateway loop. Never raises.
+
+``cancelled``, ``post_failed`` and ``timeout`` are UNCERTAIN results (``certain: False``): the card
+may have landed. Do not inject a fallback turn on them. Retry the same card id and unchanged payload
+to obtain the durable duplicate receipt without double delivery.
 """
 from __future__ import annotations
 
@@ -25,7 +29,8 @@ _POLL_S = 0.25  # how often a waiting thread checks that the gateway loop is sti
 
 
 def _err(code: str, detail: str = "") -> dict[str, Any]:
-    return {"ok": False, "error": code, **({"detail": detail} if detail else {})}
+    return {"ok": False, "error": code, **({"certain": False} if code in {"cancelled", "post_failed", "timeout"} else {}),
+            **({"detail": detail} if detail else {})}
 
 
 def _target(session_key: Optional[str], origin: Optional[Mapping[str, Any]]):

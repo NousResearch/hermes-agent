@@ -275,3 +275,46 @@ def test_a_retry_that_removed_our_leftover_and_then_failed_stays_owed(tmp_path, 
     assert default_plugins.install_defaults(home, entries=entries)["owed"] == ["accent-picker"]
     assert attempts == ["accent-picker"] * 3, "a tree we removed was read as the user's removal"
 
+
+
+def _counted_passes(monkeypatch, during_pass=lambda n: None, cap: int = 3) -> list[int]:
+    """Stand in for the install pass; a pass beyond *cap* fails the test instead of looping on."""
+    passes: list[int] = []
+
+    def install_defaults_all_homes(*, say, wait):
+        passes.append(len(passes) + 1)
+        assert len(passes) <= cap, "install_and_record kept rescanning"
+        during_pass(len(passes))
+        return {"owed": []}
+    monkeypatch.setattr(default_plugins, "install_defaults_all_homes", install_defaults_all_homes)
+    monkeypatch.setattr(default_plugins, "_identity", lambda: "rev-1")
+    return passes
+
+
+def _future_marker() -> Path:
+    import os
+    import time
+
+    from pm.environments import dependency_home_root
+    rerun = default_plugins._state(Path(dependency_home_root()), "rerun")
+    rerun.parent.mkdir(parents=True, exist_ok=True)
+    rerun.touch()
+    ahead = time.time() + 2 * 3600
+    os.utime(rerun, (ahead, ahead))
+    return rerun
+
+
+def test_a_future_dated_rescan_marker_does_not_rescan_forever(monkeypatch):
+    """Regression for #159934: a marker dated ahead of the clock is not a new rescan request."""
+    _future_marker()
+    passes = _counted_passes(monkeypatch)
+    assert default_plugins.install_and_record(wait=1.0) == {"owed": []}
+    assert passes == [1]
+
+
+def test_a_rescan_requested_during_a_pass_still_runs_another(monkeypatch):
+    """A profile created mid-pass touches the marker: one more pass, then done, even from a future-dated one."""
+    rerun = _future_marker()
+    passes = _counted_passes(monkeypatch, during_pass=lambda n: n == 1 and rerun.touch())
+    default_plugins.install_and_record(wait=1.0)
+    assert passes == [1, 2]

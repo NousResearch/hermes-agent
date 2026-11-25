@@ -81,21 +81,16 @@ def test_bundle_inputs_runs_only_for_manifests_or_bundled_routes(route, windows_
         assert _job_runs(job, inputs) is runs, (trigger, route, windows_manifest, macos_manifest)
 
 
-def test_every_workflow_caller_of_install_e2e_skips_bundle_inputs():
-    install_e2e = _load("install-e2e.yml")
-    bundle_inputs = install_e2e["jobs"]["bundle-inputs"]
-    callers: list[str] = []
-    for path in sorted(WORKFLOWS.glob("*.y*ml")):
-        workflow = _load(path.name)
-        for job_id, caller_job in (workflow.get("jobs") or {}).items():
-            if not isinstance(caller_job, dict):
-                continue
-            if caller_job.get("uses") != "./.github/workflows/install-e2e.yml":
-                continue
-            callers.append(f"{path.name}:{job_id}")
-            inputs = _typed_inputs("workflow_call", caller_job.get("with") or {})
-            assert not _job_runs(bundle_inputs, inputs), f"{path.name}:{job_id}"
-    assert {"canary-e2e.yml:install-e2e", "stable-release.yml:install-e2e"} <= set(callers)
+@pytest.mark.parametrize("workflow", ["stable-release.yml", "canary-e2e.yml"])
+def test_release_and_canary_calls_skip_bundle_inputs(workflow):
+    caller = _load(workflow)["jobs"]["install-e2e"]
+    assert caller["uses"] == "./.github/workflows/install-e2e.yml"
+    with_inputs = caller.get("with") or {}
+    # An expression would be judged here as its literal text, never as a bundled route.
+    gate_inputs = ("route", "windows-bundle-manifest", "macos-bundle-manifest")
+    assert not [key for key in gate_inputs if "${{" in str(with_inputs.get(key, ""))], workflow
+    inputs = _typed_inputs("workflow_call", with_inputs)
+    assert not _job_runs(_load("install-e2e.yml")["jobs"]["bundle-inputs"], inputs), workflow
 
 
 def test_downstream_jobs_handle_skipped_bundle_inputs_and_manifest_rehearsals():

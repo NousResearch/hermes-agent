@@ -469,3 +469,71 @@ async def test_orphan_reap_logs_arm_fire_and_ended_row(tmp_path, monkeypatch, ca
         assert row is not None
         assert ended['source'] == row['source']
         assert ended['ended_at'] > ended['started_at'] > 0
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_during_the_ended_row_read_skips_lifecycle(tmp_path, monkeypatch):
+    """A viewer back while the orphan-end diagnostic reads the stamped row keeps its session:
+    no finalize hook and no retirement may run for that close (#160116 review)."""
+    import asyncio
+    import threading
+
+    import gateway.session_retirement as retirement
+    import gateway.session_runtime_workers as workers
+
+    armed = _capture_timers(monkeypatch)
+    authority, finalized = await _owner(tmp_path, monkeypatch)
+    sid = _create(authority).session_id
+    viewer, _ = await _attach(authority, sid)
+    await viewer.close()  # arm before the read is gated: arming reads the row too
+
+    retired = []
+    monkeypatch.setattr(retirement, 'retire_closed',
+                        lambda owner, sid_, live, target, stamp: retired.append(sid_))
+    operations = []
+    original_track_mutation = workers.track_mutation
+
+    def capture_settle(owner, operation):
+        # Only capture the orphan close's settle; tracked_write uses the same helper for its
+        # own writes and still needs a real task.
+        if getattr(operation, 'cr_code', None) is not None and operation.cr_code.co_name == '_store_and_settle':
+            operations.append(operation)
+            return None
+        return original_track_mutation(owner, operation)
+
+    monkeypatch.setattr(workers, 'track_mutation', capture_settle)
+
+    store = authority.persistence
+    original_get = store.sessions.get
+    entered, resume_read = threading.Event(), threading.Event()
+    calls = []
+
+    def gated_get(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:  # first read is the pre-claim row; the second is after the stamp
+            entered.set()
+            assert resume_read.wait(10), 'the reattach never released the diagnostic read'
+        return original_get(*args, **kwargs)
+
+    monkeypatch.setattr(store.sessions, 'get', gated_get)
+
+    async def reattach():
+        await asyncio.to_thread(entered.wait, 10)
+        assert entered.is_set(), 'the close never reached the diagnostic read'
+        await _attach(authority, sid)
+        resume_read.set()
+
+    try:
+        armed[-1][1]()  # fire the orphan close, capturing its settle operation
+        assert operations, 'the fired close did not start settling'
+        reattacher = asyncio.create_task(reattach())
+        await asyncio.wait_for(operations[-1], 10)
+        await reattacher
+        assert len(calls) >= 2
+        assert finalized == [] and retired == []  # no lifecycle ran for the reattached viewer
+        row = session_row(store, sid)
+        assert row is not None and row['ended_at'] is None  # reopened for the returning viewer
+        assert authority.sessions[sid].subscribers
+    finally:
+        resume_read.set()
+        store.close()

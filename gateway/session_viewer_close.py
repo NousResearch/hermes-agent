@@ -333,7 +333,22 @@ async def settle_viewer_close(authority, session_id):
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row.source if row is not None else None) or (live.source.platform.value if live.source else '')
     if close.reason in ORPHAN_REASONS:
-        stamped = await asyncio.to_thread(authority_persistence(authority).sessions.get, target)
+        # The end operation reports only whether it stamped, so the ended row needs one more read
+        # for the diagnostic. This read is diagnostic-only: a transient failure must never abort
+        # the close, and its await is another reattach window like every await above.
+        try:
+            stamped = await asyncio.to_thread(authority_persistence(authority).sessions.get, target)
+        except Exception:
+            logger.warning('Orphan close of %s: could not read the ended row for diagnosis', session_id,
+                           exc_info=True)
+            stamped = None
+        if (authority.sessions.get(session_id) is not live or live.subscribers
+                or session_id in authority.pending_closes):
+            # A viewer came back (or a newer close was armed) while the row was read. The stamp
+            # already committed: hand the row back as reopen_if_reattached would have, and run
+            # none of the lifecycle/retirement below for a close that is no longer ours.
+            await reopen_if_reattached(authority, session_id, ended)
+            return
         _log_orphan_event('ended', authority, session_id, close.reason, source=platform,
                           started_at=stamped.started_at if stamped is not None else None,
                           ended_at=stamped.ended_at if stamped is not None else None)

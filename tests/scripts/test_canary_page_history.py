@@ -1,6 +1,7 @@
 """Already-published canary pages remain orderable after the claim-tag change."""
 import pytest
 
+from scripts.releases.downloads_page import recorded_build
 from tests.scripts.test_release_r2 import r2_server
 from tests.scripts.test_render_builds_publication import rbt
 
@@ -20,7 +21,7 @@ def test_new_canary_orders_against_published_legacy_page(request, stamp, advance
     result = rbt.write_channel_page(tag, {}, base)
     assert (result is not None) is advances
     if advances:
-        assert rbt.recorded_build(server.store[key][0].decode()) == tag
+        assert recorded_build(server.store[key][0].decode()) == tag
     else:
         assert server.store[key][0] == previous
 

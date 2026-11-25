@@ -3254,6 +3254,8 @@ export const ruOverrides = {
       messagingPlatforms: 'Платформы сообщений'
     },
     approvalMode: {
+      perProfile: 'Для каждого профиля',
+      perProfileDescription: 'Режим подтверждения задаётся отдельно для каждого профиля. Откройте бота или профиль, чтобы изменить его режим.',
       title: 'Режим подтверждения',
       ariaLabel: mode => `Режим подтверждения: ${mode}`,
       manual: 'Ручной',

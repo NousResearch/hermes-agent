@@ -332,6 +332,27 @@ async def test_a_failed_chat_restart_does_not_claim_the_next_restart(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_a_failed_chat_restart_leaves_no_restart_notice_for_the_next_boot(monkeypatch):
+    """/restart writes the requester's .restart_notify.json before it asks for the restart. When that
+    restart fails, the notice goes with it: the next boot would tell that chat its restart succeeded."""
+    from hermes_constants import get_hermes_home
+
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+    runner._restart_command_source = make_restart_source()
+    notice = get_hermes_home() / ".restart_notify.json"
+    notice.write_text("{}", encoding="utf-8")
+
+    def units(_runner):
+        raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+    monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    assert runner.request_restart(detached=True, via_service=False) is True
+    await asyncio.gather(runner._restart_task, return_exceptions=True)
+    assert not notice.exists()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_restart_keeps_an_external_drain_in_the_status(monkeypatch):
     """While an operator's external drain refuses new turns, a restart that fails before its stop does
     not report the gateway as running."""

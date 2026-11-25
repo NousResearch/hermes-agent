@@ -67,6 +67,7 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
             tokens = unwrapped
 
     port = 9119
+    explicit_port = False
     host = "127.0.0.1"
     i = 0
     while i < len(tokens):
@@ -81,11 +82,15 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
                 break
             if flag == "--port":
                 try:
-                    port = int(value)
+                    parsed_port = int(value)
                 except ValueError:
-                    return None
-                if port < 0:
-                    return None
+                    parsed_port = -1
+                if parsed_port < 0:
+                    if not explicit_port:
+                        return None
+                else:
+                    port = parsed_port
+                    explicit_port = True
             else:
                 host = value or "127.0.0.1"
             i += step

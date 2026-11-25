@@ -12,13 +12,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import faulthandler
+import itertools
 import json
 import logging
 import os
 import sys
 import threading
 import time
-import traceback
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional
@@ -53,8 +53,8 @@ _FIRE_SAMPLE_BUDGET_S = 2.0
 _DECISION_LOCK_S = 0.1  # commit-vs-stand-down lock: held only for a flag check
 # Bound on the pre-``os._exit`` drain of the async file-log queue (both watchdogs).
 _LOG_DRAIN_S = 1.0
-# The stderr stack copy keeps faulthandler's own caps (100 threads, 100 frames per thread), so a
-# journald/launchd log takes no more than the file copy does.
+# Thread and frame counts for the Python-rendered stacks, the same counts faulthandler's file copy
+# stops at: the stderr copy then grows with these caps, not with how many threads the gateway runs.
 _STDERR_STACK_THREADS = 100
 _STDERR_STACK_FRAMES = 100
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
@@ -192,12 +192,8 @@ def _run_liveness_forensics(stop_event: threading.Event, *, strikes: int, exit_c
                              host_memory_pressure=memory.get("host_memory_pressure"))
         _drain_log_queue_quietly()
 
-    # Building/starting a thread allocates, so on a starved host either can fail: then exit unless
-    # a stop() arrived.  No logging here: the kill must not wait on a handler.
-    with contextlib.suppress(MemoryError, RuntimeError):
-        worker = threading.Thread(target=work, daemon=True, name="gateway-liveness-forensics")
-        worker.start()
-        worker.join(_FIRE_FORENSICS_BUDGET_S)
+    # A worker that cannot even be built still leaves the exit to the decision below.
+    _run_bounded_worker(work, "gateway-liveness-forensics", _FIRE_FORENSICS_BUDGET_S)
     # Bounded: a worker descheduled inside the critical section must not hold up the kill.  When
     # the decision can't be taken, exit; standing down needs the lock, so the worker can't stamp
     # a process that keeps running.
@@ -214,14 +210,19 @@ def _sample_fire_memory() -> dict[str, Any]:
     ``_FIRE_SAMPLE_BUDGET_S``; return whatever snapshot it published by then (``{}`` if none), so
     the kill proceeds even when procfs or a log handler stalls.  Never raises."""
     out: dict[str, Any] = {}
-    try:  # building/starting a thread allocates: on a starved host either can fail itself
-        worker = threading.Thread(target=_liveness_memory_snapshot, args=(out,), daemon=True,
-                                  name="gateway-liveness-memory-sample")
-        worker.start()
-        worker.join(_FIRE_SAMPLE_BUDGET_S)
-    except (MemoryError, RuntimeError):  # no logging: the kill must not wait on a handler
-        return {}
+    _run_bounded_worker(lambda: _liveness_memory_snapshot(out), "gateway-liveness-memory-sample",
+                        _FIRE_SAMPLE_BUDGET_S)
     return dict(out.get("snapshot") or {})
+
+
+def _run_bounded_worker(target: Callable[[], None], name: str, timeout: float) -> None:
+    """Run ``target`` in a named daemon thread and wait at most ``timeout`` for it.  Building or
+    starting a thread allocates, so on a starved host either can raise: the caller then goes on
+    without the worker.  No logging: the kill must not wait on a handler.  Never raises."""
+    with contextlib.suppress(MemoryError, RuntimeError):
+        worker = threading.Thread(target=target, daemon=True, name=name)
+        worker.start()
+        worker.join(timeout)
 
 
 def _liveness_memory_snapshot(out: dict[str, Any]) -> None:
@@ -402,24 +403,28 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
         sys.stderr.flush()
 
 
+def _format_frame_stack(frame: Any) -> str:
+    """``File "<path>", line N, in <function>`` lines, innermost frame last, for at most
+    ``_STDERR_STACK_FRAMES`` innermost frames. File, line and function only: never frame locals
+    (no token or message text a frame holds), and no source line, since a linecache read of
+    every frame's source is more disk I/O on a host stalled enough to fire the watchdog."""
+    lines = []
+    while frame is not None and len(lines) < _STDERR_STACK_FRAMES:
+        code = frame.f_code
+        lines.append(f'  File "{code.co_filename}", line {frame.f_lineno}, in {code.co_name}\n')
+        frame = frame.f_back
+    return "".join(reversed(lines))
+
+
 def _format_thread_stacks() -> str:
-    """Every thread's stack as ``File "<path>", line N, in <function>`` lines, innermost frame
-    last, for the stderr copy. Capped like the file copy's faulthandler dump
-    (``_STDERR_STACK_THREADS`` threads, ``_STDERR_STACK_FRAMES`` innermost frames each), and reads
-    no source files: on a host stalled enough to fire the watchdog, a linecache read of every
-    frame's source is more disk I/O on the kill path. Never raises."""
+    """Every thread's stack (``_format_frame_stack``) for the stderr copy, at most
+    ``_STDERR_STACK_THREADS`` threads, like the file copy's faulthandler dump. Never raises."""
     try:
         frames = sys._current_frames()
-        names = {thread.ident: thread.name for thread in threading.enumerate()}
+        names = {thread.ident: thread.name for thread in threading.enumerate()}  # one snapshot
         out = ["--- Python thread stacks (innermost frame last) ---\n"]
-        for ident, frame in list(frames.items())[:_STDERR_STACK_THREADS]:
-            out.append(f"\nThread {ident:#x} ({names.get(ident)}):\n")
-            stack = []
-            while frame is not None and len(stack) < _STDERR_STACK_FRAMES:
-                code = frame.f_code
-                stack.append(f'  File "{code.co_filename}", line {frame.f_lineno}, in {code.co_name}\n')
-                frame = frame.f_back
-            out.extend(reversed(stack))
+        for ident, frame in itertools.islice(frames.items(), _STDERR_STACK_THREADS):
+            out.append(f"\nThread {ident:#x} ({names.get(ident)}):\n" + _format_frame_stack(frame))
         if len(frames) > _STDERR_STACK_THREADS:
             out.append(f"\n({len(frames) - _STDERR_STACK_THREADS} more threads not shown)\n")
         return "".join(out)
@@ -428,14 +433,12 @@ def _format_thread_stacks() -> str:
 
 
 def _format_loop_thread_section(loop_thread_id: int) -> str:
-    """The monitored loop thread's stack, formatted once for both dump copies. Built from
-    ``sys._current_frames()`` + ``traceback.format_stack``: file, line, function and source line
-    only, never frame locals, so no token or message text a frame holds can reach the dump.
-    ``faulthandler`` cannot be asked for one thread, and its all-threads list stops after 100
-    threads, newest first: the loop thread, started before every worker, is the one it drops."""
+    """The monitored loop thread's stack (``_format_frame_stack``), formatted once for both dump
+    copies. ``faulthandler`` cannot be asked for one thread, and its all-threads list stops after
+    100 threads, newest first: the loop thread, started before every worker, is the one it drops."""
     try:
         frame = sys._current_frames().get(loop_thread_id)
-        stack = ("".join(traceback.format_stack(frame)) if frame is not None
+        stack = (_format_frame_stack(frame) if frame is not None
                  else "(monitored loop thread stack unavailable: thread may have exited)\n")
     except Exception as exc:  # health: allow BLE001 -- a hard-exit diagnostic path must never raise
         stack = f"(monitored loop thread stack unavailable: {type(exc).__name__})\n"

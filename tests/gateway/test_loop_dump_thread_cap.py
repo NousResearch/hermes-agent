@@ -88,7 +88,7 @@ def test_stderr_dump_carries_the_loop_thread_stack_too(tmp_path, monkeypatch):
 
 
 def test_loop_stack_section_carries_no_frame_locals(tmp_path, monkeypatch):
-    """The section is a code-location stack (file, line, function, source line), never values."""
+    """The section is a code-location stack (file, line, function), never values."""
     secret = "-".join(["sk", "test", "SHOULD", "NOT", "APPEAR"])  # built at runtime: not in any source line
     dump, stderr = _wedge_loop_behind_fillers(tmp_path, monkeypatch, secret=secret)
     assert "wedged_loop_callback_marker" in dump  # the frame holding the secret IS in the dump
@@ -96,7 +96,8 @@ def test_loop_stack_section_carries_no_frame_locals(tmp_path, monkeypatch):
 
 
 def test_stderr_stacks_are_capped_and_read_no_source(monkeypatch):
-    """The stderr copy keeps faulthandler's thread cap and opens no source file on the kill path."""
+    """Both stack sections open no source file on the kill path; the all-thread one keeps
+    faulthandler's thread cap."""
     import gateway.shutdown_watchdog as watchdog
 
     monkeypatch.setattr(watchdog, "_STDERR_STACK_THREADS", 2)
@@ -110,9 +111,11 @@ def test_stderr_stacks_are_capped_and_read_no_source(monkeypatch):
             patched.setattr("linecache.getline", lambda *args, **_: source_reads.append(args) or "")
             patched.setattr("linecache.updatecache", lambda *args, **_: source_reads.append(args) or [])
             text = watchdog._format_thread_stacks()
+            loop_section = watchdog._format_loop_thread_section(threading.get_ident())
     finally:
         release.set()
-    assert source_reads == [], "the stderr stack renderer read a source file on the kill path"
+    assert source_reads == [], "a stack renderer read a source file on the kill path"
+    assert "test_stderr_stacks_are_capped_and_read_no_source" in loop_section
     assert text.count("\nThread 0x") == 2
     assert "more threads not shown" in text
     assert 'File "' in text and ", line " in text

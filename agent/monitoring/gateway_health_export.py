@@ -24,6 +24,7 @@ from agent.monitoring.gateway_health import (
     build_gateway_health_snapshot,
     source_logger_for_export,
 )
+from agent.monitoring.memory_health import build_memory_health_metrics
 from agent.monitoring.otlp_exporter import (
     EmitterStreamer,
     _allowlisted_attrs,
@@ -187,8 +188,6 @@ def _read_runtime_snapshot(config: dict[str, Any], *, events_only: bool = False)
         logger.debug("background-work snapshot traceback", exc_info=True)
     try:
         if not events_only:  # gauges only: the events pass would read the files for nothing
-            from agent.monitoring.gateway_memory_health import build_memory_health_metrics
-
             gateway_snapshot.metrics.extend(build_memory_health_metrics(base))
     except Exception as exc:
         logger.warning("memory health snapshot unavailable; previous-exit and memory-pressure gauges not exported "

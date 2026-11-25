@@ -118,7 +118,8 @@ _OOM_WINDOW_S = 900.0
 @lru_cache(maxsize=1)
 def _cgroup_v2_events_path() -> Optional[Path]:
     """This process's cgroup v2 ``memory.events``, or ``None`` without a unified-hierarchy entry.
-    Resolved once: a process's cgroup path is fixed for its life."""
+    Resolved once per process, not per heartbeat: a supervised gateway is not moved between
+    cgroups, and one that is keeps sampling its first cgroup's counters."""
     try:
         from gateway.cgroup_cleanup import _own_cgroup_path
 
@@ -171,7 +172,7 @@ def _heartbeat_oom_baseline(sentinel: dict[str, Any], hb: dict[str, Any]) -> Any
     if written is None:
         return None
     claimed = sentinel.get("start_time")
-    if isinstance(claimed, (int, float)) and written.timestamp() < claimed:
+    if not isinstance(claimed, (int, float)) or written.timestamp() < claimed:
         return None
     return hb.get("oom") if 0 <= time.time() - written.timestamp() <= _OOM_WINDOW_S else None
 
@@ -281,7 +282,10 @@ def _suspected_oom(mem: dict[str, Any]) -> bool:
 
 def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Evidence dict when the previous life died uncleanly, else ``None``. Read-only."""
-    sentinel = _read_json(get_lifecycle_sentinel_path(home))
+    return _unclean_exit_evidence(_read_json(get_lifecycle_sentinel_path(home)), home)
+
+
+def _unclean_exit_evidence(sentinel: Optional[dict[str, Any]], home: Optional[Path]) -> Optional[dict[str, Any]]:
     if not sentinel or sentinel.get("phase") != "running":
         return None
     from process_identity import persistent_record_pidns_checkable
@@ -303,6 +307,7 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
 
         hb = _read_json(get_loop_heartbeat_path(home)) or {}
     except Exception:
+        logger.debug("Heartbeat unreadable for unclean-exit evidence", exc_info=True)
         hb = {}
     if hb:
         evidence["last_heartbeat_at"] = hb.get("updated_at")
@@ -398,14 +403,13 @@ def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path], *, defe
     )
 
 
-def _report_watchdog_exit(home: Optional[Path]) -> dict[str, Any]:
+def _report_watchdog_exit(sentinel: dict[str, Any], home: Optional[Path]) -> dict[str, Any]:
     """``prior_*`` keys for the new claim when the previous life was killed by a watchdog
     (``phase=exited`` with a ``WATCHDOG_EXIT_REASONS`` reason), after appending a
     ``gateway.previous_watchdog_exit`` exit-diag record; ``{}`` otherwise.  Without this the
     next claim overwrites the only record of why the gateway restarted (#148527)."""
     from gateway.status import is_watchdog_exit_reason
 
-    sentinel = _read_json(get_lifecycle_sentinel_path(home)) or {}
     reason = sentinel.get("exit_reason")
     if sentinel.get("phase") != "exited" or not is_watchdog_exit_reason(reason):
         return {}
@@ -434,11 +438,12 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
     evidence: Optional[dict[str, Any]] = None
     watchdog_exit: dict[str, Any] = {}
     try:
-        evidence = detect_unclean_exit(home)
+        sentinel = _read_json(get_lifecycle_sentinel_path(home)) or {}  # one read for both verdicts
+        evidence = _unclean_exit_evidence(sentinel, home)
         if evidence is not None:
             _report_unclean_exit(evidence, home, defer_integrity_check=defer_integrity_check)
         else:
-            watchdog_exit = _report_watchdog_exit(home)
+            watchdog_exit = _report_watchdog_exit(sentinel, home)
     except Exception:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:

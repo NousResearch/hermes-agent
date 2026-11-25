@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.monitoring import gateway_health_export, gateway_memory_health
+from agent.monitoring import gateway_health_export, memory_health
 from agent.monitoring.gateway_health import GatewayMetric
 from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 from gateway.shutdown_watchdog import get_loop_heartbeat_path
@@ -31,9 +31,9 @@ _PRIOR_FLAGS = {
 
 @pytest.fixture(autouse=True)
 def _fresh_memo():
-    gateway_memory_health._status_memo.clear()
+    memory_health._status_memo.clear()
     yield
-    gateway_memory_health._status_memo.clear()
+    memory_health._status_memo.clear()
 
 
 @pytest.fixture
@@ -111,7 +111,7 @@ def test_a_failing_reader_warns_with_the_type_name_and_the_rest_still_exports(
     def _boom(home=None, **_kw):
         raise PermissionError("/secret/path/state/gateway.lifecycle.json")
 
-    monkeypatch.setattr("gateway.memory_status.collect_memory_status", _boom)
+    monkeypatch.setattr(memory_health, "collect_memory_status", _boom)
     with caplog.at_level(logging.WARNING, logger=gateway_health_export.logger.name):
         names = [m.name for m in gateway_health_export._read_runtime_snapshot({}).metrics]
 
@@ -124,7 +124,7 @@ def test_a_failing_reader_warns_with_the_type_name_and_the_rest_still_exports(
 
 def test_events_only_pass_skips_the_memory_files(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
-    monkeypatch.setattr("gateway.memory_status.collect_memory_status", lambda *a, **k: calls.append(1) or {})
+    monkeypatch.setattr(memory_health, "collect_memory_status", lambda *a, **k: calls.append(1) or {})
     gateway_health_export._emit_snapshot_events({})
     assert calls == []
     gateway_health_export._read_runtime_snapshot({})
@@ -136,9 +136,9 @@ def test_gauge_callbacks_within_one_second_read_the_files_once(home: Path, monke
 
     calls: list[int] = []
     real = memory_status.collect_memory_status
-    monkeypatch.setattr(memory_status, "collect_memory_status", lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(memory_health, "collect_memory_status", lambda *a, **k: calls.append(1) or real(*a, **k))
     clock = [1000.0]
-    monkeypatch.setattr(gateway_memory_health.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(memory_health.time, "monotonic", lambda: clock[0])
     _claim(home, {})
 
     for _ in range(3):  # one export: every gauge callback rebuilds the snapshot

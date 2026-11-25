@@ -428,3 +428,45 @@ def test_bootstrap_abort_before_runner_awaits_stop_and_returns_exit_verdict():
 
     assert asyncio.run(run_scenario(False)) is True
     assert asyncio.run(run_scenario(True)) is False
+
+
+def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(monkeypatch):
+    from gateway import run_bootstrap
+
+    async def run_scenario():
+        shutdown_event = asyncio.Event()
+        called_runner = []
+
+        async def fake_start_api(r):
+            r._stop_requested_by_signal = True
+            r.session_api = None
+
+        async def fake_run_runner(r, sig):
+            called_runner.append(True)
+
+        async def stop(*, restart=False, detached_restart=False, service_restart=False):
+            shutdown_event.set()
+
+        monkeypatch.setattr(run_runtime, "start_gateway_runtime_api", fake_start_api)
+        monkeypatch.setattr(run_bootstrap, "_start_gateway_run_runner", fake_run_runner)
+        runner = types.SimpleNamespace(
+            _stop_task=None,
+            _shutdown_event=shutdown_event,
+            _stop_requested_by_signal=False,
+            _restart_requested=False,
+            _restart_detached=False,
+            _restart_via_service=False,
+            should_exit_with_failure=False,
+            exit_code=None,
+            exit_reason=None,
+            _gateway_health_export_runtime=None,
+            stop=stop,
+            wait_for_shutdown=shutdown_event.wait,
+        )
+        verdict, ws_preload, unclean = await run_bootstrap._start_gateway_listener_and_runner(
+            runner, [False], idle_exit=False
+        )
+        assert (verdict, ws_preload, unclean) == (True, None, None)
+        assert called_runner == []
+
+    asyncio.run(run_scenario())

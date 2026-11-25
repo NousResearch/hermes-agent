@@ -760,6 +760,41 @@ async def _abort_startup_before_runner(runner, _signal_initiated_shutdown: list)
         _shutdown_gateway_health_export(runner)
 
 
+async def _start_gateway_listener_and_runner(
+    runner, _signal_initiated_shutdown: list, *, idle_exit: bool
+) -> tuple[Optional[bool], Any, Optional[dict]]:
+    """Start the runtime API listener, record lifecycle startup, and run ``runner.start()``.
+
+    Returns ``(early_verdict, ws_preload, unclean_exit)``. If an operator stop or restart begins
+    during the Webapp address wait, aborts before recording startup, starting keepalive, or
+    discovering MCP tools.
+    """
+    from gateway.run import _best_effort, _ensure_windows_gateway_venv_imports
+    from gateway.run_runtime import is_runner_stopping, start_gateway_runtime_api
+    await start_gateway_runtime_api(runner)
+    if is_runner_stopping(runner):
+        return await _abort_startup_before_runner(runner, _signal_initiated_shutdown), None, None
+    from gateway.run_api import preload_session_socket
+    ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
+
+    def _lifecycle_record_startup() -> Optional[dict]:
+        # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
+        # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
+        # The store scan that report used to run here is deferred: see below.
+        from gateway.lifecycle_ledger import record_startup
+        return record_startup()
+
+    def _start_keepalive() -> None:
+        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+        start_nous_auth_keepalive()
+
+    _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+    _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
+    _ensure_windows_gateway_venv_imports()
+    preload_stop_path_modules()
+    return await _start_gateway_run_runner(runner, _signal_initiated_shutdown), ws_preload, _unclean_exit
+
+
 async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
     """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
     before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
@@ -837,9 +872,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     unmanaged idle exit (``gateway.run_idle_exit``) for a client-started daemon."""
     from gateway.run import (
         GatewayRunner,
-        _best_effort,
         _enable_multiplex_log_routing,
-        _ensure_windows_gateway_venv_imports,
         _gateway_loop_exception_handler,
         _host_attach_or_none,
         _log_standalone_profiles_at_boot,
@@ -979,30 +1012,9 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         # Now the attach channel answers: republish the host record with the settled served set.
         _refresh_host_gateway_record(runner)
         _log_standalone_profiles_at_boot(runner)
-        from gateway.run_runtime import is_runner_stopping, start_gateway_runtime_api
-        await start_gateway_runtime_api(runner)
-        if is_runner_stopping(runner):
-            return await _abort_startup_before_runner(runner, _signal_initiated_shutdown)
-        from gateway.run_api import await_session_socket_preload, preload_session_socket
-        ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
-
-        def _lifecycle_record_startup() -> Optional[dict]:
-            # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
-            # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
-            # The store scan that report used to run here is deferred: see below.
-            from gateway.lifecycle_ledger import record_startup
-            return record_startup()
-
-        def _start_keepalive() -> None:
-            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
-            start_nous_auth_keepalive()
-
-        _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
-        _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
-        _ensure_windows_gateway_venv_imports()
-        preload_stop_path_modules()
-
-        _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
+        from gateway.run_api import await_session_socket_preload
+        _early_verdict, ws_preload, _unclean_exit = await _start_gateway_listener_and_runner(
+            runner, _signal_initiated_shutdown, idle_exit=idle_exit)
         if _early_verdict is not None:
             await await_session_socket_preload(ws_preload)  # never left unawaited on the way out
             return _early_verdict

@@ -131,13 +131,15 @@ def test_a_stored_handoff_keeps_its_own_list_and_an_unstored_one_carries_it(home
     (before the fix each compaction re-listed every earlier path and the summary grew without bound). With no
     session store the old summary is the list's only copy, so its paths carry forward instead of vanishing."""
     from session_rules.turns import _DB_PERSISTED_MARKER
-    from tools.tool_result_storage import pruned_archive_refs
+    from tools.tool_result_storage import ARCHIVE_LIST_HEADING, pruned_archive_refs
     msgs = _transcript()
-    c = _compressor()
     previous: set[str] = set()
     for rnd in range(3):
-        with _no_pointer_summary():
+        c = _compressor()  # a fresh process per round: the prior summary comes only from the handoff row
+        with _no_pointer_summary() as llm:
             msgs = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
+        request = json.dumps(llm.call_args.kwargs.get("messages"), ensure_ascii=False)
+        assert (rnd == 0 or "Read them all." in request) and ARCHIVE_LIST_HEADING not in request, rnd
         (summary_row,) = [m for m in msgs if m.get(COMPRESSED_SUMMARY_METADATA_KEY)]
         listed = pruned_archive_refs([summary_row])
         assert listed and (not listed & previous if stored else previous <= listed), rnd

@@ -835,8 +835,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if status in ("queued", "unknown") or {admission_id} & (
                 self._terminals.keys() | self._settling | self._receipted.keys()):
             return
-        self._cut.setdefault(admission_id, self._streamed.pop(admission_id, ""))
-        self._forwarded.pop(admission_id, None)
+        # ``_cut`` is text already painted: a held-back marker was never shown, so the cut is
+        # the forwarded prefix, not the whole streamed buffer (else the final re-slices).
+        if admission_id not in self._cut:
+            self._cut[admission_id] = self._forwarded.pop(admission_id, "")
+        self._streamed.pop(admission_id, None)
         if status:
             return
         try:

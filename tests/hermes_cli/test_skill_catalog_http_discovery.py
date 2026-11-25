@@ -9,7 +9,7 @@ import pytest
 pytest_plugins = ['tests.hermes_cli.test_skill_catalog_http']
 
 
-def test_slow_discovery_leaves_concurrent_request_runnable(client, monkeypatch):
+def test_slow_discovery_leaves_concurrent_request_runnable(client, catalog, monkeypatch):
     from hermes_cli.skill_catalog import bootstrap
     from hermes_cli.web_server import app
     entered, release = threading.Event(), threading.Event()
@@ -52,7 +52,7 @@ def test_no_consent_skips_manifest_discovery(client, monkeypatch):
     assert calls == []
 
 
-def test_discovery_obeys_request_deadline(client, monkeypatch):
+def test_discovery_obeys_request_deadline(client, catalog, monkeypatch):
     from hermes_cli.skill_catalog import bootstrap, http
     from hermes_cli.skill_catalog.validation import CatalogError
     entered, release = threading.Event(), threading.Event()

@@ -75,8 +75,8 @@ def _home(profile):
     return get_hermes_home() if _is_current_profile(profile) else _resolve_profile_dir(profile.strip())
 
 
-def discovery_required(profile):
-    """A stock-only scope never competes with provider discovery waiters."""
+def _discovery_required(profile, *, manifests):
+    """Resolve stock scope and consent before optional manifest discovery."""
     from hermes_cli.skill_catalog.projection import Projection
     home = _home(profile)
     if Service(home).entries() or not Projection(home)._absent():
@@ -88,9 +88,18 @@ def discovery_required(profile):
             entries = (config.get('plugins') or {}).get('entries') or {}
             if not any(plugin_capability_granted(key, 'skills.catalog', config=config) for key in entries):
                 return False  # No consent means manifests cannot grant catalog authority.
-            return isolation_mode(config) == 'host' and _eligible(config)
+            return isolation_mode(config) == 'host' and (not manifests or _eligible(config))
     except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- match cold bootstrap's stock fallback on loader/config failures
         return False
+
+
+def discovery_possible(profile):
+    """A stock-only scope never competes with provider discovery waiters."""
+    return _discovery_required(profile, manifests=False)
+
+
+def discovery_required(profile):
+    return _discovery_required(profile, manifests=True)
 
 
 def lookup(profile, *, deadline=None):

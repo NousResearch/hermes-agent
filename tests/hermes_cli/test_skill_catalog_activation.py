@@ -202,7 +202,63 @@ def test_cold_search_public_work_starts_before_bootstrap_join(client, cold, monk
     assert manager._discovered
 
 
-def test_lookup_capacity_preserves_stock_routes(client, monkeypatch, tmp_path):
+_STOCK_HUB_ROUTES = (
+    ('GET', 'official'), ('GET', 'sources'), ('GET', 'search'),
+    ('GET', 'updates'), ('GET', 'preview'), ('GET', 'scan'),
+    ('POST', 'install'), ('POST', 'update'), ('POST', 'uninstall'),
+    ('POST', 'review'), ('POST', 'confirm'), ('GET', 'operation'),
+)
+
+
+@pytest.mark.parametrize('profile', [None, 'default', 'missing'])
+@pytest.mark.parametrize(('method', 'route'), _STOCK_HUB_ROUTES)
+def test_all_stock_routes_bypass_every_catalog_capacity(client, monkeypatch, method, route, profile):
+    from fastapi.routing import APIRoute
+    from hermes_cli.skill_catalog import bootstrap, http
+    from hermes_cli.web_routers import skills
+    from tools import skills_hub_search
+
+    registered = {(method, route.path.rsplit('/', 1)[-1])
+                  for route in skills.hub_router.routes if isinstance(route, APIRoute)
+                  for method in route.methods}
+    assert registered == set(_STOCK_HUB_ROUTES), 'include every catalog route in the saturation matrix'
+    monkeypatch.setattr(skills, '_installed_hub_identifiers', lambda profile: {})
+    monkeypatch.setattr(skills_hub_search, 'parallel_search_sources', lambda *args, **kwargs: ([], {}, []))
+    params = {} if profile is None else {'profile': profile}
+    path = '/api/skills/hub/' + route
+    before = client.request(method, path, params=params)
+    if route == 'official':
+        assert (before.status_code, before.content) == (
+            (404, b'{"detail":"Profile \'missing\' does not exist."}') if profile == 'missing'
+            else (200, b'{"skills":[]}'))
+
+    class ForbiddenCapacity:
+        def __getattr__(self, name):
+            pytest.fail('stock route touched catalog capacity: ' + name)
+
+    # Exhaust both real pools, then assert not even an acquire/submit attempt.
+    slots = (http._lookup_slots, http._discovery_slots)
+    for slot in slots:
+        for _ in range(4):
+            assert slot.acquire(blocking=False)
+    try:
+        with monkeypatch.context() as scoped:
+            for name in ('_lookup_slots', '_discovery_slots', '_lookup_executor',
+                         '_discovery_executor', '_lookup_lock'):
+                scoped.setattr(http, name, ForbiddenCapacity())
+            scoped.setattr(bootstrap, '_eligible', lambda config:
+                           pytest.fail('stock route reached manifest discovery'))
+            after = client.request(method, path, params=params)
+        assert (after.status_code, after.content, dict(after.headers)) == (
+            before.status_code, before.content, dict(before.headers))
+    finally:
+        for slot in slots:
+            for _ in range(4):
+                slot.release()
+
+
+@pytest.mark.parametrize('capacity', ['lookup', 'preflight'])
+def test_lookup_capacity_preserves_stock_routes(client, monkeypatch, tmp_path, capacity):
     import asyncio
     import hashlib
     import httpx
@@ -222,6 +278,12 @@ def test_lookup_capacity_preserves_stock_routes(client, monkeypatch, tmp_path):
     release = threading.Event()
     waiting, tasks, public_calls = [], [], []
     original = bootstrap.lookup
+    eligible = bootstrap._eligible
+
+    def slow_manifest(config):
+        waiting.append(threading.get_ident())
+        assert release.wait(10)
+        return eligible(config)
 
     def parked(_profile, task, _home):
         try:
@@ -240,22 +302,29 @@ def test_lookup_capacity_preserves_stock_routes(client, monkeypatch, tmp_path):
     monkeypatch.setattr(skills, '_installed_hub_identifiers', lambda profile: {})
     monkeypatch.setattr(skills_hub_search, 'parallel_search_sources', public)
     paths = ['/api/skills/hub/official', '/api/skills/hub/official?profile=missing',
-             '/api/skills/hub/search?q=hello']
+             '/api/skills/hub/search?q=hello', '/api/skills/hub/review',
+             '/api/skills/hub/preview']
+    methods = ['GET', 'GET', 'GET', 'POST', 'GET']
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test',
                                     headers={_SESSION_HEADER_NAME: _SESSION_TOKEN}) as http_client:
             async def capture():
                 rows = []
-                for path in paths:
-                    response = await http_client.get(path)
+                for method, path in zip(methods, paths):
+                    response = await http_client.request(method, path)
                     rows.append((response.status_code, response.content, dict(response.headers)))
                 return rows
 
             before = await capture()
-            assert [row[0] for row in before] == [200, 404, 200]
-            monkeypatch.setattr(bootstrap, '_run', parked)
-            monkeypatch.setattr(bootstrap, 'lookup', lookup)
+            assert [row[0] for row in before] == [200, 404, 200, 405, 400]
+            assert before[0][1] == b'{"skills":[]}'
+            assert before[1][1] == b'{"detail":"Profile \'missing\' does not exist."}'
+            if capacity == 'preflight':
+                monkeypatch.setattr(bootstrap, '_eligible', slow_manifest)
+            else:
+                monkeypatch.setattr(bootstrap, '_run', parked)
+                monkeypatch.setattr(bootstrap, 'lookup', lookup)
             try:
                 with _plugin_home_scope(discovery):
                     request = Request(dict(type='http', method='GET', path=paths[0],

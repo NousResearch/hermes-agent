@@ -47,9 +47,11 @@ _discovery_executor = None
 
 
 async def _discovery_required(profile, deadline):
-    """Cheap stock checks and manifest I/O use separate bounded preflight slots."""
+    """Stock authority checks precede bounded off-loop manifest discovery."""
     global _discovery_executor
-    from hermes_cli.skill_catalog.bootstrap import discovery_required
+    from hermes_cli.skill_catalog.bootstrap import discovery_possible, discovery_required
+    if not discovery_possible(profile):
+        return False
     if not _discovery_slots.acquire(blocking=False):
         raise CatalogError('busy', 'Catalog discovery is busy.')
     try:

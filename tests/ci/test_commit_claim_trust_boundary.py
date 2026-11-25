@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.releases import handoff
 from scripts.releases import lanes as lane_set
 from tests.ci import workflow_steps
 from tests.ci.desktop_release_roles import (
@@ -319,6 +320,7 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
     extra_bin = tmp_path / "bin"
     extra_bin.mkdir()
     _built_packages(staged, target)
+    built = {path.relative_to(staged).as_posix() for path in staged.rglob("*") if path.is_file()}
     if target == "darwin-arm64":
         ditto = extra_bin / "ditto"
         ditto.write_text("#!/usr/bin/env bash\nset -e\n[ \"$1\" = -x ] && [ \"$2\" = -k ] && mkdir -p \"$4/Hermes.app\"\n", encoding="utf-8")
@@ -349,6 +351,12 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
                 assert path.is_relative_to(staged.resolve()), (flag, call)
     (record,) = [call for call in calls if call["module"] == "scripts.bundles.release_artifacts"]
     assert ("--legacy-commit-build" in record["argv"]) == (legacy == "true")
+    # The upload's patterns select exactly the built packages and the metadata the record step wrote.
+    metadata = Path(record["cwd"], record["argv"][record["argv"].index("--out") + 1])
+    metadata.write_text("{}", encoding="utf-8")
+    (upload,) = [call for call in calls if call["module"] == "scripts.releases.handoff"]
+    includes = [upload["argv"][i + 1] for i, arg in enumerate(upload["argv"]) if arg == "--include"]
+    assert set(handoff._select_files(staged, includes)) == built | {metadata.relative_to(staged).as_posix()}
 
 
 @pytest.mark.parametrize("target", [*NATIVE_TARGETS, "termux"])

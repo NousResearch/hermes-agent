@@ -13,6 +13,7 @@ except ModuleNotFoundError as exc:
         raise
 
 import contextlib
+import importlib
 import json
 import logging
 import os
@@ -23,6 +24,9 @@ import threading
 import time
 
 logger = logging.getLogger(__name__)
+
+# Mirrors plugins.memory._NATIVE_WARM_IMPORTS; kept local so the fallback path needs no import.
+_NATIVE_WARM_IMPORTS: tuple[str, ...] = ("numpy",)
 
 MAX_FRAME = 4 * 1024 * 1024
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
@@ -413,6 +417,9 @@ def execute(frame, channel):
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:
         raise RuntimeError('stale_epoch')
+    # The process authority is adopted and the store, watch and controls threads below have not
+    # started yet: pay the provider's native import here, never inside the turn's agent construction.
+    _warm_native_imports()
     store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']), adopted)
     from gateway.session_kanban import bind_worker_context
     bind_worker_context(frame)
@@ -531,6 +538,34 @@ def hello():
     from hermes_cli.process_identity import worker_birth
     me = psutil.Process()
     return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
+
+
+def _warm_native_imports() -> None:
+    """Pay first-time native imports on the calling thread, before any worker thread exists.
+
+    The first turn starts the memory provider's prefetch on a daemon thread, and that thread is
+    where this process would otherwise do its first ``import numpy``. On Windows a first-time
+    native import racing another thread's import chain deadlocks (#58083 — see the warm-up note in
+    ``plugins/memory/__init__.py``): ``threading.Thread.start`` then never returns for the rest of
+    the process, so the worker wedges before the socket opens — no API call, no heartbeat, and
+    nothing for the dispatcher to retry until the claim goes stale. Cron and desktop turns never
+    see it because those long-lived processes have already imported numpy; a managed worker is
+    spawned per card and has not.
+    """
+    try:
+        from plugins.memory import import_memory_provider_module
+        if import_memory_provider_module():
+            return
+    except Exception:
+        # Best-effort: the provider reports its own import failure when the turn loads it.
+        logger.debug("managed worker native-import warm-up skipped", exc_info=True)
+    # The shared helper returns False when no provider is configured or the provider is isolated;
+    # the bare imports below are the same last resort its callers rely on.
+    for module in _NATIVE_WARM_IMPORTS:
+        try:
+            importlib.import_module(module)
+        except Exception:
+            logger.debug("managed worker warm-up import of %s skipped", module, exc_info=True)
 
 
 def main():

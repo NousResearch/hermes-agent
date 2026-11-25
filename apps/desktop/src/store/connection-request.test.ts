@@ -152,6 +152,25 @@ describe('connection-request store', () => {
     expect(updated.targets[0].connectUrl).toBe('https://l/gmail')
   })
 
+  it('a live frame whose launch adds an env name or cwd replaces the line, an identical one keeps it', () => {
+    const launch = { kind: 'stdio' as const, target: 'npx -y @acme/mcp' }
+    const mcp = { action: 'enable' as const, kind: 'mcp' as const, launch, name: 'acme', state: 'pending' as const }
+    const req = normalizeConnectionRequest({ ...WIRE, targets: [mcp] }, 's1')!
+    const status = (next: typeof launch & { cwd?: string; env?: string[] }) =>
+      applyOperationStatus(req, {
+        deadline_at: WIRE.deadline_at,
+        op_id: 'op-1',
+        seq: nextSeq++,
+        settled: false,
+        settled_by: null,
+        targets: [{ ...mcp, launch: next }]
+      })
+
+    expect(status({ ...launch }).targets[0].launch).toBe(req.targets[0].launch)
+    expect(status({ ...launch, env: ['NODE_OPTIONS'] }).targets[0].launch).toEqual({ ...launch, env: ['NODE_OPTIONS'] })
+    expect(status({ ...launch, cwd: '/w' }).targets[0].launch).toEqual({ ...launch, cwd: '/w' })
+  })
+
   it('ignores an update for another operation or after settlement', () => {
     const req = request('a')
     const foreign = applyConnectionUpdate(req, frame({ gmail: 'connected' }, { op_id: 'op-9' }))

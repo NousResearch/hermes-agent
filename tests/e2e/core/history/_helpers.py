@@ -1,12 +1,12 @@
 """Transcript-ledger harness for the conversation-history (C3) and prompt-cache (C17) suites.
 
-Everything real except the model: a real ``AIAgent`` + ``SessionDB`` on disk in-process, the
+Everything real except the model: a real ``AIAgent`` + its store on disk in-process, the
 real ``tui_gateway`` stdio JSON-RPC server and the real ``hermes chat -q`` oneshot CLI as
 subprocesses, all pointed at one recording ``FakeLLMServer``. The invariants below read the
 three durable/observable projections of a conversation and cross-check them:
 
 * what the model was sent (the fake's recorded request bodies),
-* what the model will be sent on resume (``SessionDB.get_resume_conversations`` model view),
+* what the model will be sent on resume (``messages.read_resume_conversations`` model view),
 * what a user sees on resume (the display view, compaction archive included),
 * what was billed (``sessions`` / ``session_model_usage`` vs the fake's reported usage).
 """
@@ -106,13 +106,11 @@ def db_connect(hermes_home: Path) -> sqlite3.Connection:
 
 def views(hermes_home: Path, sid: str) -> tuple[list[dict], list[dict]]:
     """(model_history, display_history) exactly as a resuming surface loads them."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = SessionDB(db_path=hermes_home / "state.db")
-    try:
-        return db.get_resume_conversations(sid)
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=hermes_home)) as db:
+        resumed = db.messages.read_resume_conversations(sid)
+    return ([m.as_openai_message() for m in resumed.model], [m.as_openai_message() for m in resumed.display])
 
 
 def model_only_identities(hermes_home: Path, model: list[dict]) -> set[tuple]:
@@ -247,9 +245,9 @@ def tools_diff(a: Any, b: Any) -> str:
     bn = {t["function"]["name"]: canon(t) for t in b or ()}
     if list(an) != list(bn):
         return f"names/order differ: -{sorted(set(an) - set(bn))} +{sorted(set(bn) - set(an))}"
-    for name in an:
-        if an[name] != bn[name]:
-            return f"tool {name!r}: {first_divergence(an[name], bn[name])}"
+    for name, a_tool in an.items():
+        if a_tool != bn[name]:
+            return f"tool {name!r}: {first_divergence(a_tool, bn[name])}"
     return "?"
 
 
@@ -354,7 +352,7 @@ class Spawned:
         return leaked
 
 
-_SID_RE = re.compile(r"^session_id:\s*(\S+)\s*$", re.M)
+_SID_RE = re.compile(r"^session_id:\s*(\S+)\s*$", re.MULTILINE)
 
 
 def run_oneshot(env: dict[str, str], cwd: Path, prompt: str, spawned: Spawned, *,
@@ -395,7 +393,13 @@ class TuiGateway:
         self._wlock = threading.Lock()
         self.stored: dict[str, str] = {}
 
-    def __enter__(self) -> "TuiGateway":
+    def __enter__(self) -> TuiGateway:
+        # A ``hermes chat -q`` hop leaves the always-on gateway owning this home, and the standalone
+        # stdio entry refuses a home a gateway owns (it would be a second state.db writer). Stop
+        # the owner first so each "gw" hop is still a fresh process on the same durable store.
+        subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "stop"], cwd=self.cwd,
+                       env={**self.env, "PWD": self.cwd}, stdin=subprocess.DEVNULL,
+                       capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
         self.proc = self.spawned.add(subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -571,21 +575,21 @@ def big(label: str, n: int = 12000) -> str:
 
 
 class InProcessSession:
-    """A real ``AIAgent`` + ``SessionDB`` driven the way the classic CLI drives it: the surface
+    """A real ``AIAgent`` + its store driven the way the classic CLI drives it: the surface
     owns ``history`` and hands it back each turn; ``/compress`` goes through ``compress_now``."""
 
     def __init__(self, base_url: str, hermes_home: Path, sid: str, *, platform: str = "cli") -> None:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
         from run_agent import AIAgent
 
-        self.db = SessionDB(db_path=hermes_home / "state.db")
+        self.db = open_persistence(profile_scope(home=hermes_home))
         # The CLI entrypoints enable the platform's configured toolsets; a bare AIAgent would
         # advertise a different tools array than every real surface resuming this session.
         toolsets = sorted(_get_platform_tools(load_config(), platform))
         self.agent = AIAgent(provider="custom", base_url=base_url, api_key="sk-fake-e2e", model="fake-model",
-                             session_db=self.db, session_id=sid, quiet_mode=True, platform=platform,
+                             persistence=self.db, session_id=sid, quiet_mode=True, platform=platform,
                              enabled_toolsets=toolsets)
         self.history: list[dict[str, Any]] = []
 

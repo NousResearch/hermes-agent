@@ -21,7 +21,7 @@ Shop.app：商品搜索、订单追踪、退货、重新下单。
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Shopping`, `E-commerce`, `Shop.app`, `Products`, `Orders`, `Returns` |
-| 相关 skill | [`shopify`](/user-guide/skills/optional/productivity/productivity-shopify), [`maps`](/user-guide/skills/bundled/productivity/productivity-maps) |
+| 相关 skill | [`maps`](/user-guide/skills/bundled/productivity/productivity-maps) |
 
 ## 参考：完整 SKILL.md
 

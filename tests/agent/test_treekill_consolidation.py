@@ -7,9 +7,8 @@ termination through :func:`agent.deadline.kill_process_tree`:
 * ``hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
   by ``agent.shell_hooks`` by name; falls back to
   ``_legacy_kill_process_tree`` when delegation fails.
-* ``tools.browser_tool_lifecycle._kill_process_tree(proc)`` — same pattern.
-* ``tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
-  SIGTERM tree first, then (escalate) bounded wait + SIGKILL tree.
+* ``tools.code_kernel._kill_process_group(proc)`` —
+  SIGTERM tree first, then bounded wait + SIGKILL tree.
 
 Plus one real end-to-end probe: a setsid'd grandchild must die through the
 compat wrapper (i.e. the psutil descendant sweep in agent.deadline is
@@ -36,6 +35,9 @@ class _FakeProc:
     def kill(self):
         self.kill_calls += 1
 
+    def wait(self, timeout=None):
+        return 0
+
 
 # ---------------------------------------------------------------------------
 # (1) hermes_cli._subprocess_compat.kill_process_tree
@@ -44,13 +46,7 @@ class _FakeProc:
 
 
 # ---------------------------------------------------------------------------
-# (2) tools.browser_tool_lifecycle._kill_process_tree
-# ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
-# (3) tools.code_execution_tool._kill_process_group
+# (2) tools.code_kernel._kill_process_group
 # ---------------------------------------------------------------------------
 
 class TestCodeExecutionDelegation:
@@ -59,7 +55,7 @@ class TestCodeExecutionDelegation:
     def test_escalate_waits_then_sigkills_tree(self, monkeypatch):
         import signal as _signal
 
-        from tools import code_execution_tool
+        from tools import code_kernel
 
         calls = []
         monkeypatch.setattr(
@@ -70,23 +66,23 @@ class TestCodeExecutionDelegation:
         proc = MagicMock()
         proc.pid = 6666
         proc.wait.side_effect = subprocess.TimeoutExpired(cmd="x", timeout=5)
-        code_execution_tool._kill_process_group(proc, escalate=True)
+        code_kernel._kill_process_group(proc)
         assert calls == [(6666, _signal.SIGTERM), (6666, _signal.SIGKILL)]
         proc.wait.assert_called_once_with(timeout=5)
 
     def test_swallows_delegation_raise_falls_back_to_plain_kill(self, monkeypatch):
-        from tools import code_execution_tool
+        from tools import code_kernel
 
         def _boom(pid, **kw):
             raise PermissionError("nope")
 
         monkeypatch.setattr(deadline_mod, "kill_process_tree", _boom)
         proc = _FakeProc(pid=7777)
-        code_execution_tool._kill_process_group(proc)  # must not raise
+        code_kernel._kill_process_group(proc)  # must not raise
         assert proc.kill_calls == 1
 
     def test_even_proc_kill_raise_is_swallowed(self, monkeypatch):
-        from tools import code_execution_tool
+        from tools import code_kernel
 
         def _boom(pid, **kw):
             raise PermissionError("nope")
@@ -95,7 +91,7 @@ class TestCodeExecutionDelegation:
         proc = MagicMock()
         proc.pid = 8888
         proc.kill.side_effect = OSError("already reaped")
-        code_execution_tool._kill_process_group(proc)  # must not raise
+        code_kernel._kill_process_group(proc)  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +138,7 @@ def test_e2e_setsid_grandchild_killed_via_compat_wrapper(tmp_path):
         kill_process_tree(proc)
 
         proc.wait(timeout=5)
-        gone, alive = psutil.wait_procs(descendants, timeout=5)
+        _gone, alive = psutil.wait_procs(descendants, timeout=5)
         assert not alive, f"survivors after tree kill: {alive}"
         time.sleep(1.0)
         assert not marker.exists()

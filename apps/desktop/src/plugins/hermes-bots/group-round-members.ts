@@ -12,7 +12,12 @@ import {
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberAuthor, groupMemberKey } from './group-membership'
-import { buildGroupChatTurnPrompt, formatGroupDeltaLines, isGroupChatSelf } from './group-round-prompt'
+import {
+  buildGroupChatTurnPrompt,
+  formatGroupDeltaLines,
+  GROUP_ADDRESSED_NUDGE_SUFFIX,
+  isGroupChatSelf
+} from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -24,6 +29,12 @@ export interface GroupRoundMemberContext {
   binding: { isLive(): boolean }
   isCurrent(): boolean
   failedMembers?: Set<string>
+  /** #129443: member keys the driving user send explicitly addressed
+   *  (@everyone / @mention). An addressed member's "(pass)" gets one bounded
+   *  nudge; a second "(pass)" is recorded as explicit noncompliance — never
+   *  ordinary silence. Absent/empty = collaborative turn, where a plain
+   *  "(pass)" stays legitimate. */
+  addressedKeys?: null | Set<string>
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
@@ -132,7 +143,46 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
   // the transcript's [attached image: …] marker.
   const deltaImages = visibleDelta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
 
-  return { room, memberKey, markKey, prompt, deltaImages, heldIds }
+  // A user entry this turn is about to see for the first time: whatever the
+  // member already posted was written without it, so it answers nothing here.
+  const seesNewUserEntry = visibleDelta.some((entry: GroupMessage) => entry.from?.kind === 'user')
+
+  return { room, memberKey, markKey, prompt, deltaImages, heldIds, seesNewUserEntry }
+}
+
+/** True while the user's explicit address to `member` is unanswered in this
+ *  thread: this turn is the first to see a user entry, or the member has not
+ *  posted since the latest one. Position alone is not enough, because a turn
+ *  that started before a follow-up can land after it. */
+function memberOwesAnswer(
+  context: GroupRoundMemberContext,
+  member: GroupMember,
+  log: GroupMessage[],
+  seesNewUserEntry: boolean
+): boolean {
+  return Boolean(context.addressedKeys?.has(groupMemberKey(member))) &&
+    (seesNewUserEntry || !answeredSinceLastUser(log, member, context.thread))
+}
+
+/** True when `member` has a room entry in `thread` after the latest user entry there. */
+function answeredSinceLastUser(log: GroupMessage[], member: GroupMember, thread: string): boolean {
+  for (let i = log.length - 1; i >= 0; i--) {
+    const entry = log[i]
+
+    if (groupThreadOf(entry) !== thread) {
+      continue
+    }
+
+    if (entry.from?.kind === 'user') {
+      return false
+    }
+
+    if (authoredByMember(entry, member)) {
+      return true
+    }
+  }
+
+  return false
 }
 
 /** Each invocation owns its descriptor, so an old completion cannot clear a newer turn. */
@@ -170,13 +220,31 @@ export async function runGroupRoundMember(
     return false
   }
 
-  const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
+  const { room, memberKey, markKey, prompt, deltaImages, heldIds, seesNewUserEntry } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
+  // Owed only until the member answers: after its reply to the user's address,
+  // a pass on a teammate's reply is ordinary consensus, not noncompliance.
+  const owesAnswer = memberOwesAnswer(context, member, room.log, seesNewUserEntry)
   let reply: null | string = null
   let accepted = false
 
   try {
     reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
+
+    // #129443: the participation rules ("reply only with something new,
+    // else (pass)") let a directly addressed member pass just because a
+    // teammate already answered — the room then settles as ordinary
+    // consensus and the user's explicit address silently disappears. One
+    // bounded nudge re-asks with the directive spelled out; the recovered
+    // reply replaces the pass and flows through the exact same commit path
+    // below. A nudge that throws falls into the catch like any failed turn.
+    // `isCurrent()` (not the bare binding): a superseded drive's pass is
+    // discarded by the epoch check right below anyway, so nudging it would
+    // burn a model call whose result can never be committed.
+    if (context.isCurrent() && reply !== null && isGroupPassText(reply) && owesAnswer) {
+      reply = await runVisibleMemberTurn(context, member, `${prompt}${GROUP_ADDRESSED_NUDGE_SUFFIX}`, deltaImages)
+    }
+
     accepted = true
 
     // Needs-attention hook (#93091 item 3): a turn that produced a real
@@ -278,6 +346,23 @@ export async function runGroupRoundMember(
 
   if (reply !== null && spoke) {
     appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
+  } else if (reply !== null && context.isCurrent() && owesAnswer) {
+    // #129443: the nudge was passed on too. Record the noncompliance where
+    // the user looks (activity row + roster badge) instead of letting the
+    // user's explicit address settle as ordinary quiet consensus. Only a
+    // CURRENT drive's pass is disclosed: a turn the epoch check just
+    // tolerated committing (a cross-thread send superseded its drive) is
+    // stale residue, and flagging it would point the user at an address
+    // their newer send already moved past.
+    const reason = 'explicitly addressed member passed twice'
+
+    recordGroupActivity(context.group, {
+      kind: 'failed',
+      member: groupMemberKey(member),
+      reason,
+      thread
+    })
+    noteBotAttention(groupMemberKey(member), reason)
   }
 
   // A member's own entries — its reply, and the rows group-external-writes.ts

@@ -10,7 +10,7 @@ import pytest
 
 from gateway.platforms.api_server import ThreadSafeAsyncQueue
 from tests.gateway.test_api_server_reasoning_stream import (
-    _fake_writer_env, _frames, _stub_create_agent_runtime, adapter,  # noqa: F401
+    _fake_writer_env, _frames, _stub_create_agent_runtime, adapter,
 )
 
 _LADDER = "⏳ Provider temporarily unavailable — retrying automatically in 15s (cycle 1/5); cancel the request to stop"
@@ -34,7 +34,7 @@ async def test_chat_completions_stream_forwards_agent_status_callback(adapter, m
             return {"final_response": "answer", "completed": True}
 
     _stub_create_agent_runtime(monkeypatch, FakeAgent)
-    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+    monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
     request, written, fake_response = _fake_writer_env()
     stream_q = ThreadSafeAsyncQueue()
     agent_task, agent_ref = adapter._spawn_stream_agent(

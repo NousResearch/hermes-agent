@@ -1,0 +1,16 @@
+name: hermes-council
+repo: https://github.com/girayk/hermes-council
+sha: 18a66633acc045c251063721a1cf26f9a46d29de
+description: "LLM Council (karpathy/llm-council) as a Hermes plugin. Four fixed advisor seats (First-Principles Analyst, Skeptic, Pragmatist, Researcher) answer in parallel, anonymously review and rank each other, and a Chairman model synthesizes the final answer. Members borrow your existing provider credentials - no API keys. Registers a Council group in every model menu, a council_deliberate tool, /council, hermes council CLI, and a desktop panel. Disclosure — council_deliberate and the Council model fan each prompt (as a session model, the whole conversation) out to every seat, judge and chairman model you assign, up to 2N+1 billed calls per turn on your existing provider credentials; it also adds a non-secret \"council\" marker row to auth.json and keeps run history in $HERMES_HOME/council/runs/."
+maintainer: girayk
+tier: community
+category: models
+version: "1.0.0"
+docs_url: https://github.com/girayk/hermes-council#readme
+capabilities:
+  provides_tools:
+    - council_deliberate
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.4"

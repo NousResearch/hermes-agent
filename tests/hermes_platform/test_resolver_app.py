@@ -8,11 +8,12 @@ import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlsplit
 
 import pytest
 
 from hermes_platform.resolver import CheckState, Effort
-from hermes_platform.resolver.app import AppDef, AppResolver, Endpoint
+from hermes_platform.resolver.app import AppDef, AppLocation, AppResolver, Endpoint
 
 TOKEN = "tok-3e1f9c-unique-fixture-value"
 
@@ -33,7 +34,7 @@ def _server_json(tmp_path, *, url, pid=None):
 
 def _resolver(tmp_path, exe, server_json=None):
     return AppResolver(AppDef(
-        "thing", sys.platform, "executable", str(exe),
+        "thing", sys.platform, "executable", (AppLocation("path", str(exe)),),
         liveness_kind="server_json" if server_json else "none",
         liveness_path=str(server_json) if server_json else "",
     ))
@@ -43,7 +44,7 @@ def _resolver(tmp_path, exe, server_json=None):
 
 def test_locate_reports_expanded_path_when_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("THINGROOT", str(tmp_path))
-    r = AppResolver(AppDef("thing", sys.platform, "executable", "$THINGROOT/bin/thing"))
+    r = AppResolver(AppDef("thing", sys.platform, "executable", (AppLocation("path", "$THINGROOT/bin/thing"),)))
     res = r.locate()
     assert res.kind == "missing"
     assert res.candidates[0].value == str(tmp_path / "bin" / "thing")
@@ -51,7 +52,7 @@ def test_locate_reports_expanded_path_when_missing(tmp_path, monkeypatch):
 
 def test_bundle_presence_and_plist_version(tmp_path):
     app = _bundle(tmp_path)
-    r = AppResolver(AppDef("thing", "darwin", "bundle", str(app), version_kind="plist"))
+    r = AppResolver(AppDef("thing", "darwin", "bundle", (AppLocation("path", str(app)),), version_kind="plist"))
     res = r.locate()
     assert res.kind == "known_path" and res.command == (str(app),)
     insp = r.inspect(res)
@@ -59,8 +60,29 @@ def test_bundle_presence_and_plist_version(tmp_path):
     assert insp.signer.state is CheckState.NOT_CHECKED
 
 
+def test_star_segment_tries_the_highest_version_first(tmp_path):
+    for version in ("2.9", "2.10", "10.0b"):
+        folder = tmp_path / f"Thing {version}"
+        folder.mkdir()
+        (folder / "thing").write_text("", encoding="utf-8")
+    location = AppLocation("path", str(tmp_path / "Thing *" / "thing"))
+    res = AppResolver(AppDef("thing", sys.platform, "executable", (location,))).locate()
+    assert res.kind == "known_path"
+    assert [os.path.basename(os.path.dirname(c.value)) for c in res.candidates] == ["Thing 10.0b", "Thing 2.10", "Thing 2.9"]
+
+
+def test_first_present_location_sets_the_resolution(tmp_path):
+    exe = tmp_path / "later" / "thing"
+    exe.parent.mkdir()
+    exe.write_text("", encoding="utf-8")
+    locations = (AppLocation("path", str(tmp_path / "absent" / "thing")), AppLocation("path", str(exe)))
+    res = AppResolver(AppDef("thing", sys.platform, "executable", locations)).locate()
+    assert res.kind == "known_path" and res.command == (str(exe),)
+    assert [c.present for c in res.candidates] == [False, True]
+
+
 def test_inspect_on_missing_is_not_checked(tmp_path):
-    r = AppResolver(AppDef("thing", sys.platform, "executable", str(tmp_path / "none"), version_kind="plist"))
+    r = AppResolver(AppDef("thing", sys.platform, "executable", (AppLocation("path", str(tmp_path / "none")),), version_kind="plist"))
     insp = r.inspect(r.locate())
     assert insp.version.state is CheckState.NOT_CHECKED
 
@@ -124,6 +146,90 @@ def test_non_loopback_or_malformed_endpoint_is_unavailable_and_never_contacted(t
     assert pr.answering.state is CheckState.NOT_CHECKED
 
 
+@pytest.mark.parametrize("epath", [
+    "@attacker.example/",      # userinfo rewrite: the bearer token would go to attacker.example
+    "@169.254.169.254/x",      # metadata-endpoint variant of the same
+    "@127.0.0.1:9/",           # same host:port, userinfo smuggled into netloc -- isolates the
+                             # rejoined.username clause (hostname and port both still match)
+    "mcp",                     # no leading slash: corrupts the authority, port parse fails
+])
+def test_manifest_endpoint_path_cannot_hijack_the_dialed_host(tmp_path, monkeypatch, epath):
+    """A manifest-authored endpoint_path must never turn the probe into a token sender: the
+    composed URL is re-parsed and must stay on the loopback host:port before any connect."""
+    exe = tmp_path / "thing"
+    exe.write_text("", encoding="utf-8")
+    sj = _server_json(tmp_path, url="http://127.0.0.1:9/mcp")
+    r = AppResolver(AppDef(
+        "thing", sys.platform, "executable", (AppLocation("path", str(exe)),),
+        liveness_kind="server_json", liveness_path=str(sj), endpoint_path=epath,
+    ))
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: pytest.fail("no socket allowed"))
+    pr = r.probe(r.locate(), effort=Effort.NETWORK)
+    assert pr.endpoint.state is CheckState.UNAVAILABLE
+    assert pr.answering.state is CheckState.NOT_CHECKED
+    # endpoint() exposes the same composed URL to the transport layer: it must refuse too.
+    assert r.endpoint() is None
+
+
+@pytest.mark.parametrize("epath", [
+    "//evil.example/x",  # network-path-reference form: allowed by the charset, must not move authority
+    "/a/../../b",        # '..' segments: authority can never move, compose must still dial loopback
+    "/mcp?x=1",          # query tail: rejected at declaration parse, but a direct AppDef may carry it
+])
+def test_regex_admitted_endpoint_paths_stay_on_loopback(tmp_path, epath):
+    """Paths the declaration charset admits (or a direct AppDef smuggles past it) may be odd
+    but the composed URL's authority is machine-built: pin that it stays the loopback host."""
+    exe = tmp_path / "thing"
+    exe.write_text("", encoding="utf-8")
+    sj = _server_json(tmp_path, url="http://127.0.0.1:9/mcp")
+    r = AppResolver(AppDef(
+        "thing", sys.platform, "executable", (AppLocation("path", str(exe)),),
+        liveness_kind="server_json", liveness_path=str(sj), endpoint_path=epath,
+    ))
+    ep = r.endpoint()
+    if ep is not None:  # '/mcp?x=1' stays loopback (rejected only at declaration parse)
+        parts = urlsplit(ep.url)
+        assert parts.hostname == "127.0.0.1" and parts.port == 9 and not parts.username
+
+
+@pytest.mark.parametrize("endpoint", [
+    "http://169.254.169.254/latest",   # non-loopback host
+    "http://user:pw@127.0.0.1:9/mcp",  # loopback host but userinfo present
+    "https://127.0.0.1:9/mcp",         # wrong scheme
+    "http://127.0.0.1:0/mcp",          # port 0 is out of range; must not fall back to 80
+])
+def test_mcp_initialize_belt_refuses_non_loopback_url_directly(tmp_path, monkeypatch, endpoint):
+    """The dial-site re-check is a second layer under _endpoint_observation: probe() can never
+    reach it with a bad URL, so call it directly or the belt could silently rot."""
+    from hermes_platform.resolver.app import _Session, _mcp_initialize
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: pytest.fail("no socket allowed"))
+    obs = _mcp_initialize(_Session(pid=os.getpid(), url="", token=TOKEN), endpoint, 1.0)
+    assert obs.state is CheckState.UNAVAILABLE  # policy refusal, not "server did not answer"
+
+
+def test_ipv6_loopback_url_composes_with_brackets(tmp_path):
+    exe = tmp_path / "thing"
+    exe.write_text("", encoding="utf-8")
+    sj = _server_json(tmp_path, url="http://[::1]:8080/ignored")
+    r = _resolver(tmp_path, exe, sj)
+    assert r.endpoint() == Endpoint("http://[::1]:8080/mcp", TOKEN)
+
+
+@pytest.mark.parametrize("pid", [2**31, True, "1234"])
+def test_pathological_pid_never_raises_and_is_not_alive(tmp_path, monkeypatch, pid):
+    """os.kill overflows above int32 and bool is an int subclass (True probes PID 1); a
+    malformed pid in the runtime file must degrade the probe, not crash it."""
+    exe = tmp_path / "thing"
+    exe.write_text("", encoding="utf-8")
+    sj = _server_json(tmp_path, url="http://127.0.0.1:9/mcp", pid=pid)
+    r = _resolver(tmp_path, exe, sj)
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: pytest.fail("no socket allowed"))
+    pr = r.probe(r.locate(), effort=Effort.NETWORK)
+    assert pr.running.state is CheckState.UNAVAILABLE
+    assert pr.answering.state is CheckState.NOT_CHECKED
+    assert r.endpoint() is None
+
+
 def test_dead_pid_is_absent_and_skips_network(tmp_path, monkeypatch):
     exe = tmp_path / "thing"
     exe.write_text("", encoding="utf-8")
@@ -147,7 +253,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"jsonrpc":"2.0","id":1,"result":{}}')
 
-    def log_message(self, format, *args):  # noqa: A002
+    def log_message(self, format, *args):
         pass
 
 
@@ -204,7 +310,7 @@ class _SlowDrip(BaseHTTPRequestHandler):
                 return
             _t.sleep(0.3)
 
-    def log_message(self, format, *args):  # noqa: A002
+    def log_message(self, format, *args):
         pass
 
 

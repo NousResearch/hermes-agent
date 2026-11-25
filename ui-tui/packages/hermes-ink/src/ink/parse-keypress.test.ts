@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
+import { BURST_END_QUIET_MS, INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
 describe('legacy modified return parsing', () => {
@@ -133,6 +133,67 @@ describe('parseMultipleKeypresses text control splitting', () => {
     const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'a\rb')
 
     expect(keys).toEqual([expect.objectContaining({ raw: 'a\rb' })])
+  })
+
+  it('submits a single-line read ending in CR once input stays quiet (scripted text + Enter in one write)', () => {
+    // `tmux send-keys '/help' Enter` and a PTY write of `/help\r` arrive as one read.
+    const [keys, held] = parseMultipleKeypresses(INITIAL_STATE, '/help\r', 1_000)
+
+    expect(keys).toEqual([expect.objectContaining({ raw: '/help' })])
+    expect(held.pendingReturn).toBe(true)
+
+    const [flushed, after] = parseMultipleKeypresses(held, null, 1_000 + BURST_END_QUIET_MS)
+
+    expect(flushed).toEqual([expect.objectContaining({ name: 'return' })])
+    expect(after.pendingReturn).toBe(false)
+  })
+
+  it('keeps every CR of a non-bracketed paste split across reads as content', () => {
+    // Tail read: 'line one\rline ' then 'two\r' inside the quiet window.
+    const [first, mid] = parseMultipleKeypresses(INITIAL_STATE, 'line one\rline ', 1_000)
+    const [second, end] = parseMultipleKeypresses(mid, 'two\r', 1_010)
+    const [flushed] = parseMultipleKeypresses(end, null, 1_010 + BURST_END_QUIET_MS)
+
+    expect([...first, ...second, ...flushed]).toEqual([
+      expect.objectContaining({ raw: 'line one\rline ' }),
+      expect.objectContaining({ raw: 'two\r' })
+    ])
+
+    // Head read: 'line one\r' then 'line two' inside the quiet window.
+    const [a, held] = parseMultipleKeypresses(INITIAL_STATE, 'line one\r', 2_000)
+    const [b, rest] = parseMultipleKeypresses(held, 'line two', 2_010)
+    const [c] = parseMultipleKeypresses(rest, null, 2_010 + BURST_END_QUIET_MS)
+
+    expect([...a, ...b, ...c]).toEqual([
+      expect.objectContaining({ raw: 'line one' }),
+      expect.objectContaining({ raw: '\rline two' })
+    ])
+  })
+
+  it('keeps the trailing CR of a paste whose reads keep arriving past the quiet window', () => {
+    // 'one\r', 'two', ' continued', ' again', ' end\r' 100 ms apart: the last break is older than
+    // BURST_END_QUIET_MS, but input never went quiet, so the trailing CR is still paste content.
+    let state = INITIAL_STATE
+    const keys = []
+
+    for (const [i, chunk] of ['one\r', 'two', ' continued', ' again', ' end\r'].entries()) {
+      const [parsed, next] = parseMultipleKeypresses(state, chunk, 1_000 + i * 100)
+
+      keys.push(...parsed)
+      state = next
+    }
+
+    const [flushed] = parseMultipleKeypresses(state, null, 1_400 + BURST_END_QUIET_MS)
+
+    keys.push(...flushed)
+    expect(keys.some(key => 'name' in key && key.name === 'return')).toBe(false)
+    expect(keys.at(-1)).toEqual(expect.objectContaining({ raw: ' end\r' }))
+  })
+
+  it('keeps the trailing CR of a multi-line non-bracketed paste inside the text token', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'line one\rline two\r')
+
+    expect(keys).toEqual([expect.objectContaining({ raw: 'line one\rline two\r' })])
   })
 })
 

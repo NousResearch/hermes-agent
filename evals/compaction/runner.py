@@ -27,12 +27,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from evals.compaction.fixtures import (  # noqa: E402
+from evals.compaction.fixtures import (
     estimate_tokens,
     load_transcript,
     total_tokens,
 )
-from evals.compaction.policies import EVAL_MODEL, POLICIES, apply_policy  # noqa: E402
+from evals.compaction.policies import EVAL_MODEL, POLICIES, apply_policy
 
 QUESTION_PROMPT = """You are building a factual recall exam from an AI-agent work session transcript.
 
@@ -177,7 +177,7 @@ def _call(prompt: str, max_tokens: int = 2000) -> str:
 
 
 def _extract_json(text: str):
-    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if m:
         text = m.group(1)
     start = min([i for i in (text.find("["), text.find("{")) if i >= 0], default=0)
@@ -428,7 +428,6 @@ def main():
 
     summaries = []
     if args.also_uncompacted:
-        spec = {"ctor": {}, "attrs": {"tail_token_budget": 10**9}}
         # control: no compression at all — answer from the full transcript
         context_text = serialize_for_exam(messages, char_cap=900_000)
         results = []

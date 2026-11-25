@@ -1,0 +1,9 @@
+#!/bin/sh
+# `just` for a git-hook job (`{just}` in lefthook.yml), resolved only once lefthook has
+# matched staged files to the job: a commit no job matches never sets up an environment.
+# An unactivated shell has no `just`, a PM tool: it comes from this checkout's own
+# environment (scripts/run-in-hermes-env), never from a venv on PATH or `uv run`.
+if command -v just >/dev/null 2>&1; then
+    exec just "$@"
+fi
+exec "$(dirname "$0")/run-in-hermes-env" just "$@"

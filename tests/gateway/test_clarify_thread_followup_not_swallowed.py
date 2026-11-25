@@ -7,7 +7,7 @@ consume ANY non-command message in the session as the clarify answer —
 arbitrary prose vanished into clarify resolution and the agent appeared to
 ignore the user's thread messages.
 
-After the fix (``tools/clarify_gateway._coerce_text_response`` rejects
+After the fix (``tools/clarify_gateway._coerce_text_response_detailed`` rejects
 arbitrary prose for native multi-choice prompts):
 
   * numeric selections ("2") and exact choice labels still resolve, and
@@ -88,7 +88,6 @@ def _clear_clarify_state():
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
-        cm._notify_cbs.clear()
 
 
 def _make_runner(adapter):
@@ -100,7 +99,6 @@ def _make_runner(adapter):
     runner._is_user_authorized = lambda source: True
     runner._session_key_for_source = lambda source: SESSION_KEY
     runner._delivery_adapter_for = lambda source: adapter
-    runner._update_prompt_pending = {}
     return runner
 
 
@@ -139,7 +137,7 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
         entry = cm._entries.get("cl-native")
     assert entry is not None
     assert entry.event.is_set()
-    assert entry.response == ""
+    assert entry.response == cm.CANCELLED
     _clear_clarify_state()
 
 
@@ -284,7 +282,7 @@ async def test_native_multi_select_prose_releases_clarify_before_routing():
         entry = cm._entries.get("cl-ms-prose")
     assert entry is not None
     assert entry.event.is_set()
-    assert entry.response == ""
+    assert entry.response == cm.CANCELLED
     _clear_clarify_state()
 
 

@@ -52,7 +52,7 @@ Use it whenever the question is about **code structure**, not bytes:
 - "Apply this codemod across these 200 files."
 - "Run our YAML lint rules and surface violations."
 
-Switch to `search_files` (or plain `rg`) when the question is text-shaped (string literal contents, comments, license headers, file names, cross-language regex). When in doubt, ask: "does the answer depend on the language's syntax tree, or just on the file's bytes?" If the former, ast-grep. If the latter, search_files.
+Switch to `search_files` when the question is text-shaped (string literal contents, comments, license headers, file names, cross-language regex). When in doubt, ask: "does the answer depend on the language's syntax tree, or just on the file's bytes?" If the former, ast-grep. If the latter, search_files.
 
 Hermes integration notes:
 - Run the helper and `sg` through the `terminal` tool. Single-quote every pattern so the shell never expands `$VAR`.

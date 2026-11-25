@@ -137,7 +137,7 @@ def test_terminal_transcript_integrity(surface: str, scenario: str, tmp_path: Pa
     if surface == "tui" and not _tui_available():
         if os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
             pytest.fail("ui-tui/dist/entry.js or node missing but HERMES_E2E_REQUIRE_TUI=1")
-        pytest.skip("Ink TUI not built (cd ui-tui && npm run build) or node missing")
+        pytest.skip("Ink TUI not built (cd ui-tui && pnpm run build) or node missing")
 
     spec = _scenarios(surface)[scenario]
     script = [r for turn in spec.turns for r in turn.responses]

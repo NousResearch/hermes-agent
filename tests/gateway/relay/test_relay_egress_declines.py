@@ -39,7 +39,7 @@ from gateway.relay.egress import (
 DECLINE_TEXT = (
     "discord egress declined: target is not an approved destination for this connection"
 )
-DECLINE: Dict[str, Any] = {"success": False, "error": DECLINE_TEXT}
+DECLINE: dict[str, Any] = {"success": False, "error": DECLINE_TEXT}
 
 ALL_OPS = (
     "send",
@@ -62,7 +62,7 @@ class DecliningConnector:
 
     def __init__(self, descriptor: CapabilityDescriptor) -> None:
         self._descriptor = descriptor
-        self.ops: List[str] = []
+        self.ops: list[str] = []
         self._identities = [(descriptor.platform, "b1")]
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -81,17 +81,17 @@ class DecliningConnector:
         return None
 
     async def send_outbound(
-        self, action: Dict[str, Any], *, platform: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, action: dict[str, Any], *, platform: Optional[str] = None
+    ) -> dict[str, Any]:
         self.ops.append(str(action.get("op")))
         return dict(DECLINE)
 
     async def send_follow_up(
-        self, action: Dict[str, Any], *, platform: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, action: dict[str, Any], *, platform: Optional[str] = None
+    ) -> dict[str, Any]:
         return dict(DECLINE)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
     async def send_interrupt(self, session_key, reason=None) -> None:
@@ -462,15 +462,15 @@ def test_username_like_but_not_prefixed_is_guarded(monkeypatch):
 # because a connector may send no prose at all, and a caller that rebuilds
 # `{"success": False, "error": ...}` from `error` alone cannot see it.
 
-CODE_ONLY_DECLINE: Dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
+CODE_ONLY_DECLINE: dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
 
 
 class CodeOnlyDecliningConnector(DecliningConnector):
     """Refuses with a structured code and NO error prose."""
 
     async def send_outbound(
-        self, action: Dict[str, Any], *, platform: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, action: dict[str, Any], *, platform: Optional[str] = None
+    ) -> dict[str, Any]:
         self.ops.append(str(action.get("op")))
         return dict(CODE_ONLY_DECLINE)
 

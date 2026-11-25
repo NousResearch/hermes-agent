@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url
 
 
 def test_rate_and_eta_report_only_an_honest_number():

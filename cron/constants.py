@@ -15,3 +15,11 @@ FIRE_CLAIM_SKEW_SECONDS = 60
 # wall-clock cap, so healthy runs may legitimately exceed it and a TTL of exactly the timeout
 # would expire live claims.
 CLAIM_TTL_INACTIVITY_HEADROOM = 3
+# Every manual-run surface (cronjob tool, `hermes cron run`, gateway /cron run, console) refuses a
+# paused/disabled job with this text; resuming stays an explicit operator action.
+NOT_RUNNABLE_ERROR = "Job is paused/disabled; resume it before running."
+
+
+def is_recurring(job: dict) -> bool:
+    """A cron/interval job (vs a one-shot); a null ``schedule`` counts as not recurring."""
+    return (job.get("schedule") or {}).get("kind") in {"cron", "interval"}

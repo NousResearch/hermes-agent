@@ -17,9 +17,10 @@ class DataRemovalPlan:
 
 def plan_data_removal(home: Path, project: Path, userdata: Path | None = None) -> DataRemovalPlan:
     from hermes_constants import get_default_hermes_root
+    from hermes_cli.home_data_layout import PROVIDER_PLUGIN_SNAPSHOT_PARTS
     from pm.environments import base_venv, installs_root, store_root
     from hermes_cli.steward import is_bundled_payload
-    from tools.checkpoint_pruning import store_lock_path
+    from agent.checkpoints.pruning import store_lock_path
 
     home = home.resolve()
     if home == Path(home.anchor) or home == Path.home().resolve():
@@ -28,7 +29,8 @@ def plan_data_removal(home: Path, project: Path, userdata: Path | None = None) -
     protected = {
         project.resolve(), base_venv(project).resolve(), store_root(project).resolve(),
         installs_root().resolve(), machine / "tools", machine / "bin", machine / "cache",
-        machine / "spawn-ledger.json", home / "gateway.lock", home / ".backup.lock",
+        machine / "spawn-ledger.json", machine / "spawn-ledger.json.lock", home / "gateway.lock", home / ".backup.lock",
+        machine.joinpath(*PROVIDER_PLUGIN_SNAPSHOT_PARTS),  # live processes import from these; reclaimed on start
         home / "runtime" / "active_sessions.lock", home / "cron" / ".tick.lock",
         store_lock_path(home / "checkpoints"),
     }

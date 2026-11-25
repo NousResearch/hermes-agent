@@ -19,7 +19,9 @@ const mocks = vi.hoisted(() => ({
   }
 }))
 
-vi.mock('./use-mic-recorder', () => ({ useMicRecorder: () => ({ handle: mocks.handle, level: 0 }) }))
+vi.mock('./use-mic-recorder', () => ({
+  useMicRecorder: () => ({ handle: mocks.handle, levelStore: { get: () => 0, listen: () => () => {}, set: () => {} } })
+}))
 vi.mock('@/lib/voice-barge-in', () => ({ monitorSpeechDuringPlayback: () => vi.fn() }))
 vi.mock('@/lib/thinking-sound', () => ({ startThinkingSound: vi.fn(), stopThinkingSound: vi.fn() }))
 vi.mock('@/lib/voice-playback', () => ({
@@ -95,7 +97,7 @@ describe('useVoiceConversation with a failed level meter', () => {
       lastStartOptions().onMeterFailure?.()
     })
 
-    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledWith(take.audio))
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledWith(take.audio, expect.anything()))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('what time is it'))
   })
 

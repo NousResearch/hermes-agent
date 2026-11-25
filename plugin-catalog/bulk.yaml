@@ -1,0 +1,15 @@
+name: bulk
+repo: https://github.com/sniperchief/Bulk
+sha: "99a3f1780de549ac1c0a0e878b29f6d8d248be4a"
+description: "Apply one instruction to hundreds of independent files, CSV rows or JSON records from a /bulk slash command, with job state in SQLite, background processing, bounded concurrency, automatic retries, shared rate-limit waits, pause and resume, Bulk-enforced token limits, restart recovery and a combined Markdown or CSV export. Disclosure — sends each item to the configured model provider through ctx.llm, billed to the user; reads the paths given to --over, including outside the plugin data directory; runs background threads inside the Hermes process while a job is active; token limits are approximate and are not a billing limit; interrupted items can be sent to the model again."
+maintainer: sniperchief
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/sniperchief/Bulk#readme
+version: "0.5.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

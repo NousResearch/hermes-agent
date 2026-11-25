@@ -8,7 +8,7 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 
-import { type FastControl, ModelEditSubmenu } from './model-edit-submenu'
+import { type DaybreakControl, type FastControl, ModelEditSubmenu } from './model-edit-submenu'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -24,6 +24,7 @@ afterEach(() => {
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
 function renderSubmenu(opts: {
+  daybreak?: DaybreakControl
   defaultEffort?: string
   effort?: string
   fastControl: FastControl
@@ -31,6 +32,8 @@ function renderSubmenu(opts: {
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   reasoning: boolean
+  serviceTier?: string
+  ultrafastSupported?: boolean
 }) {
   return render(
     <DropdownMenu open>
@@ -38,6 +41,7 @@ function renderSubmenu(opts: {
         <DropdownMenuSub open>
           <DropdownMenuSubTrigger>edit</DropdownMenuSubTrigger>
           <ModelEditSubmenu
+            daybreak={opts.daybreak}
             defaultEffort={opts.defaultEffort ?? 'medium'}
             effort={opts.effort ?? 'medium'}
             fastControl={opts.fastControl}
@@ -47,6 +51,8 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            serviceTier={opts.serviceTier}
+            ultrafastSupported={opts.ultrafastSupported}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -127,5 +133,55 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
+  })
+})
+
+describe('the Daybreak switch', () => {
+  it('appears only when the row is offered it, and reports the flip to its owner', () => {
+    const set = vi.fn()
+    renderSubmenu({
+      daybreak: { on: true, set },
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: false
+    })
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Daybreak' }))
+
+    expect(set).toHaveBeenCalledWith(false)
+  })
+
+  it('is absent without an offer', () => {
+    renderSubmenu({ fastControl: { kind: 'param', on: false }, onSetOptions: vi.fn(), reasoning: false })
+
+    expect(screen.queryByRole('switch', { name: 'Daybreak' })).toBeNull()
+  })
+})
+
+describe('inherited ultrafast tier on models without ultrafast support', () => {
+  it('keeps the Fast switch checked on an active -fast variant model', () => {
+    renderSubmenu({
+      fastControl: { baseId: 'm1', fastId: 'm1-fast', kind: 'variant', on: true },
+      onSetOptions: vi.fn(),
+      reasoning: false,
+      serviceTier: 'ultrafast',
+      ultrafastSupported: false
+    })
+
+    expect(screen.getByRole('switch', { name: 'Fast' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.queryByRole('switch', { name: 'Ultrafast' })).toBeNull()
+  })
+
+  it('keeps the Fast switch off on a param fast-only model when serviceTier is ultrafast', () => {
+    renderSubmenu({
+      fastControl: { kind: 'param', on: true },
+      onSetOptions: vi.fn(),
+      reasoning: false,
+      serviceTier: 'ultrafast',
+      ultrafastSupported: false
+    })
+
+    expect(screen.getByRole('switch', { name: 'Fast' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByRole('switch', { name: 'Ultrafast' })).toBeNull()
   })
 })

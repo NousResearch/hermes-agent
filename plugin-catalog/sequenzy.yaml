@@ -1,0 +1,19 @@
+name: sequenzy
+title: Sequenzy
+repo: https://github.com/Sequenzy/skills
+sha: a28b9f1461d3483abbafdd7b404c49fe800c4d32
+subdir: plugins/sequenzy
+version: "1.0.1"
+description: "Run Sequenzy email marketing through Sequenzy's hosted MCP server (Streamable HTTP at https://api.sequenzy.com/v1/mcp, OAuth sign-in, no keys in config): subscribers, lists, tags and segments, campaigns with A/B tests, automated sequences, templates, transactional email, inbox replies, webhooks, integrations, and delivery and engagement stats. Bundles the sequenzy-email-marketing workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Sequenzy's hosted server (api.sequenzy.com) and acts on the user's Sequenzy account with the permission level they approved at sign-in; the tool set is served by that server at runtime and is not covered by the pinned sha. Campaigns, sequences and transactional sends email real recipients and count toward the user's Sequenzy plan. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores the OAuth token under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Sequenzy
+tier: community
+category: tools
+docs_url: https://github.com/Sequenzy/skills/tree/main/plugins/sequenzy#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

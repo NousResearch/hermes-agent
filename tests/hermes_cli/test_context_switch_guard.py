@@ -206,3 +206,56 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     assert "shrinks" in result3.warning_message
     # Must not honor the unused 1M custom override when no providers were passed.
     assert "1,048,576" not in result3.warning_message
+
+
+def test_lifetime_prompt_counter_is_not_a_size_estimate():
+    """``session_prompt_tokens`` sums every call; without a measured size the guard stays silent (#126343)."""
+    from hermes_cli.context_switch_guard import _estimate_tokens
+
+    agent = SimpleNamespace(context_compressor=SimpleNamespace(last_prompt_tokens=0),
+                            session_prompt_tokens=16_282_033)
+
+    assert _estimate_tokens(agent, None) is None
+
+
+def test_gateway_warning_estimates_from_the_stored_transcript(tmp_path, monkeypatch):
+    """A messaging chat's agent has no measured prompt size before its first turn on the new model; the warning
+    comes from the stored transcript, as the CLI's comes from its in-memory history."""
+    import threading
+
+    from hermes_cli.context_switch_guard import enrich_model_switch_warnings_for_gateway
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        lambda *a, **k: 32_000,
+    )
+    cc = _compressor(monkeypatch)
+    assert not cc.last_prompt_tokens
+    agent = SimpleNamespace(
+        context_compressor=cc,
+        compression_enabled=True,
+        base_url="",
+        api_key="",
+    )
+    result = _result()
+    store = open_persistence(profile_scope(home=tmp_path), eager=True)
+    try:
+        seed_session(store, "s-chat", "telegram")
+        seed_messages(store, "s-chat", *(
+            {"role": ("user", "assistant")[i % 2], "content": f"turn {i} " + "words " * 4_000}
+            for i in range(40)))
+        runner = SimpleNamespace(
+            _agent_cache_lock=threading.Lock(),
+            _agent_cache={"chat-key": (agent, None)},
+            _session_db=store,
+            session_store=SimpleNamespace(
+                get_or_create_session=lambda source: SimpleNamespace(session_id="s-chat")),
+        )
+        enrich_model_switch_warnings_for_gateway(result, runner, session_key="chat-key", source=None)
+    finally:
+        store.close()
+
+    assert "preflight compression" in (result.warning_message or "")
+    assert "auto-compress at ~" in result.warning_message

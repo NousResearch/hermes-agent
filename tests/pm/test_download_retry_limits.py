@@ -8,7 +8,7 @@ import pytest
 
 from pm import network
 from pm.downloader import Download, DownloadPaused, DownloadTransportError, HashError, Source
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url
 
 
 @pytest.mark.parametrize("failure,phase", [

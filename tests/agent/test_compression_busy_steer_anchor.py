@@ -19,6 +19,7 @@ from agent.conversation_compression import (
     _ensure_compressed_has_user_turn,
 )
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
+import itertools
 
 REQUEST_A = "Historical request A: audit the auth module."
 STEER_B = "Steer B: stop, switch to fixing the login bug instead."
@@ -53,7 +54,7 @@ def _summary_row() -> dict:
 
 def _assert_alternation(messages: list[dict]) -> None:
     roles = [m.get("role") for m in messages]
-    for left, right in zip(roles, roles[1:]):
+    for left, right in itertools.pairwise(roles):
         assert not (left == right == "user"), f"user/user adjacency in {roles}"
         assert not (left == right == "assistant"), f"assistant/assistant adjacency in {roles}"
 

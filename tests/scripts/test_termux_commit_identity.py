@@ -44,7 +44,7 @@ def test_deb_identity_refusal_leaves_payload_and_output_untouched(tmp_path):
     def invoke(identity):
         result = subprocess.run([_BASH, str(ROOT / 'scripts/termux/build_deb.sh'), *args, *identity],
                                 cwd=tmp_path, env=env, capture_output=True, text=True,
-                                encoding='utf-8', timeout=30)
+                                encoding='utf-8', timeout=30, check=False)
         assert result.returncode != 0, result.stdout + result.stderr
         assert not boundary.exists(), 'identity refusal reached the native builder'
         assert witness.read_bytes() == b'prior dependency tree'

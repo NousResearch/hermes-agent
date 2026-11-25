@@ -83,7 +83,7 @@ def test_cli_export_rejects_bad_profile_name_without_traceback(
     tmp_path, monkeypatch, capsys, profiles
 ):
     """A bad name must print a clean error — the helper raises before export."""
-    main_mod = importlib.import_module("hermes_cli.main")
+    importlib.import_module("hermes_cli.main")
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
@@ -104,7 +104,7 @@ def test_cli_export_rejects_bad_profile_name_without_traceback(
 def test_cli_export_default_does_not_write_into_the_current_checkout(
     tmp_path, monkeypatch, capsys, profiles
 ):
-    main_mod = importlib.import_module("hermes_cli.main")
+    importlib.import_module("hermes_cli.main")
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
     (default_home / "config.yaml").write_text("model: test\n", encoding="utf-8")

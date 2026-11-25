@@ -1,0 +1,138 @@
+/* One tint drives the whole bar. A tone picks a palette token; a custom
+   `color` sets --bb-tint inline. Every other color is mixed from that tint
+   against the live theme (chrome + foreground), so any hue lands readable in
+   light and dark without per-theme overrides. */
+[data-slot='butterbar'] {
+  --bb-tint: var(--ui-accent);
+  /* How hard the fill leans into the tint. Dark chrome needs more of it to
+     read as a band; light chrome saturates fast. */
+  --bb-mix: 17%;
+  --bb-bg: color-mix(in oklab, var(--bb-tint) var(--bb-mix), var(--ui-bg-chrome));
+  /* Text and links mix toward the theme foreground, never a fixed white or
+     black: amber darkens on light paper and lifts on dark. */
+  --bb-fg: color-mix(in oklab, var(--bb-tint) 38%, var(--ui-text-secondary));
+  --bb-link: color-mix(in oklab, var(--bb-tint) 62%, var(--foreground));
+  --bb-edge: color-mix(in oklab, var(--bb-tint) 26%, transparent);
+  --bb-hover: color-mix(in oklab, var(--bb-tint) 18%, transparent);
+  --bb-dot: color-mix(in oklab, var(--bb-fg) 34%, transparent);
+  --bb-dot-active: var(--bb-link);
+  --ref-color: var(--bb-link);
+
+  background: var(--bb-bg);
+  /* Hairlines on both edges separate it from the workspace above and the
+     statusbar below, which share the chrome color. */
+  box-shadow:
+    inset 0 1px 0 var(--bb-edge),
+    inset 0 -1px 0 color-mix(in oklab, var(--bb-tint) 10%, transparent);
+  color: var(--bb-fg);
+}
+
+:where(:root.dark) [data-slot='butterbar'] {
+  --bb-mix: 20%;
+  --bb-fg: color-mix(in oklab, var(--bb-tint) 34%, var(--ui-text-secondary));
+  --bb-link: color-mix(in oklab, var(--bb-tint) 55%, var(--foreground));
+}
+
+[data-slot='butterbar'][data-tone='info'] {
+  --bb-tint: var(--ui-blue);
+}
+
+[data-slot='butterbar'][data-tone='success'] {
+  --bb-tint: var(--ui-green);
+}
+
+[data-slot='butterbar'][data-tone='warn'] {
+  --bb-tint: var(--ui-yellow);
+}
+
+[data-slot='butterbar'][data-tone='danger'] {
+  --bb-tint: var(--ui-red);
+}
+
+/* Neutral is a quiet step off the chrome: no hue, the links carry it. */
+[data-slot='butterbar'][data-tone='neutral'] {
+  --bb-tint: var(--foreground);
+  --bb-mix: 5%;
+  --bb-fg: var(--ui-text-tertiary);
+  --bb-link: var(--ui-text-secondary);
+  --bb-edge: var(--ui-stroke-quaternary);
+  --bb-hover: var(--chrome-action-hover);
+}
+
+:where(:root.dark) [data-slot='butterbar'][data-tone='neutral'] {
+  --bb-mix: 7%;
+}
+
+/* Solid paints the tint itself. Text picks black or white from the tint's own
+   lightness (relative color), then leans a little back toward the tint so it
+   sits in the band instead of punching out of it. */
+[data-slot='butterbar'][data-variant='solid'] {
+  --bb-on: oklch(from var(--bb-tint) clamp(0, (0.62 - l) * 1000, 1) 0 0);
+  --bb-bg: var(--bb-tint);
+  --bb-fg: color-mix(in oklab, var(--bb-on) 88%, var(--bb-tint));
+  --bb-link: var(--bb-on);
+  --bb-edge: transparent;
+  --bb-hover: color-mix(in oklab, var(--bb-on) 16%, transparent);
+  --bb-dot: color-mix(in oklab, var(--bb-on) 38%, transparent);
+
+  box-shadow: none;
+}
+
+[data-slot='butterbar'][data-variant='solid'][data-tone='neutral'] {
+  --bb-tint: color-mix(in oklab, var(--foreground) 88%, var(--ui-bg-chrome));
+}
+
+[data-slot='butterbar'] a {
+  color: var(--bb-link);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, currentColor 35%, transparent);
+  text-underline-offset: 0.2em;
+  transition: text-decoration-color 150ms ease-out;
+}
+
+[data-slot='butterbar'] a:hover {
+  text-decoration-color: currentColor;
+  transition: none;
+}
+
+.butterbar-dot > span {
+  width: 0.3125rem;
+  height: 0.3125rem;
+  border-radius: 999px;
+  background: var(--bb-dot);
+  transition:
+    width 200ms ease-out,
+    background-color 150ms ease-out;
+}
+
+.butterbar-dot:hover > span {
+  background: color-mix(in oklab, var(--bb-dot-active) 70%, transparent);
+  transition: width 200ms ease-out;
+}
+
+.butterbar-dot[aria-current='true'] > span {
+  width: 0.75rem;
+  background: var(--bb-dot-active);
+}
+
+@keyframes butterbar-in {
+  from {
+    opacity: 0;
+    transform: translateY(40%);
+  }
+}
+
+.butterbar-slide {
+  animation: butterbar-in 240ms cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .butterbar-slide {
+    animation: none;
+  }
+
+  .butterbar-dot > span {
+    transition: none;
+  }
+}

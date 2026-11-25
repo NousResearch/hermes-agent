@@ -40,7 +40,7 @@ class BrowserbaseBrowserProvider(CloudBrowserProvider):
         {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
     ]
 
-    def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+    def _get_config_or_none(self) -> Optional[dict[str, Any]]:
         api_key = get_secret("BROWSERBASE_API_KEY")
         project_id = get_secret("BROWSERBASE_PROJECT_ID")
         if not (api_key and project_id):
@@ -52,23 +52,23 @@ class BrowserbaseBrowserProvider(CloudBrowserProvider):
             "base_url": (get_secret("BROWSERBASE_BASE_URL", "") or "https://api.browserbase.com").rstrip("/"),
         }
 
-    def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+    def _headers(self, config: dict[str, Any]) -> dict[str, str]:
         return {"Content-Type": "application/json", "X-BB-API-Key": config["api_key"]}
 
-    def _release_headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+    def _release_headers(self, config: dict[str, Any]) -> dict[str, str]:
         return {"X-BB-API-Key": config["api_key"], "Content-Type": "application/json"}
 
-    def _release_body(self, config: Dict[str, Any]) -> Dict[str, object]:
+    def _release_body(self, config: dict[str, Any]) -> dict[str, object]:
         return {"projectId": config["project_id"], "status": "REQUEST_RELEASE"}
 
-    def create_session(self, task_id: str) -> Dict[str, object]:
+    def create_session(self, task_id: str) -> dict[str, object]:
         config = self._get_config()
         enable_proxies = os.environ.get("BROWSERBASE_PROXIES", "true").lower() != "false"
         enable_advanced_stealth = os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
         enable_keep_alive = os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
         custom_timeout_ms = os.environ.get("BROWSERBASE_SESSION_TIMEOUT")
 
-        session_config: Dict[str, object] = {"projectId": config["project_id"]}
+        session_config: dict[str, object] = {"projectId": config["project_id"]}
         if enable_keep_alive:
             session_config["keepAlive"] = True
         if custom_timeout_ms:
@@ -114,27 +114,3 @@ class BrowserbaseBrowserProvider(CloudBrowserProvider):
             "cdp_url": session_data["connectUrl"],
             "features": features_enabled,
         }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import requests  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'BrowserProvider': ('agent.browser_provider', 'BrowserProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

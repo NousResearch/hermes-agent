@@ -53,4 +53,18 @@ describe('markdown documents delivered via MEDIA', () => {
     expect(screen.getByText('archive.zip')).toBeTruthy()
     expect(screen.queryByText(/^Open archive/)).toBeNull()
   })
+
+  it('renders a MEDIA pdf as a prominent attachment card with a download action (#74564)', async () => {
+    // Acceptance for the attachment-card half of #74564: the reporter saw
+    // pdf artifacts as a bare "Open report.pdf" link instead of a card.
+    const href = mediaMarkdownHref('/home/user/out/report.pdf')
+
+    render(<MarkdownTextContent isRunning={false} text={`Wrote the deck: [report.pdf](${href})`} />)
+
+    const buttons = await screen.findAllByRole('button')
+    expect(buttons.length).toBe(2)
+    expect(screen.getByText('Download')).toBeTruthy()
+    expect(screen.getByText('report.pdf')).toBeTruthy()
+    expect(screen.queryByText(/^Open report/)).toBeNull()
+  })
 })

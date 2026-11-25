@@ -5,6 +5,7 @@ application dependencies or adds the manager's dependencies to that process.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ import sys
 from typing import Callable
 import uuid
 
+from pm.filesystem import native
 from pm.package import InstallError
 
 
@@ -23,11 +25,11 @@ def runtime_environment() -> dict[str, str]:
     from hermes_constants import get_hermes_home
     from pm.paths import store_root
 
-    from pm.environment import _base_environment
+    from pm.environment import _base_environment  # noqa: TID251
 
     env = _base_environment()
     env["HERMES_HOME"] = str(get_hermes_home())
-    env["HERMES_RUNTIME_DIR"] = str(store_root())
+    env["HERMES_RUNTIME_DIR"] = native(store_root())
     return env
 
 
@@ -46,7 +48,8 @@ def _inputs(project: Path, python: Path, *, as_spelled: bool = False) -> str:
     # the same one reached through a symlinked store (a per-task HERMES_HOME whose
     # tools/ links back) must. Only the directories resolve: the pinned
     # bin/python3 is itself a symlink, so resolving it would re-key every install.
-    python = python.absolute()
+    # A store spells its root extended-length on Windows; the identity must not.
+    python = Path(native(python)).absolute()
     digest.update(str(python if as_spelled else python.parent.resolve() / python.name).encode())
     return digest.hexdigest()
 
@@ -101,14 +104,24 @@ def _validate(python: Path, env: dict[str, str]) -> str:
             [str(python), "-I", "-B", "-c",
              "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
             env=env, capture_output=True, text=True, timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return str(exc)
     return checked.stderr.strip() or f"exit {checked.returncode}" if checked.returncode else ""
 
 
+@contextmanager
+def _prepare_lock(root: Path, *, timeout: float | None):
+    """Serialize staging and collection of *root*'s generations; yields whether the lock is held."""
+    from pm.filesystem import moved_lock
+
+    with moved_lock(root / ".prepare.lock", root.parent / "locks" / "prepare.lock", timeout=timeout) as held:
+        yield held
+
+
 # Generations this process resolved for a child. The lease is taken under
-# .prepare.lock, which the collector also holds, so a publish + `pm gc` between
+# the prepare lock, which the collector also holds, so a publish + `pm gc` between
 # this return and the child's own lease cannot remove the child's generation.
 # It lives as long as this process (one lease per generation, not per call):
 # children may still be starting from an older generation after a newer one
@@ -131,16 +144,14 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     Generations are immutable after publication. Failed preparation leaves the
     previous generation intact, including when an old worker is still running.
     """
-    from pm.filesystem import lock_fd
     from pm.lock import _write
-    from pm.runtime_stage import stage_runtime
+    from pm.runtime_stage import stage_runtime  # noqa: TID251
 
     project = project or Path(__file__).resolve().parent
     identity = _inputs(project, python)
     env = runtime_environment()
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".prepare.lock").open("a+b") as lock:
-        lock_fd(lock.fileno(), wait=True)
+    with _prepare_lock(root, timeout=None):
         selected = root / "selected.json"
         try:
             fact = json.loads(selected.read_text(encoding="utf-8"))
@@ -187,15 +198,14 @@ def collect_runtime_generations(root: Path) -> list[Path]:
     once every worker launched from it has exited; generations published before leases
     existed stay, as the application collector keeps its own.
     """
-    from pm.filesystem import lock_fd
-    from hermes_cli.runtime_state import leases_held
+    from hermes_cli.runtime_state import collect_lease_dirs, leases_held
 
     generations = root / "generations"
     removed: list[Path] = []
     if not generations.is_dir():
         return removed
-    with (root / ".prepare.lock").open("a+b") as lock:
-        if not lock_fd(lock.fileno(), wait=False):
+    with _prepare_lock(root, timeout=0) as held:
+        if not held:
             return removed  # a stage is in flight; maintenance skips rather than queues
         try:
             selected = json.loads((root / "selected.json").read_text(encoding="utf-8-sig")).get("generation", "")
@@ -209,6 +219,7 @@ def collect_runtime_generations(root: Path) -> list[Path]:
                 continue
             shutil.rmtree(generation)
             removed.append(generation)
+        collect_lease_dirs(root.parent / "leases" / "pm-runtime", generations)
     return removed
 
 
@@ -218,7 +229,7 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
     if is_runtime():
         return Path(sys.executable)
     from pm.environments import install_state_dir
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
     from pm.paths import repo_root
 
     project = repo_root()
@@ -270,5 +281,5 @@ def runtime_command(script: Path, args: tuple[str, ...] | list[str] = (), *,
 
 def run_cli(argv: list[str]) -> int:
     result = subprocess.run(runtime_command(Path(__file__).with_name("launch.py"), argv),
-                            env=runtime_environment())
+                            env=runtime_environment(), check=False)
     return result.returncode

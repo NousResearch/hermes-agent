@@ -41,18 +41,15 @@ def _runs_here_again(root: Path) -> None:
     assert pre.clear_profile_run_elsewhere("ops", PLUGIN, root=root)
 
 
-def _program(folder: Path, name: str, says: str = "") -> tuple[Path, Path]:
-    """A program the profile's backend could have written: it appends a line to ``<name>.ran`` (and prints
-    *says*)."""
+def _program(folder: Path, name: str) -> tuple[Path, Path]:
+    """A program the profile's backend could have written: it appends a line to ``<name>.ran``."""
     ran = folder / f"{name}.ran"
     if os.name == "nt":
         program = folder / f"{name}.cmd"
-        program.write_text(f'@echo off\r\necho ran>>"{ran}"\r\n' + (f"echo {says}\r\n" if says else ""),
-                           encoding="utf-8")
+        program.write_text(f'@echo off\r\necho ran>>"{ran}"\r\n', encoding="utf-8")
     else:
         program = folder / name
-        program.write_text(f'#!/bin/sh\necho ran >> "{ran}"\n' + (f"echo {says}\n" if says else ""),
-                           encoding="utf-8")
+        program.write_text(f'#!/bin/sh\necho ran >> "{ran}"\n', encoding="utf-8")
         program.chmod(0o755)
     return program, ran
 

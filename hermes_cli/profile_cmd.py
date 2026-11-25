@@ -113,19 +113,21 @@ def _profile_list(args):
     if not profiles:
         print("No profiles found.")
         return
-    print(f"\n {'Profile':<16} {'Model':<28} {'Gateway':<12} {'Alias':<12} {'Distribution'}")
-    print(f" {'─' * 15}    {'─' * 27}    {'─' * 11}    {'─' * 11}    {'─' * 20}")
+    # The column grows to the longest id: this table gets parsed, and a cut id names no model (#159994).
+    model_w = max([28, *(len(p.model or "") + 1 for p in profiles)])
+    print(f"\n {'Profile':<16} {'Model':<{model_w}} {'Gateway':<12} {'Alias':<12} {'Distribution'}")
+    print(f" {'─' * 15}    {'─' * (model_w - 1)}    {'─' * 11}    {'─' * 11}    {'─' * 20}")
     for p in profiles:
         marker = " ◆" if _is_active(p, active) else "  "
         name = format_profile_label(p.name, p.display_name)
-        model = (p.model or "—")[:26]
+        model = p.model or "—"
         gw = "running" if p.gateway_running else "stopped"
         alias = (p.alias_name or p.name) if p.alias_path and not p.is_default else "—"
-        dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:30] if p.distribution_name else "—"
-        print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
+        dist = f"{p.distribution_name}@{p.distribution_version or '?'}" if p.distribution_name else "—"
+        print(f"{marker}{name:<15} {model:<{model_w}} {gw:<12} {alias:<12} {dist}")
     unfinished = _unfinished_deletes()
     for canon, _ in unfinished:
-        print(f"  {canon:<15} {'—':<28} {'delete incomplete':<12}")
+        print(f"  {canon:<15} {'—':<{model_w}} {'delete incomplete':<12}")
     print()
     for canon, profile_dir in unfinished:
         print(delete_incomplete_message(canon, profile_dir))

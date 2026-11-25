@@ -22,7 +22,7 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-Download the desktop package from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md#desktop-packages-on-macos-or-windows), which give each package's OS requirements and the installer to use on older systems.
+Download the desktop package from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md), which give each package's OS requirements and the installer to use on older systems.
 
 If you already have a source install of Hermes, simply run
 

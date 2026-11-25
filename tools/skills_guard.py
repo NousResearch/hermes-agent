@@ -609,7 +609,7 @@ _COMMAND_SEGMENT_END_RE = re.compile(r'\|\||(?<![>&])&(?!>)|[|;()]|`|\$\(')
 # Stdout discarded to ``/dev/null``, and NOT restored afterwards: a later ``>file`` or ``>&2`` re-points
 # stdout, so the value still escapes (``printenv HOME >/dev/null > out.txt`` writes it to ``out.txt``).
 # Only the last stdout-affecting redirect decides; ``2>`` and ``2>&1`` are stderr and leave stdout alone.
-_STDOUT_REDIRECT_RE = re.compile(r"(?P<fd>\d*)(?P<op>&>>?|>>?|>&)(?P<target>\s*['\"]?[^\s;|&<>'\"]*['\"]?)")
+_STDOUT_REDIRECT_RE = re.compile(r"(?P<fd>\d*)(?P<op>&>>?|>&|>>?)(?P<target>\s*['\"]?[^\s;|&<>'\"]*['\"]?)")
 _REDIRECTION_RE = re.compile(r'\d?&?>>?\s*[\'"]?[^\s;|&<>]+[\'"]?|\d?>&\d')
 
 

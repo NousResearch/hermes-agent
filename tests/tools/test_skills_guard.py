@@ -32,6 +32,7 @@ from tools.skills_guard import (
     _determine_verdict,
     _resolve_trust_level,
     _check_structure,
+    _stdout_destination,
     MAX_FILE_COUNT,
     MAX_SINGLE_FILE_KB,
 )
@@ -1410,6 +1411,18 @@ class TestEnvDumpExistenceCheck:
         assert result.verdict == "safe"
         assert should_allow_install(result)[0] is True
         assert any(fi.pattern_id == "dump_all_env" for fi in result.findings)
+
+    @pytest.mark.parametrize(
+        "segment,expected",
+        [
+            (" HOME >/dev/null 1>&2", "fd:2"),
+            (" HOME >/dev/null >&2", "fd:2"),
+            (" HOME >/dev/null 2>&1", "/dev/null"),
+            (" HOME >/dev/null > out.txt", "out.txt"),
+        ],
+    )
+    def test_stdout_destination_parses_fd_duplication(self, segment, expected):
+        assert _stdout_destination(segment) == expected
 
 
 # Well-known PUBLIC Solana program ids that every Solana client hardcodes. Only these exact values,

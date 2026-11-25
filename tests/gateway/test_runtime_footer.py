@@ -3,10 +3,12 @@ appended to final gateway replies."""
 
 from __future__ import annotations
 
+import copy
 
 import pytest
 
 from gateway.runtime_footer import (
+    FooteredReply,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -279,3 +281,34 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# FooteredReply survives copy / deepcopy
+# ---------------------------------------------------------------------------
+
+def test_footered_reply_copy_and_deepcopy_keep_the_footer():
+    """A ``str`` subclass is copied through ``copyreg.__newobj__`` (``cls.__new__(cls)`` with no
+    footer), so an unhooked copy raised TypeError when a published event carrying the reply was
+    deep-copied. Both copy paths must return a real ``FooteredReply`` with text and footer intact.
+    """
+    footer = "gpt-5.4 · 68% · ~/projects/hermes"
+    reply = FooteredReply("the answer", footer)
+
+    for clone in (copy.copy(reply), copy.deepcopy(reply)):
+        assert isinstance(clone, FooteredReply)
+        assert str(clone) == f"the answer\n\n{footer}"
+        assert clone.runtime_footer == footer
+
+
+def test_footered_reply_deepcopies_inside_a_container():
+    """The failure path is a deepcopy of the whole payload, not of the string alone."""
+    footer = "gpt-5.4 · 5% · /var/data"
+    payload = {"final_response": FooteredReply("answer", footer), "other": [1, 2]}
+
+    clone = copy.deepcopy(payload)
+
+    assert isinstance(clone["final_response"], FooteredReply)
+    assert str(clone["final_response"]) == f"answer\n\n{footer}"
+    assert clone["final_response"].runtime_footer == footer
+    assert clone["other"] == [1, 2]

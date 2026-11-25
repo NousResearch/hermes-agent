@@ -139,6 +139,23 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    def _split(self) -> tuple[str, str]:
+        text = str(self)
+        footer = getattr(self, "runtime_footer", "") or ""
+        if footer and text.endswith("\n\n" + footer):
+            text = text[: -(len(footer) + 2)]
+        return text, footer
+
+    # A ``str`` subclass is copied through ``copyreg.__newobj__``, i.e. ``cls.__new__(cls)`` with no
+    # ``footer`` argument, which raises TypeError inside the agent's deepcopy of published events.
+    def __deepcopy__(self, memo):
+        clone = type(self).__new__(type(self), *self._split())
+        memo[id(self)] = clone
+        return clone
+
+    def __copy__(self):
+        return type(self).__new__(type(self), *self._split())
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

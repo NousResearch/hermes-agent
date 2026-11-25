@@ -5,12 +5,14 @@ import os
 import pytest
 
 from cron import jobs, scheduler
+from cron.scheduler_worktree_maintenance import run_sweep
 from hermes_cli import worktree_registry
 from hermes_platform.resolver import git as git_resolver
 
 
-@pytest.mark.platforms("posix")
-def test_cron_discovery_does_not_launch_uninstalled_apple_git(tmp_path, monkeypatch):
+@pytest.fixture
+def stub_git_log(tmp_path, monkeypatch):
+    """Make the PATH's only git a trap that logs each launch, marked as the CLT stub."""
     spawn_log = tmp_path / "git_spawns.log"
     trap_git = tmp_path / "apple_usr_bin" / "git"
     trap_git.parent.mkdir()
@@ -25,12 +27,30 @@ def test_cron_discovery_does_not_launch_uninstalled_apple_git(tmp_path, monkeypa
         lambda exe, env=None, **kw: bool(exe) and os.path.realpath(exe) != trap and real_check(exe, env, **kw),
     )
     monkeypatch.setenv("PATH", str(trap_git.parent))
+    monkeypatch.setattr(scheduler, "project_root_str", lambda: str(tmp_path))
+    assert git_resolver.inspect_git(cached=False).status == "clt_stub"
+    return spawn_log
+
+
+@pytest.mark.platforms("posix")
+def test_cron_discovery_does_not_launch_uninstalled_apple_git(tmp_path, monkeypatch, stub_git_log):
     workdir = tmp_path / "job"
     workdir.mkdir()
     monkeypatch.setattr(worktree_registry, "registered_repos", list)
     monkeypatch.setattr(jobs, "load_jobs", lambda: [{"workdir": str(workdir)}])
-    monkeypatch.setattr(scheduler, "project_root_str", lambda: str(tmp_path))
 
-    assert git_resolver.inspect_git(cached=False).status == "clt_stub"
     assert scheduler._worktree_maintenance_repos() == []
-    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+    assert not stub_git_log.exists(), f"git stub was spawned: {stub_git_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
+def test_cron_sweep_of_a_registered_repo_does_not_launch_uninstalled_apple_git(tmp_path, monkeypatch, stub_git_log):
+    """A repo a worktree was made in earlier (before a macOS upgrade dropped the Command Line Tools)
+    reaches the six-hourly prune without any job probe."""
+    repo = tmp_path / "repo"
+    (repo / ".worktrees").mkdir(parents=True)
+    monkeypatch.setattr(worktree_registry, "registered_repos", lambda: [str(repo)])
+    monkeypatch.setattr(jobs, "load_jobs", list)
+
+    run_sweep(scheduler._worktree_maintenance_repos, interval_seconds=3600.0)
+    assert not stub_git_log.exists(), f"git stub was spawned: {stub_git_log.read_text()}"

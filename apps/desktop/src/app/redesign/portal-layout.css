@@ -1,20 +1,26 @@
 /* Global Settings' column (Panel/flexible 16292:16447): 640px centred in the stage, its header
    --portal-settings-top under the stage's top; a stage narrower than the column keeps the panel
-   inset on both sides. */
+   inset on both sides. The stage lays no side padding of its own: the column's centring rides the
+   two flows below, so the scroller spans the stage's whole width and the wheel scrolls over the
+   blank gutters beside the column instead of into dead space. */
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
+  --portal-settings-gutter: max(var(--page-panel-inset), (100% - var(--portal-settings-column)) / 2);
+
   max-width: none;
   margin-inline: 0;
-  padding: var(--portal-settings-top) max(var(--page-panel-inset), (100% - var(--portal-settings-column)) / 2) 0;
+  padding: var(--portal-settings-top) 0 0;
 }
 
-/* The column's two flows, its header and its scroller, pad their content to the TEXT column,
-   --portal-settings-inset inside the 640: the H1, descriptions, section heads, forms and every page's
-   own content start there. Only the card primitives (SettingsCard, SettingsDisclosure, the empty
-   block) bleed back out over that padding to the column's edges, their rows keeping the inset
-   (global-overviews.css). The bleed stays inside the scroller's padding box, so it is never clipped. */
+/* The column's two flows, its header and its scroller, carry the centring and pad their content to
+   the TEXT column, --portal-settings-inset inside the 640: the H1, descriptions, section heads,
+   forms and every page's own content start there. Only the card primitives (SettingsCard,
+   SettingsDisclosure, the empty block) bleed back out over that padding to the column's edges, their
+   rows keeping the inset (global-overviews.css). The bleed stays inside the scroller's padding box,
+   so it is never clipped. The gutter's percentage resolves on the flow that uses it, both of which
+   box the whole stage. */
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > :not([data-slot='settings-content']),
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > [data-slot='settings-content'] > div {
-  padding-inline: var(--portal-settings-inset);
+  padding-inline: calc(var(--portal-settings-gutter) + var(--portal-settings-inset));
 }
 
 /* The scroller ends in the page end space, as every page scroller does (classic keeps its own). */

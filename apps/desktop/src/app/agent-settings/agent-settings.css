@@ -7,6 +7,43 @@
   font-family: var(--portal-font-body);
 }
 
+/* This page's content scrolls in the children below, not in the stage, so the stage hands the
+   column's paddings down (portal-pages.css) and lays none itself: the scrollers — and the header
+   that stays put — take the column, and the wheel then scrolls over the blank gutters beside it.
+   Only while such a scroller is up: a state with none (waiting for another agent to be activated)
+   keeps the stage's own padding and its card's column. */
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage:has(> :is(.agent-management-scroll, .agent-management-editor, .agent-history)) {
+  padding-inline: 0;
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage:has(> :is(.agent-management-scroll, .agent-management-editor, .agent-history))
+  > :is(.portal-page-header, .agent-management-scroll, .agent-history) {
+  padding-inline: var(--page-stage-pad-start) var(--page-stage-pad-end);
+}
+
+/* The Settings tab scrolls the body inside that editor, the editor itself does not scroll: the body
+   takes the column, so it too spans the stage. With the sections menu inline in the editor (a folded
+   panel or a narrow window) the editor's own box is the column, and menu and body scroll in it. */
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage
+  > .agent-management-editor:has(> .agent-settings-editor[data-inline-navigation]) {
+  padding-inline: var(--page-stage-pad-start) var(--page-stage-pad-end);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage
+  > .agent-management-editor
+  > .agent-settings-editor:not([data-inline-navigation])
+  > .agent-settings-body {
+  padding-inline: var(--page-stage-pad-start) var(--page-stage-pad-end);
+}
+
 .agent-management-avatar {
   width: 56px;
   height: 56px;

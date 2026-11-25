@@ -12,7 +12,10 @@
    itself (Agents, the loading frame) the rule steps past it; where the panel is its sibling
    (Routines, Library) the page's own start padding already has. A stage that scrolls reserves its
    scrollbar on both sides and gives that width back, so the column is the same with or without
-   one. Vertical padding stays the page's. The searchable pages (Capabilities, Messaging) and the
+   one. A stage whose content scrolls on its own instead of the stage (the agent page) lays no side
+   padding: it hands the two paddings below to the scrollers and the header that stay on it, so each
+   scroller spans the stage too (agent-settings.css). Vertical padding stays the page's. The
+   searchable pages (Capabilities, Messaging) and the
    plain panels (Webhooks, Spawn tree) reach the same column through --page-content-max-width,
    which is derived from the same token. */
 :where(:root[data-shell='portal']) [data-page-surface] :is(.page-stage, .management-panel.page-stage) {
@@ -22,14 +25,20 @@
     var(--page-content-inset),
     (100% - var(--page-stage-nav) - var(--portal-column-page)) / 2
   );
+  /* The column's two paddings. They ride the box that scrolls — the stage itself, or the scroller
+     the stage hands them to when its content scrolls on its own (agent-settings.css) — so that box
+     spans the stage's whole width and the wheel scrolls over the gutters beside the column. */
+  --page-stage-pad-start: calc(var(--page-stage-nav) + var(--page-stage-gutter) - var(--page-stage-scrollbar));
+  --page-stage-pad-end: calc(var(--page-stage-gutter) - var(--page-stage-scrollbar));
 
   width: 100%;
   max-width: none;
   margin-inline: 0;
-  padding-inline: calc(var(--page-stage-nav) + var(--page-stage-gutter) - var(--page-stage-scrollbar))
-    calc(var(--page-stage-gutter) - var(--page-stage-scrollbar));
+  padding-inline: var(--page-stage-pad-start) var(--page-stage-pad-end);
 }
 
+/* A stage that scrolls reserves its scrollbar on both sides and gives that width back, so the column
+   is the same with or without one. */
 :where(:root[data-shell='portal']) [data-page-surface] .page-stage[data-scrolls] {
   --page-stage-scrollbar: var(--portal-scrollbar-size);
 
@@ -43,6 +52,19 @@
     --page-stage-nav: var(--page-nav-width);
 
     position: relative;
+    /* The stage's scrollers (agent-settings.css) span it full width and, being later in DOM order,
+       would paint and hit-test their transparent start padding over the panel. Isolating the stage
+       keeps that overlap inside its own stacking context, under the panel's layer below. */
+    isolation: isolate;
+  }
+
+  /* The panel is absolute with no layer of its own, so the stage's later scrollers reach over it and
+     swallow its clicks and wheel. One layer above the unlayered content puts the panel back on top. */
+  :where(:root[data-shell='portal'])
+    [data-page-surface]
+    .page-stage:has(> .page-sidebar-panel)
+    > .page-sidebar-panel {
+    z-index: 1;
   }
 }
 

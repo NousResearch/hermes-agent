@@ -49,7 +49,7 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
-import { appliedLive, optimisticToggleState, restartReason } from './live-apply'
+import { appliedLive, needsCredentials, optimisticToggleState, restartPendingAfter, restartReason } from './live-apply'
 import { PlatformAvatar } from './platform-icon'
 import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
@@ -161,6 +161,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // vanishing toast is not enough: the page keeps a banner up until a restart
   // actually happens (dashboard parity). Cleared on a completed restart.
   const [restartNeeded, setRestartNeeded] = useState(false)
+  // Platforms whose last save the running gateway could not apply (see restartPendingAfter).
+  const [restartPlatforms, setRestartPlatforms] = useState<ReadonlySet<string>>(() => new Set())
   const gatewayRestarting = useStore($gatewayRestarting)
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
@@ -185,20 +187,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     if (ok) {
       setRestartNeeded(false)
+      setRestartPlatforms(new Set())
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
   }, [])
 
   // The running gateway applied the save itself (any profile): no restart banner; re-read status once
   // the adapter had a moment to connect. Only a gateway that could not (or an older one) needs a restart.
-  const settleAfterUpdate = useCallback((result: MessagingPlatformUpdateResponse) => {
+  const settleAfterUpdate = useCallback((platformId: string, result: MessagingPlatformUpdateResponse) => {
+    setRestartPlatforms(pending => restartPendingAfter(pending, platformId, result))
+
     if (appliedLive(result)) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
-
-      return
     }
-
-    setRestartNeeded(true)
   }, [])
 
   // The scope each in-flight fetch was issued for. A→B: A's request can resolve
@@ -388,16 +389,20 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               ? {
                   ...row,
                   enabled,
-                  state: optimisticToggleState(enabled, row.configured, appliedLive(result))
+                  state: optimisticToggleState(enabled, row.configured, result)
                 }
               : row
           ) ?? current
       )
-      settleAfterUpdate(result)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: appliedLive(result) ? m.appliedLive : restartReason(result, m.restartToApply)
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.appliedLive
+            : restartReason(result, m.restartToApply)
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -420,11 +425,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
       setEdits(current => ({ ...current, [platform.id]: {} }))
-      settleAfterUpdate(result)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: appliedLive(result) ? m.connectingLive : restartReason(result, m.restartToReconnect)
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.connectingLive
+            : restartReason(result, m.restartToReconnect)
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -446,7 +455,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      settleAfterUpdate(result)
+      settleAfterUpdate(platform.id, result)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
@@ -610,7 +619,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   )
                 }
               >
-                {restartNeeded && (
+                {(restartNeeded || restartPlatforms.size > 0) && (
                   <Alert variant="warning">
                     <AlertTriangle />
                     <AlertDescription className="flex flex-wrap items-center justify-between gap-2">

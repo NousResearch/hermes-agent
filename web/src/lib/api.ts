@@ -949,7 +949,7 @@ export const api = {
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
   // `live.applied` (or `hot_served` from older backends): the running gateway applied the change itself.
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean; live?: { applied: boolean; detail?: string } }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean; live?: { applied: boolean; detail?: string; state?: string | null } }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",

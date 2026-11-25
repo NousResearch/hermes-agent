@@ -180,6 +180,16 @@ export default function ChannelsPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [restartNeeded, setRestartNeeded] = useState(false);
+  // Channels whose latest save the running gateway could not apply; a later save it applied for the
+  // same channel takes it off, so the banner never outlives the reason for it.
+  const [restartFor, setRestartFor] = useState<ReadonlySet<string>>(() => new Set());
+  const settleRestart = (id: string, live: boolean) =>
+    setRestartFor((prev) => {
+      const next = new Set(prev);
+      if (live) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const [restarting, setRestarting] = useState(false);
 
   const gatewayRunning = platforms.length > 0 && platforms[0].gateway_running;
@@ -258,14 +268,18 @@ export default function ChannelsPage() {
       const result = await api.updateMessagingPlatform(editing.id, body);
       const live = result.live ? result.live.applied : Boolean(result.hot_served);
       const reason = result.live?.applied === false ? result.live.detail : undefined;
+      // Enabled without its credentials: the gateway's verdict is "needs setup", never "restart".
+      const needsSetup = result.live?.state === "not_configured";
       showToast(
-        live
-          ? `${editing.name} saved; the running gateway is connecting`
-          : `${editing.name} saved${reason ? ` (${reason})` : ""}`,
+        needsSetup
+          ? `${editing.name} saved; it still needs setup${result.live?.detail ? ` (${result.live.detail})` : ""}`
+          : live
+            ? `${editing.name} saved; the running gateway is connecting`
+            : `${editing.name} saved${reason ? ` (${reason})` : ""}`,
         "success",
       );
+      settleRestart(editing.id, live);
       setEditing(null);
-      if (!live) setRestartNeeded(true);
       await load();
       if (live) setTimeout(() => void load(), 4000);
     } catch (e) {
@@ -284,12 +298,22 @@ export default function ChannelsPage() {
       setPlatforms((prev) =>
         prev.map((p) =>
           p.id === platform.id
-            ? { ...p, enabled: next, state: next ? (live ? "connecting" : "pending_restart") : "disabled" }
+            ? {
+                ...p,
+                enabled: next,
+                state: !next
+                  ? "disabled"
+                  : result.live?.state === "not_configured"
+                    ? "not_configured"
+                    : live
+                      ? "connecting"
+                      : "pending_restart",
+              }
             : p,
         ),
       );
+      settleRestart(platform.id, live);
       if (live) setTimeout(() => void load(), 4000);
-      else setRestartNeeded(true);
     } catch (e) {
       showToast(`Could not update the channel: ${errorMessage(e)}`, "error");
     } finally {
@@ -315,6 +339,7 @@ export default function ChannelsPage() {
       await api.restartGateway();
       showToast("Gateway restarting…", "success");
       setRestartNeeded(false);
+      setRestartFor(new Set());
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
@@ -358,7 +383,7 @@ export default function ChannelsPage() {
       <Toast toast={toast} />
 
       {/* Restart banner */}
-      {restartNeeded && (
+      {(restartNeeded || restartFor.size > 0) && (
         <Card className="border-warning/50">
           <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2 text-sm">
@@ -380,7 +405,7 @@ export default function ChannelsPage() {
         </Card>
       )}
 
-      {!gatewayRunning && !restartNeeded && (
+      {!gatewayRunning && !restartNeeded && restartFor.size === 0 && (
         <Card className="border-border">
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />

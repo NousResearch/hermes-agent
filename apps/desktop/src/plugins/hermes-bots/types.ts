@@ -258,6 +258,10 @@ export interface GroupChat {
   watermarks: Record<string, number>
 }
 
+export type RuntimeGroupChatKey = 'epoch' | 'running' | 'tombstone'
+
+export type DurableGroupChat = { [K in Exclude<keyof GroupChat, RuntimeGroupChatKey>]: GroupChat[K] }
+
 /**
  * One sub-question of a batch clarify, straight off the wire. `choices` and
  * `question` stay unknown because the card re-validates them.

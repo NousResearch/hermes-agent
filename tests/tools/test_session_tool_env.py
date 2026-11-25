@@ -149,7 +149,7 @@ async def _owner(home, monkeypatch):
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setenv('HERMES_HOME', str(home))
     store = SessionStore(home / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
                              _evict_cached_agent=lambda route: None)
     owner = await initialize_session_authority(runner, profile_id=str(home), instance_id='fixture')
@@ -161,7 +161,6 @@ async def test_a_sessions_terminal_runs_with_its_clients_path(tmp_path, monkeypa
     """Two CLI sessions on one gateway: each terminal command sees its own client's PATH and venv."""
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(
@@ -180,7 +179,7 @@ async def test_a_sessions_terminal_runs_with_its_clients_path(tmp_path, monkeypa
                 'client_env': {'PATH': f'{path}{os.pathsep}/usr/bin{os.pathsep}/bin', 'NVM_DIR': str(path.parent),
                                'MY_TOOLCHAIN_HOME': f'/opt/{name}', 'MY_API_TOKEN': 'secret', 'UNLISTED': 'x'}},
                 client_local=True)  # attached through the gateway's own ticket
-            policies[name] = restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
+            policies[name] = restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy)
         # Listed toolchain names travel; a credential-looking name never lands in the stored policy.
         assert set(policies['alpha'].client_env()) == {'PATH', 'NVM_DIR', 'MY_TOOLCHAIN_HOME'}
         outputs = await asyncio.to_thread(_overlapping_terminal_turns, owner, policies)
@@ -193,7 +192,7 @@ async def test_a_sessions_terminal_runs_with_its_clients_path(tmp_path, monkeypa
         from tools.terminal_tool_lifecycle import cleanup_all_environments
         cleanup_all_environments()
         await connection.close()
-        owner.db.close()
+        owner.persistence.close()
 
 
 def _overlapping_terminal_turns(owner, policies):

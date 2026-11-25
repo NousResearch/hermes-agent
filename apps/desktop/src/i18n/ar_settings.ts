@@ -122,6 +122,8 @@ export const arSettings = {
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
       sessions: 'الجلسات',
+      backup: 'النسخ الاحتياطي والنقل',
+      backupOnly: 'النسخ الاحتياطي',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -278,6 +280,15 @@ export const arSettings = {
           insecure: 'يتطلب HTTPS، مثل Tailscale serve. عبر HTTP العادي يومض عنوان علامة التبويب فقط.',
           unsupported: 'لا يستطيع هذا المتصفح عرض الإشعارات. سيظل عنوان علامة التبويب يومض.'
         }
+      },
+      phonePresence: {
+        title: 'هذا الحاسوب لإشعارات الهاتف',
+        description: 'ما تخبر به هذه النافذة Hermes عن وجودك هنا. يقرّر مكوّن إشعارات الهاتف ما يفعله بذلك.',
+        unsupported: 'لا تتأثر إشعارات الهاتف بنشاطك على هذه الواجهة الخلفية.',
+        disconnected: 'غير متصل.',
+        watchingComputer: (time: string) => `ما دامت محادثة مفتوحة في هذه النافذة، يُبلَّغ Hermes بآخر مرة استخدمت فيها هذا الحاسوب. آخر إدخال قبل ${time}.`,
+        watchingWindow: (time: string) => `ما دامت محادثة مفتوحة في هذه النافذة، يُبلَّغ Hermes بآخر مرة استخدمت فيها هذه النافذة. آخر إدخال قبل ${time}.`,
+        watchingWindowNoInput: 'ما دامت محادثة مفتوحة في هذه النافذة، يُبلَّغ Hermes بآخر مرة استخدمت فيها هذه النافذة. لم يُرصَد أي إدخال بعد.'
       },
       test: 'إرسال إشعار تجريبي',
       testTitle: 'Hermes',

@@ -1046,7 +1046,7 @@ def test_listing_prefixed_model_id_reaches_the_wire_once(monkeypatch):
     """A model id carrying the listing's own ``models/`` prefix is a valid request (#152786).
     Every builder here concatenates ``{base}/models/{model}:…``, so the prefix must be dropped
     before the URL is built or the turn 404s on ``…/models/models/…``."""
-    from agent.gemini_native_adapter import GeminiNativeClient, bare_gemini_model_id
+    from agent.gemini_native_adapter import GeminiNativeClient, _native_gemini_model_id
 
     recorded = {}
 
@@ -1070,7 +1070,7 @@ def test_listing_prefixed_model_id_reaches_the_wire_once(monkeypatch):
         messages=[{"role": "user", "content": "Hello"}],
     )
 
-    assert bare_gemini_model_id("models/gemini-2.5-flash") == "gemini-2.5-flash"
+    assert _native_gemini_model_id("models/gemini-2.5-flash") == "gemini-2.5-flash"
     assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     assert response.choices[0].message.content == "hello"
 

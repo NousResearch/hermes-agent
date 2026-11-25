@@ -217,7 +217,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
-| send engine (`tools/send_message_tool.py`) | Routes through live gateway adapter |
+| send engine (`gateway/outbound/send.py`) | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |
@@ -311,6 +311,7 @@ lists each import of it.
 | Refuse a picker-card (`send_model_picker` / `send_choice_picker`) or `/update` prompt click from someone other than its opener | `from gateway.approval_actor import picker_refusal, update_prompt_refusal, refusal_text`: `picker_refusal(on_selected, clicker_id, extra=self.config.extra)` with the callback the picker was sent with, or `update_prompt_refusal(clicker_id, extra=self.config.extra)`; a non-`None` result is the opener's name: reply privately with `refusal_text(name)` and leave the card open. The opener and the chat scope's admins always pass |
 | Native clarify buttons | `tools.clarify_gateway`: `get_pending(clarify_id)` (the pending entry or `None`; read `session_key`, `choices`, `multi_select`), `resolve_gateway_clarify(clarify_id, text)`, `mark_awaiting_text(clarify_id)`, `SKIPPED` |
 | `setup_fn` wizard steps | `hermes_cli.gateway_setup_wizard`: `print_setup_header(title)`, `confirm_reconfigure(label, *env_vars)`, `offer_home_channel(home_var, user_id, what)`, `save_env_values(**values)`, `prompt_csv(text, default)`; prompts from `hermes_cli.setup` (`prompt`, `prompt_choice`, `prompt_yes_no`); output from `hermes_cli.cli_output` (`print_info`, `print_success`, `print_warning`, `print_error`); `.env` access through `hermes_cli.config` (`save_env_value`, `get_env_value`) |
+| Recognize a silence marker (`[SILENT]`, `NO_REPLY`) in reply text and strip a closing one, by the text rules Hermes uses (a reply that is only a marker; a marker closing a real reply on its own line; a marker inside a sentence is prose). These are text checks: whether a turn may stay silent is the gateway's decision, and where a reply is expected it can send a notice in place of a bare marker, so do not use them to drop text the gateway hands your adapter to send | `from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker, is_autonomous_silence_response`: `is_intentional_silence_response(text)` is `True` only when the whole reply is a marker; `strip_trailing_silence_marker(text)` returns the reply without a closing own-line marker (anything else, a bare marker included, comes back unchanged); for an autonomous run with no user waiting (cron, webhook) use `is_autonomous_silence_response(text)`, which is also `True` when the bracketed sentinel opens the reply (`[SILENT] nothing new`) or a marker sits on its own first or last line |
 
 ```python
 from gateway.platforms.helpers import platform_http_client
@@ -860,7 +861,7 @@ Six touchpoints:
 
 ### 7. Tools
 
-1. **`tools/send_message_tool.py`** — Add `"newplat": Platform.NEWPLAT` to platform map
+1. **`gateway/outbound/send.py`** — Add `"newplat": Platform.NEWPLAT` to platform map
 2. **`tools/cronjob_tools.py`** — Add `newplat` to the delivery target description string
 
 ### 8. Toolsets

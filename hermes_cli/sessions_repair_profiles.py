@@ -28,7 +28,6 @@ will mutate, and is idempotent: a second run finds nothing.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -50,7 +49,8 @@ class Store:
 
     @property
     def db_path(self) -> Path:
-        return self.home / "state.db"
+        from persistence_assembly import profile_scope, store_location
+        return store_location(profile_scope(home=self.home))
 
 
 @dataclass
@@ -80,25 +80,19 @@ class _Session:
         self._dbs: dict[Path, Any] = {}
 
     def db(self, store: Store):
-        """The store's SessionDB. Read-only runs never create a file: a live profile that has no
-        ``state.db`` yet reads as empty; an apply run opens it for real when a move lands there."""
+        """The store's crossed-profile repair handle. Read-only runs never create a file: a live profile that has
+        no ``state.db`` yet reads as empty; an apply run opens it for real when a move lands there. A backend
+        without the admin capability reads as empty."""
         path = store.db_path
         if path not in self._dbs:
-            if self.read_only:
-                from hermes_state import SessionDB
-                self._dbs[path] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
-            else:
-                from hermes_state_registry import acquire
-                self._dbs[path] = acquire(path)
+            from persistence.core.admin import AdminUnsupported
+            from persistence_assembly import open_profile_repair, profile_scope
+            repair = (open_profile_repair(profile_scope(home=store.home), read_only=self.read_only)
+                      if path.exists() or not self.read_only else _EMPTY_STORE)
+            self._dbs[path] = _EMPTY_STORE if isinstance(repair, AdminUnsupported) else repair
         return self._dbs[path]
 
     def close(self) -> None:
-        from hermes_state_registry import release_or_close
-        for db in self._dbs.values():
-            if db is _EMPTY_STORE:
-                continue
-            with contextlib.suppress(Exception):
-                release_or_close(db) if not self.read_only else db.close()
         self._dbs.clear()
 
 
@@ -276,7 +270,7 @@ class RepairPlan:
                 _fix=lambda s, st=store, r=row: s.db(st).relabel_telegram_topic_rows([r])))
 
     def _scan_routing(self, session: _Session, store: Store) -> None:
-        from hermes_state_profile_repair import session_key_profile
+        from persistence.core.keys import session_key_profile
         rows = session.db(store).list_gateway_routing_rows()
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
@@ -339,7 +333,7 @@ class RepairPlan:
                 _fix=lambda s, p=path, k=key, o=owner: _rekey_voice_mode_entry(p, k, o)))
 
     def _scan_sessions_json(self, store: Store) -> None:
-        from hermes_state_profile_repair import session_key_profile
+        from persistence.core.keys import session_key_profile
         path = store.home / "sessions" / "sessions.json"
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -371,9 +365,10 @@ class RepairPlan:
                 for key, count in (fix(session) or {}).items():
                     totals[key] = totals.get(key, 0) + int(count)
             except Exception as exc:  # one bad row must not abandon the rest of the plan
+                from storage_user_copy import error_type_name
                 logger.warning("repair-profiles: %s on %s failed", finding.kind, finding.subject, exc_info=True)
                 failures.append({"kind": finding.kind, "subject": finding.subject,
-                                 "error": f"{type(exc).__name__}: {exc}"})
+                                 "error": f"{error_type_name(exc)}: {exc}"})
         return {"snapshots": snapshots, "totals": totals, "failures": failures}
 
 
@@ -406,12 +401,12 @@ class _MoveBatch:
         if self._result is not None:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
-        from hermes_state_profile_repair import SessionLedgeredError
+        from persistence import SessionLedgered
         payloads: dict[str, Optional[dict[str, Any]]] = {}
         for sid in self.ids:
             try:
                 payloads[sid] = src_db.export_session_for_move(sid)
-            except SessionLedgeredError as exc:  # gained ledger rows since the scan: never copied
+            except SessionLedgered as exc:  # gained ledger rows since the scan: never copied
                 self._errors[sid] = exc
         ordered = _parents_first([p for p in payloads.values() if p is not None])
         result: dict[str, dict[str, int]] = {sid: {"missing": 1} for sid, p in payloads.items()

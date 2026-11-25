@@ -186,13 +186,13 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [_entry("previous")], "removed": []})
     previous = cache.read_text()
 
-    import utils
+    import utils.files
     _serve(monkeypatch, {"entries": [_entry("fresh")], "removed": []})
 
     def _dies(*_a, **_k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(utils, "atomic_replace", _dies)
+    monkeypatch.setattr(utils.files, "atomic_replace", _dies)
     pc.fetch_live_catalog(force=True)  # the failed write is swallowed like any other fetch failure
     assert cache.read_text() == previous
     assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either

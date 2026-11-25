@@ -23,6 +23,7 @@ from agent.bounded_response import read_streaming_error_body
 from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
 from agent.retry_utils import parse_retry_after_seconds
 from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
+from agent.reasoning_effort import bare_gemini_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -96,16 +97,20 @@ _MISSING_KEY_ERROR = (
 )
 
 
-def bare_gemini_model_id(model: str) -> str:
-    """Strip the prefixes a foreign spelling of the same id can carry: an aggregator's vendor prefix
+def _native_gemini_model_id(model: str) -> str:
+    """Strip the prefixes a Gemini native request can carry: an aggregator's vendor prefix
     (``google/``, ``gemini/``) and the ``models/`` prefix Gemini's own listings return, which every
-    ``{base}/models/{model}:…`` builder would otherwise double (#152786)."""
-    name = (model or "").strip()
+    ``{base}/models/{model}:…`` builder would otherwise double (#152786). Kept separate from the
+    published ``agent.reasoning_effort.bare_gemini_model_id`` plugin helper whose contract only
+    strips provider prefixes."""
+    name = bare_gemini_model_id(model)
     while True:
         for prefix in ("google/", "gemini/", "models/"):
             if name.lower().startswith(prefix) and len(name) > len(prefix):
-                name = name[len(prefix):].strip()
-                break
+                stripped = name[len(prefix):].strip()
+                if stripped:
+                    name = stripped
+                    break
         else:
             return name
 
@@ -125,7 +130,7 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
 def _gemini_version(model: str) -> tuple[int, int]:
     """(major, minor) of a Gemini model id: ``gemini-4-argon`` -> (4, 0), ``google/gemini-3.8-flash`` ->
     (3, 8); (0, 0) for non-Gemini and unversioned ids (``gemini-flash-latest``, ``gemini-exp-1206``)."""
-    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", bare_gemini_model_id(model).lower())
+    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", _native_gemini_model_id(model).lower())
     return (int(match.group(1)), int(match.group(2) or 0)) if match else (0, 0)
 
 
@@ -134,7 +139,7 @@ def gemini_uses_thinking_level(model: str) -> bool:
     is deprecated there), as do the ``gemini-*-latest`` aliases, which Google hot-swaps to the newest
     release of each variant. A version-number gate, not a ``gemini-3`` prefix, so a new generation
     (``gemini-4-argon``) isn't silently treated as legacy."""
-    bare = bare_gemini_model_id(model).lower()
+    bare = _native_gemini_model_id(model).lower()
     return (bare.startswith("gemini-") and bare.endswith("-latest")) or _gemini_version(bare) >= (3, 0)
 
 
@@ -209,10 +214,10 @@ def probe_gemini_tier(
         return "unknown"
     base = normalize_gemini_base_url(base_url)
     payload = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}}
-    headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _api_client()}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key, "X-Goog-Api-Client": _api_client()}
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{base}/models/{model}:generateContent", params={"key": key}, json=payload, headers=headers)
+            resp = client.post(f"{base}/models/{model}:generateContent", json=payload, headers=headers)
     except Exception as exc:
         logger.debug("probe_gemini_tier: network error: %s", exc)
         return "unknown"
@@ -539,6 +544,12 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     if requested <= 0 or _thinking_requests_output_headroom(thinking_config):
         return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
     return requested
+
+
+def _long_decode_cap(max_tokens: Optional[int], extra_body: dict[str, Any]) -> Optional[int]:
+    """Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins."""
+    budget = extra_body.get("max_output_tokens")
+    return budget if isinstance(budget, int) and budget > int(max_tokens or 0) else max_tokens
 
 
 def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> dict[str, Any]:
@@ -953,6 +964,16 @@ class GeminiNativeClient:
         chunk = next(iterator, _END)
         return (True, None) if chunk is _END else (False, chunk)
 
+    @staticmethod
+    def effective_output_cap(*, max_tokens: Optional[int] = None, extra_body: Optional[dict[str, Any]] = None,
+                             **_: Any) -> int:
+        """The ``maxOutputTokens`` a ``chat.completions.create(**kwargs)`` call would really send: the
+        long-decode budget and thinking headroom can raise ``max_tokens`` (the prompt-cache warmer sends
+        a keep-alive only when the cap it asked for stands)."""
+        extra = extra_body if isinstance(extra_body, dict) else {}
+        return _effective_gemini_max_output_tokens(
+            _long_decode_cap(max_tokens, extra), extra.get("thinking_config") or extra.get("thinkingConfig"))
+
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
@@ -960,17 +981,14 @@ class GeminiNativeClient:
         timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
-        # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
-        budget = extra.get("max_output_tokens")
-        if isinstance(budget, int) and budget > int(max_tokens or 0):
-            max_tokens = budget
+        max_tokens = _long_decode_cap(max_tokens, extra)
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
             response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
-        model = bare_gemini_model_id(model)
+        model = _native_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
             return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)

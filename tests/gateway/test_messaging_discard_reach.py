@@ -6,6 +6,7 @@ a conversation brought back by ``/resume`` after a restart is not in the owner's
 import asyncio
 
 import pytest
+from tests.fixtures.storage_seed import seed_messages
 
 
 def test_slack_pause_notice_names_the_registered_umbrella_command():
@@ -36,13 +37,11 @@ async def test_discard_after_resume_into_a_cold_conversation_resolves_its_lost_t
     from gateway.session_authority import initialize_session_authority
     from gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import claim_session_input, get_session_admission
     from tests.gateway.test_command_bypass_active_session import _StubAdapter
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
     monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
-    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')  # conftest repoints it per test
     runner = GatewayRunner(GatewayConfig(multiplex_profiles=False, sessions_dir=tmp_path / 'sessions'))
     adapter = _StubAdapter(PlatformConfig(enabled=True, token='fixture', typing_indicator=False), Platform.TELEGRAM)
     sent = []
@@ -59,13 +58,13 @@ async def test_discard_after_resume_into_a_cold_conversation_resolves_its_lost_t
     first = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='old')
     first._schedule = lambda ref: None
     previous = first.register(source).session_id
-    first.db.append_message(previous, 'user', 'older conversation')
+    seed_messages(first.persistence, previous, {'role': 'user', 'content': 'older conversation'})
     runner.session_store.get_or_create_session(source, force_new=True)
     head = MessageEvent(text='lost human input', source=source, message_id='head')
     with native_callback(runner, head, get_hermes_home()):
         receipt = await first.admit_native(head)
     sid = receipt.ref.session_id
-    claimed = claim_session_input(first.db, epoch=first.epoch, session_id=sid)
+    claimed = first.persistence.admissions.claim(epoch=first.epoch, session_id=sid)
     key = runner._session_key_for_source(source)
     try:
         # A restart fences the turn unknown; /resume moves away, a second restart, /resume back:
@@ -79,14 +78,14 @@ async def test_discard_after_resume_into_a_cold_conversation_resolves_its_lost_t
         await recover_profile_native_sessions(runner, second)
         await runner._handle_message(MessageEvent(text='/resume ' + sid, source=source, message_id='back'))
         assert runner.session_store.peek_session_id(key) == sid and sid not in second.sessions
-        assert get_session_admission(second.db, admission_id=claimed['admission_id'])['status'] == 'unknown'
+        assert second.persistence.admissions.get(admission_id=claimed.admission_id).status == 'unknown'
         if suspended:
             runner.session_store._entries[key].suspended = True  # as _suspend_stuck_loop_sessions does
         await adapter.handle_message(MessageEvent(text='/discard', source=source, message_id='discard'))
         if adapter._background_tasks:
             await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 10)
-        row = get_session_admission(second.db, admission_id=claimed['admission_id'])
-        assert (row['status'], row['outcome']) == ('terminal', 'interrupted'), (row, sent)
+        row = second.persistence.admissions.get(admission_id=claimed.admission_id)
+        assert (row.status, row.outcome) == ('terminal', 'interrupted'), (row, sent)
         assert runner.session_store.peek_session_id(key) == sid  # /discard never rotates the chat
     finally:
         runner.session_store.close_all_db_handles()

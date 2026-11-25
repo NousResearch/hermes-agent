@@ -29,6 +29,7 @@ import json, os, threading
 from pathlib import Path
 from unittest.mock import MagicMock
 import tools.delegate_tool as dt
+import tools.delegate_tool_routes as routes
 parent = MagicMock()
 parent._delegate_depth = 0
 parent.session_id = "diagnostic-parent"
@@ -49,7 +50,7 @@ creds = dict(model="m", provider=None, base_url=None, api_key=None,
              api_mode=None, command=None, args=None)
 dt._build_child_agent = build
 dt._run_single_child = child
-dt._resolve_delegation_credentials = lambda *a, **k: creds
+routes._resolve_delegation_credentials = lambda *a, **k: creds
 if os.environ['REPRO_MISSING'] == '1':
     import tools.delegation_live_log as live
     original = live.create_live_transcripts

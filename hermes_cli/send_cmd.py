@@ -195,6 +195,10 @@ def _load_hermes_env() -> None:
 
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
+    # A profile a plugin runs elsewhere sends from that backend: this would load the credentials that
+    # backend wrote into the home (its .env and config.yaml) and message a platform with them.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+    exit_if_profile_runs_elsewhere("send")
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
     if getattr(args, "list_targets", False):  # --list short-circuits everything else
         # `hermes send --list telegram` lands "telegram" in the `message` positional.
@@ -231,7 +235,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         message = f"{subject}\n\n{message.lstrip()}"
 
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
-    from tools.send_message_tool import send_message_tool
+    from gateway.outbound.send import send_message_tool
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.

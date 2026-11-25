@@ -266,16 +266,17 @@ class SlashCommandsMixin:
         if request.aggressive:
             return AGGRESSIVE_UNSUPPORTED
         original_session_db = getattr(agent, "_session_db", None)
+        original_persistence = getattr(agent, "persistence", None)
         try:
             # Stable ACP session id: suppress _compress_context's SQLite session split.
-            agent._session_db = None
+            agent._session_db = agent.persistence = None
             result = compress_now(
                 agent, state.history, request, system_message=getattr(agent, "_cached_system_prompt", "") or "",
                 task_id=state.session_id)
         except Exception as e:
             return f"Compression failed: {e}"
         finally:
-            agent._session_db = original_session_db
+            agent._session_db, agent.persistence = original_session_db, original_persistence
         if result.status != "compressed":
             return "\n".join(render_compress_result(result))
         state.history = result.after_messages

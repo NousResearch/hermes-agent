@@ -166,8 +166,6 @@ def _sdk_unavailable_error(server_name: str) -> ImportError:
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
-    __slots__ = ()
-
     def _advertises_tools(self) -> bool:
         """False only when captured capabilities omit ``tools`` (prompt-/resource-only servers,
         where ``tools/list`` raises -32601); True without capability info (legacy fallback).
@@ -715,10 +713,14 @@ class MCPServerTransportMixin:
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
-        if self._registered_tool_names:
-            return
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]
+        if self._registered_tool_names:
+            # A reconnect keeps the registered tools, but the trust gate must judge the session that will
+            # run the call: refresh readOnlyHint from this listing (#144380).
+            for key in owned:
+                _registration._record_tool_trust_metadata(self.name, self._config, self._tools, key)
+            return
         if not owned and not self._ready.is_set():
             return
         self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)

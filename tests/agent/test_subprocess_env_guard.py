@@ -55,7 +55,7 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
     # These children are Hermes itself and need its full environment: the gateway respawn
     # watcher (generated script source), the launchd stderr-timestamp wrapper around the
     # gateway command, and the skills sync that seeds a new profile.
-    "hermes_cli/gateway.py",
+    "hermes_cli/gateway_restart_watcher.py",
     "hermes_cli/stderr_timestamp.py",
     "hermes_cli/profiles.py",
     # The compute host runs agent turns for the dashboard: Home Assistant tools, Modal/Daytona

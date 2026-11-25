@@ -5,6 +5,7 @@ import { setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOQi1gAAAGuARekSxIOAAAAAElFTkSuQmCC'
+
 const PLUGIN = `
 import { COMPOSER_AREAS, host } from '@hermes/plugin-sdk'
 import { jsx } from 'react/jsx-runtime'
@@ -29,6 +30,7 @@ test('a plugin can attach a PNG to an unsent Desktop draft through the public SD
   test.setTimeout(120_000)
   const fixture = await setupMockBackend()
   const { page, sandbox } = fixture
+
   try {
     await waitForAppReady(fixture)
     const plugins = path.join(sandbox.hermesHome, 'desktop-plugins')

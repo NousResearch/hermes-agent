@@ -564,6 +564,45 @@ describe("BackendMigrationCard", () => {
     expect(container.textContent).toContain("Hermes itself takes over its address.");
     expect(container.textContent).not.toContain("null");
   });
+
+  it("keeps polling across a 685 s slow restart + failed verify + rollback and reports the recovered rollback", async () => {
+    const startMs = Date.now();
+    const rolledBack: BackendMigrationStatus = {
+      ...none,
+      state: "rolled_back",
+      step: "verify",
+      started_at: 100,
+      finished_at: 785,
+      reason: "verify failed: verification failed after 300s: no HTTP 200",
+      message: "verify failed: verification failed after 300s: no HTTP 200; rolled back, old backend verified on 0.0.0.0:9119",
+    };
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/apply")) {
+        return json(200, { ok: true, confirmed: true, requested_at: 100, old_address: "0.0.0.0:9119", new_address: "0.0.0.0:9119" });
+      }
+      // Simulates slow restart (225 s) + failed verify (300 s) + rollback stop (160 s) = 685 s outage.
+      if (Date.now() - startMs < 685_000) {
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return json(200, rolledBack);
+    }));
+
+    await render(planWith({}));
+    await confirmMove();
+
+    // Past the old 660 s cutoff, the mounted card must still be polling in switching (never unreachable).
+    await wait(665_000);
+    expect(container.querySelector('[data-slot="backend-migration-unknown"]')).toBeNull();
+    expect(container.querySelector('[data-slot="backend-migration-progress"]')?.textContent).toContain("Switching over");
+    expect(moveButton()).toBeUndefined();
+
+    // Once the old backend comes back at 685 s, the card reports the recovered rollback outcome.
+    await wait(25_000);
+    const shown = container.querySelector('[data-slot="backend-migration-rolled-back"]')?.textContent ?? "";
+    expect(shown).toContain("Reason: verify failed: verification failed after 300s: no HTTP 200");
+    expect(button("Try again")).toBeDefined();
+  });
 });
 
 describe("readPoll", () => {
@@ -662,12 +701,14 @@ describe("readPoll", () => {
   });
 
   it("reads the swap's gap as switching and a refused sign-in as sign in again, never as failure", () => {
-    expect(UNREACHABLE_AFTER_SECONDS).toBeGreaterThanOrEqual(600);
+    expect(UNREACHABLE_AFTER_SECONDS).toBeGreaterThanOrEqual(1830);
     expect(readPoll({ kind: "unreachable" }, asked, at(5)).kind).toBe("switching");
     expect(readPoll({ kind: "auth" }, asked, at(5)).kind).toBe("signInAgain");
-    // Stay in switching across the backend's 240s restart handoff + 300s verify window.
+    // Stay in switching across restart, handoff, verify, and slow rollback recovery windows.
     expect(readPoll({ kind: "unreachable" }, asked, at(200)).kind).toBe("switching");
     expect(readPoll({ kind: "unreachable" }, asked, at(540)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(685)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(1380)).kind).toBe("switching");
     expect(readPoll({ kind: "unreachable" }, asked, at(UNREACHABLE_AFTER_SECONDS)).kind).toBe("switching");
     expect(readPoll({ kind: "unreachable" }, asked, at(UNREACHABLE_AFTER_SECONDS + 1)).kind).toBe("unreachable");
   });

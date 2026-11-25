@@ -10,6 +10,12 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
 
   const options: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value))
 
+  // `hermes --tui` sets HERMES_CWD to the directory the process was launched from
+  // (hermes_cli/main_tui_launch.py). That is a deliberate workspace, not the Desktop's
+  // inherited app-global default: mark it explicit so a named profile's terminal.cwd
+  // does not replace it, and the shared gateway does not fall back to $HOME (#84015, #52589).
+  if (options.cwd) { options.cwd_explicit = true }
+
   if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
 
   // `hermes --tui -s a,b`: the owner renders these into the session's frozen prompt.

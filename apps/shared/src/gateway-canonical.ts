@@ -47,6 +47,10 @@ export function canonicalRequest(
     // with its own environment, as before.
     if (!contract.parameters.includes('client_env')) { delete params.client_env }
 
+    // Same for the launch-directory provenance flag: an older owner still accepts cwd, and
+    // refusing the whole create would block `hermes --tui` against that gateway.
+    if (!contract.parameters.includes('cwd_explicit')) { delete params.cwd_explicit }
+
     // The client's name is attribution, not a launch option: sent only to a gateway that takes it.
     if (identity.client) {
       if (contract.parameters.includes('client')) { params.client = { ...identity.client } } else { delete params.client }

@@ -67,3 +67,19 @@ it('sends the launcher\'s client environment (LC-8, T3) only to a gateway that t
     expect(localCreationOptions({ HERMES_TUI_CLIENT_ENV: raw } as NodeJS.ProcessEnv)).not.toHaveProperty('client_env')
   }
 })
+
+it('marks the shell launch directory as an explicit workspace so it beats a profile terminal.cwd', () => {
+  const options = localCreationOptions({ HERMES_CWD: '/work/repo' } as NodeJS.ProcessEnv)
+  expect(options).toEqual({ cwd: '/work/repo', cwd_explicit: true })
+  expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('cwd')
+  expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('cwd_explicit')
+  const contract = { sources: ['tui'], parameters: ['request_id', 'source', 'cwd', 'cwd_explicit'] }
+  expect(canonicalRequest('session.create', { request_id: 'owned', ...options }, contract).params).toMatchObject({
+    cwd: '/work/repo', cwd_explicit: true
+  })
+  // Older owners reject unknown create fields. Drop the flag and keep the cwd.
+  const older = { sources: ['tui'], parameters: ['request_id', 'source', 'cwd'] }
+  expect(canonicalRequest('session.create', { request_id: 'owned', ...options }, older).params).toEqual({
+    request_id: 'owned', source: 'tui', cwd: '/work/repo'
+  })
+})

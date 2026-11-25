@@ -55,11 +55,21 @@ def session_has_expired(session_info: dict[str, Any], *, now: Optional[float] = 
 
 
 def _best_effort(label: str, fn) -> None:
-    """Run ``fn()``; log and swallow any exception — teardown must never abort."""
+    """Run ``fn()``; log and swallow any exception — teardown must never abort.
+
+    Each step is timed as well: shutdown runs under launchd's 60 s ExitTimeOut, and a step
+    that merely runs long (without failing) used to leave no trace at all when the rest of
+    the shutdown then got SIGKILLed.
+    """
+    started = time.monotonic()
     try:
         fn()
     except Exception as e:  # health: allow BLE001 -- teardown boundary: one failure must not stop the rest
         logger.debug("%s failed: %s", label, e)
+    finally:
+        elapsed = time.monotonic() - started
+        if elapsed >= 2.0:
+            logger.warning("browser teardown: %s took %.1fs (gateway shutdown budget is 60s)", label, elapsed)
 
 
 def update_session_activity(cache_key: str) -> None:

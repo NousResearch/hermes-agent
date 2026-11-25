@@ -40,6 +40,18 @@ logger = logging.getLogger(__name__)
 # supervisor thread and warnings forever for the latter.
 MAX_POST_ATTACH_RECONNECT_FAILURES = 5
 
+# A connection only counts as a recovery once it stayed up this long.  An endpoint
+# that accepts the socket and closes it again resets a naive failure counter on every
+# cycle, so it is re-dialled forever; treating a sub-threshold connection as one more
+# failed dial lets the budget above retire it.
+RECONNECT_STABLE_AFTER_S = 10.0
+
+# Total wall-clock budget for ``_SupervisorRegistry.stop_all`` (gateway shutdown).
+# Per-supervisor joins are capped by the remaining budget instead of 5 s each: the
+# launchd domain clamps ExitTimeOut to 60 s, so a serial 7 s per supervisor teardown
+# turns into SIGKILL; whatever is left is marked stopped and exits on its own.
+STOP_ALL_BUDGET_S = 15.0
+
 
 def _redact_cdp_error_text(exc: object) -> str:
     """Redact CDP endpoint credentials from an exception's (or URL's) string form.
@@ -122,6 +134,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         # Supervisor loop machinery — populated in start().
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
+        self._main_task: Optional[asyncio.Task] = None  # the ``_run`` coroutine, for prompt stop()
         self._ready_event = threading.Event()
         self._start_error: Optional[BaseException] = None
         self._stop_requested = False
@@ -169,8 +182,17 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             # returns cleanly, ``_run`` hits its ``finally``, THEN the thread exits.
             with contextlib.suppress(Exception):  # loop already shutting down / close timed out
                 _schedule(self._close_ws(), loop, timeout=2.0)
+            # A supervisor in its reconnect backoff sleep would sit out the whole delay (up to
+            # 10 s) and every shutdown would pay it; cancelling ends the sleep at once.
+            task = self._main_task
+            if task is not None and not task.done():
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(task.cancel)
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                logger.warning("CDP supervisor %s: thread still running %.1fs after stop; it exits on its own "
+                               "(shutdown must not wait on it)", self.task_id, timeout)
         self._set_active(False)
 
     def _set_active(self, value: bool) -> None:
@@ -429,7 +451,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             loop.run_until_complete(self._run())
         except BaseException as e:
             if not self._fail_start(e):
-                logger.warning("CDP supervisor %s crashed: %s", self.task_id, e)
+                # ``stop()`` cancels ``_run``; that landing here is the normal exit, not a crash.
+                if self._stop_requested or isinstance(e, asyncio.CancelledError):
+                    logger.debug("CDP supervisor %s stopped", self.task_id)
+                else:
+                    logger.warning("CDP supervisor %s crashed: %s", self.task_id, _redact_cdp_error_text(e))
         finally:
             # Cancel + flush remaining tasks before closing the loop to avoid
             # "Task was destroyed but it is pending" warnings.
@@ -476,7 +502,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         socket whenever a short-lived client (a per-call browser_cdp or harness CDP connection)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
-        reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
+        self._main_task = asyncio.current_task()
+        reconnect_failures, backoff = 0, 0.5
         import websockets  # deferred: only supervisors that connect pay the import
         from agent.proxy_bypass import loopback_connect_kwargs
         connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
@@ -497,6 +524,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 continue
 
             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
+            connected_at = time.time()
+            drop: Optional[BaseException] = None
             try:
                 # Reset the per-connection page session id; ``_pending_dialogs`` / ``_frames``
                 # are deliberately kept — they reconcile as fresh events arrive (worst case a
@@ -504,20 +533,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 self._page_session_id = None
                 await self._attach_initial_page()
                 self._set_active(True)
-                last_success_at = time.time()
-                reconnect_failures = 0
-                backoff = 0.5  # reset after a successful attach
                 self._ready_event.set()
                 await reader_task
             except BaseException as e:
                 if self._fail_start(e):
                     raise
-                reconnect_failures += 1
-                if self._reconnect_budget_spent(reconnect_failures, e):
-                    return
-                logger.warning("CDP supervisor %s: session dropped after %.1fs (attempt %s/%s): %s",
-                               self.task_id, time.time() - last_success_at, reconnect_failures,
-                               MAX_POST_ATTACH_RECONNECT_FAILURES, _redact_cdp_error_text(e))
+                drop = e
             finally:
                 self._set_active(False)
                 if not reader_task.done():
@@ -537,6 +558,24 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
             if self._stop_requested:
                 return
+            # A connection that outlived RECONNECT_STABLE_AFTER_S proved the endpoint usable:
+            # that drop is the transient kind the reconnect loop exists for. Anything shorter
+            # never worked, so it counts as one more failed dial — otherwise an endpoint that
+            # accepts the socket and immediately closes it resets the budget every cycle.
+            elapsed = time.time() - connected_at
+            reason = drop if drop is not None else ConnectionError("closed by the browser")
+            if elapsed >= RECONNECT_STABLE_AFTER_S:
+                logger.warning("CDP supervisor %s: connection dropped after %.1fs; reconnecting: %s",
+                               self.task_id, elapsed, _redact_cdp_error_text(reason))
+                reconnect_failures, backoff = 0, 0.5
+            else:
+                reconnect_failures += 1
+                if self._reconnect_budget_spent(reconnect_failures, reason):
+                    return
+                logger.warning("CDP supervisor %s: connection dropped after %.1fs (attempt %s/%s): %s",
+                               self.task_id, elapsed, reconnect_failures,
+                               MAX_POST_ATTACH_RECONNECT_FAILURES, _redact_cdp_error_text(reason))
+
             logger.debug("CDP supervisor %s: reconnecting in %.1fs...", self.task_id, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
@@ -593,7 +632,14 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     if result is not None:
                         await result
         except Exception as e:
-            logger.debug("CDP read loop exited: %s", e)
+            # A read loop that dies here takes the whole connection with it (``_run`` re-dials),
+            # so the cause must be visible: swallowing it at DEBUG hid the failure that kept a
+            # supervisor reconnecting without ever serving a turn.
+            if self._stop_requested:
+                logger.debug("CDP read loop closed: %s", e)
+            else:
+                logger.warning("CDP supervisor %s: read loop ended: %s",
+                               self.task_id, _redact_cdp_error_text(e))
 
     # CDP event → handler(self, params, session_id). Async handlers return an
     # awaitable that ``_read_loop`` awaits; sync handlers return None.
@@ -668,14 +714,30 @@ class _SupervisorRegistry:
         for task_id in tasks:
             self.stop(task_id)
 
-    def stop_all(self) -> None:
-        """Stop every running supervisor. For shutdown / test teardown."""
+    def stop_all(self, *, budget_s: float = STOP_ALL_BUDGET_S) -> None:
+        """Stop every running supervisor. For shutdown / test teardown.
+
+        Bounded by ``budget_s`` in total, not per supervisor: shutdown runs under a 60 s
+        launchd ExitTimeOut, and only ``stop()``'s per-supervisor join can exceed it.
+        Every supervisor is marked stopped up front, so one that runs out of budget
+        still ends its own loop and thread; the registry is empty either way."""
+        deadline = time.monotonic() + max(0.0, budget_s)
         with self._lock:
             items = list(self._by_task.values())
             self._by_task.clear()
             self._home_by_task.clear()
         for supervisor in items:
-            supervisor.stop()
+            supervisor._stop_requested = True
+        left = 0
+        for supervisor in items:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                left += 1
+                continue
+            supervisor.stop(timeout=min(remaining, 5.0))
+        if left:
+            logger.warning("CDP supervisor registry: stop_all budget %.1fs spent; %s supervisor(s) left to "
+                           "exit on their own (threads are daemons, shutdown does not wait)", budget_s, left)
 
 
 SUPERVISOR_REGISTRY = _SupervisorRegistry()

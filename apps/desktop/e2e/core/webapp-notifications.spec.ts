@@ -155,8 +155,10 @@ test('a Webapp notification shows through its worker where the constructor throw
 
   try {
     // Full Chromium in its new headless mode: the old headless shell denies notifications whatever is
-    // granted. The constructor is refused as on Android (see the header).
-    const args = ['--disable-blink-features=NotificationConstructor']
+    // granted. The constructor is refused as on Android (see the header). Chromium keeps notifications in
+    // its own notification centre rather than handing them to the desktop's notification service, which
+    // CI's xvfb session does not run: on a host whose session has none, getNotifications() listed nothing.
+    const args = ['--disable-blink-features=NotificationConstructor', '--disable-features=NativeNotifications']
 
     browser = await chromium.launch(
       process.env.HERMES_E2E_CHROMIUM

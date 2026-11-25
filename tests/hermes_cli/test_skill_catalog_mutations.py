@@ -1,6 +1,8 @@
 """Permit contract: real held gate, writer chain and operation CAS, no provider I/O."""
 import uuid
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import pytest
@@ -31,6 +33,53 @@ def admitted(home):
             yield projection, owner, facade, admission, op
         finally:
             facade.close()
+
+
+@pytest.mark.parametrize('phase', ['queued', 'acquired'])
+@pytest.mark.parametrize('method', ['acquire', 'recovery_acquire'])
+def test_timed_out_acquire_never_orphans_permit(tmp_path, monkeypatch, phase, method):
+    with admitted(tmp_path) as (p, _owner, facade, admission, op):
+        entered, resume = threading.Event(), threading.Event()
+        original = getattr(facade, '_do_' + method)
+        original_wait = threading.Event.wait
+
+        def delayed(payload):
+            if phase == 'queued':
+                entered.set()
+                assert resume.wait(10)
+            result = original(payload)
+            if phase == 'acquired':
+                entered.set()
+                assert resume.wait(10)
+            return result
+
+        def bounded_wait(event, timeout=None):
+            # Keep the real command queue and worker, accelerate only caller wait.
+            return original_wait(event, 0.1 if timeout == 3.5 else timeout)
+
+        monkeypatch.setattr(facade, '_do_' + method, delayed)
+        monkeypatch.setattr(threading.Event, 'wait', bounded_wait)
+        payload = dict(admission=admission, operation_id=op)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            request = pool.submit(getattr(facade, method), payload)
+            try:
+                assert entered.wait(5)
+                with pytest.raises(CatalogError) as caught:
+                    request.result(5)
+                assert caught.value.code == 'outcome_unknown'
+            finally:
+                resume.set()
+        # FIFO barrier: all late acquisition/cleanup has finished by this reply.
+        facade.settlement(op)
+        try:
+            assert facade._permit is None, 'timed-out caller left an orphan permit'
+            monkeypatch.setattr(facade, '_do_' + method, original)
+            next_permit = facade.acquire(payload)
+            facade.release(dict(permit_id=next_permit['permit_id']))
+        finally:
+            if facade._permit is not None:
+                facade.release(dict(permit_id=facade._permit['id']))
+        assert p.read()['reservations'][admission['reservation_id']]['state'] in ('bound', 'unknown')
 
 
 def test_commit_derives_target_holds_both_locks_and_idempotently_settles(tmp_path):

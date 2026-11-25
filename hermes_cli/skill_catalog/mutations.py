@@ -18,6 +18,8 @@ class _Command:
     def __init__(self, method, payload):
         self.method, self.payload = method, payload
         self.done = threading.Event()
+        self.lock = threading.Lock()
+        self.cancelled = False
         self.result = None
         self.error = None
 
@@ -54,11 +56,16 @@ class Mutations:
                 continue
             try:
                 self._release_dead_writer()
-                command.result = getattr(self, '_do_' + command.method)(command.payload)
+                if not command.cancelled or command.method not in ('acquire', 'recovery_acquire'):
+                    command.result = getattr(self, '_do_' + command.method)(command.payload)
             except Exception as exc:  # health: allow BLE001 -- relay the exact exception to the waiting caller, never kill the lock owner
                 command.error = exc
             finally:
-                command.done.set()
+                with command.lock:
+                    if (command.cancelled and command.method in ('acquire', 'recovery_acquire')
+                            and command.result is not None):
+                        self._do_release(dict(permit_id=command.result['permit_id']))
+                    command.done.set()
             if command.method == 'close' and command.error is None:
                 return
 
@@ -78,7 +85,10 @@ class Mutations:
         except queue.Full:
             raise CatalogError('busy', 'Catalog mutation queue is busy.') from None
         if not command.done.wait(3.5):
-            raise CatalogError('outcome_unknown', 'Catalog mutation outcome is unknown.')
+            with command.lock:
+                if not command.done.is_set():
+                    command.cancelled = True
+                    raise CatalogError('outcome_unknown', 'Catalog mutation outcome is unknown.')
         if command.error is not None:
             raise command.error
         return command.result

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { sessionFileOwnerScope } from '@/api/client'
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -206,7 +207,16 @@ export function PreviewAttachment({ target }: { target: string }) {
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
       // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target, sessionId ? { sessionId } : undefined)
+      // Route the session through its owning profile, not the foreground profile.
+      // With no known owner, follow the existing media playback convention.
+      const ownerScope = sessionId ? sessionFileOwnerScope(sessionId) : null
+
+      const result = await downloadGatewayMediaFile(
+        target,
+        ownerScope
+          ? { owner: { connectionId: ownerScope.connectionId, profile: ownerScope.profile }, sessionId }
+          : undefined
+      )
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

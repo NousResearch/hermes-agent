@@ -149,10 +149,8 @@ starts no `workflow_run` workflow when it completes. This is why:
 ### Runners
 
 `blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
-`32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
-`windows-latest` (standard, free on a public repository), `windows-latest-32-core`
-and `windows-latest-32-arm-core` (larger, billed) are GitHub-hosted. The Windows
-install/update legs (`install-e2e-windows-run.yml`'s `e2e` job) use `windows-latest`.
+`32vcpu` for test suites and builds, `-arm` for native arm64). The only GitHub-hosted
+label is `windows-latest-32-arm-core`: Blacksmith has no Windows arm64 runners.
 No workflow runs on Intel macOS. Jobs that only run `docker buildx imagetools`
 (manifest lists, alias promotion) set up buildx with `docker/setup-buildx-action`
 and `driver: docker`, never `useblacksmith/setup-docker-builder`: its no-`cache-key`

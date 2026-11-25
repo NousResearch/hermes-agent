@@ -18,14 +18,16 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 
 _CHILD = r'''
-import asyncio, json, os, sys, threading, time
+import asyncio, json, os, signal, sys, threading, time
 from pathlib import Path
-repo = Path(sys.argv[1])
+repo, stop = Path(sys.argv[1]), sys.argv[2]
 sys.path.insert(0, str(repo))
 import hermes_cli.env_loader as env_loader
 env_loader.load_hermes_dotenv = lambda **_kwargs: []
 from gateway import restart_when_idle, run_bootstrap, run_runtime
 from gateway.config import GatewayConfig
+from gateway.run_shutdown import GatewayShutdownMixin
+from gateway.status import write_planned_stop_marker
 from hermes_constants import get_hermes_home
 from tests.waiting import async_wait_until
 
@@ -59,6 +61,11 @@ async def serve_until_stop(runner):
     await async_wait_until(settled, timeout=60, interval=0.1, what="boot imports to settle")
     recorder.armed = True
     await restart_when_idle.await_idle(runner)
+    GatewayShutdownMixin._restart_watcher_env()  # a detached restart builds its helper's environment
+    if stop == "planned_sigterm":  # the CLI's planned stop: the planned-stop marker, then SIGTERM
+        write_planned_stop_marker(os.getpid())
+        os.kill(os.getpid(), signal.SIGTERM)
+        await runner.wait_for_shutdown()
 
 run_bootstrap._start_gateway_start_cron_and_housekeeping = lambda runner: (
     stopped, None, threading.Thread(target=stopped.wait, daemon=True),
@@ -121,7 +128,8 @@ def test_a_stop_path_module_that_no_longer_imports_is_reported_at_boot(monkeypat
     assert any("gateway.no_such_stop_path_module" in r.getMessage() for r in caplog.records)
 
 
-def test_a_stop_imports_no_repo_module_boot_did_not_load(tmp_path):
+@pytest.mark.parametrize("stop", ["return", pytest.param("planned_sigterm", marks=pytest.mark.platforms("linux", "macos"))])
+def test_a_stop_imports_no_repo_module_boot_did_not_load(tmp_path, stop):
     home = tmp_path / "home"
     home.mkdir()
     (home / "config.yaml").write_text("terminal:\n  backend: local\n", encoding="utf-8")
@@ -131,7 +139,7 @@ def test_a_stop_imports_no_repo_module_boot_did_not_load(tmp_path):
                HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"))
     child = tmp_path / "child.py"
     child.write_text(_CHILD, encoding="utf-8")
-    proc = subprocess.run([sys.executable, str(child), str(REPO)], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
+    proc = subprocess.run([sys.executable, str(child), str(REPO), stop], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
                           capture_output=True, encoding="utf-8", errors="replace", timeout=180, check=False)
     assert proc.returncode == 0, proc.stderr[-3000:]
     result = json.loads(proc.stdout.strip().splitlines()[-1])

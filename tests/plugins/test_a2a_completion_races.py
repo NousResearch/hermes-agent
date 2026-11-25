@@ -10,7 +10,7 @@ import pytest
 from gateway.platforms.event import MessageEvent
 from plugins.platforms.a2a import protocol
 from tests.plugins import test_a2a_completion_lifecycle as lifecycle
-from tests.waiting import async_wait_until, wait_until
+from tests.waiting import wait_until
 
 adapter = lifecycle.adapter
 params = lifecycle.params
@@ -114,14 +114,22 @@ def test_three_same_context_requests_execute_individually(adapter, cancel_index)
                 result = await asyncio.to_thread(adapter._rpc_message_send, 1, arguments, "peer")
                 ids.append(result["result"]["id"])
             await asyncio.wait_for(entered.wait(), 5)
+            watchers = {tid: adapter.tasks.watch(tid) for tid in ids}
+            assert all(future is not None for future in watchers.values())
+            outcomes = {tid: asyncio.wrap_future(future) for tid, future in watchers.items()}
             if cancel_index is not None:
                 adapter._rpc_tasks_cancel(1, {"id": ids[cancel_index]})
             release.set()
-            expected = [tid for i, tid in enumerate(ids) if i != cancel_index]
-            await async_wait_until(lambda: all(adapter.tasks.get(t)["state"] == protocol.STATE_COMPLETED
-                                              for t in expected), timeout=2)
+            _, pending = await asyncio.wait(outcomes.values(), timeout=10)
+            if pending:
+                pytest.fail(f"timed out; seen={seen!r}; pending="
+                            f"{[tid for tid, future in outcomes.items() if future in pending]!r}")
             assert seen == ([ids[0], ids[2]] if cancel_index == 1 else ids)
-            assert [adapter.tasks.get(t)["reply"] for t in expected] == expected
+            assert {tid: future.result() for tid, future in outcomes.items()} == {
+                tid: (protocol.STATE_CANCELED, "") if i == cancel_index
+                else (protocol.STATE_COMPLETED, tid)
+                for i, tid in enumerate(ids)
+            }
         finally:
             release.set()
             await adapter.cancel_background_tasks()

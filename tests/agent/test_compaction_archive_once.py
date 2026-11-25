@@ -125,9 +125,12 @@ def _next_batch(start, n=24, chars=12_000):
     return rows + [{"role": "assistant", "content": f"batch {start} read"}, {"role": "user", "content": f"go on {start}"}]
 
 
-def test_repeated_compactions_list_only_their_own_archives_not_every_earlier_one(home):
-    """The previous handoff's archive list is not re-listed by the next summary: before the fix each
-    compaction appended every path any earlier summary listed, so the summary grew without bound."""
+@pytest.mark.parametrize("stored", [True, False])
+def test_a_stored_handoff_keeps_its_own_list_and_an_unstored_one_carries_it(home, stored):
+    """A stored handoff's archive list stays on its state.db row, so the next summary does not repeat it
+    (before the fix each compaction re-listed every earlier path and the summary grew without bound). With no
+    session store the old summary is the list's only copy, so its paths carry forward instead of vanishing."""
+    from session_rules.turns import _DB_PERSISTED_MARKER
     from tools.tool_result_storage import pruned_archive_refs
     msgs = _transcript()
     c = _compressor()
@@ -137,6 +140,15 @@ def test_repeated_compactions_list_only_their_own_archives_not_every_earlier_one
             msgs = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
         (summary_row,) = [m for m in msgs if m.get(COMPRESSED_SUMMARY_METADATA_KEY)]
         listed = pruned_archive_refs([summary_row])
-        assert listed and not listed & previous, (rnd, sorted(listed & previous)[:3])
+        assert listed and (not listed & previous if stored else previous <= listed), rnd
         previous = listed
+        if stored:
+            summary_row[_DB_PERSISTED_MARKER] = True  # what the commit stamps on the live handoff
         msgs = msgs + _next_batch(rnd + 1)
+
+
+def test_stripping_removes_only_generated_list_blocks_not_a_quoted_heading():
+    from tools.tool_result_storage import ARCHIVE_LIST_HEADING, strip_archive_list
+    block = f"\n\n{ARCHIVE_LIST_HEADING}\n- ~/.hermes/cache/pruned/a.txt\n- ~/.hermes/cache/pruned/b.json"
+    quoted = f'## User said\n"why does {ARCHIVE_LIST_HEADING} keep growing?"\n## Recovery\nread_file the paths'
+    assert strip_archive_list(quoted + block + block) == quoted

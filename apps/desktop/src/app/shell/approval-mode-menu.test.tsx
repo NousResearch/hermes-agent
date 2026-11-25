@@ -41,7 +41,7 @@ function Harness({
 }
 
 describe('approval mode statusbar item', () => {
-  it('scopes the hint to workspaces that declare per-profile approvals and resyncs on return', async () => {
+  it('scopes the hint to workspaces that declare per-profile approvals without extra mode reads', async () => {
     const previousTree = $layoutTree.get()
     const previousGroup = $activeTreeGroup.get()
     const previousHidden = $hiddenTreePanes.get()
@@ -73,7 +73,8 @@ describe('approval mode statusbar item', () => {
       })
       render(<Harness requestGateway={requestGateway} />)
       expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
-      expect(configReads()).toBe(0)
+      // Navigation never re-reads the mode: a read issued mid-write would supersede the write.
+      expect(configReads()).toBe(1)
 
       act(() => $activeTreeGroup.set('side'))
       expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
@@ -88,11 +89,9 @@ describe('approval mode statusbar item', () => {
       act(() => $hiddenTreePanes.set(new Set([room])))
       await waitFor(() => expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy())
       act(() => $hiddenTreePanes.set(new Set()))
-      expect(configReads()).toBe(1)
 
       act(() => $activeTreeGroup.set('chat'))
       await waitFor(() => expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy())
-      await waitFor(() => expect(configReads()).toBe(2))
 
       act(() => {
         $layoutTree.set(layout(room))
@@ -109,7 +108,18 @@ describe('approval mode statusbar item', () => {
         $activeTreeGroup.set('plugin')
       })
       expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy()
-      await waitFor(() => expect(configReads()).toBe(4))
+
+      // A preview covering the remembered chat keeps the chat's menu while a room is visible beside it.
+      const chatBehindPreview = (active: string) =>
+        split('row', [group(['workspace', 'preview'], { active, id: 'chat' }), group([room], { id: 'plugin' })])
+
+      act(() => {
+        $layoutTree.set(chatBehindPreview('workspace'))
+        $activeTreeGroup.set('chat')
+      })
+      act(() => $layoutTree.set(chatBehindPreview('preview')))
+      expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy()
+      expect(configReads()).toBe(1)
     } finally {
       cleanup()
       disposers.forEach(dispose => dispose())

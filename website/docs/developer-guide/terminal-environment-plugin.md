@@ -233,6 +233,29 @@ host path.
 `default_cwd` is read on every command, so keep it cheap (no network calls).
 Relative paths are ignored, because Hermes would anchor them on the host.
 
+## Command-prefix hook (`wrap_argv`)
+
+A plugin that subclasses `LocalEnvironment` can override `wrap_argv` to prepend a
+wrapper to every host process Hermes starts through that environment:
+
+```python
+from tools.environments.local import LocalEnvironment
+
+class SandboxEnvironment(LocalEnvironment):
+    def wrap_argv(self, argv, env, *, purpose):
+        # purpose is "command", "login" or "long_lived"
+        return ["sandbox-exec", "-p", self._profile, *argv]
+```
+
+The hook is called with the final `argv` list and the run environment dict
+before `subprocess.Popen` (or `spawn_owned` for long-lived processes). The
+default implementation is identity; a constructor kwarg `argv_prefix` is also
+available for a fixed prefix without subclassing.
+
+The prefix must **exec in place** (e.g. `sandbox-exec`, `bwrap --exec`):
+process-group kill, PID-reuse guards and `pass_fds` all depend on the PID
+staying the same. On Windows the hook is identity.
+
 ## Bot Desktop and `computer_use`
 
 The screen, `computer_use` and the browser follow the terminal into Docker and

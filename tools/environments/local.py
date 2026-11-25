@@ -14,7 +14,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
@@ -1175,10 +1175,22 @@ class LocalEnvironment(BaseEnvironment):
         declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
         return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True, argv_prefix: Sequence[str] = ()):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
+        self._argv_prefix = tuple(argv_prefix)
         self._secret_handoff = SecretHandoff()
         self.init_session()
+
+    def wrap_argv(self, argv: list[str], env: dict[str, str], *, purpose: str) -> list[str]:
+        """Final argv exec'd on the host.  *purpose* is one of ``"command"``,
+        ``"login"`` or ``"long_lived"``.  The default implementation returns
+        *argv* unchanged; a subclass may prepend a wrapper (e.g.
+        ``sandbox-exec``) that execs in place so PID / process group and
+        ``pass_fds`` all survive.  On Windows the hook is identity.
+        """
+        if self._argv_prefix:
+            return [*self._argv_prefix, *argv]
+        return argv
 
     def _secret_dump_args(self) -> dict:
         """Secret exports leave the snapshot file through a pipe ``_run_bash`` hands the shell and
@@ -1292,7 +1304,11 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        args = self.wrap_argv(
+            [bash, *(["-l"] if login else []), "-c", cmd_string],
+            run_env,
+            purpose="login" if login else "command",
+        )
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
         try:
@@ -1346,9 +1362,11 @@ class LocalEnvironment(BaseEnvironment):
         its group die with Hermes however Hermes dies (``spawn_owned``), stdin/stdout as byte pipes.
         ``_stop_long_lived`` kills the group and releases it."""
         from hermes_cli.process_identity import spawn_owned
+        run_env = _make_run_env({**self.env, **(child_env or {})})
+        wrapped = self.wrap_argv(list(argv), run_env, purpose="long_lived")
         proc = spawn_owned(  # windows-footgun: ok — argv list, no shell; group kill gated on _IS_WINDOWS
-            list(argv), purpose="long-lived environment process",
-            env=_make_run_env({**self.env, **(child_env or {})}), cwd=self.cwd,
+            wrapped, purpose="long-lived environment process",
+            env=run_env, cwd=self.cwd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:

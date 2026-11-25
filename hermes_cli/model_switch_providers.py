@@ -38,26 +38,22 @@ def _save_discovered_models_to_config(
         return
     try:
         from hermes_cli.config import load_config, save_config
-        from hermes_cli.config_providers import _normalize_custom_provider_entry
         cfg = load_config()
-        # (entry written back, legacy-shaped view it is matched by): a providers.<name> entry matches
-        # through the same normalized view the picker probed, so its api/transport/key aliases count.
-        legacy = cfg.get("custom_providers")
-        candidates = [(e, e) for e in legacy if isinstance(e, dict)] if isinstance(legacy, list) else []
-        modern = cfg.get("providers")
-        if isinstance(modern, dict):
-            candidates += [(e, view) for key, e in modern.items() if isinstance(e, dict)
-                           and (view := _normalize_custom_provider_entry(e, provider_key=key)) is not None]
+        legacy, modern = cfg.get("custom_providers"), cfg.get("providers")
+        entries = [*(legacy if isinstance(legacy, list) else []), *(modern.values() if isinstance(modern, dict) else [])]
 
         norm_url = api_url.strip().rstrip("/").lower()
         changed = False
-        for entry, view in candidates:
-            entry_url = (view.get("base_url", "") or view.get("url", "")).strip()
-            if entry_url.rstrip("/").lower() != norm_url or _entry_api_mode(view) != api_mode:
+        for entry in entries:
+            if not isinstance(entry, dict):
                 continue
-            if headers is not None and _extra_headers_from_config(view) != headers:
+            # ``api`` is the providers: spelling of base_url (section 3 reads the same three keys).
+            entry_url = _entry_base_url(entry, ("base_url", "api", "url")).strip()
+            if entry_url.rstrip("/").lower() != norm_url or _entry_api_mode(entry) != api_mode:
                 continue
-            if credential_identity is not None and _entry_credentials(view, "key_env", "api_key_env")[2] != credential_identity:
+            if headers is not None and _extra_headers_from_config(entry) != headers:
+                continue
+            if credential_identity is not None and _entry_credentials(entry, "key_env", "api_key_env")[2] != credential_identity:
                 continue
             if not _discovered_catalog_stale(entry, model_ids):
                 continue
@@ -1024,7 +1020,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         grp["raw_names"].append(display_name)
         grp["aliases"].update(custom_provider_aliases(display_name, str(ep_name)))
 
-    for grp in ep_groups.values():
+    for (_url, cred_identity, api_mode, _headers), grp in ep_groups.items():
         ep_name, display_name, api_url = grp["slug"], grp["name"], grp["api_url"]
         models_list = list(grp["models"])
         # Official OpenAI rows often have base_url but no models: dict — avoid a misleading zero count.
@@ -1034,13 +1030,16 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         ep_url_norm = _norm_url(api_url)
         ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
         is_current = b.endpoint_is_current(ep_name, ep_aliases, ep_url_norm)
-        discovered, native_catalog_empty, _ = b.discover_endpoint(
+        discovered, native_catalog_empty, probe_live = b.discover_endpoint(
             grp["api_key"], api_url,
             ep_name if str(ep_name).strip().lower() in {"ollama", "custom:ollama"} else "custom",
             grp["has_explicit_models"], headers=grp["headers"] or None, api_mode=grp["api_mode"],
             discovery_allowed=grp["discovery_allowed"], is_current=is_current)
         if discovered is not None:
             models_list = discovered
+            if probe_live:  # same as section 4: a successful live probe persists the catalog (#159908)
+                _save_discovered_models_to_config(api_url, discovered, api_mode=api_mode,
+                                                  headers=grp["headers"] or None, credential_identity=cred_identity)
 
         b.add_endpoint_row(ep_name, display_name, api_url, models_list, is_current, native_catalog_empty)
         b.seen_slugs.update(ep_aliases)

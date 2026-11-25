@@ -740,6 +740,26 @@ def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restar
         logger.info("Skipping signal handlers (not running in main thread).")
 
 
+async def _abort_startup_before_runner(runner, _signal_initiated_shutdown: list) -> bool:
+    """Finish an operator stop or restart that arrived while the runtime listener was starting."""
+    import asyncio
+    from gateway.run import _resolve_gateway_exit_verdict, _shutdown_gateway_health_export
+    try:
+        stop_task = getattr(runner, "_stop_task", None)
+        if stop_task is not None and stop_task is not asyncio.current_task():
+            await stop_task
+        elif not runner._shutdown_event.is_set():
+            await runner.stop(
+                restart=getattr(runner, "_restart_requested", False),
+                detached_restart=getattr(runner, "_restart_detached", False),
+                service_restart=getattr(runner, "_restart_via_service", False),
+            )
+        await runner.wait_for_shutdown()
+        return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
+    finally:
+        _shutdown_gateway_health_export(runner)
+
+
 async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
     """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
     before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
@@ -959,8 +979,10 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         # Now the attach channel answers: republish the host record with the settled served set.
         _refresh_host_gateway_record(runner)
         _log_standalone_profiles_at_boot(runner)
-        from gateway.run_runtime import start_gateway_runtime_api
+        from gateway.run_runtime import is_runner_stopping, start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
+        if is_runner_stopping(runner):
+            return await _abort_startup_before_runner(runner, _signal_initiated_shutdown)
         from gateway.run_api import await_session_socket_preload, preload_session_socket
         ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
 

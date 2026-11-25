@@ -615,14 +615,58 @@ def _webapp_address_wait_seconds() -> float:
     return max(0.0, seconds)
 
 
+def is_runner_stopping(runner) -> bool:
+    """Whether shutdown, drain or restart has started for *runner* during startup."""
+    should_abort = getattr(runner, "_startup_should_abort", None)
+    if callable(should_abort) and should_abort():
+        return True
+    if getattr(runner, "_stop_task", None) is not None:
+        return True
+    if (getattr(runner, "_draining", False)
+            or getattr(runner, "_restart_requested", False)
+            or getattr(runner, "_stop_requested_by_signal", False)
+            or getattr(runner, "_planned_takeover_shutdown", False)):
+        return True
+    shutdown_event = getattr(runner, "_shutdown_event", None)
+    return bool(isinstance(shutdown_event, asyncio.Event) and shutdown_event.is_set())
+
+
+async def _wait_for_address_retry(runner, delay: float) -> None:
+    """Sleep up to *delay* seconds for the address to appear, waking at once on shutdown."""
+    shutdown_event = getattr(runner, "_shutdown_event", None)
+    if isinstance(shutdown_event, asyncio.Event):
+        if shutdown_event.is_set():
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
+        return
+    await asyncio.sleep(delay)
+
+
+async def _close_listener_if_stopping(run_api, runner, handle) -> bool:
+    """Close a freshly started listener if shutdown began while it was binding; True when closed."""
+    if not is_runner_stopping(runner):
+        return False
+    stop_api = getattr(run_api, "stop_gateway_api", None)
+    if callable(stop_api):
+        await stop_api(handle)
+    return True
+
+
 async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port, webapp):
-    """Start the gateway's listener, waiting out an address an interface has not been given yet.
+    """Start the gateway's listener, waiting out a specific ``webapp.host`` an interface has not been given yet.
 
     A failed start leaves nothing behind (``start_gateway_api`` closes its listener and clears its
-    runner), so retrying is safe. Only EADDRNOTAVAIL is retried: a busy port, a refused bind and the
-    loopback companion's own failure (``ListenerAddressError``) are reported at once, as before.
+    runner), so retrying is safe. Only EADDRNOTAVAIL on an enabled Webapp with a specific
+    non-loopback, non-wildcard address is retried: loopback/wildcard binds, a private listener,
+    a busy port, a refused bind and the loopback companion's own failure (``ListenerAddressError``)
+    are reported at once, as before. Returns ``None`` when shutdown or restart starts before the
+    listener is published.
     """
-    deadline = time.monotonic() + _webapp_address_wait_seconds()
+    from gateway.webapp_listener import loopback_companion
+
+    wait_for_address = webapp is not None and bool(loopback_companion(host))
+    deadline = (time.monotonic() + _webapp_address_wait_seconds()) if wait_for_address else 0.0
     warned = False
 
     async def _start():
@@ -631,19 +675,27 @@ async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port,
                       if webapp is not None else run_api.start_gateway_api(runner))
 
     while True:
+        if is_runner_stopping(runner):
+            return None
         try:
-            return await _start()
+            handle = await _start()
         except run_api.ListenerAddressError:
             raise  # the loopback socket beside a specific address: its address does not appear later
         except OSError as exc:
+            if is_runner_stopping(runner):
+                return None
             remaining = deadline - time.monotonic()
-            if exc.errno != errno.EADDRNOTAVAIL or remaining <= 0:
+            if not wait_for_address or exc.errno != errno.EADDRNOTAVAIL or remaining <= 0:
                 raise
             if not warned:
                 logger.warning("Webapp: %s is not assigned to any interface yet; retrying for up to %.0fs",
                                host, remaining)
                 warned = True
-            await asyncio.sleep(min(_WEBAPP_ADDRESS_POLL_SECONDS, remaining))
+            await _wait_for_address_retry(runner, min(_WEBAPP_ADDRESS_POLL_SECONDS, remaining))
+        else:
+            if await _close_listener_if_stopping(run_api, runner, handle):
+                return None
+            return handle
 
 
 async def start_gateway_runtime_api(runner):
@@ -664,9 +716,12 @@ async def start_gateway_runtime_api(runner):
                             else dict(STARTING))
     try:
         # Without the Webapp the listener is main's: the same call, a private ephemeral port.
-        runner.session_api = await _start_gateway_api_waiting_for_address(
+        handle = await _start_gateway_api_waiting_for_address(
             run_api, runner, host=host, port=port, webapp=webapp)
     except (Exception, SystemExit) as exc:
+        if is_runner_stopping(runner):
+            runner.session_api = None
+            return
         if webapp is None:
             raise
         # The Webapp's listener could not start (port taken, address unavailable, its browser credential
@@ -700,8 +755,16 @@ async def start_gateway_runtime_api(runner):
             browser_session_token(home, rotate=True)
         except OSError as write_error:
             logger.warning("Could not replace the Webapp's browser credential: %s", write_error)
-        runner.session_api = await run_api.start_gateway_api(runner)
+        fallback = await run_api.start_gateway_api(runner)
+        if await _close_listener_if_stopping(run_api, runner, fallback):
+            runner.session_api = None
+            return
+        runner.session_api = fallback
     else:
+        if handle is None:
+            runner.session_api = None
+            return
+        runner.session_api = handle
         if webapp is not None:
             runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
             if own := bind_origin(host, port):  # a specific address: the one a browser opens

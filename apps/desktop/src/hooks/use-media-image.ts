@@ -1,8 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useComposerScope } from '@/app/chat/composer/scope'
 import {
+  gatewayImageProxyDataUrl,
   getMediaImageDimensions,
   isInlineMediaSrc,
   isKnownBrokenMediaImage,
@@ -79,6 +80,33 @@ export function useMediaImage(
     setState(inheritsPendingFrame ? { ...next, frameStyle: state.frameStyle } : next)
   }
 
+  // One proxy retry per inline https source (#74564): when the direct load
+  // fails (client blocked from the image CDN), ask the gateway — which
+  // generated the image and can reach the CDN — to fetch the bytes through
+  // its authenticated /api/media/proxy. Latched so a failing proxy data URL
+  // (itself a data: src, which cannot fail with onError again) and a remount
+  // never loop: the failed direct load is remembered via the broken-key
+  // mechanism instead.
+  const proxyRetriedRef = useRef(false)
+
+  const retryThroughGatewayProxy = () => {
+    if (proxyRetriedRef.current || !path || !isInlineMediaSrc(path) || !/^https?:/i.test(path)) {
+      return
+    }
+
+    proxyRetriedRef.current = true
+
+    void gatewayImageProxyDataUrl(path, owner).then(dataUrl => {
+      if (dataUrl) {
+        setState(current =>
+          current.key === key && current.failed && !current.loaded
+            ? { ...current, src: dataUrl, failed: false }
+            : current
+        )
+      }
+    })
+  }
+
   useEffect(() => {
     let cancelled = false
 
@@ -107,15 +135,20 @@ export function useMediaImage(
     }
   }, [key, path, owner])
 
+  const onLoad = (image: HTMLImageElement) => {
+    rememberMediaImageDimensions(key, image.naturalWidth, image.naturalHeight)
+    setState(current => ({ ...current, loaded: true }))
+  }
+
+  const onError = () => {
+    rememberMediaImageFailure(key)
+    setState(current => ({ ...current, failed: true, loaded: false }))
+    retryThroughGatewayProxy()
+  }
+
   return {
     ...state,
-    onLoad: (image: HTMLImageElement) => {
-      rememberMediaImageDimensions(key, image.naturalWidth, image.naturalHeight)
-      setState(current => ({ ...current, loaded: true }))
-    },
-    onError: () => {
-      rememberMediaImageFailure(key)
-      setState(current => ({ ...current, failed: true, loaded: false }))
-    }
+    onLoad,
+    onError
   }
 }

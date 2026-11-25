@@ -108,3 +108,14 @@ def test_callback_failure_is_reported():
 
     result = json.loads(ap.drive_preview_tool(action="elements", callback=_boom))
     assert "renderer went away" in result["error"]
+
+
+def test_empty_answer_distinguishes_no_tab_from_a_stale_app():
+    """An empty bridge answer used to be one merged "timed out, or no window
+    answered" string that blamed a closed tab even when the pane was open on an
+    app older than this backend (#94272): the two cases need different next
+    steps (open a tab vs update the app)."""
+    result = json.loads(ap.drive_preview_tool(action="elements", callback=lambda _p: ""))
+
+    assert "no preview tab is open" in result["error"]
+    assert "older than this backend" in result["error"]

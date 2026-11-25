@@ -1,0 +1,44 @@
+name: hermes-wallet
+title: Hermes Wallet by CoinFello
+repo: https://github.com/CoinFello/hermes-wallet
+sha: 064bbb66ce281aa950bf5c7922949b53dd537c1e
+version: "0.3.3"
+description: "All of DeFi. One conversation. Hermes Wallet by CoinFello makes your agent the only DeFi interface you need: swap, bridge, lend, LP, trade perps, farm yield and automate strategy from your own CoinFello wallet. Fello, CoinFello's DeFi agent, plans and stages each step, and nothing runs until you approve your agent's transaction summary in Hermes, inside a daily spending limit CoinFello enforces. The wallet pane covers portfolio, activity, swap, send, earn, strategies and settings. Built by jacobc.eth, former Lead Managing Director at MetaMask. Sign-in is the plugin's oauth: entry (hermes auth add coinfello:coinfello, OAuth 2.1 + PKCE against app.coinfello.com); Hermes stores and refreshes the grant and the plugin never holds a token. Disclosure — crypto wallet: the agent can move funds from your CoinFello automation wallet (keys held and signing done by CoinFello's server) within the daily limit you approve on CoinFello; coinfello_execute and every coinfello_chat message go through Hermes' approval prompt, and Fello can carry out on-chain actions from an approved chat message. Talks to app.coinfello.com (which records a daily activity event per session with your account id and wallet address), LI.FI's status API (li.quest), public chain RPCs (publicnode.com and others) for swap-venue lookup, static.cx.metamask.io for token icons and Google Fonts in cards; stores non-secret wallet/card state under the Hermes home and the plugin directory; the open Desktop pane polls status and balances."
+maintainer: CoinFello
+tier: community
+category: tools
+docs_url: https://github.com/CoinFello/hermes-wallet#readme
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/pane-home.png
+  - https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/pane-activity.png
+  - https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/pane-settings.png
+capabilities:
+  provides_tools:
+    - coinfello_status
+    - coinfello_connect
+    - coinfello_set_daily_limit
+    - coinfello_limit_status
+    - coinfello_disconnect
+    - coinfello_chat
+    - coinfello_job_status
+    - coinfello_balances
+    - coinfello_positions
+    - coinfello_lp_positions
+    - coinfello_open_orders
+    - coinfello_activity
+    - coinfello_quote
+    - coinfello_prepare_swap
+    - coinfello_prepare_send
+    - coinfello_execute
+    - coinfello_transfer_status
+    - coinfello_yields
+    - coinfello_prices
+    - coinfello_show_card
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

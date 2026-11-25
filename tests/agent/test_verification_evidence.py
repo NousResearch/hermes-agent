@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,7 @@ from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
+    record_verify_run,
     verification_status,
 )
 
@@ -88,6 +89,155 @@ def test_shell_wrappers_match_but_echo_does_not(tmp_path, monkeypatch):
     assert wrapped.canonical_command == "scripts/run_tests.sh"
     assert wrapped.scope == "targeted"
     assert echoed is None
+
+
+@pytest.mark.parametrize("pipeline_status, expected", [([0, 0], "passed"), ([1, 0], "failed")])
+def test_piped_verifier_uses_its_own_pipeline_status(tmp_path, monkeypatch, pipeline_status, expected):
+    """``pytest | tail`` exits with tail's status; PIPESTATUS carries pytest's own."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    evidence = classify_verification_command(
+        "pytest -q 2>&1 | tail -20", cwd=tmp_path, session_id="s1",
+        exit_code=0, output="12 passed", pipeline_status=pipeline_status,
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "pytest"
+    assert evidence.status == expected
+
+
+def test_piped_verifier_without_pipeline_status_is_not_evidence(tmp_path, monkeypatch):
+    """Without PIPESTATUS the shell's code belongs to the filter, so nothing is proven."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    assert classify_verification_command(
+        "pytest -q 2>&1 | tail -20", cwd=tmp_path, session_id="s1", exit_code=0,
+    ) is None
+
+
+@pytest.mark.parametrize("command, exit_code, pipeline_status, expected", [
+    ("true | false && pytest -q | tail -5", 1, [0, 1], None),
+    ("cd . && pytest -q | tail -5", 0, [1, 0], "failed"),
+])
+def test_piped_verifier_behind_and_counts_only_when_the_chain_ran(
+    tmp_path, monkeypatch, command, exit_code, pipeline_status, expected,
+):
+    """A short-circuited ``&&`` skips the verifier and leaves an earlier pipeline's PIPESTATUS."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    evidence = classify_verification_command(
+        command, cwd=tmp_path, session_id="s1", exit_code=exit_code, pipeline_status=pipeline_status,
+    )
+
+    assert (evidence and evidence.status) == expected
+
+
+@pytest.mark.parametrize("pipeline_status", [[0], [1]])
+def test_piped_verifier_with_single_pipeline_status_is_not_evidence(
+    tmp_path, monkeypatch, pipeline_status,
+):
+    """A one-element PIPESTATUS belongs to a compound command (``!``, ``if``), not a pipe."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    assert classify_verification_command(
+        "pytest -q 2>&1 | tail -20", cwd=tmp_path, session_id="s1",
+        exit_code=0, pipeline_status=pipeline_status,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "./venv/bin/python -m pytest tests/test_widget.py -q",
+        "venv/bin/python3 -m pytest tests/test_widget.py -q",
+        "/opt/venv/bin/python3.12 -m pytest tests/test_widget.py -q",
+        ".venv/bin/python -I -B -m pytest -o pythonpath=.",
+        "/usr/bin/python3.12 -u -m pytest tests/test_widget.py -q",
+        "python -W ignore -X dev -m pytest tests/test_widget.py -q",
+        "py -3.11 -m pytest tests/test_widget.py -q",
+    ],
+)
+def test_venv_interpreter_path_matches_detected_pytest(tmp_path, monkeypatch, command):
+    """A venv interpreter path is the same ``pytest`` run: the agent's usual spelling."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    evidence = classify_verification_command(
+        command, cwd=tmp_path, session_id="s1", exit_code=0, output="12 passed",
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "pytest"
+    assert evidence.status == "passed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python --version -m pytest",
+        "python -c pass -m pytest",
+        "python -h -m pytest",
+    ],
+)
+def test_interpreter_flag_that_skips_the_module_is_not_evidence(tmp_path, monkeypatch, command):
+    """A flag that exits before ``-m`` runs cannot produce passing evidence."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    assert classify_verification_command(
+        command, cwd=tmp_path, session_id="s1", exit_code=0,
+    ) is None
+
+
+def test_dot_slash_script_invocation_matches_detected_script(tmp_path, monkeypatch):
+    """``./scripts/run_tests.sh`` is the detected command run the obvious way."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    evidence = classify_verification_command(
+        "./scripts/run_tests.sh", cwd=tmp_path, session_id="s1", exit_code=0,
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "scripts/run_tests.sh"
+
+
+@pytest.mark.parametrize("command", [
+    "bash -s scripts/run_tests.sh", "sh -s scripts/run_tests.sh",
+    "nice --help scripts/run_tests.sh", "timeout --help 300 scripts/run_tests.sh",
+    "nohup --version scripts/run_tests.sh", "stdbuf --help scripts/run_tests.sh",
+])
+def test_flag_that_skips_the_script_is_not_evidence(tmp_path, monkeypatch, command):
+    """``bash -s`` reads stdin and ``--help`` exits 0: the script named after it never runs."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    assert classify_verification_command(
+        command, cwd=tmp_path, session_id="s1", exit_code=0,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["timeout 300 pytest -q", "nice -n 5 pytest -q", "timeout 5m pytest -q", "timeout -s KILL 300 pytest -q",
+     "timeout --signal=KILL -k 10 5m pytest -q", "stdbuf -oL nohup pytest -q"],
+)
+def test_status_preserving_wrapper_still_attributes_the_run(tmp_path, monkeypatch, command):
+    """``timeout``/``nice`` return the child's status, so the run proves the verifier's."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    evidence = classify_verification_command(
+        command, cwd=tmp_path, session_id="s1", exit_code=0,
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "pytest"
+    assert evidence.status == "passed"
 
 
 @pytest.mark.parametrize(
@@ -346,6 +496,63 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
 
 
 
+def test_workspace_verify_clears_stale_on_other_session(tmp_path, monkeypatch):
+    """A hermes verify pass is a property of the workspace, not the session
+    that ran the CLI (#103271)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    changed = str(tmp_path / "changed.py")
+    mark_workspace_edited(session_id="s-edit", cwd=tmp_path, paths=[changed])
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] == "unverified"
+
+    event = record_verify_run(root=tmp_path, session_id="default", ok=True, output="all green")
+    assert event is not None
+    status = verification_status(session_id="s-edit", cwd=tmp_path)
+    assert status["status"] == "passed"
+    assert status["evidence"]["canonical_command"] == "hermes verify"
+
+
+def test_targeted_partial_verify_does_not_clear_other_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    record_verify_run(root=tmp_path, session_id="s-edit", ok=True)
+    mark_workspace_edited(session_id="s-edit", cwd=tmp_path, paths=[str(tmp_path / "a.py")])
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] == "stale"
+
+    record_verify_run(root=tmp_path, session_id=None, ok=True, scope="targeted")
+
+    status = verification_status(session_id="s-edit", cwd=tmp_path)
+    assert status["status"] == "stale"
+
+
+def test_failed_verify_does_not_erase_other_session_edit_record(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _python_project(tmp_path)
+    mark_workspace_edited(session_id="s-edit", cwd=tmp_path, paths=[str(tmp_path / "a.py")])
+
+    record_verify_run(root=tmp_path, session_id=None, ok=False)
+
+    row = sqlite3.connect(home / "verification_evidence.db").execute(
+        "SELECT last_edit_at, changed_paths_json FROM verification_state WHERE session_id='s-edit'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is not None
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] != "passed"
+
+
+def test_older_workspace_verify_does_not_clear_later_edit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    record_verify_run(root=tmp_path, session_id="default", ok=True, output="old pass")
+    mark_workspace_edited(
+        session_id="s-edit",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "changed.py")],
+    )
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] == "unverified"
+
+
 def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -356,7 +563,7 @@ def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
         cwd=tmp_path,
         paths=[str(tmp_path / "src" / "app.ts")],
     )
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=31)).isoformat()
     with sqlite3.connect(home / "verification_evidence.db") as conn:
         conn.execute("UPDATE verification_state SET last_edit_at = ?", (cutoff,))
         conn.commit()

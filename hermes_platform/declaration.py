@@ -7,20 +7,23 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional
 
-from hermes_platform.resolver.app import AppDef
+from hermes_platform.resolver.app import LOCATION_KINDS, AppDef, AppLocation
 
 __all__ = [
+    "KEY_NAME_RE",
     "AppSpec",
-    "RequiresSpec",
     "Declaration",
     "DeclarationError",
+    "RequiresSpec",
+    "clear",
+    "gpu_label",
+    "location_is_rooted",
+    "lookup",
     "parse_app",
-    "parse_requires",
     "parse_declaration",
+    "parse_requires",
     "register",
     "unregister",
-    "lookup",
-    "clear",
 ]
 
 
@@ -44,6 +47,7 @@ class RequiresSpec:
 
     app: bool = False
     min_version: Optional[str] = None
+    gpu: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,10 @@ class Declaration:
     def min_version(self) -> Optional[str]:
         return self.requires.min_version
 
+    @property
+    def required_gpu(self) -> Optional[str]:
+        return self.requires.gpu
+
     def app_for(self, os_family: str) -> Optional[AppDef]:
         return self.app.for_os(os_family) if self.app else None
 
@@ -71,6 +79,21 @@ _APP_PRESENCE = ("executable", "bundle")
 _APP_VERSION_KINDS = {"pe_resource": "win32", "uninstall_registry": "win32", "plist": "darwin", "none": None}
 _APP_LIVENESS_KINDS = ("server_json", "none")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
+# A manifest endpoint_path is concatenated onto "http://<loopback>:<port>" and re-parsed:
+# only a plain path is safe -- no '@' userinfo, '?'/'#' fragments, whitespace, or schemes.
+ENDPOINT_PATH_RE = re.compile(r"/[A-Za-z0-9._~/-]*")
+# server-json keys are looked up verbatim in a file the manifest names; keep them
+# identifier-shaped so a manifest can't smuggle lookups outside flat json keys.
+KEY_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
+# `requires.gpu` values and how a sentence names them. Only NVIDIA: `facts.gpu_class()` reports the
+# highest-priority vendor present, which answers "is an NVIDIA GPU here" exactly and would not answer
+# it for AMD or Intel on a machine that also has an NVIDIA GPU.
+GPU_LABELS = {"nvidia": "an NVIDIA GPU"}
+
+
+def gpu_label(gpu: Optional[str]) -> str:
+    """How a user-facing sentence names a ``requires.gpu`` value."""
+    return GPU_LABELS.get(gpu or "", "a supported GPU")
 
 
 def _require_mapping(where: str, key: str, raw: Any) -> dict:
@@ -79,7 +102,7 @@ def _require_mapping(where: str, key: str, raw: Any) -> dict:
     return raw
 
 
-def _location_is_rooted(location: str, osf: str) -> bool:
+def location_is_rooted(location: str, osf: str) -> bool:
     if ".." in location.replace("\\", "/").split("/") or "://" in location:
         return False
     if location.startswith(("~", "%", "$")):
@@ -89,17 +112,56 @@ def _location_is_rooted(location: str, osf: str) -> bool:
     return location.startswith("/")
 
 
+def _is_relative_name(value: Any, *, allow_dirs: bool) -> bool:
+    """Checks the stripped value, the one later joined: an empty part rejects a leading / or \\, a colon rejects a drive."""
+    if not isinstance(value, str) or not value.strip() or "://" in value:
+        return False
+    parts = value.strip().replace("\\", "/").split("/")
+    return ".." not in parts and "" not in parts and (allow_dirs or len(parts) == 1) and ":" not in parts[0]
+
+
+def _parse_location(where: str, osf: str, presence: str, label: str, raw: Any) -> AppLocation:
+    """A string is a path, where `*` may stand for a versioned folder; a mapping names a location kind."""
+    if isinstance(raw, str):
+        path = raw.strip()
+        if not path:
+            raise DeclarationError(f"{where}: {label} is required")
+        if not location_is_rooted(path, osf) or "**" in path:
+            raise DeclarationError(
+                f"{where}: {label} must be absolute or start with ~ / %VAR% / $VAR, without '..', '**' or a URL scheme")
+        return AppLocation("path", path)
+    if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str) or raw["kind"] not in LOCATION_KINDS:
+        raise DeclarationError(f"{where}: {label} must be a path or a mapping with kind one of {sorted(LOCATION_KINDS)}")
+    kind = raw["kind"]
+    spec = LOCATION_KINDS[kind]
+    if spec.only_on and spec.only_on != osf:
+        raise DeclarationError(f"{where}: {label} kind {kind!r} is only valid under app.{spec.only_on}")
+    if spec.yields != presence:
+        raise DeclarationError(f"{where}: {label} kind {kind!r} needs app.{osf}.presence {spec.yields}")
+    value = raw.get(spec.key)
+    if not _is_relative_name(value, allow_dirs=False):
+        raise DeclarationError(f"{where}: {label}.{spec.key} must be a bare name")
+    file = raw.get("file", "")
+    if spec.needs_file and not _is_relative_name(file, allow_dirs=True):
+        raise DeclarationError(f"{where}: {label}.file must be a relative path inside the install folder")
+    return AppLocation(kind, value.strip(), str(file).strip())
+
+
 def _parse_app_os(where: str, name: str, osf: str, raw: Any) -> AppDef:
     _require_mapping(where, f"app.{osf}", raw)
     presence = raw.get("presence")
     if presence not in _APP_PRESENCE:
         raise DeclarationError(f"{where}: app.{osf}.presence must be one of {_APP_PRESENCE}")
     location = raw.get("location")
-    if not isinstance(location, str) or not location.strip():
+    if isinstance(location, list):
+        if not location:
+            raise DeclarationError(f"{where}: app.{osf}.location is required")
+        locations = tuple(_parse_location(where, osf, presence, f"app.{osf}.location[{i}]", item)
+                          for i, item in enumerate(location))
+    elif isinstance(location, str):
+        locations = (_parse_location(where, osf, presence, f"app.{osf}.location", location),)
+    else:
         raise DeclarationError(f"{where}: app.{osf}.location is required")
-    if not _location_is_rooted(location.strip(), osf):
-        raise DeclarationError(
-            f"{where}: app.{osf}.location must be absolute or start with ~ / %VAR% / $VAR, without '..' or a URL scheme")
     version = raw.get("version") or {"kind": "none"}
     _require_mapping(where, f"app.{osf}.version", version)
     vkind = version.get("kind", "none")
@@ -117,16 +179,33 @@ def _parse_app_os(where: str, name: str, osf: str, raw: Any) -> AppDef:
     if lkind not in _APP_LIVENESS_KINDS:
         raise DeclarationError(f"{where}: app.{osf}.liveness.kind must be one of {_APP_LIVENESS_KINDS}")
     lpath = str(liveness.get("path") or "")
-    if lkind == "server_json" and not lpath:
-        raise DeclarationError(f"{where}: app.{osf}.liveness.path is required for server_json")
+    if lkind == "server_json":
+        if not lpath:
+            raise DeclarationError(f"{where}: app.{osf}.liveness.path is required for server_json")
+        if not location_is_rooted(lpath.strip(), osf):
+            raise DeclarationError(
+                f"{where}: app.{osf}.liveness.path must be absolute or start with ~ / %VAR% / $VAR,"
+                " without '..' or a URL scheme")
+    # The resolver re-checks loopback at dial time too, but a hostile tail rejected here
+    # never reaches it. '..' segments cannot move the URL authority but are rejected for
+    # consistency with location_is_rooted.
+    epath = str(liveness.get("endpoint_path") or "/mcp")
+    if not ENDPOINT_PATH_RE.fullmatch(epath) or ".." in epath.split("/"):
+        raise DeclarationError(
+            f"{where}: app.{osf}.liveness.endpoint_path must be a plain path starting with '/' "
+            "(no userinfo, query, scheme, or whitespace)")
+    for key_name in ("pid_key", "url_key", "token_key"):
+        key_val = str(liveness.get(key_name) or "")
+        if key_val and not KEY_NAME_RE.fullmatch(key_val):
+            raise DeclarationError(f"{where}: app.{osf}.liveness.{key_name} must be a simple key name")
     return AppDef(
-        app_id=name, os_family=osf, presence=presence, location=location.strip(),
+        app_id=name, os_family=osf, presence=presence, locations=locations,
         version_kind=vkind, version_arg=varg,
-        liveness_kind=lkind, liveness_path=lpath,
+        liveness_kind=lkind, liveness_path=lpath.strip(),
         liveness_pid_key=str(liveness.get("pid_key") or "pid"),
         liveness_url_key=str(liveness.get("url_key") or "http"),
         liveness_token_key=str(liveness.get("token_key") or "token"),
-        endpoint_path=str(liveness.get("endpoint_path") or "/mcp"),
+        endpoint_path=epath,
     )
 
 
@@ -148,9 +227,12 @@ def parse_requires(raw: Any, app: Optional[AppSpec], *, where: str) -> RequiresS
     if raw is None:
         return RequiresSpec()
     _require_mapping(where, "requires", raw)
-    unknown = set(raw) - {"app", "min_version"}
+    unknown = set(raw) - {"app", "min_version", "gpu"}
     if unknown:
         raise DeclarationError(f"{where}: requires has unknown keys {sorted(unknown)}")
+    gpu = raw.get("gpu")
+    if gpu is not None and (not isinstance(gpu, str) or gpu not in GPU_LABELS):
+        raise DeclarationError(f"{where}: requires.gpu must be one of {sorted(GPU_LABELS)}")
     needs_app = raw.get("app", False)
     if not isinstance(needs_app, bool):
         raise DeclarationError(f"{where}: requires.app must be a boolean")
@@ -163,11 +245,14 @@ def parse_requires(raw: Any, app: Optional[AppSpec], *, where: str) -> RequiresS
         if not needs_app:
             raise DeclarationError(f"{where}: requires.min_version needs requires.app: true")
         assert app is not None
-        unversioned = sorted(osf for osf, d in app.per_os.items() if d.version_kind == "none")
+        # Linux has no version source, so a Linux block is gated on presence only; Windows and macOS must read
+        # one, and a Linux-only declaration has nothing to compare.
+        unversioned = [osf for osf in sorted(app.per_os) if app.per_os[osf].version_kind == "none"
+                       and (osf != "linux" or len(app.per_os) == 1)]
         if unversioned:
             raise DeclarationError(
                 f"{where}: requires.min_version needs a version source under app.{unversioned[0]} (kind is none)")
-    return RequiresSpec(app=needs_app, min_version=min_version)
+    return RequiresSpec(app=needs_app, min_version=min_version, gpu=gpu)
 
 
 def parse_declaration(name: str, raw_app: Any, raw_requires: Any, *, where: str) -> Declaration:
@@ -176,7 +261,7 @@ def parse_declaration(name: str, raw_app: Any, raw_requires: Any, *, where: str)
     return Declaration(name=name, app=app, requires=parse_requires(raw_requires, app, where=where))
 
 
-_REGISTRY: Dict[str, Declaration] = {}
+_REGISTRY: dict[str, Declaration] = {}
 _REGISTRY_LOCK = threading.Lock()
 on_change: Optional[Callable[[], None]] = None
 

@@ -1,37 +1,43 @@
-import { PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, sortCatalogPlugins } from '@hermes/shared'
+import { sortCatalogPlugins } from '@hermes/shared'
 
+import { PLUGIN_TIER_ORDER, pluginTier } from './catalog-curation'
 import type { CatalogEntry, CatalogKind } from './catalog-data'
 import type { FacetRow } from './catalog-filters'
 
-export type CatalogSort = 'discover' | 'stars' | 'newest' | 'updated' | 'name'
+export type CatalogSort = 'discover' | 'usage' | 'stars' | 'newest' | 'updated' | 'name'
 
 export interface CatalogFacets {
   sources: string[]
   categories: string[]
   tags: string[]
   installedOnly: boolean
+  updatesOnly: boolean
 }
 
-export const EMPTY_FACETS: CatalogFacets = { sources: [], categories: [], tags: [], installedOnly: false }
+export const EMPTY_FACETS: CatalogFacets = { sources: [], categories: [], tags: [], installedOnly: false, updatesOnly: false }
 
-export const catalogSources = (entries: CatalogEntry[]) => [...new Set(entries.map(entry => entry.source))]
+/** Facet value an entry files under: the normalized tier for plugins, the registry for skills. */
+export const facetSource = (entry: CatalogEntry, kind: CatalogKind) => (kind === 'plugins' ? pluginTier(entry) : entry.source)
 
-/** Category facet rows with counts; plugins follow the shared taxonomy order. */
-export function catalogCategories(entries: CatalogEntry[], kind: CatalogKind) {
+/** Source facet rows; for plugins, the tiers present, in trust order. */
+export function catalogSources(entries: CatalogEntry[], kind: CatalogKind) {
+  const present = new Set(entries.map(entry => facetSource(entry, kind)))
+
+  return kind === 'plugins' ? PLUGIN_TIER_ORDER.filter(tier => present.has(tier)) : [...present]
+}
+
+/** Category facet rows with counts, A–Z with "Other" last. */
+export function catalogCategories(entries: CatalogEntry[]) {
   const values = new Map<string, { label: string; count: number }>()
 
   for (const entry of entries) {
     values.set(entry.category, { label: entry.categoryLabel, count: (values.get(entry.category)?.count ?? 0) + 1 })
   }
 
-  if (kind === 'plugins') {
-    return PLUGIN_CATEGORY_ORDER.filter(key => values.has(key)).map(
-      key => [key, { ...values.get(key)!, label: PLUGIN_CATEGORIES[key].label }] as const
-    )
-  }
-
-  return [...values].sort((a, b) => b[1].count - a[1].count)
+  return [...values].sort((a, b) => categoryRank(a) - categoryRank(b) || a[1].label.localeCompare(b[1].label))
 }
+
+const categoryRank = (row: [string, { label: string }]) => (row[0] === 'other' || row[1].label.toLowerCase() === 'other' ? 1 : 0)
 
 /** The most common tags plus whatever is selected; search covers the long tail. */
 export function catalogTags(entries: CatalogEntry[], selected: string[], limit: number): FacetRow[] {
@@ -54,16 +60,18 @@ export function filterCatalog(
   entries: CatalogEntry[],
   facets: CatalogFacets,
   query: string,
-  isInstalled: (entry: CatalogEntry) => boolean
+  isInstalled: (entry: CatalogEntry) => boolean,
+  kind: CatalogKind
 ) {
-  const { sources, categories, tags, installedOnly } = facets
+  const { sources, categories, tags, installedOnly, updatesOnly } = facets
 
   return entries.filter(
     entry =>
-      (!sources.length || sources.includes(entry.source)) &&
+      (!sources.length || sources.includes(facetSource(entry, kind))) &&
       (!categories.length || categories.includes(entry.category)) &&
       (!tags.length || tags.some(tag => entry.tags.includes(tag))) &&
       (!installedOnly || isInstalled(entry)) &&
+      (!updatesOnly || Boolean(entry.updateAvailable)) &&
       (!query || entry.search.includes(query))
   )
 }
@@ -74,8 +82,12 @@ export function sortCatalog(entries: CatalogEntry[], sort: CatalogSort, kind: Ca
     return entries
   }
 
-  if (kind === 'plugins' && sort !== 'name') {
+  if (kind === 'plugins' && sort !== 'name' && sort !== 'usage') {
     return sortCatalogPlugins(entries, sort)
+  }
+
+  if (sort === 'usage') {
+    return [...entries].sort((a, b) => (b.usage ?? -1) - (a.usage ?? -1) || a.name.localeCompare(b.name))
   }
 
   if (sort === 'name') {
@@ -115,6 +127,7 @@ export function relatedEntries(entries: CatalogEntry[], entry: CatalogEntry, lim
 export function catalogSortOptions(entries: CatalogEntry[], kind: CatalogKind, labels: Record<CatalogSort, string>) {
   const available: Record<CatalogSort, boolean> = {
     discover: kind === 'skills',
+    usage: entries.some(entry => (entry.usage ?? 0) > 0),
     stars: entries.some(entry => entry.stars !== null),
     newest: entries.some(entry => entry.addedAt),
     updated: entries.some(entry => entry.updatedAt),

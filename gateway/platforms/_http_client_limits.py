@@ -5,7 +5,8 @@ httpx's default ``keepalive_expiry`` (5s) lets peer-initiated FIN sit in
 adapters plus LLM/MCP clients that walks into the default 256 fd limit.
 ``platform_httpx_limits()`` returns tighter ``httpx.Limits``: 10 keepalive
 connections (platform APIs rarely parallelise beyond this), 2.0s expiry.
-Override via ``HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY`` / ``HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE``.
+Override via ``HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY`` / ``HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE``;
+``HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE=0`` disables keepalive (httpx keeps no idle connections).
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ _DEFAULT_KEEPALIVE_EXPIRY_S = 2.0
 _DEFAULT_MAX_KEEPALIVE = 10
 
 
-def _positive_env(name: str, default, cast):
-    """``cast(env)`` when set, parseable and > 0; else *default*."""
+def _positive_env(name: str, default, cast, *, allow_zero: bool = False):
+    """``cast(env)`` when set, parseable and > 0 (>= 0 with *allow_zero*); else *default*."""
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -31,17 +32,17 @@ def _positive_env(name: str, default, cast):
         val = cast(raw)
     except (TypeError, ValueError):
         return default
-    return val if val > 0 else default
+    return val if val > 0 or (allow_zero and val == 0) else default
 
 
-def platform_httpx_limits() -> "httpx.Limits | None":
+def platform_httpx_limits() -> httpx.Limits | None:
     """``httpx.Limits`` tuned for persistent platform-adapter clients; ``None`` without httpx."""
     if httpx is None:
         return None
     # max_connections stays at the httpx default (100) — plenty of headroom.
     return httpx.Limits(
         max_keepalive_connections=_positive_env(
-            "HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", _DEFAULT_MAX_KEEPALIVE, int),
+            "HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", _DEFAULT_MAX_KEEPALIVE, int, allow_zero=True),
         keepalive_expiry=_positive_env(
             "HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", _DEFAULT_KEEPALIVE_EXPIRY_S, float),
     )

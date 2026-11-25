@@ -23,8 +23,9 @@ from tools.tts_tool_providers import _tts_response_format_from_path
 logger = logging.getLogger("tools.tts_tool")
 
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
-# The managed OpenAI audio gateway only proxies these; anything else is 400 "Unsupported".
-MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
+# Speech models the managed Nous audio gateway serves (it bills a model only when NAS has a priced
+# rule for it, so anything else fails closed). Others are coerced to DEFAULT_OPENAI_MODEL.
+MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts", "tts-1", "tts-1-hd"})
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
@@ -79,11 +80,11 @@ def _has_openai_audio_backend() -> bool:
         return False
 
 
-def _openai_extra_body(oai_config: Dict[str, Any]) -> Dict[str, Any]:
+def _openai_extra_body(oai_config: dict[str, Any]) -> dict[str, Any]:
     """Optional ``tts.openai`` fields OpenAI-compatible servers read from the JSON body: ``language``
     (sent as ``lang_code``) and ``consent_attestation`` (cloned voices). Unset keys are omitted so
     the official API and strict servers never see unknown fields."""
-    extra_body: Dict[str, Any] = {}
+    extra_body: dict[str, Any] = {}
     if oai_config.get("language"):
         extra_body["lang_code"] = oai_config["language"]
     if oai_config.get("consent_attestation"):
@@ -91,8 +92,57 @@ def _openai_extra_body(oai_config: Dict[str, Any]) -> Dict[str, Any]:
     return extra_body
 
 
+def _is_response_format_rejection(exc: Exception) -> bool:
+    """True when a speech.create() error is a backend rejecting response_format.
+
+    Several self-hosted OpenAI-compatible speech servers (Speaches/Kokoro,
+    etc.) implement only ``mp3``/``wav``/``flac``/``pcm`` and 4xx a request for
+    ``response_format="opus"`` outright — ``{"type": "literal_error", "loc":
+    ["body", "response_format"], ...}`` with HTTP 400/422 — before any audio
+    bytes exist. The post-synthesis ``_repair_ogg_container`` hook only helps
+    backends that *ignore* the parameter and write playable bytes; a rejection
+    never reaches it. This predicate is intentionally narrow so unrelated
+    4xx errors still propagate.
+    """
+    status = getattr(exc, "status_code", None)
+    if status not in (400, 422):
+        return False
+    return "response_format" in str(exc)
+
+
+def _openai_speech_create_with_format_fallback(client, create_kwargs: dict[str, Any]):
+    """Call ``audio.speech.create``; on an *opus* rejection, retry mp3.
+
+    Native opus is always requested first (from a ``.ogg`` target), so backends
+    that support it are unaffected. When the backend rejects opus, we retry
+    exactly once as ``mp3`` — a format the OpenAI speech API contract
+    guarantees — and let the downstream ``_repair_ogg_container`` step transcode
+    those mp3 bytes into a real Ogg/Opus container. The retry carries a fresh
+    idempotency key because it is a distinct request.
+
+    The fallback is deliberately limited to ``opus``: ``_repair_ogg_container``
+    only rewrites ``.ogg`` outputs, so retrying a rejected ``wav``/``flac``/
+    ``pcm`` request as mp3 would leave mp3 bytes mislabeled under the requested
+    extension. Those rejections propagate unchanged (#73470 review).
+    """
+    try:
+        return client.audio.speech.create(**create_kwargs)
+    except Exception as exc:
+        requested = create_kwargs.get("response_format")
+        if requested != "opus" or not _is_response_format_rejection(exc):
+            raise
+        logger.warning(
+            "TTS backend rejected response_format=%r — retrying as 'mp3' "
+            "(the .ogg container is rebuilt post-synthesis).",
+            requested,
+        )
+        retry_kwargs = dict(create_kwargs, response_format="mp3")
+        retry_kwargs["extra_headers"] = {"x-idempotency-key": str(uuid.uuid4())}
+        return client.audio.speech.create(**retry_kwargs)
+
+
 def _generate_openai_tts(
-    text: str, output_path: str, tts_config: Dict[str, Any], *, api_key: Optional[str] = None,
+    text: str, output_path: str, tts_config: dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
     speed: Optional[float] = None, instructions: Optional[str] = None) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
@@ -117,8 +167,8 @@ def _generate_openai_tts(
     if speed is None:
         speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
         speed = float(oai_config.get("speed", speed_default))
-    # The managed gateway only proxies MANAGED_OPENAI_TTS_MODELS; coerce a direct-OpenAI
-    # model (e.g. "tts-1-hd") unless the user redirected base_url to their own endpoint.
+    # The managed gateway only serves MANAGED_OPENAI_TTS_MODELS; coerce any other model
+    # unless the user redirected base_url to their own endpoint.
     if is_managed and not explicit_base_url and not config_base_url and model not in MANAGED_OPENAI_TTS_MODELS:
         logger.warning(
             "TTS: managed OpenAI audio gateway does not support model %r; "
@@ -126,7 +176,7 @@ def _generate_openai_tts(
             "to use %r directly.",
             model, DEFAULT_OPENAI_MODEL, model)
         model = DEFAULT_OPENAI_MODEL
-    create_kwargs: Dict[str, Any] = {
+    create_kwargs: dict[str, Any] = {
         "model": model, "voice": voice, "input": text,
         "response_format": _tts_response_format_from_path(output_path),
         "extra_headers": {"x-idempotency-key": str(uuid.uuid4())}}
@@ -138,7 +188,7 @@ def _generate_openai_tts(
         create_kwargs["extra_body"] = extra_body
     client = _origin()._import_openai_client()(api_key=api_key, base_url=base_url)
     try:
-        client.audio.speech.create(**create_kwargs).stream_to_file(output_path)
+        _openai_speech_create_with_format_fallback(client, create_kwargs).stream_to_file(output_path)
         return output_path
     finally:
         close = getattr(client, "close", None)
@@ -146,7 +196,7 @@ def _generate_openai_tts(
             close()
 
 
-def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_deepinfra_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     """Resolve DeepInfra credentials/model (live ``hermes_cli.models`` catalog, no hardcoded ids), then
     delegate to the OpenAI-compatible handler."""
     api_key = _origin()._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")

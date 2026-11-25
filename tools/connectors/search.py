@@ -1,35 +1,48 @@
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from tools.connectors.gateway.bridge import SIGN_IN_EXPIRED, UNREACHABLE
+from tools.connectors.gateway.bridge import NOT_SET_UP, NOT_SET_UP_MESSAGE, SIGN_IN_EXPIRED, UNREACHABLE
 from tools.connectors.gateway.names import format_connector_name, is_connector_name, vendor_slug_candidates
 from tools.tool_search_catalog import CatalogEntry, _fn, _tokenize
 
 logger = logging.getLogger(__name__)
 
 
-def connections_in_scope(tool_defs: Iterable[Dict[str, Any]]) -> bool:
+def connections_in_scope(tool_defs: Iterable[dict[str, Any]]) -> bool:
     return any(_fn(td).get("name") == "manage_connections" for td in tool_defs)
 
 
 def connectors_unavailable(failure: str, *, verb: str,
-                           names: Optional[List[str]] = None) -> Dict[str, Any]:
+                           names: Optional[list[str]] = None) -> dict[str, Any]:
+    if failure == NOT_SET_UP:
+        from tools.connectors.gateway.config import guest_setup_failure
+
+        hint = (f"{NOT_SET_UP_MESSAGE} Hosted apps (Gmail, Calendar, Notion and more) are then searchable. "
+                "If the request is better served by the tools above, use those instead.")
+        if last_failure := guest_setup_failure():
+            hint += f" The last attempt failed, so tell the user before retrying: {last_failure}"
+        field: dict[str, Any] = {"status": NOT_SET_UP, "hint": hint}
+        if names:
+            field["names"] = names
+        return field
     hint = (f"Hosted connector tools could not be {verb} right now. "
             "Do not conclude the app is missing.")
     if failure == SIGN_IN_EXPIRED:
         hint += " The user must sign in to Nous again."
-    field: Dict[str, Any] = {"status": "unavailable", "reason": failure, "hint": hint}
+    field = {"status": "unavailable", "reason": failure, "hint": hint}
     if names:
         field["names"] = names
     return field
 
 
-def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any]) -> CatalogEntry:
+def _connector_entry(name: str, connector: str, slug: str, schema: dict[str, Any]) -> CatalogEntry:
     description = str(schema.get("description") or "")
-    input_schema = schema.get("input_schema")
-    parameters = input_schema if isinstance(input_schema, dict) else {}
+    from tools.connectors.gateway.files import model_parameters
+
+    parameters = model_parameters(name, schema.get("input_schema"))
     tool_def = {"type": "function", "function": {
         "name": name, "description": description, "parameters": parameters}}
     text = f"{connector} {slug.replace('_', ' ')} {description}"
@@ -38,13 +51,16 @@ def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any
 
 
 def connector_entries_by_group(
-    queries: List[str],
+    queries: list[str],
     connector_search: Optional[Any] = None,
-) -> Tuple[List[List[CatalogEntry]], Optional[str]]:
-    per_query: List[List[CatalogEntry]] = [[] for _ in queries]
+    call: Optional[Any] = None,
+) -> tuple[list[list[CatalogEntry]], Optional[str]]:
+    per_query: list[list[CatalogEntry]] = [[] for _ in queries]
     try:
         if connector_search is None:
-            from tools.connectors.gateway.bridge import connector_search_hits as connector_search
+            from tools.connectors.gateway.bridge import connector_search_hits
+
+            connector_search = functools.partial(connector_search_hits, call=call)
         leg = connector_search([{"use_case": q} for q in queries])
         if leg.failure:
             return per_query, leg.failure
@@ -60,7 +76,7 @@ def connector_entries_by_group(
             if isinstance(echoed, str) and echoed and echoed != queries[position]:
                 continue
             slugs = group.get("tools") if isinstance(group.get("tools"), list) else []
-            picked: Dict[str, tuple[str, CatalogEntry]] = {}
+            picked: dict[str, tuple[str, CatalogEntry]] = {}
             for slug in slugs:
                 schema = schemas.get(slug)
                 if not isinstance(schema, dict) or not schema.get("connector"):
@@ -82,22 +98,25 @@ def connector_entries_by_group(
                 picked[name] = (slug, _connector_entry(name, str(schema["connector"]), slug, schema))
             per_query[position] = [entry for _, entry in picked.values()]
     except Exception:
-        logger.debug("connector search merge failed (D32)", exc_info=True)
+        logger.warning("connector search merge failed (D32)", exc_info=True)
         return [[] for _ in queries], UNREACHABLE
     return per_query, None
 
 
 def remote_schemas_for(
-    names: List[str],
-    current_tool_defs: List[Dict[str, Any]],
+    names: list[str],
+    current_tool_defs: list[dict[str, Any]],
     connector_describe: Optional[Any] = None,
-) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
+    call: Optional[Any] = None,
+) -> tuple[dict[str, dict[str, Any]], Optional[str]]:
     connector_names = [n for n in names if is_connector_name(n)]
     if not connector_names or not connections_in_scope(current_tool_defs):
         return {}, None
     try:
         if connector_describe is None:
-            from tools.connectors.gateway.bridge import connector_describe
+            from tools.connectors.gateway.bridge import connector_describe as describe
+
+            connector_describe = functools.partial(describe, call=call)
         leg = connector_describe(connector_names)
         if leg.failure:
             return {}, leg.failure
@@ -106,5 +125,5 @@ def remote_schemas_for(
             return tools, None
         return {}, (UNREACHABLE if leg.payload else None)
     except Exception:
-        logger.debug("connector describe merge failed (D32)", exc_info=True)
+        logger.warning("connector describe merge failed (D32)", exc_info=True)
         return {}, UNREACHABLE

@@ -251,7 +251,7 @@ class TestDirectSendScope:
 
     @pytest.mark.asyncio
     async def test_scoped_credentials_win_over_environ(self, monkeypatch):
-        from tools.send_message_tool import _send_qqbot
+        from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
 
         captured = []
         monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))
@@ -273,7 +273,7 @@ class TestDirectSendScope:
 
     @pytest.mark.asyncio
     async def test_unscoped_falls_back_to_environ(self, monkeypatch):
-        from tools.send_message_tool import _send_qqbot
+        from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
 
         captured = []
         monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))

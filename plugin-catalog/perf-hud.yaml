@@ -1,0 +1,36 @@
+name: perf-hud
+repo: https://github.com/g3org3yo/hermes-perf-hud
+sha: bb97f8f73175a22b75f21204cf9fd4394f18077b
+version: "1.0.0"
+title: Perf HUD
+description: "Live performance HUD for Hermes Desktop: a status-bar chip with core-compatible TPS (sum of output tokens over sum of API durations for the last 10 completed calls, the same window and arithmetic as Hermes' own status bar) in `tps`, `tps_ttft` or `calls` form, and a statistics popover with TPS, a separately labelled Session Avg TPS (the same ratio over every call in the session), median TTFT from `first_chunk_at`, LLM calls, an `Agent steps*` compatibility alias (equal to LLM calls, footnoted inside the snapshot by `agent_steps_note`), turns, errors, input, output and cache-read tokens, cache hit rate on Hermes' `cache_read / (cache_read + input)` buckets, tool calls and tool time, tool time share, wall-clock session duration, and the model and provider. Two controls — Reset current statistics (clears the plugin's own in-memory counters, never Hermes session state) and Clear history — plus local performance history for the last 50 sessions. Observes only: nine observer hooks, no tool or message is ever blocked, rewritten or reordered, no Hermes core file is touched, the aggregation layer is pure with no I/O and no host imports, all handlers are fail-open so a telemetry bug cannot break a turn, and a corrupt history file is quarantined instead of raised. Disclosure — reads only from the observer payloads: token usage buckets (input, output, cache read, cache write, reasoning), API and tool timings, first-chunk timestamps, model and provider names, session ids, and tool names plus error status for the counts; prompts, model responses, conversation contents, tool arguments and tool results are never read and have no field in its snapshot, its desktop event or its history record. Writes exactly one JSON file per profile at `<HERMES_HOME>/plugin-data/agent-plugin-perf-hud-*/history.json` containing only session_id, model, provider, started_at, updated_at, duration_ms, ttft_ms, tps_core, input_tokens, output_tokens, cache_hit_pct, tool_time_ms and llm_calls, allow-list enforced, atomic, capped at 50 sessions; no other disk writes, and no config change beyond the documented `plugins.entries.perf-hud.settings.*` keys (chip_enabled, chip_metric, history_enabled, history_max_sessions, poll_ms, broadcast_min_interval_ms). Desktop updates travel over Hermes' in-process plugin event bridge (`broadcast_plugin_event`, topic `plugin.perf-hud.stats.update`, throttled to 400 ms) and its REST routes are served by the user's own local dashboard at /api/plugins/perf-hud/ (snapshot, sessions, history, config, reset, clear-history, status), which requires the dashboard's auth ticket. Executes no subprocess, no shell command, no systemd unit, no Task Scheduler task; makes no network request; has no credentials, no OAuth and no telemetry. Standard library only, no third-party dependencies."
+maintainer: g3org3yo
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/g3org3yo/hermes-perf-hud/blob/bb97f8f73175a22b75f21204cf9fd4394f18077b/README.md
+platforms: [linux, macos, windows]
+image: https://raw.githubusercontent.com/g3org3yo/hermes-perf-hud/bb97f8f73175a22b75f21204cf9fd4394f18077b/docs/screenshots/chip.png
+screenshots:
+  - https://raw.githubusercontent.com/g3org3yo/hermes-perf-hud/bb97f8f73175a22b75f21204cf9fd4394f18077b/docs/screenshots/chip.png
+  - https://raw.githubusercontent.com/g3org3yo/hermes-perf-hud/bb97f8f73175a22b75f21204cf9fd4394f18077b/docs/screenshots/popover.png
+known_issues:
+  - "Turns counts completed turns, so one long turn can show `Turns 0` beside a high `LLM calls` (an agent loop is many calls, one turn). `LLM calls` and `Agent steps*` count per call."
+  - "The status-bar chip appears after one desktop restart, because the desktop half is materialised into `<HERMES_HOME>/desktop-plugins/` at app startup. The backend half (hooks, history, REST) is live as soon as the plugin is enabled."
+  - "Verified by hand on Windows with a packaged Hermes Desktop build. Linux and macOS run the same code and the same plugin directories, but were not exercised on those platforms."
+  - "If `dashboard.turn_isolation` runs turns in a compute-host child process, the child keeps its own in-memory counters: live events still reach the desktop, but `/snapshot` in the parent will not include them. History is on shared disk, so `/history` stays complete."
+  - "TTFT needs `first_chunk_at`; providers or non-streaming paths that do not report it show a dash for those calls instead of an invented sample."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - post_llm_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+    - on_session_delete
+  provides_middleware: []
+  requires_env: []

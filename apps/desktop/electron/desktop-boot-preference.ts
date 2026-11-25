@@ -2,13 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
+
 export interface DesktopBootPreference {
   profile: string | null
   _migrated?: boolean
 }
 
 function validProfile(profile: string | null): boolean {
-  return profile === null || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile)
+  return profile === null || PROFILE_ID_ARG_RE.test(profile)
 }
 
 /** Missing is a fresh install; unreadable state must not be treated as permission to replace it. */

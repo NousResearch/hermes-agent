@@ -6,10 +6,11 @@ from urllib.parse import unquote
 import pytest
 
 from scripts.releases import handoff, r2
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 
-@pytest.mark.parametrize('tag', ['v1.2.3', 'v1.2.3+canary.20260908T232538Z', 'rc.1-v1.2.3', None])
+@pytest.mark.parametrize('tag', ['v1.2.3', 'canary.20260908T232538Z-v1.2.3', 'rc.1-v1.2.3',
+                                 'commit.20260908T232538Z-v1.2.3', None])
 def test_stage_and_fetch_bind_tag_commit_and_files_without_feed_writes(tmp_path, monkeypatch, r2_server, tag):
     commit = "a" * 40
     identity = ['--tag', tag, '--commit', commit] if tag else ['--commit-build', commit]
@@ -188,7 +189,7 @@ def test_public_handoff_downloads_exact_staged_bytes_without_credentials(tmp_pat
     assert any(path.endswith('/app%20x64.msix') for _, path, _ in r2_server.requests)
     result = subprocess.run([sys.executable, '-m', 'scripts.releases.handoff', *args],
                             cwd=Path(__file__).resolve().parents[2], env=os.environ,
-                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+                            capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (download / 'app x64.msix').read_bytes() == payload
     # A bad CDN object cannot replace a previously verified local download.
@@ -251,3 +252,16 @@ def test_public_handoff_rejects_unsafe_origins_paths_and_redirects(tmp_path, r2_
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_a_commit_claim_stages_under_its_claim_despite_its_commit_identity_env(tmp_path, monkeypatch):
+    # A commit claim's legs export HERMES_BUILD_COMMIT (the Commit<sha7> identity) beside the claim
+    # tag; the handoff CLI must stage under the claim archive, never fall into tagless commit mode.
+    commit, tag = "a" * 40, "commit.20261026T180000Z-v1.2.3"
+    monkeypatch.setenv("HERMES_BUILD_COMMIT", commit)
+    calls = []
+    monkeypatch.setattr(handoff, "stage", lambda *args: calls.append(("tag", *args)))
+    monkeypatch.setattr(handoff, "stage_commit_build", lambda *args: calls.append(("commit", *args)))
+    handoff.main(["stage", "--tag", tag, "--commit", commit, "--name", "win32-x64",
+                  "--root", str(tmp_path), "--include", "*.msix"])
+    assert calls == [("tag", tag, commit, "win32-x64", tmp_path, ["*.msix"])]

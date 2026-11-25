@@ -1,0 +1,27 @@
+name: equitylayer
+title: EquityLayer
+repo: https://github.com/equitylayerio/equitylayer-hermes-plugin
+sha: "b5120d992d29cae3e23944489fe731988b0f597f"
+version: "0.4.0"
+description: "Research CPO or custom AI chips with your own AI. Type /equitylayer:start and Hermes guides you in four decisions, each with a recommended option: sector (with EquityLayer's theses and live readings shown before anything is asked), how to follow it (EquityLayer's published Research Packs for the sector when there are any, its curated readings, your own thesis, or three questions that help you form one), one card to approve, and how often to check. Saying yes all the way follows EquityLayer's CPO Research Packs: their hypotheses, what would prove each wrong, and the readings each one watches, saved, checked and scheduled; in a sector without a Pack it ends with curated readings. EquityLayer's public MCP (https://equitylayer.io/mcp, no sign-in) supplies the tracked variables with caveats and coverage gaps, official events and due dates; the plugin keeps watchlists, thesis harnesses and baselines in local plugin-data, keeps one tracked object at three levels (readings, the person's own thesis, EquityLayer's thesis) behind nine tools, checks them in one Hermes cron job created from the chat, and reports new readings, link statuses (seen, against, late, no data, not due), fired wrong_if conditions, events, what is due next and what needs a person. Nothing becomes the baseline until the person says they read it; unattended runs repeat the alert instead. A local HTML dashboard (built by code from local files and the last public Research Pack registry the plugin fetched; the page has no scripts and makes no network requests) shows it all and is listed under Artifacts in Hermes Desktop. Each new chat recalls the person's research profile, watchlists and theses from the local files. Also lists, reads and follows published EquityLayer Research Packs. Disclosure: every tool call goes over HTTPS to equitylayer.io (/mcp, and /mcp/full on the same server for events and due dates; mcp_url accepts only that host or localhost); thesis text, harness, baseline and variable ids are sent as tool arguments and the server reports it stores neither thesis nor harness; no account, key, payment or telemetry; watchlists, harnesses, baselines, a 30-entry check history, Follow Cards, the research profile (fixed-value fields only), a copy of the public Research Pack registry and the dashboard page with its JSON copy and a calendar file of upcoming dates are written under the plugin's own plugin-data directory; a system prompt section (at most 2,000 characters, off with recall_in_new_chats: false) lists the profile and saved ids, titles and last check dates at the start of each new chat and reaches only the user's own model provider; nothing is written to Hermes memory; no shell commands or background processes. It never says what to buy, sell, size or time, and never writes a view for the person. Not investment advice."
+maintainer: equitylayerio
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/equitylayerio/equitylayer-hermes-plugin#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - el_profile
+    - el_plan
+    - el_get_variable
+    - el_track
+    - el_check
+    - el_seen
+    - el_list
+    - el_dashboard_render
+    - el_research_pack
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

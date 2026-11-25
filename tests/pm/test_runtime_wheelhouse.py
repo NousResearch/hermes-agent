@@ -16,6 +16,9 @@ from pm.runtime import runtime_environment
 from scripts.bundles.payload import seal_pm_runtime
 from tests.pm._fixtures import stage_host_python
 
+# The wheelhouse is downloaded from PyPI on purpose (only the stage afterwards is offline).
+pytestmark = pytest.mark.allow_network
+
 
 @pytest.fixture(scope="module")
 def locked_wheelhouse(tmp_path_factory):
@@ -98,6 +101,7 @@ print(json.dumps({canonicalize_name(d.metadata['Name']): d.version
         [str(runtime / marker["python"]), "-I", "-S", "-B", "-c", probe,
          str(runtime / marker["sitePackages"])],
         cwd=tmp_path, env=runtime_environment(), capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == versions

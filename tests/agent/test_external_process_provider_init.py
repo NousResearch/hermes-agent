@@ -92,7 +92,7 @@ def test_should_stream_is_off_for_any_external_process_profile(monkeypatch):
 
     profile = ProviderProfile(name="acme-acp", auth_type="external_process")
     monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == "acme-acp" else None)
-    make = lambda provider: SimpleNamespace(  # noqa: E731
+    make = lambda provider: SimpleNamespace(
         provider=provider, base_url="https://proxy.example.invalid/v1", _has_stream_consumers=lambda: True)
 
     assert _should_stream(make("acme-acp")) is False

@@ -1,0 +1,95 @@
+{
+  "fixtureVersion": 1,
+  "name": "chain-order-with-group",
+  "description": "Proves rule-0, rule-2: With a mapped group the group level sits between tenant and principal.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "a": "g",
+        "b": "g",
+        "c": "g",
+        "d": "g",
+        "e": "g",
+        "f": "g"
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "b": "t",
+        "c": "t",
+        "d": "t",
+        "e": "t",
+        "f": "t"
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {
+        "c": "gr",
+        "d": "gr",
+        "e": "gr",
+        "f": "gr"
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "d": "p",
+        "e": "p",
+        "f": "p"
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "e": "a",
+        "f": "a"
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "f": "pr"
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": "g",
+      "b": "t",
+      "c": "gr",
+      "d": "p",
+      "e": "a",
+      "f": "pr"
+    },
+    "provenance": {
+      "a": "global",
+      "b": "tenant",
+      "c": "group",
+      "d": "principal",
+      "e": "agent",
+      "f": "profile"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "c",
+      "value": "x",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

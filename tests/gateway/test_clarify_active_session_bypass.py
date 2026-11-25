@@ -51,7 +51,6 @@ def _clear_clarify_state():
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
-        cm._notify_cbs.clear()
 
 
 @pytest.mark.asyncio

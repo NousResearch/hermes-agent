@@ -4,16 +4,16 @@ Failure class: PATH shapes. Two things users report once the install "works":
 
 * the installer's PATH wiring duplicates ``~/.local/bin`` when the distro's own startup files
   already put it on PATH with a bare ``PATH=...`` assignment (Fedora ``.bashrc``, Debian
-  ``.profile``), so a login shell carries it more than once (gated on #123424); a re-run of the
+  ``.profile``), so a login shell carries it more than once (#123424); a re-run of the
   installer must not edit the startup files again;
-* a node/npm the user already has, earlier on PATH, must never stand in for the managed toolchain:
+* a node/npm/pnpm the user already has, earlier on PATH, must never stand in for the managed toolchain:
   not for the TUI/web builds and not for an MCP server configured with a bare ``command: node``.
-  Hermes only ever runs its own packaged node/npm; when such a server's native addon was built by
+  Hermes only ever runs its own packaged node/npm/pnpm; when such a server's native addon was built by
   the user's Node it fails under Hermes's, and that failure must reach the user with the remedy
   (rebuild it under Hermes's Node) instead of a silent park (#124264).
 
 One real install through HEAD's ``scripts/install.sh`` into a HOME carrying Fedora's stock
-``.bashrc`` / ``.bash_profile``, with a user-owned ``node``/``npm`` first on PATH. That node
+``.bashrc`` / ``.bash_profile``, with a user-owned ``node``/``npm``/``pnpm`` first on PATH. That node
 is a stand-in (the external edge): it answers version probes as v22 and logs every call; anything
 else it refuses loudly, except the user's own MCP server script, which it would serve as a minimal
 stdio MCP server. The managed node running the same script instead exits the way a native addon
@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -90,7 +89,7 @@ for line in sys.stdin:
 
 
 def _user_toolchain(root: Path) -> dict[str, Path]:
-    """The user's own node/npm (first on PATH) plus their MCP server script."""
+    """The user's own node/npm/pnpm (first on PATH) plus their MCP server script."""
     sysbin = root / "user-node" / "bin"
     sysbin.mkdir(parents=True)
     calls = root / "user-node" / "calls.log"
@@ -108,7 +107,7 @@ def _user_toolchain(root: Path) -> dict[str, Path]:
         " + \"\\n  code: 'ERR_DLOPEN_FAILED'\");\n"
         "process.exit(1);\n", encoding="utf-8")
     python = shutil.which("python3") or sys.executable
-    versions = {"node": USER_NODE_VERSION, "npm": "10.9.0", "npx": "10.9.0"}
+    versions = {"node": USER_NODE_VERSION, "npm": "10.9.0", "npx": "10.9.0", "pnpm": "10.33.0"}
     for name, ver in versions.items():
         serve = f'  *server.js) exec "{python}" "{server_py}" ;;\n' if name == "node" else ""
         p = sysbin / name
@@ -165,8 +164,8 @@ def test_user_node_first_on_path_does_not_shadow_the_managed_toolchain(world, pr
     sb, first = world["sb"], world["install"]
     # The shim log first: when the user's node is picked up the build usually dies on it, and the
     # log names that root cause where the exit code alone would not.
-    used = [c for c in _calls(world) if not re.fullmatch(r"(node|npm|npx) (--version|-v)", c)]
-    assert not used, ("the installer ran the user's node/npm for real work instead of the managed toolchain:\n"
+    used = [c for c in _calls(world) if not re.fullmatch(r"(node|npm|npx|pnpm) (--version|-v)", c)]
+    assert not used, ("the installer ran the user's node/npm/pnpm for real work instead of the managed toolchain:\n"
                       + "\n".join(used) + "\n" + I.describe(first))
     assert first.returncode == 0, "install.sh failed with the user's own node first on PATH:\n" + I.describe(first)
     X.ok(sb.cli("--version"))
@@ -186,12 +185,10 @@ def test_login_shell_has_local_bin_once_with_stock_fedora_startup_files(world):
     assert rc_after_rerun == world["rc_after_install"], (
         "re-running the installer edited the startup files again: "
         f"{[n for n in FEDORA_SKEL if rc_after_rerun[n] != world['rc_after_install'][n]]}")
-    with known_failure(r"~/\.local/bin appears [2-9]\d* times",
-                       "gated on #123424: wire_shell_path's existing-setup regex misses bare PATH= assignments"):
-        changed = [n for n, text in FEDORA_SKEL.items() if world["rc_after_install"][n] != text]
-        assert count == 1 and count_rerun == 1, (
-            f"~/.local/bin appears {count} times on a login shell's PATH after install ({count_rerun} after a re-run):\n"
-            f"{line_rerun}\n(startup files the installer changed: {changed})")
+    changed = [n for n, text in FEDORA_SKEL.items() if world["rc_after_install"][n] != text]
+    assert count == 1 and count_rerun == 1, (
+        f"~/.local/bin appears {count} times on a login shell's PATH after install ({count_rerun} after a re-run):\n"
+        f"{line_rerun}\n(startup files the installer changed: {changed})")
 
 
 def test_mcp_server_runs_on_the_managed_node_and_an_abi_mismatch_names_the_rebuild(world, provider):

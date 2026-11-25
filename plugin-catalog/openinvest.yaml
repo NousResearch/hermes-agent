@@ -1,0 +1,16 @@
+name: openinvest
+repo: https://github.com/longsizhuo/openInvest
+sha: 0b9268bb85f8b97bff0f9d2eea18d7b88faec8fa
+subdir: plugin
+description: "Self-hosted AI investment committee — skills for portfolio review, a decision ledger, and a 4-role LLM committee (macro / quant / risk / CIO) that debates a symbol. Disclosure — the skills run the openinvest backend from PyPI via uvx (pinned in run.sh) and keep portfolio, ledger, committee records and any keys you add in plaintext under ~/openInvest (or $INVEST_HOME); it fetches public market data and RSS news, and on the Direct path / daily report sends your portfolio and wealth context to the LLM you configure (default api.deepseek.com) and, if installed, to the agy or gemini CLI for a second opinion; news ingestion can trigger extra committee runs (LLM spend). The MCP tools are a server you add to config.yaml yourself (the printed snippet runs the plugin's pinned run.sh with `trust: untrusted`, so Hermes asks before ledger writes); buy/sell/deposit/withdraw only edit the local ledger — it never connects to a broker or places orders."
+maintainer: longsizhuo
+tier: community
+category: tools
+title: openInvest
+docs_url: https://openinvest.involutionhell.com
+version: "0.25.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

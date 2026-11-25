@@ -6,6 +6,7 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
+import functools
 import logging
 import json
 import os
@@ -41,6 +42,40 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
             f"Check ~/.hermes/.env or environment variables."
         )
+
+
+# (current home, Hermes root) -> profile name; only homes that exist are stored (see home_profile_name).
+_HOME_PROFILE_NAMES: dict[tuple[str, str], str] = {}
+
+
+def home_profile_name() -> str:
+    """Profile name of the current Hermes home (the process home, or a routed turn's bound home);
+    ``"default"`` when it cannot be resolved. One lookup for every reader that must agree: the
+    persistent-Docker container key, the container's profile label, the name the TUI stamps on its
+    sessions (``get_active_profile_name``, so ``custom`` for a home inside the root that is not a
+    ``profiles/<name>`` home), and the file panel's sandbox names.
+
+    Memoized per (home, root) path pair: the lookup resolves three paths and runs on every
+    container-key resolution, several times per tool call."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        home = get_hermes_home()
+        key = (str(home), str(get_default_hermes_root()))
+        if (cached := _HOME_PROFILE_NAMES.get(key)) is not None:
+            return cached
+        name = get_active_profile_name() or "default"
+        if home.exists():  # a home created later may resolve differently
+            _HOME_PROFILE_NAMES[key] = name
+        return name
+    except (ImportError, OSError, RuntimeError, ValueError):  # an unresolvable home keeps the shared default key
+        return "default"
+
+
+def profile_container_key(profile: str) -> str:
+    """Persistent-Docker container key of a profile: the default profile stays literally ``"default"``."""
+    return "default" if profile == "default" else f"profile:{profile}"
 
 
 def _safe_getcwd() -> str:
@@ -117,7 +152,7 @@ def cwd_follows_host_mount(cwd: str, mount: str) -> bool:
         return True
     return cwd == "/workspace" and mount != "/workspace"
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset({"docker", "modal", "daytona", "vercel_sandbox"})
 _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
 
 
@@ -151,6 +186,49 @@ def _get_plugin_env_provider(env_type: str):
     return _plugin_registry_lookup(env_type, "get_provider", None)
 
 
+def plugin_sandbox_home(env: Any) -> str | None:
+    """The home a plugin environment started in (``_build_plugin_env`` stamps it per environment, so two
+    sandboxes of one backend never share it), or None."""
+    home = getattr(env, "_hermes_sandbox_home", None)
+    return home if isinstance(home, str) and posixpath.isabs(home) and home != "/" else None
+
+
+def _in_sandbox_home(cwd: Any, env: Any) -> bool:
+    """True for *cwd* at or under *env*'s sandbox home: a ``cd`` inside that sandbox, not a host workspace,
+    even when it looks like one (``/home/...``)."""
+    home = plugin_sandbox_home(env)
+    if not home or not isinstance(cwd, str) or not posixpath.isabs(cwd):
+        return False
+    home, cwd = posixpath.normpath(home), posixpath.normpath(cwd)
+    return cwd == home or cwd.startswith(home + "/")
+
+
+@functools.lru_cache(maxsize=32)
+def _launch_dirs(home: str, native_home: str) -> frozenset[str]:
+    """The lexical launch set for one Hermes home. The root depends on that home and the platform default home
+    (``native_home``, which keys the cache too); the install root is fixed per process. Cached: the shared root
+    memo holds a single entry and thrashed when called once per command."""
+    from hermes_cli._startup_fast import project_root_str
+    from hermes_constants import get_default_hermes_root
+
+    root = posixpath.normpath(str(get_default_hermes_root(home=home)))
+    return frozenset({home, root, posixpath.join(home, "home"), posixpath.join(root, "home"), project_root_str()})
+
+
+def _is_container_launch_dir(path: str) -> bool:
+    """True when *path* (absolute) IS a directory Hermes starts in inside a container: the Hermes home, the
+    Hermes root (``/opt/data`` in the official image, which is also the image user's HOME), ``home/`` under
+    each, or the install root (``/opt/hermes``, as its real path). Those exist only in the container, never on
+    an SSH target. The candidate is compared lexically: a symlink on this machine says nothing about the target.
+    On a host they are left alone, since an SSH target may share the layout (``~/.hermes`` on an NFS home)."""
+    from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, is_container
+
+    if not is_container():
+        return False
+    home = posixpath.normpath(str(get_hermes_home()))
+    return posixpath.normpath(path) in _launch_dirs(home, str(_get_platform_default_hermes_home()))
+
+
 @overload
 def coerce_ssh_remote_cwd(cwd: str, env_type: str | None) -> str: ...
 @overload
@@ -162,19 +240,27 @@ def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
     SSH user's home. The Hermes process's subprocess home (``/opt/data/home``
     in the official Docker image) is a directory on the machine running
     Hermes: it and anything under it are rewritten onto the remote ``~``, since
-    ``cd`` into the host path exits 126 on the target. A subprocess home that is
-    the OS user's real home is left alone: a remote path may legitimately match
-    it. Other backends are unchanged.
+    ``cd`` into the host path exits 126 on the target. In a container, the
+    directories Hermes starts in (the Hermes home, its root ``/opt/data``,
+    which is also the image user's HOME, ``home/`` under each, the install
+    root) map to ``~`` too; folders below them are kept, except under the
+    subprocess home (above), since a remote may use the same path. A
+    subprocess home that is the OS user's real home is left alone: a remote
+    path may legitimately match it. Other backends are unchanged.
     """
     if not isinstance(cwd, str) or (env_type or "").strip().lower() != "ssh":
         return cwd
     text = cwd.strip()
     if not text or text.startswith("~"):
         return text or "~"
+    if not posixpath.isabs(text):
+        return text
+    if _is_container_launch_dir(text):
+        return "~"
     from hermes_constants import get_real_home, get_subprocess_home
 
     home = get_subprocess_home()
-    if not home or not posixpath.isabs(text) or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
+    if not home or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
         return text
     rel = posixpath.relpath(posixpath.normpath(text), posixpath.normpath(home))
     if rel == ".":

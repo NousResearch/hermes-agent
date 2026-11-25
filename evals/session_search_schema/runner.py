@@ -36,8 +36,8 @@ REPO_ROOT = EVAL_DIR.parent.parent
 sys.path.insert(0, str(EVAL_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent.compression_marker import elide  # noqa: E402
-from tasks import SYSTEM, TASKS  # noqa: E402
+from agent.compression_marker import elide
+from tasks import SYSTEM, TASKS
 
 ALLOWED_KEYS = {
     "query", "role_filter", "limit", "session_id", "around_message_id",
@@ -62,6 +62,7 @@ def extract_arm(ref: str, workdir: Path, name: str) -> Path:
     out = subprocess.run(
         ["git", "show", f"{ref}:tools/session_search_tool.py"],
         cwd=REPO_ROOT, capture_output=True, text=True,
+        check=False,
     )
     if out.returncode != 0:
         raise SystemExit(f"git show {ref}: {out.stderr.strip()}")
@@ -70,20 +71,20 @@ def extract_arm(ref: str, workdir: Path, name: str) -> Path:
     return path
 
 
-def load_arm(path: Path, name: str, work_db_path: Path):
+def load_arm(path: Path, name: str, work_home: Path):
     """Import an arm module and make profile resolution hermetic."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence_reader
 
     spec = importlib.util.spec_from_file_location(f"ss_arm_{name}", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[f"ss_arm_{name}"] = mod
     spec.loader.exec_module(mod)
 
-    def _fake_resolve_profile_db(profile):
+    def _fake_resolve_profile_db(profile, handles):
         if profile is None or not str(profile).strip():
             return None
         if str(profile).strip().lower() == "work":
-            return SessionDB(db_path=work_db_path, read_only=True)
+            return handles.enter_context(open_persistence_reader(work_home))
         raise ValueError(f"profile '{profile}' does not exist")
 
     mod._resolve_profile_db = _fake_resolve_profile_db
@@ -102,10 +103,10 @@ def build_tools(arm_mod):
     }]
 
 
-def exec_tool(arm_mod, args, main_db_path: Path):
-    from hermes_state import SessionDB
+def exec_tool(arm_mod, args, main_home: Path):
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = SessionDB(db_path=main_db_path)
+    db = open_persistence(profile_scope(home=main_home))
     try:
         kwargs, bad = {}, []
         for k, v in args.items():
@@ -118,8 +119,8 @@ def exec_tool(arm_mod, args, main_db_path: Path):
                 "success": False,
                 "error": f"unexpected parameter(s): {', '.join(bad)}",
             }), True
-        return arm_mod.session_search(db=db, **kwargs), False
-    except Exception as e:  # noqa: BLE001 — tool errors go back to the model
+        return arm_mod.session_search(persistence=db, **kwargs), False
+    except Exception as e:
         return json.dumps({
             "success": False, "error": f"{type(e).__name__}: {e}",
         }), True
@@ -131,7 +132,7 @@ def exec_tool(arm_mod, args, main_db_path: Path):
 
 
 def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
-            main_db_path: Path, max_iters: int = 8):
+            main_home: Path, max_iters: int = 8):
     tools = build_tools(arm_mod)
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": prompt}]
@@ -174,7 +175,7 @@ def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
                 out, was_err = json.dumps(
                     {"success": False, "error": "unknown tool"}), True
             else:
-                out, was_err = exec_tool(arm_mod, args, main_db_path)
+                out, was_err = exec_tool(arm_mod, args, main_home)
             if was_err:
                 bad_calls += 1
             out = elide(out, 30000)
@@ -210,12 +211,11 @@ def main():
         from fixtures import seed
         dbdir = tdir / "dbs"
         seed(dbdir)
-        main_db = dbdir / "state.db"
-        work_db = dbdir / "state_work.db"
+        work_home = dbdir / "work"
 
         arms = {
-            "base": load_arm(extract_arm(args.base, tdir, "base"), "base", work_db),
-            "cand": load_arm(extract_arm(args.cand, tdir, "cand"), "cand", work_db),
+            "base": load_arm(extract_arm(args.base, tdir, "base"), "base", work_home),
+            "cand": load_arm(extract_arm(args.cand, tdir, "cand"), "cand", work_home),
         }
 
         outdir = EVAL_DIR / "results" / args.label
@@ -242,7 +242,7 @@ def main():
                             try:
                                 r = run_one(client, args.model, arm_name,
                                             arm_mod, task_id, prompt, oracle,
-                                            main_db)
+                                            dbdir)
                                 # Provider noise: zero tool calls AND empty
                                 # final → one retry, identical on both arms.
                                 if (not r["final"].strip()
@@ -261,7 +261,7 @@ def main():
                                       f"bad={r['bad_calls']} "
                                       f"ptok={r['first_prompt_tokens']}")
                                 break
-                            except Exception as e:  # noqa: BLE001
+                            except Exception as e:
                                 print(f"RETRY {task_id} {arm_name} rep{rep}: {e}")
                                 traceback.print_exc()
                                 time.sleep(5 * (attempt + 1))

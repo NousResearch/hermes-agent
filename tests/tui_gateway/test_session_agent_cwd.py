@@ -2,6 +2,7 @@
 
 import socket
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -9,11 +10,32 @@ import pytest
 
 from agent import codex_runtime, runtime_cwd
 from agent.transports import codex_app_server_session
-from hermes_state import SessionDB
-from plugins.memory.honcho import HonchoMemoryProvider
-from plugins.memory.honcho.client import HonchoClientConfig
+from agent.memory_provider import MemoryProvider
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
 from tools import terminal_tool
+
+
+class _CwdRecordingProvider(MemoryProvider):
+    """Keys its memory session on the cwd ``initialize`` receives, like a per-directory provider."""
+
+    def __init__(self):
+        self._session_key = ""
+        self._init_kwargs: dict = {}
+
+    @property
+    def name(self) -> str:
+        return "cwd-recording"
+
+    def is_available(self) -> bool:
+        return True
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        self._init_kwargs = dict(kwargs)
+        self._session_key = Path(kwargs["cwd"]).name
+
+    def get_tool_schemas(self):
+        return []
 
 
 @pytest.fixture
@@ -29,7 +51,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_CWD", str(other))
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_info", lambda agent, session: {"cwd": session["cwd"]})
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *a, **k: None)
@@ -37,17 +59,11 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
     monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *a, **k: {})
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", MagicMock())
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"memory": {"provider": "honcho"}})
-    # Real Honcho initialization/routing, but tools-only lazy mode never creates peers.
-    config = HonchoClientConfig(
-        enabled=True, api_key="test-key", session_strategy="per-directory",
-        recall_mode="tools", init_on_session_start=False,
-    )
-    monkeypatch.setattr(HonchoClientConfig, "from_global_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"memory": {"provider": "cwd-recording"}})
     providers, agents, starts, network_attempts = [], [], [], []
 
     def load_provider(*a, **k):
-        provider = HonchoMemoryProvider()
+        provider = _CwdRecordingProvider()
         providers.append(provider)
         return provider
 
@@ -73,14 +89,14 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr("plugins.memory.load_memory_provider", load_provider)
     monkeypatch.setattr(socket.socket, "connect", blocked_connect)
     monkeypatch.setattr(codex_app_server_session, "CodexAppServerClient", CodexClient)
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
 
     def build(cwd, key="conversation"):
         agent = AIAgent(
             model="test-model", api_key="test-key", base_url="https://example.invalid/v1",
             quiet_mode=True, skip_context_files=True, skip_background_review=True,
-            save_trajectories=False, platform="gui", session_id=key, session_db=db,
+            save_trajectories=False, platform="gui", session_id=key, persistence=db,
             cwd=cwd,
         )
         agents.append(agent)
@@ -144,7 +160,7 @@ def test_explicit_workspace_moves_reach_new_codex_threads(workspace_runtime, act
     assert neighbor.session_cwd == str(runtime.other)
     assert runtime_cwd.resolve_agent_cwd() == runtime.other
     assert provider._session_key == memory_key
-    assert provider._lazy_init_kwargs["cwd"] == str(runtime.old)
+    assert provider._init_kwargs["cwd"] == str(runtime.old)
     assert agent._cached_system_prompt == prompt
 
 
@@ -180,5 +196,5 @@ def test_workspace_move_during_deferred_build_reaches_first_codex_thread(workspa
     agent._codex_session.ensure_started()
     assert runtime.starts[-1] == str(runtime.new)
     assert runtime.providers[0]._session_key == runtime.old.name
-    assert runtime.providers[0]._lazy_init_kwargs["cwd"] == str(runtime.old)
+    assert runtime.providers[0]._init_kwargs["cwd"] == str(runtime.old)
     assert agent._cached_system_prompt == f"Stable prompt for {agent.session_id}"

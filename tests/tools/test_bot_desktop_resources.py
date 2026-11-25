@@ -13,7 +13,7 @@ def test_start_refuses_and_status_explains_when_memory_is_short(tmp_path, monkey
     # The memory gate is platform-independent logic; pin the host gate open so the
     # gate's client-visible reason is exercised off Linux too (was implicitly true there).
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
-    monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
+    monkeypatch.setattr(runtime, "missing_binaries", list)
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
     monkeypatch.setattr(resources, "min_free_mb", lambda: 1536)
     monkeypatch.setattr(resources, "memory_info", lambda: resources.MemoryInfo(available_mb=900, limit_mb=4096))
@@ -41,7 +41,7 @@ def test_running_screen_is_not_reported_blocked_by_later_pressure(tmp_path, monk
     """The gate guards the allocation; once the desktop is up, memory pressure is the browser's problem,
     not a reason to tell the pane its running screen is blocked."""
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
-    monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
+    monkeypatch.setattr(runtime, "missing_binaries", list)
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: 4242)
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":20"})
     monkeypatch.setattr(resources, "min_free_mb", lambda: 1536)

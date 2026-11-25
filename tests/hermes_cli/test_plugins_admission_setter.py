@@ -5,9 +5,9 @@ import sys
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    plugin_world as plugin_world,
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
     worker_command,
-    isolated_python as isolated_python,
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 
@@ -68,6 +68,7 @@ def test_historical_writer_hands_off_without_mutating_config(plugin_world, monke
     def takeover():
         raise SystemExit(73)
     monkeypatch.setattr("hermes_cli._old_updater.stop_for_relaunch", takeover)
+    monkeypatch.setattr("hermes_cli._old_updater.in_historical_update", lambda: True)
     with pytest.raises(SystemExit) as exc:
         _save_enabled_set({"must-not-be-saved"})
     assert exc.value.code == 73

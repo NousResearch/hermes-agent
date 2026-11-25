@@ -245,20 +245,20 @@ class TestExternalProviderSurvivesBuiltinDisable:
     """
 
     def test_provider_tools_enabled_when_memory_toolset_requested(self):
-        from agent.memory_manager import memory_provider_tools_enabled
+        from agent.memory_manager_tools import memory_provider_tools_enabled
 
         assert memory_provider_tools_enabled(
             ["memory", "file"], None, memory_tool_present=False
         )
 
     def test_provider_tools_enabled_for_unrestricted_toolsets(self):
-        from agent.memory_manager import memory_provider_tools_enabled
+        from agent.memory_manager_tools import memory_provider_tools_enabled
 
         assert memory_provider_tools_enabled(None, None, memory_tool_present=False)
 
     def test_disabled_toolsets_still_takes_everything_down(self):
         """The heavy switch keeps its documented meaning."""
-        from agent.memory_manager import memory_provider_tools_enabled
+        from agent.memory_manager_tools import memory_provider_tools_enabled
 
         assert not memory_provider_tools_enabled(
             None, ["memory"], memory_tool_present=False
@@ -271,7 +271,8 @@ class TestInjectionEndToEnd:
     def test_provider_tools_injected_without_builtin_memory_tool(self):
         from types import SimpleNamespace
 
-        from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+        from agent.memory_manager import MemoryManager
+        from agent.memory_manager_tools import inject_memory_provider_tools
         from agent.memory_provider import MemoryProvider
 
         class _Provider(MemoryProvider):

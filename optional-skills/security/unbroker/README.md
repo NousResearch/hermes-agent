@@ -28,7 +28,7 @@ fallback**. Scope is **US-first**, with EU/UK (GDPR) and global coverage on the 
 
 The design is **Hermes-native**: a small deterministic Python CLI (`scripts/pdd.py`) owns the state
 (config, dossiers, broker DB, tier planning, ledger, drafts, reports), while the agent does the
-scanning and submitting with native tools (`web_extract`, `browser_*`, email, `cronjob`,
+scanning and submitting with native tools (`web_extract`, `browser_exec`, email, `cronjob`,
 `delegate_task`). [`SKILL.md`](SKILL.md) is the authoritative reference.
 
 ## Install
@@ -57,6 +57,11 @@ Drive it from a Hermes session:
 > "Use the unbroker skill to remove my data from data brokers. Here is my consent. Run it hands-off
 > and show me the human-task digest at the end."
 
+Or, phone-first (spam-call scrubbing):
+
+> "My number is getting hammered by spam calls. Find where it's listed, scrub it, and put it on
+> the Do Not Call Registry."
+
 The agent configures itself (`setup --auto` selects programmatic email if `EMAIL_*` creds exist, the
 cloud browser if available, and encryption if `age` is installed), records your consent, then drains
 the autonomous queue: scan, opt out (parents first), send and verify emails, schedule re-checks. You
@@ -72,6 +77,7 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 | `pdd.py brokers` / `refresh-brokers` | List people-search brokers, or pull the latest BADBOOL list plus the CA registry |
 | `pdd.py registry` | State data-broker registry coverage (CA ~545 ingested; VT/OR/TX portals); `--search` to find one |
 | `pdd.py drop` | The CA DROP one-shot: delete from all registered brokers in a single request |
+| `pdd.py dnc` | The spam-call one-shot: register US personal numbers on the FTC National Do Not Call Registry |
 | `pdd.py plan` | Per-broker tier, method, search vectors, and the exact fields to disclose |
 | `pdd.py fanout` | Batch brokers into parallel `delegate_task` subagents |
 | `pdd.py record` | Update the ledger (validated state machine); auto-stamps recheck dates |
@@ -114,6 +120,11 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 - **The DROP one-shot.** California's Delete Request and Opt-out Platform is live: for a CA resident,
   a single verified request deletes their data from **every registered broker at once**, and
   `pdd.py next` surfaces it as the highest-leverage action.
+- **Spam-call lane.** A run can be entered from the phone number ("my number keeps getting spam
+  calls"): the number is scanned across the reverse-phone people-search sites (14 of the live
+  curated records; five curated brokers are defunct and excluded from planning), opted out, and
+  re-checked on the same schedule - and `pdd.py dnc` registers it on the FTC's National Do Not
+  Call Registry (surfaced by `next` for phone-led US runs until filed or declined).
 - **Ledger, audit, and re-scan.** Every case is a validated state machine, every PII disclosure is
   logged (field names only), and confirmed removals are re-scanned on a schedule so a re-listing is
   caught and re-filed. Ledger writes are file-locked for safe concurrent runs.
@@ -122,7 +133,7 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 
 ## Tests
 
-85 hermetic tests (no network, browser, or email; SMTP and IMAP are exercised through injected
+42 hermetic tests (no network, browser, or email; SMTP and IMAP are exercised through injected
 fakes):
 
 ```bash
@@ -147,7 +158,7 @@ python3 tests/skills/test_unbroker_skill.py                        # dependency-
 
 **v1.0.** The deterministic engine, the autonomous loop, the verified cluster-parent deletion lanes,
 and full broker-registry coverage (the CA Data Broker Registry plus the DROP one-shot) are built and
-covered by 85 hermetic tests. The skill ships placeholder data only. Live agent-driven submission
+covered by 42 hermetic tests. The skill ships placeholder data only. Live agent-driven submission
 against broker sites is the active field-testing frontier.
 
 ## Credits and license

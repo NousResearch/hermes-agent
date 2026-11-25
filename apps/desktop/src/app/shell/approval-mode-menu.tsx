@@ -1,7 +1,17 @@
 import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
 import { useEffect, useMemo } from 'react'
 
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import {
+  $activeTreeGroup,
+  $collapsedTreeSides,
+  $dismissedPanes,
+  $hiddenTreePanes,
+  $layoutTree,
+  isPaneVisible
+} from '@/components/pane-shell/tree/store'
 import {
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -17,6 +27,24 @@ import {
   setApprovalModeForProfile,
   syncApprovalModeForProfile
 } from '@/store/approval-mode'
+import { $lastApprovalContentPane, isApprovalContentPane, PLUGIN_PANE_PREFIX } from '@/store/session-focus'
+
+// Plugin workspaces are not sessions and declare no single profile owner. A room can contain
+// independently gated profiles; the ambient gateway's mode cannot describe or control it.
+const $showsPluginWorkspace = computed(
+  [$activeTreeGroup, $layoutTree, $lastApprovalContentPane, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides],
+  (groupId, tree, remembered) => {
+    const active = tree && groupId ? findGroup(tree, groupId)?.active : undefined
+    const visible = (paneId?: null | string) => (paneId && isPaneVisible(paneId) ? paneId : undefined)
+
+    const content =
+      (isApprovalContentPane(active) && visible(active)) ||
+      visible(remembered) ||
+      visible(tree ? findGroupOfPane(tree, 'workspace')?.active : undefined)
+
+    return Boolean(content?.startsWith(PLUGIN_PANE_PREFIX))
+  }
+)
 
 export function useApprovalModeStatusbarItem(
   profile: string,
@@ -30,6 +58,7 @@ export function useApprovalModeStatusbarItem(
   const copy = t.shell.approvalMode
   const modes = useStore($approvalModes)
   const mode = modes[profile.trim() || 'default'] ?? 'smart'
+  const hasProfileTarget = !useStore($showsPluginWorkspace)
 
   const labels = useMemo<Record<ApprovalMode, string>>(
     () => ({ manual: copy.manual, smart: copy.smart, off: copy.off }),
@@ -52,12 +81,25 @@ export function useApprovalModeStatusbarItem(
     // optimistic 'smart' default until some later session event reconciles
     // it. Gate on the open socket and re-run when it opens (or a reconnect
     // lands), the same way useStatusSnapshot does.
-    if (gatewayState !== 'open') {
+    if (gatewayState !== 'open' || !hasProfileTarget) {
       return
     }
 
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
-  }, [gatewayState, profile, requestGateway, routeIdentity])
+  }, [gatewayState, hasProfileTarget, profile, requestGateway, routeIdentity])
+
+  if (!hasProfileTarget) {
+    return {
+      icon: <Zap className="size-3.5 opacity-70" />,
+      id: 'approval-mode',
+      label: copy.perProfile,
+      menuAlign: 'end',
+      menuClassName: 'w-72 p-1',
+      menuContent: <DropdownMenuLabel className="whitespace-normal">{copy.perProfileDescription}</DropdownMenuLabel>,
+      title: copy.perProfileDescription,
+      variant: 'menu'
+    }
+  }
 
   return {
     className: mode === 'off' ? 'bg-(--chrome-action-hover) text-foreground' : undefined,

@@ -370,6 +370,13 @@ export const hu: Translations = {
     authRequired: "Hitelesítés szükséges",
     authRequiredHint: "Futtassa ezt a parancsot a hitelesítéshez:",
     updateGit: "Git pull",
+    updateAll: "Összes frissítése",
+    updatingAll: "Bővítmények frissítése…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Frissítve ${updated}, ellenőrzést igényel ${needsReview}, sikertelen ${failed}`,
+    autoUpdate: "Automatikus frissítés",
+    autoUpdateDesc: (hours: number) =>
+      `A bővítményfrissítések automatikus alkalmazása, amikor az átjáró ellenőriz (${hours} óránként). A frissített kód új munkamenetekben töltődik be.`,
     versionBadge: "Verzió",
     showInSidebar: "Megjelenítés az oldalsávon",
     hideFromSidebar: "Elrejtés az oldalsávról",

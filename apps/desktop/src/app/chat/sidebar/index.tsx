@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import { useSidebarDisplayScope } from '@/app/session/hooks/bot-mode-fetch-scope'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -81,10 +82,10 @@ import {
   $profileColors,
   $profiles,
   $profileScope,
+  type AgentProfileRoute,
   ALL_PROFILES,
   messagingTotalsKey,
   normalizeProfileKey,
-  sidebarProfileForScope
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
@@ -125,6 +126,7 @@ import {
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
+  ownerLookupSessionRows,
   sessionPinId
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
@@ -161,6 +163,7 @@ import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
+  enteredProjectLiveRows,
   excludeProjectSessions,
   orderProjectsByIds,
   overlayLiveLanes,
@@ -169,7 +172,6 @@ import {
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
-  reconcileEnteredProjectSessions,
   sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
@@ -177,6 +179,7 @@ import {
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
+  useGatewayProjectTree,
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
@@ -285,7 +288,7 @@ const HEADER_NAV_BTN =
 // by id; the snippet stands in for the preview).
 
 // The backend's FTS layer wraps matched terms in literal '>>>' / '<<<'
-// highlight markers (sqlite snippet() delimiters — see hermes_state_search.py).
+// highlight markers (sqlite snippet() delimiters — see persistence/sqlite/conversation/_store/search.py).
 // The sidebar renders the snippet as plain text, so the markers must be
 // stripped or a search for "foo" paints rows titled ">>>foo<<<".
 // Exported for tests.
@@ -303,7 +306,7 @@ export function searchResultToSession(result: SessionSearchResult): SessionInfo 
   const ts = result.session_started ?? Date.now() / 1000
 
   return {
-    archived: false,
+    archived: result.archived ?? false,
     cwd: null,
     ended_at: null,
     id: result.session_id,
@@ -380,9 +383,9 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string, session?: SessionInfo) => void
   onBranchSession: (sessionId: string) => void
-  onNewSessionInWorkspace: (path: null | string) => void
+  onNewSessionInWorkspace: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
    *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
    *  specific zone / tab-strip slot, and `cwd` pins it to a project's path —
@@ -502,13 +505,9 @@ export function ChatSidebar({
   // `unread` prop mirrors what the dot paints; flip it and let the backend
   // become the truth (optimistic update + rollback in markSessionUnread).
   const toggleUnread = (storedId: string) => {
-    const row = $sessions.get().find(r => r.id === storedId)
+    const row = ownerLookupSessionRows().find(r => r.id === storedId)
 
-    if (!row) {
-      return
-    }
-
-    markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
+    row && markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
   }
 
   // Only surface the profile switcher when more than one profile exists, so
@@ -518,7 +517,7 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const messagingProfile = sidebarProfileForScope(profileScope)
+  const [displayScope, messagingProfile, searchScope] = useSidebarDisplayScope(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
@@ -605,8 +604,8 @@ export function ChatSidebar({
   const scopedSessions = useMemo(() => {
     const pool = showArchived ? archivedSessions : sessions
 
-    return filterSessionsByProfileScope(pool, profileScope)
-  }, [sessions, archivedSessions, showArchived, profileScope])
+    return filterSessionsByProfileScope(pool, displayScope)
+  }, [sessions, archivedSessions, showArchived, displayScope])
 
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded
@@ -672,13 +671,13 @@ export function ChatSidebar({
   )
 
   const visibleCronSessions = useMemo(
-    () => filterSessionsByProfileScope(cronSessions, profileScope),
-    [cronSessions, profileScope]
+    () => filterSessionsByProfileScope(cronSessions, displayScope),
+    [cronSessions, displayScope]
   )
 
   const visibleMessagingSessions = useMemo(
-    () => filterSessionsByProfileScope(messagingSessions, profileScope),
-    [messagingSessions, profileScope]
+    () => filterSessionsByProfileScope(messagingSessions, displayScope),
+    [messagingSessions, displayScope]
   )
 
   // Index sessions by every id a pin might be stored under — recents, cron,
@@ -742,7 +741,7 @@ export function ChatSidebar({
     [isPinnedSession, filtersNarrow, sessionMatchesFilters]
   )
 
-  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, profileScope)
+  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, searchScope)
 
   const searchResults = useMemo(
     () => mergeSearchResults(sortedSessions, trimmedQuery, serverMatches, sessionByAnyId, searchPending),
@@ -776,11 +775,11 @@ export function ChatSidebar({
     }
   }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
 
-  // Recents render in recency order. The hand-picked order is layered on per
-  // date group inside the section (orderRowsWithinGroups) rather than baked
-  // into the list here, so a drag ranks a row among its own day's chats
-  // instead of flattening the whole sidebar into an undated manual mode.
+  // Recents render in recency order. The hand-picked order is layered on per date group inside the
+  // section (orderRowsWithinGroups) rather than baked into the list here, so a drag ranks a row
+  // among its own day's chats instead of flattening the whole sidebar into an undated manual mode.
   const agentSessions = unpinnedAgentSessions
+  const { owners, ownerKey, tree: gatewayProjectTree } = useGatewayProjectTree(projectTree, agentSessions)
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -984,10 +983,10 @@ export function ChatSidebar({
   // `projects.tree` already unifies explicit projects + auto repos and folds
   // linked worktrees under their main repo. The desktop only layers local view
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
-  // overview sort. Membership is the backend tree's — never re-derived here.
+  // overview sort. Membership is the backend tree's (plus other gateways' rows), never re-derived.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
-      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
+      filterToSessionBearingProjects(filterVisibleProjects(gatewayProjectTree, dismissedAutoProjects))
         // A filtered-out project drops its whole lane, header included — hiding
         // only its rows would leave a row of empty folders behind.
         .filter(project => !projectFilter.length || projectFilter.includes(project.id))
@@ -1006,11 +1005,7 @@ export function ChatSidebar({
       activeProjectId
     )
 
-    // Layer the user's manual drag-order on top of the deterministic sort. Empty
-    // (default) returns `sorted` untouched; projects the user hasn't ordered yet
-    // keep their sorted position rather than jumping the hand-picked list.
-    // Deduplicate by id — safety net for backend merge edge cases
-    // (e.g. Windows path-casing differences across profiles).
+    // Manual drag-order over the sorted list; dedupe by id (Windows path casing across profiles).
     const seen = new Set<string>()
 
     const deduped = sorted.filter(project => {
@@ -1025,7 +1020,7 @@ export function ChatSidebar({
 
     return orderProjectsByIds(deduped, projectOrderIds)
   }, [
-    projectTree,
+    gatewayProjectTree,
     dismissedAutoProjects,
     orderRepos,
     activeProjectId,
@@ -1089,8 +1084,8 @@ export function ChatSidebar({
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
   const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
+    () => enteredProjectLiveRows(overviewEnteredProject, agentSessions, owners),
+    [agentSessions, overviewEnteredProject, owners]
   )
 
   // Overlay live `$sessions` onto the entered project so a just-created session
@@ -1103,9 +1098,9 @@ export function ChatSidebar({
   const enteredProjectContent = useMemo(
     () =>
       enteredProject
-        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners)
+        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners, ownerKey)
         : undefined,
-    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners]
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners, ownerKey]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1116,7 +1111,7 @@ export function ChatSidebar({
 
   // git worktree list is a VISUAL-only enhancer (empty lanes); never membership.
   const inEnteredProject = Boolean(enteredProject && !showAllProfiles)
-  const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject)
+  const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject, enteredProject)
 
   // Re-probe worktree lanes on out-of-band git changes the renderer can't see.
   // A turn can `git worktree add/remove` in the terminal (e.g. you ask Hermes to
@@ -1211,13 +1206,14 @@ export function ChatSidebar({
         projects,
         showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
         {
+          ownerKey,
           removed: removedSessionIds,
           // Rank before the trim, so "3 priciest in this project" isn't "3 most
           // recent, priciest first".
           rankIds: sortOrderIds
         }
       ),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
+    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions, ownerKey]
   )
 
   // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —
@@ -1392,7 +1388,7 @@ export function ChatSidebar({
     !showArchived &&
     (showAllProfiles
       ? Object.values(sessionProfilesTruncated).some(Boolean)
-      : Boolean(sessionProfilesTruncated[profileScope]))
+      : Boolean(sessionProfilesTruncated[displayScope]))
 
   const displayRecentsCountRef = useRef(0)
   const loadedRecentsCountRef = useRef(0)
@@ -1873,7 +1869,7 @@ export function ChatSidebar({
                     )}
                     {inProject && enteredProject ? (
                       <div className="group/workspace flex shrink-0 items-center gap-0.5">
-                        {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
+                        {enteredProject.path && <StartWorkButton project={enteredProject} />}
                         {/* Home has no folder and no record to rename, theme, or delete. */}
                         {!enteredProject.isNoProject && (
                           <ProjectMenu

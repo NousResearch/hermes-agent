@@ -13,10 +13,9 @@
  *     against apps/bootstrap-installer/src/. Since both apps live two levels
  *     deep under the same repo root, `../../../node_modules` lands in the
  *     same place. (Verify if either app ever moves.)
- *   - The desktop's `@font-face url('../../../node_modules/...')` references
- *     are baked into the *imported* stylesheet; CSS resolves url()s relative
- *     to the file that contains them, so they continue to point at the
- *     correct node_modules path even from here.
+ *   - The desktop's `@font-face url('@nous-research/ui/fonts/...')`
+ *     references are package specifiers, which Vite resolves through the
+ *     package's exports map, so they find the font from here too.
  *
  * Follows the OS appearance: the installer has no in-app theme switcher, so
  * src/theme.ts tracks the Tauri window theme and toggles `.dark` on

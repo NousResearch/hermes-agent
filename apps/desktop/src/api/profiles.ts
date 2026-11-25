@@ -16,6 +16,18 @@ export function getProfiles(scope?: ProfileScope): Promise<ProfilesResponse> {
   })
 }
 
+/**
+ * A connection's unscoped `/api/status`. `/api/profiles` lists every INSTALLED
+ * profile; `gateway_shared_with` here is the set its gateway actually serves.
+ */
+export function getConnectionServedProfiles(connectionId: string): Promise<{ gateway_shared_with?: null | string[] }> {
+  return hermesApi<{ gateway_shared_with?: null | string[] }>({
+    ...capabilityScoped({ connectionId }),
+    path: '/api/status',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
 export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
   return hermesApi<{ name: string; ok: boolean; path: string; soul_set?: boolean }>({
     path: '/api/profiles',

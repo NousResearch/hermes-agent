@@ -21,11 +21,7 @@ pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group gateway harness"),
 ]
 
-KNOWN: dict[str, tuple[str, str]] = {
-    "heic_as_image": (
-        r"a HEIC photo sent as a file did not reach the model as an image",
-        "#119593 HEIC photo sent as a file is refused by the image cache (never reaches the model)"),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 SKIP: dict[str, str] = {}
 
 rig, rig_stream = rig_fixtures(TelegramDriver)

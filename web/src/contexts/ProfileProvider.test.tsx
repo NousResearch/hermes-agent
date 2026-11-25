@@ -34,7 +34,7 @@ const router: { navigate?: NavigateFunction } = {};
 function Probe() {
   const navigate = useNavigate();
   const { profile, setProfile } = useProfileScope();
-  const { pathname, search } = useLocation();
+  const { pathname, search, state } = useLocation();
   useEffect(() => {
     router.navigate = navigate;
   }, [navigate]);
@@ -42,6 +42,7 @@ function Probe() {
     <button
       data-profile={profile}
       data-url={pathname + search}
+      data-state={JSON.stringify(state ?? null)}
       onClick={() => setProfile("gamma")}
     />
   );
@@ -50,6 +51,11 @@ function Probe() {
 function seen() {
   const probe = container.querySelector("button")!;
   return { profile: probe.dataset.profile, url: probe.dataset.url };
+}
+
+function seenState() {
+  const probe = container.querySelector("button")!;
+  return JSON.parse(probe.dataset.state ?? "null");
 }
 
 async function mount(initialEntry: string) {
@@ -90,5 +96,15 @@ describe("ProfileProvider URL sync", () => {
 
     await act(async () => container.querySelector("button")!.click());
     expect(seen()).toEqual({ profile: "gamma", url: "/config?profile=gamma" });
+  });
+
+  it("preserves router location state when re-asserting ?profile= after a bare navigation", async () => {
+    await mount("/skills?profile=alpha");
+
+    await act(async () =>
+      router.navigate!("/chat", { state: { learnSeed: "keep me" } }),
+    );
+    expect(seen()).toEqual({ profile: "alpha", url: "/chat?profile=alpha" });
+    expect(seenState()).toEqual({ learnSeed: "keep me" });
   });
 });

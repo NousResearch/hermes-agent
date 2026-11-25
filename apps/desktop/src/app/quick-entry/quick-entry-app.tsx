@@ -310,7 +310,7 @@ function NativeQuickEntryApp({ quickEntry }: { quickEntry: NonNullable<Window['h
           autoCapitalize="off"
           autoComplete="off"
           autoCorrect="off"
-          className="w-full resize-none bg-transparent text-sm text-(--ui-text-primary) outline-none"
+          className="w-full resize-none bg-transparent text-sm text-(--ui-text-primary)"
           disabled={!inbox && !notice}
           onChange={event => edit(event.target.value)}
           onKeyDown={event => {

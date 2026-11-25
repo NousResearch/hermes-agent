@@ -12,7 +12,9 @@ from pathlib import Path
 from agent.transports import codex_app_server_session as session_mod
 from agent.transports.codex_app_server import CodexAppServerError
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 SID = "sess-codex-restart"
 
@@ -49,7 +51,7 @@ class _WireClient:
 def _agent(db, **kwargs):
     from run_agent import AIAgent
     agent = AIAgent(api_key="stub", base_url="https://stub.invalid", provider="openai", api_mode="codex_app_server",
-                    quiet_mode=True, skip_context_files=True, skip_memory=True, session_db=db, session_id=SID, **kwargs)
+                    quiet_mode=True, skip_context_files=True, skip_memory=True, persistence=db, session_id=SID, **kwargs)
     agent._spawn_background_review = lambda **kw: None
     return agent
 
@@ -63,13 +65,13 @@ def test_rebuilt_agent_resumes_the_stored_codex_thread_and_an_unresumable_one_fa
     monkeypatch.setattr(session_mod, "CodexAppServerClient", _WireClient)
     monkeypatch.setattr(CodexAppServerSession, "run_turn", _run_turn)
     _WireClient.instances, _WireClient.dead, _WireClient.counter = [], set(), 0
-    db = SessionDB(Path(tmp_path) / "state.db")
+    db = open_persistence(profile_scope(home=Path(tmp_path)))
     try:
         # Process 1: first turn publishes the binding only after the transcript is durable.
         first = _agent(db)
         assert first.run_conversation("Remember the word amber.")["completed"]
-        assert db.get_session_model_config_value(SID, "codex_thread_id") == "thread-1"
-        assert [r["content"] for r in db.get_messages(SID)][-1] == "echo Remember the word amber."
+        assert db.sessions.get_model_config_value(SID, "codex_thread_id") == "thread-1"
+        assert [r["content"] for r in transcript_rows(db, SID)][-1] == "echo Remember the word amber."
 
         # Process 2 (restart): a new AIAgent for the same session resumes that thread before turn/start.
         notices: list[str] = []
@@ -89,7 +91,28 @@ def test_rebuilt_agent_resumes_the_stored_codex_thread_and_an_unresumable_one_fa
         third.status_callback = status_callback
         assert third.run_conversation("And now?", conversation_history=[])["completed"]
         assert [m for m, _ in _WireClient.instances[2].requests] == ["thread/resume", "thread/start"]
-        assert db.get_session_model_config_value(SID, "codex_thread_id") == "thread-2"
+        assert db.sessions.get_model_config_value(SID, "codex_thread_id") == "thread-2"
         assert notices == ["Codex thread could not be resumed; starting a new one."]
+    finally:
+        db.close()
+
+
+def test_the_binding_is_stored_and_read_through_the_writer_handle(tmp_path):
+    """An agent with a writer's storage handle beside its store keeps the binding through the handle."""
+    from types import SimpleNamespace
+
+    import persistence_assembly
+    from agent.codex_runtime import _store_codex_thread_id, _stored_codex_thread_id
+
+    db = open_persistence(profile_scope(home=Path(tmp_path)))
+    seed_session(db, SID, "cli")
+    try:
+        with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path)) as handle:
+            agent = SimpleNamespace(_session_db=db, session_id=SID, persistence=handle)
+            _store_codex_thread_id(agent, "thread-9")
+            assert db.sessions.get_model_config_value(SID, "codex_thread_id") == "thread-9"
+            assert _stored_codex_thread_id(agent) == "thread-9"
+            _store_codex_thread_id(agent, None)
+            assert _stored_codex_thread_id(agent) is None
     finally:
         db.close()

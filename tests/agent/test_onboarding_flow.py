@@ -1,4 +1,4 @@
-"""``agent/onboarding_flow.py``: the beats, the run record and every event, across machine fixtures.
+"""``session_rules/onboarding_flow.py``: the beats, the run record and every event, across machine fixtures.
 
 Sequences named after lab runs replay what those runs did; the lab bugs they showed are the
 assertions (``.scratch/onboarding-plan/NOTES-onboarding-flow.md``).
@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from agent import onboarding_flow as flow
-from agent.onboarding_flow import (
+from session_rules import onboarding_flow as flow
+from session_rules.onboarding_flow import (
     DONE, PENDING, SHOWN, SKIPPED, Answered, Applied, Done, Facts, End, Recorded, Shown, Skipped,
     TimedOut, Wrote, apply, new_record, next_beat,
 )
-from agent.onboarding_first_tasks import eligible_tasks
+from session_rules.onboarding_first_tasks import eligible_tasks
 from agent.onboarding_text import _LOOK_AROUND, opening_prompt, reminder, turn_note
 
 NOTES = [{"id": "notes", "label": "Notes to wiki"}]

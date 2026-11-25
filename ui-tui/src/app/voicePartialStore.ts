@@ -1,6 +1,5 @@
+import type { AnyGatewayEvent } from '@hermes/shared/gateway-types'
 import { atom } from 'nanostores'
-
-import type { AnyGatewayEvent } from '../gatewayTypes.js'
 
 // Live STT text so far while the user is still speaking (`voice.partial`, stt.streaming). The
 // composer shows it as its placeholder until the capture settles.

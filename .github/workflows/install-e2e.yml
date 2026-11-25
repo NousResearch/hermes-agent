@@ -130,7 +130,7 @@ env:
 jobs:
   pick-releases:
     name: Pick release tags
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
@@ -139,7 +139,7 @@ jobs:
       # checkout: no blobs (filter), no other files (sparse), but DO fetch
       # tags -- they are the whole input, and the default shallow checkout
       # has none.
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           filter: blob:none
@@ -170,6 +170,8 @@ jobs:
           if [ -n "$INSTALL_REF" ]; then
             [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }
             [ "$INSTALL_REF" != "$EXCLUDE_REF" ] || { echo "Candidate cannot be its own baseline" >&2; exit 1; }
+            git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null 2>&1 \
+              || git fetch --quiet --no-tags origin "+refs/tags/$INSTALL_REF:refs/tags/$INSTALL_REF"
             git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null
             tags="$(jq -cn --arg ref "$INSTALL_REF" '[$ref]')"
           elif [ "$RELEASE_MODE" = true ]; then
@@ -195,7 +197,7 @@ jobs:
   generate-matrix:
     name: Expand combinations
     needs: pick-releases
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       linux: ${{ steps.gen.outputs.linux }}
@@ -205,7 +207,7 @@ jobs:
       windows-legs: ${{ steps.gen.outputs.windows-legs }}
       macos-legs: ${{ steps.gen.outputs.macos-legs }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: scripts/sandbox/generate-e2e-matrix.mjs
@@ -232,7 +234,7 @@ jobs:
   bundle-inputs:
     name: Validate pinned bundle transitions
     # Bundled legs need dispatch-only manifests.
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       windows: ${{ steps.inputs.outputs.windows }}
@@ -240,7 +242,7 @@ jobs:
       windows-arch: ${{ steps.inputs.outputs.windows-arch }}
       macos-arch: ${{ steps.inputs.outputs.macos-arch }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
       # The repo's engines require the locked Node (>=26); the runner's system Node is older.
@@ -256,7 +258,7 @@ jobs:
           BUNDLE_MACOS_MANIFEST: ${{ inputs.macos-bundle-manifest }}
           BUNDLE_ROUTE: ${{ inputs.route }}
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund
+          pnpm install --frozen-lockfile --ignore-scripts
           node tests/install/e2e-assets/bundle-plan.mjs
 
   windows-bundled:
@@ -359,10 +361,10 @@ jobs:
   # looks it up by that name.
   leg-player:
     name: Upload leg player
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: tests/install/e2e-assets/playback.html
@@ -387,7 +389,7 @@ jobs:
     name: Source matrix gate
     if: always() && inputs.release == true
     needs: [generate-matrix, linux, windows, macos]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Evaluate source legs
@@ -429,10 +431,10 @@ jobs:
     name: Result chart
     if: always()
     needs: [leg-player, pick-releases, linux, windows, macos, bundle-inputs, windows-bundled, macos-bundled]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: |

@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 def held_archive_watermark(
     session_db: Any, session_id: str, watermark: Optional[int], messages: list, verbatim_tail: Optional[list] = None,
-    *, stale_raises: bool = False,
+    *, stale_raises: bool = False, persistence: Any = None,
 ) -> Optional[int]:
     """The in-place archive watermark, capped at the newest durable row the compressor was handed.
 
@@ -46,6 +46,8 @@ def held_archive_watermark(
     a loaded view). That comparison runs for every exact persisted held row, so an unstamped trailing
     message (which caps the watermark through the early return below) cannot suppress it for the durable
     prefix.
+
+    *persistence* is the storage interface handle both store reads go through when the store has one.
     """
     if watermark is None:
         return None
@@ -67,14 +69,16 @@ def held_archive_watermark(
         # copy would republish the pre-rewrite text over the winner (#124102). Runs before the
         # trailing-row early return: an unstamped trailing message may cap the watermark, but it must not
         # suppress the version check for the durable prefix this caller does hold exactly.
-        rewritten_of = getattr(session_db, "rewritten_held_row_ids", None)
-        if callable(rewritten_of):
-            rewritten = rewritten_of(session_id, [
-                m for m in messages
-                if isinstance(m, dict) and _exact_id(m, False) is not None])
-            if rewritten:
-                raise StaleHeldHistory(
-                    f"held row {min(rewritten)} of session {session_id} was rewritten in place")
+        exact = [m for m in messages if isinstance(m, dict) and _exact_id(m, False) is not None]
+        if persistence is not None:
+            from agent.conversation_compression_archive import held_message
+            rewritten = persistence.messages.rewritten_held_row_ids(session_id, [held_message(m) for m in exact])
+        else:
+            rewritten_of = getattr(session_db, "rewritten_held_row_ids", None)
+            rewritten = rewritten_of(session_id, exact) if callable(rewritten_of) else None
+        if rewritten:
+            raise StaleHeldHistory(
+                f"held row {min(rewritten)} of session {session_id} was rewritten in place")
     if not ids or ids[-1] is None:
         return watermark
     newest_held = max(held)
@@ -82,7 +86,12 @@ def held_archive_watermark(
     # watermark read before the slow step never sees newest_held < watermark, yet the winner may have landed.
     if newest_held >= watermark and not stale_raises:
         return watermark
-    if session_db.get_message_role(session_id, newest_held) is None:
+    if persistence is not None:
+        from persistence.core.identity import MessageId
+        role = persistence.messages.message_role(session_id, MessageId(newest_held))
+    else:
+        role = session_db.get_message_role(session_id, newest_held)
+    if role is None:
         if stale_raises:
             raise StaleHeldHistory(f"held row {newest_held} of session {session_id} is no longer active")
         return watermark

@@ -442,6 +442,27 @@ class SharedMetricsDesktopDailyResult(Result):
 method("shared_metrics.desktop_daily", params=SharedMetricsDesktopDailyParams,
        result=SharedMetricsDesktopDailyResult,
        doc="Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry.")
+
+
+class SharedMetricsDesktopLongFrameCount(Params):
+    """Long animation frames counted in one duration bucket while the window was visible."""
+
+    bucket: Literal["50ms_to_100ms", "100ms_to_250ms", "250ms_to_1s", "1s_to_5s", "gte_5s"]
+    count: int
+
+
+class SharedMetricsDesktopLongFramesParams(ProfileParams):
+    """One finished UTC day's long-frame histogram and visible window time, aggregated on the client.
+    ``day`` (YYYY-MM-DD) only latches a resend and is never recorded."""
+
+    day: str
+    frames: list[SharedMetricsDesktopLongFrameCount] = Field(default_factory=list)
+    visible_ms: float = 0
+
+
+method("shared_metrics.desktop_long_frames", params=SharedMetricsDesktopLongFramesParams,
+       result=SharedMetricsDesktopDailyResult,
+       doc="Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry.")
 # ---- end v5 desktop ----
 
 
@@ -475,6 +496,8 @@ class ModelCapabilities(Result):
 
     fast: bool
     ultrafast: bool = False
+    # This account's Codex catalog lists ``daybreak_blue`` for the model (``agent/codex_service_tiers.py``).
+    daybreak: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
 
@@ -600,6 +623,37 @@ class ImageGenerateResult(Result):
 
 method("image.generate", params=ImageGenerateParams, result=ImageGenerateResult,
        doc="Generate an image through the tool's provider dispatcher and hand the renderer a data URL.")
+
+
+# ── image.render ──────────────────────────────────────────────────────────────────────────────
+
+
+class ImageRenderParams(Params):
+    path: str
+    cols: int  # cell budget; the image keeps its aspect inside it and never upscales
+    rows: int
+    graphics: bool = False  # the client owns a real terminal and can take escapes
+    # The client's own ``auto`` pick from its terminal's env (ui-tui lib/terminalGraphics.ts); the
+    # gateway's env names no client's terminal.
+    terminal: Literal["kitty", "unicode"] = "unicode"
+
+
+class ImageRenderResult(Result):
+    """``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint
+    ``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``)
+    as half-blocks. ``off``: inline images are disabled or the file is not a readable image."""
+
+    mode: Literal["kitty", "unicode", "off"]
+    cols: int | None = None
+    rows: int | None = None
+    color: str | None = None
+    transmit: str | None = None
+    placeholder: list[str] | None = None
+    cells: list[list[list[int]]] | None = None
+
+
+method("image.render", params=ImageRenderParams, result=ImageRenderResult,
+       doc="Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks).")
 
 
 # ── session.control ───────────────────────────────────────────────────────────────────────────

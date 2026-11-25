@@ -231,3 +231,27 @@ it('paints native target options with matching theme foreground and background',
     expect(option.style.backgroundColor).toBe('var(--ui-bg-elevated, var(--background))')
   }
 })
+
+
+it('keeps IME commit Enter and Shift+Enter in the draft, then sends on ordinary Enter', async () => {
+  const { api, connect } = setup()
+  render(<QuickEntryApp />)
+  const input = screen.getByRole<HTMLTextAreaElement>('textbox')
+  await waitFor(() => expect(input.disabled).toBe(false))
+  act(connect)
+  fireEvent.change(input, { target: { value: 'A composed thought' } })
+
+  fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+  fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: false })
+  fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+  expect(api.submit).not.toHaveBeenCalled()
+  expect(input.value).toBe('A composed thought')
+
+  fireEvent.keyDown(input, { key: 'Enter' })
+  await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1))
+  expect(api.submit).toHaveBeenCalledWith({
+    target: 'current',
+    text: 'A composed thought',
+    thoughtOwnerToken: 'owner-a'
+  })
+})

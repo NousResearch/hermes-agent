@@ -151,9 +151,7 @@ def _message_identity(msg: Any) -> _Identity:
     bodies are left out: the no-LLM prune rewrites them in place."""
     if not isinstance(msg, dict):
         return "?", None, ""
-    from agent.memory_manager import sanitize_context
-    from agent.message_content import flatten_message_text
-    from agent.message_metadata import message_uid_or_none
+    from session_rules.turns import sanitize_context, flatten_message_text, message_uid_or_none
 
     role = str(msg.get("role") or "")
     uid = message_uid_or_none(msg)
@@ -405,7 +403,7 @@ class PreparedCompaction:
             with self._lock:
                 if self._pending is not None or self._entry is not None:
                     return None  # one summary per compaction: later messages join the tail at the splice
-            working, _, start, end = compressor._plan_compaction_window(messages)
+            working, _pruned, start, end = compressor._plan_compaction_window(messages)
             if start >= end:
                 return None
             worker = _worker_copy(compressor)
@@ -413,8 +411,7 @@ class PreparedCompaction:
             scan = worker._scan_window_handoffs(working, start, end, working[start:end])
             if scan.tail_start != end:
                 return None  # a handoff inside the protected tail: leave it to compress()
-            turns = scan.turns_to_summarize
-            if not turns:
+            if not scan.turns_to_summarize:
                 return None
             focus = worker._derive_auto_focus_topic(working)
             window = _Window(compressor._session_id, start, end, prefix_identities(working, end))
@@ -429,6 +426,13 @@ class PreparedCompaction:
                     _slots.release()
                     return None
                 token = self._pending = _PendingPass(window)
+            # The pass summarizes the window's ORIGINAL rows and writes nothing: the splicing compaction
+            # archives what it replaces once its summary is adopted (summarize first, archive after).
+            from agent.context_compressor_window import summary_view
+
+            source = summary_view(working, compressor._drop_blank_echoes(messages), start, end)
+            worker = _worker_copy(compressor)  # the gating scan mutated the first copy
+            turns = worker._scan_window_handoffs(source, start, end, source[start:end]).turns_to_summarize
             from agent.memory_provider import spawn_context_thread
 
             # Profile and secret scope ride the contextvars into the pass.

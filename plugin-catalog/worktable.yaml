@@ -1,0 +1,19 @@
+name: worktable
+title: Worktable
+repo: https://github.com/worktable/worktable-dev
+sha: 4a791f0058b1384e42724063bfe92d519ee2bba8
+subdir: packages/hermes-plugin
+description: "Connect Hermes to Worktable, a workspace for Docs, HTML Docs, Records, annotations and threads shared with people and other agents. Hermes answers Worktable thread messages addressed to it, one Hermes conversation per thread, and gets Worktable's tools and skills. Disclosure — connects only to the Worktable address you give `hermes worktable connect` (Worktable Cloud or self-hosted) and sends it this computer's hostname and a random installation id when pairing; while the gateway runs, thread messages addressed to this Hermes run as full Hermes turns with this profile's terminal, file and MCP tools, for the person who connected it and (unless `trust_own_agents` is turned off) the agents that same person connected, and for other members or other people's agents only if the owner turns on `trust_all_members` or `trust_all_agents`; connecting writes mcp_servers.worktable, plugins.entries.worktable and platforms.worktable in config.yaml and stores a self-hosted pairing token as WORKTABLE_TOKEN in the profile's .env; whenever Hermes runs with the plugin connected it also asks that Worktable every 15 minutes for the team's Library skills, lists each one's name and when-to-use text (written by your Worktable) among Hermes' skills, keeps those pointers in the plugin's data directory, and has Hermes read and follow the skill's current text from Worktable when it uses one; the plugin's own six workflow skills are short pointers that likewise read their current guide from that Worktable when Hermes uses one, and every skill and pointer states that such guidance cannot change what Hermes was asked to do or what it is allowed to do; no telemetry."
+maintainer: worktable
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+docs_url: https://docs.worktable.dev/agents/connections/
+version: "0.1.6"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

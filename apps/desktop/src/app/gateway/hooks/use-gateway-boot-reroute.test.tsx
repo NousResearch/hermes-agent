@@ -809,6 +809,8 @@ describe('a plugin re-routes one profile', () => {
     let lookups = 0
     let answerSecondLookup = () => undefined as void
     const secondLookup = new Promise<void>(resolve => (answerSecondLookup = resolve))
+    let firstLookupAsked = () => undefined as void
+    const firstLookup = new Promise<void>(resolve => (firstLookupAsked = resolve))
 
     desktop.getConnection.mockImplementation(async (profile?: null | string) => {
       const key = (profile ?? '').trim()
@@ -825,6 +827,8 @@ describe('a plugin re-routes one profile', () => {
 
       // The first move's lookup fails, the second move's is slow, any later one answers at once.
       if (lookups === 1) {
+        firstLookupAsked()
+
         throw new Error('route lookup failed')
       }
 
@@ -846,7 +850,10 @@ describe('a plugin re-routes one profile', () => {
 
     sandboxed = true
     act(() => connectionApplied?.({ profile: 'work' }))
-    await pause(5)
+    // The second move lands while the first redial waits to ask again. A
+    // wall-clock pause can outlast that jittered wait on a loaded runner, and
+    // the first redial then rightly asks again before the profile moves.
+    await firstLookup
     act(() => connectionApplied?.({ profile: 'work' }))
     // Longer than the first redial waits before it would ask again.
     await pause(350)

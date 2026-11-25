@@ -94,8 +94,10 @@ interface PortalSidebarSearchFieldProps {
   onChange: (query: string) => void
 }
 
-/** The field the header's button brings out: New chat's row on a rim, the shortcut's keycaps at its
- *  end while it rests. Escape on an empty field puts it away, back on its button. */
+/** The field the header's button brings out: New chat's row — its slot on the rim instead of the
+ *  fill — the shortcut's keycaps at its end while it rests. Held in New chat's own place, so the
+ *  sections under it never move when it comes out or goes away. Escape on an empty field puts it
+ *  away, back on its button. */
 export function PortalSidebarSearchField({ search, query, pending, onChange }: PortalSidebarSearchFieldProps) {
   const { t } = useI18n()
   const bindings = useStore($bindings)

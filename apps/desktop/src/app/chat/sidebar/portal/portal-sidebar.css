@@ -20,9 +20,9 @@
 
 /* ── Content column ─────────────────────────────────────────────────────────────────────────── */
 
-/* The header, then New chat (and the search field while it is out), then the sections, 16px apart
-   (Centre 16292:15509). The column runs on the 20px gutter: New chat and row fills span it, text
-   sits 12px further in. */
+/* The header, then New chat — or the search field in its place while it is out — then the sections,
+   16px apart (Centre 16292:15509). The column runs on the 20px gutter: New chat and row fills span
+   it, text sits 12px further in. */
 .portal-sidebar-content {
   min-width: 0;
   gap: var(--portal-sidebar-actions-gap);
@@ -307,8 +307,9 @@
   background: color-mix(in srgb, var(--ui-base) 6%, transparent);
 }
 
-/* ── Search, out while its header button is pressed: New chat's 40px row on a rim instead of a fill,
-   the shortcut's keycaps at the end ──────────────────────────────────────────────────────────── */
+/* ── Search, out while its header button is pressed: it takes New chat's 40px row — the same
+   --portal-row-panel height, on a rim instead of a fill, the shortcut's keycaps at its end — so the
+   list under it never moves ─────────────────────────────────────────────────────────────────── */
 
 .portal-sidebar-search-row {
   display: flex;

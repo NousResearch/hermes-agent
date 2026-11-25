@@ -333,6 +333,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.forward': historyForward,
 
     'session.new': () => {
+      // The redesigned sidebar's New-chat row claims this command and starts the chat in the agent of
+      // the chat being viewed. Its claim answers whether it opened one, so a row that is unmounted, a
+      // picker-only mount, or a row still loading its roster falls through to the plain fresh draft
+      // below — the chord is never swallowed by a sidebar that cannot service it.
       if (requestSimplifiedNewSession()) { return }
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create

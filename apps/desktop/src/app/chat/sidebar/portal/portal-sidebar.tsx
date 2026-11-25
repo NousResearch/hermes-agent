@@ -200,7 +200,15 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
     <Sidebar className="portal-sidebar" collapsible="none" data-tour="sessions-sidebar">
       <SidebarContent className="portal-sidebar-content">
         <PortalSidebarHead search={searchBox} />
+        {/* One slot under the header: New chat's row, or the search field in its place while it is
+            out — never both, so the sections below keep their place when search opens (HADESK-53).
+            SimplifiedNewSession stays mounted (`hidden`) so its `session.new` agent claim survives
+            while search is open (HADESK-78). */}
+        {searchBox.open && (
+          <PortalSidebarSearchField onChange={setQuery} pending={search.pending} query={query} search={searchBox} />
+        )}
         <SimplifiedNewSession
+          hidden={searchBox.open}
           onFallback={() => {
             $newChatProfile.set(null)
             props.onNavigate({
@@ -213,9 +221,6 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           }}
           sessions={all}
         />
-        {searchBox.open && (
-          <PortalSidebarSearchField onChange={setQuery} pending={search.pending} query={query} search={searchBox} />
-        )}
         <SidebarStorageCorruptNotice />
         {search.failed && (
           <p className="text-xs text-destructive" role="alert">

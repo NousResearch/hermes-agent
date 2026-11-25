@@ -228,7 +228,7 @@ it('lets v2 claim New session only while enabled; off retains the original short
   const { deps, press } = await mountKeybinds()
   const { $shellChoice } = await import('@/store/shell-variant')
   const { claimSimplifiedNewSession } = await import('@/store/simplified-new-session')
-  const claim = vi.fn()
+  const claim = vi.fn(() => true)
   const release = claimSimplifiedNewSession(claim)
 
   try {
@@ -243,6 +243,44 @@ it('lets v2 claim New session only while enabled; off retains the original short
   } finally {
     $shellChoice.set(false)
     release()
+  }
+})
+
+it('hands the chord to the shell fresh draft when the redesigned sidebar declines it', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { deps, press } = await mountKeybinds()
+  const { $shellChoice } = await import('@/store/shell-variant')
+  const { claimSimplifiedNewSession } = await import('@/store/simplified-new-session')
+  // A New-chat row with nothing to start answers false instead of eating the key.
+  const release = claimSimplifiedNewSession(() => false)
+
+  try {
+    $shellChoice.set(true)
+    press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+    expect(deps.startFreshSession).toHaveBeenCalledOnce()
+  } finally {
+    $shellChoice.set(false)
+    release()
+  }
+})
+
+it('opens a fresh draft with no redesigned sidebar mounted, so a hidden pane cannot swallow the chord', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { deps, press } = await mountKeybinds()
+  const { $shellChoice } = await import('@/store/shell-variant')
+  const flash = vi.fn()
+
+  window.addEventListener('hermes:new-session-shortcut', flash)
+
+  try {
+    $shellChoice.set(true)
+    press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+    expect(deps.startFreshSession).toHaveBeenCalledOnce()
+    // The row's own hint ping, sidebar or not: the key visibly belongs to New chat.
+    expect(flash).toHaveBeenCalledOnce()
+  } finally {
+    window.removeEventListener('hermes:new-session-shortcut', flash)
+    $shellChoice.set(false)
   }
 })
 

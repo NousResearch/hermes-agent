@@ -109,6 +109,25 @@ it('falls back to the existing action while the roster is empty', () => {
   expect(fallback).toHaveBeenCalledOnce()
 })
 
+it('runs the host’s fallback from the shortcut while the roster is empty', () => {
+  profile.$profiles.set([])
+  const fallback = vi.fn()
+  render(<SimplifiedNewSession onFallback={fallback} sessions={[]} />)
+  act(() => {
+    expect(requestSimplifiedNewSession()).toBe(true)
+  })
+  expect(fallback).toHaveBeenCalledOnce()
+})
+
+it('declines the shortcut when it has neither an agent to start nor a fallback to run', () => {
+  profile.$profiles.set([])
+  render(<SimplifiedNewSession sessions={[]} />)
+  act(() => {
+    // A picker-only mount cannot open a chat, so the chord keeps the shell's own fresh draft.
+    expect(requestSimplifiedNewSession()).toBe(false)
+  })
+})
+
 it('ranks the current owner first, then balances frequency and recency without mixing gateways', () => {
   const agents = ['current', 'frequent', 'recent', 'old'].map(name => ({
     id: JSON.stringify(['alpha', name]),

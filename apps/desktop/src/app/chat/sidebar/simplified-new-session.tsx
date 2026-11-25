@@ -41,7 +41,19 @@ function AgentTag({ label }: { label: string }) {
   )
 }
 
-export function SimplifiedNewSession({ sessions, onFallback }: { sessions: SessionInfo[]; onFallback: () => void }) {
+export function SimplifiedNewSession({
+  hidden = false,
+  sessions,
+  onFallback
+}: {
+  /** Render nothing while keeping the shortcut claim mounted (e.g. while sidebar search owns the slot). */
+  hidden?: boolean
+  sessions: SessionInfo[]
+  /** The host's own fresh-draft action, run when this row has no agent to start. A host that mounts
+   *  the row purely as a picker omits it — the row then declines the shortcut rather than swallowing
+   *  it (see `request`). */
+  onFallback?: () => void
+}) {
   const { t } = useI18n()
   const c = useNewSessionCopy()
   const { agents, owner } = useSimplifiedAgents([])
@@ -109,16 +121,26 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
     setOpen(next)
   }
 
-  function request() {
+  /** The row's command. Answers whether it opened a chat, so the keyboard shortcut falls back to the
+   *  shell's own fresh draft when this row has nothing to start (see the claim below). */
+  function request(): boolean {
     picked.current = true
     changeOpen(false)
 
     if (selected) {
       recordIaAction('ia.new_session.specific')
       startSimplifiedAgentSession(selected)
-    } else {
-      onFallback()
+
+      return true
     }
+
+    if (!onFallback) {
+      return false
+    }
+
+    onFallback()
+
+    return true
   }
 
   // A pick IS the action: it opens a new chat with that agent (or a blank one) at once, and never
@@ -138,10 +160,18 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
 
   const onCommand = useEffectEvent(() => {
     recordIaAction('ia.new_session.command')
-    request()
+
+    return request()
   })
 
+  // The claim answers the shortcut: a row with no agent to start and no fresh-draft action of its own
+  // (a picker-only mount) returns false, so `session.new` runs the shell's own draft instead of
+  // swallowing the chord on a row the user cannot reach.
   useEffect(() => claimSimplifiedNewSession(() => onCommand()), [])
+
+  if (hidden) {
+    return null
+  }
 
   return (
     <div className="portal-new-session" data-slot="new-session-split" ref={splitButton}>

@@ -212,6 +212,35 @@ describe('Portal sidebar', () => {
     expect((screen.getByRole('textbox', { name: 'Search sessions' }) as HTMLInputElement).value).toBe('')
   })
 
+  it('gives session search New chat’s own row, so nothing under it moves when the field comes out', () => {
+    const { container } = mount()
+    const content = container.querySelector('.portal-sidebar-content')!
+    // The slot the header hands down: New chat's row, or the search field standing in its place.
+    const leadSlot = () =>
+      [...content.children].findIndex(child =>
+        child.matches('[data-slot="new-session-split"], .portal-sidebar-search-row')
+      )
+
+    const slot = leadSlot()
+    expect(slot).toBeGreaterThan(0)
+    expect(container.querySelector('[data-slot="new-session-split"]')).toBeTruthy()
+    expect(container.querySelector('.portal-sidebar-search-row')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search sessions' }))
+
+    // One row, not two: the field took New chat's place instead of sitting under it.
+    expect(screen.getByRole('textbox', { name: 'Search sessions' })).toBeTruthy()
+    expect(container.querySelector('[data-slot="new-session-split"]')).toBeNull()
+    expect(container.querySelector('.portal-sidebar-search-row')).toBeTruthy()
+    expect(leadSlot()).toBe(slot)
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search sessions' }), { key: 'Escape' })
+    expect(screen.queryByRole('textbox', { name: 'Search sessions' })).toBeNull()
+    expect(container.querySelector('[data-slot="new-session-split"]')).toBeTruthy()
+    expect(container.querySelector('.portal-sidebar-search-row')).toBeNull()
+    expect(leadSlot()).toBe(slot)
+  })
+
   it('highlights the focused chat owner without switching the ambient agent', () => {
     $activeGatewayProfile.set('default')
     $selectedStoredSessionId.set('pinned')

@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from agent.reasoning_effort import clamp_effort, requested_effort
+from agent.reasoning_effort import clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -23,7 +23,9 @@ class CerebrasProfile(ProviderProfile):
         if not supported or not isinstance(reasoning_config, dict):
             return {}, {}
 
-        effort = "none" if reasoning_config.get("enabled") is False else requested_effort(reasoning_config)
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        if reasoning_config.get("enabled") is False:
+            effort = "none"
         # GPT-OSS always reasons. Leave its server default in place when "off" is requested.
         if effort == "none" and effort not in supported:
             return {}, {}

@@ -2,12 +2,15 @@
 
 Covers: off unless configured, per-feature DWD scopes, the thinking reaction in place of the
 marker message (and its fallback), Workspace Events deliveries told apart from app events, which
-listened messages are admitted, and the subscription upkeep (create, adopt, renew, reactivate).
+listened messages are admitted, the subscription upkeep (create, adopt, renew, reactivate,
+recreate after expiry), and the catch-up on what was said while a subscription was gone.
 """
 
 import asyncio
 import datetime as dt
+import json
 import logging
+import re
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
@@ -61,10 +64,22 @@ class _FakeReactions:
 
 
 class _FakeUserChat:
-    """``spaces().messages().reactions()`` of the delegated user's Chat client."""
+    """``spaces().messages().reactions()`` and ``spaces().messages().list()`` of the delegated
+    user's Chat client."""
 
     def __init__(self):
         self.fake_reactions = _FakeReactions()
+        self.history: list[dict] = []  # what messages.list can return
+        self.listed: list[tuple] = []
+        self.list_fails_with = None
+
+    def list(self, parent, pageSize=None, filter=None, orderBy=None, pageToken=None):
+        self.listed.append((parent, filter, orderBy))
+        if self.list_fails_with is not None:
+            return _Call(exc=self.list_fails_with)
+        since, until = re.findall(r'"([^"]+)"', filter)
+        return _Call({"messages": [dict(m) for m in sorted(self.history, key=lambda m: m["createTime"])
+                                   if m["name"].startswith(parent + "/") and since < m["createTime"] < until]})
 
     def spaces(self):
         return self
@@ -469,6 +484,174 @@ class TestSubscriptionKeeper:
         assert moved.ensure(SPACE) == "replaced (other topic), created"
         assert [s["notificationEndpoint"]["pubsubTopic"] for s in events.subscriptions_.subs.values()] == [
             "projects/p/topics/other"]
+
+
+# ===========================================================================
+# What was said while a subscription was gone
+# ===========================================================================
+
+
+def _said(n, text, sender="users/alice", minutes=30, **more):
+    return _ws_message(text=text, sender=sender, name=f"{SPACE}/messages/{n}", createTime=_in(minutes=-minutes), **more)
+
+
+def _expire(events, keeper, hours=5):
+    """The subscription on SPACE ran out ``hours`` ago and Google removed it."""
+    keeper._expires[SPACE] = _in(hours=-hours)
+    events.subscriptions_.subs.clear()
+    events.subscriptions_.gone_status = 403
+
+
+class TestMissedWindow:
+    def test_an_expired_subscription_leaves_a_window_until_it_is_caught_up(self):
+        events = _FakeEvents()
+        keeper = _keeper(events)
+        keeper.ensure(SPACE)
+        assert keeper.missed(SPACE) is None
+        _expire(events, keeper)
+        since = keeper._expires[SPACE]
+        assert keeper.ensure(SPACE) == "created"
+        assert keeper.missed(SPACE) == (since, keeper.missed(SPACE)[1])
+        assert _in(minutes=-1) < keeper.missed(SPACE)[1] <= _in()
+        window = keeper.missed(SPACE)
+        assert keeper.ensure(SPACE) is None and keeper.missed(SPACE) == window  # owed until settled
+        keeper.caught_up(SPACE)
+        assert keeper.missed(SPACE) is None
+
+    def test_one_still_returned_past_its_expiry_counts_too(self):
+        events = _FakeEvents()
+        keeper = _keeper(events)
+        keeper.ensure(SPACE)
+        events.subscriptions_.subs[keeper.names[SPACE]]["expireTime"] = since = _in(hours=-2)
+        assert keeper.ensure(SPACE) == "renewed"
+        assert keeper.missed(SPACE)[0] == since
+
+    def test_a_first_or_a_healthy_or_a_deleted_subscription_leaves_none(self):
+        events = _FakeEvents()
+        keeper = _keeper(events)
+        keeper.ensure(SPACE)
+        events.subscriptions_.subs.clear()  # removed before its expiry: when is not known
+        assert keeper.ensure(SPACE) == "created"
+        assert keeper.missed(SPACE) is None
+
+    def test_the_expiry_and_the_window_outlive_a_restart(self, tmp_path):
+        path = tmp_path / "state.json"
+        events = _FakeEvents()
+        first = we.SubscriptionKeeper(lambda: events, lambda: None, TOPIC, path)
+        first.ensure(SPACE)
+        stored = json.loads(path.read_text())
+        assert stored["subscriptions"][SPACE]["name"] == first.names[SPACE]
+        stored["subscriptions"][SPACE]["expireTime"] = since = _in(hours=-20)  # the host was off for a day
+        path.write_text(json.dumps(stored))
+        events.subscriptions_.subs.clear()
+        events.subscriptions_.gone_status = 403
+        second = we.SubscriptionKeeper(lambda: events, lambda: None, TOPIC, path)
+        assert second.ensure(SPACE) == "created"
+        assert second.missed(SPACE)[0] == since
+        third = we.SubscriptionKeeper(lambda: events, lambda: None, TOPIC, path)  # restarted before the catch-up
+        assert third.missed(SPACE) == second.missed(SPACE)
+        third.caught_up(SPACE)
+        assert we.SubscriptionKeeper(lambda: events, lambda: None, TOPIC, path).missed(SPACE) is None
+
+    def test_an_unreadable_state_file_is_a_first_run(self, tmp_path):
+        path = tmp_path / "state.json"
+        path.write_text("{not json")
+        keeper = we.SubscriptionKeeper(lambda: _FakeEvents(), lambda: None, TOPIC, path)
+        assert keeper.names == {} and keeper.missed(SPACE) is None
+
+
+async def _caught_up_adapter(monkeypatch, since_hours=5):
+    a, submitted = await _listening_adapter(monkeypatch)
+    listener = a._workspace_user.listener
+    listener.keeper = _keeper(a._workspace_user.events())
+    listener.keeper._missed[SPACE] = {"since": _in(hours=-since_hours), "until": _in(minutes=-5)}
+    return a, submitted, listener, a._workspace_user.chat()
+
+
+class TestCatchUp:
+    @pytest.mark.asyncio
+    async def test_what_was_said_meanwhile_is_handed_over_as_one_late_turn(self, monkeypatch, caplog):
+        a, submitted, listener, chat = await _caught_up_adapter(monkeypatch)
+        chat.history = [
+            _said("before", "hermes, sent while it still listened", minutes=400),
+            _said("M1", "hermes, are the lights off?", minutes=40),
+            _said("own", "hermes report, posted by the user itself", sender="users/self", minutes=35),
+            _said("talk", "lunch at noon?", sender="users/bob", minutes=30),
+            _said("guest", "hermes, open the garage", sender="users/mallory", minutes=25),
+            _said("M2", "Hermes, status?", sender="users/bob", minutes=20, attachment=[{"name": "a"}]),
+            _said("after", "hermes, sent once it listened again", minutes=1),
+        ]
+        with caplog.at_level(logging.INFO):
+            assert we.catch_up(listener, SPACE) == 2
+        assert len(submitted) == 1
+        msg, envelope = a._dispatch_message.call_args.args
+        assert msg["name"] == f"{SPACE}/messages/M2"  # the reply and the reaction land on the newest
+        assert msg["sender"]["email"] == BOB and msg["attachment"] == [{"name": "a"}]
+        assert envelope["message"] is msg and msg["argumentText"] == msg["text"]
+        note, first, second = msg["text"].split("\n")
+        assert note.startswith("[Delivered late. This conversation's listener was down from ")
+        assert "2 message(s) sent in that time never arrived" in note and "still applies" in note
+        assert re.fullmatch(rf"\[\d{{4}}-\d\d-\d\d \d\d:\d\d[^\]]*\] {ALICE}: hermes, are the lights off\?", first)
+        assert second.endswith(f"{BOB}: Hermes, status?")
+        parent, flt, order = chat.listed[0]
+        assert (parent, order) == (SPACE, "createTime ASC")
+        assert re.fullmatch(r'createTime > "[-0-9T:]+Z" AND createTime < "[-0-9T:]+Z"', flt)
+        assert listener.keeper.missed(SPACE) is None
+        assert "2 message(s) sent in spaces/HOME" in caplog.text
+        assert we.catch_up(listener, SPACE) == 0 and len(chat.listed) == 1  # settled: nothing is read again
+
+    @pytest.mark.asyncio
+    async def test_nothing_said_meanwhile_is_no_turn(self, monkeypatch):
+        _a, submitted, listener, chat = await _caught_up_adapter(monkeypatch)
+        chat.history = [_said("talk", "lunch at noon?", minutes=30)]
+        assert we.catch_up(listener, SPACE) == 0
+        assert not submitted and listener.keeper.missed(SPACE) is None
+
+    @pytest.mark.asyncio
+    async def test_a_message_that_did_arrive_is_not_handed_over_again(self, monkeypatch):
+        a, _submitted, listener, chat = await _caught_up_adapter(monkeypatch)
+        chat.history = [_said("M1", "hermes, one", minutes=40), _said("M2", "hermes, two", minutes=20)]
+        assert listener.admit(chat.history[1]) is not None  # the live delivery took it
+        assert we.catch_up(listener, SPACE) == 1
+        assert a._dispatch_message.call_args.args[0]["name"] == f"{SPACE}/messages/M1"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_stays_owed_and_is_logged_once(self, monkeypatch, caplog):
+        _a, submitted, listener, chat = await _caught_up_adapter(monkeypatch)
+        chat.history = [_said("M1", "hermes, are the lights off?", minutes=40)]
+        chat.list_fails_with = _FakeHttpError(503)
+        with caplog.at_level(logging.WARNING):
+            assert we.catch_up(listener, SPACE) == 0
+            assert we.catch_up(listener, SPACE) == 0
+        assert caplog.text.count("reading what was said in spaces/HOME") == 1
+        assert listener.keeper.missed(SPACE) is not None and not submitted
+        chat.list_fails_with = None
+        assert we.catch_up(listener, SPACE) == 1 and len(submitted) == 1
+
+    @pytest.mark.asyncio
+    async def test_only_the_newest_few_and_nothing_older_than_the_limit(self, monkeypatch):
+        a, _submitted, listener, chat = await _caught_up_adapter(monkeypatch, since_hours=100)
+        monkeypatch.setattr(we, "CATCH_UP_MAX", 3)
+        chat.history = [_said("old", "hermes, three days ago", minutes=72 * 60)] + [
+            _said(f"M{i}", f"hermes, message {i}", minutes=50 - i) for i in range(5)]
+        assert we.catch_up(listener, SPACE) == 3
+        note, *lines = a._dispatch_message.call_args.args[0]["text"].split("\n")
+        assert [line.rsplit(" ", 1)[1] for line in lines] == ["2", "3", "4"]
+        assert "(the newest 3 are below; 2 older ones are left out)" in note
+        since = re.findall(r'"([^"]+)"', chat.listed[0][1])[0]
+        assert _in(hours=-48, minutes=-1) < since < _in(hours=-48, minutes=1)
+
+    @pytest.mark.asyncio
+    async def test_upkeep_recreates_an_expired_subscription_and_catches_up(self, monkeypatch):
+        a, submitted = await _listening_adapter(monkeypatch)
+        listener, events, chat = a._workspace_user.listener, a._workspace_user.events(), a._workspace_user.chat()
+        await asyncio.to_thread(listener.upkeep)
+        assert not chat.listed  # a first subscription: nothing was missed
+        _expire(events, listener.keeper)
+        chat.history = [_said("M1", "hermes, are the lights off?", minutes=40)]
+        await asyncio.to_thread(listener.upkeep)
+        assert len(events.subscriptions_.subs) == 1 and len(submitted) == 1
+        assert a._dispatch_message.call_args.args[0]["text"].endswith(f"{ALICE}: hermes, are the lights off?")
 
 
 @pytest.mark.asyncio

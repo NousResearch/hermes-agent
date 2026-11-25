@@ -9,6 +9,11 @@ subscription; ``is_workspace_event`` tells them apart from Chat app events.
 Subscriptions expire (Google caps their lifetime at hours, not days), so ``SpaceListener`` keeps
 each one alive in the background: renew before expiry, reactivate when suspended, recreate
 when deleted, adopt one that already exists. Lifecycle notifications wake it early.
+
+A subscription that expired anyway (the host was off or asleep for longer than its lifetime)
+delivered nothing from its expiry on, and Google sends nothing for that time afterwards. The
+keeper remembers each subscription's expiry across restarts, so it knows the gap; ``catch_up``
+then reads what was said in the space meanwhile and hands it to the agent late, as one turn.
 """
 
 from __future__ import annotations
@@ -16,9 +21,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as _dt
+import json
 import logging
+import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger("gateway.platforms.google_chat")
@@ -53,28 +61,103 @@ def event_messages(attrs: dict[str, Any], envelope: dict[str, Any]) -> list[dict
     return [item["message"] for item in batch if isinstance(item, dict) and isinstance(item.get("message"), dict)]
 
 
-def seconds_left(expire_time: Any) -> Optional[float]:
-    """Seconds until an RFC 3339 ``expireTime``; None when absent or unparseable."""
-    if not expire_time:
+def _parse(stamp: Any) -> Optional[_dt.datetime]:
+    """An RFC 3339 time (fractions dropped); None when absent or unparseable."""
+    if not stamp:
         return None
-    text = re.sub(r"\.\d+", "", str(expire_time)).replace("Z", "+00:00")
+    text = re.sub(r"\.\d+", "", str(stamp)).replace("Z", "+00:00")
     try:
-        return (_dt.datetime.fromisoformat(text) - _dt.datetime.now(_dt.UTC)).total_seconds()
+        return _dt.datetime.fromisoformat(text)
     except ValueError:
         return None
 
 
+def _stamp(when: Optional[_dt.datetime] = None) -> str:
+    """RFC 3339 in UTC without fractions, the form ``spaces.messages.list`` filters take (default: now)."""
+    return (when or _dt.datetime.now(_dt.UTC)).astimezone(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def seconds_left(expire_time: Any) -> Optional[float]:
+    """Seconds until an RFC 3339 ``expireTime``; None when absent or unparseable."""
+    when = _parse(expire_time)
+    return None if when is None else (when - _dt.datetime.now(_dt.UTC)).total_seconds()
+
+
+def _lapsed(expire_time: Any) -> Optional[str]:
+    """``expire_time`` when it is in the past: from then on its subscription delivered nothing."""
+    left = seconds_left(expire_time)
+    return str(expire_time) if left is not None and left < 0 else None
+
+
+def state_path(kind: str) -> Path:
+    """Where a keeper remembers its subscriptions (``kind``: one file per keeper), under the
+    profile's HERMES_HOME; resolved at call time so multiplexed profiles do not share it."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / f"google_chat_workspace_{kind}.json"
+
+
 class SubscriptionKeeper:
     """Create / adopt / reactivate / renew one subscription per Chat space (blocking calls: run
-    in a worker thread). ``subscriptions`` and ``http`` come from the delegated user."""
+    in a worker thread). ``subscriptions`` and ``http`` come from the delegated user.
+
+    With ``state_path`` each subscription's name and expiry outlive a restart. That is what lets
+    the keeper tell that one expired while the process was down, and since when: ``missed``
+    then names the window nothing was delivered in, until ``caught_up`` settles it."""
 
     RENEW_MARGIN = 3 * 3600.0
     _OP_POLLS = 10
 
-    def __init__(self, events: Callable[[], Any], http: Callable[[], Any], topic: str) -> None:
+    def __init__(self, events: Callable[[], Any], http: Callable[[], Any], topic: str,
+                 state_path: Optional[Path] = None) -> None:
         self._events, self._http, self.topic = events, http, topic
+        self._state_path = state_path
         self.names: dict[str, str] = {}  # space -> subscription name
+        self._expires: dict[str, str] = {}  # space -> expireTime as last seen
+        self._missed: dict[str, dict[str, str]] = {}  # space -> {"since", "until"}: a catch-up still owed
         self.authority: Optional[str] = None  # users/{id} of the delegated user, learned from a subscription
+        self._load()
+
+    # -- what outlives a restart ---------------------------------------------------
+    def _load(self) -> None:
+        if self._state_path is None:
+            return
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return  # first run, or unreadable: nothing is known, so nothing is caught up
+        subs = data.get("subscriptions") if isinstance(data, dict) else None
+        for space, entry in (subs.items() if isinstance(subs, dict) else ()):
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+                self.names[space] = entry["name"]
+                if isinstance(entry.get("expireTime"), str):
+                    self._expires[space] = entry["expireTime"]
+        missed = data.get("missed") if isinstance(data, dict) else None
+        for space, entry in (missed.items() if isinstance(missed, dict) else ()):
+            if isinstance(entry, dict) and isinstance(entry.get("since"), str) and isinstance(entry.get("until"), str):
+                self._missed[space] = {"since": entry["since"], "until": entry["until"]}
+
+    def _save(self) -> None:
+        if self._state_path is None:
+            return
+        data = {"subscriptions": {space: {"name": name, "expireTime": self._expires.get(space)}
+                                  for space, name in self.names.items()},
+                "missed": self._missed}
+        tmp = self._state_path.with_name(self._state_path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            os.replace(tmp, self._state_path)
+        except OSError:
+            logger.debug("[GoogleChat] could not persist the Workspace Events subscriptions", exc_info=True)
+
+    def missed(self, space: str) -> Optional[tuple[str, str]]:
+        """``(since, until)`` while a catch-up is owed on ``space``: its subscription delivered
+        nothing between the two."""
+        window = self._missed.get(space)
+        return (window["since"], window["until"]) if window else None
+
+    def caught_up(self, space: str) -> None:
+        if self._missed.pop(space, None) is not None:
+            self._save()
 
     def _subs(self) -> Any:
         return self._events().subscriptions()
@@ -123,7 +206,12 @@ class SubscriptionKeeper:
 
     def ensure(self, space: str) -> Optional[str]:
         """Make the subscription on ``space`` ACTIVE and not about to expire; the action taken."""
+        held = self.names.get(space)
         sub, action = self._find(space), None
+        if sub is not None:
+            lapsed = _lapsed(sub.get("expireTime"))  # still returned, but past its expiry
+        else:  # the one held is gone: it delivered nothing since the expiry last seen
+            lapsed = _lapsed(self._expires.get(space)) if held and space not in self.names else None
         if sub is not None and (sub.get("notificationEndpoint") or {}).get("pubsubTopic") != self.topic:
             self._subs().delete(name=sub["name"]).execute(http=self._http())  # the endpoint is immutable
             sub, action = None, "replaced (other topic)"
@@ -139,7 +227,12 @@ class SubscriptionKeeper:
             sub, action = self._op_result(renewed) or sub, "renewed"
         if not sub or not sub.get("name"):
             raise RuntimeError(f"Workspace Events returned no subscription for {space}")
-        self.names[space] = sub["name"]
+        if lapsed and space not in self._missed:
+            self._missed[space] = {"since": lapsed, "until": _stamp()}
+        expires = str(sub.get("expireTime") or "")
+        if lapsed or self.names.get(space) != sub["name"] or self._expires.get(space) != expires:
+            self.names[space], self._expires[space] = sub["name"], expires
+            self._save()
         authority = str(sub.get("authority") or "")
         if authority.startswith("users/") and "@" not in authority:
             self.authority = authority
@@ -149,8 +242,106 @@ class SubscriptionKeeper:
         return action
 
     def drop(self, space: str) -> None:
+        self._expires.pop(space, None)
+        self._missed.pop(space, None)
         if name := self.names.pop(space, None):
+            self._save()
             self._subs().delete(name=name).execute(http=self._http())
+
+
+# -- what was said while a subscription was gone ----------------------------------
+
+CATCH_UP_MAX = 20  # messages handed over per space (the newest)
+CATCH_UP_MAX_AGE = 48 * 3600.0  # nothing older than this is read
+
+
+def _local(stamp: Any) -> str:
+    """``stamp`` in the host's time zone, for the note the model reads."""
+    when = _parse(stamp)
+    return str(stamp or "?") if when is None else when.astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
+
+
+def _list_messages(chat: Any, http: Callable[[], Any], space: str, since: str, until: str) -> list[dict[str, Any]]:
+    """The messages created in ``space`` between the two times, oldest first (as the user)."""
+    found: list[dict[str, Any]] = []
+    token: Optional[str] = None
+    for _ in range(10):
+        kwargs: dict[str, Any] = {"parent": space, "pageSize": 100, "orderBy": "createTime ASC",
+                                  "filter": f'createTime > "{since}" AND createTime < "{until}"'}
+        if token:
+            kwargs["pageToken"] = token
+        resp = chat.spaces().messages().list(**kwargs).execute(http=http())
+        found.extend(m for m in resp.get("messages") or [] if isinstance(m, dict))
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return found
+
+
+def late_turn(admitted: list[tuple[dict[str, Any], dict[str, Any]]], since: str, until: str,
+              left_out: int = 0) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One ``(msg, envelope)`` for several admitted messages that arrive late. The newest carries
+    the turn (the reply and the thinking reaction land on it); its text says the listener was
+    down and from when to when, then gives each message with the time it was sent and its
+    sender. One turn, because separate late messages would interrupt each other."""
+    last, envelope = admitted[-1]
+    lines = []
+    for msg, _ in admitted:
+        sender = msg.get("sender") or {}
+        files = len(msg.get("attachment") or []) if msg is not last else 0
+        lines.append(f"[{_local(msg.get('createTime'))}] {sender.get('displayName') or sender.get('email') or '?'}: "
+                     f"{str(msg.get('text') or '').strip() or '(no text)'}"
+                     + (f" (with {files} attachment(s), not handed over)" if files else ""))
+    note = (f"[Delivered late. This conversation's listener was down from {_local(since)} to {_local(until)}, so "
+            f"{len(admitted)} message(s) sent in that time never arrived"
+            + (f" (the newest {len(admitted)} are below; {left_out} older ones are left out)" if left_out else "")
+            + ". They are handed over now, each with the time it was sent. Before acting on a request, consider "
+            "whether it still applies.]")
+    text = "\n".join([note, *lines])
+    late = {**last, "text": text, "argumentText": text}
+    return late, {**envelope, "message": late}
+
+
+def catch_up(part: Any, space: str) -> int:
+    """Hand the agent what was said in ``space`` while its subscription was gone (blocking; run
+    in a worker thread). ``part`` is the listener that owns the space: its ``keeper`` knows the
+    window, its ``admit`` decides which messages count, exactly as for a live delivery. Returns
+    how many messages were handed over. A failed read stays owed and is retried at the next pass."""
+    from . import adapter as gc
+    window = part.keeper.missed(space) if part.keeper is not None else None
+    if window is None:
+        return 0
+    since, until = window
+    oldest = _dt.datetime.now(_dt.UTC) - _dt.timedelta(seconds=CATCH_UP_MAX_AGE)
+    start = _stamp(max(_parse(since) or oldest, oldest))
+    try:
+        messages = _list_messages(part._user.chat(), part._user.http, space, start, _stamp(_parse(until)))
+    except Exception as exc:  # health: allow BLE001 -- the read is retried at the next upkeep pass
+        msg = gc._redact_sensitive(str(exc))[:300]
+        if part._catch_up_errors.get(space) != msg:
+            part._catch_up_errors[space] = msg
+            logger.warning("[GoogleChat] reading what was said in %s between %s and %s failed (retried at the next "
+                           "pass): %s", space, start, until, msg)
+        return 0
+    part._catch_up_errors.pop(space, None)
+    admitted = []
+    for m in messages:
+        sender = m.get("sender") or {}
+        if sender.get("type") == "BOT" or (part.user_id and sender.get("name") == part.user_id):
+            continue  # the app's and the user's own messages, without a log line each
+        if (taken := part.admit(m)) is not None:
+            admitted.append(taken)
+    part.keeper.caught_up(space)
+    if not admitted:
+        logger.info("[GoogleChat] nothing to answer in %s from between %s and %s (%d message(s) read)",
+                    space, start, until, len(messages))
+        return 0
+    left_out = max(0, len(admitted) - CATCH_UP_MAX)
+    admitted = admitted[-CATCH_UP_MAX:]
+    logger.info("[GoogleChat] %d message(s) sent in %s between %s and %s are handed over late (%d older left out)",
+                len(admitted), space, start, until, left_out)
+    part._adapter._submit_on_loop(part._adapter._dispatch_message(*late_turn(admitted, start, until, left_out)))
+    return len(admitted)
 
 
 class SpaceListener:
@@ -166,6 +357,7 @@ class SpaceListener:
         self.members: dict[str, str] = {}  # users/{id} -> allowed email
         self.user_id: Optional[str] = None  # users/{id} of the Workspace user itself
         self._members_at = 0.0
+        self._catch_up_errors: dict[str, str] = {}
         self._task: Optional[asyncio.Task] = None
         self._wake: Optional[asyncio.Event] = None
 
@@ -193,14 +385,16 @@ class SpaceListener:
         return sub.topic
 
     def upkeep(self) -> None:
-        """One pass (blocking): resolve members, ensure every listen space's subscription."""
+        """One pass (blocking): resolve members, ensure every listen space's subscription, and
+        hand over what was said while one of them was gone."""
         if self.keeper is None:
-            self.keeper = SubscriptionKeeper(self._user.events, self._user.http, self._topic())
+            self.keeper = SubscriptionKeeper(self._user.events, self._user.http, self._topic(), state_path("spaces"))
         if not self.members or time.monotonic() - self._members_at > self.MEMBER_REFRESH:
             self.refresh_members()
         for space in self._user.settings.listen_spaces:
             self.keeper.ensure(space)
-        self.user_id = self.user_id or self.keeper.authority
+            self.user_id = self.user_id or self.keeper.authority
+            catch_up(self, space)
 
     async def _run(self) -> None:
         last_err: Optional[str] = None

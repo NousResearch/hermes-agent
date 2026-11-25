@@ -1107,10 +1107,40 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             "env_keys=%s cleared_keys=%s",
             platform_id, target_profile or "current", body.enabled, sorted(body.env), sorted(body.clear_env),
         )
-        # A live multiplexer serving this named profile builds the adapter from the new token now
-        # (its periodic rescan would otherwise pick it up within a cycle); no gateway restart.
-        hot_served = await asyncio.to_thread(_notify_multiplexer_hot_serve, target_profile)
-        return {"ok": True, "platform": platform_id, "hot_served": hot_served}
+        # The running gateway serving this profile starts/restarts/stops the platform's adapter now
+        # and says whether it could; only a "no" (or no answer) leaves a restart to the user.
+        live = await asyncio.to_thread(_apply_platform_live, target_profile, platform_id)
+        return {"ok": True, "platform": platform_id, "hot_served": live["applied"], "live": live}
+
+
+# Platform states after which a restart would change nothing: it runs (or is reconnecting) live, or
+# the saved config does not enable it.
+_LIVE_SETTLED_STATES = frozenset({"connected", "retrying", "disabled", "not_configured", "shared", None})
+
+
+def _apply_platform_live(profile: Optional[str], platform_id: str) -> dict:
+    """Ask the gateway serving ``profile`` (its own, or the multiplexer serving it) to reconcile that
+    profile's platforms now. ``{"applied", "state"?, "detail"?}``: ``applied`` False means only a restart
+    applies the save (no gateway answered, one predating the verb, or the adapter could not be built)."""
+    from hermes_cli.gateway import _current_profile_name
+    from hermes_cli.gateway_platform_live import reconcile_running_gateway_platforms
+    from hermes_constants import get_hermes_home
+    name = (profile or "").strip() or _current_profile_name() or "default"
+    with _profile_scope(profile):
+        home = Path(get_hermes_home())
+    answer = reconcile_running_gateway_platforms(name, home)
+    if answer is None:
+        # A multiplexer predating the verb still rebuilds a named profile from its rescan.
+        return {"applied": _notify_multiplexer_hot_serve(profile)}
+    if answer.get("pending"):
+        return {"applied": True, "state": "connecting"}
+    state = (answer.get("platforms") or {}).get(platform_id)
+    live = {"applied": bool(answer.get("applied")) and state in _LIVE_SETTLED_STATES, "state": state}
+    if answer.get("error"):
+        live["detail"] = str(answer["error"])
+    elif state == "unavailable":
+        live["detail"] = "the running gateway could not build this platform's adapter"
+    return live
 
 
 def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:

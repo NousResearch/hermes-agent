@@ -48,6 +48,8 @@ class GatewayPluginRewireMixin:
             if loop is None or loop.is_closed():
                 return
             loop.call_soon_threadsafe(self._rewire_plugin_handlers, profile_name, profile_home)
+            # A plugin that registers a platform the profile configures starts its adapter now.
+            loop.call_soon_threadsafe(self._schedule_platform_reconcile, profile_name, "plugin-loaded")
 
         subs[scope] = manager.on_plugin_loaded(_on_loaded)
 

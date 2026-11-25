@@ -1367,7 +1367,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         configs = getattr(self, "_profile_configs", None)
         if configs is None:
             configs = self._profile_configs = {}
+        previous = configs.get(profile_name)
         configs[profile_name] = profile_cfg
+        if previous is not None:  # a rescan: retire what is no longer wanted or runs on stale credentials
+            await self._retire_stale_profile_platforms(profile_name, profile_home, previous, profile_cfg)
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         checkpoint = batch.checkpoint()

@@ -358,6 +358,8 @@ hermes profile export coder   # pack into coder.tar.gz (shareable; keys stripped
 hermes profile import coder.tar.gz   # install an archive as a new profile
 ```
 
+`hermes profile list --json` prints a machine-readable roster with untruncated model ids.
+
 In chat, the same two live as `/export` and `/import` — and in the desktop app as **⌘K → Export/Import profile…**. See [Sharing a profile](#sharing-a-profile).
 
 ### Naming the default profile

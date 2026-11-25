@@ -49,18 +49,17 @@ def main():
         refusals = {}
         if command.get('probe_constructors'):
             from concurrent.futures import ThreadPoolExecutor
-            from hermes_state_registry import release_or_close
             from tools.delegate_tool import _open_child_session_db
-            from tools.async_delegation import _connect
+            from tools.async_delegation import _ledger
             from cron.scheduler import _open_cron_session_db, run_job
             operations = {'child': lambda: _open_child_session_db(agent),
                           'cron': lambda: _open_cron_session_db({'id': 'worker-probe'}),
-                          'ledger': _connect}
+                          'ledger': _ledger}
             def attempt(name, fn):
                 try:
                     opened = fn()
                     if opened is not None:
-                        release_or_close(opened)
+                        opened.close()
                     return name, 'opened:' + type(opened).__name__
                 except Exception as exc:
                     return name, str(exc)

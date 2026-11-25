@@ -41,10 +41,9 @@ def _startup(monkeypatch, tmp_path):
         def __init__(self, config):
             from gateway.session import SessionStore
             from hermes_constants import get_hermes_home
-            from hermes_state import SessionDB
+            from persistence_assembly import open_persistence, profile_scope
             self.session_store = SessionStore(get_hermes_home() / "sessions", config)
-            self._session_db = SessionDB(get_hermes_home() / "state.db")
-            self.session_store._db = self._session_db
+            self._session_db = self.persistence = open_persistence(profile_scope())
             self._draining = False
             self._running = False
             self._closed = False
@@ -67,7 +66,7 @@ def _startup(monkeypatch, tmp_path):
             if not self._closed:
                 self._closed = True
                 self.session_store.close_all_db_handles()
-                self._session_db.close()
+                self.persistence.close()
 
     real_spawn = memory_provider.spawn_context_thread
 

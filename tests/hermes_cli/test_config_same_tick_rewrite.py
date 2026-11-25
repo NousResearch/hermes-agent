@@ -50,10 +50,14 @@ def coarse_clock(monkeypatch):
     """Every stat signature reports one frozen mtime/ctime tick, like a coarse filesystem clock; the
     returned clock is what ``utils`` reads as now, so a test can move past the racy window."""
     import utils
-    real, tick = utils.file_signature, time.time_ns()
-    monkeypatch.setattr(utils, 'file_signature', lambda st: (tick, *real(st)[1:3], tick))
+    import utils.files
+    real, tick = utils.files.file_signature, time.time_ns()
+    # The config backend reads ``file_signature`` from ``utils`` at call time; ``file_cache_version``
+    # reads it in ``utils.files``. Both are config readers' signatures.
+    for module in (utils, utils.files):
+        monkeypatch.setattr(module, 'file_signature', lambda st: (tick, *real(st)[1:3], tick))
     clock = _Clock(tick)
-    monkeypatch.setattr(utils, 'time', clock)
+    monkeypatch.setattr(utils.files, 'time', clock)
     return clock
 
 
@@ -61,22 +65,22 @@ def coarse_clock(monkeypatch):
 def digest_opens(monkeypatch):
     """Paths opened through ``utils`` (the cache-key content digest, and some parsers)."""
     import builtins
-    import utils
+    import utils.files
     opened = []
 
     def _open(file, *args, **kwargs):
         opened.append(os.fspath(file))
         return builtins.open(file, *args, **kwargs)
 
-    monkeypatch.setattr(utils, 'open', _open, raising=False)
+    monkeypatch.setattr(utils.files, 'open', _open, raising=False)
     return opened
 
 
 @pytest.fixture
 def frozen_now(monkeypatch):
     """``utils`` reads now as the test's start, so every file the test writes stays racy (fresh)."""
-    import utils
-    monkeypatch.setattr(utils, 'time', _Clock(time.time_ns()))
+    import utils.files
+    monkeypatch.setattr(utils.files, 'time', _Clock(time.time_ns()))
 
 def test_same_size_rewrite_in_one_tick_reaches_every_config_reader(coarse_clock):
     from hermes_cli.config import get_config_path

@@ -11,8 +11,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent import relay_runtime
-from hermes_state import SessionDB
+from persistence.authority import coordination
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 class _DB:
@@ -237,18 +240,17 @@ def test_waited_admission_uses_the_row_read_after_the_lease(
 def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):
     """A client-addressed session id has no row until its first turn writes one; a second
     turn arriving meanwhile must wait for that turn and see its rows, not interleave."""
-    path = tmp_path / "state.db"
-    db_a, db_b = SessionDB(path), SessionDB(path)
+    db_a, db_b = open_persistence(profile_scope(home=tmp_path)), open_persistence(profile_scope(home=tmp_path))
     a_in_turn, a_may_finish, a_finished = threading.Event(), threading.Event(), threading.Event()
     observed = {}
 
     def fake_run(_agent, message, _system, history, *_args, **_kwargs):
         if message == "first":
-            _agent._session_db.create_session("client-id", source="api_server")
-            _agent._session_db.append_message("client-id", "user", "first")
+            seed_session(_agent._session_db, "client-id", "api_server")
+            seed_messages(_agent._session_db, "client-id", {"role": "user", "content": "first"})
             a_in_turn.set()
             a_may_finish.wait(timeout=10)
-            _agent._session_db.append_message("client-id", "assistant", "first answer")
+            seed_messages(_agent._session_db, "client-id", {"role": "assistant", "content": "first answer"})
             a_finished.set()  # still inside the turn, so strictly before the lease is released
         else:
             observed["a_finished"] = a_finished.is_set()
@@ -257,25 +259,30 @@ def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkey
 
     monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
     agent_a = _agent_with_db(db_a, session_id="client-id", platform="api_server")
+    agent_a.persistence = db_a
     agent_a._session_db_created = False
     agent_b = _agent_with_db(db_b, session_id="client-id", platform="api_server")
+    agent_b.persistence = db_b
     # B either starts waiting on the lease or, unserialized, runs to the end.
     b_waiting_or_done = threading.Event()
-    real_acquire = db_b.acquire_session_turn_lease
+    real_acquire = coordination.acquire_turn_lease_waiting
 
-    def acquire_b(*args, on_wait=None, **kwargs):
+    def acquire_b(repository, *args, on_wait=None, **kwargs):
+        if repository is not db_b.coordination:
+            return real_acquire(repository, *args, on_wait=on_wait, **kwargs)
+
         def waiting(elapsed):
             b_waiting_or_done.set()
             on_wait(elapsed)
-        return real_acquire(*args, on_wait=waiting, **kwargs)
+        return real_acquire(repository, *args, on_wait=waiting, **kwargs)
 
-    db_b.acquire_session_turn_lease = acquire_b
+    monkeypatch.setattr(coordination, "acquire_turn_lease_waiting", acquire_b)
 
     def run_b():
         try:
             AIAgent.run_conversation(
                 agent_b, "second",
-                conversation_history=db_b.get_messages_as_conversation("client-id"))
+                conversation_history=conversation(db_b, "client-id"))
         finally:
             b_waiting_or_done.set()
 
@@ -751,9 +758,10 @@ def test_run_conversation_exposes_holder_for_fenced_flush(monkeypatch):
 
 
 def _flush_agent(db, session_id):
-    """Bind the real flush onto a stand-in so we can use a live SessionDB."""
+    """Bind the real flush onto a stand-in so we can use a live store."""
     agent = SimpleNamespace(
         _session_db=db,
+        persistence=db,
         _session_db_created=True,
         _persist_disabled=False,
         session_id=session_id,
@@ -781,38 +789,37 @@ def _flush_agent(db, session_id):
 
 def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
     """A-loses / B-acquires / A-late-flush, through the real persist path."""
-    path = tmp_path / "state.db"
-    first = SessionDB(path)
-    second = SessionDB(path)
-    first.create_session("shared", source="test")
+    first = open_persistence(profile_scope(home=tmp_path))
+    second = open_persistence(profile_scope(home=tmp_path))
+    seed_session(first, "shared", "test")
     stale_holder = "pid=1:turn=stale"
     next_holder = "pid=2:turn=next"
-    assert first.try_acquire_session_turn_lease(
-        "shared", stale_holder, ttl_seconds=5
+    assert first.coordination.try_acquire_turn_lease(
+        session_id="shared", holder=stale_holder, ttl_seconds=5
     )
 
     agent = _flush_agent(first, "shared")
     agent._active_session_turn_lease_holder = stale_holder
     owned = [{"role": "user", "content": "stale-owned"}]
     assert agent._flush_messages_to_session_db(owned, []) is True
-    assert [m["content"] for m in first.get_messages("shared")] == ["stale-owned"]
+    assert [m["content"] for m in transcript_rows(first, "shared")] == ["stale-owned"]
 
-    first.release_session_turn_lease("shared", stale_holder)
-    assert second.try_acquire_session_turn_lease(
-        "shared", next_holder, ttl_seconds=5
+    first.coordination.release_turn_lease(session_id="shared", holder=stale_holder)
+    assert second.coordination.try_acquire_turn_lease(
+        session_id="shared", holder=next_holder, ttl_seconds=5
     )
 
     late = [{"role": "assistant", "content": "late stale reply"}]
     assert agent._flush_messages_to_session_db(late, []) is False
     assert agent._last_persistence_error_cause == "turn_lease"
-    assert [m["content"] for m in second.get_messages("shared")] == ["stale-owned"]
+    assert [m["content"] for m in transcript_rows(second, "shared")] == ["stale-owned"]
 
     agent._active_session_turn_lease_holder = next_holder
     assert agent._flush_messages_to_session_db(late, []) is True
-    assert [m["content"] for m in second.get_messages("shared")] == [
+    assert [m["content"] for m in transcript_rows(second, "shared")] == [
         "stale-owned",
         "late stale reply",
     ]
-    second.release_session_turn_lease("shared", next_holder)
+    second.coordination.release_turn_lease(session_id="shared", holder=next_holder)
     first.close()
     second.close()

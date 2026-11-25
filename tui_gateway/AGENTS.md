@@ -87,9 +87,9 @@ enter `_session_profile_runtime_scope(session)` around `on_session_end`, the mem
 `agent.close()` (their callers are unscoped reapers, Timers, atexit and pool threads); background
 threads start via `agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
 children act for the served profile through `tools/environments/local.py::served_profile_child_env`
-(`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
-unscoped handlers before adding one: `rg -n "^(async )?def " tui_gateway/methods_*.py | rg -v
-_profile_scoped`. Probe with two on-disk homes and a `.env` name present only in the secondary:
+(`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Find
+unscoped handlers before adding one: `search_files` for `^(async )?def ` with
+`file_glob="methods_*.py"` in `tui_gateway/`, `context=1`, and check each for `_profile_scoped`. Probe with two on-disk homes and a `.env` name present only in the secondary:
 call the method for that session and assert the secondary's value resolves and the launch
 profile's does not, and that `os.environ` is unchanged afterwards.
 
@@ -213,6 +213,8 @@ pnpm run lint      # eslint
 pnpm run fmt       # prettier
 pnpm test          # vitest
 ```
+
+From the repository root, `just tui` runs the same watch mode.
 
 Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest in `ui-tui`. A
 Python test that asserts about `package.json` / `.ts` sources will not run on a JS-only PR — keep

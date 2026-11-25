@@ -1,0 +1,18 @@
+name: corsair
+title: Corsair
+repo: https://github.com/corsairdev/agent-plugins
+sha: 72d3ace8a239a8db02d218c938caedc7d68705fc
+subdir: plugins/corsair
+description: "Work in Corsair from Hermes: track issues in Corsair's PM, keep people, companies and deals in its CRM, use the apps you've connected to Corsair (Gmail, Slack, Linear, GitHub and others), search across them, hand them files, and set up automations that run on app events or a schedule. Corsair's hosted MCP server plus seven skills. Disclosure — connects to Corsair's hosted MCP server at mcp.corsair.dev (by Corsair / corsairdev) and sends it the requests the agent makes; Corsair acts in the apps you connected, with the access you gave each one. Sign-in is Hermes-managed OAuth through a native `mcp_servers.corsair` entry with `auth: oauth`; the package carries no credentials. Some apps run on Corsair's own account and bill each call to your Corsair credits. upload_file, and save_skill with a folder, return a curl command that uploads a local file or skills folder you asked to upload. The package marks the server `trust: untrusted`, so every tool not annotated read-only goes through Hermes's approval prompt."
+maintainer: corsairdev
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://docs.corsair.dev/cloud/mcp
+version: "0.1.7"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

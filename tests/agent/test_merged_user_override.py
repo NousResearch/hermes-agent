@@ -2,8 +2,8 @@
 
 import pytest
 
-from agent.agent_runtime_helpers import repair_message_sequence
 from agent.message_metadata import TYPED_ASK
+from session_rules.turns import repair_message_sequence
 from agent.session_persistence import SessionPersistenceMixin, _db_flush_row
 from agent.transcript_repair import sync_flushed_message_markers
 
@@ -79,7 +79,7 @@ def test_a_merged_row_forgets_the_typed_ask_and_keeps_its_other_metadata(rows):
     """An unanswered stored image turn folded with the next prompt on repair: the row now holds more than
     that one ask, so the stamp goes (the row reads as before stamps existed); other metadata stays. An
     empty turn folded in changes nothing, so the stamp stays."""
-    from agent.agent_runtime_helpers import _merge_consecutive_users
+    from session_rules.turns import _merge_consecutive_users
     from agent.turn_context import _previous_user_message_text
 
     def history(stamped):
@@ -104,16 +104,22 @@ def test_a_folded_rows_flush_removes_its_stored_stamp_and_keeps_a_reaction(tmp_p
     (previous_message would name only the first ask); the rewrite removes it, keeping a concurrent reaction.
     A rewrite of the same content leaves it, even from a live dict that lacks the row's metadata."""
     from types import SimpleNamespace
-    from agent.agent_runtime_helpers import _merge_consecutive_users
+    from persistence.conversation.messages import NewMessage, stamp_live
+    from persistence_assembly import open_persistence, profile_scope
+    from session_rules.turns import _merge_consecutive_users
     from agent.turn_context import _previous_user_message_text
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_read import conversation, message_reactions
+    from tests.fixtures.storage_seed import seed_session
+
+    def append_batch(rows):  # the batch append, stamping each dict with the state the write gave its row
+        stamp_live(rows, db.messages.append_batch("s1", [NewMessage.from_live(r) for r in rows]))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s1", "test")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "s1", "test")
     row = {"role": "user", "content": _STORED_IMAGE_TURN, "display_metadata": {TYPED_ASK: "first ask"}}
-    db.append_messages_batch("s1", [row])
-    db.set_message_reaction("s1", row["_row_id"], "👍")
+    append_batch([row])
+    db.messages.set_reaction("s1", row["_row_id"], "👍", author="user")
     rows = [row, {"role": "user", "content": "" if folded == "empty" else "second ask"}] if folded else [row]
     merged, _ = _merge_consecutive_users([*rows, {"role": "assistant", "content": "x"}])
     if folded == "text-unloaded":  # the flush hands stored metadata back to a dict that never loaded it
@@ -123,11 +129,11 @@ def test_a_folded_rows_flush_removes_its_stored_stamp_and_keeps_a_reaction(tmp_p
         merged[0].pop("display_metadata")
     agent = SimpleNamespace(_persist_user_message_override=None, _persist_user_message_idx=None)
     flushed = [{**_db_flush_row(agent, m, False), **{k: v for k, v in m.items() if k.startswith("_")}} for m in merged]
-    db.append_messages_batch("s1", flushed)
+    append_batch(flushed)
     sync_flushed_message_markers(merged, flushed)  # what the agent flush hands back to its live dicts
 
-    reloaded = db.get_messages_as_conversation("s1")
-    assert db.get_message_reactions("s1", row["_row_id"])
+    reloaded = conversation(db, "s1")
+    assert message_reactions(db, "s1", row["_row_id"])
     if folded:  # restart parity: the reloaded row and the live one after the flush read the same
         assert _previous_user_message_text(reloaded) == _previous_user_message_text(merged)
     if folded in ("text", "text-unloaded"):

@@ -1,8 +1,10 @@
-"""Log-safe URL rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
+"""Log-safe URL and path rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
 import os
 import re
 from urllib.parse import urlsplit
 from urllib.request import getproxies_environment, proxy_bypass_environment
+
+from agent.redact import _LOG_UNSAFE_CHARS  # one class for the formatter and model-emitted paths
 
 _UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
 _FILE_NAME = re.compile(r"[\w-]{1,40}\.[A-Za-z0-9]{1,5}")
@@ -174,7 +176,15 @@ def _bypasses(no_proxy: str, host: str | None, netloc: str) -> bool:
 
 def _shown_in_full(proxy: str) -> bool:
     """True when rendering prints all of ``proxy`` (lowercased scheme and host, integer port):
-    ``HTTP://Proxy:03128`` holds nothing ``http://proxy:3128`` leaves out."""
+    ``HTTP://Proxy:03128`` holds nothing ``http://proxy:3128`` leaves out. A bare ``host:port`` is
+    read as ``http://`` like :func:`_proxy_scheme`, since httpx and requests both accept it."""
+    proxy = proxy if "://" in proxy else f"http://{proxy}"
     m = _BARE_AUTHORITY.fullmatch(proxy)
     canonical = m and f"{m[1].lower()}://{m[2].lower()}" + (f":{int(m[3])}" if m[3] else "")
     return bool(canonical) and safe_proxy_url_for_log(proxy, max_len=len(proxy) + 64) == canonical
+
+
+def _log_safe_path(path: str) -> str:
+    """Return a single-line, length-bounded path for log output: a model-emitted path must not forge a
+    log line."""
+    return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]

@@ -144,7 +144,8 @@ On Linux and macOS, `hermes update` stops every gateway running from this instal
 - The paused set is recorded in the Hermes home before the first stop. If the update is killed, the next `hermes` command (or `hermes update`) starts exactly those gateways again. A failed update that never changed the checkout restarts them on the old code. If the dependency sync fails after the checkout moved, they restart once a launch has synced the dependencies.
 - A gateway the updater cannot stop through its supervisor (an s6 or custom systemd unit, `--external-supervisor`, a launchd job that started this update) is left running and refreshed after the update, as before.
 - `--no-gateway-restart` stops nothing; you manage the gateways.
-- The pause never blocks an update. If it cannot list, record or stop the gateways, it restarts anything it stopped, says so, and the update continues the way it did before the pause existed: gateways run through the swap and are restarted afterwards.
+- `hermes update --force` (Linux and macOS) skips the wait for in-flight work. Each gateway is stopped at once and prints one `⏹ <gateway>: stopped by --force, interrupting N unit(s): …` line naming the chat turns, cron jobs and background delegations it was running. Those are interrupted (background delegations as resumable) and its tool and background processes are stopped; a gateway still alive about 12 seconds later is killed, and the background processes it recorded are stopped for it (`⏹ <gateway>: also stopped N background process(es) it left behind`). The update then runs and the gateways start again on the new code as usual. If a stop still has not finished after the kill (a systemd stop job still running, or a process that survives SIGKILL), the update stops before changing the checkout and names the unit or PID to check; nothing is started behind that stop, and the next `hermes` command restarts the stopped gateways once it has finished.
+- The pause never blocks an update, apart from the unfinished `--force` stop above. If it cannot list, record or stop the gateways, it restarts anything it stopped, says so, and the update continues the way it did before the pause existed: gateways run through the swap and are restarted afterwards.
 
 Windows already paused its gateways before the update (they lock files the dependency sync replaces) and restarts them once the update completes, after the builds.
 
@@ -201,17 +202,19 @@ Sessions and messages created after the update are not in that snapshot.
 
 ### Why the gateway restart can take a while
 
-The restart is drain-first: the running gateway refuses new turns, then waits for in-flight work (chat turns, cron jobs, API runs) to finish before exiting, capped by `agent.restart_after_turn_timeout` (30 minutes by default) so a long-running job is never cut off mid-run. While that wait is in progress the updater prints, every 30 seconds, what the gateway is still holding for — for example:
+The restart happens when the gateway is idle: the running gateway keeps serving normally (new turns, background-process notices and background-subagent completions all still run) and exits at the first moment no work is in flight (chat turns, cron jobs, API runs, background subagents, notify-watched background processes). Live work is never interrupted on a timer: every `agent.restart_after_turn_timeout` seconds (30 minutes by default) the gateway logs a warning naming what it is still waiting on and keeps waiting; only a forced restart stops it. While that wait is in progress the updater prints, every 30 seconds, what the gateway is still holding for — for example:
 
 ```
   → hermes-gateway: draining (up to 1875s)...
-  ⏳ still draining — 1560s left before the forced restart
+  ⏳ still waiting for idle — 1560s left of this wait (live work is never interrupted; past it the gateway keeps its restart pending)
      waiting on 1 active work unit(s):
        • cron job 6ba19dab68df (nightly-scout) in external worker pid 573597, running 6m40s
-     finish or kill the work above to release the drain now; agent.restart_after_turn_timeout in config.yaml caps this wait
+     finish or kill the work above to restart now, or `hermes update --force` to stop it now
 ```
 
-Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or lower `agent.restart_after_turn_timeout` in `config.yaml` (`0` enters the forced drain immediately).
+Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or start the update with `hermes update --force`, which stops every gateway at once and interrupts that work (see [Gateway downtime during an update](#gateway-downtime-during-an-update)). A second `hermes update --force` cannot cut short an update that is already waiting: that update holds the update lock, so the second one is refused until it finishes.
+
+The updater's wait is bounded (the `draining (up to …)` figure), the work is not: when that wait runs out on a gateway that is still doing work, the updater and the gateway restart command leave it running and print one line naming what it is still doing. The gateway keeps its restart pending and exits at its first idle moment; its service (systemd, launchd or an external supervisor) then starts it on the new code, and the update's fleet check lists it as `restart pending`, not stale. A gateway started by hand with `gateway run` exits the same way and needs starting again. The pre-swap pause works the same way: it stops nothing that is still working and the update carries on without the pause.
 
 Wedged work does not hold the restart: a chat turn idle past `agent.gateway_timeout`, or a cron run older than the scheduler's in-flight allowance (`max(2 × the job's interval, cron.inflight_max_minutes)`, 30 minutes by default), is excluded from the wait and interrupted by the restart instead.
 
@@ -489,8 +492,9 @@ Follow any blocker diagnostic for the specific process and installation. Do
 not kill every process named Python or Hermes. Source updates and MSIX package
 replacement have different owners and shutdown requirements.
 
-The parser retains `--force` and `--force-venv` for Windows compatibility. They
-are not normal update instructions or a guarantee that an OS file lock can be
+On Windows, `--force` also lets the update proceed when another `hermes.exe` is
+detected, and `--force-venv` mutates the venv while other processes hold it.
+Neither is a normal update instruction or a guarantee that an OS file lock can be
 bypassed. Inspect `hermes update --plan`, the update log, and `hermes pm status`
 before retrying a failed update.
 

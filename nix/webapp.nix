@@ -9,6 +9,10 @@ hermesNpmLib.buildPnpmPackage {
     "apps/shared"
     "scripts/build/webapp.mjs"
     "scripts/build/node-deps.mjs"
+    "scripts/build/node-deps-lock.mjs"
+    "scripts/build/node-deps-heartbeat.mjs"
+    "scripts/build/node-deps-watcher.mjs"
+    "scripts/build/node-deps-relay.mjs"
     "scripts/build/freshness.mjs"
     "scripts/build/frontend-common.mjs"
   ];

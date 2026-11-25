@@ -427,6 +427,17 @@ logs one warning and retries every 5 minutes; no restart is needed once the
 cause is fixed. A message in a listened space that also @mentions the app is
 handled once, through the app's own delivery.
 
+If a subscription expires anyway (the host was off or asleep for longer than
+its lifetime), Google delivers nothing for that time, also not afterwards.
+Hermes remembers each subscription's expiry in
+`~/.hermes/google_chat_workspace_spaces.json`, so after it has made the
+subscription again it reads what was said in the space since the expiry and
+hands the messages it would have admitted to the agent as **one late turn**:
+a note that the listener was down, from when to when, then each message with
+the time it was sent and its sender. The reply lands on the newest of them.
+At most 20 messages are handed over, and none older than 48 hours. The log
+shows `N message(s) sent in spaces/AAAA... between … and … are handed over late`.
+
 ---
 
 ## Troubleshooting

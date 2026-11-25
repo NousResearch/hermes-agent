@@ -23,7 +23,7 @@
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
   container: portal-composer / inline-size;
-  --composer-surface-pad-x: 1rem;
+  --composer-surface-pad-x: var(--portal-composer-inset);
   --composer-surface-pad-y: 1rem;
   --composer-input-max-height: min(9.375rem, 25dvh);
   --composer-row-gap: var(--portal-composer-gap);
@@ -225,7 +225,6 @@
    so a phone keeps the room. */
 @media (max-width: 639.98px) {
   :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
-    --composer-surface-pad-x: var(--portal-space-compact);
     --composer-surface-pad-y: var(--portal-space-compact);
     --portal-composer-gap: var(--portal-space-compact);
   }

@@ -98,14 +98,16 @@
      stage contract (portal-pages.css), which is its only reader outside this folder
      (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the
      owner keeps one width so no heading moves between pages. Then the conversation shared by the
-     transcript and the docked composer, the transcript flush with the composer's edges: as wide as
-     its stage allows, up to 960. Figma draws 440 (chat 16292:16175) and the column was 640; at
+     transcript and the docked composer: as wide as its stage allows, up to 960. The composer's card
+     is the column's width and the turns stand inside it by the card's own inset, so a reply starts
+     where the composer's text does and a prompt ends inside the card's far edge. Figma draws 440 (chat 16292:16175) and the column was 640; at
      either, a wide window left most of the stage empty beside a narrow column, and dragging the
      sidebar narrower gave the chat nothing. It now takes the room there is, as classic's does, with
      a cap so a line never runs the width of a wide monitor. */
   --portal-column-page: 61.25rem;
   --portal-column-conversation: 60rem;
-  --portal-column-conversation-inset: 0px;
+  --portal-composer-inset: 1rem;
+  --portal-column-conversation-inset: var(--portal-composer-inset);
   /* The 640 column: the landing's composer before the first message (16292:14822), and what stands
      on the stage in its place (the splashes, the held exchange, the offers over the composer). */
   --portal-column-landing: 40rem;
@@ -204,6 +206,7 @@
    gutter. */
 @media (max-width: 639.98px) {
   :root[data-shell='portal'] {
+    --portal-composer-inset: var(--portal-space-compact);
     --portal-rail-reserve: 0px;
     --portal-page-top: 1rem;
     --portal-frame-inset: 1rem;

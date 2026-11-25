@@ -239,3 +239,26 @@ def test_catalog_platform_credentials_install_a_default_entry_and_point_to_any_o
     told = [line for line in said if "chattwo" in line]
     assert len(told) == 1 and "`hermes plugins install chattwo`" in told[0] and "CHATTWO_TOKEN" in told[0]
     assert not any("chatthree" in line for line in said)
+
+
+def test_a_catalog_platform_whose_credentials_another_platform_serves_is_not_reported(tmp_path, monkeypatch):
+    """The real catalog's community ``hermes-tag`` requires ``FEISHU_APP_ID``/``FEISHU_APP_SECRET``, which the
+    Feishu platform plugin this home has also requires: those credentials are served, so a working Feishu
+    user is not told on every start that 'hermes-tag' is missing. A platform nothing serves still is."""
+    import hermes_cli.plugin_catalog as catalog
+    from hermes_cli import catalog_platforms
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("FEISHU_APP_ID=a\nFEISHU_APP_SECRET=b\nFLUXER_BOT_TOKEN=c\n", encoding="utf-8")
+    for name in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FLUXER_BOT_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(catalog, "fetch_live_catalog", lambda **kwargs: None)
+    names = {entry.name for entry in catalog.load_catalog()}
+    assert {"hermes-tag", "fluxer-platform"} <= names  # the real in-tree catalog file
+
+    pending = {entry.name for entry in catalog_platforms.pending_entries(home)}
+
+    assert "hermes-tag" not in pending
+    assert "fluxer-platform" in pending

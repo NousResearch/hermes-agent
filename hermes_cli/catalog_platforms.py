@@ -35,17 +35,43 @@ def _configured(entry, home: Path) -> bool:
     return bool(names) and all(_home_env(home, name, process_env=True) for name in names)
 
 
+def _served_env(home: Path) -> set[str]:
+    """Env names a platform plugin *home* already has (bundled or installed, not disabled) requires: read
+    from the manifests, never by loading a plugin, so it holds before *home*'s first discovery."""
+    from hermes_cli.left_core_migration import _plugins_listed
+    from hermes_cli.plugins_discovery import collect_directory_manifests
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_cli.plugins_manifest import manifest_key
+    with bind_profile_scope(home, hydrate_secrets=False):
+        manifests = collect_directory_manifests()
+    served: set[str] = set()
+    for manifest in manifests:
+        if manifest.kind != "platform" or _plugins_listed(home, (manifest.name, manifest_key(manifest)))[1]:
+            continue
+        for item in manifest.requires_env:
+            name = item.get("name") if isinstance(item, dict) else item
+            if isinstance(name, str):
+                served.add(name)
+    return served
+
+
 def pending_entries(home: Path) -> list:
-    """Platform entries *home* has the credentials for and has never had installed. Read-only."""
+    """Platform entries *home* has the credentials for and has never had installed. Read-only.
+
+    An entry whose required env a platform plugin *home* already has also requires is not pending: those
+    credentials are served (``hermes-tag`` overrides Feishu with the same ``FEISHU_*``), so naming it would
+    tell a working Feishu user on every start that a plugin they do not need is missing."""
     from hermes_cli.default_plugins import _installed_dir, _recorded
     from hermes_cli.left_core_migration import LEFT_CORE, _plugins_listed
     from hermes_cli.plugin_catalog import load_catalog_live
     owned = {feature.plugin for feature in LEFT_CORE}
     done = _recorded(home)
-    return [entry for entry in load_catalog_live()
-            if entry.category == "platform" and entry.name not in owned and entry.name not in done
-            and _configured(entry, home) and _installed_dir(home, entry) is None
-            and not _plugins_listed(home, (entry.name,))[1]]
+    candidates = [entry for entry in load_catalog_live()
+                  if entry.category == "platform" and entry.name not in owned and entry.name not in done
+                  and _configured(entry, home) and _installed_dir(home, entry) is None
+                  and not _plugins_listed(home, (entry.name,))[1]]
+    served = _served_env(home) if candidates else set()
+    return [entry for entry in candidates if not set(entry.capabilities.requires_env) <= served]
 
 
 def recover_in(home: Path, *, report: Callable[[str], None]) -> list[str]:

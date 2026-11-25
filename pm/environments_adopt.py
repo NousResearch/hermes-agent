@@ -132,3 +132,12 @@ def adopt_selected(project_root: Path) -> bool:
     or runs from no generation of this install at all (there is nothing to adopt)."""
     pair = _running_and_selected(project_root)
     return pair is None or adopt(pair[0], pair[1], pair[0])
+
+
+def adopt_published(project_root: Path) -> bool:
+    """Move this process onto a generation published after it booted (a plugin's dependencies installed
+    by another process or by this one). True only when this process now imports from a generation it did
+    not before; False when nothing was published since, when it runs from no generation of this install,
+    or when :func:`adopt` refuses (something already loaded would change: only a restart loads that)."""
+    return restart_needed(project_root) is not None and adopt_selected(project_root) \
+        and restart_needed(project_root) is None

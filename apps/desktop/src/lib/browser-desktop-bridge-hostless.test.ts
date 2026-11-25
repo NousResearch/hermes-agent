@@ -240,6 +240,17 @@ describe('a Webapp whose host runs no agent', () => {
     expect(ownRequests(requests).every(request => HOST_SURFACE.has(request))).toBe(true)
   })
 
+  it('reads the agent list once for roster reads made at the same moment', async () => {
+    const requests = dashboardHost()
+    const desktop = install()
+    await desktop.getConnection()
+    requests.length = 0
+
+    await Promise.all([desktop.getAgentRoster!(), desktop.getAgentRoster!()])
+
+    expect(ownRequests(requests)).toEqual(['GET /api/gateway-connections'])
+  })
+
   it("asks the window's agent, not the host, for its version, Portal status and connection test", async () => {
     const requests = dashboardHost()
     const desktop = install()

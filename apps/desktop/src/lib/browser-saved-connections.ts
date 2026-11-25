@@ -172,7 +172,7 @@ export function createBrowserSavedConnections({
     return next
   }
 
-  const list = async () => {
+  const readList = async () => {
     const read = await api<DesktopConnectionsRegistry | null>({ path: ROUTE })
 
     if (!Array.isArray(read?.connections)) {
@@ -181,6 +181,16 @@ export function createBrowserSavedConnections({
 
     return publish(read)
   }
+
+  // Readers that start while a read is in flight share it: a roster, a dial and Settings often ask
+  // in the same moment, and on a hosted dashboard each read is a call to the account service. A
+  // settled read is never reused: a caller that joins gets the answer of a read already under way.
+  let reading: null | Promise<DesktopConnectionsRegistry> = null
+
+  const list = () =>
+    (reading ??= readList().finally(() => {
+      reading = null
+    }))
 
   const mutated = async <T extends { registry: DesktopConnectionsRegistry }>(request: HermesApiRequest) => {
     const result = await api<T>(request)
@@ -191,9 +201,7 @@ export function createBrowserSavedConnections({
 
   const gateways = async () => (await list()).connections.filter(row => row.kind !== 'local')
 
-  // Every caller before the first answer shares one read; a failed read is not kept.
-  let firstRead: null | Promise<DesktopConnectionsRegistry> = null
-
+  // The list as last read; every caller before the first answer shares one read (`list`).
   const windowConnection = async () => {
     const known = hostedWindowConnection(snapshot)
 
@@ -201,11 +209,7 @@ export function createBrowserSavedConnections({
       return known
     }
 
-    const read = (firstRead ??= list().finally(() => {
-      firstRead = null
-    }))
-
-    const id = hostedWindowConnection(await read)
+    const id = hostedWindowConnection(await list())
 
     if (!id) {
       throw new NoHostedAgentError()

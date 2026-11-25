@@ -5,10 +5,11 @@ summary into that window."""
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from agent.context_compressor_tail import tail_cut_progress_floor
 from agent.prepared_compaction import PreparedCompaction, PreparedSummary
+from agent.turn_tool_validation import model_can_call
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,9 @@ class CompactionWindowMixin:
 
     # Set by agent_init when compression.prepare_ahead is on; None leaves compress() inline as before.
     prepared_compaction: Optional[PreparedCompaction] = None
+    # The agent whose tools decide whether session_search is reachable (ContextCompressor's search_owner); None,
+    # or a gone agent, keeps every archive.
+    _search_owner: Optional[Callable[[], Any]] = None
     # Set on delegated children (tools/delegate_tool.py): their first user turn is the whole brief.
     pin_task_turn: bool = False
 
@@ -124,12 +128,14 @@ class CompactionWindowMixin:
         return plan, pruned_count, compress_start, compress_end
 
     def _session_searchable(self) -> bool:
-        """True when session_search returns this session, read from its own row (the source it was stored
-        under, not the process's). Only then is a stored row's copy a way back; unknown means keep archives."""
+        """True when the owning agent can call session_search (``model_can_call``, read now) and search
+        returns this session, read from its own row (the source it was stored under, not the process's). Only then
+        is a stored row's copy a way back; unknown means keep archives."""
         from agent.session_source import SEARCH_HIDDEN_SOURCES
 
         session_id, persistence = getattr(self, "_session_id", "") or "", getattr(self, "_persistence", None)
-        if not session_id or persistence is None:
+        owner = self._search_owner() if self._search_owner is not None else None
+        if not session_id or persistence is None or owner is None or not model_can_call(owner, "session_search"):
             return False
         try:
             record = persistence.sessions.get(session_id)
@@ -172,21 +178,21 @@ class CompactionWindowMixin:
 
     def _assemble_with_archive_list(
         self, messages: list[dict[str, Any]], start: int, end: int, scan: Any, summary: str,
-        searchable: bool = False,
     ) -> list[dict[str, Any]]:
-        """``_assemble_compressed`` with every archive an unstored replaced row named, that neither the kept head
-        and tail nor the generated summary still name, listed in the summary row: the summarizer never saw the
-        pointers (it read the originals), and the list keeps the model's path back and the reference the
-        retention sweep keeps the file for. When *searchable*, a stored row adds nothing: the store keeps it and
-        every pointer it holds, so a searchable session commits no list. Otherwise a stored earlier handoff counts
-        only for its unwrapped prior-tail content (its own list stays on that stored row, which the sweep still
-        reads, so lists never re-stack) and an unstored one carries its list over as the only copy."""
+        """``_assemble_compressed`` with every archive a replaced row named, that neither the kept head and tail
+        nor the generated summary still name, listed in the summary row: the summarizer never saw the pointers
+        (it read the originals), and the list keeps the model's path back and the reference the retention
+        sweep keeps the file for. A replaced row stored where search reaches it got no file (``_commit_window``),
+        so it names none; a stored stub naming an earlier archive is listed, since that file can be the only
+        copy. An earlier handoff row that is already stored counts only for its unwrapped prior-tail content:
+        its own archive list stays on that stored row, which the sweep still reads, so lists never re-stack.
+        An unstored handoff (no session store) is the list's only copy, so it carries over."""
         from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
 
         named = pruned_archive_refs(
-            row for idx, msg in enumerate(messages) if not (searchable and _stored(msg))
-            and (row := self._strip_context_summary_handoff_message(msg) if idx in scan.summary_indices and _stored(msg)
-                 else msg) is not None
+            row for idx, msg in enumerate(messages)
+            if (row := msg if idx not in scan.summary_indices or not _stored(msg)
+                else self._strip_context_summary_handoff_message(msg)) is not None
         )
         # What the committed transcript really keeps: assembly drops standalone handoffs from the head and tail.
         kept = [*self._assemble_head(messages, start), {"content": summary},

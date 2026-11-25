@@ -53,6 +53,16 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
+def model_can_call(agent, name: str) -> bool:
+    """True when the model can call *name*: loaded directly, or deferred behind ``tool_call`` (a by-name call to a
+    deferred tool is routed through the bridge by ``_route_deferred_call``)."""
+    from agent.tool_executor import _tool_search_scoped_names
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    names = agent.valid_tool_names
+    return name in names or (TOOL_CALL_NAME in names and name in _tool_search_scoped_names(agent))
+
+
 def _route_deferred_call(agent, tc) -> bool:
     """Rewrite a call to a deferred tool by its real name into the ``tool_call`` bridge call, so
     the executor's scope check, schema probe and hooks run on it as on a model-written one."""

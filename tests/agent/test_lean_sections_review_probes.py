@@ -14,13 +14,13 @@ name the exact behaviour that must hold.
 """
 from __future__ import annotations
 
-from agent.context_compressor import (
+from agent.context_compressor import _LEAN_RECOVERY_HEADING
+from agent.context_compressor_lean import (
     _LEAN_ANCHOR_HEADING,
-    _LEAN_RECOVERY_HEADING,
     _build_anchor_index,
     _parse_anchor_index,
+    strip_lean_sections,
 )
-from agent.context_compressor_lean import strip_lean_sections
 
 HEADINGS = (_LEAN_ANCHOR_HEADING, _LEAN_RECOVERY_HEADING)
 

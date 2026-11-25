@@ -85,10 +85,12 @@ def test_stored_replaced_rows_get_no_file_and_the_summary_lists_no_paths(home):
     assert _archived(home) == pruned_archive_refs(kept)
 
 
-def test_a_stored_row_that_already_points_at_an_archive_adds_no_list_entry(home):
-    """An earlier prune left a stub naming its file on a stored row; the store keeps that row (and the reference
-    the sweep reads) when the summary replaces it, so the summary must not re-list the path."""
+def test_a_stored_stub_naming_an_earlier_archive_stays_listed(home):
+    """An earlier prune left a stub naming its file on a stored row. The store holds only the stub, so that file can
+    be the only copy of the output: the summary that replaces the row must keep listing it."""
     msgs = _transcript()
+    (home / "cache" / "pruned").mkdir(parents=True)
+    (home / "cache" / "pruned" / "s1_earlier_read_file_00.txt").write_text("ONLY-COPY", encoding="utf-8")
     stub = "[read_file] read f3.py (12,010 chars) — full result: ~/.hermes/cache/pruned/s1_earlier_read_file_00.txt"
     msgs[2 * 3 + 3]["content"] = stub  # call_3's result, already shortened and stored by a proactive prune
     c = _compressor()
@@ -96,8 +98,19 @@ def test_a_stored_row_that_already_points_at_an_archive_adds_no_list_entry(home)
         out = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
 
     assert stub not in json.dumps(out)  # the summary replaced it
-    assert "s1_earlier_read_file_00" not in _summary(out)
+    assert "s1_earlier_read_file_00" in _summary(out)
 
+
+def test_a_row_known_only_by_its_row_id_counts_as_stored(home):
+    """Rows reloaded from state.db carry a row id instead of the born-durable marker."""
+    msgs = _transcript(stored=lambda i: False)
+    for n, row in enumerate(msgs[1:], 1):
+        row["_row_id"] = n
+    c = _compressor()
+    with _no_pointer_summary():
+        out = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
+
+    assert ARCHIVE_LIST_HEADING not in _summary(out)
 
 def test_a_session_not_confirmed_searchable_keeps_its_archives_and_list(home):
     """No bound store row to read the source from (the gateway's one-off compressor): keep every file and list it."""
@@ -131,10 +144,17 @@ def test_a_mixed_window_lists_only_the_unstored_results(home):
     assert _archived(home) == listed | pruned_archive_refs(kept)
 
 
-@pytest.mark.parametrize("source", ["cli", "subagent", "kanban"])
-def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_file(home, source):
-    """Real AIAgent, real SQLite and the in-place commit: the replaced tool result's exact text comes back from
-    session_search, so dropping its file and list line loses nothing the model can reach."""
+@pytest.mark.parametrize(("source", "toolsets"), [
+    ("cli", {}),
+    ("subagent", {}),  # session_search hides the session, even from itself
+    ("kanban", {}),
+    ("cli", {"disabled_toolsets": ["session_search"]}),  # the store reaches it, this agent cannot ask
+    ("cli", {"enabled_toolsets": ["file", "terminal"]}),
+])
+def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_file(home, source, toolsets):
+    """Real AIAgent, real SQLite and the in-place commit: where this agent can search its session, the replaced
+    tool result's exact text comes back from session_search, so it gets no file and no list line. Otherwise the
+    listed archive files stay the way back."""
     import os
 
     from agent.conversation_compression import compress_context
@@ -151,7 +171,8 @@ def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_fil
         from run_agent import AIAgent
 
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
-                        quiet_mode=True, persistence=db, session_id=sid, skip_context_files=True, skip_memory=True)
+                        quiet_mode=True, persistence=db, session_id=sid, skip_context_files=True, skip_memory=True,
+                        **toolsets)
         agent.compression_in_place = True
         agent.context_compressor.protect_first_n, agent.context_compressor.protect_last_n = 2, 4
         msgs = _transcript(stored=lambda i: False)[1:]
@@ -162,9 +183,10 @@ def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_fil
 
         active = [m.as_openai_message() for m in db.messages.read_conversation(sid, ConversationRequest())]
         summary = _summary(active)
-        if source != "cli":  # session_search hides this session, even from itself: the files stay the way back
+        if source != "cli" or toolsets:
             listed = pruned_archive_refs([{"content": summary}])
-            assert listed and listed <= _archived(home)
+            originals = {m["content"] for m in msgs if m.get("role") == "tool"}
+            assert listed and all((home / ref).read_text(encoding="utf-8") in originals for ref in listed)
             return
         assert ARCHIVE_LIST_HEADING not in summary
         replaced = sorted({int(m["content"][7:9]) for m in msgs if m.get("role") == "tool"}

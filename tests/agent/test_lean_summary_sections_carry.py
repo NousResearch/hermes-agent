@@ -15,9 +15,9 @@ from unittest.mock import patch
 
 from agent.context_compressor import (
     ContextCompressor,
-    _LEAN_ANCHOR_HEADING,
     _LEAN_USER_MESSAGES_HEADING,
 )
+from agent.context_compressor_lean import _LEAN_ANCHOR_HEADING
 
 USER_A = "ALPHA-NEEDLE keep the alpha access code 1111 in src/alpha/access_code.py"
 USER_B = "BRAVO-NEEDLE and the bravo access code is 2222 in src/bravo/limits.py"
@@ -161,8 +161,9 @@ def test_an_anchor_index_written_before_the_separator_change_carries_per_entry()
     """Stored summaries from before this change join entries with ", "; each must keep its own count."""
     from agent.context_compressor_lean import rebuild_lean_sections
 
-    previous = (f"narrative\n\n{_LEAN_ANCHOR_HEADING}\nfiles: src/a.py(x3), src/b.py\n"
-                "(Exact identifiers from the compacted region.)")
+    previous = (f"narrative\n\n{_LEAN_ANCHOR_HEADING}\nfiles: src/a.py(x3), src/b.py\n"  # main's footer, verbatim
+                "(Exact identifiers from the compacted region \u2014 use these verbatim, "
+                "and as session_search query anchors to recover their full context.)")
     out = rebuild_lean_sections("narrative", [{"role": "user", "content": "edit src/a.py"}],
                                 previous_summary=previous, session_id="s")
 
@@ -188,3 +189,43 @@ def test_an_error_entry_with_the_separator_in_it_carries_as_one_entry():
 
     (line,) = [ln for ln in second.splitlines() if ln.startswith("errors: ")]
     assert line == "errors: ValueError: input a(x2)"
+
+
+def test_a_one_entry_error_line_with_a_comma_carries_whole():
+    from agent.context_compressor_lean import rebuild_lean_sections
+
+    turns = [{"role": "assistant", "content": "ValueError: expected int, got str"}]
+    first = rebuild_lean_sections("n", turns, previous_summary="", session_id="s")
+    second = rebuild_lean_sections("n", turns, previous_summary=first, session_id="s")
+
+    assert "errors: ValueError: expected int, got str(x2)" in second.splitlines()
+
+
+def test_a_longer_fence_can_quote_a_shorter_one():
+    from agent.context_compressor import _LEAN_RECOVERY_HEADING
+    from agent.context_compressor_lean import rebuild_lean_sections
+
+    example = f"````\n```\n{_LEAN_RECOVERY_HEADING}\nexample\n````\nKEEP-AFTER-FENCE"
+    out = rebuild_lean_sections("## Progress\n" + example, [{"role": "user", "content": "go"}],
+                                previous_summary="", session_id="s")
+
+    assert example in out
+
+
+def test_the_recovery_footer_counts_this_region_not_the_previous_one():
+    from agent.context_compressor import _LEAN_RECOVERY_HEADING
+    from agent.context_compressor_lean import rebuild_lean_sections
+
+    first = rebuild_lean_sections("n", [{"role": "user", "content": "a"}] * 3, previous_summary="", session_id="s")
+    second = rebuild_lean_sections("n", [{"role": "user", "content": "b"}] * 7, previous_summary=first, session_id="s")
+
+    assert second.count(_LEAN_RECOVERY_HEADING) == 1 and "The 7 compacted message(s)" in second
+
+
+def test_an_echoed_heading_with_trailing_spaces_is_still_replaced():
+    from agent.context_compressor_lean import rebuild_lean_sections
+
+    echoed = f"narrative\n\n{_LEAN_ANCHOR_HEADING}  \nfiles: MODEL-WROTE-THIS.py\n"
+    out = rebuild_lean_sections(echoed, [{"role": "user", "content": "edit src/a.py"}], previous_summary="", session_id="s")
+
+    assert out.count(_LEAN_ANCHOR_HEADING) == 1 and "MODEL-WROTE-THIS" not in out

@@ -45,6 +45,8 @@ _ANCHOR_ITEM_COUNT_RE = re.compile(r"^(?P<val>.+?)\(x(?P<n>\d+)\)$")
 # identifier or an error string, so a rendered index parses back unambiguously (", " could not:
 # two adjacent error entries merged into one and were cut as a single over-long value).
 _ANCHOR_ITEM_SEP = " \u00b7 "
+# The footer every index rendered before the separator change ends with.
+_LEGACY_ANCHOR_FOOTER = "(Exact identifiers from the compacted region \u2014 use these verbatim,"
 
 
 def _parse_anchor_index(section: str) -> dict[str, dict[str, int]]:
@@ -52,8 +54,9 @@ def _parse_anchor_index(section: str) -> dict[str, dict[str, int]]:
     parsed: dict[str, dict[str, int]] = {}
     if not section:
         return parsed
-    # An index written before the separator changed (still in stored summaries) joins its entries with ", ".
-    sep = _ANCHOR_ITEM_SEP if _ANCHOR_ITEM_SEP in section else ", "
+    # An index written before the separator changed (still in stored summaries) joins its entries with ", " and
+    # ends with the old footer; the new footer names the separator, so a one-entry line is never misread.
+    sep = ", " if _LEGACY_ANCHOR_FOOTER in section else _ANCHOR_ITEM_SEP
     for line in section.splitlines()[1:]:
         if line.startswith("(Exact identifiers"):
             break
@@ -118,8 +121,8 @@ def _build_anchor_index(turns: list[dict[str, Any]], *, carried_section: str = "
     return (
         "\n\n" + _LEAN_ANCHOR_HEADING + "\n"
         + "\n".join(sections)
-        + "\n(Exact identifiers from the compacted region — use these verbatim, "
-        "and as session_search query anchors to recover their full context.)"
+        + f"\n(Exact identifiers from the compacted region, entries separated by '{_ANCHOR_ITEM_SEP.strip()}' "
+        "— use these verbatim, and as session_search query anchors to recover their full context.)"
     )
 
 
@@ -151,7 +154,7 @@ def _unquoted_section_spans(summary: str, headings: tuple[str, ...]) -> list[tup
     fenced code block (a summary quoting one of these headings in an example must keep the example)."""
     from agent.markdown_fences import unfenced_lines
 
-    rows = [(offset, line.rstrip("\r\n")) for offset, line in unfenced_lines(summary)]
+    rows = [(offset, line.rstrip()) for offset, line in unfenced_lines(summary)]  # "## Heading  " is the heading
     spans: list[tuple[int, int, str]] = []
     for index, (start, line) in enumerate(rows):
         if line in headings:

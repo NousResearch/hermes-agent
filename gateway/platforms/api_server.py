@@ -2221,6 +2221,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route_cfg = route if isinstance(route, dict) else {}
         route_model = _clean_request_string(route_cfg.get("model"))
         route_provider = _clean_request_string(route_cfg.get("provider"))
+        if not request_provider and request_model:
+            prefixed_prov, split_m = self._split_provider_prefixed_model(request_model)
+            if prefixed_prov:
+                request_provider = prefixed_prov
+                request_model = split_m
+        if not route_provider and route_model:
+            prefixed_prov, split_m = self._split_provider_prefixed_model(route_model)
+            if prefixed_prov:
+                route_provider = prefixed_prov
+                route_model = split_m
         session_key = gateway_session_key or session_id
         session_row_model = _clean_request_string(session_model)
         current_provider = _clean_request_string(runtime_kwargs.get("provider"))
@@ -2230,10 +2240,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from hermes_cli.model_switch import resolve_effective_model
         if session_override:
             model = resolve_effective_model(session_override, None, model)
+            override_prov = _clean_request_string(session_override.get("provider"))
             self._apply_provider_runtime(
                 runtime_kwargs,
-                _clean_request_string(session_override.get("provider")) or current_provider,
-                target_model=model)
+                override_prov or current_provider,
+                target_model=model,
+                required=bool(override_prov and not session_override.get("api_key")))
             _apply_runtime_agent_overrides(runtime_kwargs, session_override)
             if route or request_model or request_provider:
                 logger.debug(
@@ -2258,9 +2270,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if effective_provider and (bool(request_provider or route_provider) or effective_model != model):
                 # A confirmed Browser lock fails closed: never fall through to the previous
                 # global provider's credentials.
+                provider_required = bool(
+                    request_provider or (route_provider and not route_cfg.get("api_key"))
+                ) or confirmed_runtime_lock
                 applied = self._apply_provider_runtime(
                     runtime_kwargs, effective_provider, target_model=effective_model,
-                    required=bool(request_provider) or confirmed_runtime_lock)
+                    required=provider_required)
             if not applied and effective_provider and effective_provider != current_provider:
                 runtime_kwargs["provider"] = effective_provider
             model = effective_model
@@ -2296,11 +2311,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
         # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
-        # run_conversation() errors distinct.
+        # run_conversation() errors distinct. Defer raising if the request specifies an explicit
+        # provider, route, or session override with its own valid credentials (#159980).
+        default_auth_error: Optional[RuntimeError] = None
         try:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
-            raise _ProviderAuthResolutionError(str(exc)) from exc
+            default_auth_error = exc
+            runtime_kwargs = {}
         # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
         # must not collide with the ``**runtime_kwargs`` spread).
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
@@ -2312,6 +2330,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             requested_model=requested_model, requested_provider=requested_provider, route=route,
             session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
             gateway_session_key=gateway_session_key, session_id=session_id)
+        if default_auth_error is not None and not (runtime_kwargs.get("provider") or runtime_kwargs.get("api_key")):
+            raise _ProviderAuthResolutionError(str(default_auth_error)) from default_auth_error
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
         # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``

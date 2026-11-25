@@ -1509,6 +1509,49 @@ class TestRunsProviderAuthFailure:
                 )
                 assert status["last_event"] == "run.failed"
 
+    @pytest.mark.asyncio
+    async def test_runs_explicit_provider_succeeds_when_default_auth_fails(self, adapter, monkeypatch):
+        """#159980: An explicit provider passed to /v1/runs must resolve and create the agent
+        even if the default provider's auth resolution fails."""
+        app = _create_runs_app(adapter)
+        agent = MagicMock()
+        agent.run_conversation.return_value = {"final_response": "explicit success"}
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: (_ for _ in ()).throw(RuntimeError("No credentials found for default provider 'nous'")),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            lambda provider, target_model=None: {
+                "provider": provider,
+                "api_key": f"sk-{provider}",
+                "base_url": f"https://{provider}.example/v1",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            },
+        )
+        monkeypatch.setattr("run_agent.AIAgent", lambda **kw: agent)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json={"input": "hello", "provider": "customprov"})
+            assert resp.status == 202
+            data = await resp.json()
+            run_id = data["run_id"]
+
+            for _ in range(40):
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status = await status_resp.json()
+                if status["status"] == "completed":
+                    break
+                await asyncio.sleep(0.05)
+
+            assert status["status"] == "completed"
+            assert status["output"] == "explicit success"
+
 
 # ---------------------------------------------------------------------------
 # POST /v1/runs idempotency

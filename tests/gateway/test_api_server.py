@@ -2700,6 +2700,117 @@ class TestModelRoutesAgentCreation:
         assert captured["provider"] == "sessionprov"
         assert captured["api_key"] == "sk-session"
 
+    def test_explicit_provider_succeeds_when_default_provider_auth_fails(self, monkeypatch):
+        """#159980: When the gateway default provider credentials are missing,
+        an explicit requested_provider or route provider must not fail on the default auth."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: (_ for _ in ()).throw(RuntimeError("No credentials found for default provider 'nous'")),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            lambda provider, target_model=None: {
+                "provider": provider,
+                "api_key": f"sk-{provider}",
+                "base_url": f"https://{provider}.example/v1",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            },
+        )
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "provider": "otherprov"}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        # 1. Via route
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+        assert captured["model"] == "other/model"
+        assert captured["provider"] == "otherprov"
+        assert captured["api_key"] == "sk-otherprov"
+
+        # 2. Via requested_provider
+        captured.clear()
+        adapter._create_agent(
+            session_id="s2", requested_provider="customprov", requested_model="custom/model"
+        )
+        assert captured["model"] == "custom/model"
+        assert captured["provider"] == "customprov"
+        assert captured["api_key"] == "sk-customprov"
+
+        # 3. Via provider::model prefix syntax
+        captured.clear()
+        adapter._create_agent(session_id="s3", requested_model="prefixedprov::fast-model")
+        assert captured["model"] == "fast-model"
+        assert captured["provider"] == "prefixedprov"
+        assert captured["api_key"] == "sk-prefixedprov"
+
+    def test_explicit_provider_auth_failure_reports_its_own_error_not_default(self, monkeypatch):
+        """#159980: When both default and explicit provider fail, the error must identify
+        the explicitly requested provider rather than the default provider."""
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: (_ for _ in ()).throw(RuntimeError("No credentials found for default provider 'nous'")),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            lambda provider, target_model=None: (_ for _ in ()).throw(
+                RuntimeError(f"API key missing for provider '{provider}'")
+            ),
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        with pytest.raises(_ProviderAuthResolutionError) as exc_info:
+            adapter._create_agent(session_id="s1", requested_provider="badprov")
+
+        assert "API key missing for provider 'badprov'" in str(exc_info.value)
+        assert "nous" not in str(exc_info.value)
+
+    def test_default_provider_auth_failure_raised_when_no_explicit_selection(self, monkeypatch):
+        """#159980: When no explicit provider or route is passed, default provider auth
+        failure is still raised as _ProviderAuthResolutionError."""
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: (_ for _ in ()).throw(RuntimeError("No credentials found for default provider 'nous'")),
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        with pytest.raises(_ProviderAuthResolutionError) as exc_info:
+            adapter._create_agent(session_id="s1")
+
+        assert "No credentials found for default provider 'nous'" in str(exc_info.value)
+
 
 class TestStoredSessionModelFilter:
     """A session row that persisted the advertised virtual model must read as

@@ -26,11 +26,11 @@ import httpx
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
+    BasePlatformAdapter, CachedMedia, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import redact_phone
+from gateway.platforms.helpers import redact_phone, tag_safe_display_name
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
@@ -40,7 +40,7 @@ from plugins.platforms.signal.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from gateway.platforms._shared import get_scoped_secret as _sig_secret
-from utils import TRUTHY_STRINGS, is_truthy_value
+from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,13 @@ _OBSERVE_CHANNEL_PROMPT = (
     "before the current message; it is not necessarily addressed to you.\n"
     "- Treat only the current new message as a request explicitly directed at you, "
     "and use observed context only when the current message asks for it.")
+
+
+def _flag(value: Any, default: bool) -> bool:
+    """A YAML bool or an env/quoted-YAML string as a bool; ``None`` (unset) is *default*."""
+    if value is None:
+        return default
+    return value.strip().lower() in TRUTHY_STRINGS if isinstance(value, str) else bool(value)
 
 
 def _parse_comma_list(value: str) -> list[str]:
@@ -210,9 +217,10 @@ class SignalAdapter(BasePlatformAdapter):
         # Replay reads that turn's session, so this needs one session per group: per-sender lanes
         # (group_sessions_per_user) would scatter the chatter where the addressed turn never looks.
         _obs_cfg = extra.get("observe_unmentioned_group_messages")
-        observe = is_truthy_value(
-            _obs_cfg if _obs_cfg is not None else _sig_secret("SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false"))
-        shared_group_sessions = not is_truthy_value(extra.get("group_sessions_per_user"), default=True)
+        observe = _flag(
+            _obs_cfg if _obs_cfg is not None else _sig_secret("SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false"),
+            default=False)
+        shared_group_sessions = not _flag(extra.get("group_sessions_per_user"), default=True)
         self.observe_unmentioned_group_messages = observe and self.require_mention and shared_group_sessions
         if observe and self.require_mention and not shared_group_sessions:
             logger.warning("Signal: observe_unmentioned_group_messages needs group_sessions_per_user: false "
@@ -536,14 +544,12 @@ class SignalAdapter(BasePlatformAdapter):
         store = getattr(self, "_session_store", None)
         if not store:
             return
-        from gateway.session import neutralize_untrusted_inline_text
-        from tools.credential_files import to_agent_visible_cache_path
         parts = [text.strip()] if text and text.strip() else []
         for path, mime in zip(media_urls, media_types):
             kind = mime.split("/", 1)[0] if mime.startswith(("image/", "audio/", "video/")) else "document"
-            parts.append(f"[{kind} saved at: {to_agent_visible_cache_path(path)}]")
-        # Same "[sender] text" shape the runner gives addressed turns in a shared group session.
-        content = f"[{neutralize_untrusted_inline_text(source.user_name)}] " + "\n\n".join(parts)
+            parts.append(CachedMedia(path, mime, kind, Path(path).name).context_note())
+        # Same "[sender] text" shape (and name sanitizing) the runner gives addressed turns in a shared group session.
+        content = f"[{tag_safe_display_name(source.user_name)}] " + "\n\n".join(parts)
         # Epoch seconds: the store refuses ISO strings, and a delayed delivery keeps its real send time.
         entry = {"role": "user", "content": content, "timestamp": timestamp.timestamp(), "observed": True}
 

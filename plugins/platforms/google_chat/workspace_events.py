@@ -100,9 +100,13 @@ class SubscriptionKeeper:
             try:
                 return self._subs().get(name=name).execute(http=self._http())
             except gc.HttpError as exc:
-                if gc._http_status(exc) != 404:
+                # Google answers 403 ("Permission denied on subscription ...") for a subscription
+                # that expired and was removed, not 404. Either way this name is gone: forget it
+                # and look the space up. A real refusal fails at the list below with its own error.
+                if gc._http_status(exc) not in (403, 404):
                     raise
-        flt = f'event_types:"{MESSAGE_CREATED}" AND target_resource="//chat.googleapis.com/{space}"'
+                self.names.pop(space, None)
+        flt =f'event_types:"{MESSAGE_CREATED}" AND target_resource="//chat.googleapis.com/{space}"'
         found = self._subs().list(filter=flt).execute(http=self._http()).get("subscriptions") or []
         return found[0] if found else None
 

@@ -84,6 +84,8 @@ class _FakeSubscriptions:
         self.calls: list[str] = []
         self.create_conflict = False
         self.list_hides = 0  # list() returns nothing this many times (an eventually consistent list)
+        self.gone_status = 404  # get() of an unknown name; Google answers 403 once one has expired
+        self.refuse_list = False
 
     def _op(self, sub):
         return _Call({"done": True, "response": {"@type": "x", **sub}})
@@ -91,11 +93,13 @@ class _FakeSubscriptions:
     def get(self, name):
         self.calls.append("get")
         if name not in self.subs:
-            return _Call(exc=_FakeHttpError(404))
+            return _Call(exc=_FakeHttpError(self.gone_status))
         return _Call(dict(self.subs[name]))
 
     def list(self, filter):
         self.calls.append("list")
+        if self.refuse_list:
+            return _Call(exc=_FakeHttpError(403))
         if self.list_hides:
             self.list_hides -= 1
             return _Call({"subscriptions": []})
@@ -424,6 +428,39 @@ class TestSubscriptionKeeper:
         assert keeper.ensure(SPACE) == "renewed"
         sub["state"], sub["suspensionReason"] = "SUSPENDED", "USER_SCOPE_REVOKED"
         assert keeper.ensure(SPACE).startswith("reactivated")
+
+    @pytest.mark.parametrize("gone_status", [403, 404])
+    def test_an_expired_subscription_is_created_again(self, gone_status):
+        """Past its expiry Google removes a subscription and answers a get of its name with 403
+        ("Permission denied on subscription ..."), not 404: e.g. after the host was asleep for a day."""
+        events = _FakeEvents()
+        keeper = _keeper(events)
+        keeper.ensure(SPACE)
+        events.subscriptions_.subs.clear()
+        events.subscriptions_.gone_status = gone_status
+        events.subscriptions_.calls.clear()
+        assert keeper.ensure(SPACE) == "created"
+        assert events.subscriptions_.calls == ["get", "list", "create"]
+        assert events.subscriptions_.subs[keeper.names[SPACE]]["state"] == "ACTIVE"  # Google reuses the name
+        assert keeper.ensure(SPACE) is None
+
+    def test_a_refusal_is_still_raised(self):
+        """403 because the API is off or the delegation is gone: the lookup fails too, nothing is created."""
+        events = _FakeEvents()
+        keeper = _keeper(events)
+        keeper.ensure(SPACE)
+        events.subscriptions_.subs.clear()
+        events.subscriptions_.gone_status, events.subscriptions_.refuse_list = 403, True
+        events.subscriptions_.calls.clear()
+        with pytest.raises(_FakeHttpError):
+            keeper.ensure(SPACE)
+        assert events.subscriptions_.calls == ["get", "list"]
+        events.subscriptions_.gone_status = 500  # any other error on the get is raised at once
+        keeper.names[SPACE] = "subscriptions/S1"
+        events.subscriptions_.calls.clear()
+        with pytest.raises(_FakeHttpError):
+            keeper.ensure(SPACE)
+        assert events.subscriptions_.calls == ["get"]
 
     def test_a_subscription_on_another_topic_is_replaced(self):
         events = _FakeEvents()

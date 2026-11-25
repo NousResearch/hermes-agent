@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -979,6 +980,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         return verdict
 
     finally:
+        exiting = sys.exc_info()[1]  # a verdict the shutdown tail already raised (SystemExit 75), if any
         try:
             if runner is not None:
                 from gateway.run_runtime import drain_gateway_runtime
@@ -988,7 +990,15 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
                 # yet this is cleanup, not a shutdown: keep startup_failed and the crash markers.
                 if getattr(runner, "_stop_task", None) is None and not getattr(runner, "_running", False):
                     runner._startup_cleanup_only = True
-                await runner.stop()
+                try:
+                    await runner.stop()
+                except Exception as exc:
+                    # _stop_impl's guard logged it. Exit through the entry point's hard exit like every
+                    # other verdict: re-raised, it reaches interpreter finalization, which joins live
+                    # non-daemon workers (an in-flight cron job) for as long as they run.
+                    if isinstance(exiting, SystemExit):
+                        raise exiting from exc
+                    raise SystemExit(1) from exc
         finally:
             if _planned_stop_watcher_stop is not None:
                 _planned_stop_watcher_stop.set()

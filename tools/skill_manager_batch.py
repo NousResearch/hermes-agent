@@ -90,7 +90,6 @@ def _validate_batch_ops(operations, default_name, tool_error):
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
-    creates = 0
     for i, op in enumerate(operations):
         if not isinstance(op, dict) or not op.get("action"):
             return fail(i, " needs an 'action'.")
@@ -112,8 +111,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
         names.append(nm)
         if act == "create" and nm in names[:-1]:
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")
-        creates += act == "create"
-        if (preflight := _background_review_preflight(act, nm, creates=creates)) is not None:
+        if (preflight := _background_review_preflight(act, nm)) is not None:
             return None, json.dumps(preflight, ensure_ascii=False)
     # Clobber guard: a DESTRUCTIVE op (create/write_file/remove_file/full rewrite) on
     # a file an earlier op touched would SILENTLY discard its work — reject it.
@@ -243,6 +241,17 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     names, err = _validate_batch_ops(operations, default_name, tool_error)
     if err is not None:
         return err
+    # One cap check for the batch's total creates, its lock held through commit or rollback.
+    from tools.skill_manager_guards import agent_created_cap
+    with agent_created_cap(sum(op["action"] == "create" for op in operations)) as cap_refusal:
+        if cap_refusal is not None:
+            return json.dumps(cap_refusal, ensure_ascii=False)
+        return _apply_validated_batch(operations, names, task_id, session_id)
+
+
+def _apply_validated_batch(operations, names, task_id, session_id) -> str:
+    from tools import skill_manager_tool as _smt
+    from tools.registry import tool_error
     if not _smt._skill_gate_bypass.get():
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
@@ -273,7 +282,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                                               task_id=task_id, session_id=session_id)
                 try:
                     parsed = json.loads(raw)
-                except Exception:
+                except (TypeError, ValueError):  # json.JSONDecodeError is a ValueError
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
                     note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)

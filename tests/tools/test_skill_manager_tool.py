@@ -1600,7 +1600,24 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
         mark_background_review_skill_read(tmp_path / "team-skills" / "one" / "SKILL.md")
         patched = json.loads(skill_manage(action="patch", name="one", old_string="Step one.",
                                           new_string="Step one, then two."))
-        (tmp_path / "skills" / ".usage.json").write_text("{not json", encoding="utf-8")
+        # A second record keyed by the frontmatter name (an adopt) must not make "one" fill two slots.
+        usage_path = tmp_path / "skills" / ".usage.json"
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        usage["one-display"] = {"created_by": "agent", "state": "active"}
+        usage_path.write_text(json.dumps(usage), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 2\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        counted_once = json.loads(skill_manage(action="create", name="five", content=skill("five")))
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 10\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        # A create whose record cannot be saved is undone, or its slot would stay free.
+        skills_root = tmp_path / "skills"
+        skills_root.chmod(0o555)
+        try:
+            unrecorded = json.loads(skill_manage(action="create", name="six", content=skill("six")))
+        finally:
+            skills_root.chmod(0o755)
+        usage_path.write_text("{not json", encoding="utf-8")
         damaged = json.loads(skill_manage(action="create", name="four", content=skill("four")))
     finally:
         reset_current_write_origin(token)
@@ -1611,6 +1628,8 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
     assert batch["success"] is False and batch.get("_cap_reached") is True, batch
     assert not (tmp_path / "team-skills" / "two").exists() and not (tmp_path / "team-skills" / "three").exists()
     assert patched["success"] is True, patched
+    assert counted_once["success"] is True, counted_once
+    assert unrecorded["success"] is False and not (tmp_path / "team-skills" / "six").exists(), unrecorded
     assert damaged["success"] is False and not (tmp_path / "team-skills" / "four").exists(), damaged  # fail closed
     assert user["success"] is True, user
 

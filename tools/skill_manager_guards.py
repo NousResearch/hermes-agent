@@ -6,9 +6,9 @@ so test patches keep working."""
 import contextvars as _ctxvars
 import logging
 import threading
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger("tools.skill_manager_tool")
 
@@ -253,74 +253,66 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
         return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
     return None
 
-# Set (token-scoped) by the curator consolidation pass: its umbrella creates skip the check (they
-# absorb and shrink the library); once created they count like any other curator-managed skill.
+
+# Set (token-scoped) by the curator consolidation pass: its umbrella creates skip the cap (they absorb
+# and shrink the library); once created they count like any other curator-managed skill.
 _cap_exempt: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_exempt", default=False)
+_cap_held: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_held", default=False)
 
 
-def _count_agent_created() -> int:
-    """Live curator-managed skills, keyed exactly as ``record_created`` writes them (the tool's
-    ``name``, wherever ``skills.create_dir`` put the files). Strict read: raises on a damaged sidecar."""
+@contextmanager
+def agent_created_cap(creates: int) -> Iterator[Optional[dict[str, Any]]]:
+    """``curator.max_agent_created`` for a background-review write adding *creates* skills: yields a refusal,
+    or None while holding one profile-wide lock the caller keeps across the write AND its creation record,
+    so two reviews cannot share a last slot (thread re-entrant: a batch's per-op calls pass straight
+    through). Updates stay allowed at the cap, so the fork must improve or retire a skill before adding
+    one: every auto-written skill rides each session's prompt index. A no-op (None, no lock) for
+    foreground writes, the consolidation pass, non-creates and cap 0. Fails closed on an unreadable
+    sidecar. Inspired by Perplexity Brain's per-user cap on automatically created skills."""
+    try:
+        from agent.curator import get_max_agent_created
+        cap = get_max_agent_created() if creates and _is_background_review() and not _cap_exempt.get() else 0
+    except Exception:
+        logger.debug("curator.max_agent_created read failed; treating as unset", exc_info=True)
+        cap = 0
+    if cap <= 0:
+        yield None
+        return
+    from agent.skill_utils import get_skill_create_dir
     from tools import skill_manager_tool as _smt
     from tools import skill_usage
-    return sum(1 for name, rec in skill_usage._load_usage_strict().items()
-               if skill_usage._is_curator_managed_record(rec) and rec.get("state") != skill_usage.STATE_ARCHIVED
-               and not skill_usage.is_bundled(name) and _smt._find_skill(name))
+    with skill_usage.skill_file_lock(_smt._skills_dir() / ".locks" / "agent-created-cap.lock"):
+        if _cap_held.get():
+            yield None  # an outer call (the batch) already checked the total under this lock
+            return
+        try:
+            have = skill_usage.count_agent_created_skills(get_skill_create_dir())
+        except Exception:
+            logger.warning("agent-created skill count unreadable; refusing the background create", exc_info=True)
+            yield _refusal("Refusing background create: skills/.usage.json is unreadable, so "
+                           "curator.max_agent_created cannot be checked. Patch an existing skill instead.",
+                           _cap_reached=True)
+            return
+        if have + creates > cap:
+            yield _refusal(
+                f"Refusing background create: {have} agent-created skills already exist and "
+                f"curator.max_agent_created is {cap}. Put the lesson into an existing skill (skill_view, then "
+                f"patch), or retire a less useful agent-created skill first (fold its content into another, "
+                f"then delete it with absorbed_into=<that skill>) and say in your summary why the new skill "
+                f"is worth more.", _cap_reached=True)
+            return
+        token = _cap_held.set(True)
+        try:
+            yield None
+        finally:
+            _cap_held.reset(token)
 
 
-def agent_created_cap_lock(creates: bool):
-    """Profile-wide lock held across a capped background create's count, write and creation record
-    (thread re-entrant, so a batch's nested per-op calls pass). A no-op for every other call."""
-    from contextlib import nullcontext
-    if not creates or not _is_background_review() or _cap_exempt.get():
-        return nullcontext()
-    try:
-        from agent.curator import get_max_agent_created
-        if get_max_agent_created() <= 0:
-            return nullcontext()
-    except Exception:
-        logger.debug("cap config read failed; taking the cap lock", exc_info=True)
-    from tools import skill_manager_tool as _smt
-    from tools.skill_usage import skill_file_lock
-    return skill_file_lock(_smt._skills_dir() / ".locks" / "agent-created-cap.lock")
-
-
-def _agent_created_cap_guard(creates: int) -> Optional[dict[str, Any]]:
-    """Refuse a background-review create that would push the curator-managed library past
-    ``curator.max_agent_created`` (0 = no cap). Updates and absorbs stay allowed at the cap, so the
-    fork must improve an existing skill or retire one before adding another: an index of every
-    auto-written skill rides each session's prompt, and an unbounded library buries the useful ones.
-    Inspired by Perplexity Brain's per-user cap on automatically created skills."""
-    if not _is_background_review() or _cap_exempt.get():
-        return None
-    try:
-        from agent.curator import get_max_agent_created
-        if (cap := get_max_agent_created()) <= 0:
-            return None
-        have = _count_agent_created()
-    except Exception:
-        logger.warning("agent-created skill cap lookup failed; refusing the background create", exc_info=True)
-        return _refusal("Refusing background create: the agent-created skill count could not be read "
-                        "(skills/.usage.json unreadable), so curator.max_agent_created cannot be checked. "
-                        "Patch an existing skill instead.", _cap_reached=True)
-    if have + creates <= cap:
-        return None
-    return _refusal(
-        f"Refusing background create: {have} agent-created skills already exist and "
-        f"curator.max_agent_created is {cap}. Put the lesson into an existing skill (skill_view, then "
-        f"patch), or retire a less useful agent-created skill first (fold its content into another, "
-        f"then delete it with absorbed_into=<that skill>) and say in your summary why the new skill is "
-        f"worth more.", _cap_reached=True)
-
-
-def _background_review_preflight(action: str, name: str, creates: int = 1) -> Optional[dict[str, Any]]:
+def _background_review_preflight(action: str, name: str) -> Optional[dict[str, Any]]:
     """Guards that run on the bare action/name before any handler, for the single-op AND the
-    batch path: the content lock (every mutating action), the agent-created skill cap (create;
-    ``creates`` = creates so far in a batch) and the ownership delete guard."""
+    batch path: the content lock (every mutating action) and the ownership delete guard."""
     if (locked := _locked_guard(name, action)) is not None:
         return locked
-    if action == "create":
-        return _agent_created_cap_guard(creates)
     if action != "delete":
         return None
     from tools import skill_manager_tool as _smt

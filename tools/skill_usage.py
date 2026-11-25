@@ -243,6 +243,24 @@ def list_archived_skill_names() -> list[str]:
     return sorted({p.name for p in root.iterdir() if p.is_dir()}) if root.exists() else []
 
 
+def count_agent_created_skills(create_dir: Optional[Path] = None) -> int:
+    """Live curator-managed skill DIRECTORIES under the profile skills dir and *create_dir*, each counted once
+    whether its record is keyed by directory name (what ``record_created`` writes) or frontmatter name (what
+    ``curator adopt`` may write). Bundled skills and external/project dirs never count. Strict: raises when
+    ``.usage.json`` is unreadable, so a damaged sidecar cannot read as an empty library."""
+    usage, bundled = _load_usage_strict(), _read_bundled_names()
+    seen: set[Path] = set()
+    for base in filter(None, (_skills_dir(), create_dir)):
+        if not base.exists():
+            continue
+        for display, skill_md in _iter_skill_mds(base, local_only=True):
+            names = {skill_md.parent.name, display}
+            if names & bundled or not any(_is_curator_managed_record(usage.get(n)) for n in names):
+                continue
+            seen.add(skill_md.parent.resolve())
+    return len(seen)
+
+
 def read_skill_name(skill_md: Path, fallback: str) -> str:
     """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
     try:
@@ -492,10 +510,12 @@ def _emit_skill_lifecycle(skill_name: str, action: str, *, record: Optional[dict
 
 
 def _mutate_and_emit(skill_name: str, action: str, mutator: Callable[[dict[str, Any]], dict[str, Any]],
-                     **hook_kwargs: Any) -> None:
-    """``_mutate`` then emit *action* with the mutator's facts as the record — only if the write landed."""
+                     **hook_kwargs: Any) -> bool:
+    """``_mutate`` then emit *action* with the mutator's facts as the record — only if the write landed (True)."""
     if isinstance(facts := _mutate(skill_name, mutator), dict):
         _emit_skill_lifecycle(skill_name, action, record=facts, **hook_kwargs)
+        return True
+    return False
 
 
 # --- Counter bumps — telemetry for ALL skills regardless of provenance (observability only) ---
@@ -529,8 +549,9 @@ def bump_patch(skill_name: str, *, action: str = "patch", task_id: Optional[str]
 
 
 def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[str] = None,
-                   session_id: Optional[str] = None) -> None:
+                   session_id: Optional[str] = None) -> bool:
     """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill).
+    True when the record was saved.
 
     Foreground creates (``agent_created=False`` — e.g. ``/learn`` at the user's request) are stamped
     ``created_by="learn"``: a learning-signal marker, NOT the curator-management opt-in (``"agent"``),
@@ -540,7 +561,7 @@ def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[st
         rec.clear()
         rec.update(_empty_record(), created_by="agent" if agent_created else "learn")
         return {"created_by": rec["created_by"]}
-    _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
+    return _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
 
 
 def record_installed(skill_name: str) -> None:

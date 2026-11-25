@@ -133,7 +133,11 @@ def test_member_less_generation_still_installs_core_lock_frozen(update):
     assert _versions(sync(), "pkgb") == ["1.2"]
     ship("pkgb", "1.3")
     lock = sync()
-    assert lock.read_bytes() == (core / "uv.lock").read_bytes()
+    generated = tomllib.loads(lock.read_text(encoding="utf-8"))["package"]
+    expected = tomllib.loads((core / "uv.lock").read_text(encoding="utf-8"))["package"]
+    assert [(p["name"], p["version"]) for p in generated] == [(p["name"], p["version"]) for p in expected]
+    sources = [p["source"]["registry"] for p in generated if "registry" in p.get("source", {})]
+    assert sources and all(Path(source).is_absolute() for source in sources)
 
 
 def test_a_bump_to_one_platform_fork_moves_that_fork(tmp_path):

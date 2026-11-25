@@ -744,19 +744,30 @@ def _relocate_lock_sources(lock: bytes, *, base: Path, root: Path) -> bytes:
     except (UnicodeDecodeError, tomllib.TOMLDecodeError):
         return lock  # uv reports its own parse failure for an invalid seed
     rewritten = False
-    for package in document.get("package", []):
-        source = package.get("source")
-        if not isinstance(source, dict):
-            continue
-        for key, value in source.items():
-            if key not in ("registry", "directory", "editable", "virtual") or not isinstance(value, str):
-                continue
-            if _externally_anchored(value) or (root / value).exists():
-                continue
-            original = base / value
-            if original.exists():
-                source[key] = original.resolve().as_posix()
-                rewritten = True
+
+    def relocate(node):
+        nonlocal rewritten
+        if isinstance(node, list):
+            for item in node:
+                relocate(item)
+            return
+        if not isinstance(node, dict):
+            return
+        source = node.get("source")
+        if isinstance(source, dict):
+            for key, value in source.items():
+                if key not in ("registry", "directory", "editable", "virtual") or not isinstance(value, str):
+                    continue
+                if _externally_anchored(value) or (root / value).exists():
+                    continue
+                original = base / value
+                if original.exists():
+                    source[key] = original.resolve().as_posix()
+                    rewritten = True
+        for nested in node.values():
+            relocate(nested)
+
+    relocate(document)
     if not rewritten:
         return lock
     # tomli-w is a 3.14+ dependency (pyproject marker); no-op paths above must return the

@@ -15,7 +15,8 @@ logger = logging.getLogger("gateway.run")
 # them from memory: after an in-place upgrade the files on disk may import names this process lacks.
 # tests/gateway/test_stop_path_preload.py fails when a stop-path import is missing here. The last row
 # is one hop further: modules those helpers import lazily themselves on a stop (delegation interrupt,
-# storage health, browser cleanup, the tail's MCP close).
+# storage health, browser cleanup, the tail's MCP close, the SIGTERM planned-stop check, the detached
+# restart helper's environment).
 STOP_PATH_MODULES = (
     "cron.jobs", "cron.scheduler",
     "gateway.config_loader", "gateway.drain_control", "gateway.host_rendezvous", "gateway.lifecycle_ledger",
@@ -29,6 +30,7 @@ STOP_PATH_MODULES = (
     "tools.environments.local", "tools.process_registry", "tools.terminal_tool_lifecycle",
     "tools.delegate_tool_resumable", "persistence.sqlite.services", "tools.browser_session",
     "tools.browser_session_cloud", "tools.browser_launcher", "tui_gateway.launch_profile_policy",
+    "hermes_cli.update_pause_record", "hermes_cli.plugins_session_env", "agent.terminal_env_registry",
 )
 
 

@@ -791,12 +791,14 @@ class TestQuotedReply:
 
     @pytest.mark.asyncio
     async def test_a_slow_fetch_is_cut_short(self, adapter):
-        import time as _time
-        self._get(adapter).return_value.execute.side_effect = lambda **_: _time.sleep(1.0)
+        import threading
+        release = threading.Event()  # the fetch hangs until the test lets it go
+        self._get(adapter).return_value.execute.side_effect = lambda **_: release.wait(timeout=30)
         adapter._QUOTE_FETCH_TIMEOUT = 0.1
-        t = _time.monotonic()
-        event = await adapter._build_message_event(*_quote_reply())
-        assert _time.monotonic() - t < 0.8
+        try:
+            event = await asyncio.wait_for(adapter._build_message_event(*_quote_reply()), 5)
+        finally:
+            release.set()
         assert event.reply_to_text == OFFER
         assert event.reply_to_is_own_message is False
 

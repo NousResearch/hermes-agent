@@ -1039,9 +1039,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
         within ``_QUOTE_FETCH_TIMEOUT``. The sender's display name is remembered as ours or not."""
         try:
             m = await asyncio.wait_for(asyncio.to_thread(self._get_quoted_message, name), self._QUOTE_FETCH_TIMEOUT)
-        except Exception as exc:
-            logger.info("[GoogleChat] quoted message %s not fetched (%s); the snapshot stands", name,
-                        _redact_sensitive(str(exc))[:200] or type(exc).__name__)
+        except TimeoutError:
+            logger.info("[GoogleChat] quoted message %s not fetched within %.1fs; the snapshot stands", name,
+                        self._QUOTE_FETCH_TIMEOUT)
+            return None
+        except Exception:
+            # Boundary: whatever messages.get raises, the message that quoted it still goes on.
+            logger.info("[GoogleChat] quoted message %s not fetched; the snapshot stands", name, exc_info=True)
             return None
         sender = (m or {}).get("sender") or {}
         sid, display = str(sender.get("name") or ""), str(sender.get("displayName") or "")

@@ -2145,7 +2145,11 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
 
         if user_sig is not None:
             try:
-                user_config = read_config_doc(config_path) or {}
+                user_config = read_config_doc(config_path)
+                if user_config is None:  # Empty YAML document.
+                    user_config = {}
+                elif not isinstance(user_config, dict):
+                    raise ValueError("Config root must be a mapping")
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
                 if "max_turns" in user_config:

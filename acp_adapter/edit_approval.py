@@ -18,6 +18,8 @@ from itertools import count
 from pathlib import Path
 from typing import Any, Callable
 
+from tools.file_operations_common import ReadResult, WriteResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +113,44 @@ def _extract_v4a_patch_paths(patch_body: str) -> list[str]:
     return [p for p in paths if p]
 
 
+class _InMemoryFile:
+    """The one file of a single-file V4A patch, for ``apply_v4a_operations`` to patch in memory.
+
+    Reads serve the file's current text; writes and deletes change only ``text``. The preview
+    therefore comes from the patch tool's own applier and cannot drift from what the edit does."""
+
+    def __init__(self, text: str | None):
+        self.text = text
+
+    def read_file_raw(self, path: str) -> ReadResult:
+        if self.text is None:
+            return ReadResult(error=f"File not found: {path}", not_found=True)
+        return ReadResult(content=self.text)
+
+    def write_file(self, path: str, content: str, pre_content: str | None = None) -> WriteResult:
+        self.text = content
+        return WriteResult()
+
+    def delete_file(self, path: str) -> WriteResult:
+        self.text = None
+        return WriteResult()
+
+
+def _v4a_new_text(patch_body: str, old_text: str | None) -> str:
+    """The file's text after the single-file *patch_body* ("" after a Delete File).
+
+    A patch that would not apply keeps the raw patch as the new text, so the prompt still shows
+    exactly what the model sent; the tool then rejects the patch without modifying anything."""
+    from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
+    operations, error = parse_v4a_patch(patch_body)
+    if error or len(operations) != 1:
+        return patch_body
+    target = _InMemoryFile(old_text)
+    if not apply_v4a_operations(operations, target).success:
+        return patch_body
+    return target.text or ""
+
+
 def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     patch_body = arguments.get("patch")
     if not isinstance(patch_body, str) or not patch_body:
@@ -118,14 +158,13 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     paths = [_required_path({'path': path}) for path in _extract_v4a_patch_paths(patch_body)]
     if not paths:
         raise ValueError("no file paths found in V4A patch")
-    single = len(paths) == 1
-    # ACP only supports a single diff payload: surface the exact V4A patch as new_text so
-    # patch-mode calls are permissioned and denied patches cannot mutate.
+    if len(paths) > 1:
+        # ACP carries one diff per permission request: a multi-file patch is shown as the exact
+        # V4A text so it is still permissioned and a denied patch cannot mutate.
+        return EditProposal("patch", ", ".join(paths), None, patch_body, dict(arguments), tuple(paths))
+    old_text = _read_text_if_exists(paths[0])
     return EditProposal(
-        "patch", paths[0] if single else ", ".join(paths),
-        _read_text_if_exists(paths[0]) if single else None, patch_body, dict(arguments),
-        tuple(paths),
-    )
+        "patch", paths[0], old_text, _v4a_new_text(patch_body, old_text), dict(arguments), tuple(paths))
 
 
 # (tool_name, patch mode or None) -> proposal builder.

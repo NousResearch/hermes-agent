@@ -21,5 +21,6 @@ def test_v4a_permission_paths_use_execution_workspace(tmp_path, multiple):
         expected.append(str(tmp_path / 'two.txt'))
     assert proposal.path == ', '.join(expected)
     assert proposal.old_text == (None if multiple else 'old one')
-    assert proposal.new_text == patch  # V4A protocol card shows the exact patch.
+    # One file: the card shows the file after the patch. Several: ACP carries one diff, so the exact patch.
+    assert proposal.new_text == (patch if multiple else 'new one')
     assert (tmp_path / 'one.txt').read_text() == 'old one'

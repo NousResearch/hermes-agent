@@ -148,6 +148,26 @@ def test_opaque_assignment_values_become_non_reusable_sentinels(content):
     assert "«redacted" in message["content"]
 
 
+_OPAQUE_BEARER = "q7Zr2LmX9vKp4TnW8sYc3HdJ6fBg1NaE5uRo0iQt"
+
+
+@pytest.mark.parametrize("content", [
+    'headers = {"Authorization": "Bearer ' + _OPAQUE_BEARER + '"}',
+    '{"headers": {"Authorization": "Bearer ' + _OPAQUE_BEARER + '"}}',
+    f"my token: Bearer {_OPAQUE_BEARER}",
+    "fetch(url, {headers: {Authorization: `Bearer " + _OPAQUE_BEARER + "`}})",
+    "axios.get(url, {headers: {'Authorization': 'Bearer " + _OPAQUE_BEARER + "'}})",
+    f"Authorization: Bearer {_OPAQUE_BEARER}",
+])
+@pytest.mark.parametrize("role", ["user", "assistant"])
+def test_opaque_bearer_tokens_never_survive(content, role):
+    """A prefix-less ``Bearer <opaque>`` credential carries no vendor shape; no byte of it may survive."""
+    message = routes._session_activity_message({"id": 1, "role": role, "content": content})
+    assert message is not None
+    assert _OPAQUE_BEARER[:6] not in message["content"]
+    assert _OPAQUE_BEARER[-4:] not in message["content"]
+
+
 def test_opaque_assignment_redacted_over_http(activity_store):
     store, _ = activity_store
     store.messages.append("session-root", NewMessage("user", f"my DB_PASSWORD={_OPAQUE} ok"))

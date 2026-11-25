@@ -22,7 +22,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_bearer_credentials, redact_sensitive_text
 from agent.think_scrubber import THINK_TAG_NAMES
 
 from hermes_cli.session_listing import subagent_listing_scope
@@ -211,6 +211,7 @@ def _resolve_session_id(store, session_id: str) -> Optional[str]:
 _SESSION_ACTIVITY_CAPABILITIES = ("sessions.activity.read_model.v1",)
 _SESSION_ACTIVITY_SCHEMA = "sessions.activity.read_model.v1"
 _SESSION_ACTIVITY_CONTENT_LIMIT = 500
+_SESSION_ACTIVITY_BEARER_SENTINEL = "Bearer «redacted-secret»"
 _SESSION_ACTIVITY_PUBLIC_BLOCK_TYPES = frozenset({"text", "input_text", "output_text"})
 _SESSION_ACTIVITY_PATH_HINT_RE = re.compile(
     r"(?i)(?:\bfile://|(?:^|[\s:(])(?:~[/\\]|[A-Z]:[/\\]|\\\\|\.{0,2}[/\\]|/)"
@@ -349,6 +350,9 @@ def _session_activity_message(row: dict[str, Any]) -> Optional[dict[str, Any]]:
         try:
             # file_read: non-reusable sentinels. secret_file: transcript text is secret-bearing, so the
             # ENV/JSON/YAML assignment passes that file_read alone skips (it implies code_file) still run.
+            # A prefix-less ``Bearer <opaque>`` value has no vendor shape: sweep it before the pattern
+            # list (which would keep a head/tail mask on an Authorization header) and again after.
+            text = redact_bearer_credentials(text, _SESSION_ACTIVITY_BEARER_SENTINEL)
             text = redact_sensitive_text(
                 text,
                 force=True,
@@ -356,6 +360,7 @@ def _session_activity_message(row: dict[str, Any]) -> Optional[dict[str, Any]]:
                 secret_file=True,
                 redact_url_credentials=True,
             )
+            text = redact_bearer_credentials(text, _SESSION_ACTIVITY_BEARER_SENTINEL)
             text = _session_activity_redact_paths(text)
         except Exception:
             text = "[REDACTED: content unavailable]"

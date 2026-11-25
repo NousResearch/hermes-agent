@@ -17,6 +17,7 @@ preserving all existing security invariants:
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 from urllib.parse import parse_qs, urlsplit
 
@@ -244,8 +245,186 @@ def test_standalone_loopback_dashboard_is_unaffected(loopback_webapp, monkeypatc
     browser = loopback_webapp.browser()
     _sign_in_password(browser)
     assert not any(name.startswith("hermes_webapp_signin") for name in browser.cookies.keys())
-    assert browser.get("/api/profiles").status_code == 401
+    rejected = browser.get("/api/profiles")
+    assert rejected.status_code == 401
+    assert rejected.json() == {"detail": "Unauthorized"}
     assert browser.get("/api/profiles", headers={"X-Hermes-Session-Token": _TOKEN}).status_code == 200
+
+
+def _sign_out_via_control_verb(loopback_webapp, tmp_path) -> dict:
+    """Invoke the gateway's ``webapp-sign-out`` control verb against *loopback_webapp*."""
+    from gateway.control_socket import GatewayControlServer
+    from gateway.webapp_listener import register_control_verbs
+
+    home = tmp_path / ".hermes"
+    runner = types.SimpleNamespace(
+        session_control_server=GatewayControlServer(home),
+        webapp_status={"state": "serving", "url": WEBAPP, "reason": None},
+        session_api=types.SimpleNamespace(app=types.SimpleNamespace(web=loopback_webapp.server)),
+    )
+    register_control_verbs(runner, home)
+    raw = json.dumps({"protocol": 1, "verb": "webapp-sign-out", "id": 1, "params": {}}).encode()
+    answer = json.loads(runner.session_control_server.handle_request_line(raw, "same-user"))
+    assert answer["ok"], answer
+    assert loopback_webapp.server._SESSION_TOKEN != _TOKEN
+    return answer["result"]
+
+
+def _mint_native_file_ticket(loopback_webapp, monkeypatch, home, route: str, path: str) -> str:
+    """Mint a file ticket through HTTP using a real ``native-http`` gateway grant."""
+    from gateway.runtime_bootstrap import TicketStore
+    from gateway.session_authorities import SessionAuthorities
+    from hermes_cli.dashboard_auth.native_http import HEADER as NATIVE_HEADER
+
+    resolved_home = home.resolve()
+    resolved_home.mkdir(parents=True, exist_ok=True)
+    authorities = SessionAuthorities(resolved_home, multiplexed=False)
+    authorities.add(resolved_home, types.SimpleNamespace(profile_id=str(resolved_home), instance_id="daemon"))
+    store = TicketStore("daemon", authorities.profile_ids())
+    runner = types.SimpleNamespace(
+        session_authorities=authorities,
+        session_ticket_store=store,
+        _draining=False,
+        session_runtime_descriptor={
+            "state": "ready",
+            "instance_id": "daemon",
+            "served_profiles": authorities.served_profiles(),
+        },
+    )
+    monkeypatch.setattr(loopback_webapp.server.app.state, "gateway_runner", runner, raising=False)
+    grant = store.mint(
+        profile_id=str(resolved_home),
+        subject="desktop",
+        purpose="native-http",
+    )
+
+    async def loopback_peer(scope, receive, send):
+        scope["hermes.gateway_socket_peer"] = ("127.0.0.1", 50000)
+        await loopback_webapp.server.app(scope, receive, send)
+
+    native_client = TestClient(loopback_peer, base_url=WEBAPP)
+    resp = native_client.post(
+        "/api/files/ticket",
+        headers={NATIVE_HEADER: grant},
+        json={"route": route, "path": path},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["ticket"]
+
+
+def _mint_service_file_ticket(loopback_webapp, route: str, path: str) -> str:
+    """Mint a file ticket through HTTP using a registered bearer token-auth service provider."""
+    from hermes_cli.dashboard_auth import clear_providers, list_providers, register_provider
+    from hermes_cli.dashboard_auth.base import TokenPrincipal
+    from hermes_cli.dashboard_auth.token_auth import clear_token_routes, register_token_route
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    class _ServiceTokenProvider(StubAuthProvider):
+        name = "test-service-token"
+        display_name = "Test Service Token"
+        supports_session = False
+        supports_token = True
+
+        def verify_token(self, *, token: str):
+            if token == "svc-secret":
+                return TokenPrincipal(principal="svc", provider=self.name, scopes=("files",))
+            return None
+
+    prior_providers = list_providers()
+    register_provider(_ServiceTokenProvider())
+    register_token_route("/api/files/ticket")
+    try:
+        svc_client = loopback_webapp.browser()
+        resp = svc_client.post(
+            "/api/files/ticket",
+            headers={"Authorization": "Bearer svc-secret"},
+            json={"route": route, "path": path},
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["ticket"]
+    finally:
+        clear_token_routes()
+        clear_providers()
+        for provider in prior_providers:
+            register_provider(provider)
+
+
+@pytest.mark.parametrize("route", ["download", "stream"])
+def test_loopback_webapp_sign_out_revokes_cookie_file_tickets_only(loopback_webapp, tmp_path, monkeypatch, route):
+    """Cookie-authenticated file tickets (download and stream) inherit the Webapp sign-in
+    generation and are purged on sign-out; native and service file tickets remain intact."""
+    from hermes_cli import web_server_file_tickets as tickets
+
+    root = tmp_path / "owned"
+    root.mkdir()
+    target = root / "clip.mp4"
+    target.write_bytes(b"fixture")
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+
+    browser = loopback_webapp.browser()
+    _sign_in_password(browser)
+    resp = browser.post("/api/files/ticket", headers=OWN_PAGE, json={"route": route, "path": str(target)})
+    assert resp.status_code == 200, resp.text
+    browser_ticket = resp.json()["ticket"]
+    native_ticket = _mint_native_file_ticket(loopback_webapp, monkeypatch, tmp_path / ".hermes", route, str(target))
+    service_ticket = _mint_service_file_ticket(loopback_webapp, route, str(target))
+
+    endpoint = tickets.ROUTES[route]
+    anon = loopback_webapp.browser()
+    assert browser_ticket in tickets._tickets
+    assert anon.get(endpoint, params={"path": str(target), "ticket": browser_ticket}).content == b"fixture"
+
+    _sign_out_via_control_verb(loopback_webapp, tmp_path)
+
+    assert browser_ticket not in tickets._tickets
+    assert anon.get(endpoint, params={"path": str(target), "ticket": browser_ticket}).status_code == 401
+    assert browser.get(endpoint, params={"path": str(target), "ticket": browser_ticket}).status_code == 401
+
+    assert native_ticket in tickets._tickets
+    assert anon.get(endpoint, params={"path": str(target), "ticket": native_ticket}).content == b"fixture"
+    assert service_ticket in tickets._tickets
+    assert anon.get(endpoint, params={"path": str(target), "ticket": service_ticket}).content == b"fixture"
+
+
+def test_loopback_webapp_expired_cookie_jar_returns_structured_401_without_redirecting_html(loopback_webapp):
+    """Once a loopback cookie-mode tab loses its cookies, protected API calls get the structured
+    401 envelope with ``login_url`` so the SPA navigates back to ``/login``, while HTML loads stay
+    non-redirecting and launch-link tokens keep working."""
+    browser = loopback_webapp.browser()
+    _sign_in_password(browser)
+    assert "window.__HERMES_AUTH_REQUIRED__=true;" in browser.get("/").text
+
+    browser.cookies.clear()
+
+    socket_resp = browser.post("/api/webapp/socket-ticket?socket=gateway", headers=OWN_PAGE)
+    assert socket_resp.status_code == 401
+    assert socket_resp.json() == {
+        "error": "unauthenticated",
+        "detail": "Unauthorized",
+        "reason": "no_cookie",
+        "login_url": "/login",
+    }
+
+    profiles_resp = browser.get("/api/profiles")
+    assert profiles_resp.status_code == 401
+    assert profiles_resp.json()["login_url"] == "/login"
+    assert profiles_resp.json()["error"] == "unauthenticated"
+
+    prefixed = browser.get("/api/profiles", headers={"X-Forwarded-Prefix": "/hermes"})
+    assert prefixed.status_code == 401
+    assert prefixed.json()["login_url"] == "/hermes/login"
+
+    # Public routes and HTML loads stay non-redirecting so launch-link tabs are never trapped.
+    assert browser.get("/api/status").status_code == 200
+    root = browser.get("/", follow_redirects=False)
+    assert root.status_code == 200
+    assert "window.__HERMES_AUTH_REQUIRED__=false;" in root.text
+    assert loopback_webapp.server._SESSION_TOKEN not in root.text
+
+    # Launch-link token admission remains intact.
+    launch_headers = {"X-Hermes-Session-Token": _TOKEN}
+    assert browser.get("/api/profiles", headers=launch_headers).status_code == 200
+    assert browser.post("/api/webapp/socket-ticket?socket=gateway", headers=launch_headers).status_code == 200
 
 
 def test_gateway_dashboard_mount_loopback_webapp_login_end_to_end(tmp_path, monkeypatch):

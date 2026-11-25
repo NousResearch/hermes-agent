@@ -34,6 +34,11 @@ Only free-text prompts are dispatched. A slash command (``/reset $agent-one``, t
 never re-homed: it runs exactly as it would without this feature, ``$handle`` and all, so a
 ``$<profile>`` in its arguments can neither address the bot nor act on another profile's session.
 
+Only what the user TYPED is scanned, the same text the ``require_mention`` gate reads. Text the
+adapter inlines from an attached document (``[Content of notes.md]: ...``) never routes a message,
+and its ``$handles`` are never stripped: the profile gets the document byte for byte, followed by
+the typed text without its handles.
+
 A gateway can run several Discord bots (one per profile token), and every bot in the channel
 receives the same message and computes the same handles. Exactly one of them dispatches it to a
 given profile: the first bot to reach dispatch claims ``(message id, profile)`` for the whole
@@ -255,19 +260,31 @@ def _claim(adapter: Any, event: Any, profile: str) -> bool:
         return True
 
 
-def mention_events(adapter: Any, event: Any) -> list:
-    """The events to dispatch for *event*: itself when it names no mentionable profile, one copy
-    per named profile otherwise (unless another bot already dispatched it), or none when nothing
-    but the handles was sent and there is no backfilled context or media (a bare @mention's rule).
-    A slash command is always itself: it runs where it would without this feature, with its
-    arguments (``$handle`` included) untouched."""
-    if event.message_type == MessageType.COMMAND or _is_command_text(event.text):
+def _rebuild_prompt(text: str, typed: str, stripped: str) -> str:
+    """The event *text* with its *typed* part (the adapter appends it after any inlined document
+    text) replaced by *stripped*. Text that is not where the typed part should be is returned
+    unchanged: only typed text is ever edited."""
+    if not typed or not text.endswith(typed):
+        return text
+    head = text[:len(text) - len(typed)]
+    return head + stripped if stripped else head.removesuffix("\n\n")
+
+
+def mention_events(adapter: Any, event: Any, typed: str) -> list:
+    """The events to dispatch for *event*, judged on *typed* (what the user typed; never inlined
+    attachment text): itself when it names no mentionable profile, one copy per named profile
+    otherwise (unless another bot already dispatched it), or none when nothing but the handles was
+    sent and there is no backfilled context or media (a bare @mention's rule). A slash command is
+    always itself: it runs where it would without this feature, with its arguments (``$handle``
+    included) untouched."""
+    typed = typed or ""
+    if event.message_type == MessageType.COMMAND or _is_command_text(typed):
         return [event]
-    text = event.text or ""
-    plan = plan_mentions(text, _active_handles(adapter, text))
+    plan = plan_mentions(typed, _active_handles(adapter, typed))
     if plan is None:
         return [event]
-    if not plan.prompt and not event.media_urls and not event.channel_context:
+    prompt = _rebuild_prompt(event.text or "", typed, plan.prompt)
+    if not prompt and not event.media_urls and not event.channel_context:
         logger.info("[%s] Ignoring profile-mention-only message (no prompt) for %d profile(s)",
                     adapter.name, len(plan.profiles))
         return []
@@ -278,12 +295,13 @@ def mention_events(adapter: Any, event: Any) -> list:
     if profiles:
         logger.info("[%s] Dispatching message %s to %d mentioned profile(s)", adapter.name,
                     event.message_id, len(profiles))
-    return [_profile_event(adapter, event, profile, plan.prompt) for profile in profiles]
+    return [_profile_event(adapter, event, profile, prompt) for profile in profiles]
 
 
-async def dispatch_event(adapter: Any, event: Any, *, batch: bool) -> None:
-    """Hand *event* (or its per-profile copies) to the gateway, batched or straight through."""
-    for item in mention_events(adapter, event):
+async def dispatch_event(adapter: Any, event: Any, typed: str, *, batch: bool) -> None:
+    """Hand *event* (or its per-profile copies, chosen from the *typed* text) to the gateway,
+    batched or straight through."""
+    for item in mention_events(adapter, event, typed):
         if batch:
             adapter._enqueue_text_event(item)
         else:

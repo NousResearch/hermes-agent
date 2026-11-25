@@ -282,6 +282,87 @@ async def test_a_bare_handle_with_default_backfill_behaves_like_a_bare_at_mentio
         assert "CI went red on main" in handle_turn.channel_context
 
 
+_DOC = "# Runbook\n\nPage $agent-two if prod is down.\n  Indented: costs $agent-one-ish, $5\n"
+
+
+def _text_attachment(monkeypatch, adapter, body: str = _DOC):
+    """A ``notes.md`` attachment the adapter downloads and inlines into the event text."""
+    monkeypatch.setattr(adapter, "_cache_discord_document", AsyncMock(return_value=body.encode("utf-8")))
+    monkeypatch.setattr(discord_platform, "cache_document_from_bytes_async",
+                        AsyncMock(return_value="/tmp/doc_notes.md"))
+    return SimpleNamespace(content_type="text/markdown", filename="notes.md", size=len(body), url="u")
+
+
+async def _dispatched_with(adapter, content: str, attachment):
+    adapter.handle_message.reset_mock()
+    await adapter._handle_message(_message(content, attachments=[attachment]))
+    return [call.args[0] for call in adapter.handle_message.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_a_handle_inside_an_attached_document_never_routes_or_gets_stripped(adapter, monkeypatch):
+    """Only what the user TYPED is scanned for handles, the same text the require_mention gate
+    reads. A ``$agent-two`` inside an attached document's inlined text addresses nobody: in a
+    require_mention channel the message is dropped like any unaddressed one, and where it does
+    run it stays in the channel's own session with the document's text byte for byte."""
+    attachment = _text_attachment(monkeypatch, adapter)
+    assert await _dispatched_with(adapter, "please summarize", attachment) == []
+
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    (event,) = await _dispatched_with(adapter, "please summarize", attachment)
+    assert event.source.profile is None and event.source.profile_mention is False
+    assert event.text == f"[Content of notes.md]:\n{_DOC}\n\nplease summarize"
+    assert event.media_text_inlined == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_typed_handle_routes_while_the_attached_documents_text_stays_intact(adapter, monkeypatch):
+    """The typed ``$agent-one`` routes and is stripped from the typed text only. The attachment
+    also mentions ``$agent-two``: that neither fans the message out to agent-two nor loses the
+    handle; the document reaches agent-one exactly as it was uploaded."""
+    attachment = _text_attachment(monkeypatch, adapter)
+
+    (event,) = await _dispatched_with(adapter, "$agent-one summarize this", attachment)
+    assert (event.source.profile, event.source.profile_mention) == ("agent-one", True)
+    assert event.text == f"[Content of notes.md]:\n{_DOC}\n\nsummarize this"
+
+    # A handle with nothing typed after it: the document alone is the prompt, untouched.
+    (event,) = await _dispatched_with(adapter, "$agent-one", attachment)
+    assert event.source.profile == "agent-one"
+    assert event.text == f"[Content of notes.md]:\n{_DOC}"
+
+
+@pytest.mark.asyncio
+async def test_attached_document_handles_with_every_discord_default_left_alone(adapter, monkeypatch):
+    """The same two messages with ``require_mention``, ``auto_thread`` and ``history_backfill`` at
+    their defaults (the fixture pins all three): a document's ``$agent-two`` addresses nobody, a
+    typed ``$agent-one`` opens its auto-thread and routes with the document intact."""
+    for var in ("DISCORD_REQUIRE_MENTION", "DISCORD_AUTO_THREAD", "DISCORD_HISTORY_BACKFILL"):
+        monkeypatch.delenv(var, raising=False)
+    assert (adapter._discord_require_mention(), adapter._discord_history_backfill()) == (True, True)
+    thread = SimpleNamespace(id=600, name="summarize this", guild=SimpleNamespace(name="Hermes Server", id=777))
+    monkeypatch.setattr(adapter, "_auto_create_thread", AsyncMock(return_value=thread))
+    attachment = _text_attachment(monkeypatch, adapter)
+
+    assert await _dispatched_with(adapter, "please summarize", attachment) == []
+    adapter._auto_create_thread.assert_not_awaited()
+
+    (event,) = await _dispatched_with(adapter, "$agent-one summarize this", attachment)
+    adapter._auto_create_thread.assert_awaited_once()
+    assert (event.source.profile, event.source.thread_id) == ("agent-one", "600")
+    assert event.text == f"[Content of notes.md]:\n{_DOC}\n\nsummarize this"
+
+
+def test_the_prompt_rebuild_never_edits_text_it_cannot_place_as_typed():
+    """``mention_events`` strips handles out of the typed text only. If the typed text is not
+    where the adapter puts it (the end of the event text), the event text is left as it is."""
+    rebuild = profile_mentions._rebuild_prompt
+    assert rebuild("doc $agent-two\n\n$agent-one hi", "$agent-one hi", "hi") == "doc $agent-two\n\nhi"
+    assert rebuild("doc $agent-two\n\n$agent-one", "$agent-one", "") == "doc $agent-two"
+    assert rebuild("$agent-one hi", "$agent-one hi", "hi") == "hi"
+    assert rebuild("something else $agent-two", "$agent-one hi", "hi") == "something else $agent-two"
+
+
 @pytest.mark.asyncio
 async def test_a_recovered_message_passes_the_same_gate_as_a_live_one(adapter, monkeypatch):
     """Missed-message recovery re-applies the require_mention gate itself: a ``$<profile>``
@@ -362,7 +443,7 @@ async def test_a_slash_command_is_never_rerouted_by_a_handle(adapter, monkeypatc
 
     native = MessageEvent(text="/stop $agent-one $agent-two", message_type=MessageType.COMMAND,
                           source=adapter.build_source(chat_id="555", chat_type="group", user_id="42"))
-    assert profile_mentions.mention_events(adapter, native) == [native]
+    assert profile_mentions.mention_events(adapter, native, native.text) == [native]
     assert native.source.profile is None and native.text == "/stop $agent-one $agent-two"
 
 
@@ -511,7 +592,7 @@ async def test_the_hot_serve_rescan_rereads_a_served_profiles_flag(tmp_path, mon
     def _mentions(text):
         source = bot.build_source(chat_id="555", chat_type="group", user_id="42")
         event = MessageEvent(text=text, source=source, message_id="1")
-        return [(e.source.profile, e.text) for e in profile_mentions.mention_events(bot, event)]
+        return [(e.source.profile, e.text) for e in profile_mentions.mention_events(bot, event, text)]
 
     gamma = home / "profiles" / "gamma"
     _write_config(gamma, {"model": {"default": "m"}})
@@ -607,7 +688,7 @@ def _copies(mux, text):
 
     source = mux.primary.build_source(chat_id="555", chat_type="group", user_id="42", guild_id="777")
     event = MessageEvent(text=text, source=source, message_id="123")
-    return profile_mentions.mention_events(mux.primary, event)
+    return profile_mentions.mention_events(mux.primary, event, text)
 
 
 def test_the_copy_runs_in_the_named_profile_and_authorizes_as_the_receiving_bot(mux):

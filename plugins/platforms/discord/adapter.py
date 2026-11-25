@@ -6078,9 +6078,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         if thread_id:
             await self._threads.mark_async(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        # A ``$<profile>`` message goes to each named profile instead (discord.mentionable).
-        await dispatch_profile_mentions(
-            self, event, batch=not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0)
+        # A ``$<profile>`` in the TYPED text (never inlined attachment text) goes to that profile instead.
+        await dispatch_profile_mentions(self, event, normalized_content,
+                                        batch=not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0)
         return True
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:

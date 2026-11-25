@@ -167,7 +167,7 @@ class SolsticeClient(GeminiNativeClient):
             yield wire.finish_ceiling(model, state)
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"}
+        return {"Authorization": f"Bearer {self._api_key_value()}"}
 
     def _headers(self) -> dict[str, str]:
         # Bearer, content type and User-Agent only: no API key, user-project or DPoP header, nor Google's client tag.

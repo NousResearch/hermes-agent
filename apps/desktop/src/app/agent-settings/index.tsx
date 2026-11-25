@@ -225,6 +225,7 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
   // Opening waits on a route lookup: by then the page may be gone, or a second click be waiting too.
   const page = useRef({ closed: false, shown: true })
   const [starting, setStarting] = useState(false)
+  const startRequest = useRef<Promise<void> | null>(null)
 
   useEffect(() => {
     page.current.shown = true
@@ -241,11 +242,20 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
   const start = async () => {
     setStarting(true)
 
+    // One request at a time: a press after the wait ran out waits on the one still out, it does not
+    // ask the machine for a second screen.
+    startRequest.current ??= startBotScreen(bot).finally(() => {
+      startRequest.current = null
+    })
+
     try {
       // A backend that never answers must not leave Start disabled for good.
-      await withTimeout(startBotScreen(bot), START_SCREEN_TIMEOUT_MS, b.bot.openReasonTimeout(owner.profile))
+      await withTimeout(startRequest.current, START_SCREEN_TIMEOUT_MS, b.bot.openReasonTimeout(owner.profile))
     } catch (error) {
-      notifyError(error, b.screen.heroStart)
+      // Nobody is on the page to be told.
+      if (page.current.shown) {
+        notifyError(error, b.screen.heroStart)
+      }
     } finally {
       setStarting(false)
     }

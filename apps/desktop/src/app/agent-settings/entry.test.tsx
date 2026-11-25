@@ -615,6 +615,32 @@ it('gives Start back, and says so, when the backend never answers', async () => 
   }
 })
 
+it('asks for one Screen however often Start is pressed, and tells nobody once the page is gone', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'off'
+  screenPlugin.start.mockClear()
+  screenPlugin.start.mockImplementation(() => new Promise<void>(() => {}))
+  const view = mount('/settings?agentProfile=default')
+  await screenControls()
+  vi.useFakeTimers()
+
+  try {
+    fireEvent.click(startButton()!)
+    await act(() => vi.advanceTimersByTimeAsync(5 * 60_000))
+    const told = $notifications.get().length
+    fireEvent.click(startButton()!)
+
+    expect(screenPlugin.start).toHaveBeenCalledTimes(1)
+
+    view.unmount()
+    await act(() => vi.advanceTimersByTimeAsync(5 * 60_000))
+
+    expect($notifications.get().length).toBe(told)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 it('says why a Screen did not start, and leaves its row as it was', async () => {
   $apiRequestScope.set({ connectionId: null, profile: 'default' })
   screenPlugin.tone = 'off'

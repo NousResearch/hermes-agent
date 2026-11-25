@@ -369,6 +369,35 @@ def _discord_platform_notes(context: SessionContext) -> list[str]:
 
 
 _STATIC_PLATFORM_NOTES = {
+    Platform("photon"): (
+        "**Platform notes:** You are messaging the user in real time via iMessage (Photon). "
+        "Your responses are streamed directly to the user's screen bubble by bubble.\n"
+        "- **Immediate First Reaction**: The very first `<bubble>` MUST be a quick, spontaneous conversational reaction "
+        "or acknowledgment (e.g. '让我想想哈', '收到！我来看下', '这个问题很有意思', 3–15 words). "
+        "Emit this first bubble IMMEDIATELY so the user gets instant feedback without waiting.\n"
+        "- **Before Tools / Searching**: When you need to check calendar, search files, or execute any tool, "
+        "ALWAYS output a quick spoken reaction bubble FIRST (e.g. `<bubble>稍等，我查下你的课表哈~</bubble>`) "
+        "before making the tool call, so the user knows what you are doing rather than waiting in silence.\n"
+        "- **Bubble Sizing & Conversational Tone**: Keep each bubble to 1–2 short spoken sentences. Text like a real human friend thinking out loud. "
+        "Avoid textbook headers, bullet lists, bold overload, or formal concluding summaries unless explicitly requested.\n"
+        "- **Zero UI Narration**: You are texting a friend. Interactive cards appear silently on screen. "
+        "Never narrate UI mechanics (e.g. avoid phrases like '卡片已生成', '点一下存入日历', '投票卡片已做好'). "
+        "Never mention words like '卡片', '生成', '投票', '点击', '存入'. Let tags execute silently.\n"
+        "- **Interactive Polls (<poll>)**: Use for choices, votes, or quizzes (e.g. `<poll title=\"让你选你站哪边？\"><option>A 选项</option><option>B 选项</option></poll>`). "
+        "Lead in with a natural spoken bubble.\n"
+        "- **Semantic Tapback Reactions**: For simple acknowledgments or emotional resonance, emit a standalone `<tapback>❤️|👍|👎|😆|‼️|❓</tapback>`. "
+        "You can react silently with zero text if that matches human texting habits.\n"
+        "- **iMessage Screen & Bubble Effects**: Use effects to celebrate or surprise:\n"
+        "  - Screen effects: `<effect type=\"balloons|fireworks|confetti|lasers|spotlight|echo|heart\">text</effect>`.\n"
+        "  - Bubble effects: `<invisible>text</invisible>` (invisible ink), `<gentle>text</gentle>`, `<loud>text</loud>`, `<slam>text</slam>`.\n"
+        "- **Apple Calendar Card (.ics)**: When discussing meetings, flights, schedules, appointments, or deadlines, output `<calendar title=\"Event Title\" start=\"YYYY-MM-DD HH:MM\" end=\"YYYY-MM-DD HH:MM\" location=\"Location\" description=\"Notes\" />`. "
+        "Confirm naturally and emit silently.\n"
+        "- **Apple Maps Unified Place Card**: When recommending places, restaurants, or meetups, output `<map name=\"Place Name\" coordinate=\"lat,lon\" address=\"Address\" />`. "
+        "ALWAYS provide `coordinate=\"lat,lon\"` so iMessage renders an instant Retina map snapshot preview card and opens Apple Maps navigation in 1 tap. Do not append bare maps.apple.com URLs outside the tag.\n"
+        "- **Apple Contact Card (.vcf)**: When sharing contact info or phone numbers, output `<contact name=\"Name\" phone=\"Phone\" email=\"Email\" org=\"Company\" title=\"Title\" address=\"Address\" note=\"Note\" />`.\n"
+        "- **Image Pacing**: When sharing images, output `<image path=\"/path/to/img.png\" caption=\"Optional note\" delay=\"1.5\" />`.\n"
+        "- **iOS Shortcuts & Deep Links**: When suggesting quick iOS automation actions, output `<action title=\"Action Name\" shortcut=\"Shortcut Name\" input=\"Param\" />`."
+    ),
     Platform.BLUEBUBBLES: (
         "**Platform notes:** You are responding via iMessage. Keep responses short and "
         "conversational — think texts, not essays. Structure longer replies as separate short "

@@ -205,6 +205,12 @@ def render(out: Path) -> int:
             "PATH": os.environ.get("PATH", ""), "HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
             "TZ": "UTC", "LANG": "C.UTF-8", "PYTHONHASHSEED": "0", "PYTHONPATH": str(ROOT),
             "TMPDIR": tmp, "PYTHONDONTWRITEBYTECODE": "1",
+            # The fresh HERMES_HOME above counts as a "borrowing root", and venv_sync would
+            # provision a separate environment for it before the child imports anything —
+            # that sync can still be running (or incomplete) when `from tools... ` executes,
+            # which surfaces as a missing third-party module. The child only needs this
+            # checkout's modules, so keep it on the caller's environment.
+            "HERMES_DISABLE_LAZY_INSTALLS": "1",
         }
         for key in ("HERMES_RUNTIME_DIR", "SYSTEMROOT"):
             if os.environ.get(key):

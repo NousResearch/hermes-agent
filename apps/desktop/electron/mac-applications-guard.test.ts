@@ -68,6 +68,7 @@ function makeDeps(overrides: Partial<MacApplicationsGuardDeps> = {}) {
     argv: ['/Volumes/Hermes Agent/Hermes Agent.app/Contents/MacOS/Hermes Agent'],
     homeDir: '/Users/alice',
     access,
+    exists: () => false,
     readBundleVersion: () => null,
     log: message => {
       logs.push(message)
@@ -495,14 +496,12 @@ describe('guardMacApplicationsLaunch', () => {
       })
     )
 
-    const downgradeDecision = captureExistsDecision(downgrade.app)
-
     await expect(guardMacApplicationsLaunch(downgrade.deps)).resolves.toEqual({
       action: 'continue',
       reason: 'conflict-newer-installed',
       location: 'read-only-volume'
     })
-    expect(downgradeDecision.value).toBe(false)
+    expect(downgrade.app.moveToApplicationsFolder).not.toHaveBeenCalled()
     expect(downgrade.dialog.showMessageBox).toHaveBeenCalledTimes(2)
     expect(downgrade.dialog.showMessageBox).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -520,13 +519,11 @@ describe('guardMacApplicationsLaunch', () => {
       })
     )
 
-    const canaryDecision = captureExistsDecision(canary.app)
-
     await expect(guardMacApplicationsLaunch(canary.deps)).resolves.toMatchObject({
       action: 'continue',
       reason: 'conflict-newer-installed'
     })
-    expect(canaryDecision.value).toBe(false)
+    expect(canary.app.moveToApplicationsFolder).not.toHaveBeenCalled()
 
     for (const installed of [
       { '/Users/alice/Applications/Hermes Agent.app': '0.24.0' },
@@ -537,13 +534,11 @@ describe('guardMacApplicationsLaunch', () => {
         installedCopies({ '/Volumes/Hermes Agent/Hermes Agent.app': '0.24.0-rc.1', ...installed })
       )
 
-      const userAppsDecision = captureExistsDecision(userApps.app)
-
       await expect(guardMacApplicationsLaunch(userApps.deps)).resolves.toMatchObject({
         action: 'continue',
         reason: 'conflict-newer-installed'
       })
-      expect(userAppsDecision.value).toBe(false)
+      expect(userApps.app.moveToApplicationsFolder).not.toHaveBeenCalled()
     }
 
     for (const [runningVersion, existingVersion] of [
@@ -572,27 +567,65 @@ describe('guardMacApplicationsLaunch', () => {
   })
 
   it.each([
+    ['a newer', '0.30.0', 'conflict-newer-installed'],
+    ['an unreadable', null, 'conflict-unverified-installed']
+  ] as const)(
+    'checks %s installed copy before moving, since Electron skips conflictHandler when it needs admin rights',
+    async (_label, installedVersion, reason) => {
+      const { deps, app, dialog } = makeDeps(
+        installedCopies({
+          '/Volumes/Hermes Agent/Hermes Agent.app': '0.24.0',
+          '/Applications/Hermes Agent.app': installedVersion
+        })
+      )
+
+      // Electron's admin-prompt install (/Applications or the installed copy not writable) runs rm -rf and
+      // cp -pR without calling conflictHandler, so a move here replaces the installed copy unchecked.
+      app.moveToApplicationsFolder.mockReturnValue(true)
+
+      await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
+        action: 'continue',
+        reason,
+        location: 'read-only-volume'
+      })
+      expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  it('checks again from conflictHandler when a copy appears after the first check', async () => {
+    const copies = installedCopies({
+      '/Volumes/Hermes Agent/Hermes Agent.app': '0.24.0',
+      '/Applications/Hermes Agent.app': '0.30.0'
+    })
+
+    let checks = 0
+    const { deps, app } = makeDeps({ ...copies, exists: target => checks++ > 0 && copies.exists(target) })
+    const decision = captureExistsDecision(app)
+
+    await expect(guardMacApplicationsLaunch(deps)).resolves.toMatchObject({ reason: 'conflict-newer-installed' })
+    expect(decision.value).toBe(false)
+  })
+
+  it.each([
     ['an unreadable Info.plist', { '/Applications/Hermes Agent.app': null }],
     ['a version it cannot compare', { '/Applications/Hermes Agent.app': 'banana' }],
     ['a two-part version', { '/Applications/Hermes Agent.app': '0.23' }],
     [
       'an unreadable ~/Applications copy beside an older /Applications one',
       { '/Applications/Hermes Agent.app': '0.20.0', '/Users/alice/Applications/Hermes Agent.app': null }
-    ],
-    ['no copy at either Applications path', {}]
+    ]
   ] as const)('refuses to replace an installed copy with %s', async (_label, installed) => {
     const { deps, app, dialog, logs, userDataDir } = makeDeps(
       installedCopies({ '/Volumes/Hermes Agent/Hermes Agent.app': '0.24.0', ...installed })
     )
-
-    const decision = captureExistsDecision(app)
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
       action: 'continue',
       reason: 'conflict-unverified-installed',
       location: 'read-only-volume'
     })
-    expect(decision.value).toBe(false)
+    expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
     expect(dialog.showMessageBox).toHaveBeenLastCalledWith(
       expect.objectContaining({
         message: 'Hermes Agent is already in Applications',

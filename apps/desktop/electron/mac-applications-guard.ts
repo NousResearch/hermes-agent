@@ -359,13 +359,7 @@ function installedCopyBlockingMove(
     candidates.push(path.posix.join(path.posix.resolve(homeDir), 'Applications', bundleName))
   }
 
-  const installed = candidates.filter(candidate => exists(candidate))
-
-  if (installed.length === 0) {
-    return { existingVersion: null, newer: false }
-  }
-
-  for (const candidate of installed) {
+  for (const candidate of candidates.filter(candidate => exists(candidate))) {
     const existingVersion = readBundleVersion(candidate)
     const comparison = existingVersion ? compareBundleVersions(runningVersion, existingVersion) : null
 
@@ -449,9 +443,22 @@ async function attemptMoveToApplications(
   const exists = deps.exists ?? fs.existsSync
   const homeDir = deps.homeDir ?? os.homedir()
   let conflict: 'exists' | 'existsAndRunning' | null = null
-  let blocked: { runningVersion: string; block: InstalledCopyBlock } | null = null
+  let blocked: InstalledCopyBlock | null = null
 
   try {
+    const runningVersion = readBundleVersion(bundlePath) ?? deps.app.getVersion()
+
+    const checkInstalled = () =>
+      installedCopyBlockingMove(bundlePath, runningVersion, homeDir, readBundleVersion, exists)
+
+    // Electron calls conflictHandler only when it can trash the installed copy itself. When /Applications or
+    // that copy needs admin rights, it deletes and copies through an admin prompt without asking, so check first.
+    const preflight = checkInstalled()
+
+    if (preflight) {
+      return await reportInstalledCopyConflict(deps, location, runningVersion, preflight)
+    }
+
     const moved = deps.app.moveToApplicationsFolder({
       conflictHandler: conflictType => {
         conflict = conflictType
@@ -460,12 +467,9 @@ async function attemptMoveToApplications(
           return false
         }
 
-        const runningVersion = readBundleVersion(bundlePath) ?? deps.app.getVersion()
-        const block = installedCopyBlockingMove(bundlePath, runningVersion, homeDir, readBundleVersion, exists)
+        blocked = checkInstalled()
 
-        blocked = block ? { runningVersion, block } : null
-
-        return block === null
+        return blocked === null
       }
     })
 
@@ -476,9 +480,7 @@ async function attemptMoveToApplications(
     }
 
     if (blocked) {
-      const { runningVersion, block } = blocked
-
-      return await reportInstalledCopyConflict(deps, location, runningVersion, block)
+      return await reportInstalledCopyConflict(deps, location, runningVersion, blocked)
     }
 
     if (conflict === 'existsAndRunning') {

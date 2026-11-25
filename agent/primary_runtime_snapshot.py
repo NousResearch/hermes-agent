@@ -12,6 +12,31 @@ from typing import Any
 
 from agent.custom_entry_pool import SNAPSHOT_OWNER_KEY, runtime_entry_owner
 
+_NATIVE_ANTHROPIC_FIELDS = (
+    ("anthropic_api_key", "_anthropic_api_key"),
+    ("anthropic_base_url", "_anthropic_base_url"),
+    ("is_anthropic_oauth", "_is_anthropic_oauth"),
+)
+
+
+def _native_anthropic_snapshot_fields(agent) -> dict[str, Any]:
+    """The native-client fields an ``anthropic_messages`` route must carry into the snapshot.
+
+    They are bound only when the native Anthropic client is built. If one is missing, the agent sits
+    on an ``anthropic_messages`` route with a client built for another protocol. Raise a named error
+    here instead of letting a bare ``AttributeError`` escape, and never default the key: a ``None``
+    key would be restored on the next turn as a keyless request.
+    """
+    missing = [attr for _, attr in _NATIVE_ANTHROPIC_FIELDS if not hasattr(agent, attr)]
+    if missing:
+        raise RuntimeError(
+            "api_mode='anthropic_messages' but the native Anthropic client was not initialized "
+            f"(provider={getattr(agent, 'provider', None)!r}, model={getattr(agent, 'model', None)!r}, "
+            f"base_url={getattr(agent, 'base_url', None)!r}; missing {', '.join(missing)}). "
+            "A construction path switched to anthropic_messages without building the native client."
+        )
+    return {key: getattr(agent, attr) for key, attr in _NATIVE_ANTHROPIC_FIELDS}
+
 
 def _snapshot_primary_runtime(agent):
     # Per-turn restoration snapshot: after a fallback, the next turn restores these so the
@@ -39,11 +64,7 @@ def _snapshot_primary_runtime(agent):
         "compressor_threshold_tokens": _cc.threshold_tokens,
     }
     if agent.api_mode == "anthropic_messages":
-        agent._primary_runtime.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
+        agent._primary_runtime.update(_native_anthropic_snapshot_fields(agent))
 
 
 def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
@@ -76,9 +97,5 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         "compressor_threshold_tokens": cc.threshold_tokens if cc else 0,
     }
     if api_mode == "anthropic_messages":
-        rt.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
+        rt.update(_native_anthropic_snapshot_fields(agent))
     return rt

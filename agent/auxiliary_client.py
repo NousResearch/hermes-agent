@@ -2164,14 +2164,11 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
         # Provider-owned native transport (e.g. Gemini), else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
-        with contextlib.suppress(Exception):
-            from providers import get_provider_profile as _get_aux_profile
-
-            _aux_profile = _get_aux_profile(provider_id)
-            if _aux_profile is not None and getattr(_aux_profile, "strict_client", False):
-                _aux_client = _aux_profile.create_client(api_key=api_key, base_url=base_url, auxiliary_chain=True)
-                if _aux_client is not None:
-                    return _tag_backend(_aux_client, provider_id), model
+        aux_profile_client = _api_key_profile_supplied_client(
+            provider_id, api_key=api_key, base_url=base_url, auxiliary_chain=True,
+        )
+        if aux_profile_client is not None:
+            return _tag_backend(aux_profile_client, provider_id), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
@@ -5048,14 +5045,15 @@ def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
                           "runtime resolution failed (run: hermes doctor for diagnostics)")
 
 
-def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any | None:
+def _api_key_profile_supplied_client(provider: str, *, auxiliary_chain: bool = False, **client_kwargs: Any) -> Any | None:
     """Registered profile's own client for an ``api_key`` aux route, or ``None``.
 
     Same registration seam as ``agent_runtime_helpers._provider_supplied_client`` (main agent)
     and the ``external_process`` branch below: a profile whose wire protocol is not
     OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
-    A profile that raises is logged and skipped — a third-party plugin can only fail to
-    provide a client, never take the auxiliary resolution down."""
+    A ``strict_client`` profile owns the transport (its errors propagate rather than falling
+    back to an OpenAI client on a native URL, and ``auxiliary_chain=True`` queries only strict
+    profiles). A non-strict third-party plugin that raises is logged and skipped."""
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(provider)
@@ -5063,9 +5061,16 @@ def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any
         return None
     if profile is None:
         return None
+    strict = bool(getattr(profile, "strict_client", False))
+    if auxiliary_chain and not strict:
+        return None
+    if auxiliary_chain:
+        client_kwargs = {**client_kwargs, "auxiliary_chain": True}
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
+        if strict:
+            raise
         logger.warning("resolve_provider_client: provider profile %r failed to create an "
                        "auxiliary client; falling back to the standard client path",
                        provider, exc_info=True)

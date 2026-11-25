@@ -354,12 +354,12 @@ def _finish(item: BackendItem, own_home: str) -> BackendItem:
 def collect_backends() -> list[BackendItem]:
     """Every serve/dashboard backend on this machine (running, or installed and enabled). Read-only."""
     from hermes_cli.dashboard_procs import _exclude_pids_from_env, _lock_owned_serve_pids
-    from hermes_cli.gateway import _ensure_user_systemd_env
     from hermes_cli.main_dashboard import _loaded_launchd_backend_jobs
     from hermes_constants import get_hermes_home
     if os_family().startswith("linux"):
         # Without the user bus env (a headless shell) `systemctl --user` cannot prove a user unit owns
         # its dashboard, which is then reported a second time as a manual backend.
+        from hermes_cli.gateway import _ensure_user_systemd_env
         _ensure_user_systemd_env()
     own_home = str(get_hermes_home())
     launchd_jobs = _loaded_launchd_backend_jobs()  # empty off macOS

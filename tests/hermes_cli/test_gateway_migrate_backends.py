@@ -209,6 +209,77 @@ def test_user_unit_dashboard_is_one_systemd_backend_from_a_shell_without_the_use
         ("systemd", 4301, "hermes-dashboard.service", "user")]
 
 
+@pytest.mark.platforms("linux")
+def test_headless_shell_populates_dbus_address_to_avoid_duplicate_user_unit(host, no_writes, monkeypatch):
+    """When `systemctl --user show` needs DBUS_SESSION_BUS_ADDRESS while `list-unit-files` still works
+    offline, missing bus env made the running user unit appear twice (manual + installed unit)."""
+    uid = os.getuid()  # windows-footgun: ok — linux-only test
+    expected_bus = f"unix:path=/run/user/{uid}/bus"
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
+    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: str(path) == f"/run/user/{uid}/bus")
+    fake_run = host.run
+
+    def run_needing_dbus_for_show(cmd, *args, **kwargs):
+        if (cmd[0] == "systemctl" and "--user" in cmd and "show" in cmd
+                and os.environ.get("DBUS_SESSION_BUS_ADDRESS") != expected_bus):
+            host.calls.append([str(c) for c in cmd])
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No medium found")
+        return fake_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_needing_dbus_for_show)
+    host.proc(4302, _argv("dashboard", "--port", "9119"), ppid=900,
+              cgroup=f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/hermes-dashboard.service")
+    host.unit("user", "hermes-dashboard.service", main_pid=4302,
+              path="/home/u/.config/systemd/user/hermes-dashboard.service")
+
+    items = gmb.collect_backends()
+
+    assert [(i.supervisor, i.pid, i.unit, i.scope) for i in items] == [
+        ("systemd", 4302, "hermes-dashboard.service", "user")]
+    assert os.environ["XDG_RUNTIME_DIR"] == f"/run/user/{uid}"
+    assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == expected_bus
+
+
+@pytest.mark.platforms("linux")
+def test_user_bus_env_preserves_existing_own_runtime_dir_and_absent_bus(host, no_writes, tmp_path, monkeypatch):
+    """Existing user-owned runtime/bus env is never overwritten, and an absent runtime dir is not fabricated."""
+    runtime = tmp_path / "custom-runtime"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/custom/bus")
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == str(runtime))
+
+    assert gmb.collect_backends() == []
+    assert os.environ["XDG_RUNTIME_DIR"] == str(runtime)
+    assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/custom/bus"
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: False)
+    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: False)
+
+    assert gmb.collect_backends() == []
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+
+@pytest.mark.parametrize("family", ["darwin", "win32"])
+def test_non_linux_backend_scan_skips_user_systemd_env(host, no_writes, monkeypatch, family):
+    """macOS and Windows never call the Linux-only user-systemd env helper (which uses os.getuid())."""
+    monkeypatch.setattr(gmb, "os_family", lambda: family)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", list)
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_windows.wmic_missing", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway._ensure_user_systemd_env",
+                        lambda: pytest.fail(f"_ensure_user_systemd_env called on {family}"))
+
+    assert gmb.collect_backends() == []
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+
 def test_installed_enabled_unit_that_is_not_running_is_reported_once(host, no_writes):
     host.unit("user", "hermes-dashboard.service", path="/home/u/.config/systemd/user/hermes-dashboard.service",
               env="HERMES_HOME=/srv/hermes PATH=/usr/bin")

@@ -1,7 +1,7 @@
 import { host } from '@hermes/plugin-sdk'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router'
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
@@ -639,6 +639,37 @@ it('asks for one Screen however often Start is pressed, and tells nobody once th
   } finally {
     vi.useRealTimers()
   }
+})
+
+it('starts the agent on the page: another agent\'s request still out is not this one\'s', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'off'
+  screenPlugin.start.mockClear()
+  screenPlugin.start.mockImplementation(() => new Promise<void>(() => {}))
+
+  function Switch() {
+    const navigate = useNavigate()
+
+    return <button onClick={() => navigate('/settings?agentProfile=ops')}>to ops</button>
+  }
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/settings?agentProfile=default']}>
+        <SettingsView onClose={closed} />
+        <Switch />
+      </MemoryRouter>
+    </QueryClientProvider>
+  )
+  await screenControls()
+  fireEvent.click(startButton()!)
+  expect(screenPlugin.start).toHaveBeenCalledTimes(1)
+
+  fireEvent.click(screen.getByRole('button', { name: 'to ops' }))
+  await waitFor(() => expect(startButton()?.hasAttribute('disabled')).toBe(false))
+  fireEvent.click(startButton()!)
+
+  expect(screenPlugin.start).toHaveBeenCalledTimes(2)
 })
 
 it('says why a Screen did not start, and leaves its row as it was', async () => {

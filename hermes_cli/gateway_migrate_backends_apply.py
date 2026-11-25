@@ -320,7 +320,8 @@ def _await_replacement(host, before_pid: Optional[int]) -> None:
     if _replaced(host, before_pid):
         return
     if not _wait(host, RESTART_HANDOFF_SECONDS, lambda: _replaced(host, before_pid)):
-        print(f"⚠ gateway PID {before_pid} did not hand over within {RESTART_HANDOFF_SECONDS:.0f}s "
+        who = f"gateway PID {before_pid}" if before_pid is not None else "gateway"
+        print(f"⚠ {who} did not hand over within {RESTART_HANDOFF_SECONDS:.0f}s "
               "— verifying anyway")
 
 
@@ -408,7 +409,7 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
     run.step("stop_old_backend", "done")
     run.step("start_gateway")
     was_active = m["gateway"]["active"]
-    before_pid = host.gateway_pid() if was_active else None
+    before_pid = (host.gateway_pid() or m["gateway"].get("running_pid")) if was_active else None
     host.gateway_verb("restart" if was_active else "start")
     if was_active:
         _await_replacement(host, before_pid)

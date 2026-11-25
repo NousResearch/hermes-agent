@@ -330,13 +330,15 @@ def _wrap_command_script(
     parts += restore
     # Plain (non-exported) assignments, e.g. the dispatcher-owned worker's own task id (#160138):
     # the command and its subshells expand the variable, child processes inherit nothing.
-    # Exporting it would hand worker identity to every hermes process the shell starts —
-    # exactly what the descendant scrub (agent.delegation_context) prevents. Malformed names
-    # and non-string values are skipped, never rendered.
-    plain_lines = [(name, value) for name, value in (plain_vars or {}).items()
-                   if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name)
-                   and isinstance(value, str)]
-    parts.extend(f"{name}={shlex.quote(value)}" for name, value in sorted(plain_lines))
+    # The trailing ``builtin export -n`` is load-bearing: a bare assignment KEEPS the export
+    # attribute when the name was already exported (a sourced snapshot that once carried an
+    # in-command ``export``) or under ``set -a`` (an rc file that left allexport on), and an
+    # exported value here would hand worker identity to every hermes process the shell
+    # starts — exactly what the descendant scrub (agent.delegation_context) prevents.
+    for name, value in sorted((plain_vars or {}).items()):
+        if not isinstance(name, str) or not _SHELL_ENV_NAME_RE.fullmatch(name):
+            raise ValueError(f"plain shell var name is not a shell identifier: {name!r}")
+        parts.append(f"{name}={shlex.quote(value)}; builtin export -n {name} 2>/dev/null")
     run = _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'"
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
@@ -348,8 +350,12 @@ def _wrap_command_script(
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready and persist_env:
+        # The plain vars are excluded from the re-dump too: a command that ran
+        # ``export <name>`` mid-flight must not persist the attribute into the snapshot,
+        # where every later command (and its children) would re-export the identity.
         dump = _export_dump_excluding_session_vars(
-            _SNAP_TMP, passthrough_names, secret_fd=secret_fd, secret_names=secret_names, secret_gen=secret_gen)
+            _SNAP_TMP, [*passthrough_names, *plain_vars.keys()] if plain_vars else passthrough_names,
+            secret_fd=secret_fd, secret_names=secret_names, secret_gen=secret_gen)
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {dump} "

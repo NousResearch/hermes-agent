@@ -1114,7 +1114,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         sourced, user tools on PATH), wrapped in a transient systemd scope when we are
         the supervised gateway (own cgroup: an OOM kills only the worker, not the
         gateway and its messaging control plane)."""
-        argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
+        # The dispatcher-owned worker's own background/PTY shells expand $HERMES_KANBAN_TASK the
+        # same way its foreground wrapper does (#160138): the spawn env is scrubbed, so the plain
+        # assignment rides the command string. unset first — a login/interactive rc file could
+        # have exported the name, and a bare re-assignment would keep the export attribute.
+        from agent.delegation_context import worker_plain_shell_command_prefix
+        argv = [_find_shell(), "-lic", f"{worker_plain_shell_command_prefix()}set +m; {safe_command}"]
         # This applies to both pipe mode and the PTY path above. See #70716.
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         if in_supervised_gateway and _systemd_run_user_scope_available():

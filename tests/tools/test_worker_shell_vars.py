@@ -4,165 +4,248 @@
 The worker protocol documents the var to shells (done-when receipts, evidence naming;
 #160138), while the child-env scrub deliberately keeps worker identity away from every child
 process a worker starts (#90782, #112817). A plain shell variable threads that needle: the
-command and its subshells expand it, ``env``/child processes never see it.
+command and its subshells expand it, ``env``/child processes never see it. ``builtin export -n``
+after the assignment keeps the export attribute off the name even when it was already exported
+(a sourced snapshot that carried an in-command ``export``) or under ``set -a``.
 """
 
 import os
-import shlex
 import subprocess
 
 import pytest
 
-from agent.delegation_context import worker_plain_shell_vars
+from agent.delegation_context import (
+    DELEGATED_CHILD_ENV_MARKER,
+    delegated_child_context,
+    non_dispatcher_owned_context,
+    worker_plain_shell_command_prefix,
+    worker_plain_shell_vars,
+)
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_session_env import _wrap_command_script
+from tools.environments.local import LocalEnvironment, _find_bash
 
-def _wrapper(command: str, plain_vars=None) -> str:
+TASK_ID = "task-abc-123"
+_BASH = _find_bash()
+
+needs_bash = pytest.mark.skipif(not _BASH, reason="bash required for real-shell tests")
+
+
+def _wrapper(command: str, plain_vars=None, *, snapshot_ready=False, persist_env=True) -> str:
     return _wrap_command_script(
         command,
         quoted_cwd="'/tmp'",
         quoted_snap="'/tmp/hermes-snap.sh'",
         snap_tmp_template="'/tmp/hermes-snap.sh.tmp.XXXXXXXXXX'",
         passthrough_names=(),
-        snapshot_ready=False,
+        snapshot_ready=snapshot_ready,
+        persist_env=persist_env,
         cwd_marker="HERMES_TEST_CWD:",
         plain_vars=plain_vars)
 
 
-def _with_worker(monkeypatch, task_id="task-abc-123", *, owned=True):
+def _set_worker_env(monkeypatch, task_id=TASK_ID):
     if task_id is None:
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     else:
         monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
-    monkeypatch.setattr(
-        "agent.delegation_context.is_dispatcher_owned_worker_context", lambda: owned)
 
 
-# --- worker_plain_shell_vars (the policy) ---
+def _scrubbed_spawn_env(monkeypatch) -> dict:
+    """Env WITHOUT the var: in production the terminal spawn env is scrubbed
+    (delegated_child_subprocess_env), so the wrapper's assignment is the only place the
+    value exists — nothing may leak in via the inherited process env."""
+    _set_worker_env(monkeypatch)
+    return {k: v for k, v in os.environ.items() if k != "HERMES_KANBAN_TASK"}
+
+
+def _run_bash(script: str, cwd, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run([_BASH, "-c", script], capture_output=True, text=True,
+                          timeout=30, check=False, cwd=str(cwd), env=env)
+
+
+# --- the policy: real contexts, no mocked predicates ---
 
 def test_worker_gets_its_task_as_plain_var(monkeypatch):
-    _with_worker(monkeypatch)
-    assert worker_plain_shell_vars() == {"HERMES_KANBAN_TASK": "task-abc-123"}
+    _set_worker_env(monkeypatch)
+    assert worker_plain_shell_vars() == {"HERMES_KANBAN_TASK": TASK_ID}
 
 
-def test_worker_value_is_stripped(monkeypatch):
-    _with_worker(monkeypatch, "  task-9  ")
-    assert worker_plain_shell_vars() == {"HERMES_KANBAN_TASK": "task-9"}
+def test_spawned_descendant_marked_in_env_gets_nothing(monkeypatch):
+    _set_worker_env(monkeypatch)
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "/home/x/.hermes/kanban")
+    assert worker_plain_shell_vars() == {}
 
 
-def test_non_worker_process_gets_nothing(monkeypatch):
+def test_in_process_delegate_child_of_worker_gets_nothing(monkeypatch):
+    _set_worker_env(monkeypatch)
+    with delegated_child_context():
+        assert worker_plain_shell_vars() == {}
+
+
+def test_cron_run_inside_a_worker_gets_nothing(monkeypatch):
+    _set_worker_env(monkeypatch)
+    with non_dispatcher_owned_context():
+        assert worker_plain_shell_vars() == {}
+
+
+def test_whitespace_only_value_is_not_a_task(monkeypatch):
+    _set_worker_env(monkeypatch, "   ")
+    assert worker_plain_shell_vars() == {}
+
+
+def test_command_prefix_is_empty_for_non_workers(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    assert worker_plain_shell_vars() == {}
+    assert worker_plain_shell_command_prefix() == ""
 
 
-def test_delegate_child_of_worker_gets_nothing(monkeypatch):
-    # An in-process delegate_task child / cron run shares the worker's os.environ but does
-    # not own the task — its shells must stay as inert as its env already is.
-    _with_worker(monkeypatch, owned=False)
-    assert worker_plain_shell_vars() == {}
+# --- rendering: the one structural contract + the loud failure mode ---
 
-
-# --- wrapper rendering ---
-
-def test_wrapper_sets_plain_assignment_before_the_command(monkeypatch):
-    wrapped = _wrapper("echo hi", plain_vars={"HERMES_KANBAN_TASK": "task-abc-123"})
+def test_wrapper_sets_plain_assignment_before_the_command():
+    wrapped = _wrapper("echo hi", {"HERMES_KANBAN_TASK": TASK_ID})
     # shlex.quote leaves a clean token unquoted — the assignment is still shell-safe.
-    assert "HERMES_KANBAN_TASK=task-abc-123" in wrapped
-    # Plain assignment, never an export: the re-dump and child envs must not see it.
-    assert "export HERMES_KANBAN_TASK" not in wrapped
+    assert f"HERMES_KANBAN_TASK={TASK_ID}; builtin export -n HERMES_KANBAN_TASK" in wrapped
     assignment_at = wrapped.index("HERMES_KANBAN_TASK=")
     run_at = wrapped.index("eval 'echo hi'")
     assert assignment_at < run_at
 
 
-def test_wrapper_skips_malformed_names_and_non_string_values():
-    wrapped = _wrapper("echo hi", plain_vars={"bad name": "x", 7: "y"})
-    assert "bad name" not in wrapped
-    assert "7=" not in wrapped
+def test_wrapper_rejects_names_that_are_not_shell_identifiers():
+    with pytest.raises(ValueError):
+        _wrapper("echo hi", {"bad name": "x"})
 
 
-# --- end-to-end semantics (real bash) ---
-
-def _run_wrapper(script: str) -> subprocess.CompletedProcess:
-    # Spawn env WITHOUT the var: in production the terminal spawn env is scrubbed
-    # (delegated_child_subprocess_env), so the wrapper's plain assignment is the only
-    # place the value exists — nothing may leak in via the inherited process env.
-    child_env = {k: v for k, v in os.environ.items() if k != "HERMES_KANBAN_TASK"}
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                          timeout=30, env=child_env, check=False)
+def test_command_prefix_is_unset_first(monkeypatch):
+    _set_worker_env(monkeypatch)
+    prefix = worker_plain_shell_command_prefix()
+    assert prefix.startswith("unset HERMES_KANBAN_TASK 2>/dev/null; HERMES_KANBAN_TASK=")
+    assert prefix.endswith("; ")
 
 
-def test_command_and_subshell_expand_the_var_children_do_not(monkeypatch):
-    _with_worker(monkeypatch)
+# --- end-to-end semantics (real bash; spawn env mirrors production: no var) ---
+
+@needs_bash
+def test_command_and_subshell_expand_the_var_children_do_not(monkeypatch, tmp_path):
+    env = _scrubbed_spawn_env(monkeypatch)
     command = (
         'printf "shell=%s" "$HERMES_KANBAN_TASK"; '
         'printf " sub=%s" "$(printf %s "$HERMES_KANBAN_TASK")"; '
         'printf " child=[%s]" "$(sh -c \'printf %s "$HERMES_KANBAN_TASK"\')"'
     )
-    result = _run_wrapper(_wrapper(command, plain_vars=worker_plain_shell_vars()))
+    result = _run_bash(_wrapper(command, worker_plain_shell_vars()), tmp_path, env)
     assert result.returncode == 0, result.stderr
     assert "shell=task-abc-123 sub=task-abc-123 child=[]" in result.stdout
 
 
-def test_hostile_value_expands_verbatim_without_injection(monkeypatch):
-    hostile = "x'; rm -rf /; echo '"
-    _with_worker(monkeypatch, hostile)
-    result = _run_wrapper(_wrapper("printf %s \"$HERMES_KANBAN_TASK\"",
-                                   plain_vars=worker_plain_shell_vars()))
+@needs_bash
+@pytest.mark.parametrize("hostile", [
+    "x'; rm -rf /; echo '",
+    "$(id)",
+    "`id`",
+    "with space",
+])
+def test_hostile_values_expand_verbatim_without_injection(monkeypatch, tmp_path, hostile):
+    env = _scrubbed_spawn_env(monkeypatch)
+    result = _run_bash(
+        _wrapper('printf %s "$HERMES_KANBAN_TASK"', {"HERMES_KANBAN_TASK": hostile}), tmp_path, env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith(hostile)
     assert "rm -rf" not in result.stdout.replace(hostile, "")
 
 
-def test_env_dump_never_carries_the_plain_var(monkeypatch):
-    # persist_env re-dumps `export -p` into the snapshot; a plain variable must never land
-    # there, or the NEXT command (and its children) would inherit worker identity.
-    _with_worker(monkeypatch)
-    command = 'printf %s "$HERMES_KANBAN_TASK"'
-    wrapped = _wrap_command_script(
-        command, plain_vars=worker_plain_shell_vars(),
-        quoted_cwd="'/tmp'", quoted_snap="'/tmp/hermes-snap.sh'",
-        snap_tmp_template="'/tmp/hermes-snap.sh.tmp.XXXXXXXXXX'",
+@needs_bash
+def test_mid_command_export_never_persists_across_commands(monkeypatch, tmp_path):
+    """P0-1 regression: command 1 exports the name; command 2 must still see it as a plain
+    variable only — the snapshot re-dump drops the name and ``export -n`` clears the
+    attribute, so command 2's child inherits nothing."""
+    env = _scrubbed_spawn_env(monkeypatch)
+    snap = tmp_path / "snap.sh"
+    first = _wrap_command_script(
+        "export HERMES_KANBAN_TASK", plain_vars={"HERMES_KANBAN_TASK": TASK_ID},
+        quoted_cwd=f"'{tmp_path}'", quoted_snap=f"'{snap}'",
+        snap_tmp_template=f"'{snap}.tmp.XXXXXXXXXX'",
         passthrough_names=(), snapshot_ready=True, persist_env=True,
         cwd_marker="HERMES_TEST_CWD:")
-    dump_at = wrapped.index("export -p")
-    assert "HERMES_KANBAN_TASK" not in wrapped[dump_at:]
+    second = _wrap_command_script(
+        'printf "child=[%s]" "$(sh -c \'printf %s "$HERMES_KANBAN_TASK"\')"',
+        plain_vars={"HERMES_KANBAN_TASK": TASK_ID},
+        quoted_cwd=f"'{tmp_path}'", quoted_snap=f"'{snap}'",
+        snap_tmp_template=f"'{snap}.tmp.XXXXXXXXXX'",
+        passthrough_names=(), snapshot_ready=True, persist_env=True,
+        cwd_marker="HERMES_TEST_CWD:")
+    # Two separate invocations, like production's spawn-per-call: each wrapper ends in
+    # `exit`, so concatenating them into one bash would never reach the second.
+    first_run = _run_bash(first, tmp_path, env)
+    assert first_run.returncode == 0, first_run.stderr
+    second_run = _run_bash(second, tmp_path, env)
+    assert second_run.returncode == 0, second_run.stderr
+    assert "child=[]" in second_run.stdout
+    # And the snapshot file itself never carries the export line.
+    assert "HERMES_KANBAN_TASK" not in snap.read_text()
 
 
-# --- LocalEnvironment wiring ---
-
-class _QuietLocalEnvironment:
-    """Lazy proxy: construct the real LocalEnvironment without its login-shell snapshot."""
-
-    def __init__(self):
-        from tools.environments.local import LocalEnvironment
-
-        class _NoInit(LocalEnvironment):
-            def init_session(self):
-                self._snapshot_ready = False
-
-        self._env = _NoInit(cwd="/tmp", timeout=10)
-
-    def __getattr__(self, name):
-        return getattr(self._env, name)
+@needs_bash
+def test_allexport_cannot_turn_the_assignment_into_an_export(monkeypatch, tmp_path):
+    """P0-1: under ``set -a`` (an rc file that left allexport on) a bare assignment would
+    export; ``builtin export -n`` in the wrapper keeps the attribute off."""
+    env = _scrubbed_spawn_env(monkeypatch)
+    inner = _wrapper('printf "child=[%s]" "$(sh -c \'printf %s "$HERMES_KANBAN_TASK"\')"',
+                     {"HERMES_KANBAN_TASK": TASK_ID})
+    result = _run_bash(f"set -a\n{inner}", tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert "child=[]" in result.stdout
 
 
-def test_local_environment_override_uses_the_policy(monkeypatch):
-    _with_worker(monkeypatch)
-    env = _QuietLocalEnvironment()
-    assert env._plain_shell_vars() == {"HERMES_KANBAN_TASK": "task-abc-123"}
+@needs_bash
+def test_background_prefix_expands_in_shell_but_not_in_children(monkeypatch, tmp_path):
+    env = _scrubbed_spawn_env(monkeypatch)
+    result = _run_bash(
+        f"{worker_plain_shell_command_prefix()}set +m; "
+        'printf "shell=%s" "$HERMES_KANBAN_TASK"; '
+        'printf " child=[%s]" "$(sh -c \'printf %s "$HERMES_KANBAN_TASK"\')"',
+        tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert "shell=task-abc-123 child=[]" in result.stdout
 
 
-def test_local_environment_threading_reaches_the_wrapper(monkeypatch):
-    _with_worker(monkeypatch)
-    env = _QuietLocalEnvironment()
-    wrapped = env._wrap_command("echo $HERMES_KANBAN_TASK", "/tmp")
-    assert "HERMES_KANBAN_TASK=task-abc-123" in wrapped
+# --- the production chain: LocalEnvironment.execute, red on base, green here ---
+
+@needs_bash
+def test_local_environment_execute_the_full_chain(monkeypatch, tmp_path):
+    """The #160138 repro through the real machinery: scrubbed spawn env, worker os.environ,
+    login snapshot, per-command wrapper. The shell expands the id; the command's child gets
+    no identity but does carry the non-owner fence marker."""
+    _set_worker_env(monkeypatch)
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    result = env.execute(
+        'printf %s "$HERMES_KANBAN_TASK"; printf "|%s" '
+        '"$(sh -c \'printf %s "$HERMES_KANBAN_TASK"; printf "|%s" "${HERMES_DELEGATED_CHILD_CONTEXT-}"\')"',
+        cwd=str(tmp_path))
+    assert result["returncode"] == 0, result["output"]
+    shell_out, _, rest = result["output"].partition("|")
+    child_task, _, child_marker = rest.partition("|")
+    assert shell_out == TASK_ID
+    assert child_task == ""  # the child process inherited no identity
+    assert child_marker.strip()  # …but it carries the non-owner fence
 
 
-def test_base_environment_default_is_empty():
-    env = _TestableBaseEnv()
+def test_local_environment_override_uses_the_policy(monkeypatch, tmp_path):
+    _set_worker_env(monkeypatch)
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+    assert env._plain_shell_vars() == {"HERMES_KANBAN_TASK": TASK_ID}
+
+
+def test_local_environment_threading_reaches_the_wrapper(monkeypatch, tmp_path):
+    _set_worker_env(monkeypatch)
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+    wrapped = env._wrap_command("echo $HERMES_KANBAN_TASK", str(tmp_path))
+    assert f"HERMES_KANBAN_TASK={TASK_ID}" in wrapped
+
+
+def test_base_environment_default_is_empty(tmp_path):
+    env = _TestableBaseEnv(cwd=str(tmp_path))
     assert env._plain_shell_vars() == {}
+    assert "_plain_shell_vars" in BaseEnvironment.__dict__
 
 
 class _TestableBaseEnv(BaseEnvironment):
@@ -176,11 +259,3 @@ class _TestableBaseEnv(BaseEnvironment):
 
     def cleanup(self):
         pass
-
-
-@pytest.mark.parametrize("value", ["with space", "with'quote", "$HOME", '`id`'])
-def test_values_are_shlex_quoted_safely(value):
-    # The rendering is exactly shlex.quote's (never a bare interpolation), so the value
-    # expands verbatim inside the command and is never re-parsed as syntax.
-    wrapped = _wrapper("echo hi", plain_vars={"V": value})
-    assert f"V={shlex.quote(value)}" in wrapped

@@ -149,12 +149,28 @@ def worker_plain_shell_vars() -> dict[str, str]:
     away from every child PROCESS so a ``hermes`` run started by the worker can never promote
     itself to the owner (#90782, #112817). Exporting the var in the worker's terminal env would
     undo exactly that. A plain shell variable threads the needle: the command and its subshells
-    expand it, child processes inherit nothing. Consumed by ``LocalEnvironment`` only.
+    expand it, child processes inherit nothing. Consumed by ``LocalEnvironment`` and the local
+    background/PTY spawner.
     """
-    task = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if not task or not is_dispatcher_owned_worker_context():
-        return {}
-    return {"HERMES_KANBAN_TASK": task}
+    task = owned_kanban_task()
+    return {"HERMES_KANBAN_TASK": task} if task else {}
+
+
+def worker_plain_shell_command_prefix() -> str:
+    """Command-string form of :func:`worker_plain_shell_vars` for spawn paths that prefix the
+    user's command (background/PTY login shells in ``tools.process_registry``) instead of
+    sourcing a wrapper script. ``unset`` first: the spawn env is scrubbed, but a login/interactive
+    rc file could still export the name, and a plain re-assignment would keep its export
+    attribute. Non-bash shells have no ``export -n``, so the ``set -a`` corner (an rc that left
+    allexport on) stays closed only on the wrapper's bash path."""
+    import shlex
+
+    vars_ = worker_plain_shell_vars()
+    if not vars_:
+        return ""
+    return "".join(
+        f"unset {name} 2>/dev/null; {name}={shlex.quote(value)}; "
+        for name, value in sorted(vars_.items()))
 
 
 def kanban_path_is_fenced(path: os.PathLike[str] | str) -> bool:

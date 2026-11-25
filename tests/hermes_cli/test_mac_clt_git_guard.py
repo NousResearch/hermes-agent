@@ -533,14 +533,18 @@ def test_macos_native_absent_clt_prevents_all_git_spawns_and_warns_doctor(tmp_pa
     real_run = subprocess.run
     real_popen = subprocess.Popen
 
+    # A git launch here is the stub: record it and never run it, so a regression fails the test
+    # instead of opening Apple's install dialog on the machine running it.
     def spy_run(cmd, *args, **kwargs):
         if cmd and "git" in str(cmd[0]):
             spawned.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "", "")
         return real_run(cmd, *args, **kwargs)
 
     def spy_popen(cmd, *args, **kwargs):
         if cmd and "git" in str(cmd[0]):
             spawned.append(list(cmd))
+            raise FileNotFoundError(f"trapped git launch: {cmd[0]}")
         return real_popen(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", spy_run)

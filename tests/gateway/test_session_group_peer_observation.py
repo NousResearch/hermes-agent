@@ -21,7 +21,7 @@ async def test_renewed_peer_turn_recovers_after_member_goes_away(
         gateway, monkeypatch, linked_peer, resolution):
     server, url, catalog, room = linked_peer
     assert (await peers._seat(gateway, room, url, catalog))[1]['registered']
-    service, db = gateway.service, gateway.db.db_path
+    service, db = gateway.service, gateway.db
     runtime, binding = service.runtime, service.bindings()[0]
     runtime.status = lambda: {**HostedRoomRuntime.status(runtime), 'running': True, 'stopping': False}
     now = [time.time()]
@@ -56,7 +56,7 @@ async def test_renewed_peer_turn_recovers_after_member_goes_away(
     monkeypatch.setattr(client, 'history', lose_member_after_renewal)
     assert (await peers.call(gateway.owner, 'groups.send', room_id='linked', event_id='ask',
                             payload={'text': '@reviewer review', 'thread_id': 'peer-thread'}))['accepted']
-    task, = driver.list_tasks(db, room_id='linked', status='queued')
+    task, = driver.list_tasks(db, placement='profile', room_id='linked', status='queued')
     identity = task['identity']
     restarted = None
     lost = start + 33
@@ -79,20 +79,20 @@ async def test_renewed_peer_turn_recovers_after_member_goes_away(
         run_id, = gateway.adapter._run_statuses
         if resolution == 'transient':
             # Back within the grace period: the watcher never left, so the same run settles.
-            assert driver.get_task(db, identity)['status'] == 'settled'
-            assert driver.get_task(db, identity)['result']['text'] == 'Recovered reply'
+            assert driver.get_task(db, identity, placement='profile')['status'] == 'settled'
+            assert driver.get_task(db, identity, placement='profile')['result']['text'] == 'Recovered reply'
         else:
-            assert driver.get_task(db, identity)['status'] == 'indeterminate'
+            assert driver.get_task(db, identity, placement='profile')['status'] == 'indeterminate'
             assert now[0] - lost <= runtime.lease_ttl_seconds + 2
             assert await peers.linked_room(gateway, catalog, room_id='other')
             assert (await peers.call(gateway.owner, 'groups.send', room_id='other', event_id='other-ask',
                                     payload={'text': '@host answer', 'thread_id': 'other'}))['accepted']
             other = next(b for b in service.bindings() if b.room_id == 'other')
             await asyncio.to_thread(runtime._process_room, other)
-            assert driver.list_tasks(db, room_id='other')[0]['status'] == 'settled'
+            assert driver.list_tasks(db, placement='profile', room_id='other')[0]['status'] == 'settled'
             now[0] += runtime.indeterminate_defer_seconds
             await asyncio.to_thread(runtime._process_room, binding)
-            assert driver.get_task(db, identity)['status'] == 'deferred'
+            assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
             assert now[0] - lost <= runtime.lease_ttl_seconds + runtime.indeterminate_defer_seconds + 2
             actions = service.status('linked')['pending_actions']
             assert {a['kind'] for a in actions if a.get('task_id') == identity.task_id} == {'retry', 'discard'}
@@ -100,15 +100,16 @@ async def test_renewed_peer_turn_recovers_after_member_goes_away(
                 payload={'text': '@host next', 'thread_id': 'next-thread'}))['accepted']
             await asyncio.to_thread(runtime._process_room, binding)
             assert any(t['status'] == 'settled' and t['payload']['target_member_id'] == 'host'
-                       for t in driver.list_tasks(db, room_id='linked'))
+                       for t in driver.list_tasks(db, placement='profile', room_id='linked'))
             restarted, _ = await peers.serve(gateway, monkeypatch, port=port, stop=True)
             gateway.adapter._set_run_status(run_id, 'completed', output='Recovered reply', completed=True)
             now[0] += client.poll_max_seconds + 1
             result = await peers.call(gateway.owner, 'groups.' + resolution, room_id='linked',
                 member_id='reviewer', task_id=identity.task_id, execution_generation=1)
             assert isinstance(result, dict), result
-            assert driver.get_task(db, identity)['status'] == ('settled' if resolution == 'retry' else 'cancelled')
-        assert driver.get_task(db, identity)['execution_generation'] == 1
+            assert driver.get_task(db, identity, placement='profile')['status'] == (
+                'settled' if resolution == 'retry' else 'cancelled')
+        assert driver.get_task(db, identity, placement='profile')['execution_generation'] == 1
         assert list(gateway.adapter._run_statuses) == [run_id]
         await asyncio.to_thread(runtime._process_room, binding)  # publish any recovered terminal row
         replies = [e for e in service._events('linked') if e['kind'] == 'message.member'

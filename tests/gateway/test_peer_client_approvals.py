@@ -9,9 +9,10 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from gateway.session_api_turn import admit_api_turn
+from gateway.session_authority import admission_row
 from gateway.session_controls import AuthorityConnection
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from hermes_state_runtime import claim_session_input, settle_session_input
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 from tests.tui_gateway.test_hosted_room_two_gateway_peer import _target_app
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
@@ -43,7 +44,7 @@ async def lender(api, owner, tmp_path, monkeypatch):
         grant = invited['grant']
         _, ref, _ = admit_api_turn(api, session_id='approval-session', request_id='run_approval',
                                   user_message='run', conversation_history=[])
-        row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
+        row = admission_row(owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id))
         scope = SimpleNamespace(headers={'Authorization': 'HermesRoom ' + grant},
                                 path='/v1/runs/run_approval', method='GET')
         api._run_owners['run_approval'] = api._run_idempotency_scope(scope)
@@ -98,7 +99,7 @@ async def test_groups_approve_refusal_matches_local_nonpending_approval(lender, 
     service = owner.hosted_room_service = CanonicalHostedRoomService(owner, asyncio.get_running_loop())
     monkeypatch.setattr(service.runtime, 'status', lambda: {'running': True, 'stopping': False})
     connection = AuthorityConnection(owner, object(), {'user_id': 'alice'})
-    service.authorize_room(connection.actor.subject, 'room-1', create=True)
+    service.insert_room(room_id='room-1', name='room-1', members=[], owner=connection.actor.subject)
     params = dict(room_id='room-1', member_id='member-peer', task_id='task',
                   execution_generation=7, request_id='prompt', choice='once')
     request = {'id': 1, 'method': 'groups.approve', 'params': params}
@@ -108,14 +109,13 @@ async def test_groups_approve_refusal_matches_local_nonpending_approval(lender, 
     service._set_pending_action(*key, {**params, 'kind': 'approval', 'approval': observed['approval']})
     # The home still runs that attempt (#148877 refuses an approval for an attempt it no longer runs):
     # the refusal under test is the lender's.
-    from gateway import hosted_room_driver
     from tui_gateway import hosted_room_service
-    attempt = {'identity': hosted_room_driver.TaskIdentity('room-1', 'task', 'thread', 'turn'),
+    attempt = {'identity': HostedTaskIdentity('room-1', 'task', 'thread', 'turn'),
                'execution_generation': 7, 'status': 'running', 'payload': {'target_member_id': 'member-peer'}}
     monkeypatch.setattr(hosted_room_service.driver, 'list_tasks', lambda *_a, **_kw: [attempt])
     if reason == 'stale_generation':
-        settle_session_input(owner.db, epoch=owner.epoch, admission_id=row['admission_id'],
-                             generation=row['generation'], outcome='interrupted')
+        owner.persistence.admissions.settle(epoch=owner.epoch, admission_id=row['admission_id'],
+                                            generation=row['generation'], outcome='interrupted')
     elif reason == 'approval_not_pending':
         live.controls.respond(lender.ref.session_id, row['generation'], 'prompt', {'choice': 'deny'})
         owner.register_approval(lender.ref.session_id, row['generation'], live.route, {

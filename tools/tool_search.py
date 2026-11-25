@@ -143,10 +143,10 @@ _DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.k
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit
 # ``defer`` list replaces this wholesale ([] = everything eager). ``clarify`` is deliberately
 # absent: A/B showed deferring it collapsed structured-clarify usage (18/18 -> 7/18) — the
-# ask-the-user affordance must be ambient, a stub is not enough. ``manage_connections`` is absent
-# for the same reason: deferred, a weak model installed an MCP server through the terminal
-# instead of finding it (3/3 -> 0/3, evals/tts_connections_deferral), while ``text_to_speech``
-# was reached 12/12 on both arms.
+# ask-the-user affordance must be ambient, a stub is not enough. ``manage_connections`` is
+# deferred only because its catalog line names both of its jobs: with the old first sentence a
+# weak model installed MCP servers through the terminal (18/20 -> 10/20); with the line naming
+# MCP installs it matched eager (18/20, evals/tts_connections_deferral). Keep that sentence.
 _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
 
 
@@ -235,7 +235,7 @@ def _bridge_schema(name: str, description: str, properties: dict[str, Any],
 _CONNECTIONS_HINT = (
     " Searches also cover the user's connected app accounts, whose tools are hosted and so "
     "never listed here (results named `connectors__<app>__<tool>`); `manage_connections` checks "
-    "or connects an account.")
+    "or connects an account and installs MCP servers.")
 
 
 def _search_description(deferred_count: int, listing: Optional[str], listing_form: str,

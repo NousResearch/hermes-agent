@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopConnectionsRegistry } from '@/global'
+import type * as ProfileStore from '@/store/profile'
 
 import { deferred } from '../test/deferred'
 
@@ -34,7 +35,8 @@ const ensureGatewayAgent = vi.fn(
 
 const openGatewayAgent = vi.fn(async (_connectionId: string, _profile: string): Promise<void> => undefined)
 
-vi.mock('@/store/session', () => ({
+vi.mock('@/store/session', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   $connection,
   $activeSessionId,
   $selectedStoredSessionId,
@@ -43,24 +45,30 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('@/store/project-scope', () => ({ exitProjectScope: vi.fn() }))
 vi.mock('@/store/gateway-switch', () => ({ supersedeGatewaySwitch: vi.fn() }))
-vi.mock('@/store/profile', () => ({
-  $activeGatewayProfile,
-  $freshSessionRequest,
-  $newChatConnectionId: atom(null),
-  $newChatProfile: atom(null),
-  $newChatRoute: atom(null),
-  $showAllProfiles: atom(false),
-  captureNewChatSource: vi.fn(),
-  currentNewChatIntent: () => 0,
-  ensureGatewayAgent,
-  isLegacyNewChatProfile: () => false,
-  normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
-  openGatewayAgent,
-  pinLegacyNewChatProfile: vi.fn(),
-  refreshActiveProfile: vi.fn(async () => undefined),
-  requestFreshSession: vi.fn()
-}))
+vi.mock('@/store/profile', async importOriginal => {
+  // Keep the real selection listener and draft clock: automatic resumes are not draft intent.
+  const { captureNewChatSource, currentNewChatIntent } = await importOriginal<typeof ProfileStore>()
 
+  return {
+    $activeGatewayProfile,
+    $freshSessionRequest,
+    $newChatConnectionId: atom(null),
+    $newChatProfile: atom(null),
+    $newChatRoute: atom(null),
+    $showAllProfiles: atom(false),
+    captureNewChatSource,
+    currentNewChatIntent,
+    ensureGatewayAgent,
+    isLegacyNewChatProfile: () => false,
+    normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
+    openGatewayAgent,
+    pinLegacyNewChatProfile: vi.fn(),
+    refreshActiveProfile: vi.fn(async () => undefined),
+    requestFreshSession: vi.fn()
+  }
+})
+
+// The mocked modules close over initialized atoms above; static imports run before those exist.
 const { _resetConnectionsForTests, initializeConnectionsRegistry } = await import('./connections')
 const { _resetFleetRosterForTests } = await import('./fleet-roster')
 const { _resetUserSessionOpenForTests, noteUserSessionOpen } = await import('./session-open-intent')

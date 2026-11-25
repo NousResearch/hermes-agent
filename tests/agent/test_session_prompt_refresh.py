@@ -7,7 +7,7 @@ profile's state.db; the session's next turn rebuilds its prompt once, keeps its 
 and persists the new bytes so later turns restore them verbatim.
 
 Everything is real except the model: a real ``AIAgent`` per turn (as the messaging gateway runs
-it), the real ``SessionDB`` in a temp HERMES_HOME, the real CLI entrypoint, and a recording
+it), the real store in a temp HERMES_HOME, the real CLI entrypoint, and a recording
 ``FakeLLMServer`` whose request bodies are what the model was actually sent.
 """
 
@@ -21,6 +21,9 @@ import pytest
 
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
 from tests.fakes.fake_llm_provider import FakeLLMServer, write_hermes_home
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SOUL_V1 = "You are Wren, the operations assistant. Soul revision one."
 SOUL_V2 = "You are Wren, the operations assistant. Soul revision two."
@@ -60,13 +63,12 @@ def profile(monkeypatch, tmp_path):
 
 
 def _agent(srv, home, session_id):
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
-    db = SessionDB(db_path=home / "state.db")
-    db.ensure_session(session_id, source="whatsapp")  # the gateway opens the row before the turn
+    store = storage_handle(home)
+    seed_session(store, session_id, "whatsapp")  # the gateway opens the row before the turn
     return AIAgent(provider="custom", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
-                   session_db=db, session_id=session_id, quiet_mode=True, platform="whatsapp")
+                   session_db=store, persistence=store, session_id=session_id, quiet_mode=True, platform="whatsapp")
 
 
 def _system(request) -> str:
@@ -161,9 +163,7 @@ def test_the_verb_makes_the_next_turn_adopt_soul_skills_and_project_files_once(p
     assert after == refreshed and builds == []
     assert len(_user_texts(srv.main_requests()[-1])) == 4
 
-    from hermes_state import SessionDB
-    with SessionDB(db_path=home / "state.db") as db:
-        assert db.get_session("chat-a")["system_prompt"] == refreshed  # persisted for the next restore
+    assert session_row(storage_handle(home), "chat-a")["system_prompt"] == refreshed  # persisted for the next restore
 
 
 def test_session_flag_refreshes_only_that_session(profile, monkeypatch):

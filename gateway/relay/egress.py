@@ -577,5 +577,5 @@ def authorize_relay_target(
     return (
         f"Refusing to send to unattested relay target '{name}:{target}': "
         "this gateway has no record of that destination. Use "
-        "send_message(action='list') to see the targets it can reach."
+        "`hermes send --list` to see the targets it can reach."
     )

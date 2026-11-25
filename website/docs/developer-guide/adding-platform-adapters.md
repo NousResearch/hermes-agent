@@ -217,7 +217,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
-| send engine (`tools/send_message_tool.py`) | Routes through live gateway adapter |
+| send engine (`gateway/outbound/send.py`) | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |
@@ -303,13 +303,15 @@ lists each import of it.
 |---|---|
 | Adapter base class, send results, media cache helpers | `gateway.platforms.base` (public names) |
 | SSRF-safe HTTP client: connect-time IP validation, per-redirect re-check, shared keepalive limits | `from gateway.platforms.helpers import platform_http_client` |
-| The pieces of that client, to build your own | `gateway.platforms.base.ssrf_redirect_guard` (httpx `response` hook), `tools.url_safety.create_ssrf_safe_async_client`, `tools.url_safety.is_safe_url`, `gateway.platforms._http_client_limits.platform_httpx_limits` |
+| The pieces of that client, to build your own | `gateway.platforms.base.ssrf_redirect_guard` (httpx `response` hook), `tools.url_safety.create_ssrf_safe_async_client` (sync: `create_ssrf_safe_client`), `tools.url_safety.is_safe_url`, `gateway.platforms._http_client_limits.platform_httpx_limits` |
+| Fetch a URL with an existing `aiohttp.ClientSession`, every redirect hop SSRF-checked (credential-bearing cross-origin hops refused, one `total` timeout for the chain) | `async with gateway.platforms.helpers.ssrf_checked_aiohttp_get(session, url, **get_kwargs) as resp:` (raises `ValueError` on a blocked hop) |
 | Own DM/group policy (`dm_policy` / `group_policy` / allowlists) | `from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin` |
 | Resolve an approval from a native button | `from tools.approval import resolve_gateway_approval_card` (pass the card's request id; a call without one resolves nothing. Every request starts Deny-only: render through `_send_exec_approval_prompt` so the base `send_exec_approval` can lift the mark once the card shows the whole command. `resolve_gateway_approval` answers the oldest pending request) |
 | Refuse a click from someone who may not answer the approval (not its requester when `approvals.approvers` is narrowed; not allowed `/approve` / `/deny` when the chat sets `allow_admin_from`) | `from gateway.approval_actor import approval_refusal, refusal_text`: call `approval_refusal(session_key, clicker_id, extra=self.config.extra, request_id=..., choice=choice)` before resolving (the `choice` lets the chat's slash admin gate check the answer's own `/approve` or `/deny`); a non-`None` result is the requester's name, reply privately with `refusal_text(name)` and leave the approval pending. Then settle with `resolve_gateway_approval_card(session_key, choice, request_id, actor_id=clicker_id, extra=self.config.extra)`, which rechecks the clicker against the entry it settles in the same critical section. Slash-confirm and clarify taps use `slash_confirm_refusal(session_key, confirm_id, clicker_id, extra=...)` and `clarify_refusal(clarify_id, clicker_id, extra=...)` the same way, before `slash_confirm.resolve` / `resolve_gateway_clarify` / `mark_awaiting_text` |
 | Refuse a picker-card (`send_model_picker` / `send_choice_picker`) or `/update` prompt click from someone other than its opener | `from gateway.approval_actor import picker_refusal, update_prompt_refusal, refusal_text`: `picker_refusal(on_selected, clicker_id, extra=self.config.extra)` with the callback the picker was sent with, or `update_prompt_refusal(clicker_id, extra=self.config.extra)`; a non-`None` result is the opener's name: reply privately with `refusal_text(name)` and leave the card open. The opener and the chat scope's admins always pass |
 | Native clarify buttons | `tools.clarify_gateway`: `get_pending(clarify_id)` (the pending entry or `None`; read `session_key`, `choices`, `multi_select`), `resolve_gateway_clarify(clarify_id, text)`, `mark_awaiting_text(clarify_id)`, `SKIPPED` |
 | `setup_fn` wizard steps | `hermes_cli.gateway_setup_wizard`: `print_setup_header(title)`, `confirm_reconfigure(label, *env_vars)`, `offer_home_channel(home_var, user_id, what)`, `save_env_values(**values)`, `prompt_csv(text, default)`; prompts from `hermes_cli.setup` (`prompt`, `prompt_choice`, `prompt_yes_no`); output from `hermes_cli.cli_output` (`print_info`, `print_success`, `print_warning`, `print_error`); `.env` access through `hermes_cli.config` (`save_env_value`, `get_env_value`) |
+| Recognize a silence marker (`[SILENT]`, `NO_REPLY`) in reply text and strip a closing one, by the text rules Hermes uses (a reply that is only a marker; a marker closing a real reply on its own line; a marker inside a sentence is prose). These are text checks: whether a turn may stay silent is the gateway's decision, and where a reply is expected it can send a notice in place of a bare marker, so do not use them to drop text the gateway hands your adapter to send | `from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker, is_autonomous_silence_response`: `is_intentional_silence_response(text)` is `True` only when the whole reply is a marker; `strip_trailing_silence_marker(text)` returns the reply without a closing own-line marker (anything else, a bare marker included, comes back unchanged); for an autonomous run with no user waiting (cron, webhook) use `is_autonomous_silence_response(text)`, which is also `True` when the bracketed sentinel opens the reply (`[SILENT] nothing new`) or a marker sits on its own first or last line |
 
 ```python
 from gateway.platforms.helpers import platform_http_client
@@ -859,7 +861,7 @@ Six touchpoints:
 
 ### 7. Tools
 
-1. **`tools/send_message_tool.py`** — Add `"newplat": Platform.NEWPLAT` to platform map
+1. **`gateway/outbound/send.py`** — Add `"newplat": Platform.NEWPLAT` to platform map
 2. **`tools/cronjob_tools.py`** — Add `newplat` to the delivery target description string
 
 ### 8. Toolsets

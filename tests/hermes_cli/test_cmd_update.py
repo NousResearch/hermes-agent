@@ -120,10 +120,48 @@ class TestGitTrampolineSelfHeal:
         monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
 
+        monkeypatch.setattr("pm.paths.store_root", lambda: root / "tools")
+
         candidates = _portable_git_candidates()
-        assert candidates[0] == (
-            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
-        assert candidates[1] == (
-            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
+        # 2.56+ ships git-core under ucrt64/ (x64) or clangarm64/ (arm64); older trees use mingw64/.
+        assert candidates == [
+            tree / "git" / prefix / "libexec" / "git-core" / "git.exe"
+            for tree in (root, profile_home)
+            for prefix in ("ucrt64", "clangarm64", "mingw64")
+        ]
+
+    def test_portable_git_candidates_include_the_pm_store_tree(self, tmp_path, monkeypatch):
+        # install.ps1 and pm stage PortableGit at <store>/git-<version>-<target>/, not <root>/git.
+        import hermes_constants
+        from hermes_cli.update_cmd_git import _portable_git_candidates
+
+        store = tmp_path / "tools"
+        for entry in ("git-2.53.0+3-win32-x64", "git-2.56.1+1-win32-arm64", "python-3.14-win32-x64"):
+            (store / entry).mkdir(parents=True)
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: tmp_path)
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("pm.paths.store_root", lambda: store)
+
+        candidates = _portable_git_candidates()
+        assert store / "git-2.56.1+1-win32-arm64" / "clangarm64" / "libexec" / "git-core" / "git.exe" in candidates
+        assert store / "git-2.53.0+3-win32-x64" / "mingw64" / "libexec" / "git-core" / "git.exe" in candidates
+        assert not any("python-" in str(c) for c in candidates)
+
+    def test_portable_git_candidates_order_store_entries_by_version(self, tmp_path, monkeypatch):
+        # Newest first by number, not by name: a name sort puts 2.56.9 ahead of 2.56.10.
+        from types import SimpleNamespace
+
+        import hermes_constants
+        from hermes_cli.update_cmd_git import _portable_git_candidates
+
+        store = tmp_path / "tools"
+        # Listed oldest first, so a sort that ties every entry keeps the wrong order.
+        listed = [store / f"git-{v}-win32-x64" for v in ("2.56.9+1", "2.56.10+1", "2.56.10+2")]
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: tmp_path)
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("pm.paths.store_root", lambda: SimpleNamespace(glob=lambda pattern: list(listed)))
+
+        trees = [c.parents[3].name for c in _portable_git_candidates() if c.parents[3].parent == store]
+        assert list(dict.fromkeys(trees)) == [
+            "git-2.56.10+2-win32-x64", "git-2.56.10+1-win32-x64", "git-2.56.9+1-win32-x64",
+        ]

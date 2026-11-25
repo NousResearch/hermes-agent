@@ -484,7 +484,7 @@ class TestBOMToleranceSiblingSites:
     def test_blueprints_split_frontmatter_bom(self):
         # str.lstrip() does NOT strip U+FEFF (it is not whitespace), so the
         # pre-existing lstrip() in _split_frontmatter never covered it.
-        from tools.blueprints import _split_frontmatter
+        from cron.skill_blueprints import _split_frontmatter
 
         fm = _split_frontmatter("\ufeff---\nname: bp\n---\nbody")
         assert fm is not None

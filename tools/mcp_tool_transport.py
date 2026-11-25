@@ -166,8 +166,6 @@ def _sdk_unavailable_error(server_name: str) -> ImportError:
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
-    __slots__ = ()
-
     def _advertises_tools(self) -> bool:
         """False only when captured capabilities omit ``tools`` (prompt-/resource-only servers,
         where ``tools/list`` raises -32601); True without capability info (legacy fallback).
@@ -376,6 +374,8 @@ class MCPServerTransportMixin:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        from tools.hosted_tool_policy import require_host_feature
+        require_host_feature("mcp_stdio", f"MCP server '{self.name}' (stdio)")
         if config.get("identity_header") is not None:  # copy-pasted HTTP block: warn, don't mislead
             logger.warning("MCP server '%s': identity_header is only supported on "
                            "HTTP/SSE transports — ignored for stdio servers", self.name)
@@ -495,7 +495,9 @@ class MCPServerTransportMixin:
         if not _non_mcp_2xx(resp):
             return
         ct_base = _content_type_base(resp)
-        raise NonMcpEndpointError(f"MCP server '{self.name}' at {url} returned Content-Type '{ct_base}', not an MCP "
+        from agent.redact import redact_sensitive_text  # error text reaches the model: no ?token= credential
+        shown = redact_sensitive_text(str(url), redact_url_credentials=True)
+        raise NonMcpEndpointError(f"MCP server '{self.name}' at {shown} returned Content-Type '{ct_base}', not an MCP "
             f"response (expected one of: {', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it resolves to a Streamable "
             "HTTP / SSE endpoint (e.g. https://host/mcp, not https://host/).")
@@ -711,10 +713,14 @@ class MCPServerTransportMixin:
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
-        if self._registered_tool_names:
-            return
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]
+        if self._registered_tool_names:
+            # A reconnect keeps the registered tools, but the trust gate must judge the session that will
+            # run the call: refresh readOnlyHint from this listing (#144380).
+            for key in owned:
+                _registration._record_tool_trust_metadata(self.name, self._config, self._tools, key)
+            return
         if not owned and not self._ready.is_set():
             return
         self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)

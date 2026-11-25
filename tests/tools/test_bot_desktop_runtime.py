@@ -13,12 +13,27 @@ import pytest
 
 from tools.bot_desktop import runtime, thumbnail
 
+# Which package in each distro list ships each binary the launcher execs.
+BINARY_PACKAGES = {
+    "apt": {"Xvnc": "tigervnc-standalone-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
+            "xfdesktop": "xfdesktop4", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
+            "xauth": "xauth", "xdpyinfo": "x11-utils", "setxkbmap": "x11-xkb-utils", "xprop": "x11-utils"},
+    # tigervnc-x11-server is the real package (tigervnc-server-minimal is only a Provides on it); dbus-run-session
+    # is in dbus-daemon (dbus-x11 ships dbus-launch only).
+    "dnf": {"Xvnc": "tigervnc-x11-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
+            "xfdesktop": "xfdesktop", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-daemon",
+            "xauth": "xorg-x11-xauth", "xdpyinfo": "xdpyinfo", "setxkbmap": "setxkbmap", "xprop": "xprop"},
+    "pacman": {"Xvnc": "tigervnc", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel", "xfdesktop": "xfdesktop",
+               "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus",
+               "xauth": "xorg-xauth", "xdpyinfo": "xorg-xdpyinfo", "setxkbmap": "xorg-setxkbmap", "xprop": "xorg-xprop"},
+}
+
 
 @pytest.mark.parametrize("pm", sorted(runtime.PACKAGES))
 def test_every_required_binary_maps_to_an_installed_package(pm):
     """Each binary the launcher execs must come from a package the distro list actually installs; dnf5
     refuses the whole transaction on one retired name, so the map is the contract, not the list."""
-    mapping = runtime.BINARY_PACKAGES[pm]
+    mapping = BINARY_PACKAGES[pm]
     assert set(mapping) == set(runtime.REQUIRED_BINARIES)
     assert set(mapping.values()) <= set(runtime.PACKAGES[pm])
     assert not {"xorg-x11-server-utils", "xorg-x11-utils"} & set(runtime.PACKAGES["dnf"]), "retired on Fedora"
@@ -73,10 +88,9 @@ def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypa
     (tmp_path / "display").write_text("37", encoding="utf-8")
     live = {37: os.getpid()}  # :37 is owned by a running server (this very process stands in for it)
     monkeypatch.setattr(runtime, "_display_in_use", lambda num: num in live)
-    monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
-    assert runtime._allocate_display() != 37
+    assert runtime._pick_display() != 37
     live.clear()
-    assert runtime._allocate_display() == 37, "a free recorded number is reclaimed"
+    assert runtime._pick_display() == 37, "a free recorded number is reclaimed"
 
 
 def test_live_server_without_its_lock_file_still_owns_the_display(tmp_path, monkeypatch):

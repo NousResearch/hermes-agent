@@ -9,6 +9,7 @@ category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salch-cred/aftercare
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/aftercare/df2d75f39539b585a6edd9479dde5cf8da5e687d/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

@@ -65,8 +65,12 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. It gets the current profile's API keys (bot tokens and allowlists left out) and model, and shares the default profile's logins, the same as the Desktop bot page's "Share keys & accounts" default. Run `mybot setup` for its gateway tokens.
 
+If a cloned profile has no model selection of its own, creation inherits the current profile's model without querying the provider's model catalog. The selected provider and model stay pinned to the source selection; URL and credential references still use the new profile's environment. The source's model-level key, key pointer and context-length settings are not copied. Explicit model selections continue to be validated.
+
 - `--isolated-auth` copies the logins (`auth.json`) once instead of sharing them. A profile created from a named profile always gets a copy of that profile's logins; its subscription (single-use OAuth) logins can't be copied, so for those providers the new profile reads the default profile's and `profile create` says so.
 - `--no-credentials` copies no keys, logins or model; run `mybot setup` afterwards.
+
+When a gateway is running for the current profile, `profile create` asks it to make the profile, so the CLI, the dashboard and the Desktop app all create through the same running process. With `HERMES_TUI_GATEWAY_URL` set, the profile is made on that gateway's machine; if it can't be reached the command fails and nothing is created locally. With no gateway running, the profile is made in the terminal's own process, as before.
 
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
 

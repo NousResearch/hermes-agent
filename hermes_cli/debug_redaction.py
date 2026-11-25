@@ -15,7 +15,10 @@ from agent.redact_headers import SECRET_HEADER_NAME_LIST
 _REDACTED = "[REDACTED]"
 _EMAIL_ADDRESS_RE = re.compile(
     r"(?<![A-Za-z0-9._%+-])"
-    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"[A-Za-z0-9._%+-]+@"
+    # systemd template instances (user@1000.service) are not addresses; .target is a real TLD.
+    r"(?![A-Za-z0-9.-]+\.(?:service|slice|scope|socket|mount|timer)(?![A-Za-z0-9._%+-]))"
+    r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
     r"(?![A-Za-z0-9._%+-])"
 )
 

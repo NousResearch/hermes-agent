@@ -174,6 +174,7 @@ def stored_context_breakdown(system_prompt: str, tools: Sequence[dict], messages
 
 def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]] = None) -> dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
+    from agent.prompt_cache_clock import cache_window_payload
     from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
@@ -223,6 +224,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]]
         "context_source": source,
         "context_estimated": source != "provider_usage",
         "model": getattr(agent, "model", "") or "",
+        "prompt_cache": cache_window_payload(agent),
     }
 
 
@@ -356,6 +358,9 @@ def render_context_breakdown_lines(
         if source:
             source_label = t(f"gateway.context.source.{source}") if source in _CONTEXT_SOURCES else source
             lines.append(t("gateway.context.source_line", source=source_label))
+    from agent.prompt_cache_clock import render_prompt_cache_line
+    if cache_line := render_prompt_cache_line(payload.get("prompt_cache")):
+        lines.append(cache_line)
 
     if details is None:
         lines.extend(["", t("gateway.context.hint_all")])

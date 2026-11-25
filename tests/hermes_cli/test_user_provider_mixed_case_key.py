@@ -206,12 +206,13 @@ def test_dashboard_main_pick_of_builtin_named_key_runs_where_it_validated(key, m
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-builtin-123456")
     from hermes_cli.config import atomic_config_write, load_config
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_cli.web_server_config import _apply_main_model_assignment, _prepare_main_assignment
+    from hermes_cli.model_assignment import apply_main_model_assignment
+    from hermes_cli.web_server_config import _prepare_main_assignment
 
     config_path, _ = _write_config(key)
     cfg = load_config()
     _, result = _prepare_main_assignment(cfg, key, "m1", "", "")
-    atomic_config_write(config_path, {"model": _apply_main_model_assignment(cfg["model"], result),
+    atomic_config_write(config_path, {"model": apply_main_model_assignment(cfg["model"], result),
                                       "providers": cfg["providers"]})
 
     runtime = resolve_runtime_provider(target_model="m1")

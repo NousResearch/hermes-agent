@@ -1,0 +1,25 @@
+name: survey-desk
+repo: https://github.com/ferzerz5-lab/survey-desk
+sha: "0e2e45b25a56883033d13746484123c975f22f4f"
+title: "Survey Desk"
+description: "Exact land-survey computation for Hermes: closed traverses with misclosure and Bowditch/transit adjustment, area cross-checked by two independent methods, blunder-leg detection when a traverse fails tolerance, PROJ datum conversion (Minna, Nigeria belts, UTM, any EPSG) with the published datum-shift accuracy, and plan drawings exported as PNG, PDF, DXF, KML and GeoJSON, driven from a /survey field-book command or the agent. Disclosure: no network calls (PROJ network access stays off), no shell commands, no background processes, no credentials, no telemetry. Plans are written to <hermes home>/plugin-data/survey-desk/plans/. Dependencies: pyproj, matplotlib, ezdxf."
+maintainer: ferzerz5-lab
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+version: "1.0.0"
+docs_url: https://github.com/ferzerz5-lab/survey-desk#readme
+readme: true
+known_issues:
+  - "Closed-loop traverses in metres only. The default 1:5000 tolerance is a placeholder: set your authority's limit"
+  - "Datum shifts (for example Minna to WGS 84, about 15 m) limit how precisely a KML sits on the globe"
+  - "Output is a computation aid, not a licensed survey plan"
+capabilities:
+  provides_tools:
+    - survey_traverse
+    - survey_plan
+    - survey_convert
+    - survey_inverse
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

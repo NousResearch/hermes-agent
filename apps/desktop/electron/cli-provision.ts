@@ -1,0 +1,165 @@
+import { randomUUID } from 'node:crypto'
+import * as fs from 'node:fs'
+import path from 'node:path'
+
+import { ephemeralMacBundleLocation } from './mac-bundle-location'
+
+type ProvisionFs = Pick<
+  typeof fs,
+  'mkdirSync' | 'lstatSync' | 'readlinkSync' | 'statSync' | 'symlinkSync' | 'renameSync' | 'unlinkSync'
+>
+
+/** Remove only the absolute, same-name links this bundle's provisioner creates. */
+export function removeBundleCliLinks(payloadRoot: string, binDir: string): void {
+  if (!fs.existsSync(binDir)) {
+    return
+  }
+
+  const payloadBin: string = path.resolve(payloadRoot, 'bin')
+
+  for (const entry of fs.readdirSync(binDir, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) {
+      continue
+    }
+
+    const link: string = path.join(binDir, entry.name)
+    const destination: string = fs.readlinkSync(link)
+
+    if (
+      path.isAbsolute(destination) &&
+      path.dirname(destination) === payloadBin &&
+      path.basename(destination) === entry.name
+    ) {
+      fs.unlinkSync(link)
+    }
+  }
+}
+
+function resolves(io: ProvisionFs, link: string): boolean {
+  try {
+    io.statSync(link)
+
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      throw error
+    }
+
+    return false
+  }
+}
+
+/** A live link into another build beside the source's own (<store>/<build>/agent-payload) is an older copy. */
+function supersededBuild(destination: string, source: string): boolean {
+  const build = (command: string): string => path.dirname(path.dirname(path.dirname(command)))
+
+  return build(destination) !== build(source) && path.dirname(build(destination)) === path.dirname(build(source))
+}
+
+/**
+ * Whether to link the bundled CLI into ~/.local/bin. Judged on the payload the links point into, never on
+ * the Applications move prompt: on macOS a translocated or read-only payload is skipped, since its links
+ * dangle once macOS drops the copy or the volume ejects. Linux links as before; Windows never links.
+ */
+export function shouldProvisionBundledCliLinks(
+  payloadRoot: string,
+  log: (message: string) => void,
+  platform: NodeJS.Platform = process.platform,
+  access?: (file: string, mode: number) => void
+): boolean {
+  if (platform === 'win32') {
+    return false
+  }
+
+  const location = platform === 'darwin' ? ephemeralMacBundleLocation(payloadRoot, access) : null
+
+  if (location) {
+    log(`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`)
+  }
+
+  return !location
+}
+
+export function provisionCliLinks(
+  commands: Readonly<Record<string, string>>,
+  binDir: string,
+  log: (message: string) => void,
+  io: ProvisionFs = fs
+): void {
+  try {
+    io.mkdirSync(binDir, { recursive: true })
+  } catch (error) {
+    log(`[payload] CLI PATH provision skipped: ${String(error)}`)
+
+    return
+  }
+
+  let linked = 0
+
+  for (const source of Object.values(commands)) {
+    // The map keys are backend entrypoint identities, not public shell names.
+    const name: string = path.basename(source)
+    const target = path.join(binDir, name)
+
+    try {
+      const existing = io.lstatSync(target, { throwIfNoEntry: false })
+
+      if (!existing) {
+        io.symlinkSync(source, target)
+        linked += 1
+
+        continue
+      }
+
+      if (!existing.isSymbolicLink()) {
+        continue
+      }
+
+      const destination = io.readlinkSync(target)
+      const bin = path.dirname(destination)
+
+      // Only bundled CLI links have this absolute destination shape.
+      if (
+        !path.isAbsolute(destination) ||
+        path.basename(destination) !== name ||
+        path.basename(bin) !== 'bin' ||
+        path.basename(path.dirname(bin)) !== 'agent-payload' ||
+        (resolves(io, target) && !supersededBuild(destination, source))
+      ) {
+        continue
+      }
+
+      // Rename a staged link, never the payload command itself.
+      const staged = `${target}.hermes-provision-${randomUUID()}`
+
+      io.symlinkSync(source, staged)
+
+      try {
+        io.renameSync(staged, target)
+      } catch (error) {
+        try {
+          io.unlinkSync(staged)
+        } catch (cleanupError) {
+          if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw new AggregateError(
+              [error, cleanupError],
+              `${String(error)}; temporary link cleanup failed: ${String(cleanupError)}`
+            )
+          }
+        }
+
+        throw error
+      }
+
+      linked += 1
+    } catch (error) {
+      log(`[payload] CLI PATH provision skipped for ${target}: ${String(error)}`)
+    }
+  }
+
+  if (linked > 0) {
+    log(`[payload] linked ${linked} CLI trampoline(s) into ${binDir}`)
+  }
+}

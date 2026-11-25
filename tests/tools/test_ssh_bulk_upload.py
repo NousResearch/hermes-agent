@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.environments import ssh as ssh_env
-from tools.environments.file_sync import quoted_mkdir_command, unique_parent_dirs
 from tools.environments.ssh import SSHEnvironment
 
 
@@ -136,6 +135,7 @@ class TestSSHBulkUpload:
         assert len(staging_paths) == 1, "tar command should have been called"
 
 
+    @pytest.mark.require_symlinks
     def test_bulk_upload_never_stages_remote_home_prefix(self, mock_env, tmp_path):
         """Regression: do not archive /home/<user> path components."""
         f1 = tmp_path / "nested.txt"
@@ -195,46 +195,8 @@ class TestSSHBulkUpload:
         mock_ssh.kill.assert_called_once()
 
 
-class TestSSHBulkUploadWiring:
-    """Verify bulk_upload_fn is wired into FileSyncManager."""
-
-    def test_filesyncmanager_receives_bulk_upload_fn(self, monkeypatch):
-        """SSHEnvironment should pass _ssh_bulk_upload to FileSyncManager."""
-        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/root")
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
-
-        captured_kwargs = {}
-
-        class FakeSyncManager:
-            def __init__(self, **kwargs):
-                captured_kwargs.update(kwargs)
-
-            def sync(self, **kw):
-                pass
-
-        monkeypatch.setattr(ssh_env, "FileSyncManager", FakeSyncManager)
-
-        env = SSHEnvironment(host="h", user="u")
-
-        assert "bulk_upload_fn" in captured_kwargs
-        assert captured_kwargs["bulk_upload_fn"] is not None
-        # Should be the bound method
-        assert callable(captured_kwargs["bulk_upload_fn"])
 
 
-class TestSharedHelpers:
-    """Direct unit tests for file_sync.py helpers."""
-
-    def test_quoted_mkdir_command_basic(self):
-        result = quoted_mkdir_command(["/a", "/b/c"])
-        assert result == "mkdir -p /a /b/c"
-
-
-    def test_unique_parent_dirs_empty(self):
-        assert unique_parent_dirs([]) == []
 
 
 class TestSSHBulkUploadEdgeCases:

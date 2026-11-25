@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Runs website/scripts/extract-skills.py and generate-llms-txt.py before
 // docusaurus build/start so that:
-//   - website/static/api/skills.json (lazy-fetched by src/pages/skills/index.tsx)
-//   - website/static/api/skills-meta.json (sidecar metadata for the Skills Hub)
+//   - website/static/api/skills.json (the skills feed the Marketplace syncs from)
+//   - website/static/api/skills-meta.json (sidecar metadata for that feed)
 //   - website/static/llms.txt (agent-friendly short docs index)
 //   - website/static/llms-full.txt (full docs concat for LLM context)
 // all exist without contributors remembering to run Python scripts manually.
@@ -16,9 +16,9 @@
 // several minutes and burns GitHub API quota — but still gets the same
 // 2000+ external skills the deployed site has.
 //
-// If python3 or its deps (pyyaml) aren't available on the local machine, we
+// If python3 or its deps (ruamel.yaml) aren't available on the local machine, we
 // fall back to writing an empty skills.json so `npm run build` still
-// succeeds — the Skills Hub page just shows an empty state, and llms.txt
+// succeeds with an empty skills feed, and llms.txt
 // generation is skipped. CI always has the deps installed, so production
 // deploys get real data.
 
@@ -29,10 +29,15 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+const repoRoot = resolve(websiteDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
+const pluginsScript = join(scriptDir, "extract-plugins.py");
+const pluginStarsScript = join(scriptDir, "fetch-plugin-stars.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
+const pluginsOutputFile = join(websiteDir, "static", "api", "plugins.json");
+const pluginsMetaOutputFile = join(websiteDir, "static", "api", "plugins-meta.json");
 const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
   "https://hermes-agent.nousresearch.com/docs/api/skills-index.json";
@@ -43,7 +48,7 @@ function writeEmptyFallback(reason) {
   writeFileSync(outputFile, "[]\n");
   console.warn(
     `[prebuild] extract-skills.py skipped (${reason}); wrote empty skills.json. ` +
-      `Install python3 + pyyaml locally for a populated Skills Hub page.`,
+      `Install python3 + ruamel.yaml locally for a populated skills feed.`,
   );
 }
 
@@ -122,7 +127,7 @@ async function ensureUnifiedIndex() {
 // 0) Pull unified index if we don't have a fresh one.
 await ensureUnifiedIndex();
 
-// 1) skills.json — required for the Skills Hub page.
+// 1) skills.json — the published skills feed.
 if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
 } else {
@@ -143,3 +148,27 @@ runPython(llmsScript, "generate-llms-txt.py");
 // 3) automation-blueprints-index.json — Automation Blueprints catalog page. Non-fatal; the page
 //    renders an empty state if the generator can't run.
 runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
+
+// 4a) plugin-stars.json — GitHub star counts for catalog ranking. Reuse-only here
+//     (live site copy via one CDN GET, else on-disk, else empty); GitHub itself is
+//     probed only by the scheduled skills-index workflow. Never fails the build.
+runPython(pluginStarsScript, "fetch-plugin-stars.py");
+
+// 4) plugins.json + plugins-meta.json — the published plugin feed (Marketplace,
+//    Desktop and the CLI read it). The script itself degrades gracefully (empty
+//    catalog, exit 0) when plugin-catalog/ is absent; if python3 is missing
+//    entirely, write the same empty fallback.
+if (!runPython(pluginsScript, "extract-plugins.py")) {
+  mkdirSync(dirname(pluginsOutputFile), { recursive: true });
+  writeFileSync(pluginsOutputFile, "[]\n");
+  writeFileSync(
+    pluginsMetaOutputFile,
+    JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      total: 0,
+      byTier: { official: 0, community: 0 },
+      removedCount: 0,
+    }) + "\n",
+  );
+  console.warn("[prebuild] wrote empty plugins.json fallback");
+}

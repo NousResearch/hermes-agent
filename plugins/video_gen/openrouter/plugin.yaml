@@ -1,0 +1,7 @@
+name: openrouter
+version: 1.0.0
+description: "OpenRouter video generation backend. Every generative model on the /api/v1/videos API (Veo, Sora, Kling, Seedance, Wan, Hailuo, Grok Imagine, FLUX Video, …) — text-to-video, image-to-video and reference-to-video; catalog and per-model limits discovered live."
+author: Nous Research
+kind: backend
+requires_env:
+  - OPENROUTER_API_KEY

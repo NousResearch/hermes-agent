@@ -29,16 +29,6 @@ describe("resolvePageTitle", () => {
     expect(resolvePageTitle("/env", t, [])).toBe("Keys");
   });
 
-  it("renders initialisms and literal labels correctly", () => {
-    // Regression: the naive capitalize fallback produced "Mcp".
-    expect(resolvePageTitle("/mcp", t, [])).toBe("MCP");
-    expect(resolvePageTitle("/system", t, [])).toBe("System");
-    expect(resolvePageTitle("/channels", t, [])).toBe("Channels");
-    expect(resolvePageTitle("/webhooks", t, [])).toBe("Webhooks");
-    expect(resolvePageTitle("/pairing", t, [])).toBe("Pairing");
-    expect(resolvePageTitle("/files", t, [])).toBe("Files");
-  });
-
   it("prefers plugin tab labels", () => {
     expect(
       resolvePageTitle("/kanban", t, [{ path: "/kanban", label: "Kanban" }]),

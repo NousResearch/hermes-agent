@@ -133,3 +133,58 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe("mobile IME double-send dedup (#115505)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("delivers a word exactly once across the three Android/Gboard double-send paths", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    // 1. compositionend fires twice with identical data.
+    forwarder.onCompositionEnd("hello");
+    vi.advanceTimersByTime(16);
+    forwarder.onCompositionEnd("hello");
+    vi.advanceTimersByTime(16);
+    expect(send).toHaveBeenCalledExactlyOnceWith("hello");
+
+    // 2. onData already carried the commit; a trailing compositionend must not re-arm the fallback.
+    vi.advanceTimersByTime(100);
+    forwarder.noteTerminalData("wor");
+    forwarder.noteTerminalData("ld");
+    forwarder.onCompositionEnd("world");
+    vi.runAllTimers();
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // 3. onData echoes (or strictly extends) text the composition path just committed.
+    vi.advanceTimersByTime(100);
+    forwarder.onCompositionEnd("again");
+    vi.advanceTimersByTime(16);
+    expect(send).toHaveBeenLastCalledWith("again");
+    expect(forwarder.filterTerminalData("again")).toBe("");
+    expect(forwarder.filterTerminalData("again ")).toBe(" ");
+  });
+
+  it("keeps real repeats and unrelated input: outside the echo window and for different text", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.advanceTimersByTime(16);
+    vi.advanceTimersByTime(100);
+    forwarder.onCompositionEnd("hello");
+    vi.advanceTimersByTime(16);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    forwarder.noteTerminalData("abc");
+    forwarder.onCompositionEnd("xyz");
+    vi.runAllTimers();
+    expect(send).toHaveBeenLastCalledWith("xyz");
+
+    expect(forwarder.filterTerminalData("other")).toBe("other");
+    vi.advanceTimersByTime(100);
+    expect(forwarder.filterTerminalData("xyz")).toBe("xyz");
+  });
+});

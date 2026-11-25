@@ -1,0 +1,52 @@
+name: geo-analyzer-mcp
+title: GEO Analyzer MCP
+repo: https://github.com/clance1/geo-analyzer-mcp
+sha: "165bcf26c46abfeba3029ad70f1e8cbd233ab41d"
+description: >-
+  Self-hosted MCP server for Generative Engine Optimization (GEO): audit how AI crawlers see a
+  site (robots.txt rules for 16 known AI crawlers, live HTTP access for the 14 that send a user
+  agent, WAF/bot-challenge detection, content parity, SPA-shell detection, indexability,
+  JSON-LD, sitemap, llms.txt), track AI visibility and citation share-of-voice across Claude,
+  ChatGPT, Gemini and optionally Perplexity with stable query variants, score brand sentiment
+  and the AI claims that contradict your ground-truth facts, and turn the result into a
+  prioritised action plan with Markdown and HTML reports. Runs entirely on your own machine;
+  MIT licensed. 12 MCP tools (page_audit, ai_visibility, sentiment, full_analysis, get_job,
+  get_run, list_runs, get_trends, compare_runs, list_projects, get_project, server_status) plus
+  a bundled skill that teaches the agent the list-projects → run → poll → report workflow and
+  the dry_run cost guard. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/),
+  no plugin code. Disclosure — the MCP server runs locally as a stdio child process that uvx
+  launches: it builds the installed plugin directory into a throwaway environment on first run
+  and downloads the package's Python dependencies from PyPI; the engine API keys you supply
+  (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, optionally PERPLEXITY_API_KEY) are read
+  by the server from your own ~/.geo-mcp/.env file in plain text (the installer also drops an
+  empty .env key template next to the plugin manifest, which the server does not read), are
+  sent only to those providers, and are not read from Hermes' own secret store; project presets
+  are read from ~/.geo-mcp/projects.yaml; every visibility or sentiment run sends your queries
+  and company facts to the AI engines you enabled, and full answers, citations and reports are
+  stored under ~/.geo-mcp/; the page audit fetches the URLs you name plus that origin's
+  robots.txt, sitemap.xml and llms.txt, behind an SSRF guard that refuses private, loopback,
+  link-local and other reserved targets; a full analysis costs real provider credits, so use
+  dry_run and the per-run query cap to bound spend; the optional Docker/HTTP mode serves the
+  same tools over bearer-token HTTP on localhost (it refuses a non-localhost bind without
+  GEO_MCP_TOKEN) and can be placed behind a Cloudflare Tunnel, which exposes the run API to the
+  internet if you do that; an optional GEO_WEBHOOK_URL posts a run summary to a webhook you
+  configure; no telemetry and no account with the plugin author.
+maintainer: Carson Lance (clance1)
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/clance1/geo-analyzer-mcp#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "Needs uvx on PATH and Python 3.11+: the server is built into a throwaway uv environment on first launch."
+  - "The first launch builds the package and its dependencies, which can exceed Hermes' 60-second MCP connect timeout; if the geo tools are missing in your first session, start a second one and they appear."
+  - "Engine API keys are read from your own ~/.geo-mcp/.env (create it with `geo-mcp init`), not from Hermes secrets."
+  - "The install does not put the `geo-mcp` command on your PATH: write ~/.geo-mcp/projects.yaml and ~/.geo-mcp/.env by hand, or run `uvx --from git+https://github.com/clance1/geo-analyzer-mcp geo-mcp init` once."
+  - "The JS-render comparison (page_audit render_js) needs the optional `render` extra (Playwright plus a Chromium download); a plain install ships the base package, so that check reports itself unavailable."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

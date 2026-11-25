@@ -4,7 +4,7 @@ The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
 the ``telegram`` package is registered in :data:`sys.modules` **before**
 any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
 
-Without this, ``pytest-xdist`` workers that happen to collect
+Without this, pytest sessions that happen to collect
 ``test_telegram_caption_merge.py`` (bare top-level import, no per-file
 mock) first will cache ``ChatType = None`` from the production
 ImportError fallback, causing 30+ downstream test failures wherever
@@ -25,18 +25,56 @@ pointer to the helper if the anti-pattern is detected.
 
 Rationale: every plugin ships its own ``adapter.py``, and two tests each
 inserting their plugin dir on ``sys.path[0]`` race for
-``sys.modules["adapter"]`` in the same xdist worker. Whichever collects
+``sys.modules["adapter"]`` in the same pytest session. Whichever collects
 first wins; the other fails with ``ImportError``, and the polluted
 ``sys.path`` cascades into unrelated tests. See PR #17764 for the
 incident.
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _join_api_turn_workers():
+    """Join the API turn workers a test left running, as its loop's teardown used to.
+
+    API turns ran on the loop's default executor, which each test's loop teardown joined. They now
+    run on ``api_server_runs``' own executor, which only an adapter disconnect retires, and most
+    API-server tests never disconnect: a worker still finishing would raise the process-global
+    ``api_worker_live_count`` inside the next test (the shutdown close-gate tests read it).
+    """
+    yield
+    runs = sys.modules.get("gateway.platforms.api_server_runs")
+    executor = runs.retire_api_turn_executor() if runs is not None else None
+    for thread in list(getattr(executor, "_threads", ())):
+        thread.join(30)
+
+
+@pytest.fixture
+def private_db_probe_cleanup(tmp_path):
+    """Release only this test's probe fds after its explicit SQLite-handle finalizers.
+
+    Production intentionally keeps these probes open: closing one while SQLite still
+    owns the inode cancels its POSIX locks. Opt-in tests must first register normal
+    runner/store cleanup and use only databases underneath their private tmp_path.
+    """
+    from tests.fixtures.storage_holder import header_probe_fds
+
+    lock, fds = header_probe_fds()
+    with lock:
+        existing = set(fds)
+    yield
+    with lock:
+        for key in set(fds) - existing:
+            if Path(key).is_relative_to(tmp_path):
+                fd, _dev, _ino = fds.pop(key)
+                os.close(fd)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -53,7 +91,7 @@ def _bind_lark_sdk_globals_when_installed():
     their own ``skipUnless`` guards.
     """
     try:
-        import lark_oapi  # noqa: F401
+        import lark_oapi
     except ImportError:
         yield
         return
@@ -64,15 +102,6 @@ def _bind_lark_sdk_globals_when_installed():
     except Exception:
         pass  # adapter not importable in this environment — tests will skip
     yield
-
-
-def make_async_session_db(sync_mock=None):
-    """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
-    the facade works in tests. Returns (facade, sync_mock); configure return
-    values and assert calls on sync_mock."""
-    from hermes_state import AsyncSessionDB
-    sync_mock = sync_mock if sync_mock is not None else MagicMock()
-    return AsyncSessionDB(sync_mock), sync_mock
 
 
 class _FakeEnumMember(str):
@@ -163,6 +192,14 @@ def _ensure_telegram_mock() -> None:
     # Update.ALL_TYPES used in start_polling()
     mod.Update.ALL_TYPES = []
 
+    # PerChatUpdateProcessor subclasses this at import time: a MagicMock base
+    # would turn the subclass itself into a mock that fails on its second call.
+    class SimpleUpdateProcessor:
+        def __init__(self, max_concurrent_updates):
+            self.max_concurrent_updates = max_concurrent_updates
+
+    mod.SimpleUpdateProcessor = SimpleUpdateProcessor
+
     for name in (
         "telegram",
         "telegram.ext",
@@ -226,6 +263,11 @@ def _ensure_discord_mock() -> None:
         def __init__(self, timeout=None):
             self.timeout = timeout
             self.children = []
+            self._finished = False
+        def stop(self):
+            self._finished = True
+        def is_finished(self):
+            return self._finished
         def add_item(self, item):
             self.children.append(item)
         def clear_items(self):
@@ -271,10 +313,32 @@ def _ensure_discord_mock() -> None:
             pass
     discord_mod.AudioSource = _FakeAudioSource
 
+    class _FakeModal(_FakeView):
+        def __init__(self, *, title=None, timeout=None, custom_id=None):
+            super().__init__(timeout=timeout)
+            self.title = title
+
+    class _FakeTextInput:
+        def __init__(self, *, label=None, placeholder=None, min_length=None, max_length=None, **_):
+            self.label = label
+            self.placeholder = placeholder
+            self.min_length = min_length
+            self.max_length = max_length
+            self.value = ""
+
+    class _FakeLabel:
+        def __init__(self, *, text=None, component=None, description=None, **_):
+            self.text = text
+            self.component = component
+            self.description = description
+
     discord_mod.ui = SimpleNamespace(
         View=_FakeView,
         Select=_FakeSelect,
         Button=_FakeButton,
+        Modal=_FakeModal,
+        TextInput=_FakeTextInput,
+        Label=_FakeLabel,
         button=lambda *a, **k: (lambda fn: fn),
     )
     discord_mod.ButtonStyle = SimpleNamespace(
@@ -471,13 +535,13 @@ def _run_adapter_antipattern_scan() -> list[str]:
 def pytest_configure(config):
     """Reject plugin-adapter tests that use the sys.path anti-pattern.
 
-    Runs once per pytest session on the controller, BEFORE any xdist
-    worker is spawned. If any file under ``tests/gateway/`` matches the
-    anti-pattern, we fail the whole session with a clear message —
-    before a polluted ``sys.path`` can cascade across workers.
+    Runs once per pytest session, before any test is collected. If any
+    file under ``tests/gateway/`` matches the anti-pattern, we fail the
+    whole session with a clear message — before a polluted ``sys.path``
+    can cascade.
 
-    **Performance**: in the per-file subprocess isolation model (no xdist),
-    every subprocess is a "controller" — so the naive scan would run 257
+    **Performance**: in the per-file subprocess isolation model, every
+    subprocess runs this hook — so the naive scan would run 257
     times, each costing ~1s of AST walking.  We avoid this with two
     strategies:
 
@@ -491,11 +555,6 @@ def pytest_configure(config):
        subprocesses acquire a lock; only the first performs the scan;
        the rest wait and read the cached result.
     """
-    # Only run on the xdist controller (or in non-xdist runs). Skip on
-    # worker subprocesses so we don't scan the filesystem N times.
-    if hasattr(config, "workerinput"):
-        return
-
     fp = _fingerprint_gateway_tests()
     cache_dir = Path.cwd() / ".pytest-cache"
     cache_file = cache_dir / f"gw-adapter-guard-{fp}"
@@ -504,6 +563,10 @@ def pytest_configure(config):
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Evict stale cache entries from previous fingerprints (best-effort).
+    # ``.tmp-gw-adapter-guard-*`` staging files (see
+    # ``_write_guard_cache_atomic``) deliberately do NOT match these globs:
+    # a sibling process evicting mid-publish must never unlink a temp file
+    # between its write and its ``os.replace``.
     try:
         for old in cache_dir.glob("gw-adapter-guard-*"):
             if old.name != f"gw-adapter-guard-{fp}":
@@ -517,6 +580,15 @@ def pytest_configure(config):
     # Use filelock to ensure only one process scans at a time.
     # Concurrent subprocesses all hit pytest_configure simultaneously;
     # without a lock they'd all find no cache and all run the scan.
+    #
+    # NOTE: filelock is NOT in CI's app and dev/test dependency closure,
+    # so on CI the _NoLock fallback is
+    # what actually runs. Correctness therefore cannot depend on the lock:
+    # the cache write must be atomic and the read must tolerate a
+    # not-yet-visible cache. Before the atomic-write fix, a reader could
+    # observe a sibling's ``write_text`` mid-truncate, read "" and raise
+    # ``UsageError("")`` — the empty ``ERROR:`` flake that hit
+    # tests/gateway/relay/* files under the 96-way per-file runner.
     try:
         from filelock import FileLock
         lock = FileLock(str(lock_file), timeout=120)
@@ -531,10 +603,10 @@ def pytest_configure(config):
         lock = _NoLock()
 
     with lock:
-        if cache_file.exists():
-            cached = cache_file.read_text(encoding="utf-8")
-            if cached == "clean":
-                return
+        cached = _read_guard_cache(cache_file)
+        if cached == "clean":
+            return
+        if cached is not None:
             raise pytest.UsageError(cached)
 
         # Slow path: this process is the first to acquire the lock.
@@ -547,8 +619,160 @@ def pytest_configure(config):
                 + "\n\n"
                 + _GUARD_HINT
             )
-            cache_file.write_text(msg, encoding="utf-8")
+            _write_guard_cache_atomic(cache_file, msg)
             raise pytest.UsageError(msg)
         else:
-            cache_file.write_text("clean", encoding="utf-8")
+            _write_guard_cache_atomic(cache_file, "clean")
 
+
+def _read_guard_cache(cache_file: Path) -> str | None:
+    """Read the guard cache, treating unreadable/empty content as a miss.
+
+    Returns the cached text, or ``None`` when the cache should be treated as
+    absent (missing file, concurrent delete, or empty content). An empty or
+    vanished file is NEVER a violation — before this guard existed, a reader
+    racing a sibling's non-atomic write raised ``UsageError("")``, failing a
+    perfectly healthy test file with a blank ``ERROR:`` line.
+    """
+    try:
+        cached = cache_file.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    if not cached.strip():
+        return None
+    return cached
+
+
+def _write_guard_cache_atomic(cache_file: Path, content: str) -> None:
+    """Publish the guard cache atomically (write-temp + ``os.replace``).
+
+    ``Path.write_text`` opens with truncation, so concurrent readers can see
+    an empty or partial file. ``os.replace`` makes the new content appear
+    all-at-once under the final name — readers see either the old state
+    (miss → they scan too, harmless) or the complete verdict, never a
+    torn write. This must hold WITHOUT the filelock, which CI doesn't
+    install.
+
+    The staging name starts with ``.tmp-`` so it can never match the stale
+    eviction globs (``gw-adapter-guard-*`` / ``.gw-adapter-guard-*.lock``);
+    otherwise a sibling's eviction pass could unlink the temp between the
+    write and the ``os.replace``.
+    """
+    tmp = cache_file.with_name(f".tmp-{cache_file.name}.{os.getpid()}")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, cache_file)
+    except OSError:
+        # Best-effort cache: losing it costs a rescan, never correctness.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Canonical session-authority fixtures shared by several test files.
+#
+# Imports stay inside the fixture bodies: this conftest must install the
+# telegram/discord mocks above before any gateway module is imported.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def owner(tmp_path):
+    """A canonical ``SessionAuthority`` over a fresh profile ``state.db``."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from persistence_assembly import open_persistence, profile_scope
+
+    persistence = open_persistence(profile_scope(home=tmp_path))
+    store = SessionStore(config=GatewayConfig(), sessions_dir=tmp_path / 'sessions')
+    # production: the routing store and the authority share the profile's state.db
+    store._db, store._persistence_beside = persistence, lambda pinned: pinned
+    runner = SimpleNamespace(_draining=False, session_store=store)
+    authority = SessionAuthority(runner, profile_id='default', instance_id='first',
+                                 epoch=persistence.runtime.begin_epoch(instance_id='first'), persistence=persistence)
+    runner.session_authority = authority
+    yield authority
+    persistence.close()
+
+
+@pytest.fixture
+def api_store(monkeypatch):
+    """``api_store(db)``: a storage interface handle on the file of ``db`` (a storage interface handle or a store
+    with a ``db_path``), which every API server session lookup in the test answers with (an adapter opens none beside
+    a pinned ``_session_db``)."""
+    from pathlib import Path
+
+    from persistence_assembly import open_persistence, profile_scope
+
+    handles = []
+
+    def pin(db):
+        home = db.scope.profile_dir if hasattr(db, "scope") else Path(db.db_path).parent
+        handles.append(handle := open_persistence(profile_scope(home=home)))
+        monkeypatch.setattr('gateway.platforms.api_server_store.adapter_persistence', lambda *_a, **_kw: handle)
+        return handle
+    yield pin
+    for handle in handles:
+        handle.close()
+
+
+@pytest.fixture
+def api(owner, tmp_path, monkeypatch):
+    """The API server adapter bound to ``owner``'s runner and database."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.api_server import APIServerAdapter
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter.gateway_runner = owner.runner
+    adapter._session_db = owner.persistence
+    owner.runner._adapter_for_source = lambda source: adapter
+    yield adapter
+    adapter._response_store.close()
+    adapter._run_idempotency_store.close()
+
+
+@pytest.fixture
+def hosted_owner(tmp_path, monkeypatch):
+    """A hosted-room source authority on its own loop thread: ``(authority, loop, principal, agent)``."""
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import SessionActor
+    from gateway import run, session_policy
+    from persistence_assembly import close_stores_under
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
+    monkeypatch.setattr(run, '_resolve_gateway_model', lambda cfg: 'fixture')
+    # Parent-owned private restore hook, explicitly not an ordinary-daemon proof.
+    original = session_policy.restore_policy
+    def restore(data):
+        from dataclasses import replace
+        if data['source'] == 'bot_room':
+            return replace(original({**data, 'source': 'gui', 'platform': 'desktop'}), source='bot_room', platform='bot_room')
+        return original(data)
+    monkeypatch.setattr(session_policy, 'restore_policy', restore)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    agent = SimpleNamespace(interrupted=False)
+    agent.interrupt = lambda: setattr(agent, 'interrupted', True)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: agent)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    authority = asyncio.run_coroutine_threadsafe(initialize_session_authority(runner, profile_id='owned', instance_id='first'), loop).result()
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    principal = SessionActor('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
+    yield authority, loop, principal, agent
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join()
+    loop.close()
+    close_stores_under(store.persistence.scope.profile_dir)

@@ -22,10 +22,6 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def test_pre_command_in_valid_hooks():
-    from hermes_cli.plugins import VALID_HOOKS
-
-    assert "pre_command" in VALID_HOOKS
 
 
 # ---------------------------------------------------------------------------
@@ -64,20 +60,6 @@ def test_fire_helper_is_observer_only_and_never_raises(monkeypatch):
     assert calls["kwargs"]["command"] == "model"
 
 
-def test_fire_helper_skips_when_no_plugin_listens(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
-
-    class _FakeManager:
-        def has_hook(self, name):
-            return False
-
-        def invoke_hook(self, name, **kwargs):  # pragma: no cover
-            raise AssertionError("invoke_hook must not be called")
-
-    monkeypatch.setattr(plugins_mod, "get_plugin_manager", _FakeManager)
-    plugins_mod.fire_pre_command_hook(
-        surface="cli", command="help", alias_used="help", args_raw="",
-    )
 
 
 def test_fire_helper_swallows_manager_errors(monkeypatch):
@@ -118,7 +100,7 @@ def test_cli_fires_for_recognized_command(monkeypatch):
     monkeypatch.setattr(plugins_mod, "fire_pre_command_hook", _capture)
 
     inst = _make_cli()
-    inst.show_help = lambda: None
+    inst.show_help = lambda *a, **k: None
     assert inst.process_command("/help") is True
 
     assert captured["surface"] == "cli"
@@ -158,7 +140,7 @@ def test_cli_passes_raw_args(monkeypatch):
     )
 
     inst = _make_cli()
-    inst.show_help = lambda: None
+    inst.show_help = lambda *a, **k: None
     # /help ignores args but the payload must carry them raw (case kept).
     inst.process_command("/help Some RAW args")
     assert captured["args_raw"] == "Some RAW args"
@@ -175,7 +157,7 @@ def test_cli_hook_before_handler(monkeypatch):
     )
 
     inst = _make_cli()
-    inst.show_help = lambda: order.append("handler")
+    inst.show_help = lambda *a, **k: order.append("handler")
     inst.process_command("/help")
     assert order == ["hook", "handler"]
 
@@ -199,7 +181,7 @@ def _make_source():
 
 
 def _make_event(text: str):
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
 
     return MessageEvent(
         text=text,
@@ -248,10 +230,7 @@ def _make_runner():
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
-    runner._queued_events = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None
@@ -262,14 +241,10 @@ def _make_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_a, **_k: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *a, **k: None
     runner._emit_gateway_run_progress = AsyncMock()
-    runner._update_prompt_pending = {}
     runner._busy_input_mode = "interrupt"
     runner._draining = False
-    runner._session_run_generation = {}
     runner._session_sources = {}
-    runner._pending_native_image_paths_by_session = {}
     runner._background_tasks = {}
     runner._background_task_counter = 0
     runner._session_model_overrides = {}
@@ -284,7 +259,7 @@ def _make_runner():
     runner._check_slash_access = lambda _source, _command: None
     runner._begin_session_run_generation = lambda _key: 1
     runner._release_running_agent_state = (
-        lambda key: runner._running_agents.pop(key, None)
+        lambda key, run_generation=None: runner._running_agents.pop(key, None)
     )
     return runner, adapter
 

@@ -1,0 +1,83 @@
+name: Plugin Catalog CI
+
+# Admission gate for plugin-catalog entries. Fires ONLY on PRs touching
+# plugin-catalog/** so it can never go red on unrelated PRs.
+#
+# Two gates:
+#   structural            — cheap schema check, no hermes install needed
+#   pinned-source-validate — supply-chain gate: the pinned sha MUST be
+#                            reachable in the entry's repo, and the plugin
+#                            at that exact commit must pass
+#                            `hermes plugins validate`.
+
+on:
+  pull_request:
+    paths:
+      - "plugin-catalog/**"
+
+permissions:
+  contents: read
+
+jobs:
+  structural:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          persist-credentials: false # this job is read-only
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install ruamel.yaml
+        uses: ./.github/actions/retry
+        with:
+          command: pip install ruamel.yaml==0.18.17
+
+      - name: Validate catalog files (structural)
+        run: |
+          set -euo pipefail
+          # Validating the whole directory is simpler than diffing and keeps
+          # the invariant that EVERYTHING in plugin-catalog/ stays valid.
+          python3 scripts/validate_plugin_catalog.py plugin-catalog/
+
+  pinned-source-validate:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          # Full commit graph + tags, blobs on demand: the diff below needs the
+          # merge commit's first parent, and Hermes resolves its own version
+          # from the release tags merged into HEAD. A shallow checkout reports
+          # "unknown", which plugins checking the host version reject (omh).
+          fetch-depth: 0
+          filter: blob:none
+          # `hermes plugins validate` below runs pinned-repo code; keep the
+          # job's token out of .git/config where that code could read it.
+          persist-credentials: false
+
+      - name: Find changed catalog entries
+        id: changed
+        run: python3 -I "$GITHUB_WORKSPACE/scripts/ci/catalog_changed_entries.py"
+
+      - name: Prepare Hermes from the PR's own checkout
+        if: steps.changed.outputs.files != ''
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          extras: '[]'
+
+      - name: Clone each entry at its pinned sha and validate
+        if: steps.changed.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          # A hostile repo URL must never block the job on a credential prompt.
+          GIT_TERMINAL_PROMPT: "0"
+          # `gh attestation verify` (README rule 17) reads the attestation from
+          # GitHub and needs a token. Read-only default token; the step runs
+          # pinned-repo code, so nothing broader is exposed here.
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I "$GITHUB_WORKSPACE/scripts/ci/catalog_validate_pinned_entries.py"

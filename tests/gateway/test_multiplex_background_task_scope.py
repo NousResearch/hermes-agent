@@ -1,6 +1,6 @@
 """Regression: background tasks respect profile secret scope when multiplexing.
 
-Issue #60726: /background spawns _run_background_task as a fire-and-forget
+Issue #60726: /bg spawns _run_background_task as a fire-and-forget
 asyncio task with no profile scope, so _resolve_session_agent_runtime()'s
 credential reads raise UnscopedSecretError when multiplex_profiles is on.
 The fix wraps the task body in _profile_runtime_scope, mirroring _run_agent.

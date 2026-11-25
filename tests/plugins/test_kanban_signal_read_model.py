@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 CAPABILITIES = {
     "kanban.read_model.signal.v1",
@@ -81,7 +82,7 @@ def _all_keys(value):
 
 def _seed_sensitive_graph():
     secret = "ghp_fake-canary-credential"
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent = kb.create_task(
             conn,
@@ -118,7 +119,7 @@ def _seed_sensitive_graph():
 
 
 def test_signal_connector_is_query_only_and_never_creates_board(signal_home):
-    conn = kb._connect_existing_query_only(board="default")
+    conn = kbc._connect_existing_query_only(board="default")
     try:
         assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
         with pytest.raises(sqlite3.OperationalError):
@@ -129,7 +130,7 @@ def test_signal_connector_is_query_only_and_never_creates_board(signal_home):
     missing_path = kb.kanban_db_path(board="never-created")
     assert not missing_path.exists()
     with pytest.raises(FileNotFoundError):
-        kb._connect_existing_query_only(board="never-created")
+        kbc._connect_existing_query_only(board="never-created")
     assert not missing_path.exists()
 
 
@@ -225,8 +226,8 @@ def test_signal_read_model_bounds_links_and_marks_truncation(
     signal_client, monkeypatch,
 ):
     module = sys.modules["hermes_dashboard_plugin_kanban_signal_test"]
-    monkeypatch.setattr(module, "_SIGNAL_LINK_LIMIT", 1)
-    conn = kb.connect()
+    monkeypatch.setattr(module.signal_api, "_SIGNAL_LINK_LIMIT", 1)
+    conn = kbc.connect()
     try:
         parent = kb.create_task(conn, title="parent", assignee="pm")
         first = kb.create_task(conn, title="first", assignee="dev")
@@ -247,7 +248,7 @@ def test_signal_read_model_bounds_links_and_marks_truncation(
 
 
 def test_event_generation_rotates_only_when_gc_deletes_history(signal_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="old", assignee="qa")
         conn.execute("UPDATE tasks SET status='done' WHERE id=?", (task_id,))
@@ -266,7 +267,7 @@ def test_event_generation_rotates_only_when_gc_deletes_history(signal_home):
 
 
 def test_event_generation_is_stable_for_append_only_history(signal_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         before = kb.event_generation(conn)
         kb.create_task(conn, title="one", assignee="qa")
@@ -277,14 +278,14 @@ def test_event_generation_is_stable_for_append_only_history(signal_home):
 
 
 def test_event_generation_is_materialized_for_legacy_board(signal_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         conn.execute("DROP TABLE kanban_metadata")
     finally:
         conn.close()
 
     kb.init_db()
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert re.fullmatch(r"[0-9a-f]{32}", kb.event_generation(conn))
     finally:
@@ -292,7 +293,7 @@ def test_event_generation_is_materialized_for_legacy_board(signal_home):
 
 
 def test_event_generation_rotates_with_hard_delete(signal_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="delete", assignee="qa")
         conn.execute("DELETE FROM task_events WHERE task_id=?", (task_id,))
@@ -307,7 +308,7 @@ def test_event_generation_rotates_with_hard_delete(signal_home):
 
 
 def test_event_generation_rotates_with_archived_delete(signal_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="archive", assignee="qa")
         assert kb.archive_task(conn, task_id) is True
@@ -379,13 +380,13 @@ def test_signal_ws_delegates_to_canonical_web_auth(signal_home, monkeypatch):
     module = _load_plugin_module()
     observed = []
 
-    from hermes_cli import web_server
+    from hermes_cli import web_server_chat
 
     def deny(websocket):
         observed.append(websocket)
         return False
 
-    monkeypatch.setattr(web_server, "_ws_auth_ok", deny)
+    monkeypatch.setattr(web_server_chat, "_ws_auth_ok", deny)
     app = FastAPI()
     app.include_router(module.router, prefix="/api/plugins/kanban")
 
@@ -401,7 +402,7 @@ def test_signal_ws_delegates_to_canonical_web_auth(signal_home, monkeypatch):
 
 
 def test_signal_websocket_resets_after_history_rotation(signal_client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="old", assignee="qa")
         conn.execute("UPDATE tasks SET status='done' WHERE id=?", (task_id,))
@@ -428,7 +429,7 @@ def test_signal_websocket_resets_after_history_rotation(signal_client):
 
 
 def test_signal_websocket_pushes_reset_when_generation_changes(signal_client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="old", assignee="qa")
         conn.execute("UPDATE tasks SET status='done' WHERE id=?", (task_id,))
@@ -448,7 +449,7 @@ def test_signal_websocket_pushes_reset_when_generation_changes(signal_client):
         initial = websocket.receive_json()
         assert initial["reset"] is False
 
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
             conn.execute(
                 "UPDATE task_events SET created_at=0 WHERE task_id=?", (task_id,),
@@ -466,7 +467,7 @@ def test_signal_websocket_pushes_reset_when_generation_changes(signal_client):
 
 
 def test_signal_reconnect_detects_internal_history_gap(signal_client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_ids = [
             kb.create_task(conn, title=f"task-{index}", assignee="qa")
@@ -508,9 +509,144 @@ def test_legacy_websocket_still_emits_raw_event_envelope(signal_client):
     assert "payload" in event
 
 
-def test_legacy_websocket_still_coerces_malformed_since_to_zero(signal_client):
-    _secret, parent, _child = _seed_sensitive_graph()
-    path = "/api/plugins/kanban/events?since=bad&token=test"
-    with signal_client.websocket_connect(path) as websocket:
-        frame = websocket.receive_json()
-    assert any(item["task_id"] == parent for item in frame["events"])
+def test_event_generation_rotates_when_legacy_events_are_renumbered(signal_home):
+    conn = kbc.connect()
+    try:
+        before = kb.event_generation(conn)
+        conn.execute("DROP TABLE task_events")
+        conn.execute(
+            "CREATE TABLE task_events (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+            "run_id INTEGER, kind TEXT NOT NULL, payload TEXT, created_at INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO task_events VALUES ('99', 't_legacy', NULL, 'created', NULL, 1)")
+        kbc._rebuild_drifted_tables(conn)
+        assert conn.execute("SELECT id FROM task_events").fetchone()[0] == 1
+        after = kb.event_generation(conn)
+        assert after != before
+        kbc._rebuild_drifted_tables(conn)
+        assert kb.event_generation(conn) == after
+    finally:
+        conn.close()
+
+
+def test_event_rebuild_and_generation_roll_back_together(signal_home):
+    conn = kbc.connect()
+    try:
+        before = kb.event_generation(conn)
+        conn.execute("DROP TABLE task_events")
+        conn.execute(
+            "CREATE TABLE task_events (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+            "run_id INTEGER, kind TEXT NOT NULL, payload TEXT, created_at INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO task_events VALUES ('99', 't_legacy', NULL, 'created', NULL, 1)")
+        conn.execute(
+            "CREATE TRIGGER reject_generation BEFORE UPDATE ON kanban_metadata "
+            "BEGIN SELECT RAISE(ABORT, 'generation unavailable'); END"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="generation unavailable"):
+            kbc._rebuild_drifted_tables(conn)
+        assert not conn.in_transaction
+        assert conn.execute("SELECT id FROM task_events").fetchone()[0] == "99"
+        assert kb.event_generation(conn) == before
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("mutation", ["delete_task", "delete_archived_task", "gc_events"])
+def test_signal_history_deletion_rolls_back_if_generation_cannot_rotate(signal_home, mutation):
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(conn, title="retained if rotation fails")
+        kb.archive_task(conn, task_id)
+        conn.execute("UPDATE task_events SET created_at=0 WHERE task_id=?", (task_id,))
+        before = kb.event_generation(conn)
+        count = conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]
+        conn.execute(
+            "CREATE TRIGGER reject_generation BEFORE UPDATE ON kanban_metadata "
+            "BEGIN SELECT RAISE(ABORT, 'generation unavailable'); END"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="generation unavailable"):
+            if mutation == "gc_events":
+                kb.gc_events(conn, older_than_seconds=1)
+            else:
+                getattr(kb, mutation)(conn, task_id)
+        assert not conn.in_transaction
+        assert kb.get_task(conn, task_id) is not None
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == count
+        assert kb.event_generation(conn) == before
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("limited", ["TASK", "RUN"])
+def test_signal_snapshot_bounds_each_entity(signal_client, monkeypatch, limited):
+    module = sys.modules["hermes_dashboard_plugin_kanban_signal_test"].signal_api
+    monkeypatch.setattr(module, f"_SIGNAL_{limited}_LIMIT", 1)
+    _seed_sensitive_graph()
+    conn = kbc.connect()
+    try:
+        task_id = conn.execute("SELECT id FROM tasks ORDER BY created_at, id LIMIT 1").fetchone()[0]
+        conn.executemany(
+            "INSERT INTO task_runs (task_id, status, started_at) VALUES (?, 'done', 1)",
+            [(task_id,), (task_id,)],
+        )
+    finally:
+        conn.close()
+    response = signal_client.get("/api/plugins/kanban/read-model/signal?board=default")
+    assert response.status_code == 200
+    model = response.json()
+    assert model["truncated"] is True
+    assert len(model["tasks" if limited == "TASK" else "runs"]) == 1
+    visible = {task["id"] for task in model["tasks"]}
+    assert all(link["source"] in visible and link["target"] in visible for link in model["links"])
+    assert all(run["task_id"] in visible for run in model["runs"])
+
+
+def test_signal_event_batches_are_bounded_and_empty_batch_keeps_cursor(signal_home):
+    module = _load_plugin_module().signal_api
+    conn = kbc.connect()
+    try:
+        conn.executemany(
+            "INSERT INTO task_events (task_id, kind, created_at) VALUES ('t_safe', 'created', ?)",
+            [(index,) for index in range(201)],
+        )
+        generation = kb.event_generation(conn)
+    finally:
+        conn.close()
+    first = module._signal_event_frame("default", 0, initial=True)
+    second = module._signal_event_frame("default", first["cursor"], initial=False, expected_generation=generation)
+    empty = module._signal_event_frame("default", second["cursor"], initial=False, expected_generation=generation)
+    assert len(first["events"]) == 200
+    assert len(second["events"]) == 1
+    assert empty["events"] == []
+    assert empty["cursor"] == second["cursor"]
+    assert not any(frame["reset"] for frame in (first, second, empty))
+
+
+@pytest.mark.parametrize("token,origin,accepted", [
+    ("test-only", "http://127.0.0.1", True),
+    ("incorrect", "http://127.0.0.1", False),
+    ("test-only", "https://foreign.invalid", False),
+])
+def test_signal_real_canonical_token_and_origin_gates(signal_home, monkeypatch, token, origin, accepted):
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "test-only")
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+    module = _load_plugin_module()
+    app = FastAPI()
+    app.include_router(module.router, prefix="/api/plugins/kanban")
+    url = f"ws://127.0.0.1/api/plugins/kanban/events?view=signal&board=default&since=0&token={token}"
+    monkeypatch.setattr(web_server.app.state, "bound_port", 80, raising=False)
+    with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as client:
+        if accepted:
+            with client.websocket_connect(url, headers={"origin": origin}) as websocket:
+                frame = websocket.receive_json()
+            assert frame["initial"] is True
+            assert frame["events"] == []
+        else:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect(url, headers={"origin": origin}):
+                    pass
+            assert exc.value.code == 1008

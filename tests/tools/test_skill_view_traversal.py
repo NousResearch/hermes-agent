@@ -84,6 +84,7 @@ class TestPathTraversalBlocked:
         assert result["success"] is False
         assert "traversal" in result["error"].lower()
 
+    @pytest.mark.platforms("posix", "windows")
     def test_legitimate_file_still_works(self, fake_skills):
         """Valid paths within the skill directory should work normally."""
         result = json.loads(skill_view("test-skill", file_path="references/api.md"))
@@ -95,10 +96,13 @@ class TestPathTraversalBlocked:
         result = json.loads(skill_view("test-skill"))
         assert result["success"] is True
 
-    def test_symlink_escape_blocked(self, fake_skills):
+    @pytest.mark.parametrize("sibling", [False, True])
+    def test_symlink_escape_blocked(self, fake_skills, sibling):
         """Symlinks pointing outside the skill directory should be blocked."""
         skill_dir = fake_skills["skill_dir"]
-        secret = fake_skills["tmp_path"] / "secret.txt"
+        outside = fake_skills["skills_dir"] / "test-skill-v2" if sibling else fake_skills["tmp_path"]
+        outside.mkdir(exist_ok=True)
+        secret = outside / "secret.txt"
         secret.write_text("TOP SECRET DATA")
 
         symlink = skill_dir / "evil-link"
@@ -111,6 +115,7 @@ class TestPathTraversalBlocked:
         # The resolve() check should catch the symlink escaping
         assert result["success"] is False
         assert "escapes" in result["error"].lower() or "boundary" in result["error"].lower()
+        assert "TOP SECRET DATA" not in json.dumps(result)
 
     def test_sensitive_file_not_leaked(self, fake_skills):
         """Even if traversal somehow passes, sensitive content must not leak."""

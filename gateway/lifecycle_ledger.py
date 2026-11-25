@@ -1,332 +1,572 @@
-"""Gateway lifecycle ledger — durable termination-reason evidence (NS-608).
+"""Gateway lifecycle ledger — durable termination-reason evidence.
 
-The gateway already has *graceful* shutdown forensics
-(:mod:`gateway.shutdown_forensics` — who sent the SIGTERM) and an exit-path
-diagnostic log (``gateway-exit-diag.log`` — every way ``asyncio.run`` can
-return).  What it does NOT have is any record of an **unclean death**: a
-SIGKILL, a kernel OOM kill, or the whole VM dying takes the process out
-before any handler runs, so the next boot has no idea the previous life
-ended violently — support tickets like NS-608 then require manually
-cross-correlating four log files and two external APIs to answer "what
-killed the gateway?".
-
-This module closes that gap with a tiny state machine persisted to
-``<HERMES_HOME>/state/gateway.lifecycle.json``:
-
-* On startup, :func:`record_startup` reads the sentinel left by the
-  previous life.  ``phase == "running"`` means that life never reached any
-  exit path → it died uncleanly.  The finding — including the last
-  heartbeat's memory sample, which is the closest thing to a pre-death
-  telemetry snapshot — is appended to ``gateway-exit-diag.log`` as a
-  ``gateway.previous_unclean_exit`` record and logged at WARNING.  The
-  sentinel is then rewritten as ``phase=running`` for the new life.
-* On every clean exit path, :func:`mark_exited` rewrites the sentinel as
-  ``phase=exited`` with the exit code and a reason string.  Wired into
-  ``_exit_after_graceful_shutdown`` (the single funnel for all graceful
-  exits, #53107) and the two watchdog ``os._exit`` sites in
-  :mod:`gateway.shutdown_watchdog`.
-
-:func:`sample_memory` provides the cheap (<1ms, pure /proc reads) memory
-snapshot that :func:`gateway.shutdown_watchdog.write_loop_heartbeat`
-embeds in the 30s heartbeat — giving every unclean-death report a
-"memory available N seconds before death" data point so OOM crash cycles
-are classifiable from the volume alone (no Prometheus retention races).
-
-Everything here is best-effort: a forensics failure must never affect the
-gateway lifecycle it is observing.
+Graceful shutdowns leave forensics (``gateway-exit-diag.log``); an unclean
+death (SIGKILL, kernel OOM, VM death) runs no handler.  A sentinel at
+``<HERMES_HOME>/state/gateway.lifecycle.json`` closes the gap:
+:func:`record_startup` finds ``phase == "running"`` from the previous life →
+unclean death, appended to the exit-diag log as ``gateway.previous_unclean_exit``
+and logged at WARNING; :func:`mark_exited` rewrites ``phase=exited`` on every
+clean exit path.  Best-effort: forensics must never affect the lifecycle.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
-from datetime import datetime, timezone
+from contextlib import closing
+from functools import lru_cache
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_LIFECYCLE_RELATIVE = ("state", "gateway.lifecycle.json")
-_EXIT_DIAG_RELATIVE = ("logs", "gateway-exit-diag.log")
-
-# Heuristic OOM-suspicion thresholds applied to the last heartbeat's memory
-# sample.  Deliberately conservative: this only annotates the report with a
-# hint; classification stays with the human reading the evidence.
-_LOW_MEM_AVAILABLE_KIB = 64 * 1024  # < 64 MiB available
-_LOW_MEM_AVAILABLE_FRACTION = 0.05  # < 5% of MemTotal available
-
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    val = os.environ.get("HERMES_HOME", "").strip()
-    if val:
-        return Path(val)
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, get_process_hermes_home
 
-    return get_hermes_home()
+    # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
+    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
+
+
+def _home_path(home: Optional[Path], *relative: str) -> Path:
+    return (_process_hermes_home() if home is None else home).joinpath(*relative)
 
 
 def get_lifecycle_sentinel_path(home: Optional[Path] = None) -> Path:
     """Return ``<HERMES_HOME>/state/gateway.lifecycle.json``."""
-    base = home if home is not None else _process_hermes_home()
-    return base.joinpath(*_LIFECYCLE_RELATIVE)
+    return _home_path(home, "state", "gateway.lifecycle.json")
 
 
-def sample_memory() -> Dict[str, Any]:
-    """Cheap memory snapshot: own RSS + system availability + swap.
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
-    Pure ``/proc`` reads, Linux-only (returns ``{}`` elsewhere), never
-    raises.  Values in KiB to match the kernel's units.
-    """
-    sample: Dict[str, Any] = {}
+
+def _proc_fields(path: str, wanted: dict[str, str]) -> dict[str, int]:
+    """``{dst: int}`` for each ``src: dst`` key found in a ``Key: value`` or ``key value``
+    (``/proc/vmstat``, cgroup ``memory.events``) file."""
+    found: dict[str, int] = {}
     try:
-        with open("/proc/self/status", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             for line in fh:
-                if line.startswith("VmRSS:"):
-                    sample["rss_kib"] = int(line.split()[1])
-                    break
-    except (OSError, ValueError, IndexError):
-        pass
-    try:
-        meminfo: Dict[str, int] = {}
-        wanted = {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}
-        with open("/proc/meminfo", encoding="utf-8") as fh:
-            for line in fh:
-                key = line.split(":", 1)[0]
+                key, *values = line.replace(":", " ", 1).split() or [""]
                 if key in wanted:
-                    meminfo[key] = int(line.split()[1])
-                    if len(meminfo) == len(wanted):
+                    found[wanted[key]] = int(values[0])
+                    if len(found) == len(wanted):
                         break
-        if "MemTotal" in meminfo:
-            sample["mem_total_kib"] = meminfo["MemTotal"]
-        if "MemAvailable" in meminfo:
-            sample["mem_available_kib"] = meminfo["MemAvailable"]
-        if "SwapTotal" in meminfo and "SwapFree" in meminfo:
-            sample["swap_used_kib"] = meminfo["SwapTotal"] - meminfo["SwapFree"]
     except (OSError, ValueError, IndexError):
-        pass
+        return {}
+    return found
+
+
+def sample_memory() -> dict[str, Any]:
+    """Cheap /proc snapshot (KiB): own RSS + MemTotal/MemAvailable + swap used.  Linux-only
+    (``{}`` elsewhere), never raises; the 30s heartbeat embeds it so OOM cycles are classifiable."""
+    sample = _proc_fields("/proc/self/status", {"VmRSS": "rss_kib"})
+    mem = _proc_fields("/proc/meminfo", {"MemTotal": "mem_total_kib", "MemAvailable": "mem_available_kib",
+                                         "SwapTotal": "SwapTotal", "SwapFree": "SwapFree"})
+    swap_total, swap_free = mem.pop("SwapTotal", None), mem.pop("SwapFree", None)
+    sample.update(mem)
+    if swap_total is not None and swap_free is not None:
+        sample["swap_used_kib"] = swap_total - swap_free
     return sample
 
 
-def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+_PSI_ROOT = Path("/proc/pressure")
+
+
+def _psi_fields(path: Path) -> dict[str, float]:
+    """``{some_avg10, some_avg60, full_avg10, full_avg60}`` from one PSI file, whose lines read
+    ``some avg10=0.00 avg60=0.00 avg300=0.00 total=0``."""
+    fields: dict[str, float] = {}
+    with open(path, encoding="utf-8-sig") as fh:
+        for line in fh:
+            kind, *pairs = line.split() or [""]
+            if kind not in ("some", "full"):
+                continue
+            for key, _, value in (pair.partition("=") for pair in pairs):
+                if key in ("avg10", "avg60"):
+                    fields[f"{kind}_{key}"] = float(value)
+    return fields
+
+
+def sample_pressure_stall(root: Optional[Path] = None) -> dict[str, dict[str, float]]:
+    """Linux PSI stall percentages: ``{"memory": {...}, "io": {...}}`` from ``/proc/pressure``
+    (``root`` overrides it for tests).  A resource whose file is missing or unparsable is left
+    out, so off Linux the result is ``{}``.  Never raises."""
+    base = _PSI_ROOT if root is None else root
+    sample: dict[str, dict[str, float]] = {}
+    for resource in ("memory", "io"):
+        try:
+            if fields := _psi_fields(base / resource):
+                sample[resource] = fields
+        except (OSError, ValueError):
+            continue
+    return sample
+
+
+_VMSTAT_PATH = "/proc/vmstat"
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+# Counter growth is compared only when the dead life's last heartbeat is this recent: a supervisor
+# restart takes seconds, and over a longer gap the counters say nothing about that death.
+_OOM_WINDOW_S = 900.0
+
+
+@lru_cache(maxsize=1)
+def _cgroup_v2_events_path() -> Optional[Path]:
+    """This process's cgroup v2 ``memory.events``, or ``None`` without a unified-hierarchy entry.
+    Resolved once per process, not per heartbeat: a supervised gateway is not moved between
+    cgroups, and one that is keeps sampling its first cgroup's counters."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        from gateway.cgroup_cleanup import _own_cgroup_path
+
+        own = _own_cgroup_path()
+    except (ImportError, OSError, ValueError):
+        return None
+    return _CGROUP_ROOT / own.lstrip("/") / "memory.events" if own else None
+
+
+def sample_oom_kills() -> dict[str, Any]:
+    """Kernel OOM-kill counters, so the next boot can tell whether the kernel OOM-killed a
+    process while this life was dying: ``boot_id``, ``host_oom_kills`` (``oom_kill`` in
+    ``/proc/vmstat``, host-wide: counts every process the kernel OOM-killed) and
+    ``cgroup_oom_kills`` (``oom_kill`` in this process's cgroup v2 ``memory.events``: only kills
+    inside the gateway's own cgroup, i.e. its systemd unit or container, tool subprocesses
+    included) with ``cgroup_id`` (the cgroup directory's inode: a recreated cgroup, e.g. after a
+    systemd unit or container restart, gets a new one and a counter reset to 0).  Each key is
+    present only when readable: Linux-only (``{}`` elsewhere), cgroup v1 has no counter.  Never
+    raises."""
+    sample: dict[str, Any] = {}
+    try:
+        from hermes_cli.process_identity import _live_boot_id
+
+        if boot_id := _live_boot_id():
+            sample["boot_id"] = boot_id
+    except Exception:
+        logger.debug("boot_id unavailable for the OOM-kill sample", exc_info=True)
+    sample.update(_proc_fields(_VMSTAT_PATH, {"oom_kill": "host_oom_kills"}))
+    if (events := _cgroup_v2_events_path()) is not None and (
+            counter := _proc_fields(str(events), {"oom_kill": "cgroup_oom_kills"})):
+        try:
+            sample.update(counter, cgroup_id=events.parent.stat().st_ino)
+        except (OSError, ValueError):
+            pass  # cgroup removed between the read and the stat: no comparable counter
+    return sample
+
+
+def _heartbeat_oom_baseline(sentinel: dict[str, Any], hb: dict[str, Any]) -> Any:
+    """The heartbeat's ``oom`` sample when the heartbeat provably belongs to the life the
+    sentinel describes (same pid, written after that life's claim) and was written at most
+    ``_OOM_WINDOW_S`` ago, else ``None``.  ``record_startup`` replaces the sentinel before the
+    new life's first heartbeat, so a life that dies before then leaves an older life's
+    heartbeat behind; its counters must not be read as this life's."""
+    pid = hb.get("pid")
+    if type(pid) is not int or pid != sentinel.get("pid"):
+        return None
+    from gateway.memory_status import _parse_iso
+
+    written = _parse_iso(hb.get("updated_at"))
+    if written is None:
+        return None
+    claimed = sentinel.get("start_time")
+    if type(claimed) not in (int, float) or not math.isfinite(claimed) or written.timestamp() < claimed:
+        return None  # bool is an int and NaN compares False: neither proves the heartbeat's life
+    return hb.get("oom") if 0 <= time.time() - written.timestamp() <= _OOM_WINDOW_S else None
+
+
+def _oom_kill_scope(prior: Any) -> Optional[str]:
+    """``"cgroup"``/``"host"`` when an OOM-kill counter grew since the heartbeat sample
+    ``prior`` within the same boot, else ``None``.  Growth shows only that the kernel
+    OOM-killed SOME process in that scope, not which one: the gateway, a tool subprocess in
+    its cgroup, or (host scope) any process on the host.
+
+    ``cgroup`` (kills inside the gateway's own cgroup) is used when the cgroup is still the same
+    one, i.e. the gateway restarted inside a surviving cgroup.  Otherwise the host counter is
+    used, with scope ``host``: no cgroup v2 counter on either side (cgroup v1, no memory
+    controller), or a different cgroup now; a systemd unit or container restart recreates the
+    cgroup at 0, so after a supervisor restart the comparison is usually host-scoped."""
+    if not isinstance(prior, dict) or not isinstance(prior.get("boot_id"), str):
+        return None
+    now = sample_oom_kills()
+    if prior["boot_id"] != now.get("boot_id"):
+        return None  # a reboot reset the counters; nothing to compare
+    same_cgroup = type(prior.get("cgroup_id")) is int and prior.get("cgroup_id") == now.get("cgroup_id")
+    key, source = ("cgroup_oom_kills", "cgroup") if same_cgroup else ("host_oom_kills", "host")
+    before, after = prior.get(key), now.get(key)
+    if type(before) is int and type(after) is int and after > before:
+        return source
+    return None
+
+
+def _read_json(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
 
-def _write_sentinel(payload: Dict[str, Any], home: Optional[Path]) -> None:
-    path = get_lifecycle_sentinel_path(home)
+def _write_sentinel(payload: dict[str, Any], home: Optional[Path]) -> None:
     try:
         from utils import atomic_json_write
 
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path = get_lifecycle_sentinel_path(home)
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, payload, indent=None)
     except Exception:
         logger.debug("Failed to write lifecycle sentinel", exc_info=True)
 
 
-def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
-    """Append a JSON line to gateway-exit-diag.log (same format as the CLI's
-    ``_exit_diag`` records so existing tooling greps both)."""
-    base = home if home is not None else _process_hermes_home()
-    path = base.joinpath(*_EXIT_DIAG_RELATIVE)
+def _append_exit_diag(record: dict[str, Any], home: Optional[Path]) -> None:
+    """Append a JSON line to gateway-exit-diag.log (same format as the CLI's ``_exit_diag``)."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path = _home_path(home, "logs", "gateway-exit-diag.log")
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(path.parent)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
     except OSError:
         logger.debug("Failed to append unclean-exit record", exc_info=True)
 
 
-def _pid_alive_with_start_time(pid: Any, start_time: Any) -> bool:
-    """True when ``pid`` is a live process matching ``start_time`` (±2s).
+def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
+    """True when ``pid`` is a live process that is the sentinel's incarnation — guards the
+    ``--replace`` race: a live matching owner mid-teardown is a handover, not a death.
 
-    Guards the takeover race: during ``--replace`` the old gateway can still
-    be mid-teardown when the new one boots — a live matching owner is a
-    planned handover, not an unclean death.
-    """
+    Identity is the psutil ``create_time`` the sentinel stamps at claim (epoch seconds, same
+    producer on both sides). The sentinel's ``start_time`` is the ledger claim time and is NOT
+    comparable with ``gateway.status.get_process_start_time`` (proc ticks on Linux, centiseconds
+    elsewhere) — the old comparison never matched, so every ``--replace`` handover read as an
+    unclean death. A pre-stamp sentinel (no ``create_time``) still has ``start_time`` in epoch
+    seconds: the owner was born BEFORE it claimed, a PID reuser AFTER the owner died, so a birth
+    later than the claim is a reuser."""
     try:
         pid_int = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if pid_int <= 0:
-        return False
-    try:
-        # NOT os.kill(pid, 0): on Windows that sends CTRL_C_EVENT to the
-        # target's console group (bpo-14484). _pid_exists is the repo's
-        # canonical no-kill cross-platform probe (psutil-backed).
+        # NOT os.kill(pid, 0): on Windows that sends CTRL_C_EVENT to the target's console group.
         from gateway.status import _pid_exists
 
-        if not _pid_exists(pid_int):
+        if pid_int <= 0 or not _pid_exists(pid_int):
             return False
     except Exception:
         return False
-    if start_time is None:
-        return True  # alive; can't disambiguate PID reuse — err on "alive"
-    try:
-        from gateway.status import get_process_start_time
+    from hermes_cli.process_identity import _process_create_time
 
-        actual = get_process_start_time(pid_int)
-        if actual is None:
-            return True
-        return abs(float(actual) - float(start_time)) <= 2.0
-    except Exception:
-        return True
+    actual = _process_create_time(pid_int)
+    if actual is None:
+        return True  # can't disambiguate PID reuse
+    if type(create_time) in (int, float):
+        return abs(actual - float(create_time)) <= 2.0
+    if type(start_time) in (int, float):
+        return actual <= float(start_time) + 2.0
+    return True
 
 
-def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """Inspect the previous life's sentinel; return an evidence dict when it
-    died uncleanly, else ``None``.  Read-only — does not rewrite the sentinel.
-    """
-    sentinel = _read_json(get_lifecycle_sentinel_path(home))
+def _suspected_oom(mem: dict[str, Any]) -> bool:
+    """Heuristic only (classification stays with the reader); thresholds are
+    memory_status' "critical" tier so a live warning and a post-mortem verdict agree."""
+    from gateway.memory_status import _CRITICAL_AVAILABLE_FRACTION, _CRITICAL_AVAILABLE_KIB
+
+    total, avail = mem.get("mem_total_kib"), mem.get("mem_available_kib")
+    if not isinstance(avail, int):
+        return False
+    return avail < _CRITICAL_AVAILABLE_KIB or (
+        isinstance(total, int) and total > 0 and avail / total < _CRITICAL_AVAILABLE_FRACTION
+    )
+
+
+def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """Evidence dict when the previous life died uncleanly, else ``None``. Read-only."""
+    return _unclean_exit_evidence(_read_json(get_lifecycle_sentinel_path(home)), home)
+
+
+def _unclean_exit_evidence(sentinel: Optional[dict[str, Any]], home: Optional[Path]) -> Optional[dict[str, Any]]:
     if not sentinel or sentinel.get("phase") != "running":
         return None
-    if _pid_alive_with_start_time(sentinel.get("pid"), sentinel.get("start_time")):
+    from process_identity import persistent_record_pidns_checkable
+    if not persistent_record_pidns_checkable(sentinel.get("pidns")):
+        # Written in another PID namespace, so its pid means nothing here (#123081). The home's
+        # gateway.lock flock does: held by another process = that life is still running.
+        from gateway.runtime_ownership import runtime_lock_held_elsewhere
+        if runtime_lock_held_elsewhere(_home_path(home)):
+            return None
+    elif _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time")):
         return None  # live owner — planned takeover in flight, not a death
-
-    evidence: Dict[str, Any] = {
-        "prior_pid": sentinel.get("pid"),
-        "prior_started_at": sentinel.get("started_at"),
+    evidence: dict[str, Any] = {
+        "prior_pid": sentinel.get("pid"), "prior_started_at": sentinel.get("started_at"),
         "prior_start_time": sentinel.get("start_time"),
     }
-
-    # Enrich with the last heartbeat: when did the loop last prove liveness,
-    # and what did memory look like at that moment?
+    # Enrich with the last heartbeat: last proven liveness and memory at that moment.
     try:
         from gateway.shutdown_watchdog import get_loop_heartbeat_path
 
-        hb = _read_json(get_loop_heartbeat_path(home))
+        hb = _read_json(get_loop_heartbeat_path(home)) or {}
     except Exception:
-        hb = None
+        logger.debug("Heartbeat unreadable for unclean-exit evidence", exc_info=True)
+        hb = {}
     if hb:
         evidence["last_heartbeat_at"] = hb.get("updated_at")
-        mem = hb.get("mem")
-        if isinstance(mem, dict):
-            evidence["last_heartbeat_mem"] = mem
-            total = mem.get("mem_total_kib")
-            avail = mem.get("mem_available_kib")
-            if isinstance(avail, int) and (
-                avail < _LOW_MEM_AVAILABLE_KIB
-                or (
-                    isinstance(total, int)
-                    and total > 0
-                    and avail / total < _LOW_MEM_AVAILABLE_FRACTION
-                )
-            ):
-                evidence["suspected_oom"] = True
+    mem = hb.get("mem")
+    if isinstance(mem, dict):
+        evidence["last_heartbeat_mem"] = mem
+        if _suspected_oom(mem):
+            evidence["suspected_oom"] = True
+    try:  # optional enrichment: a failure here must never cost the unclean-exit verdict
+        if scope := _oom_kill_scope(_heartbeat_oom_baseline(sentinel, hb)):
+            evidence["oom_kill_seen"], evidence["oom_kill_scope"] = True, scope
+    except Exception:
+        logger.debug("OOM-kill enrichment failed", exc_info=True)
     return evidence
 
 
-def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """Boot-time entry point: report any unclean previous exit, then claim
-    the sentinel for the current life.
+# Bound on the deferred post-connect scan: a pathological store cannot pin its thread forever.
+STATE_DB_INTEGRITY_DEADLINE_S = 1800.0
 
-    Returns the unclean-exit evidence dict (also persisted to
-    ``gateway-exit-diag.log`` and logged at WARNING) or ``None``.  Never
-    raises.
+
+def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optional[float] = None) -> str:
+    """``"ok"``, ``"absent"``, or the first ``quick_check`` complaint.  Never raises.
+
+    Only after an unclean death — SIGKILL mid-WAL-checkpoint can leave half-written
+    b-tree pages.  ``quick_check(1)`` stops at the first problem (~2s on a healthy
+    500MB store): cheap once per unclean boot, too costly every boot.  Opened
+    normally: a WAL store needs its -shm sidecar for read-only, and the PRAGMA writes nothing.
+
+    Holds a phase-owned startup-watchdog lease for the check duration
+    (renewed from a SQLite progress handler, #115542) so a long healthy check
+    on a huge store is not mistaken for a parked deadlock.
+
+    ``deadline_s`` (optional): abort the scan once that many seconds elapse and
+    return ``"check-incomplete: exceeded <N>s"``.  ``deadline_s=None`` (default) is the
+    historic unbounded behaviour -- the progress handler never aborts the PRAGMA.
     """
-    evidence: Optional[Dict[str, Any]] = None
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import open_store_admin, profile_scope, store_location
+
+    scope = profile_scope(home=_home_path(home))
+    path = store_location(scope)
+    if path is None or not path.exists():
+        return "absent"
     try:
-        evidence = detect_unclean_exit(home)
-        if evidence is not None:
-            record = {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "tag": "gateway.previous_unclean_exit",
-                "pid": os.getpid(),
-                **evidence,
-            }
-            _append_exit_diag(record, home)
-            logger.warning(
-                "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY "
-                "(no exit path ran — SIGKILL / OOM / VM death). "
-                "last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
-                evidence.get("prior_pid"),
-                evidence.get("prior_started_at"),
-                evidence.get("last_heartbeat_at"),
-                evidence.get("last_heartbeat_mem"),
-                evidence.get("suspected_oom", False),
+        admin = open_store_admin(scope)
+    except Exception as exc:
+        return f"check-failed: {exc}"
+    return "absent" if isinstance(admin, AdminUnsupported) else admin.integrity_check(deadline_s=deadline_s)
+
+
+def _state_db_journal_mode(path: Path) -> Optional[str]:
+    """On-disk journal mode of ``path`` via one ``PRAGMA journal_mode`` read on a short-lived
+    connection (no lock outlives it); ``None`` when undeterminable or on a backend without the
+    admin capability.  Never raises."""
+    try:
+        from persistence.core.admin import AdminUnsupported
+        from persistence_assembly import open_store_admin
+
+        admin = open_store_admin(path)
+        return None if isinstance(admin, AdminUnsupported) else admin.journal_mode()
+    except Exception:
+        logger.debug("Could not read state.db journal mode", exc_info=True)
+        return None
+
+
+def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path], *, defer_integrity_check: bool = False) -> None:
+    """Persist the exit-diag record and log at WARNING.
+
+    When ``defer_integrity_check`` is set, the forensic store scan is NOT run here (it would
+    gate platform startup); the record carries ``state_db_integrity: "deferred"`` and
+    :func:`run_deferred_integrity_check` runs the scan post-connect.
+    """
+    if defer_integrity_check:
+        evidence["state_db_integrity"] = "deferred"
+    else:
+        # The death may have torn the store; this is the only moment we know to look.
+        verdict = evidence["state_db_integrity"] = check_state_db_integrity(home=home)
+        if verdict not in ("ok", "absent"):
+            logger.error(
+                "state.db FAILED integrity check after an unclean gateway exit: %s — sessions may read as "
+                "missing until it is repaired. Run `hermes doctor`.",
+                verdict,
             )
+    _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
+    logger.warning(
+        "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
+        "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
+        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s "
+        "oom_kill_seen=%s oom_kill_scope=%s",
+        evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
+        evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
+        evidence.get("oom_kill_seen", False), evidence.get("oom_kill_scope"),
+    )
+
+
+def _report_watchdog_exit(sentinel: dict[str, Any], home: Optional[Path]) -> dict[str, Any]:
+    """``prior_*`` keys for the new claim when the previous life was killed by a watchdog
+    (``phase=exited`` with a ``WATCHDOG_EXIT_REASONS`` reason), after appending a
+    ``gateway.previous_watchdog_exit`` exit-diag record; ``{}`` otherwise.  Without this the
+    next claim overwrites the only record of why the gateway restarted (#148527)."""
+    from gateway.status import is_watchdog_exit_reason
+
+    reason = sentinel.get("exit_reason")
+    if sentinel.get("phase") != "exited" or not is_watchdog_exit_reason(reason):
+        return {}
+    carry: dict[str, Any] = {"prior_exit_reason": reason}
+    pressure = sentinel.get("host_memory_pressure")
+    if isinstance(pressure, str) and pressure:
+        carry["prior_host_memory_pressure"] = pressure
+    _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_watchdog_exit", "pid": os.getpid(),
+                       "prior_pid": sentinel.get("pid"), "prior_exit_code": sentinel.get("exit_code"),
+                       "prior_exited_at": sentinel.get("exited_at"), **carry}, home)
+    return carry
+
+
+def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool = True) -> Optional[dict[str, Any]]:
+    """Boot entry point: report any unclean previous exit (evidence dict, also persisted
+    to ``gateway-exit-diag.log`` and logged at WARNING), or carry a watchdog exit's reason and
+    host memory pressure into the claim as ``prior_*`` (see ``_report_watchdog_exit``), then
+    claim the sentinel.  Never raises.
+
+    ``defer_integrity_check`` defaults to True: the state.db integrity scan is forensic and
+    must NOT gate platform startup (a large store's ``quick_check`` blocked the ``:8644`` fleet
+    peer-DM transport for minutes).  In deferred mode the exit-diag record is written
+    immediately with ``state_db_integrity: "deferred"`` and the scan runs post-connect via
+    :func:`run_deferred_integrity_check`.  Pass False for the historic INLINE scan.
+    """
+    evidence: Optional[dict[str, Any]] = None
+    watchdog_exit: dict[str, Any] = {}
+    try:
+        sentinel = _read_json(get_lifecycle_sentinel_path(home)) or {}  # one read for both verdicts
+        evidence = _unclean_exit_evidence(sentinel, home)
+        if evidence is not None:
+            _report_unclean_exit(evidence, home, defer_integrity_check=defer_integrity_check)
+        else:
+            watchdog_exit = _report_watchdog_exit(sentinel, home)
     except Exception:
         logger.debug("Unclean-exit detection failed", exc_info=True)
-
     try:
-        claim: Dict[str, Any] = {
-            "phase": "running",
-            "pid": os.getpid(),
-            "start_time": time.time(),
-            "started_at": datetime.now(timezone.utc).isoformat(),
-        }
-        # Carry the verdict on the PREVIOUS life forward on the new
-        # sentinel: it is the only place the finding survives in
-        # machine-readable form (the exit-diag log is append-only prose
-        # for humans), and /api/status reads it to tell the user "your
-        # agent restarted after (suspected) running out of memory"
-        # (NS-656).  Scoped to this life only — the next clean exit or
-        # boot rewrites the sentinel and the flags age out with it.
+        from process_identity import pid_namespace_id
+        claim: dict[str, Any] = {"phase": "running", "pid": os.getpid(), "pidns": pid_namespace_id(),
+                                 "start_time": time.time(), "started_at": _now_iso()}
+        # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
+        # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
+        from hermes_cli.process_identity import _process_create_time
+
+        create_time = _process_create_time(os.getpid())
+        if create_time is not None:
+            claim["create_time"] = create_time
+        # Carry the verdict on the PREVIOUS life on the new sentinel: it is the only
+        # machine-readable copy (/api/status reads it to report an OOM restart).
+        # Scoped to this life — the next clean exit or boot rewrites the sentinel.
         if evidence is not None:
             claim["prior_unclean_exit"] = True
             if evidence.get("suspected_oom"):
                 claim["prior_suspected_oom"] = True
+            if evidence.get("oom_kill_seen"):
+                claim["prior_oom_kill_seen"], claim["prior_oom_kill_scope"] = True, evidence.get("oom_kill_scope")
+        claim.update(watchdog_exit)
         _write_sentinel(claim, home)
     except Exception:
         logger.debug("Failed to claim lifecycle sentinel", exc_info=True)
     return evidence
 
 
-def mark_exited(
-    exit_code: Optional[int] = None,
-    reason: str = "graceful_shutdown",
-    home: Optional[Path] = None,
-) -> None:
-    """Mark the current life as cleanly exited.  Idempotent, never raises.
+def run_deferred_integrity_check(
+    evidence: Optional[dict[str, Any]], *, home: Optional[Path] = None,
+    deadline_s: float = STATE_DB_INTEGRITY_DEADLINE_S,
+) -> str:
+    """Run the deferred post-connect state.db scan and append a second diag record.
 
-    Only rewrites the sentinel when it is provably owned by this process —
-    during a ``--replace`` takeover the replacement claims the sentinel
-    before the old process finishes teardown, and the old life must not
-    clobber the new owner's ``running`` phase on its way out.  A sentinel
-    with ``pid=None`` (or a malformed pid) has *unknown* ownership and is
-    likewise left alone: we must not overwrite evidence we cannot prove is
-    ours with a ``clean exit`` claim.
+    Companion to :func:`record_startup` with ``defer_integrity_check=True``: the forensic scan
+    is moved off the startup path (where, on a multi-GB store, it gated every platform adapter
+    — including the ``:8644`` fleet peer-DM transport — for minutes) into a daemon thread
+    started only after platforms connected.  ``deadline_s`` bounds a pathological store so the
+    thread cannot be pinned forever.
+
+    Appends ``{"tag": "gateway.state_db_integrity", "deferred": true, "state_db_integrity":
+    <verdict>, "prior_pid": ...}`` and logs the existing ERROR text on a bad verdict.  NEVER
+    raises -- a forensic scan must not disturb a running gateway (the alerting path is the
+    bounded per-poll readiness probe ``gateway/readiness.py::_probe_state_db``).
+
+    Only a WAL store is scanned: in rollback-journal mode (``database.journal_mode: delete``,
+    or a silent WAL fallback) the scan's SHARED lock would block every live commit for its
+    whole run, so the scan is skipped with a ``skipped: ...`` verdict and one WARNING.  The
+    on-disk mode decides, not config; an undeterminable mode is skipped too.
+    """
+    try:
+        from persistence_assembly import profile_scope, store_location
+
+        path = store_location(profile_scope(home=_home_path(home)))
+        mode = _state_db_journal_mode(path) if path is not None and path.exists() else "wal"
+        if mode != "wal":
+            verdict = (f"skipped: rollback-journal store (journal_mode={mode or 'unknown'}), "
+                       "scan would block live writes")
+            logger.warning(
+                "Previous gateway exit was unclean, but the state.db integrity check was skipped: %s is a "
+                "rollback-journal store (journal_mode=%s) and a background scan would block live writes. "
+                "To check it, stop the gateway and run: sqlite3 %s 'PRAGMA quick_check'",
+                path, mode or "unknown", path,
+            )
+        else:
+            verdict = check_state_db_integrity(home=home, deadline_s=deadline_s)
+        if verdict not in ("ok", "absent") and not verdict.startswith("skipped:"):
+            logger.error(
+                "state.db FAILED integrity check after an unclean gateway exit: %s — sessions may read as "
+                "missing until it is repaired. Run `hermes doctor`.",
+                verdict,
+            )
+        record: dict[str, Any] = {
+            "ts": _now_iso(),
+            "tag": "gateway.state_db_integrity",
+            "deferred": True,
+            "state_db_integrity": verdict,
+        }
+        if isinstance(evidence, dict) and evidence.get("prior_pid") is not None:
+            record["prior_pid"] = evidence.get("prior_pid")
+        _append_exit_diag(record, home)
+        if isinstance(evidence, dict):
+            evidence["state_db_integrity"] = verdict
+        return verdict
+    except Exception:
+        logger.debug("Deferred state.db integrity check failed", exc_info=True)
+        return "check-failed: deferred scan raised"
+
+
+def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdown", home: Optional[Path] = None,
+                *, host_memory_pressure: Optional[str] = None) -> None:
+    """Mark the current life as cleanly exited.  Idempotent, never raises.  ``host_memory_pressure``
+    (the liveness watchdog's fire-time ``classify_pressure`` verdict) is stamped only when given.
+
+    Only rewrites a sentinel provably owned by this process: during ``--replace``
+    the replacement claims it before the old process finishes teardown and must not
+    be clobbered.  ``pid=None`` / malformed sentinels have unknown ownership → left alone.
     """
     try:
         sentinel = _read_json(get_lifecycle_sentinel_path(home))
         if sentinel is not None and sentinel.get("pid") != os.getpid():
             return
-        _write_sentinel(
-            {
-                "phase": "exited",
-                "pid": os.getpid(),
-                "exit_code": exit_code,
-                "exit_reason": reason,
-                "exited_at": datetime.now(timezone.utc).isoformat(),
-            },
-            home,
-        )
+        exited: dict[str, Any] = {"phase": "exited", "pid": os.getpid(), "exit_code": exit_code, "exit_reason": reason,
+                                  "exited_at": _now_iso()}
+        if host_memory_pressure:
+            exited["host_memory_pressure"] = host_memory_pressure
+        # Carry the incarnation identity: the Windows start attestation matches a clean exit by
+        # PID *and* start time so a reused PID's exit cannot vouch for a different life (#110020).
+        for key in ("start_time", "create_time"):
+            if sentinel is not None and sentinel.get(key) is not None:
+                exited[key] = sentinel[key]
+        _write_sentinel(exited, home)
     except Exception:
         logger.debug("Failed to mark lifecycle sentinel exited", exc_info=True)
 
 
 def read_prior_exit_label(profile_home: Path) -> str:
-    """Container-boot helper: one-word summary of how the profile's last
-    gateway life ended.  ``clean`` / ``unclean`` / ``unknown`` (no sentinel
-    or never ran).  Read-only and exception-free — used by
-    ``hermes_cli.container_boot`` to annotate ``container-boot.log``.
-    """
+    """``clean``/``unclean``/``unknown`` for the profile's last gateway life; annotates
+    ``container-boot.log``.  ``running`` is unclean: the old PID namespace is gone at container boot."""
     try:
-        sentinel = _read_json(get_lifecycle_sentinel_path(profile_home))
-        if not sentinel:
-            return "unknown"
-        phase = sentinel.get("phase")
-        if phase == "exited":
-            return "clean"
-        if phase == "running":
-            # At container boot the old PID namespace is gone — any
-            # "running" sentinel is from a life that never exited cleanly.
-            return "unclean"
+        phase = (_read_json(get_lifecycle_sentinel_path(profile_home)) or {}).get("phase")
+        return {"exited": "clean", "running": "unclean"}.get(phase, "unknown")
     except Exception:
-        pass
-    return "unknown"
+        return "unknown"

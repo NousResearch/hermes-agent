@@ -9,6 +9,7 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
 
 
 class _ControlledRequest:
@@ -65,11 +66,17 @@ class _LifecycleBuilder:
     def token(self, _token):
         return self
 
+    def application_class(self, _application_class, _kwargs=None):
+        return self
+
     def request(self, _request):
         return self
 
     def get_updates_request(self, request):
         self.polling_request = request
+        return self
+
+    def concurrent_updates(self, _processor):
         return self
 
     def build(self):
@@ -111,7 +118,7 @@ def _configure_lifecycle_connect(monkeypatch, adapter, apps):
     monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *args, **kwargs: None)
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)
     monkeypatch.setattr(adapter, "_release_platform_lock", MagicMock())
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_fallback_ips", list)
     monkeypatch.setattr(adapter, "_start_post_connect_housekeeping", MagicMock())
     return builders
 
@@ -243,8 +250,8 @@ async def test_fallback_disabled_skips_doh_discovery_on_connect(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fallback_discovery_timeout_falls_back_to_plain_connect(monkeypatch):
-    """A stuck DoH fallback lookup must not block Telegram cold connect."""
+async def test_fallback_discovery_timeout_uses_seed_ipv4(monkeypatch):
+    """A stuck DoH lookup must not block connect; seed IPv4 IPs are used instead."""
     adapter = _make_adapter()
     polling_app = _lifecycle_app()
 
@@ -263,9 +270,10 @@ async def test_fallback_discovery_timeout_falls_back_to_plain_connect(monkeypatc
     monkeypatch.setattr(tg_adapter, "discover_fallback_ips", stuck_discovery)
 
     assert await adapter.connect() is True
-    assert "transport" not in (
-        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
-    )
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    transport = httpx_kwargs.get("transport")
+    assert isinstance(transport, TelegramFallbackTransport)
+    assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 
 
@@ -293,16 +301,17 @@ async def test_non_finite_fallback_discovery_timeout_uses_finite_default(monkeyp
         if getattr(getattr(awaitable, "cr_code", None), "co_name", "") == "stuck_discovery":
             assert timeout == 5.0
             awaitable.close()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         return await original_deadline(awaitable, timeout, **_kwargs)
 
     monkeypatch.setattr(tg_adapter, "discover_fallback_ips", stuck_discovery)
     monkeypatch.setattr(tg_adapter, "_await_with_thread_deadline", deadline)
 
     assert await adapter.connect() is True
-    assert "transport" not in (
-        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
-    )
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    transport = httpx_kwargs.get("transport")
+    assert isinstance(transport, TelegramFallbackTransport)
+    assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 
 
@@ -324,7 +333,7 @@ async def test_fallback_disabled_excludes_configured_ips_from_proxy_targets(monk
 
     proxy_targets = []
 
-    def resolve_proxy(_env_name, *, target_hosts):
+    def resolve_proxy(_env_name, *, target_hosts, configured=None):
         proxy_targets.append(list(target_hosts))
         return "http://127.0.0.1:8080"
 
@@ -411,12 +420,18 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
         def token(self, _token):
             return self
 
+        def application_class(self, _application_class, _kwargs=None):
+            return self
+
         def request(self, request):
             self.general_request = request
             return self
 
         def get_updates_request(self, request):
             self.polling_request = request
+            return self
+
+        def concurrent_updates(self, _processor):
             return self
 
         def build(self):
@@ -441,7 +456,7 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
 
     adapter = _make_adapter()
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_fallback_ips", list)
     _, progress = adapter._begin_polling_generation()
 
     assert await adapter.connect() is False

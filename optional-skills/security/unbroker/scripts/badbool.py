@@ -34,15 +34,15 @@ SYMBOLS = {
 
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _OPTOUT_HINT = re.compile(
-    r"opt[\- ]?out|optout|removal|remove|suppress|control-privacy|delete", re.I
+    r"opt[\- ]?out|optout|removal|remove|suppress|control-privacy|delete", re.IGNORECASE
 )
-_FIND_HINT = re.compile(r"find|your information|search|look ?up|look for", re.I)
+_FIND_HINT = re.compile(r"find|your information|search|look ?up|look for", re.IGNORECASE)
 
 
 def slug(name: str) -> str:
     # Drop a trailing .com/.org/.info on the displayed name so "FastPeopleSearch.com"
     # matches the curated id "fastpeoplesearch"; keep .net/.id so distinct sites differ.
-    n = re.sub(r"\.(com|org|info)\b", "", name.strip(), flags=re.I)
+    n = re.sub(r"\.(com|org|info)\b", "", name.strip(), flags=re.IGNORECASE)
     return re.sub(r"[^a-z0-9]+", "", n.lower())
 
 
@@ -158,7 +158,7 @@ def parse(markdown: str) -> list[dict]:
 
 def fetch(url: str = DEFAULT_URL, timeout: int = 30) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 

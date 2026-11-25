@@ -1,11 +1,27 @@
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
+import { browserNotificationsAllowed } from '@/lib/browser-notifications'
+import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { persistString, storedString } from '@/lib/storage'
 
+import { recordFeatureToggle } from './desktop-metrics'
 import { $gateway } from './gateway'
+import { $hapticsMuted } from './haptics'
 import { withinNativeNotifyBaseline } from './notify-baseline'
-import { clearApprovalRequest } from './prompts'
-import { $activeSessionId } from './session'
+import {
+  answerApproval,
+  clearApprovalRequest,
+  replayPendingApproval,
+  sessionApprovalRequest,
+  sessionApprovalRequests
+} from './prompts'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
+import { storedSessionIdForRuntimeId } from './session-states'
+
+export type { HermesOpenTarget }
 
 // Native OS notifications (Electron `Notification`), separate from the in-app
 // toast feed in `notifications.ts`. Each kind toggles independently.
@@ -81,11 +97,13 @@ function writePrefs(next: NativeNotificationPrefs) {
 }
 
 export function setNativeNotifyEnabled(enabled: boolean) {
+  recordFeatureToggle('native_notifications', $nativeNotifyPrefs.get().enabled, enabled)
   writePrefs({ ...$nativeNotifyPrefs.get(), enabled })
 }
 
 export function setNativeNotifyKind(kind: NativeNotificationKind, on: boolean) {
   const prev = $nativeNotifyPrefs.get()
+  recordFeatureToggle('notification_kind', prev.kinds[kind], on)
   writePrefs({ ...prev, kinds: { ...prev.kinds, [kind]: on } })
 }
 
@@ -144,14 +162,41 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
 }
 
+/** Last-resort label for a session the renderer has no row for (yet): the id
+ *  tail still tells three parked approvals apart. */
+const shortSessionId = (id: string) => `#${id.slice(-6)}`
+
+/** Blocking prompts name their session in the title ("Approval needed — Fix the
+ *  flaky test") so parallel parked approvals stay tellable apart; the caller's
+ *  `title` stays the bare fallback for a prompt with no session. */
+const NAMED_TITLE_KEYS: Partial<Record<NativeNotificationKind, string>> = {
+  approval: 'notifications.native.approvalTitleNamed',
+  input: 'notifications.native.inputTitleNamed'
+}
+
+/** Sidebar naming order (title → preview → short id) via the locale's
+ *  named-title template; the runtime id the caller already passes is the whole
+ *  hint needed. */
+function withSessionLabel(namedKey: string, runtimeSessionId: string): string {
+  const storedId = storedSessionIdForRuntimeId(runtimeSessionId) ?? runtimeSessionId
+  const row = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedId))
+  const name = row?.title?.trim() || row?.preview?.trim() || shortSessionId(storedId)
+
+  return translateNow(namedKey, name.length > 80 ? `${name.slice(0, 80).trimEnd()}…` : name)
+}
+
 export interface NativeNotificationAction {
   id: string
   text: string
+  /** Serializable activate target echoed back on button press (plugin path). */
+  activate?: string
 }
 
 export interface NativeNotificationInput {
   kind: NativeNotificationKind
   title: string
+  /** Named-title template (session name appended) overriding the kind's default. */
+  namedTitleKey?: string
   body?: string
   sessionId?: null | string
   /**
@@ -168,44 +213,186 @@ export interface NativeNotificationInput {
    * into one another. Never drives click-to-focus like `sessionId` does.
    */
   tag?: string
+  /** Absolute file path for the OS notification icon (Electron). */
+  icon?: string
+  /**
+   * Resolved hash-router path to open on body click when there is no
+   * `sessionId` (plugins). Same vocabulary as `hermes://index-network/intent/1`.
+   */
+  activate?: string
+  /** Renderer-side handle so click/action can invoke registered callbacks. */
+  notifyId?: string
 }
 
-export function dispatchNativeNotification(input: NativeNotificationInput): void {
+/** Every guard dispatch applies before its throttle: the preference and kind, the post-connect quiet
+ *  interval and the focus/active-session condition. Reads only, so it can be asked ahead of time. */
+function nativeNotificationPasses({ global, kind, sessionId }: Pick<NativeNotificationInput, 'global' | 'kind' | 'sessionId'>) {
   const prefs = $nativeNotifyPrefs.get()
 
-  if (!prefs.enabled || !prefs.kinds[input.kind]) {
-    return
+  return prefs.enabled && prefs.kinds[kind] && !withinNativeNotifyBaseline() && shouldFire(kind, sessionId, global)
+}
+
+// Main's answer to whether it can show an OS notification, asked once per window (bridge); false
+// until it arrives.
+const hostNotifySupport = new WeakMap<NonNullable<Window['hermesDesktop']>, { known: Promise<void>; supported: boolean }>()
+
+/** Ask main, once per window, whether it can show OS notifications. Resolves when the answer is in
+ *  (never rejects); undefined where there is nothing to ask (no bridge, or a browser, which checks
+ *  its permission live). */
+export function readHostNotifySupport(): Promise<void> | undefined {
+  const bridge = window.hermesDesktop
+
+  if (!bridge?.notify || isBrowserHostedDesktop()) {
+    return undefined
   }
 
-  if (withinNativeNotifyBaseline()) {
-    return
+  let entry = hostNotifySupport.get(bridge)
+
+  if (!entry) {
+    const created = { known: Promise.resolve(), supported: false }
+    created.known = (bridge.notifySupported?.() ?? Promise.resolve(false)).then(
+      supported => void (created.supported = supported === true),
+      () => undefined
+    )
+    hostNotifySupport.set(bridge, (entry = created))
   }
 
-  if (!shouldFire(input.kind, input.sessionId, input.global)) {
-    return
+  return entry.known
+}
+
+/** Whether the host could show a notification handed to it now. Not known yet counts as no. */
+function hostCanNotify(): boolean {
+  const bridge = window.hermesDesktop
+
+  if (!bridge?.notify) {
+    return false
+  }
+
+  if (isBrowserHostedDesktop()) {
+    return browserNotificationsAllowed()
+  }
+
+  void readHostNotifySupport()
+
+  return hostNotifySupport.get(bridge)?.supported === true
+}
+
+/** Whether this client's turn-done notification for `sessionId` passes every guard dispatch applies
+ *  before handing it to the host, and the host could show it: in a browser the live permission the
+ *  browser bridge checks, on Desktop main's OS notification support. The dispatch throttle is not
+ *  predicted (asking must not spend it), nor whether the OS then displays it. */
+export function turnDoneNotificationWouldFire(sessionId: string): boolean {
+  return nativeNotificationPasses({ kind: 'turnDone', sessionId }) && hostCanNotify()
+}
+
+/** Returns true when the notification passed every guard and was handed to the
+ *  OS bridge — callers registering per-notification state (plugin handlers)
+ *  must only do so on true, or suppressed/throttled notifications leak it. */
+export function dispatchNativeNotification(input: NativeNotificationInput): boolean {
+  if (!nativeNotificationPasses(input)) {
+    return false
   }
 
   if (throttled(`${input.kind}:${input.sessionId ?? input.tag ?? (input.global ? 'global' : '')}`, Date.now())) {
-    return
+    return false
   }
+
+  const namedKey = input.sessionId ? (input.namedTitleKey ?? NAMED_TITLE_KEYS[input.kind]) : undefined
+  const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
 
   void window.hermesDesktop?.notify({
     actions: input.actions,
+    activate: input.activate,
     body: input.body,
+    focusSessionId: input.sessionId ? (storedSessionIdForRuntimeId(input.sessionId) ?? undefined) : undefined,
+    icon: input.icon,
     kind: input.kind,
+    notifyId: input.notifyId,
     sessionId: input.sessionId ?? undefined,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: input.tag,
-    title: input.title
+    title
   })
+
+  return true
 }
 
 // -- the plugin door (`ctx.os.notify`) ----------------------------------------
+
+export interface PluginNotificationAction {
+  id: string
+  label: string
+  /** Navigate here on button press (path or `hermes://index-network/intent/1`). */
+  activate?: HermesOpenTarget
+  /** Renderer callback — only `id` crosses IPC; this stays in-process. */
+  onAction?: () => void
+}
 
 export interface PluginNativeNotificationInput {
   title: string
   body?: string
   silent?: boolean
+  /** Absolute filesystem path for the notification icon. */
+  icon?: string
+  /**
+   * Where body-click should land. Accepts a plugin deep link
+   * (`hermes://index-network/intent/1`), a hash path (`/index-network/intent/1`),
+   * or `{ path, params }` — all resolve through the same helper as OS deep links.
+   */
+  activate?: HermesOpenTarget
+  /** Extra work on body click (runs in addition to `activate` navigation). */
+  onActivate?: () => void
+  actions?: PluginNotificationAction[]
+}
+
+interface PendingPluginNotify {
+  onActivate?: () => void
+  actions: Map<string, () => void>
+}
+
+const pendingPluginNotify = new Map<string, PendingPluginNotify>()
+
+function mintNotifyId(pluginId: string): string {
+  return `${pluginId}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Invoke body-click callback if one was registered for this notify id. */
+export function invokePluginNotifyActivate(notifyId: string | undefined): void {
+  if (!notifyId) {
+    return
+  }
+
+  const pending = pendingPluginNotify.get(notifyId)
+  pending?.onActivate?.()
+}
+
+/** Invoke an action-button callback. Returns true when a handler ran. */
+export function invokePluginNotifyAction(notifyId: string | undefined, actionId: string | undefined): boolean {
+  if (!notifyId || !actionId) {
+    return false
+  }
+
+  const handler = pendingPluginNotify.get(notifyId)?.actions.get(actionId)
+
+  if (!handler) {
+    return false
+  }
+
+  handler()
+
+  return true
+}
+
+/** Drop pending handlers (tests / after a click consumed the toast). */
+export function clearPluginNotifyHandlers(notifyId?: string): void {
+  if (notifyId) {
+    pendingPluginNotify.delete(notifyId)
+
+    return
+  }
+
+  pendingPluginNotify.clear()
 }
 
 /** Native OS notification on behalf of a plugin. One "Plugin notifications"
@@ -214,15 +401,57 @@ export interface PluginNativeNotificationInput {
  *  user is away from Hermes — the in-app toast (`host.notify`) covers the
  *  foreground case. */
 export function dispatchPluginNativeNotification(pluginId: string, input: PluginNativeNotificationInput): void {
-  dispatchNativeNotification({ ...input, global: true, kind: 'plugin', tag: pluginId })
+  const activate = resolveHermesOpenPath(input.activate) ?? undefined
+  const notifyId = input.onActivate || input.actions?.some(a => a.onAction) ? mintNotifyId(pluginId) : undefined
+
+  const actions: NativeNotificationAction[] | undefined = input.actions?.map(action => ({
+    activate: resolveHermesOpenPath(action.activate) ?? undefined,
+    id: action.id,
+    text: action.label
+  }))
+
+  const fired = dispatchNativeNotification({
+    actions,
+    activate,
+    body: input.body,
+    global: true,
+    icon: input.icon,
+    kind: 'plugin',
+    notifyId,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
+    tag: pluginId,
+    title: input.title
+  })
+
+  // Register renderer callbacks only for notifications that actually reached
+  // the OS — a throttled/suppressed one can never be clicked, so registering
+  // first would leak the closures for the window's lifetime.
+  if (fired && notifyId) {
+    const handlers = new Map<string, () => void>()
+
+    for (const action of input.actions ?? []) {
+      if (action.onAction) {
+        handlers.set(action.id, action.onAction)
+      }
+    }
+
+    pendingPluginNotify.set(notifyId, { actions: handlers, onActivate: input.onActivate })
+  }
 }
 
 // Resolve a pending approval from a notification button, mirroring the in-app
 // Run/Reject bar. Keyed by session id — a background approval has no local guard.
 export async function respondToApprovalAction(sessionId: null | string, actionId: string): Promise<void> {
-  const choice = actionId === 'approve' ? 'once' : actionId === 'reject' ? 'deny' : null
+  const [action, ...idParts] = actionId.split(':')
+  const requestId = idParts.length ? idParts.join(':') : sessionApprovalRequest(sessionId).get()?.requestId
+  const choice = action === 'approve' ? 'once' : action === 'reject' ? 'deny' : null
 
   if (!choice) {
+    return
+  }
+
+  if (sessionId && isSessionGone(sessionId)) {
     return
   }
 
@@ -233,9 +462,22 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    await gateway.request('approval.respond', { choice, session_id: sessionId ?? undefined })
-    clearApprovalRequest(sessionId)
-  } catch {
+    const parked = sessionApprovalRequests(sessionId)
+      .get()
+      .find(request => request.requestId === requestId)
+
+    await answerApproval(gateway, parked ?? { sessionId, requestId }, choice)
+
+    if (requestId || sessionApprovalRequest(sessionId).get()?.requestId === undefined) {
+      clearApprovalRequest(sessionId, requestId)
+    }
+
+    void replayPendingApproval(gateway, sessionId).catch(() => undefined)
+  } catch (error) {
+    if (sessionId && isSessionGoneForBackgroundPolling(error)) {
+      markSessionGone(sessionId)
+    }
+
     // Leave the prompt parked so the user can still resolve it in-app.
   }
 }

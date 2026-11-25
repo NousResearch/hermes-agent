@@ -177,6 +177,20 @@ class TestJudgeParseFailureAutoPause:
         assert parse_failed is False
         assert transport_failed is True
 
+    def test_unimportable_judge_client_pauses_like_an_unreachable_judge(self, hermes_home, monkeypatch):
+        """No importable auxiliary client is a judge outage, not a run of genuine continue verdicts."""
+        import sys
+        from hermes_cli.goals import DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES, GoalManager
+
+        monkeypatch.setitem(sys.modules, "agent.auxiliary_client", None)
+        mgr = GoalManager(session_id="judge-import-sid", default_max_turns=20)
+        mgr.set("do a thing")
+        decisions = [mgr.evaluate_after_turn(f"step {n}") for n in range(DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES)]
+
+        assert [d["should_continue"] for d in decisions[:-1]] == [True] * (len(decisions) - 1)
+        assert decisions[-1]["status"] == "paused" and not decisions[-1]["should_continue"]
+        assert mgr.state.paused_reason.startswith("judge API unreachable")
+
 
     def test_auto_pause_after_three_consecutive_parse_failures(self, hermes_home):
         """N=3 consecutive parse failures → auto-pause with config pointer."""

@@ -904,8 +904,9 @@ def judge_goal(
         from agent.auxiliary_client import call_llm
         from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
     except Exception as exc:
+        # No judge can run: an outage like AuxiliaryClientUnavailable below, not a "continue" verdict.
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False, None, False
+        return "continue", "auxiliary client unavailable", False, None, True
 
     # Prompt priority: contract > subgoals > plain. With both, subgoals fold into the contract
     # block as extra criteria so the judge sees a single source of truth.

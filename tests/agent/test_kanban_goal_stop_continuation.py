@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -303,6 +304,77 @@ def test_unavailable_goal_judge_is_not_worker_success(worker, monkeypatch, calle
     with connect_closing() as conn:
         task = kb.get_task(conn, worker.context['task_id'])
         assert task.status == 'running' and task.current_run_id == worker.context['run_id']
+
+
+@pytest.mark.parametrize('path', ['partial', 'needs_input'])
+def test_judge_import_failure_is_an_outage_not_a_continue_verdict(worker, monkeypatch, path):
+    from tests.agent.test_run_agent import _mock_response
+    from tools import kanban_tools
+
+    real_judge, judged = goals.judge_goal, []
+
+    def judge(*args, **kwargs):
+        # The real judge, with its auxiliary client unimportable only while it runs.
+        with pytest.MonkeyPatch.context() as broken:
+            broken.setitem(sys.modules, 'agent.auxiliary_client', None)
+            judged.append(real_judge(*args, **kwargs))
+        return judged[-1]
+
+    monkeypatch.setattr(goals, 'judge_goal', judge)
+    monkeypatch.setattr(kanban_tools, 'judge_goal', judge)
+    monkeypatch.setenv('HERMES_KANBAN_STOP_NUDGE', '0')
+    tid, run_id = worker.context['task_id'], worker.context['run_id']
+    if path == 'partial':
+        transport = worker.agent.client.chat.completions.create
+        transport.side_effect = [_mock_response(content='Section one is ready. Section two remains.')]
+        _run_caller(worker, 'sdk', monkeypatch, expected_exit=1)
+        assert transport.call_count == 1 and len(judged) == 1
+        expected = ('running', run_id)
+    else:
+        reason = 'Only the operator can choose the required export format.'
+        assert json.loads(kanban_tools._handle_block({'kind': 'needs_input', 'reason': reason}))['ok']
+        assert len(judged) == 1
+        expected = ('blocked', None)
+    with connect_closing() as conn:
+        task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        assert (task.status, task.current_run_id) == expected and run.id == run_id
+        if path == 'needs_input':
+            assert 'judge unavailable' in run.summary.lower()
+
+
+@pytest.mark.parametrize('action', ['complete', 'request_review'])
+@pytest.mark.parametrize('surface', ['tool', 'cli'])
+@pytest.mark.parametrize('importable', [True, False])
+def test_unimportable_judge_does_not_reject_handoff(worker, monkeypatch, action, surface, importable):
+    from argparse import Namespace
+    from agent import auxiliary_client as aux
+    from hermes_cli import kanban as kanban_cli
+    from tests.agent.test_run_agent import _mock_response
+    from tools import kanban_tools
+
+    # A configured judge that rejects: only the failed import can let the handoff through (#83610).
+    verdict = _mock_response(content='{"verdict":"continue","reason":"The second section is missing."}')
+    client = SimpleNamespace(base_url='https://inert.invalid/v1', chat=SimpleNamespace(
+        completions=SimpleNamespace(create=MagicMock(return_value=verdict))))
+    monkeypatch.setattr(aux, '_get_auxiliary_task_config',
+                        lambda task: {'provider': 'custom:judge', 'model': 'judge-model'} if task == 'goal_judge' else {})
+    monkeypatch.setattr(aux, 'resolve_provider_client', lambda name, *a, **kw: (client, 'judge-model'))
+    tid, run_id = worker.context['task_id'], worker.context['run_id']
+    summary = 'Both sections were written and verified.'
+    with pytest.MonkeyPatch.context() as entry:
+        if not importable:
+            entry.setitem(sys.modules, 'agent.auxiliary_client', None)
+        if surface == 'tool':
+            accepted = json.loads(getattr(kanban_tools, '_handle_' + action)({'task_id': tid, 'summary': summary})).get('ok', False)
+        else:
+            accepted = getattr(kanban_cli, '_cmd_' + action)(Namespace(
+                task_id=tid, task_ids=[tid], summary=summary, result=None, force=False)) == 0
+    assert accepted is not importable
+    assert client.chat.completions.create.call_count == int(importable)
+    with connect_closing() as conn:
+        task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        landed = 'running' if importable else 'done' if action == 'complete' else 'review'
+        assert task.status == landed and run.id == run_id
 
 
 def test_failed_gateway_continuation_is_not_judged_as_progress(worker, monkeypatch):

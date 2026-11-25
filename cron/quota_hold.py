@@ -28,6 +28,7 @@ logger = logging.getLogger("cron.scheduler")
 # Persisted while a hold is active: ISO instant the job was parked at.
 STATE_KEY = "quota_hold_until"
 SCHEDULE_EXPR_KEY = "quota_hold_cron_expr"
+_RESUMED_SLOT_KEY = "quota_resumed_slot"
 
 # The provider's remaining seconds were measured when the probe ran; by the time the run is
 # recorded a little wall clock has passed, so land clearly past the boundary.
@@ -68,6 +69,44 @@ def hold_active(job: dict[str, Any], now: Optional[datetime] = None) -> bool:
 def clear_state(job: dict[str, Any]) -> None:
     job.pop(STATE_KEY, None)
     job.pop(SCHEDULE_EXPR_KEY, None)
+    job.pop(_RESUMED_SLOT_KEY, None)
+
+
+def blocks_stale_error_rearm(job: dict[str, Any], now: datetime) -> bool:
+    """Neither a hold nor its restored next slot is a stale-error wedge."""
+    resumed = job.get(_RESUMED_SLOT_KEY)
+    return hold_active(job, now) or bool(resumed and resumed == job.get("next_run_at"))
+
+
+def _next_regular_slot(job: dict[str, Any], now: datetime) -> Optional[str]:
+    from cron.jobs import _elapsed_seconds, _parse_aware, _schedule_cadence_seconds, _seconds_after, compute_next_run
+
+    schedule = job["schedule"]
+    if schedule.get("kind") != "interval":
+        return compute_next_run(schedule, now.isoformat(), timezone=job.get("timezone"))
+
+    # The failed run's completion anchored the interval before plan_hold replaced next_run_at.
+    anchor = _parse_aware(job.get("last_run_at"))
+    cadence = _schedule_cadence_seconds(schedule)
+    if anchor is None or cadence is None or not cadence > 0:
+        return None
+    intervals = max(1, int(_elapsed_seconds(now, anchor) // cadence) + 1)
+    return _seconds_after(anchor, cadence * intervals).isoformat()
+
+
+def resume_on_schedule(job: dict[str, Any], now: datetime) -> bool:
+    """Move a confirmed reopened hold only to an earlier, future scheduled slot."""
+    from cron.jobs import _instant_before, _parse_aware
+
+    parked = _parse_aware(job[STATE_KEY])
+    slot = _next_regular_slot(job, now)
+    next_run = _parse_aware(slot) if slot else None
+    if (parked is None or next_run is None or not _instant_before(now, next_run)
+            or not _instant_before(next_run, parked)):
+        return False
+    clear_state(job)
+    job["next_run_at"] = job[_RESUMED_SLOT_KEY] = slot
+    return True
 
 
 def is_recovery_fire(job: dict[str, Any], next_run: str) -> bool:
@@ -121,6 +160,7 @@ def plan_hold(
 
     schedule = job.get("schedule") or {}
     kind = schedule.get("kind")
+    job.pop(_RESUMED_SLOT_KEY, None)
     if kind not in {"cron", "interval"} or job.get("state") == "paused":
         clear_state(job)
         return False

@@ -585,7 +585,13 @@ schedules, manual runs and interval jobs retain their natural next run.
 Otherwise, missed occurrences are coalesced and
 `next_run_at` moves to the first scheduled occurrence after the window. The
 parked instant is stored as `quota_hold_until`; nothing fires or alerts before
-it. Any run that reaches the model clears the hold. One-shot jobs are not held.
+it unless the scheduler confirms the quota reopened early. For enabled jobs
+using an unambiguous Hermes-managed Codex login, the in-process scheduler checks
+usage in the background while a hold is active. A fresh open window can restore
+an earlier regular slot in the job's timezone (or interval cadence), without
+running the failed or missed occurrences again. A closed or inconclusive check
+leaves the original schedule intact. Any run that reaches the model clears the
+hold. One-shot jobs are not held.
 
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 

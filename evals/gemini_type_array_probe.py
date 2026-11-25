@@ -98,6 +98,9 @@ def main():
             del sys.modules[name]
     with tempfile.TemporaryDirectory(prefix="gemini-schema-home-") as home:
         os.environ["HERMES_HOME"] = home
+        import providers
+
+        providers.get_provider_profile("gemini")
         adapter = importlib.import_module("plugins.model_providers.google.native_adapter")
         baseline = types.ModuleType("baseline_gemini_schema")
         source = subprocess.check_output(

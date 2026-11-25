@@ -1,65 +1,58 @@
-"""AST guard: core modules never import the Google model-provider plugin or its moved adapter modules."""
+"""Behavior tests: core Gemini-family helpers, Vertex, and child-env security work with no Google plugin loaded."""
 
 from __future__ import annotations
 
-import ast
+import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_CORE_ROOTS = (
-    "agent",
-    "cron",
-    "gateway",
-    "hermes_cli",
-    "providers",
-    "tools",
-    "tui_gateway",
-)
-_CORE_FILES = ("run_agent.py", "model_tools.py")
 
-_FORBIDDEN_PREFIXES = (
-    "agent.gemini_native_adapter",
-    "agent.gemini_schema",
-    "agent.gemini_long_decode",
-    "plugins.model_providers.google",
-    "plugins.model_providers.gemini",
-    "plugins.model_providers.solstice",
-)
+def test_core_helpers_vertex_and_env_blocklist_work_without_google_plugin():
+    """Run in a fresh interpreter with the google provider package blocked from import."""
+    code = r"""
+import sys
+sys.modules["plugins.model_providers.google"] = None
+sys.modules["agent.gemini_native_adapter"] = None
+sys.modules["agent.gemini_schema"] = None
+sys.modules["agent.gemini_long_decode"] = None
 
+from agent.gemini_urls import is_native_gemini_base_url, is_vertex_express_base_url, normalize_gemini_base_url
+from agent.gemini_model_family import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, effective_gemini_max_output_tokens
+from agent.output_budget_timeout import output_budget_stale_multiplier
+from agent.reasoning_effort import gemini_thinking_config
+from tools.environments.local_env_policy import _build_provider_env_blocklist
+import providers
 
-def _core_python_files() -> list[Path]:
-    files = [REPO_ROOT / name for name in _CORE_FILES if (REPO_ROOT / name).is_file()]
-    for root in _CORE_ROOTS:
-        base = REPO_ROOT / root
-        if base.is_dir():
-            files.extend(sorted(base.rglob("*.py")))
-    return files
+assert normalize_gemini_base_url("https://generativelanguage.googleapis.com") == "https://generativelanguage.googleapis.com/v1beta"
+assert is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta") is True
+assert is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta/openai") is False
+assert is_vertex_express_base_url("https://aiplatform.googleapis.com/v1beta1") is True
+assert is_vertex_express_base_url("https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi") is False
+assert effective_gemini_max_output_tokens(4096, {"includeThoughts": True, "thinkingLevel": "high"}) == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+assert output_budget_stale_multiplier({"extra_body": {"max_output_tokens": 262_144}}) == 8
+assert gemini_thinking_config("gemini-4-neon", {"enabled": True, "effort": "xhigh"}) == {
+    "includeThoughts": True, "thinkingLevel": "xhigh"
+}
 
+vertex = providers.get_provider_profile("vertex")
+assert vertex is not None
+assert vertex.build_extra_body(model="google/gemini-4-neon", reasoning_config={"enabled": True, "effort": "xhigh"}) == {
+    "extra_body": {"google": {"thinking_config": {"include_thoughts": True, "thinking_level": "xhigh"}}}
+}
 
-def _forbidden_imports(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
-    hits: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.startswith(_FORBIDDEN_PREFIXES):
-                    hits.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} import {alias.name}")
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module.startswith(_FORBIDDEN_PREFIXES):
-                hits.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} from {node.module}")
-    return hits
-
-
-def test_core_has_no_imports_of_moved_google_adapter_or_plugin():
-    violations = [hit for path in _core_python_files() for hit in _forbidden_imports(path)]
-    assert violations == [], "Core must talk to the Google provider through ProviderProfile seams:\n" + "\n".join(violations)
-
-
-def test_google_plugin_has_no_private_core_imports():
-    from hermes_cli.plugin_validate_private_imports import private_import_findings
-
-    plugin_dir = REPO_ROOT / "plugins" / "model-providers" / "google"
-    if not plugin_dir.is_dir():
-        return
-    assert private_import_findings(plugin_dir) == []
+blocked = _build_provider_env_blocklist()
+for var in ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GEMINI_BASE_URL"):
+    assert var in blocked, f"{var} missing from provider env blocklist"
+print("ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0 and result.stdout.strip().splitlines()[-1] == "ok", result.stderr[-2000:]

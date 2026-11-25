@@ -119,3 +119,30 @@ def test_skip_flags_replace_the_isinstance_checks_for_in_and_out_of_tree_clients
     assert _maybe_wrap_anthropic(sync_client, "m", "k", "https://example.invalid/v1") is sync_client
     wrapped, model = _to_async_client(sync_client, "m")
     assert isinstance(wrapped, _WrappedAsync) and wrapped.sync_client is sync_client and model == "m"
+
+
+def test_auxiliary_profile_client_enforces_strict_client_and_allows_none_fallback(registered):
+    from agent.auxiliary_client import _api_key_profile_supplied_client
+
+    class _StrictExplodingProfile(ProviderProfile):
+        def create_client(self, **kwargs):
+            raise RuntimeError("strict native client failed")
+
+    class _StrictOptionalProfile(ProviderProfile):
+        def create_client(self, **kwargs):
+            return None if kwargs.get("base_url", "").endswith("/openai") else _FakeClient(**kwargs)
+
+    registered(_ExplodingProfile(name="aux-non-strict-boom", base_url="https://example.invalid/v1"))
+    registered(_StrictExplodingProfile(name="aux-strict-boom", base_url="https://example.invalid/v1", strict_client=True))
+    registered(_StrictOptionalProfile(name="aux-strict-opt", base_url="https://example.invalid/v1", strict_client=True))
+
+    assert _api_key_profile_supplied_client("aux-non-strict-boom", api_key="k", base_url="https://example.invalid/v1") is None
+    assert _api_key_profile_supplied_client("aux-non-strict-boom", api_key="k", base_url="https://example.invalid/v1", auxiliary_chain=True) is None
+
+    for aux_chain in (False, True):
+        with pytest.raises(RuntimeError, match="strict native client failed"):
+            _api_key_profile_supplied_client("aux-strict-boom", api_key="k", base_url="https://example.invalid/v1", auxiliary_chain=aux_chain)
+
+    assert _api_key_profile_supplied_client("aux-strict-opt", api_key="k", base_url="https://example.invalid/openai", auxiliary_chain=True) is None
+    client = _api_key_profile_supplied_client("aux-strict-opt", api_key="k", base_url="https://example.invalid/v1", auxiliary_chain=True)
+    assert isinstance(client, _FakeClient) and client.kwargs.get("auxiliary_chain") is True

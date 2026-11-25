@@ -549,22 +549,36 @@ def snapshot_automation(authority, adapter, event, identity):
     identities = event.metadata.get('automation_identities')
     if identities:
         envelope['automation']['identities'] = sorted(set(identities))
-    envelope['automation'].update(_origin_descriptor(event))
     return {'text': event.text, 'native_text_v1': envelope}, entry
 
 
-def _origin_descriptor(event):
-    """The ``turn_origin`` an automation row records for ``turn_origin()``: only when its producer
-    named one (``MessageEvent.set_turn_origin``), so every other row, and its fingerprint, is unchanged."""
-    origin = event.turn_origin()
-    return {'turn_origin': origin} if origin is not None else {}
+# The process-registry producers whose admission identity (``producer_identity``: a JSON list
+# ``[type, producer id, incarnation]``) names the turn's ``turn_origin()``.
+_IDENTITY_ORIGINS = {'async_delegation': 'delegation_result', 'completion': 'process_notification',
+                     'watch_match': 'process_notification', 'watch_disabled': 'process_notification',
+                     'heartbeat': 'process_notification'}
+
+
+def _identity_origin(descriptor):
+    """The ``turn_origin()`` a committed automation row names, read back from the identity every row
+    (an older build's included) already carries, so no descriptor field and no fingerprint changes.
+    A liveness tick's row also records its output (``tick``), which the session heartbeat's does not;
+    every other producer's identity names none of these types."""
+    identity = descriptor.get('identity')
+    try:
+        parts = json.loads(identity) if isinstance(identity, str) else None
+    except ValueError:
+        return None
+    if (not isinstance(parts, list) or len(parts) != 3 or not isinstance(parts[0], str)
+            or (parts[0] == 'heartbeat' and 'tick' not in descriptor)):
+        return None
+    return _IDENTITY_ORIGINS.get(parts[0])
 
 
 def restore_origin(event, descriptor):
-    """Re-name a restored automation event's producer from its row (``_origin_descriptor``). A row
-    queued before the field existed, or by any producer that named none, restores as ``None``.
-    ``internal``, execution trust, stays as it is."""
-    event.set_turn_origin(descriptor.get('turn_origin'))
+    """Re-name a restored automation event's producer from its row (``_identity_origin``): any other
+    producer's row restores as ``None``. ``internal``, execution trust, stays as it is."""
+    event.set_turn_origin(_identity_origin(descriptor))
     return event
 
 
@@ -633,7 +647,6 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         descriptor['identities'] = sorted(set(event.metadata['automation_identities']))
     if getattr(event, '_heartbeat_session_id', None):
         descriptor['heartbeat'] = event._heartbeat_session_id
-    descriptor.update(_origin_descriptor(event))
     return {'text': event.text, 'local_automation_v1': descriptor}, entry
 
 

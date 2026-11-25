@@ -3,7 +3,7 @@
 Execution trust (``internal``) is not an origin: a Bot Chat delivery, a restart's resume of a
 person's interrupted turn and a late /steer drained after a wake all run ``internal`` or under a
 wake's event, and read ``None``. A process notification names itself at its producer, and the name
-survives the committed admission's restore; a row that recorded none restores as ``None``.
+is read back from the committed admission's identity at restore; any other row restores as ``None``.
 """
 from types import SimpleNamespace
 
@@ -76,23 +76,58 @@ async def test_every_bot_chat_delivery_reads_no_origin(bot_chat):
     assert sorted(bot_chat.seen) == [('bot:' + key, True, None) for key in sorted(cases)]
 
 
-def test_a_row_restores_the_origin_it_recorded_and_an_old_row_none():
+def test_a_row_restores_the_origin_its_identity_names():
+    """The origin is read from the identity every committed row already carries, an older build's
+    included: no descriptor field, so no retry fingerprint changes."""
     from gateway.config import Platform
     from gateway.session import SessionSource
-    from gateway.session_automation import _origin_descriptor, restore_origin
+    from gateway.session_automation import restore_origin
     source = SessionSource(platform=Platform.LOCAL, chat_id='c')
 
-    def fresh():
-        return MessageEvent(text='x', source=source, internal=True)
-    named = fresh()
-    named.set_turn_origin('delegation_result')
-    assert _origin_descriptor(named) == {'turn_origin': 'delegation_result'}
-    assert _origin_descriptor(fresh()) == {}  # a row of any other producer is unchanged
-    assert restore_origin(fresh(), {'turn_origin': 'delegation_result'}).turn_origin() == 'delegation_result'
-    assert restore_origin(fresh(), {'turn_origin': 'process_notification'}).turn_origin() == 'process_notification'
-    for old in ({}, {'identity': '["cron","job",1]'}, {'started_by_hermes': True}, {'turn_origin': 'cron'},
-                {'turn_origin': True}):
-        assert restore_origin(fresh(), old).turn_origin() is None, old
+    def read(descriptor):
+        return restore_origin(MessageEvent(text='x', source=source, internal=True), descriptor).turn_origin()
+    assert read({'identity': '["async_delegation","d1",""]'}) == 'delegation_result'
+    assert read({'identity': '["async_delegation","d1","task_failure:0"]'}) == 'delegation_result'
+    for kind in ('completion', 'watch_match', 'watch_disabled'):
+        assert read({'identity': f'["{kind}","proc_1",1.0]'}) == 'process_notification', kind
+    assert read({'identity': '["heartbeat","proc_1","e1"]', 'tick': {'output': '', 'omitted': 0}}) == 'process_notification'
+    for other in ({}, {'identity': '["heartbeat","s1",1.0,2]', 'heartbeat': 's1'}, {'identity': '["heartbeat","s","e"]'},
+                  {'identity': '["cron","job",1]'}, {'identity': '["loop-tick","k","u"]'},
+                  {'identity': '["plugin","p","k","u"]'}, {'identity': 'bot:' + 'a' * 32}, {'identity': 'notice'},
+                  {'identity': '{"completion": 1}'}, {'turn_origin': 'process_notification'}, {'identity': 7}):
+        assert read(other) is None, other
+
+
+@pytest.mark.asyncio
+async def test_a_pre_upgrade_watch_notification_retry_is_acknowledged(tmp_path, monkeypatch):
+    """A watch notification an older build admitted (its producer named no origin) and retried after
+    the upgrade with the identical event matches the committed row: one row, unchanged, and it
+    restores as the process notification it is."""
+    from gateway.session_authority import admission_row
+    from gateway.session_envelope import restore_native
+    from tests.gateway.test_automation_notification_category import _native_owner
+    runner, authority, _adapter, _, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
+    try:
+        evt = {'type': 'watch_match', 'event_id': 'w1', 'session_id': 'proc_x', 'session_key': metadata['gateway_session_key'],
+               'platform': 'discord', 'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done',
+               'started_at': 1.0, 'parent_session_id': metadata['gateway_session_id']}
+        with monkeypatch.context() as old_build:
+            old_build.setattr(MessageEvent, 'set_turn_origin', lambda self, origin: None)
+            assert await runner._inject_watch_notification('[done]', dict(evt), raise_not_accepted=True) is True
+        owner = authority.logical_owner(metadata['gateway_session_id'])
+
+        def rows():
+            return [r for r in authority.persistence.admissions.list(session_id=owner, pending_only=False)
+                    if (r.payload.get('native_text_v1') or {}).get('automation')]
+        [first] = rows()
+        assert await runner._inject_watch_notification('[done]', dict(evt), raise_not_accepted=True) is True
+        [again] = rows()
+        assert (again.admission_id, again.payload) == (first.admission_id, first.payload)
+        assert 'turn_origin' not in again.payload['native_text_v1']['automation']
+        row = admission_row(authority.persistence.admissions.get(admission_id=again.admission_id))
+        assert restore_native(row['payload'], runner).turn_origin() == 'process_notification'
+    finally:
+        runner.session_store.close_all_db_handles()
 
 
 KEY = "agent:main:telegram:group:-100"

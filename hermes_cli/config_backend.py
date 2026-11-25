@@ -435,6 +435,15 @@ def read_config_doc(config_path: PathLike) -> Any:
     return backend.read_user_doc(home)
 
 
+def config_mapping(data: Any) -> dict[str, Any]:
+    """Accept an empty document, but never interpret a non-mapping as defaults."""
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
+    return data
+
+
 def read_config_doc_readonly(config_path: PathLike) -> Any:
     """Signature-cached :func:`read_config_doc`; the result is shared — never mutate it."""
     backend, home = _route(config_path)

@@ -840,7 +840,7 @@ describe('PluginsTab catalog UX', () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <PluginsHarness agentControls agentLayout profile="workbot" {...props} />
+            <PluginsHarness agentControls agentLayout installedOnly profile="workbot" {...props} />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -923,7 +923,7 @@ describe('PluginsTab catalog UX', () => {
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
             <SettingsOwnerContext.Provider value={owner}>
-              <PluginsHarness agentControls agentLayout profile={owner.profile} />
+              <PluginsHarness agentControls agentLayout installedOnly profile={owner.profile} />
             </SettingsOwnerContext.Provider>
           </MemoryRouter>
         </QueryClientProvider>
@@ -965,6 +965,48 @@ describe('PluginsTab catalog UX', () => {
 
       expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeTruthy()
       expect(screen.queryByText('catalog down')).toBeNull()
+    })
+
+    it('offers no Browse for an agent on another machine: the library page cannot reach it', async () => {
+      await act(async () => {
+        forOwner({ connectionId: 'homelab', profile: 'workbot' })
+      })
+
+      await screen.findByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })
+      expect(screen.queryByRole('link', { name: 'Browse the plugin catalog' })).toBeNull()
+    })
+
+    it('holds its place while the installed list loads, instead of saying nothing was found', async () => {
+      $agentPlugins.set([])
+      $agentPluginsStatus.set('loading')
+      requestGateway.mockImplementation(() => new Promise(() => {}))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(document.querySelector('[data-capability-skeleton]')).not.toBeNull()
+      expect(screen.queryByText(TRANSLATIONS.en.catalog.noResults)).toBeNull()
+      expect(screen.queryByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeNull()
+    })
+
+    it('a dialog that embeds the agent layout keeps the library and Install from Git', async () => {
+      seedCatalog()
+      $agentPlugins.set([])
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter>
+              <PluginsHarness agentControls agentLayout profile="workbot" />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      expect(await screen.findByText('weather-plugin')).toBeTruthy()
+      expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })).toBeTruthy()
     })
 
     it('says so in a line when nothing is installed', async () => {

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
+import { settingsOwnerElsewhere } from '@/app/settings/profile-scope'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
@@ -37,7 +38,6 @@ import {
   toggleAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
-import { activeGatewayConnectionId } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
@@ -242,10 +242,6 @@ function Dash() {
     </span>
   )
 }
-
-/** An agent whose settings are open while another machine's gateway is the active one. */
-const ownerElsewhere = (owner: null | undefined | { connectionId?: null | string }) =>
-  Boolean(owner?.connectionId) && owner?.connectionId !== (activeGatewayConnectionId() ?? 'local')
 
 // Only what lives under the profile's plugins dir ("user", or "git" when it was cloned there) can
 // be uninstalled: bundled plugins are refused by the backend and entrypoint (pip-installed) ones go
@@ -661,7 +657,8 @@ export const PluginsTab = memo(function PluginsTab({
   query,
   onQueryChange,
   agentControls = true,
-  agentLayout = false
+  agentLayout = false,
+  installedOnly = false
 }: {
   profile: ProfileScope
   query?: string
@@ -672,6 +669,9 @@ export const PluginsTab = memo(function PluginsTab({
   scopeLabel?: string
   agentControls?: boolean
   agentLayout?: boolean
+  /** The agent's own settings page: what it has installed, nothing to install. A dialog that embeds
+   *  the agent layout (creating or editing a bot) keeps the library and its ways in. */
+  installedOnly?: boolean
 }) {
   const { t } = useI18n()
   const owner = useSettingsOwner()
@@ -897,11 +897,11 @@ export const PluginsTab = memo(function PluginsTab({
       agentLayout={agentLayout}
       // Installing is the Capabilities page's, which reaches only the open machine's agents: an agent
       // on another machine keeps its one way in here.
-      headerActions={<PluginActions install={!agentLayout || ownerElsewhere(owner)} profile={profile} />}
+      headerActions={<PluginActions install={!installedOnly || settingsOwnerElsewhere(owner)} profile={profile} />}
       installedEntries={installedEntries}
       // An agent's own Plugins page is its installed plugins and nothing else, like a phone's list
       // of installed apps: switch one, or uninstall it. Installing is the Capabilities page's.
-      installedOnly={agentLayout}
+      installedOnly={installedOnly}
       installedPending={status !== 'ready' || !ownsList}
       isInstalled={isInstalled}
       kind="plugins"
@@ -921,7 +921,7 @@ export const PluginsTab = memo(function PluginsTab({
 
         const { agent, desktop } = pkg
 
-        return agentLayout && agent && removableAgentPlugin(agent) ? (
+        return installedOnly && agent && removableAgentPlugin(agent) ? (
           <>
             <Button
               aria-label={`${p.uninstall}: ${pkg.name}`}

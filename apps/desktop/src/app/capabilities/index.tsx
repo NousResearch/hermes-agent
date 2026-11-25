@@ -135,7 +135,7 @@ export function CapabilitiesView({
 
   // Plugins is small enough to warm from any tab. Skills (~100k rows) only
   // loads when asked for: an idle parse of it would still block the page.
-  usePluginCatalogWarmup(mode, presentation.agentLayout)
+  usePluginCatalogWarmup(mode, presentation.installedPlugins)
   useEffect(syncCatalogArcs, [])
 
   // Rotating placeholder nudges from the user's own data — teach that search
@@ -171,6 +171,7 @@ export function CapabilitiesView({
         <PluginsTab
           agentControls={agentControls}
           agentLayout={presentation.agentLayout}
+          installedOnly={presentation.installedPlugins}
           key={`plugins-${scope.key}`}
           onQueryChange={setQuery}
           profile={scope.profile}
@@ -323,6 +324,9 @@ interface CapabilitiesPresentation {
   pageTitle: boolean
   /** One agent's enablement editor (agent settings, Bot Mode) rather than the inventory. */
   agentLayout: boolean
+  /** The agent's own settings page lists only the plugins it has installed. A dialog that embeds
+   *  the agent layout (creating or editing a bot) keeps the library and its ways in. */
+  installedPlugins: boolean
   /** Classic keeps the scope selector beside the header search. */
   headerScope: boolean
 }
@@ -333,6 +337,7 @@ function capabilitiesPresentation(redesign: boolean, embedded: boolean, pinned: 
     pageFrame: redesign && !embedded,
     pageTitle: !embedded && !(redesign && pinned),
     agentLayout: redesign && pinned,
+    installedPlugins: redesign && pinned && !embedded,
     headerScope: !redesign
   }
 }
@@ -415,8 +420,8 @@ const capabilityModes = (redesign: boolean, pinned: boolean): readonly Capabilit
 
 /** Plugins is small enough to warm from any other tab. An agent's own pages list only what it has
  *  installed: nothing there reads the library. */
-function usePluginCatalogWarmup(mode: CapabilityMode, agentLayout: boolean) {
-  const warms = mode !== 'plugins' && !agentLayout
+function usePluginCatalogWarmup(mode: CapabilityMode, installedOnly: boolean) {
+  const warms = mode !== 'plugins' && !installedOnly
 
   useEffect(() => (warms ? prefetchCatalogWhenIdle('plugins') : undefined), [warms])
 }

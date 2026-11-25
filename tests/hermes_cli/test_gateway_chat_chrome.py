@@ -124,16 +124,31 @@ class _Connection:
     def state(self, session_id):
         return self.states.setdefault(session_id, self._make(session_id))
 
+    def call(self, *a, **k):
+        return {}
 
-def _agent(connection, session_id="s1", seen=None):
+
+def _agent(connection, session_id="s1", seen=None, callback=None):
     """A ``GatewayAgent`` with just the chrome wiring ``__init__`` and the CLI give it."""
     from hermes_cli.gateway_agent import GatewayAgent
     agent = GatewayAgent.__new__(GatewayAgent)
     agent.connection, agent._session_id = connection, session_id
     connection.state(session_id).chrome_listeners.append(agent._terminal_chrome)
     if seen is not None:
-        agent.terminal_chrome_callback = lambda plugin_id, payload: seen.append((plugin_id, payload))
+        def callback(plugin_id, payload):
+            seen.append((plugin_id, payload))
+    if callback is not None:
+        agent.terminal_chrome_callback = callback
     return agent
+
+
+def _status_bar():
+    from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
+
+    class Bar(CLIStatusBarMixin):
+        pass
+
+    return Bar()
 
 
 def test_session_state_feeds_chrome_listeners_on_every_frame_even_between_turns():
@@ -162,16 +177,39 @@ def test_a_viewer_attaching_later_starts_from_each_plugins_latest_chrome():
     assert seen == [("b", {"label": "b1"}), ("a", {"label": "a2"})]
 
 
-def test_a_retired_agent_stops_listening_and_its_successor_catches_up():
-    connection, first_seen, second_seen = _Connection(), [], []
-    first = _agent(connection, seen=first_seen)
-    first.release_clients()
+def test_a_rebuilt_agent_takes_over_without_a_frozen_tab_or_a_second_listener():
+    """The CLI retires its agent (model or reasoning switch) and builds the next one on the next turn;
+    the tab must keep following the session in between, and the successor replaces the old listener."""
+    connection, bar = _Connection(), _status_bar()
     state = connection.state("s1")
-    state.apply_event("plugin.p.terminal", {"label": "while no agent"})
-    second = _agent(connection, seen=second_seen)
-    assert first_seen == [] and second_seen == [("p", {"label": "while no agent"})]
+    first = _agent(connection, callback=bar._on_terminal_chrome)
+    first.release_clients()
+    state.apply_event("plugin.p.terminal", {"label": "summoned while retired"})
+    state.apply_event("plugin.q.terminal", {"status": "brief"})
+    state.apply_event("plugin.q.terminal", {"clear": True})
+    assert bar._terminal_chrome().title() == "summoned while retired"
+    assert bar._terminal_chrome().segments() == []
+    second = _agent(connection, callback=bar._on_terminal_chrome)
+    assert state.chrome_listeners == [second._terminal_chrome]
+    assert bar._terminal_chrome().title() == "summoned while retired"
     second.close()
     assert state.chrome_listeners == []
+
+
+def test_switching_session_resets_the_tab_and_replays_the_new_sessions_chrome():
+    connection, seen = _Connection(), []
+    agent = _agent(connection, seen=seen)
+    agent._session_db = None
+    agent._apply_info = lambda info: None
+    agent._sync_show_reasoning = lambda: None
+    agent._lost_turn_notice = lambda: ""
+    connection.state("s1").apply_event("plugin.p.terminal", {"label": "old"})
+    connection.state("s2").apply_event("plugin.p.terminal", {"label": "new"})
+    agent.session_id = "s2"
+    assert seen[-2:] == [(None, None), ("p", {"label": "new"})]
+    assert connection.state("s1").chrome_listeners == []
+    connection.state("s1").apply_event("plugin.p.terminal", {"label": "stale"})
+    assert seen[-1] == ("p", {"label": "new"})
 
 
 def test_frames_from_a_session_the_agent_left_are_dropped():
@@ -215,12 +253,7 @@ def test_each_plugin_animates_on_its_own_clock():
 
 
 def test_classic_status_bar_shows_plugin_segments_in_skin_classes():
-    from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
-
-    class Bar(CLIStatusBarMixin):
-        pass
-
-    bar = Bar()
+    bar = _status_bar()
     bar._on_terminal_chrome("pantheon", {"frames": ["⚒?"], "status": "awaits your word", "tone": "warn"})
     assert bar._plugin_status_segments(None, styled=True) == [[("class:status-bar-warn", "⚒? awaits your word")]]
     assert bar._plugin_status_segments(None, styled=False) == [[("", "⚒? awaits your word")]]

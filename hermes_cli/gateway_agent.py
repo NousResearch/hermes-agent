@@ -575,8 +575,7 @@ class GatewayAgent:
             self.apply_session_usage(state.usage)
 
     def release_clients(self, *a, **k):
-        self._detach_chrome()
-
+        return None
 
     def clear_interrupt(self, *a, **k):
         self._interrupt_requested = False
@@ -585,8 +584,7 @@ class GatewayAgent:
         return None
 
     def close(self, *a, **k):
-        self._detach_chrome()
-
+        self._drop_chrome_listeners(lambda agent: agent is self)
 
     def _restore_primary_runtime(self, *a, **k):
         return None
@@ -971,8 +969,12 @@ class GatewayAgent:
 
     @terminal_chrome_callback.setter
     def terminal_chrome_callback(self, callback):
-        """Set by the CLI after construction; it starts from the session's current chrome."""
+        """Set by the CLI after construction. This agent takes over from any it replaced (a retired
+        agent keeps delivering until then, so the tab stays live between a retire and the rebuild) and
+        starts from the session's current chrome."""
         self._terminal_chrome_callback = callback
+        if callback is not None:
+            self._drop_chrome_listeners(lambda agent: agent is not self and agent.terminal_chrome_callback == callback)
         self._show_chrome(reset=False)
 
     def _show_chrome(self, *, reset):
@@ -984,11 +986,15 @@ class GatewayAgent:
         for plugin_id, payload in list(self._state().chrome.items()):
             self._deliver_chrome(plugin_id, payload)
 
-    def _detach_chrome(self):
-        """A retired agent stops listening; its successor starts from ``SessionState.chrome``."""
-        if self.session_id:
-            with suppress(ValueError):
-                self._state().chrome_listeners.remove(self._terminal_chrome)
+    def _drop_chrome_listeners(self, drop):
+        """Remove the chrome listener of every agent on this connection that ``drop(agent)`` picks."""
+        states = getattr(getattr(self, "connection", None), "states", None) or {}
+        for state in list(states.values()):
+            for listener in list(state.chrome_listeners):
+                agent = getattr(listener, "__self__", None)
+                if isinstance(agent, GatewayAgent) and drop(agent):
+                    with suppress(ValueError):
+                        state.chrome_listeners.remove(listener)
 
     def _terminal_chrome(self, session_id, plugin_id, payload):
         """``SessionState.chrome_listeners`` (loop thread). A frame from a session this agent has left

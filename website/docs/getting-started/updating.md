@@ -104,7 +104,7 @@ time:
   ~2.86 GB (x64). Windows App Installer and the Microsoft Store download only
   your host architecture and apply differential block updates between releases,
   so incremental downloads are typically smaller than a fresh install, followed
-  by local package deployment and relaunch.
+  by local package deployment.
 
 Stable and canary desktop bundles are separate applications. Installing canary
 does not replace stable, including on Windows with MSIX. Each application keeps

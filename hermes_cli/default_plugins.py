@@ -145,7 +145,8 @@ def fetch_allowed(home: Path) -> bool:
 def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
                      entries: Optional[list] = None) -> dict:
     """Install and enable every default plugin *home* never had. ``installed`` lists what this call
-    installed, ``owed`` what is still to fetch (a failed install). One plugin's failure never raises."""
+    installed, ``owed`` what is still to fetch (a failed install), ``raced`` the owed ones whose enable only
+    lost to other writers of the plugin selection (only when there are any). One plugin's failure never raises."""
     from hermes_cli.left_core_migration import _first_cause, _install_into
     from hermes_cli.memory_provider_migration import _home_label, _note_failure, _note_success
     result: dict = {"installed": [], "owed": []}
@@ -182,6 +183,8 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
             say(f"  ✓ Installed default plugin '{entry.name}' for {_home_label(home)}")
             continue
         result["owed"].append(entry.name)
+        if outcome.get("raced"):
+            result.setdefault("raced", []).append(entry.name)
         _note_failure(home, _attempt(entry))  # marks a tree it left as ours to retry, not the user's
         if _installed_dir(home, entry) is not None:
             _placed(home, entry).parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +223,8 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
                 outcome = {"installed": [], "owed": [str(home)]}
             summary["installed"] += outcome["installed"]
             summary["owed"] += outcome["owed"]
+            if outcome.get("raced"):
+                summary.setdefault("raced", []).extend(outcome["raced"])
     return summary
 
 
@@ -311,7 +316,9 @@ def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.
         if not (rerun.exists() and rerun.stat().st_mtime >= started):
             break
     if outcome["owed"]:
-        _note_failure(root, _BACKOFF)
+        # An enable that only lost to other selection writers is owed without a backoff: the next start retries.
+        if set(outcome["owed"]) - set(outcome.get("raced", ())):
+            _note_failure(root, _BACKOFF)
         # A later pass (a profile created after this revision settled) can fail too: owed again.
         _state(root, "settled").unlink(missing_ok=True)
         return outcome

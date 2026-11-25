@@ -999,6 +999,19 @@ def plugin_present(plugin: str, home: Path) -> bool:
     return (home / "plugins" / plugin).is_dir()
 
 
+def _placed(home: Path, plugin: str) -> Path:
+    """Written when a failed automatic install left *plugin*'s tree in *home* (a refused enable)."""
+    return home / "cache" / f"left-core.placed-{plugin}"
+
+
+def _installed_for_good(home: Path, plugin: str) -> bool:
+    """*plugin* is in *home* to stay: on disk, and not just the tree a refused automatic enable left that
+    nobody enabled or disabled since (that one is owed, and the next attempt enables it in place)."""
+    if not plugin_present(plugin, home):
+        return False
+    return not _placed(home, plugin).exists() or any(_plugins_listed(home, (plugin,)))
+
+
 def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
     """Whether core resolved *feature*'s toolsets on for a platform selecting *selection*: named
     directly, or through a ``hermes`` / ``hermes-<platform>`` composite that included them."""
@@ -1115,7 +1128,7 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     path = home / "config.yaml"
     created = not config_exists(path)
     config = read_user_config_raw(path)
-    installed = plugin_present(feature.plugin, home) and not _marked(config, _INSTALLED_KEY, feature)
+    installed = _installed_for_good(home, feature.plugin) and not _marked(config, _INSTALLED_KEY, feature)
     if _scope_kept(config, feature) and not installed:
         return
     if installed:
@@ -1180,7 +1193,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             if not placed_by_default:
                 _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
             continue
-        present = plugin_present(feature.plugin, home)
+        present = _installed_for_good(home, feature.plugin)
         try:
             _record_migration(home, feature)
         except Exception as exc:
@@ -1273,7 +1286,7 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
     from hermes_cli.default_plugins import installer_lock
     try:
         with installer_lock(wait):
-            if plugin_present(feature.plugin, home):
+            if _installed_for_good(home, feature.plugin):
                 logger.info("%s: the '%s' plugin was installed for %s by another Hermes process meanwhile",
                             feature.label, feature.plugin, home)
                 _record_installed(home, feature)
@@ -1297,13 +1310,18 @@ def _install_locked(home: Path, feature: LeftCoreFeature, *, install: Callable[[
         result = {"ok": False, "error": str(exc)}
     default = _ships_by_default(feature)
     if result.get("ok"):
+        _placed(home, feature.plugin).unlink(missing_ok=True)
         _record_installed(home, feature)
         say(_noticed(f"  ✓ Installed the '{feature.plugin}' plugin from the catalog for {feature.label}, which this "
                      f"profile is set up for ({feature.unchanged})." if default else
                      f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
                      f"catalog ({feature.unchanged}).", home, feature, process_env))
         return True
-    _note_failure(home, feature.plugin)
+    if plugin_present(feature.plugin, home):  # owed, not installed: the next attempt enables this tree
+        _placed(home, feature.plugin).parent.mkdir(parents=True, exist_ok=True)
+        _placed(home, feature.plugin).touch()
+    if not result.get("raced"):  # an enable that only lost to other selection writers waits out no backoff
+        _note_failure(home, feature.plugin)
     error = _first_cause(str(result.get("error") or ""))
     subject = (f"{feature.label} is set up in this profile, but its" if default
                else f"{feature.label} moved out of core and its")

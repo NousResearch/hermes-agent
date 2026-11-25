@@ -10,6 +10,8 @@ import { buildBlockMap, createBlockmap, validateConfiguration } from 'app-builde
 import jsYaml from 'js-yaml'
 import { afterEach, expect, test, vi } from 'vitest'
 
+import { createMacSigner } from './mac-sign.mjs'
+import notarize, { COMBINED_NOTARY_BUDGET_MS, DMG_VERIFY_RESERVE_MS } from './notarize.mjs'
 import notarizeDmg, { resolveDmgSigningIdentity } from './notarize-dmg.mjs'
 
 const require = createRequire(import.meta.url)
@@ -17,7 +19,12 @@ const desktopDir = path.resolve(import.meta.dirname, '..')
 const builderConfig = require(path.join(desktopDir, 'electron-builder.config.cjs'))
 
 const IDENTITY_HASH = '0123456789ABCDEF0123456789ABCDEF01234567'
+const SECOND_IDENTITY_HASH = 'FEDCBA9876543210FEDCBA9876543210FEDCBA98'
 const IDENTITY_LIST = `  1) ${IDENTITY_HASH} "Developer ID Application: Nous Research (TEAM123456)"\n  1 valid identities found\n`
+const TWO_IDENTITY_LIST =
+  `  1) ${IDENTITY_HASH} "Developer ID Application: Other Org (OTHER12345)"\n` +
+  `  2) ${SECOND_IDENTITY_HASH} "Developer ID Application: Nous Research (TEAM123456)"\n` +
+  '  2 valid identities found\n'
 const SUBMISSION_ID = '00000000-0000-4000-8000-000000000042'
 const NOTARY_TIMEOUT = `Error: HTTPError(statusCode: nil, error: Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={NSErrorFailingURLStringKey=https://appstoreconnect.apple.com/notary/v2/submissions/${SUBMISSION_ID}?})`
 const CONNECTION_LOST = 'error is Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."\nThe staple and validate action failed! Error 68.'
@@ -245,18 +252,18 @@ test('signed local build without Apple notary credentials signs DMG and refreshe
   expect(blockmap.files[0].sizes.reduce((sum, n) => sum + n, 0)).toBe(signedBytes.length)
 })
 
-test('unsigned local builds skip outer DMG signing and notarization without mutating the DMG', async () => {
+test('unsigned local builds skip outer DMG signing even when valid Developer ID certificates exist in the keychain', async () => {
   const cases = [
-    { name: 'CSC_IDENTITY_AUTO_DISCOVERY=false', env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' }, platformOptions: {}, keychainFile: null },
-    { name: 'mac.sign=null', env: {}, platformOptions: { sign: null }, keychainFile: null },
-    { name: 'mac.identity=null', env: {}, platformOptions: { identity: null }, keychainFile: null },
-    { name: 'ad-hoc CSC_NAME=-', env: { CSC_NAME: '-' }, platformOptions: {}, keychainFile: null },
-    { name: 'no Developer ID in default keychain', env: {}, platformOptions: {}, keychainFile: null }
+    { name: 'CSC_IDENTITY_AUTO_DISCOVERY=false', env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' }, platformOptions: {}, keychainFile: null, stdout: TWO_IDENTITY_LIST },
+    { name: 'mac.sign=null', env: {}, platformOptions: { sign: null }, keychainFile: null, stdout: TWO_IDENTITY_LIST },
+    { name: 'mac.identity=null', env: {}, platformOptions: { identity: null }, keychainFile: null, stdout: TWO_IDENTITY_LIST },
+    { name: 'ad-hoc CSC_NAME=-', env: { CSC_NAME: '-' }, platformOptions: {}, keychainFile: null, stdout: TWO_IDENTITY_LIST },
+    { name: 'no Developer ID in default keychain', env: {}, platformOptions: {}, keychainFile: null, stdout: '  0 valid identities found\n' }
   ]
   for (const scenario of cases) {
     const f = await createBuilderFixture({ keychainFile: scenario.keychainFile, platformOptions: scenario.platformOptions })
     const run = vi.fn(async command => {
-      if (command === 'security') return { stdout: '  0 valid identities found\n', stderr: '' }
+      if (command === 'security') return { stdout: scenario.stdout, stderr: '' }
       throw new Error(`Unexpected command for ${scenario.name}: ${command}`)
     })
     await notarizeDmg(
@@ -264,8 +271,90 @@ test('unsigned local builds skip outer DMG signing and notarization without muta
       { run, env: scenario.env, sleep: vi.fn(), log: vi.fn() }
     )
     expect(fs.readFileSync(f.dmgPath).equals(f.preStapleBytes), scenario.name).toBe(true)
-    expect(run.mock.calls.every(([cmd]) => cmd === 'security'), scenario.name).toBe(true)
+    if (scenario.stdout === TWO_IDENTITY_LIST) {
+      expect(run, scenario.name).not.toHaveBeenCalled()
+    } else {
+      expect(run.mock.calls.every(([cmd]) => cmd === 'security'), scenario.name).toBe(true)
+    }
   }
+})
+
+test('DMG reuses the exact identity and keychain recorded by createMacSigner when multiple certificates exist', async () => {
+  const f = await createBuilderFixture()
+  const appPath = path.join(f.outDir, 'Hermes Fixture.app')
+  fs.mkdirSync(path.join(appPath, 'Contents', 'Resources', 'agent-payload'), { recursive: true })
+  const signer = createMacSigner(
+    { hardenedRuntime: true, entitlements: 'ent.plist', entitlementsInherit: 'ent.plist', ignore: () => false },
+    { env: {}, sign: vi.fn(async () => {}) }
+  )
+  await signer(
+    { app: appPath, platform: 'darwin', type: 'distribution', identity: SECOND_IDENTITY_HASH, keychain: f.keychainFile },
+    Object.assign(f.packager, { helper: { getOptionsForFile: async () => () => ({}) } })
+  )
+
+  const calls = []
+  const run = vi.fn(async (command, args) => {
+    calls.push([command, ...args])
+    if (command === 'security') throw new Error('DMG hook must not re-query security find-identity after app signing')
+    if (command === 'xcrun' && args[0] === 'notarytool') {
+      return { stdout: JSON.stringify({ id: SUBMISSION_ID, status: 'Accepted' }), stderr: '' }
+    }
+    return { stdout: '', stderr: '' }
+  })
+
+  await notarizeDmg(
+    { file: f.dmgPath, target: f.dmgTarget, packager: f.packager },
+    { run, env: f.signedEnv, sleep: vi.fn(), log: vi.fn() }
+  )
+  expect(calls.some(c => c[0] === 'security')).toBe(false)
+  expect(calls).toContainEqual([
+    'codesign', '--force', '--sign', SECOND_IDENTITY_HASH, '--timestamp', '--verbose', '--keychain', f.keychainFile, f.dmgPath
+  ])
+})
+
+test('DMG notarization shares the remaining combined budget after app notarization and reserves verify headroom', async () => {
+  const f = await createBuilderFixture()
+  const appOutDir = path.join(f.root, 'mac-arm64')
+  fs.mkdirSync(path.join(appOutDir, `${f.packager.appInfo.productFilename}.app`), { recursive: true })
+  let elapsed = 0
+  const calls = []
+  const run = vi.fn(async (command, args) => {
+    calls.push([command, ...args])
+    if (command === 'security') return { stdout: IDENTITY_LIST, stderr: '' }
+    if (command === 'xcrun' && args[0] === 'notarytool') {
+      if (args[2].endsWith('.zip')) {
+        elapsed += 210 * 60 * 1000
+      }
+      return { stdout: JSON.stringify({ id: SUBMISSION_ID, status: 'Accepted' }), stderr: '' }
+    }
+    return { stdout: '', stderr: '' }
+  })
+
+  await notarize(
+    { electronPlatformName: 'darwin', appOutDir, packager: f.packager },
+    { run, env: f.signedEnv, sleep: vi.fn(), log: vi.fn(), now: () => elapsed }
+  )
+  await notarizeDmg(
+    { file: f.dmgPath, target: f.dmgTarget, packager: f.packager },
+    { run, env: f.signedEnv, sleep: vi.fn(), log: vi.fn(), now: () => elapsed }
+  )
+
+  const dmgSubmit = calls.find(c => c[0] === 'xcrun' && c[1] === 'notarytool' && c[2] === 'submit' && c[3] === f.dmgPath)
+  const expectedSeconds = Math.ceil((COMBINED_NOTARY_BUDGET_MS - 210 * 60 * 1000 - DMG_VERIFY_RESERVE_MS) / 1000)
+  expect(dmgSubmit[dmgSubmit.indexOf('--timeout') + 1]).toBe(`${expectedSeconds}s`)
+
+  elapsed = COMBINED_NOTARY_BUDGET_MS - DMG_VERIFY_RESERVE_MS
+  const exhaustedRun = vi.fn(async command => {
+    if (command === 'security') return { stdout: IDENTITY_LIST, stderr: '' }
+    if (command === 'xcrun') throw new Error('notarytool must not run when combined budget is exhausted')
+    return { stdout: '', stderr: '' }
+  })
+  await expect(
+    notarizeDmg(
+      { file: f.dmgPath, target: f.dmgTarget, packager: f.packager },
+      { run: exhaustedRun, env: f.signedEnv, sleep: vi.fn(), log: vi.fn(), now: () => elapsed }
+    )
+  ).rejects.toThrow(/exceeded the wait budget/)
 })
 
 test('non-DMG artifacts and non-darwin packagers are ignored', async () => {

@@ -108,11 +108,34 @@ export async function validateStapled(targetPath, {
   }
 }
 
+export const DEFAULT_WAIT_BUDGET_MS = 4 * 60 * 60 * 1000
+export const COMBINED_NOTARY_BUDGET_MS = 300 * 60 * 1000
+export const DMG_VERIFY_RESERVE_MS = 15 * 60 * 1000
+
+const notaryStartByPackager = new WeakMap()
+
+export function remainingNotaryBudgetMs(packager, {
+  now = () => performance.now(),
+  totalBudgetMs = COMBINED_NOTARY_BUDGET_MS,
+  reserveMs = DMG_VERIFY_RESERVE_MS
+} = {}) {
+  if (packager && typeof packager === 'object' && notaryStartByPackager.has(packager)) {
+    const elapsed = Math.max(0, now() - notaryStartByPackager.get(packager))
+    return Math.max(0, totalBudgetMs - elapsed - reserveMs)
+  }
+  return DEFAULT_WAIT_BUDGET_MS
+}
+
 export async function submitAndStaple(submitPath, staplePath, auth, {
-  run = runCommand, sleep = setTimeout, log = console.log, now = () => performance.now(), label = 'notarize'
+  run = runCommand,
+  sleep = setTimeout,
+  log = console.log,
+  now = () => performance.now(),
+  label = 'notarize',
+  waitBudgetMs = DEFAULT_WAIT_BUDGET_MS
 }) {
   log(`[${label}] submitting ${submitPath}. Waiting for Apple's decision.`)
-  const deadline = now() + 4 * 60 * 60 * 1000
+  const deadline = now() + waitBudgetMs
   let resumeId
   let result
   let submitError
@@ -217,6 +240,9 @@ export default async function notarize(context, {
   }
   const { auth, cleanup } = resolved
 
+  if (packager && typeof packager === 'object') {
+    notaryStartByPackager.set(packager, now())
+  }
   const zipPath = path.join(appOutDir, `${appName}.zip`)
   try {
     await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath])

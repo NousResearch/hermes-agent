@@ -60,7 +60,7 @@ def _sha512_base64(file: Path) -> str:
 def _verify_blockmap_size(artifact: Path) -> None:
     blockmap = artifact.with_name(artifact.name + ".blockmap")
     if not blockmap.is_file():
-        return
+        raise ValueError(f"Missing DMG blockmap: {blockmap.name}")
     try:
         data = json.loads(gzip.decompress(blockmap.read_bytes()))
     except (OSError, gzip.BadGzipFile, json.JSONDecodeError) as exc:
@@ -78,30 +78,45 @@ def _verify_blockmap_size(artifact: Path) -> None:
         )
 
 
-def _verify_mac_feed_dmg(root: Path, dmg: Path) -> None:
+def _require_feed_entry(feed_name: str, entries: list[dict], artifact: Path) -> None:
+    matches = [entry for entry in entries if entry.get("url") == artifact.name]
+    if len(matches) != 1:
+        raise ValueError(
+            f"macOS feed {feed_name} must list exactly one entry for {artifact.name}, found {len(matches)}"
+        )
+    entry = matches[0]
+    if entry.get("size") != artifact.stat().st_size or entry.get("sha512") != _sha512_base64(artifact):
+        raise ValueError(f"macOS feed {feed_name} disagrees with {artifact.name} on disk")
+
+
+def _verify_mac_feed_dmg(root: Path, package: Path, dmg: Path, *, expect_feed: bool) -> None:
     feeds = sorted(root.glob("*-mac.yml"))
     if not feeds:
+        if expect_feed:
+            raise ValueError(f"Missing macOS update feed for {dmg.name}")
         return
-    import hermes_yaml as yaml
+    from scripts.releases.darwin import parse_mac_feed
 
-    actual_size = dmg.stat().st_size
-    actual_sha512 = _sha512_base64(dmg)
     for feed_path in feeds:
-        parsed = yaml.safe_load(feed_path.read_text(encoding="utf-8-sig"))
-        entries = parsed.get("files") if isinstance(parsed, dict) else None
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if isinstance(entry, dict) and entry.get("url") == dmg.name:
-                if entry.get("size") != actual_size or entry.get("sha512") != actual_sha512:
-                    raise ValueError(f"macOS feed {feed_path.name} disagrees with {dmg.name} on disk")
+        parsed = parse_mac_feed(feed_path.read_text(encoding="utf-8-sig"))
+        _require_feed_entry(feed_path.name, parsed["files"], package)
+        _require_feed_entry(feed_path.name, parsed["files"], dmg)
 
 
-def _verify_macos_dmg(root: Path, arch: str, expected_name: str, expected_team: str) -> None:
+def _verify_macos_dmg(
+    root: Path,
+    arch: str,
+    package: Path,
+    expected_team: str,
+    *,
+    expect_feed: bool,
+) -> None:
     dmgs = sorted(root.glob(f"*-mac-{arch}.dmg"))
-    if not dmgs:
+    feeds = sorted(root.glob("*-mac.yml"))
+    if not dmgs and not feeds:
         return
     dmg = single(dmgs)
+    expected_name = package.name.removesuffix(".zip") + ".dmg"
     if dmg.name != expected_name:
         raise ValueError("macOS DMG filename differs from requested version")
     subprocess.run(["codesign", "--verify", "--verbose=2", str(dmg)], check=True, timeout=60)
@@ -117,7 +132,7 @@ def _verify_macos_dmg(root: Path, arch: str, expected_name: str, expected_team: 
     if not dmg_team or dmg_team.group(1) != expected_team:
         raise ValueError("Signed DMG team differs from signed app")
     _verify_blockmap_size(dmg)
-    _verify_mac_feed_dmg(root, dmg)
+    _verify_mac_feed_dmg(root, package, dmg, expect_feed=expect_feed)
 
 
 def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict | None = None,
@@ -263,8 +278,6 @@ def _record_macos(
     team = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", signature.stderr, re.MULTILINE)
     if not team:
         raise ValueError("Signed app has no Developer ID team")
-    if not legacy_commit_build:
-        _verify_macos_dmg(root, arch, package.name.removesuffix(".zip") + ".dmg", team.group(1))
     with zipfile.ZipFile(package) as archive:
         require_owner_write(archive)
         info = plistlib.loads(archive.read(single(
@@ -275,6 +288,17 @@ def _record_macos(
         )))
     stamp_matches(stamp, tag, commit, channel_request=channel_request,
                   legacy_commit_build=legacy_commit_build)
+    from hermes_cli.update_channel import is_commit_tag
+
+    is_commit = channel_request is None and is_commit_tag(tag)
+    if not is_commit or (not legacy_commit_build and stamp.get("signedDmg") is True):
+        _verify_macos_dmg(
+            root,
+            arch,
+            package,
+            team.group(1),
+            expect_feed=channel_request is None and not is_commit,
+        )
     fields: dict = {
         "identity": info["CFBundleIdentifier"],
         "teamId": team.group(1),

@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import { setTimeout } from 'node:timers/promises'
 
-import { resolveNotaryAuth, runCommand, submitAndStaple, validateStapled } from './notarize.mjs'
+import { getAppSigningResult } from './mac-sign.mjs'
+import { remainingNotaryBudgetMs, resolveNotaryAuth, runCommand, submitAndStaple, validateStapled } from './notarize.mjs'
 import { parseDeveloperId } from './sign-nested-chromium.mjs'
 
 export async function resolveDmgSigningIdentity(packager, { run = runCommand, env = process.env } = {}) {
@@ -22,6 +23,14 @@ export async function resolveDmgSigningIdentity(packager, { run = runCommand, en
   const qualifier = typeof rawQualifier === 'string' && rawQualifier.trim() ? rawQualifier.trim() : null
   if (qualifier === '-' || (!qualifier && env.CSC_IDENTITY_AUTO_DISCOVERY === 'false')) {
     return { identity: null, keychain: null }
+  }
+
+  const recorded = getAppSigningResult(packager)
+  if (recorded) {
+    return {
+      identity: recorded.identity === '-' ? null : recorded.identity,
+      keychain: recorded.keychain
+    }
   }
 
   const info = await packager?.codeSigningInfo?.value
@@ -95,12 +104,14 @@ export default async function notarizeDmg(
     await run('codesign', ['--verify', '--verbose=2', dmgPath])
 
     if (notaryAuth) {
+      const waitBudgetMs = remainingNotaryBudgetMs(event.packager, { now })
       const { deadline } = await submitAndStaple(dmgPath, dmgPath, notaryAuth.auth, {
         run,
         sleep,
         log,
         now,
-        label: 'notarize-dmg'
+        label: 'notarize-dmg',
+        waitBudgetMs
       })
       await run('codesign', ['--verify', '--verbose=2', dmgPath])
       await validateStapled(dmgPath, { run, sleep, log, now, deadline, label: 'notarize-dmg' })

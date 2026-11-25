@@ -219,6 +219,27 @@ def test_macos_record_verifies_outer_dmg_signature_blockmap_and_feed_consistency
     _write_mac_feed(feed, "1.2.3", package, dmg, dmg_size=len(post_staple), dmg_sha512=pre_sha)
     with pytest.raises(ValueError, match="feed"):
         release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+
+    zip_bytes = package.read_bytes()
+    zip_sha = base64.b64encode(hashlib.sha512(zip_bytes).digest()).decode("ascii")
+    feed.write_text(hermes_yaml.safe_dump({
+        "version": "1.2.3",
+        "files": [{"url": package.name, "sha512": zip_sha, "size": len(zip_bytes)}],
+        "path": package.name,
+        "sha512": zip_sha,
+    }, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="must list exactly one entry"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+    _write_mac_feed(feed, "1.2.3", package, dmg)
+
+    blockmap.unlink()
+    with pytest.raises(ValueError, match="Missing DMG blockmap"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
+    _write_blockmap(blockmap, len(post_staple))
+
+    feed.unlink()
+    with pytest.raises(ValueError, match="Missing macOS update feed"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
     _write_mac_feed(feed, "1.2.3", package, dmg)
 
     teams["dmg"] = "ZZZZZZZZZZ"
@@ -231,27 +252,72 @@ def test_macos_record_verifies_outer_dmg_signature_blockmap_and_feed_consistency
     with pytest.raises(ValueError, match="filename"):
         release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
 
+    wrong_dmg.unlink()
+    with pytest.raises(ValueError, match="Expected exactly one artifact"):
+        release_artifacts.record("macos", "arm64", root, "v1.2.3", commit, out)
 
-def test_macos_record_skips_outer_dmg_verification_for_legacy_commit_builds(tmp_path, monkeypatch):
-    commit, root = "a" * 40, tmp_path / "release"
-    (root / "mac" / "Product.app").mkdir(parents=True)
-    package = root / "Product-1.2.3-mac-arm64.zip"
-    dmg = root / "Product-1.2.3-mac-arm64.dmg"
-    out = root / "metadata-macos-arm64.json"
-    with zipfile.ZipFile(package, "w") as archive:
-        archive.writestr("Product.app/Contents/Info.plist", plistlib.dumps({
-            "CFBundleIdentifier": "ai.hermes.test", "CFBundleShortVersionString": "1.2.3",
-        }))
-        archive.writestr("Product.app/Contents/Resources/install-stamp.json",
-                         json.dumps({"source": "commit-build", "commit": commit, "tag": None, "baseVersion": "1.2.3"}))
-    dmg.write_bytes(b"unsigned-legacy-dmg")
+
+def test_macos_record_matches_commit_claim_dmg_contract_for_new_pre_pr_and_legacy_commits(tmp_path, monkeypatch):
+    commit = "a" * 40
+    claim_tag = "commit.20261125T000000Z-v1.2.3"
+
+    def make_root(name: str, *, stamp: dict, version: str, with_blockmap: bool):
+        root = tmp_path / name
+        (root / "mac" / "Product.app").mkdir(parents=True)
+        package = root / f"Product-{version}-mac-arm64.zip"
+        dmg = root / f"Product-{version}-mac-arm64.dmg"
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("Product.app/Contents/Info.plist", plistlib.dumps({
+                "CFBundleIdentifier": "ai.hermes.test", "CFBundleShortVersionString": version,
+            }))
+            archive.writestr("Product.app/Contents/Resources/install-stamp.json", json.dumps(stamp))
+        dmg.write_bytes(b"commit-dmg-bytes")
+        if with_blockmap:
+            _write_blockmap(root / f"{dmg.name}.blockmap", dmg.stat().st_size)
+        return root, dmg
+
+    calls: list[str] = []
 
     def codesign(argv, **kwargs):
-        assert not argv[-1].endswith(".dmg")
+        calls.append(argv[-1])
         return subprocess.CompletedProcess(argv, 0, stderr="TeamIdentifier=ABCDEFGHIJ\n")
 
     monkeypatch.setattr(release_artifacts.subprocess, "run", codesign)
-    release_artifacts.record(
-        "macos", "arm64", root, "commit.20261120T000000Z-v1.2.3", commit, out, legacy_commit_build=True,
+
+    # New commit claim (signedDmg: true) enforces outer DMG + blockmap without requiring a feed yml.
+    claim_version = "1.2.3+commit.20261125T000000Z"
+    new_root, new_dmg = make_root(
+        "new-claim",
+        stamp={"source": "commit-build", "commit": commit, "tag": claim_tag, "baseVersion": claim_version, "signedDmg": True},
+        version=claim_version,
+        with_blockmap=True,
     )
-    assert json.loads(out.read_text(encoding="utf-8"))["legacyCommitBuild"] is True
+    release_artifacts.record("macos", "arm64", new_root, claim_tag, commit, new_root / "meta.json")
+    assert str(new_dmg) in calls
+
+    (new_root / f"{new_dmg.name}.blockmap").unlink()
+    with pytest.raises(ValueError, match="Missing DMG blockmap"):
+        release_artifacts.record("macos", "arm64", new_root, claim_tag, commit, new_root / "meta.json")
+
+    # Pre-PR claim-aware commit (signedDmg absent) and legacy commit both skip outer DMG while checking .app.
+    calls.clear()
+    pre_pr_root, pre_pr_dmg = make_root(
+        "pre-pr-claim",
+        stamp={"source": "commit-build", "commit": commit, "tag": claim_tag, "baseVersion": claim_version},
+        version=claim_version,
+        with_blockmap=False,
+    )
+    release_artifacts.record("macos", "arm64", pre_pr_root, claim_tag, commit, pre_pr_root / "meta.json")
+    assert str(pre_pr_dmg) not in calls
+
+    legacy_root, legacy_dmg = make_root(
+        "legacy-claim",
+        stamp={"source": "commit-build", "commit": commit, "tag": None, "baseVersion": "1.2.3"},
+        version="1.2.3",
+        with_blockmap=False,
+    )
+    release_artifacts.record(
+        "macos", "arm64", legacy_root, claim_tag, commit, legacy_root / "meta.json", legacy_commit_build=True,
+    )
+    assert str(legacy_dmg) not in calls
+    assert json.loads((legacy_root / "meta.json").read_text(encoding="utf-8"))["legacyCommitBuild"] is True

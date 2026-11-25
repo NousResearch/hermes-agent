@@ -49,9 +49,13 @@ trap 'exit 143' TERM
 /usr/bin/shasum -a 256 "$artifact" > "$out/artifact-before.sha256"
 mkdir "$work/install" "$work/home" "$work/user-data"
 shopt -s nullglob
+dmg_verified=0
 case "$artifact" in
   *.dmg)
-    "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
+    if [[ -n $channel_request || ( -n $tag && $tag != commit.* ) ]]; then
+      "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
+      dmg_verified=1
+    fi
     mountpoint=$work/mount
     mkdir "$mountpoint"
     /usr/bin/hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$artifact"
@@ -70,8 +74,18 @@ apps=("$work/install"/*.app)
 [[ -d ${apps[0]} && ! -L ${apps[0]} ]] || fail 'Installed application must not be a link'
 "$node" "$metadata" verify-mac --app "${apps[0]}" --arch "$arch" "${identity_args[@]}" --out "$out/installed-identity.json"
 if [[ $artifact == *.dmg ]]; then
-  "$node" -e 'const d = require(process.argv[1]), a = require(process.argv[2]); if (d.teamIdentifier !== a.teamIdentifier) throw new Error(`DMG signing team ${d.teamIdentifier} disagrees with app team ${a.teamIdentifier}`)' \
-    "$out/dmg-identity.json" "$out/installed-identity.json"
+  if ((dmg_verified == 0)); then
+    need_dmg_verify=$("$node" "$metadata" should-verify-mac-dmg --identity "$out/installed-identity.json" "${identity_args[@]}" \
+      | "$node" -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).verifyMacDmg ? "1" : "0")')
+    if [[ $need_dmg_verify == 1 ]]; then
+      "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
+      dmg_verified=1
+    fi
+  fi
+  if ((dmg_verified == 1)); then
+    "$node" -e 'const d = require(process.argv[1]), a = require(process.argv[2]); if (d.teamIdentifier !== a.teamIdentifier) throw new Error(`DMG signing team ${d.teamIdentifier} disagrees with app team ${a.teamIdentifier}`)' \
+      "$out/dmg-identity.json" "$out/installed-identity.json"
+  fi
 fi
 exe=$("$node" -e 'console.log(require(process.argv[1]).exe)' "$out/installed-identity.json")
 root=$("$node" -e 'console.log(require(process.argv[1]).root)' "$out/installed-identity.json")

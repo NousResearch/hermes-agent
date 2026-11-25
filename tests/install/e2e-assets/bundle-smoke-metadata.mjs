@@ -81,6 +81,11 @@ export function verifyMacMetadata(plist, stamp, { commit, tag, channelRequest })
   return version
 }
 
+export function shouldVerifyMacDmg({ tag = '', channelRequest = null, stamp = null } = {}) {
+  const isCommitBuild = channelRequest === null && (!tag || COMMIT_TAG_RE.test(tag))
+  return isCommitBuild ? stamp?.signedDmg === true : true
+}
+
 export function verifyMacDmg(dmg, { exec = execFileSync, spawn = spawnSync } = {}) {
   if (!dmg || !dmg.endsWith('.dmg') || !fs.existsSync(dmg)) {
     throw new Error(`Expected an existing .dmg artifact: ${dmg || '(none)'}`)
@@ -150,7 +155,7 @@ function prepareDirectories(work, out) {
 function main() {
   const [command, ...args] = process.argv.slice(2)
   const { values } = parseArgs({ args, options: Object.fromEntries(
-    ['commit', 'tag', 'platform', 'stamp', 'app', 'dmg', 'arch', 'out', 'work', 'channel-request'].map(key => [key, { type: 'string' }])) })
+    ['commit', 'tag', 'platform', 'stamp', 'app', 'dmg', 'identity', 'arch', 'out', 'work', 'channel-request'].map(key => [key, { type: 'string' }])) })
   if (values['channel-request'] !== undefined) {
     // Preserve the raw JSON for the protocol decoder's duplicate-key checks.
     const raw = fs.readFileSync(values['channel-request'], 'utf8')
@@ -163,6 +168,10 @@ function main() {
     stamp: () => verifyBundleStamp(JSON.parse(fs.readFileSync(values.stamp, 'utf8')), values),
     'verify-mac': () => verifyMac(values.app, values.commit, values.tag, values.arch, values.channelRequest),
     'verify-mac-dmg': () => verifyMacDmg(values.dmg),
+    'should-verify-mac-dmg': () => {
+      const installed = values.identity ? JSON.parse(fs.readFileSync(values.identity, 'utf8')) : null
+      return { verifyMacDmg: shouldVerifyMacDmg({ tag: values.tag, channelRequest: values.channelRequest ?? null, stamp: installed?.stamp ?? null }) }
+    },
     prepare: () => prepareDirectories(values.work, values.out),
   }
   if (!commands[command]) throw new Error(`Unknown command: ${command}`)

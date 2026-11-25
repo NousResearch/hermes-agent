@@ -1760,9 +1760,15 @@ class _AnthropicCompletionsAdapter:
         if hasattr(response, "usage") and response.usage:
             prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
+            # Keep Anthropic's own field names next to the chat-shaped ones: accounting normalizes this
+            # response with provider="anthropic", which reads input/output/cache fields, so a chat-only
+            # shape recorded zero tokens and the aux usage row was skipped.
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
+                input_tokens=prompt_tokens, output_tokens=completion_tokens,
+                cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
             )
         # ToolCall already duck-types as OpenAI shape via properties.
         choice = SimpleNamespace(

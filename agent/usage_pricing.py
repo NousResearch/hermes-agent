@@ -668,8 +668,11 @@ def get_pricing_entry(
 
 # Usage-field candidate paths per API shape: (input/prompt total, output, cache
 # read, cache write); the first non-zero path wins.
+# Chat-style names are a fallback only: an adapter that re-shapes an Anthropic response for the
+# chat-completions interface must not record zero tokens because it renamed the fields.
 _ANTHROPIC_USAGE_SHAPE = (
-    (("input_tokens",),), (("output_tokens",),), (("cache_read_input_tokens",),), (("cache_creation_input_tokens",),)
+    (("input_tokens",), ("prompt_tokens",)), (("output_tokens",), ("completion_tokens",)),
+    (("cache_read_input_tokens",),), (("cache_creation_input_tokens",),)
 )
 # OpenAI's documented GPT-5.6+ field is `cache_write_tokens` (billed at 1.25x);
 # `cache_creation_tokens` is a fallback for older endpoints.

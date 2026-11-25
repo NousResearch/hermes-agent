@@ -869,7 +869,9 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     from gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
         try:
-            end_idle_acp_sessions(authority)
+            # Off the event loop: every end is a state.db read and write, and the stop's remaining
+            # phases (and every other socket) would wait on the loop meanwhile.
+            await asyncio.to_thread(end_idle_acp_sessions, authority)
         except Exception:
             # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
             import logging

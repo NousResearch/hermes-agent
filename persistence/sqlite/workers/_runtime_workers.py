@@ -65,11 +65,25 @@ def descendant_range(execution_id):
     return execution_id + CHILD_SEPARATOR, execution_id + CHILD_SEPARATOR[:-1] + ';'
 
 
-def retire_stale_children(conn, epoch):
+_STALE_CHILDREN = ("SELECT execution_id,session_id FROM worker_executions WHERE kind='child' "
+                   "AND status!='terminal' AND owner_epoch!=?")
+
+
+def stale_child_ids(conn, epoch):
+    """The children an owner restart would retire. A full scan, so a caller reads it without the
+    write lock and hands the ids to ``retire_stale_children``."""
+    return [child for child, _session_id in conn.execute(_STALE_CHILDREN, (epoch,)).fetchall()]
+
+
+def retire_stale_children(conn, epoch, candidates):
     """Owner restart: a child dies with its worker, which dies with its owner, so it is never
-    adoptable; only its root execution can be recovered as ``unknown``."""
-    _retire_children(conn, conn.execute("SELECT execution_id,session_id FROM worker_executions WHERE kind='child' "
-                                        "AND status!='terminal' AND owner_epoch!=?", (epoch,)).fetchall())
+    adoptable; only its root execution can be recovered as ``unknown``. *candidates* are the ids
+    ``stale_child_ids`` found before the caller took the write lock: each is looked up by key with
+    the same predicate, so a child that stopped being stale since is left alone."""
+    rows = []
+    for child in candidates:
+        rows += conn.execute(_STALE_CHILDREN + " AND execution_id=?", (epoch, child)).fetchall()
+    _retire_children(conn, rows)
 
 
 def _retire_children(conn, rows):

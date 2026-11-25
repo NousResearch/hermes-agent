@@ -101,6 +101,10 @@ class SQLiteSessionBindingRepository:
         with refused():
             return [SessionId(sid) for sid in _local.local_session_ids(self._store.holder())]
 
+    def acp_session_ids(self) -> list[SessionId]:
+        with refused():
+            return [SessionId(sid) for sid in _local.acp_candidate_ids(self._store.holder())]
+
     def list_lineages(self) -> list[LocalLineage]:
         with refused():
             found = _local.local_lineages(self._store.holder())

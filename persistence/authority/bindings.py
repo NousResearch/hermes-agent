@@ -297,6 +297,10 @@ class SessionBindingRepository(Protocol):
         """Every id holding a creation receipt, in store order."""
         ...
 
+    def acp_session_ids(self) -> list[SessionId]:
+        """Ids that can hold an ACP policy receipt, read from the indexed ``sessions`` table: rows created as ``source='acp'`` and rows a peer refresh relabelled ``source='local'`` that keep ``created_source='acp'``. A candidate is only a lookup key; the receipt's own policy still decides."""
+        ...
+
     def list_lineages(self) -> list[LocalLineage]:
         """Every receipt's owner and lineage; undecodable receipts, non-string owners and non-list lineages are skipped and non-string members dropped."""
         ...

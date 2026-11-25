@@ -68,6 +68,9 @@ async def reopen_if_reattached(authority, session_id, ended):
 
 
 def end_idle_acp_sessions(authority):
-    """Gateway shutdown: every ACP session nobody is viewing, attached this run or not."""
-    ids = authority_persistence(authority).bindings.local_session_ids()
+    """Gateway shutdown: every ACP session nobody is viewing, attached this run or not.
+
+    Costs one receipt read per ACP session, not one per local session ever created: the policy
+    receipts of every other surface are never parsed (``acp_session_ids``)."""
+    ids = authority_persistence(authority).bindings.acp_session_ids()
     return sum(end_idle_acp_session(authority, sid) for sid in ids)

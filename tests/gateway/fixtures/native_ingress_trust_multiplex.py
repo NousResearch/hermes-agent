@@ -22,7 +22,7 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
     from gateway.profile_routing import ProfileRoute
-    from hermes_state_runtime import admit_session_input, list_session_admissions
+    from gateway.session_authority import admission_row
 
     transport = state / 'profiles' / 'transport'
     transport.mkdir(parents=True, exist_ok=True)
@@ -43,7 +43,7 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
     source = adapter.build_source(chat_id='mux-chat', chat_type='dm', user_id='fixture-user')
 
     def rows(sid):
-        return list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        return [admission_row(record) for record in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
     if mode.startswith('recover'):
         saved = json.loads((state / 'multiplex.json').read_text())
@@ -138,8 +138,9 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
         # This is restart reauthorization evidence, not a native post-ACK kill claim.
         payload = deepcopy(committed[0]['payload'])
         payload['text'] = 'RESTART_SOURCE_REAUTH'
-        admit_session_input(authority.db, epoch=authority.epoch, principal_id=committed[0]['principal_id'],
-                            session_id=entry.session_id, request_id='restart-fixture', payload=payload)
+        authority.persistence.admissions.admit(epoch=authority.epoch, principal_id=committed[0]['principal_id'],
+                                               session_id=entry.session_id, request_id='restart-fixture',
+                                               payload=payload)
         (state / 'multiplex.json').write_text(json.dumps({'sid': entry.session_id}))
     print(json.dumps({'mode': mode, 'model_calls': len(peer.requests), 'rows': rows(entry.session_id),
                       'deliveries': adapter.deliveries, 'worker_scopes': worker_scopes}))

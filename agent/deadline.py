@@ -84,13 +84,11 @@ class DeadlineExpired(TimeoutError):
 
 class SuspectableBackend(Protocol):
     """A stateful backend (MCP connection, browser session, LSP client) ``run_bounded_*`` flags via
-    ``mark_suspect`` on timeout so the owner can health-check/recycle it before reuse. ``mark_suspect``
+    ``mark_suspect`` on timeout so the owner can recycle it before reuse. ``mark_suspect``
     MUST be cheap, non-blocking, and must not acquire locks the guarded operation may hold — it runs
     inline on the event loop / caller's thread while the wedged worker is still alive."""
 
     def mark_suspect(self, reason: str) -> None: ...
-
-    def ensure_healthy(self) -> bool: ...
 
 
 def _mark_backend_suspect(backend: object | None, label: str, timeout_s: float) -> None:

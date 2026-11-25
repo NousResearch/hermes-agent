@@ -12,6 +12,7 @@ import urllib.request
 import pytest
 
 from hermes_cli.urllib_security import (
+    NoRedirectHandler,
     SafeCredentialRedirectHandler,
     open_credentialed_url,
     url_origin,
@@ -116,6 +117,24 @@ def test_cross_host_redirect_drops_arbitrary_credentials_on_wire():
         "x-custom-auth",
     ):
         assert name not in headers
+
+
+def test_no_redirect_handler_follows_no_redirect_even_on_the_same_origin():
+    source = _server()
+    _RecordingHandler.requests = []
+    _RecordingHandler.redirect_status = 302
+    _RecordingHandler.redirect_to = f"http://127.0.0.1:{source.server_port}/sink"
+    try:
+        request = urllib.request.Request(f"http://127.0.0.1:{source.server_port}/redirect",
+                                         headers=_credential_headers())
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.build_opener(NoRedirectHandler).open(request, timeout=3)
+        refused.value.close()
+    finally:
+        source.shutdown()
+
+    assert refused.value.code == 302
+    assert _RecordingHandler.requests == []
 
 
 def test_same_host_different_port_drops_credentials_on_wire():

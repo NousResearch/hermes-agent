@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-from pm.environment import BuildFailure, ResolutionConflict
+from pm.environment import BuildFailure, ResolutionConflict  # noqa: TID251
 
 # Verdicts about the build. A fetch or tooling failure is the moment, not the extra.
 BUILD_VERDICTS = (ResolutionConflict, BuildFailure)
@@ -29,9 +29,12 @@ def with_pre_pm_baseline(package, extras, *, carried, automatic, plugins):
     request, so they never opt a declined extra back in; with no plugin input they are carried,
     so one that no longer builds is left out instead of failing the request.
     """
-    from pm.extras import pre_pm_baseline
+    from pm.extras import committed_generation_extras, pre_pm_baseline
 
-    added = [extra for extra in pre_pm_baseline(package.project_root()) if extra not in (extras or ())]
+    root = package.project_root()
+    # Past the migration, the generation this sync replaces is the old state to keep (#96180).
+    baseline = pre_pm_baseline(root) or committed_generation_extras(root)
+    added = [extra for extra in baseline if extra not in (extras or ())]
     if not added:
         return extras, carried, automatic
     if plugins is None:

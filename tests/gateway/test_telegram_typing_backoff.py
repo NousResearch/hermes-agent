@@ -88,8 +88,9 @@ async def test_typing_bad_thread_failure_does_not_cool_down(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_typing_is_one_call_per_chat_across_topics_and_spends_the_shared_slot():
-    """N DM topics share one chat id: their keep-alives must not multiply sendChatAction (#99643)."""
+async def test_typing_is_one_call_per_chat_across_topics_and_leaves_the_shared_slot_free():
+    """N DM topics share one chat id: their keep-alives must not multiply sendChatAction (#99643).
+    A typing call never takes the send+edit slot: a held slot skips the stream's interim edits."""
     adapter = _make_adapter()
     adapter._bot.send_chat_action = AsyncMock(return_value=None)
 
@@ -97,7 +98,7 @@ async def test_typing_is_one_call_per_chat_across_topics_and_spends_the_shared_s
         await adapter.send_typing("4242", metadata={"thread_id": topic})
 
     assert adapter._bot.send_chat_action.await_count == 1
-    assert adapter._chat_outbound_slot_remaining("4242") > 0  # a send right after waits its turn
+    assert adapter._chat_outbound_slot_remaining("4242") == 0  # the next preview edit is not skipped
     await adapter.send_typing("777")  # another chat has its own budget
     assert adapter._bot.send_chat_action.await_count == 2
 

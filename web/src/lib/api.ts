@@ -8,6 +8,8 @@ import { createDashboardSessionMutations } from "./session-mutations";
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
+import type { StatusResponse } from "./api-status";
+import type { ProfileCreateResponse } from "./api-profiles";
 import type {
   AgentPluginUpdateResponse,
   AgentPluginsUpdateAllResponse,
@@ -26,6 +28,19 @@ export type {
   WhatsAppOnboardingStartResponse,
   WhatsAppOnboardingStatusResponse,
 } from "./api-whatsapp";
+import type {
+  WebhookCreate,
+  WebhookEnableResponse,
+  WebhookRoute,
+  WebhooksResponse,
+} from "./api-webhooks";
+export type {
+  WebhookCreate,
+  WebhookEnableResponse,
+  WebhookRoute,
+  WebhookSignature,
+  WebhooksResponse,
+} from "./api-webhooks";
 import type {
   MessagingPlatform,
   RelayLinkCode,
@@ -46,6 +61,7 @@ import type {
   ManagedFileWriteResponse,
 } from "./api-files";
 import { dashboardServingProfile } from "./profile-bootstrap";
+import { PROFILE_SCOPED_PREFIXES, sameOriginRequestUrl as resolveSameOrigin } from "./api-request-scope";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -122,63 +138,6 @@ export function getManagementProfile(): string {
   return _managementProfile || dashboardServingProfile();
 }
 
-// Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope or explicit per-profile DB opens). Anything else — cron (which
-// has its own per-job profile params), profiles themselves — is machine-global or
-// self-scoped and must NOT be rewritten.
-const PROFILE_SCOPED_PREFIXES = [
-  "/api/status",
-  "/api/gateway",
-  "/api/analytics",
-  "/api/skills",
-  "/api/tools/toolsets",
-  "/api/config",
-  "/api/env",
-  "/api/mcp",
-  "/api/messaging/platforms",
-  "/api/messaging/telegram/onboarding",
-  "/api/messaging/whatsapp/onboarding",
-  // OAuth/account state is profile-owned too: status, login sessions, polling,
-  // cancellation, and disconnect must all follow the selected management
-  // profile rather than silently targeting the dashboard process's profile.
-  "/api/providers/oauth",
-  "/api/model/info",
-  "/api/model/set",
-  "/api/model/auxiliary",
-  "/api/model/moa",
-  "/api/model/options",
-  // A named profile keeps its own pairing whitelist, and its gateway only
-  // consults that one — approving into the global store would grant access
-  // the running gateway never sees.
-  "/api/pairing",
-  // Memory files, the curator state file, webhook subscriptions, shell hooks,
-  // checkpoints, backups/imports and the dashboard's own theme/font/plugin
-  // preferences all live in a profile home. One backend now serves every
-  // profile, so the switcher's selection has to ride on the request or a reset
-  // lands on the launch profile's data.
-  "/api/memory",
-  "/api/curator",
-  "/api/webhooks",
-  "/api/ops",
-  "/api/logs",
-  "/api/portal",
-  // Pool entries live in the profile's home, and DELETE /api/credentials/pool/{provider}/{index}
-  // is destructive — without this prefix the dashboard's remove button never named a profile and
-  // a multi-profile host refused it outright.
-  "/api/credentials",
-  // Not covered by "/api/dashboard/plugins": this one writes memory.provider + context.engine
-  // into the named profile's config.yaml (same key as PUT /api/memory/provider).
-  "/api/dashboard/plugin-providers",
-  // Model/runtime activation persists into config.yaml; the read routes ignore an extra param.
-  "/api/model/recommended-default",
-  "/api/local-models",
-  "/api/dashboard/theme",
-  "/api/dashboard/font",
-  "/api/dashboard/plugins",
-  "/api/plugins/", // a plugin's backend: the selected profile's copy, as its bundle is (PLG-3)
-  // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
-  "/api/shared-metrics",
-];
 
 // The dashboard's own profile when nothing else named one. The backend injects it only
 // when it provably resolves back to the serving home, so this can never retarget another
@@ -200,6 +159,7 @@ export async function fetchJSON<T>(
   options?: FetchJSONOptions,
 ): Promise<T> {
   url = withManagementProfile(url);
+  const target = resolveSameOrigin(BASE, url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -208,7 +168,7 @@ export async function fetchJSON<T>(
   }
   let res: Response;
   try {
-    res = await fetch(`${BASE}${url}`, {
+    res = await fetch(target, {
       ...init,
       headers,
       // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
@@ -216,6 +176,10 @@ export async function fetchJSON<T>(
       // server doesn't read cookies and the legacy session-token header is
       // already attached above.
       credentials: init?.credentials ?? "include",
+      // After ``...init`` so a caller cannot widen it: the browser then refuses a
+      // cross-origin redirect and any ``<base href>`` resolution off this origin,
+      // which the up-front URL check cannot see.
+      mode: "same-origin",
     });
   } catch (cause) {
     // fetch() only rejects when the request never got a response: the
@@ -358,15 +322,17 @@ export async function authedFetch(
   // not the launch profile's, and an unprofiled back door beside a family that now
   // 400s is exactly how the next hole gets in.
   url = withManagementProfile(url);
+  const target = resolveSameOrigin(BASE, url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
-  return fetch(`${BASE}${url}`, {
+  return fetch(target, {
     ...init,
     headers,
     credentials: init?.credentials ?? "include",
+    mode: "same-origin",
   });
 }
 
@@ -788,15 +754,7 @@ export const api = {
     keep_skills?: string[];
     hub_skills?: string[];
   }) =>
-    fetchJSON<{
-      ok: boolean;
-      name: string;
-      path: string;
-      model_set?: boolean;
-      mcp_written?: number;
-      skills_disabled?: number;
-      hub_installs?: Array<{ identifier: string; pid: number | null }>;
-    }>("/api/profiles", {
+    fetchJSON<ProfileCreateResponse>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1448,11 +1406,11 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        consent: true, // sent only after the confirm dialog; the backend refuses its absence
         redact: opts?.redact ?? true,
         lines: opts?.lines ?? 200,
       }),
     }),
-
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
   pruneCheckpoints: () =>
@@ -1747,48 +1705,6 @@ export interface PairingResponse {
   approved: PairingUser[];
 }
 
-export interface WebhookRoute {
-  name: string;
-  description: string;
-  events: string[];
-  deliver: string;
-  deliver_only: boolean;
-  prompt: string;
-  skills: string[];
-  created_at: string | null;
-  url: string;
-  secret_set: boolean;
-  enabled: boolean;
-}
-
-export interface WebhooksResponse {
-  enabled: boolean;
-  base_url: string;
-  subscriptions: WebhookRoute[];
-}
-
-export interface WebhookEnableResponse {
-  ok: boolean;
-  platform: "webhook";
-  enabled: true;
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
-export interface WebhookCreate {
-  name: string;
-  description?: string;
-  events?: string[];
-  prompt?: string;
-  skills?: string[];
-  deliver?: string;
-  deliver_only?: boolean;
-  deliver_chat_id?: string;
-}
-
 export interface CredentialPoolEntry {
   index: number;
   id: string | null;
@@ -1990,13 +1906,6 @@ export interface ActionStatusResponse {
   running: boolean;
 }
 
-export interface PlatformStatus {
-  error_code?: string;
-  error_message?: string;
-  state: string;
-  updated_at: string;
-}
-
 /** One profile's shared-metrics answer; `reask` = a pre-fix "off" asked once more. */
 export interface SharedMetricsConsent {
   enabled: boolean;
@@ -2004,93 +1913,6 @@ export interface SharedMetricsConsent {
   decided: boolean;
   managed: boolean;
   reask?: boolean;
-}
-
-export interface StatusResponse {
-  active_sessions: number;
-  /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
-   * (public bind, no ``--insecure``). Read alongside ``auth_providers``
-   * to render a "gated / loopback" badge. */
-  auth_required?: boolean;
-  /** Phase 7: registered ``DashboardAuthProvider`` names (e.g. ``["nous"]``).
-   * Empty in loopback mode; empty + ``auth_required=true`` is a
-   * fail-closed state (the dashboard will refuse to bind). */
-  auth_providers?: string[];
-  /** Supported dashboard auth flows for the client to choose from. In gated
-   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when any
-   * interactive session provider is registered (OAuth providers broker the
-   * IDP redirect; password providers complete at /login in the system
-   * browser), signalling that the desktop can use the RFC 8252
-   * system-browser + loopback + PKCE flow (no embedded webview, no session
-   * cookies). Absent / missing ``"native_pkce"`` ⇒ an older gateway ⇒ the
-   * desktop falls back to the embedded-webview flow. */
-  auth_flows?: string[];
-  /** False when the dashboard is running in a hosted/managed layout where
-   * updates are handled by the outer launcher instead of ``hermes update``. */
-  can_update_hermes?: boolean;
-  config_path: string;
-  config_version: number;
-  env_path: string;
-  gateway_exit_reason: string | null;
-  /** Why a multi-profile host's gateway came up STANDALONE on a boot guard (unset
-   * ``gateway.multiplex_profiles`` refused): the other profiles' bots are silent until
-   * ``hermes gateway migrate --multiplex`` runs. null/absent when it multiplexes or only one
-   * profile exists. */
-  multiplex_standalone_reason?: string | null;
-  /** Every profile installed on this host (multiplex or not). */
-  profiles?: string[];
-  gateway_health_url: string | null;
-  /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
-   * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).
-   * null when healthy; absent on older backends. */
-  gateway_heartbeat_stale_s?: number | null;
-  gateway_pid: number | null;
-  gateway_platforms: Record<string, PlatformStatus>;
-  gateway_running: boolean;
-  /** Every profile the gateway process serves when the managed profile is carried by the
-   * shared multiplexer (e.g. ["default", "alpha", "beta"]); null/absent for a standalone
-   * gateway or an older backend. */
-  gateway_shared_with?: string[] | null;
-  gateway_state: string | null;
-  gateway_updated_at: string | null;
-  hermes_home: string;
-  latest_config_version: number;
-  /** NS-656: memory-pressure rollup from the gateway heartbeat +
-   * lifecycle ledger. Absent on older gateways. */
-  memory?: MemoryPressureStatus;
-  /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
-   * older gateways. */
-  disk?: DiskPressureStatus;
-  release_date: string;
-  version: string;
-}
-
-/** NS-656: coarse memory telemetry served by /api/status. */
-export interface MemoryPressureStatus {
-  pressure: "ok" | "elevated" | "critical" | "unknown";
-  gateway_rss_mb?: number | null;
-  system_total_mb?: number | null;
-  system_available_mb?: number | null;
-  swap_used_mb?: number | null;
-  sampled_at?: string | null;
-  /** Previous gateway life died without running any exit path. */
-  last_boot_unclean?: boolean;
-  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
-   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
-  last_boot_suspected_oom?: boolean;
-  /** Identity of the current gateway life (sentinel started_at). Changes on
-   * every restart; keys per-incident banner dismissal. */
-  boot_id?: string | null;
-}
-
-/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
- * sample of the HERMES_HOME volume — no staleness dimension, so no
- * sampled_at. */
-export interface DiskPressureStatus {
-  pressure: "ok" | "elevated" | "critical" | "unknown";
-  total_mb?: number | null;
-  free_mb?: number | null;
-  used_percent?: number | null;
 }
 
 export interface ChatWorkspaceProject {
@@ -2516,6 +2338,12 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type {
+  DiskPressureStatus,
+  MemoryPressureStatus,
+  PlatformStatus,
+  StatusResponse,
+} from "./api-status";
 export type {
   AgentPluginScanFinding,
   AgentPluginUpdateResponse,

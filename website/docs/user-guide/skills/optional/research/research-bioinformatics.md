@@ -55,13 +55,13 @@ This skill is a gateway to two open-source bioinformatics skill libraries. Inste
    # ClawBio (runnable pipelines)
    git clone --depth 1 https://github.com/ClawBio/ClawBio.git ~/.hermes/cache/scratch/ClawBio
    ```
-3. Read the specific skill:
-   ```bash
+3. Read the specific skill with `read_file`:
+   ```
    # bioSkills — each skill is at: <category>/<skill-name>/SKILL.md
-   cat ~/.hermes/cache/scratch/bioSkills/variant-calling/gatk-variant-calling/SKILL.md
+   ~/.hermes/cache/scratch/bioSkills/variant-calling/gatk-variant-calling/SKILL.md
 
    # ClawBio — each skill is at: skills/<skill-name>/
-   cat ~/.hermes/cache/scratch/ClawBio/skills/pharmgx-reporter/README.md
+   ~/.hermes/cache/scratch/ClawBio/skills/pharmgx-reporter/README.md
    ```
 4. Follow the fetched skill as reference material. These are NOT Hermes-format skills — treat them as expert domain guides. They contain correct parameters, proper tool flags, and validated pipelines.
 

@@ -68,7 +68,6 @@ _log = logging.getLogger(__name__)
 
 
 from hermes_cli.web_server_lifecycle import (
-    PORT_IN_USE_EXIT_CODE,
     _dashboard_forwarded_allow_ips,
     _eager_reconcile_own_session_db,
     _maybe_open_browser,
@@ -94,20 +93,22 @@ def _gateway_owns_cron(name: str, home) -> bool:
 
 
 def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) -> None:
-    """Tick the cron scheduler from inside the desktop dashboard backend.
+    """Tick the cron scheduler from inside a Desktop-owned dashboard backend.
 
-    The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without
-    this a cron created in the app would never fire (no live adapters; delivery
-    falls back to the per-platform send path). The primary backend outlives the
-    per-profile pool (reaped after ~10 idle minutes), so it ticks EVERY local
-    profile's store like a multiplex gateway; external providers keep the
-    single-store behavior (registries are not profile-scoped). Cross-process
-    safe: the built-in tick takes the per-store ``cron/.tick.lock``.
+    ``is_desktop_owned_backend`` holds for the SSH remote spawn (``serve
+    --ssh-session-token-file``); a local Desktop attaches to the host gateway,
+    whose own ticker covers every profile. That backend is not a gateway, so
+    without this a cron created in the app would never fire on that host (no
+    live adapters; delivery falls back to the per-platform send path). It ticks
+    EVERY local profile's store like a multiplex gateway, gated per tick against
+    a gateway that owns it; external providers keep the single-store behavior
+    (registries are not profile-scoped). Cross-process safe: the built-in tick
+    takes the per-store ``cron/.tick.lock``.
 
-    Every local profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
-    desktop pools per-profile backends and reaps them after ~10 idle minutes, so a secondary profile's
-    ticker dies with its backend and that profile's jobs silently stop firing until the user next opens it
-    ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
+    Every profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
+    old per-profile Desktop backends each ticked only their own store and stopped with it, so a
+    secondary profile's jobs silently stopped firing until the user next opened it ("tasks on the
+    sleeping profile could be idle" — community report, Aug 2026).
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
     from hermes_constants import get_hermes_home, profile_name_for_home
@@ -116,8 +117,10 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
     own_home = Path(get_hermes_home())
     own_name = profile_name_for_home(own_home) or "default"
     # Ownership is re-checked every tick, not once at startup, so Desktop takes over when the
-    # gateway stops (#126822).
-    profile_gate = lambda name, home: not _gateway_owns_cron(name, home)
+    # gateway stops (#126822). A profile a plugin runs elsewhere is never ticked here, even through
+    # the single-store fallback below.
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    profile_gate = lambda name, home: not _gateway_owns_cron(name, home) and run_elsewhere_for_home(home) is None
 
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
@@ -387,7 +390,8 @@ async def host_header_middleware(request: Request, call_next):
     # app.state.bound_host is set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
+        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset()),
+        bool(getattr(app.state, "loopback_companion", None)),
     ):
         return JSONResponse(
             status_code=400,
@@ -484,8 +488,11 @@ async def _token_auth_seam(request: Request, call_next):
 
     A registered token route is owned here — authenticate, attach the principal
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
-    routes pass through untouched.
+    routes pass through untouched. ``/api/peer/`` is owned by the peer-pass check instead.
     """
+    from hermes_cli.dashboard_auth.peer_pass import is_peer_path, peer_pass_middleware
+    if is_peer_path(request.url.path):  # only a peer pass opens it; nothing else is tried
+        return await peer_pass_middleware(request, call_next)
     from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     rejection = await authenticate_native_http(request)
@@ -554,9 +561,13 @@ async def _dashboard_health_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        DASHBOARD_HEALTH.record_error(type(exc).__name__, request.url.path)
+        from storage_user_copy import error_type_name
+        DASHBOARD_HEALTH.record_error(error_type_name(exc), request.url.path)
         raise
-    if response.status_code >= 500:
+    # /api/peer answers carry the gateway api_server's status (asleep, restarting, its own errors),
+    # which the gateway component reports; they say nothing about this process.
+    from hermes_cli.dashboard_auth.peer_pass import is_peer_path
+    if response.status_code >= 500 and not is_peer_path(request.url.path):
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
     return response
 
@@ -676,12 +687,6 @@ def get_install_id() -> Optional[str]:
     return _shared_get_install_id(cache=_INSTALL_ID_CACHE)
 
 
-# Serializes config.yaml read-modify-write cycles for handlers on worker threads
-# (asyncio.to_thread): config.py's _CONFIG_LOCK covers each load/save call, not
-# the span between them, so two off-loop updates could drop each other's writes.
-# RLock so nested helpers that also take it can't self-deadlock.
-_CONFIG_MUTATION_LOCK = threading.RLock()
-
 # A finished ``gateway-restart`` child does not mean the gateway is back (it
 # exits once the restart is handed off), so in-flight reuse stops coalescing
 # exactly when a stale frontend re-fires every few seconds (#89034: 77 restarts,
@@ -798,6 +803,7 @@ from hermes_cli.web_routers import (
     cron as _cron_routes,
     mcp as _mcp_routes,
     ops as _ops_routes,
+    transfer as _transfer_routes,
     skills as _skills_routes,
     tools as _tools_routes,
     analytics as _analytics_routes,
@@ -812,6 +818,7 @@ from hermes_cli.web_routers import (
     gateway_connections as _gateway_connections_routes,
     gateway_connections_reach as _gateway_connections_reach_routes,
     webapp_relay_proxy as _webapp_relay_proxy_routes,
+    peer as _peer_routes,
 )
 
 import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
@@ -845,6 +852,7 @@ app.include_router(_status_routes.logs_router)
 app.include_router(_cron_routes.router)
 app.include_router(_mcp_routes.router)
 app.include_router(_ops_routes.router)
+app.include_router(_transfer_routes.router)
 app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)
@@ -856,6 +864,7 @@ app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
 # The saved-connections proxy checks its surface per request (WebSocket routes take no Request).
 app.include_router(_webapp_relay_proxy_routes.router)
+app.include_router(_peer_routes.router)
 app.include_router(_shared_metrics_routes.router)
 app.include_router(_delegation_routes.router)
 app.include_router(_webapp_access_routes.router, dependencies=[_Depends(_route_on("web_access"))])
@@ -1368,7 +1377,7 @@ def _windows_serve_loop_factory(config):
     return factory
 
 
-def _run_serve(serve, config, host: str, port: int) -> None:
+def _run_serve(serve, config, host: str, port: int, *, headless: Optional[bool] = None) -> None:
     """Drive ``serve()`` on the loop uvicorn expects.
 
     POSIX keeps ``asyncio.run`` (already a SelectorEventLoop / uvloop). On
@@ -1407,8 +1416,7 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         # Probe-to-bind race (#93608): uvicorn's bind_socket() exits 1 — re-check
         # and translate a confirmed conflict into the sentinel + distinct code.
         if exc.code == 1 and _port_bind_conflict(host, port):
-            _report_port_in_use(host, port)
-            raise SystemExit(PORT_IN_USE_EXIT_CODE) from None
+            raise SystemExit(_report_port_in_use(host, port, headless=headless)) from None
         raise
 
 
@@ -1471,9 +1479,14 @@ def _start_server_runtime(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # Only the gateway's Webapp listener binds a loopback socket beside a specific address.
+    app.state.loopback_companion = None
     # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
     # launcher's preselected profile instead of silently running in the launch scope (#73085).
     app.state.initial_profile = str(initial_profile or "")
+    # Before multi-profile activation can mirror a turn's profile into HERMES_HOME.
+    from hermes_cli.isolated_scope import record_launch_scope
+    record_launch_scope(isolated=isolated, desktop_owned=is_desktop_owned_backend())
 
     config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 
@@ -1493,8 +1506,7 @@ def _start_server_runtime(
     # surfaces as the BACKEND_PORT_IN_USE sentinel + distinct exit code.
     # ``--port 0`` is skipped by the probe.
     if _port_bind_conflict(host, port):
-        _report_port_in_use(host, port)
-        raise SystemExit(PORT_IN_USE_EXIT_CODE)
+        raise SystemExit(_report_port_in_use(host, port, headless=headless))
 
     # LAST boot step, deliberately. One host process serves every profile and this one can be asked
     # for any of them via ``?profile=``, so the decision is made here instead of on the first such
@@ -1541,4 +1553,4 @@ def _start_server_runtime(
             if server.started:
                 await server.shutdown()
 
-    _run_serve(_serve, config, host, port)
+    _run_serve(_serve, config, host, port, headless=headless)

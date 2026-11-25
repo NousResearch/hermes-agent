@@ -25,7 +25,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_context
 from gateway.session_context import get_session_env
 from tests.waiting import async_wait_until
-from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram import adapter as tg_adapter, telegram_media_fetch
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
 
@@ -779,6 +779,9 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
         if stage == "inline":
             monkeypatch.setattr(InlineQuery, "answer", effect_then_fail)
         if stage == "media_warning":
+            # Every retry still runs (3 fetches), just without the production 2 s / 5 s backoff,
+            # so the warning reply is reached inside the 2 s entry wait below.
+            monkeypatch.setattr(telegram_media_fetch, "FETCH_RETRY_DELAYS", (0.0, 0.0))
             monkeypatch.setattr(PhotoSize, "get_file", AsyncMock(side_effect=OSError("download unavailable")))
             monkeypatch.setattr(Message, "reply_text", effect_then_fail)
         first = asyncio.create_task(app.process_update(update(app.bot, **args)))
@@ -1008,35 +1011,35 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unserved_update_not_receipted_and_logs_field_names(monkeypatch, caplog):
-    """#141570: an update that no group-0 handler serves (e.g. a dice message) must not be
+    """#141570: an update that no group-0 handler serves (e.g. a chat-title service message) must not be
     receipted by the group-99 observer's return — the receipt would suppress redelivery of
     an update nobody served, silently. Instead one INFO line names the update id and the
     field names only (never values), and a redelivery dispatches again."""
     import logging as stdlib_logging
 
-    dice_payload = {
+    unserved_payload = {
         "update_id": 77,
         "message": {
             "message_id": 473, "date": 1800000000,
             "chat": {"id": 42, "type": "private"},
             "from": {"id": 88, "is_bot": False, "first_name": "Human"},
-            "dice": {"emoji": "🎲", "value": 4},
+            "new_chat_title": "Lunch club",
         },
     }
     async with connected(monkeypatch) as (adapter, app, delivered):
         caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
-        dice = Update.de_json(dice_payload, app.bot)
-        await app.process_update(dice)
-        assert not delivered  # no core handler serves a dice message
+        unserved = Update.de_json(unserved_payload, app.bot)
+        await app.process_update(unserved)
+        assert not delivered  # no core handler serves a title change
         assert f"{app.bot.id}:77" not in adapter._seen_update_ids  # not receipted
         records = [r for r in caplog.records if "matched no core handler" in r.message]
         assert len(records) == 1
         text = records[0].getMessage()
         assert "Update 77" in text
-        assert "message(chat,date,dice,from,message_id)" in text  # field names only
-        assert "🎲" not in text and "473" not in text and "88" not in text  # never values
+        assert "message(chat,date,from,message_id,new_chat_title)" in text  # field names only
+        assert "Lunch" not in text and "473" not in text and "88" not in text  # never values
         # No receipt: a redelivery of the same id dispatches again instead of being dropped.
-        await app.process_update(dice)
+        await app.process_update(unserved)
         records = [r for r in caplog.records if "matched no core handler" in r.message]
         assert len(records) == 2
 
@@ -1144,3 +1147,43 @@ async def test_root_message_after_threaded_follow_up_stays_root_while_creation_w
         assert await flushed(3)
         assert delivered[-1].text == "back at the root"
         assert delivered[-1].source.thread_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loaded", ["before_connect", "after_connect"])
+async def test_plugin_group_99_handler_runs_whenever_its_plugin_loaded(monkeypatch, loaded):
+    """#87770 re-wire through real PTB, whose ``add_handler`` replaces ``app.handlers`` with a new dict for
+    every new group: a late plugin's group-99 handler runs like one wired at connect, ahead of the
+    catch-all observer. Group 0 still serves the update, and the observer still gets what the plugin
+    handler does not match."""
+    import hermes_cli.lifecycle
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    seen = []
+
+    async def plugin_handler(incoming, context):
+        seen.append(incoming.update_id)
+
+    mgr = PluginManager()
+    ctx = PluginContext(manifest=PluginManifest(name="late-observer", version="0", description=""), manager=mgr)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: mgr)
+    monkeypatch.setattr(hermes_cli.lifecycle, "has_hook", lambda name: True)
+
+    def load_plugin():
+        ctx.register_platform_handler(
+            "telegram", lambda native, _adapter: native.add_handler(MessageHandler(filters.TEXT, plugin_handler), group=99))
+
+    if loaded == "before_connect":
+        load_plugin()
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        if loaded == "after_connect":
+            load_plugin()
+            adapter.rewire_plugin_handlers()
+        platform_events = adapter._platform_event_handler = AsyncMock()
+        await app.process_update(update(app.bot, 10))
+        await app.process_update(update(app.bot, 11, kind="reaction"))
+        await async_wait_until(lambda: delivered or adapter._pending_text_batch_tasks, what="the text to reach batching")
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert seen == [10]
+        assert [e.text for e in delivered] == ["hello"]
+        assert [call.args[0]["event_type"] for call in platform_events.await_args_list] == ["reaction"]

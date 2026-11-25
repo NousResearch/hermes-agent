@@ -139,11 +139,7 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     return limit_message
 
 
-_CANONICAL_PENDING_SQL = """SELECT status FROM session_admissions WHERE target_session_id=? AND status!='terminal'
-    UNION ALL SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
-
-
-def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -> bool:
+def _end_unless_ledger_busy(persistence, session_id: str, session_key, end_reason: str) -> bool:
     """End *session_id*'s row unless the gateway's durable ledger still holds work for it; True when
     the row may end (ended now, or already ended). The check and the stamp share one write txn.
 
@@ -152,26 +148,7 @@ def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -
     route as stale (#54878) and replace the conversation (#140642). The ledger names a local session
     by its logical id (the row's ``chat_id``), so the physical id, the key and that id are checked: a
     ``local-`` id, or the lineage owner its receipt names (an adopted conversation keeps its legacy id)."""
-    execute_write = getattr(db, "_execute_write", None)
-    if execute_write is None:
-        db.end_session(session_id, end_reason)
-        return True
-
-    def write(conn):
-        row = conn.execute("SELECT chat_id FROM sessions WHERE id=?", (session_id,)).fetchone()
-        ids = {session_id, str(session_key or "")}
-        if row is not None and str(row[0] or "").startswith("local-"):
-            ids.add(str(row[0]))
-        from hermes_state_local import local_lineage_owner
-        ids.add(local_lineage_owner(conn, session_id))
-        for sid in filter(None, ids):
-            if conn.execute(_CANONICAL_PENDING_SQL, (sid, sid)).fetchone() is not None:
-                return False
-        db._end_and_bump(conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-                         (time.time(), end_reason, session_id), session_id, end_reason)
-        return True
-
-    if execute_write(write):
+    if persistence.runtime.end_unless_ledger_busy(session_id, session_key=session_key, end_reason=end_reason):
         return True
     logger.info("Preserving session %s during %s: the gateway's ledger still holds its turn", session_id, end_reason)
     return False
@@ -185,38 +162,115 @@ def _canonical_ledger_refusal(session: dict):
     resolves it), queued input or a running worker; a legacy turn would run past that barrier
     and write the transcript beside the canonical FIFO. Checked on every turn, not only at the
     first claim, because a gateway may admit work while this backend still holds its lease."""
-    import sqlite3
     from hermes_cli.active_sessions import (
         ActiveSessionRefusal, SESSION_COORDINATION_UNAVAILABLE, SESSION_NOT_OWNED)
+    from persistence.core.errors import STORE_FAILURES
     key = str(session.get("session_key") or "")
     if not key:
         return None
     try:
-        with _session_db(session) as db:
-            read_ctx = getattr(db, "_read_ctx", None)
-            if read_ctx is None:
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 return None
-            with read_ctx() as conn:
-                row = next(iter(conn.execute(_CANONICAL_PENDING_SQL, (key, key))), None)
-    except sqlite3.Error:
+            status = persistence.runtime.pending_ledger_status(key)
+    except STORE_FAILURES:
         logger.warning("canonical ledger read failed for %s", key, exc_info=True)
         return ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE)
-    if row is None:
+    if status is None:
         return None
-    logger.info("Refusing legacy turn for %s: canonical ledger holds %s work", key, row[0])
+    logger.info("Refusing legacy turn for %s: canonical ledger holds %s work", key, status)
     refusal = ActiveSessionRefusal(
-        f"Session {key} has {'outcome-unknown' if row[0] == 'unknown' else 'pending'} work in the gateway's "
+        f"Session {key} has {'outcome-unknown' if status == 'unknown' else 'pending'} work in the gateway's "
         "durable queue. Resume it through the gateway (hermes chat --resume, Desktop or the TUI) to "
         "resolve it; nothing was run here.", SESSION_NOT_OWNED)
     # prompt.submit forwards a typed prompt to the owner's FIFO for work that ends on its own
     # (tui_gateway/owner_forward.py); an ``unknown`` admission is never forwarded past.
-    refusal.ledger_status = row[0]
+    refusal.ledger_status = status
     return refusal
 
 
 def _attach_lease(session: dict, lease) -> None:
     session["active_session_lease"] = lease
     session.pop("_lease_taken_over", None)  # owning again: its finalize ends the row like any owner
+    session.pop("_lease_idle_released", None)
+
+
+def _reclaim_idle_released_lease(session: dict):
+    """Re-claim a lease the idle reaper released; None when this record owns the chat again, else the refusal.
+
+    Caller holds ``history_lock``, which the reaper's release also takes, so a rewind cannot interleave with a
+    release. Claim-only: a detached-runtime takeover takes the resume lock, which nests outside history_lock."""
+    if not (sid := session.get("_lease_idle_released")) or session.get("active_session_lease") is not None:
+        return None
+    if (refusal := _canonical_ledger_refusal(session)) is not None:
+        return refusal
+    lease, refusal = _claim_active_session_slot(
+        str(session.get("session_key") or ""), live_session_id=sid, surface=_session_source(session),
+        profile_home=session.get("profile_home"))
+    if refusal is None:
+        _attach_lease(session, lease)
+    return refusal
+
+
+class SessionNotOwned(RuntimeError):
+    """An off-turn transcript writer found its idle-released lease taken: nothing was written.
+    Handlers let it through their catch-alls; dispatch answers it ``4090`` like a refused submit."""
+
+    def __init__(self, refusal):
+        super().__init__(str(refusal))
+        self.refusal = refusal
+        self.reason = getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"
+
+
+def _require_transcript_owner(session: dict) -> None:
+    """Gate for every off-turn writer of this record's transcript (rewind, model-switch marker, manual compress),
+    under ``history_lock``: re-claim an idle-released lease or raise ``SessionNotOwned``. A write counts as activity,
+    so the idle reaper cannot release the lease again before the writer finishes."""
+    if (refusal := _reclaim_idle_released_lease(session)) is not None:
+        raise SessionNotOwned(refusal)
+    session["last_active"] = time.time()
+
+
+# Upper bound on one held claim: the compute-host supervisor drops an unanswered late-ack handler after its
+# _LATE_CONTROL_TTL_SECS (1800s), so a claim whose release can never fire stops pinning the lease then.
+_TRANSCRIPT_CLAIM_MAX_S = 1800.0
+
+
+def _hold_transcript_claim(session: dict):
+    """``_require_transcript_owner`` plus a busy claim the idle reaper honours until the returned (idempotent)
+    release runs. For off-turn writers that leave ``running`` False while they work — a model switch, a
+    compute-host ``/compress`` or ``/model`` whose host may outlast the idle window — so the reaper cannot free
+    the lease between the ownership check and the write."""
+    token = object()
+    with session.get("history_lock") or contextlib.nullcontext():
+        _require_transcript_owner(session)
+        claims = session.setdefault("_transcript_claims", {})
+        now = time.time()
+        for stale in [t for t, deadline in claims.items() if deadline <= now]:
+            claims.pop(stale, None)
+        claims[token] = now + _TRANSCRIPT_CLAIM_MAX_S
+
+    def release() -> None:
+        with session.get("history_lock") or contextlib.nullcontext():
+            session.get("_transcript_claims", {}).pop(token, None)
+    return release
+
+
+@contextlib.contextmanager
+def _transcript_claim(session: dict):
+    release = _hold_transcript_claim(session)
+    try:
+        yield
+    finally:
+        release()
+
+
+def _session_holds_transcript_claim(session: dict, now: float) -> bool:
+    return any(deadline > now for deadline in list((session.get("_transcript_claims") or {}).values()))
+
+
+def _session_not_owned_err(rid, exc: SessionNotOwned) -> dict:
+    return _err(rid, 4090, str(exc), {"reason": exc.reason})
 
 
 def _detached_lease_holder(session: dict, key: str) -> tuple[str, dict] | None:
@@ -489,18 +543,18 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             logger.info("Preserving session %s during %s: another backend owns an active lease", session_id, end_reason)
         if session_id:
             # The *session's* profile state.db (app-global remote mode), not the launch profile's.
-            with contextlib.suppress(Exception), _session_db(session) as db:
-                if db is not None:
+            with contextlib.suppress(Exception), _session_db(session) as db, _persistence_for(db) as persistence:
+                if persistence is not None:
                     # Never end gateway-originated sessions: Groundhog Day loop (gateway self-heals to the parent,
                     # compression splits back to the reaped child, forever).
-                    if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
+                    if _is_gateway_owned_source(getattr(persistence.sessions.get(session_id), "source", "")):
                         _tui_owns_lifecycle = False
                     elif _tui_owns_lifecycle and not _desktop_automatic_cleanup:
                         # Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
                         # runtime but must not end the durable row — the conversation stays open
                         # and resumable until the user explicitly closes or archives it.  #105588
                         # A turn the gateway's ledger still holds keeps the row open too (#140642).
-                        if not _end_unless_ledger_busy(db, session_id, session_key, end_reason):
+                        if not _end_unless_ledger_busy(persistence, session_id, session_key, end_reason):
                             _tui_owns_lifecycle = False
     # ``_teardown_session`` follows with ``agent.close()``, whose ``_finalize_owned_session_row`` ends the row as
     # ``agent_close`` through the agent's own handle — every spare decision above would be undone one call later.
@@ -864,8 +918,9 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
         # viewer there). Unknown DB state -> assume ownership.
         # The row lives in the session's OWN store (a named-profile session's row is invisible to
         # the launch handle, which would leave this guard permanently dead).
-        with contextlib.suppress(Exception), _session_db(session) as db:
-            if db is not None and _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
+        with contextlib.suppress(Exception), _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is not None and _is_gateway_owned_source(
+                    getattr(persistence.sessions.get(session_id), "source", "")):
                 owned_session_key = ""
     if not own_sid and not owned_session_key:
         return False

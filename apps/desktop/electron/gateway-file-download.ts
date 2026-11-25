@@ -95,15 +95,46 @@ export interface GatewayFileBackendRoute<T> {
   profile: null | string
 }
 export interface GatewayFileRequestPaths {
-  dataUrl: string
+  /** The capped data-URL read a gateway without the streaming route falls back to; absent for a
+   *  route that has no such twin. */
+  dataUrl?: string
   download: string
+}
+
+/** Routes a renderer may name in place of `/api/fs/download`, each serving a file from the host
+ *  that wrote it, with the only query keys it takes. */
+const EXPLICIT_DOWNLOAD_ROUTES: Record<string, string[]> = {
+  '/api/ops/backup/download': ['archive']
+}
+
+/** A renderer-supplied download route, when it is an allow-listed one; anything else throws, so
+ *  the save never fetches an arbitrary gateway path. */
+export function explicitDownloadPath(raw: unknown): string {
+  const parsed = new URL(String(raw ?? ''), 'http://hermes.local')
+  const keys = EXPLICIT_DOWNLOAD_ROUTES[parsed.pathname]
+
+  if (
+    parsed.origin !== 'http://hermes.local' ||
+    !keys ||
+    [...parsed.searchParams.keys()].some(key => !keys.includes(key)) ||
+    !keys.every(key => parsed.searchParams.get(key))
+  ) {
+    throw new Error('Unsupported gateway download route')
+  }
+
+  return `${parsed.pathname}${parsed.search}`
 }
 
 export function gatewayFileRequestPaths(
   filePath: string,
   scopePath: (requestPath: string) => string,
-  sessionId?: string
+  sessionId?: string,
+  downloadPath?: unknown
 ): GatewayFileRequestPaths {
+  if (downloadPath !== undefined && downloadPath !== null && downloadPath !== '') {
+    return { download: scopePath(explicitDownloadPath(downloadPath)) }
+  }
+
   const encodedPath = encodeURIComponent(filePath)
   const session = sessionId === undefined ? '' : `&session_id=${encodeURIComponent(sessionId)}`
 
@@ -535,7 +566,7 @@ export async function saveGatewayDownload(
   try {
     return await deps.download(requestPaths.download, context)
   } catch (error) {
-    if (!isNotFoundError(error)) {
+    if (!isNotFoundError(error) || !requestPaths.dataUrl) {
       throw error
     }
   }

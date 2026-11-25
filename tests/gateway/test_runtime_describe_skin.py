@@ -9,6 +9,7 @@ import pytest
 
 from gateway.session_controls import AuthorityConnection
 from tests.gateway.test_local_source_labels import _authority
+from persistence_assembly import close_stores_under
 
 
 @pytest.mark.asyncio
@@ -28,7 +29,7 @@ async def test_runtime_describe_carries_the_profiles_resolved_skin(tmp_path, mon
         CANONICAL_METHODS['runtime.describe'].result.model_validate(described['result'])
     finally:
         await conn.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -45,4 +46,4 @@ async def test_runtime_describe_advertises_clarify_batch(tmp_path, monkeypatch):
         assert 'clarify_batch' in CANONICAL_METHODS['prompt.submit'].params.model_fields
     finally:
         await conn.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

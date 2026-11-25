@@ -148,8 +148,12 @@ starts no `workflow_run` workflow when it completes. This is why:
 
 ### Runners
 
-`blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
-`32vcpu` for test suites and builds, `-arm` for native arm64). The only GitHub-hosted
+`blacksmith-*` labels are Blacksmith runners (`2vcpu`/`4vcpu` for small jobs,
+`8vcpu`/`16vcpu`/`32vcpu` for test suites and builds, `-arm` for native arm64). For the
+CI jobs measured when right-sizing, a halving of the cores was kept only where the job got
+less than 15% slower (a second halving, 16 → 8, was tried only for jobs under 10% at the
+first); `catalog-tests` and `docs-site-checks` moved anyway (each added under a minute).
+The only GitHub-hosted
 label is `windows-latest-32-arm-core`: Blacksmith has no Windows arm64 runners.
 No workflow runs on Intel macOS. Jobs that only run `docker buildx imagetools`
 (manifest lists, alias promotion) set up buildx with `docker/setup-buildx-action`

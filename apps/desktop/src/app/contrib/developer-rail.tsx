@@ -3,19 +3,12 @@ import type { CSSProperties } from 'react'
 import { useLocation } from 'react-router'
 
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import {
-  $narrowViewport,
-  $paneVisible,
-  isPaneVisible,
-  restoreTreePane,
-  togglePaneVisible
-} from '@/components/pane-shell/tree/store'
+import { $narrowViewport, $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { useRootAttribute } from '@/lib/root-attribute'
-import { botsText } from '@/plugins/hermes-bots/i18n'
 import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $rightRailActiveTabId, setFileBrowserOpen } from '@/store/layout'
@@ -28,11 +21,7 @@ import { usePortalShell } from '@/store/shell-variant'
 
 import { useChatItemsCopy } from '../chat/items/chat-items-copy'
 import { toggleChatItemsSheet } from '../chat/items/chat-items-pane-id'
-import {
-  $screenPanes,
-  hideDeveloperToolPanel,
-  prepareDeveloperToolPanel
-} from '../redesign/developer-tool-panel'
+import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from '../redesign/developer-tool-panel'
 import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 import { appViewForPath } from '../routes'
 import { useTitlebarHeight } from '../shell/use-touch-titlebar'
@@ -63,10 +52,6 @@ function DeveloperTools() {
   const browser = useStore($paneVisible(`${PREVIEW_TILE_PREFIX}:${browserTab?.id ?? ''}`))
   const items = useStore($paneVisible(CHAT_ITEMS_PANE_ID))
   const itemsLabel = useChatItemsCopy().pane
-  // The Screen in front of the others, when any is open: one tile, as the Browser has for its tabs.
-  const screens = useStore($screenPanes)
-  const screenPane = screens.find(isPaneVisible) ?? screens.at(-1)
-  const screenShown = useStore($paneVisible(screenPane ?? ''))
 
   const tools = [
     {
@@ -112,21 +97,7 @@ function DeveloperTools() {
       action: undefined,
       active: narrow ? overlays.has(CHAT_ITEMS_PANE_ID) : items,
       run: () => (narrow ? toggleChatItemsSheet() : togglePaneVisible(CHAT_ITEMS_PANE_ID))
-    },
-    // Only while a Screen is open: nobody who does not use Screens sees a tile for them.
-    // On a wide window, where it is docked; below that it is a tab of the chat's zone, with its own chip.
-    ...(screenPane && !narrow
-      ? [
-          {
-            paneId: screenPane,
-            label: botsText().screen.title,
-            icon: 'device-desktop',
-            action: undefined,
-            active: screenShown,
-            run: () => restoreTreePane(screenPane)
-          }
-        ]
-      : [])
+    }
   ]
 
   return (

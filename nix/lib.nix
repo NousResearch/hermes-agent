@@ -75,23 +75,38 @@ let
   # never duplicated.  Add a workspace to pnpm-workspace.yaml and the nix
   # build picks it up automatically.  Nix reads no YAML: this parses the
   # one shape the file uses (a top-level `packages:` key followed by
-  # `  - <dir>` / `  - <dir>/*` lines) and throws on anything else, so a
-  # reformatted list cannot silently drop a workspace.
+  # `  - <dir>` / `  - <dir>/*` lines, a quoted `  - '!<dir>'` exclusion,
+  # and `  #` comment lines between them) and throws on anything else, so
+  # a reformatted list cannot silently drop a workspace.
   workspaceYamlLines = lib.splitString "\n" (builtins.readFile (repoRoot + "/pnpm-workspace.yaml"));
-  workspacePatterns =
+  workspaceEntries =
     let
       start = lib.lists.findFirstIndex (line: line == "packages:") (builtins.length workspaceYamlLines) workspaceYamlLines;
-      block = lib.drop (start + 1) workspaceYamlLines;
+      block = builtins.filter (line: !lib.hasPrefix "  #" line) (lib.drop (start + 1) workspaceYamlLines);
       count = lib.lists.findFirstIndex (line: !lib.hasPrefix "  - " line) (builtins.length block) block;
       items = lib.take count block;
       next = builtins.head (lib.drop count block ++ [ "" ]);
       patterns = map (lib.removePrefix "  - ") items;
-      supported = pattern: builtins.match "[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*(/\\*)?" pattern != null;
+      dir = "[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*";
+      supported = pattern: builtins.match "${dir}(/\\*)?" pattern != null;
+      # `'!apps/docs'` → [ "apps/docs" ... ]; null for anything else.
+      exclusion = pattern: builtins.match "'!(${dir})'" pattern;
+      included = builtins.filter (pattern: exclusion pattern == null) patterns;
     in
-    if items == [ ] || lib.hasPrefix " " next || lib.hasPrefix "-" next || !(lib.all supported patterns) then
-      throw "nix/lib.nix: pnpm-workspace.yaml `packages:` is no longer a block of unquoted `  - <dir>` or `  - <dir>/*` lines; update the parser"
+    if included == [ ] || lib.hasPrefix " " next || lib.hasPrefix "-" next || !(lib.all supported included) then
+      throw "nix/lib.nix: pnpm-workspace.yaml `packages:` is no longer a block of unquoted `  - <dir>` or `  - <dir>/*` lines, quoted `  - '!<dir>'` exclusions and comments; update the parser"
     else
-      patterns;
+      {
+        inherit included;
+        excluded = lib.concatMap (
+          pattern:
+          let
+            m = exclusion pattern;
+          in
+          if m == null then [ ] else [ (builtins.head m) ]
+        ) patterns;
+      };
+  workspacePatterns = workspaceEntries.included;
 
   # Expand a workspace glob (e.g. "apps/*") into concrete member dirs
   # relative to the repo root.  Only trailing "*" globs are supported —
@@ -115,9 +130,10 @@ let
   # All workspace member directories (relative paths), filtered to those
   # that actually carry a package.json — a glob like apps/* may match a
   # dir that isn't really a package.
-  workspaceMemberDirs = builtins.filter (d: builtins.pathExists (repoRoot + "/${d}/package.json")) (
-    lib.concatMap expandWorkspace workspacePatterns
-  );
+  workspaceMemberDirs =
+    builtins.filter
+      (d: !(builtins.elem d workspaceEntries.excluded) && builtins.pathExists (repoRoot + "/${d}/package.json"))
+      (lib.concatMap expandWorkspace workspacePatterns);
 
   # Top-level directory of each workspace member, deduplicated.  Used to
   # exclude JS/TS workspace trees from the Python source filter.  E.g.

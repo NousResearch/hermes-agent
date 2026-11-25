@@ -68,7 +68,7 @@ node_modules
 # a new standalone npm project must add its own `!` line here, or git silently skips its lock.
 **/package-lock.json
 **/npm-shrinkwrap.json
-!/website/package-lock.json
+!/apps/docs/package-lock.json
 !/scripts/whatsapp-bridge/package-lock.json
 !/plugins/platforms/photon/sidecar/package-lock.json
 browser-use/

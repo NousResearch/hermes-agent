@@ -478,13 +478,14 @@ class Projection:
     def generic(self, targets, *, deadline=None):
         targets = tuple(targets)
         deadline = time.monotonic() + 3 if deadline is None else deadline
-        with self.transaction(deadline=deadline) as doc:
-            if not doc["registrations"]:
-                # Stock mutators own path policy. The root-exclusive hold still
-                # fences orphan writers without rejecting stock-supported redirects.
-                with FileLease(self.directory / "writer-barrier.lock", deadline=deadline, root=self.home):
+        # Stock effects share the authority gate, so registration cannot race
+        # them, but only overlapping skill paths exclude each other.
+        with FileLease(self.directory / "mutation.lock", shared=True, deadline=deadline, root=self.home):
+            if self._absent():
+                with writer_hold(self.home, targets, deadline=deadline, root_exclusive=not targets):
                     yield
                 return
+        with self.transaction(deadline=deadline) as doc:
             if any(row["state"] != "ready" for row in doc["registrations"].values()):
                 raise CatalogError("busy", "Catalog installed ownership is reconciling.")
             for path in targets:

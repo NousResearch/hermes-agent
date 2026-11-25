@@ -182,6 +182,15 @@ def test_generic_write_allows_symlinked_home_prefix(tmp_path, monkeypatch, shape
     assert (real / 'skills/x/SKILL.md').read_text() == 'approved'
 
 
+def test_stock_unrelated_edits_do_not_share_exclusive_admission(home):
+    from hermes_cli.skill_catalog import admission
+    a, b = skill(home, 'a', 'a'), skill(home, 'b', 'b')
+    with admission.generic(a, a / 'SKILL.md'):
+        with admission.generic(b, b / 'SKILL.md', deadline=time.monotonic()):
+            (b / 'SKILL.md').write_text('independent')
+    assert (b / 'SKILL.md').read_text() == 'independent'
+
+
 def test_stock_no_provider_mutators_succeed_inside_gate(home, monkeypatch):
     import shutil
     import tools.skill_manager_tool as manager

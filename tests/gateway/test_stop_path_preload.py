@@ -82,7 +82,7 @@ async def test_boot_runs_the_preload_before_the_runner_starts(monkeypatch):
     import asyncio
     import threading
 
-    from gateway import run_bootstrap, run_runtime, shutdown_watchdog
+    from gateway import run_bootstrap, run_runtime, stop_path_preload
     from gateway.config import GatewayConfig
     from hermes_constants import get_hermes_home
 
@@ -97,7 +97,7 @@ async def test_boot_runs_the_preload_before_the_runner_starts(monkeypatch):
     async def serve_until_stop(runner):
         return None
 
-    monkeypatch.setattr(shutdown_watchdog, "preload_stop_path_modules", lambda: order.append("preload"))
+    monkeypatch.setattr(stop_path_preload, "preload_stop_path_modules", lambda: order.append("preload"))
     monkeypatch.setattr(run_bootstrap, "_start_gateway_run_runner", start_runner)
     monkeypatch.setattr(run_bootstrap, "_start_gateway_start_cron_and_housekeeping",
                         lambda runner: (stopped, None, threading.Thread(target=stopped.wait, daemon=True),
@@ -110,6 +110,15 @@ async def test_boot_runs_the_preload_before_the_runner_starts(monkeypatch):
     finally:
         stopped.set()
     assert order[:2] == ["preload", "runner"]
+
+
+def test_a_stop_path_module_that_no_longer_imports_is_reported_at_boot(monkeypatch, caplog):
+    from gateway import stop_path_preload
+
+    monkeypatch.setattr(stop_path_preload, "STOP_PATH_MODULES", ("gateway.no_such_stop_path_module",))
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        stop_path_preload.preload_stop_path_modules()
+    assert any("gateway.no_such_stop_path_module" in r.getMessage() for r in caplog.records)
 
 
 def test_a_stop_imports_no_repo_module_boot_did_not_load(tmp_path):

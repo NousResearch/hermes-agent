@@ -34,13 +34,16 @@ signs the user in on its own host, exchanges that sign-in for a token whose audi
 and relays the browser's requests here with it as a bearer. Portal marks every exchanged token with an
 ``act`` claim naming the client that asked for it (RFC 8693 §4.1). A browser login on this listener
 gets its tokens from the authorization-code grant, which never sets ``act``, and a token cannot gain
-the claim without Portal's signature over it. So :func:`access_token_works_alone` lets a token through
-when its claims, decoded without verification, carry an ``act`` object, and leaves the verdict to the
-providers: the gate then verifies it like any bearer (signature, ``aud``, issuer and agent instance,
-in the Nous provider), and a token no provider verifies gets nothing. Only a well-formed signed JWT
-counts: a token of another shape (the password provider's, whose decoder skips characters it does
-not know) is never read as one. The refresh route keeps :func:`token_works_alone`: an exchanged token
-is an access token, and the dashboard host exchanges again rather than refreshing here.
+the claim without Portal's signature over it. What ``act`` means is Portal's to say, so the verdict is
+the provider's: :func:`access_token_works_alone` lets a token through only when a registered provider
+that issues exchanged tokens (one with ``is_exchanged_token``, the Nous provider) verifies it as one
+of its own, signature, issuer, ``aud``, agent instance and scope included, and its verified claims
+name an actor. Another issuer's token carrying an ``act`` claim (a self-hosted OIDC ID token) stays
+bound to its login. A cheap shape check comes first, so only a well-formed compact JWS signed with an
+asymmetric algorithm is ever sent to a provider; a token of another shape (the password provider's,
+whose decoder skips characters it does not know) is never read as one. When the provider cannot be
+reached the token is refused, not let through. The refresh route keeps :func:`token_works_alone`: an
+exchanged token is an access token, and the dashboard host exchanges again rather than refreshing here.
 """
 from __future__ import annotations
 
@@ -151,23 +154,43 @@ _EXCHANGE_ALGORITHMS = frozenset({"RS256", "RS384", "RS512", "PS256", "PS384", "
 def _segment(part: str) -> object:
     try:
         return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
-    except (binascii.Error, ValueError):
+    except (binascii.Error, ValueError, RecursionError):
         return None
 
 
-def is_exchanged_token(token: str) -> bool:
-    """Whether *token* reads as one minted by RFC 8693 token exchange: a compact JWS, signed with an
-    asymmetric algorithm, whose claims carry an ``act`` object naming its actor. Read WITHOUT
-    verifying anything: it only decides whether the token may be presented alone, and the providers
-    verify it afterwards like any other bearer."""
+def reads_as_exchanged(token: str) -> bool:
+    """Whether *token* is shaped like one minted by RFC 8693 token exchange: a compact JWS, signed
+    with an asymmetric algorithm, whose claims carry an ``act`` object naming its actor. Read WITHOUT
+    verifying anything; it only decides whether a provider is asked (:func:`is_exchanged_token`)."""
     if not token or len(token) > 16384 or not _COMPACT_JWS.fullmatch(token):
         return False
     header_part, claims_part, _signature = token.split(".")
     header, claims = _segment(header_part), _segment(claims_part)
-    if not isinstance(header, dict) or header.get("alg") not in _EXCHANGE_ALGORITHMS:
+    algorithm = header.get("alg") if isinstance(header, dict) else None
+    if not isinstance(algorithm, str) or algorithm not in _EXCHANGE_ALGORITHMS:
         return False
     actor = claims.get("act") if isinstance(claims, dict) else None
     return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
+
+
+def is_exchanged_token(token: str) -> bool:
+    """Whether a registered provider that issues exchanged tokens verifies *token* as one: its
+    own token for this agent whose verified claims name an actor. Refused when no such provider
+    answers (an outage included)."""
+    if not reads_as_exchanged(token):
+        return False
+    from hermes_cli.dashboard_auth import ProviderError, list_session_providers
+
+    for provider in list_session_providers():
+        verdict = getattr(provider, "is_exchanged_token", None)
+        if not callable(verdict):
+            continue
+        try:
+            if verdict(token=token):
+                return True
+        except ProviderError as exc:
+            _log.warning("Could not check an exchanged token with provider %r: %s", provider.name, exc)
+    return False
 
 
 def access_token_works_alone(request: Request, token: str) -> bool:

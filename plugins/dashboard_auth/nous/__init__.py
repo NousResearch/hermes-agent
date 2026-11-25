@@ -107,6 +107,18 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             raise InvalidCodeError(f"token does not grant {_SCOPE}")
         return claims
 
+    def is_exchanged_token(self, *, token: str) -> bool:
+        """Whether *token* is a dashboard token Portal minted for this agent by RFC 8693 token
+        exchange: verified like any session token, and its claims name the client it was exchanged
+        for (``act.sub``). The authorization-code grant a browser login uses never sets ``act``.
+        A ``ProviderError`` (JWKS unreachable) propagates."""
+        try:
+            claims = self._claims_for(token)
+        except InvalidCodeError:
+            return False
+        actor = claims.get("act")
+        return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
+
     def verify_peer_pass(self, *, token: str) -> Optional[TokenPrincipal]:
         try:
             claims = self._agent_claims(token)

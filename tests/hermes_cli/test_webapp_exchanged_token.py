@@ -2,11 +2,11 @@
 
 The hosted dashboard signs the user in on its own host, trades that sign-in at Nous Portal (RFC 8693
 token exchange) for a token whose audience is this agent, and relays the browser's requests here with
-it as a bearer. Portal marks such a token with an ``act`` claim. The Webapp's listener lets a token
-carrying ``act`` past the rule that keeps a browser login's tokens to its cookies, and the Nous
-provider then verifies it like any bearer: a dashboard token for this agent without ``act`` (what a
-browser login holds) is still refused on its own, and a token with ``act`` that is signed by another
-key, or minted for another agent, gets nothing.
+it as a bearer. Portal marks such a token with an ``act`` claim. The Webapp's listener lets such a
+token past the rule that keeps a browser login's tokens to its cookies only when the Nous provider
+verifies it as its own exchanged token: a dashboard token for this agent without ``act`` (what a
+browser login holds) is still refused on its own; a token with ``act`` that is signed by another key,
+minted for another agent, or issued by another provider gets nothing; a Portal outage refuses it.
 """
 import base64
 import json
@@ -109,6 +109,56 @@ def _b64(value) -> str:
     return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
 
 
+def test_another_issuers_token_with_an_actor_stays_bound_to_its_login(gated, nous):
+    """What ``act`` means is Portal's to say: a provider that verifies JWTs carrying ``act`` but
+    does not vouch for exchanged tokens (a self-hosted OIDC issuer) gets no exemption."""
+    from hermes_cli.dashboard_auth import Session, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    other_key = _key()
+
+    class OtherIssuer(StubAuthProvider):
+        name = "other-oidc"
+        display_name = "Other OIDC"
+
+        def verify_session(self, *, access_token):
+            try:
+                claims = jwt.decode(access_token, other_key.public_key(), algorithms=["RS256"], audience=AGENT)
+            except jwt.PyJWTError:
+                return None
+            return Session(user_id=claims["sub"], email="", display_name="", org_id="",
+                           provider=self.name, expires_at=claims["exp"], access_token=access_token,
+                           refresh_token="")
+
+    register_provider(OtherIssuer())
+    token = _token(other_key)
+    assert OtherIssuer().verify_session(access_token=token) is not None
+    _refused(gated.browser().get("/api/auth/me", headers=_bearer(token)))
+    assert _gateway_socket_with(gated, token) == 4401
+
+
+def test_an_unreachable_portal_refuses_an_exchanged_token(gated, nous, portal_key, monkeypatch):
+    from hermes_cli.dashboard_auth import ProviderError
+
+    def unreachable(*, token):
+        raise ProviderError("JWKS unreachable")
+
+    monkeypatch.setattr(nous, "is_exchanged_token", unreachable)
+    _refused(gated.browser().get("/api/auth/me", headers=_bearer(_token(portal_key))))
+
+
+@pytest.mark.parametrize("header", [{"alg": []}, {"alg": {"x": 1}}, {"alg": None}])
+def test_a_malformed_header_is_refused_not_an_error(gated, nous, header):
+    token = f"{_b64(header)}.{_b64({'act': ACTOR})}.c2ln"
+    _refused(gated.browser().get("/api/auth/me", headers=_bearer(token)))
+
+
+def test_deeply_nested_claims_are_refused_not_an_error(gated, nous):
+    deep = base64.urlsafe_b64encode(b"[" * 5000 + b"]" * 5000).rstrip(b"=").decode()
+    token = f"{_b64({'alg': 'RS256'})}.{deep}.c2ln"
+    _refused(gated.browser().get("/api/auth/me", headers=_bearer(token)))
+
+
 @pytest.mark.parametrize(("label", "token"), [
     ("no act", f"{_b64({'alg': 'RS256'})}.{_b64({'sub': 'u'})}.c2ln"),
     ("act not an object", f"{_b64({'alg': 'RS256'})}.{_b64({'act': 'hermes-webapp'})}.c2ln"),
@@ -120,20 +170,20 @@ def _b64(value) -> str:
     ("claims not JSON", f"{_b64({'alg': 'RS256'})}.bm90LWpzb24.c2ln"),
 ])
 def test_only_a_signed_jwt_with_an_actor_reads_as_exchanged(label, token):
-    from hermes_cli.webapp_sign_in import is_exchanged_token
+    from hermes_cli.webapp_sign_in import reads_as_exchanged
 
-    assert not is_exchanged_token(token), label
-    assert is_exchanged_token(f"{_b64({'alg': 'RS256'})}.{_b64({'act': ACTOR})}.c2ln")
+    assert not reads_as_exchanged(token), label
+    assert reads_as_exchanged(f"{_b64({'alg': 'RS256'})}.{_b64({'act': ACTOR})}.c2ln")
 
 
 def test_a_password_login_token_is_never_read_as_exchanged(gated):
     """The password provider's tokens are base64 that its decoder reads leniently; no spelling of one
     reads as an exchanged token, so the binding still keeps it to its cookies."""
-    from hermes_cli.webapp_sign_in import is_exchanged_token
+    from hermes_cli.webapp_sign_in import reads_as_exchanged
     from tests.hermes_cli.test_webapp_gated_sign_out import _sign_in_with_password, _tokens
 
     browser = gated.browser()
     _sign_in_with_password(browser)
     access, refresh = _tokens(browser)
-    assert not is_exchanged_token(access) and not is_exchanged_token(refresh)
+    assert not reads_as_exchanged(access) and not reads_as_exchanged(refresh)
     _refused(gated.browser().get("/api/auth/me", headers=_bearer(access)))

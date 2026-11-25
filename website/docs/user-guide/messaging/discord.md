@@ -1025,7 +1025,7 @@ The bot answers to the handles of the profiles this gateway serves whose own con
 | `$agent-one $agent-two compare your dependency staleness` | Each profile gets the same prompt as its own independent turn and replies separately. There is no turn-taking between them. |
 | `anyone know if CI is green?` | No handle: the message follows the normal `require_mention` / free-response rules. |
 | `$not-a-real-profile ping` | No served profile opted in to that handle: nothing is dispatched, an INFO line is logged, and the message follows the normal rules. |
-| `$agent-one` (nothing else) | Ignored, like a bare `@mention` with no text. |
+| `$agent-one` (nothing else) | Treated exactly like a bare `@mention` with no text. With `history_backfill` on (the default) in a `require_mention` channel, `agent-one` gets one "catch me up" turn: an empty prompt plus the channel messages sent since the bot's last reply. With no such messages (or with backfill off), nothing runs. |
 | `/reset $agent-one` (any slash command) | Never re-routed: the command runs exactly as it would without the handle, in the channel's normal session, with its arguments untouched. In a `require_mention` channel the handle does not count as addressing the bot. |
 
 - The handles are removed from the prompt the profile sees. Each reply ends with a `— <profile>` line naming the profile that wrote it. A configured runtime footer follows on the same line.

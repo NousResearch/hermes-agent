@@ -26,7 +26,9 @@ authorizes (the receiving bot's allowlist) and delivers it. ``profile_mention`` 
 so the reply is labelled with the profile's name (``gateway/run_turn_persistence.py``).
 
 A message with no mentionable handle passes through untouched. Unknown ``$handles`` are logged and
-left in the text; a handle with no prompt after it is a no-op, like a bare bot @mention.
+left in the text. A handle with no prompt after it behaves like a bare bot @mention: with
+backfilled channel context (``history_backfill``, on by default) it is an empty-text "catch me up"
+turn for that profile; with no context and no media it is a no-op.
 
 Only free-text prompts are dispatched. A slash command (``/reset $agent-one``, typed or native) is
 never re-homed: it runs exactly as it would without this feature, ``$handle`` and all, so a
@@ -256,8 +258,9 @@ def _claim(adapter: Any, event: Any, profile: str) -> bool:
 def mention_events(adapter: Any, event: Any) -> list:
     """The events to dispatch for *event*: itself when it names no mentionable profile, one copy
     per named profile otherwise (unless another bot already dispatched it), or none when nothing
-    but the handles was sent. A slash command is always itself: it runs where it would without
-    this feature, with its arguments (``$handle`` included) untouched."""
+    but the handles was sent and there is no backfilled context or media (a bare @mention's rule).
+    A slash command is always itself: it runs where it would without this feature, with its
+    arguments (``$handle`` included) untouched."""
     if event.message_type == MessageType.COMMAND or _is_command_text(event.text):
         return [event]
     text = event.text or ""

@@ -236,9 +236,50 @@ async def test_unknown_profile_fails_closed_with_a_log_line(adapter, caplog):
 
 @pytest.mark.asyncio
 async def test_mention_with_no_prompt_is_a_no_op(adapter):
-    """Case 6: ``$agent-one`` alone dispatches nothing and does not error."""
+    """Case 6: ``$agent-one`` alone, with no backfilled context, dispatches nothing and does not
+    error. With backfill on and channel activity it is a turn: see the test below."""
     assert await adapter._handle_message(_message("$agent-one")) is True
     adapter.handle_message.assert_not_awaited()
+
+
+class _BusyTextChannel(FakeTextChannel):
+    """A channel where someone spoke since the bot's last turn, so history backfill finds context."""
+
+    def history(self, *, limit, before, after=None, oldest_first=None):
+        async def _iter():
+            yield SimpleNamespace(
+                id=100, content="CI went red on main", clean_content="CI went red on main", attachments=[],
+                type=discord_platform.discord.MessageType.default,
+                author=SimpleNamespace(id=43, display_name="Ann", name="Ann", bot=False))
+        return _iter()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [True, False], ids=["channel-activity", "no-activity"])
+async def test_a_bare_handle_with_default_backfill_behaves_like_a_bare_at_mention(adapter, monkeypatch, busy):
+    """Case 6 with ``history_backfill`` at its default (on): a bare ``$agent-one`` does exactly
+    what a bare ``@bot`` does. With channel activity since the bot's last turn, that profile gets
+    one empty-text "catch me up" turn carrying the backfilled context; with none, nothing runs."""
+    monkeypatch.delenv("DISCORD_HISTORY_BACKFILL", raising=False)
+    assert adapter._discord_history_backfill() is True
+
+    async def _turns(content):
+        message = _message(content)
+        if busy:
+            message.channel = _BusyTextChannel()
+        adapter.handle_message.reset_mock()
+        await adapter._handle_message(message)
+        return [call.args[0] for call in adapter.handle_message.await_args_list]
+
+    by_handle, by_mention = await _turns("$agent-one"), await _turns("<@999>")
+
+    assert len(by_handle) == len(by_mention) == (1 if busy else 0)
+    if busy:
+        (handle_turn,), (mention_turn,) = by_handle, by_mention
+        assert (handle_turn.source.profile, mention_turn.source.profile) == ("agent-one", None)
+        assert handle_turn.text == mention_turn.text == ""
+        assert handle_turn.channel_context == mention_turn.channel_context
+        assert "CI went red on main" in handle_turn.channel_context
 
 
 @pytest.mark.asyncio

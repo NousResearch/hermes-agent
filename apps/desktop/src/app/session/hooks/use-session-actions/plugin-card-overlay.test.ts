@@ -8,6 +8,7 @@ import type { SessionMessage } from '@/types/hermes'
 import { overlayConcurrentMessageChanges } from './utils'
 
 const card = { card_id: 'card-1', plugin_id: 'example' }
+
 const stored = (descriptor = card): ChatMessage[] =>
   toChatMessages([
     {

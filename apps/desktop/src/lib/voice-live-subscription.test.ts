@@ -190,6 +190,30 @@ describe('native Live explicit billing', () => {
     expect(onClosed).toHaveBeenCalledOnce()
   })
 
+  it('does not post a cancelled session after ICE gathering resolves', async () => {
+    const wire = media()
+    let peerConnection: RTCPeerConnection | undefined
+    const OriginalPeer = RTCPeerConnection
+    vi.stubGlobal('RTCPeerConnection', class extends OriginalPeer {
+      constructor() {
+        super()
+        Object.assign(this, { iceGatheringState: 'gathering' })
+        peerConnection = this
+      }
+    })
+    const addListener = vi.spyOn(OriginalPeer.prototype, 'addEventListener')
+    const session = new VoiceLiveSession({ onDelegation: vi.fn(), onClosed: vi.fn(), onError: vi.fn() })
+    const started = session.start([])
+    await vi.waitFor(() => expect(addListener.mock.calls.some(([name]) => name === 'icegatheringstatechange')).toBe(true))
+    session.close()
+    wire.receive({ type: 'session.closed', reason: 'closed' })
+    Object.assign(peerConnection!, { iceGatheringState: 'complete' })
+    peerConnection!.dispatchEvent(new Event('icegatheringstatechange'))
+    await started
+    expect(hermesApiAs).not.toHaveBeenCalled()
+    expect(wire.track.stop).toHaveBeenCalledOnce()
+  })
+
   it('expires subscription transcript context during silence before a delayed delegation', async () => {
     const wire = media()
     const onDelegation = vi.fn()

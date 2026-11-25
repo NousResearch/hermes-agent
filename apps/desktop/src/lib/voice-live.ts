@@ -551,6 +551,10 @@ export class VoiceLiveSession {
     await connection.setLocalDescription(offer)
     await waitForIceGathering(connection)
 
+    if (this.finalized || this.peer !== connection) {
+      return
+    }
+
     const sdp = connection.localDescription?.sdp
 
     if (!sdp) {

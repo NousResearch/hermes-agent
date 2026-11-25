@@ -165,7 +165,7 @@ def test_subscription_requires_canonical_credential_route(monkeypatch, tmp_path,
         voice_live.create_webrtc_session("offer", expected_auth="subscription")
 
 
-@pytest.mark.parametrize("document", ["false", "[]", "0", "voice: [", "voice: false", "voice: {gpt_live: false}", "exception"])
+@pytest.mark.parametrize("document", ["false", "[]", "0", "null", "~", "voice: [", "voice: false", "voice: {gpt_live: false}", "exception"])
 def test_unreadable_voice_policy_blocks_unpinned_billing(monkeypatch, tmp_path, document):
     from hermes_cli import config
 

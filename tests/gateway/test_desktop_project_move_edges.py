@@ -178,6 +178,34 @@ async def test_list_in_a_chat_without_project_tools_keeps_the_shared_pointer(tmp
 
 
 @pytest.mark.asyncio
+async def test_a_move_to_the_chats_own_folder_changes_nothing(tmp_path, monkeypatch):
+    from tools import terminal_tool
+    chat = await _chat(tmp_path, monkeypatch)
+    try:
+        sub = chat.start / 'sub'
+        sub.mkdir()
+        _create(chat, chat.worktree)  # a pending move the second call takes back
+        _in_turn(chat, lambda: terminal_tool.terminal_tool(f'cd {sub}', task_id=chat.sid))
+        built = len(chat.built)
+        assert _create(chat, chat.start)['moved'] is True
+        assert chat.authority.sessions[chat.sid].pending_workspace is None
+        await _boundary(chat)
+        assert _pwd(chat) == str(sub) and len(chat.built) == built  # same cd, same terminal
+    finally:
+        await _closed(chat)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_folder_says_so(tmp_path, monkeypatch):
+    chat = await _chat(tmp_path, monkeypatch)
+    try:
+        result = _create(chat, tmp_path / 'gone')
+        assert result['moved'] is False and 'does not exist' in result['not_moved_reason'], result
+    finally:
+        await _closed(chat)
+
+
+@pytest.mark.asyncio
 async def test_a_delegated_childs_call_moves_the_parent_chat(tmp_path, monkeypatch):
     from hermes_cli import projects_db as pdb
     from tools import project_tools

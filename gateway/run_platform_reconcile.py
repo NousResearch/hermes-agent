@@ -244,7 +244,8 @@ class GatewayPlatformReconcileMixin:
         for platform in (*plan.stop, *plan.restart):
             task = queued.pop(platform, None)
             if isinstance(task, asyncio.Task) and not task.done():
-                task.cancel()
+                task.cancel()  # awaited: its claim hold must be gone before the rebuild below
+                await asyncio.wait([task], timeout=self._adapter_disconnect_timeout_secs())
             adapter = profile_map.get(platform)
             if adapter is None:
                 continue

@@ -947,15 +947,9 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
-  // `live.applied` (mirrored by `hot_served`): the running gateway started, restarted or stopped the
-  // platform's adapter itself, so no restart is needed; older backends send only `hot_served`.
+  // `live.applied` (or `hot_served` from older backends): the running gateway applied the change itself.
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{
-      ok: boolean;
-      platform: string;
-      hot_served?: boolean;
-      live?: { applied: boolean; state?: string | null; detail?: string };
-    }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean; live?: { applied: boolean; detail?: string } }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",

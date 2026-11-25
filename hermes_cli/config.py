@@ -3177,7 +3177,6 @@ def set_config_value(key: str, value: str, force: bool = False):
         except ValueError as exc:
             _exit_invalid(f"✗ {exc}")
         print(f"✓ Set {key} in {get_env_path()}")
-        _print_gateway_live_note(key.upper())
         return
     from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
 
@@ -3191,7 +3190,6 @@ def set_config_value(key: str, value: str, force: bool = False):
         except ValueError as exc:
             _exit_invalid(f"✗ {exc}")
         print(f"✓ Set {key.upper()} in {get_env_path()}")
-        _print_gateway_live_note(key.upper())
         return
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the
@@ -3271,15 +3269,6 @@ def set_config_value(key: str, value: str, force: bool = False):
     # it and suggest the likely-intended path.
     if not is_known and not force:
         _print_unknown_key_notice(key, suggestion)
-    _print_gateway_live_note(key)
-
-
-def _print_gateway_live_note(key: str) -> None:
-    """A running gateway applies a platform setting now (bot token, ``platforms.*``); say what it did."""
-    from hermes_cli.gateway_platform_live import config_set_live_note
-    note = config_set_live_note(key)
-    if note:
-        print(note)
 
 
 def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
@@ -3433,11 +3422,11 @@ def _cmd_config_get(args):
 
 
 def _cmd_config_set(args):
-    key = getattr(args, 'key', None)
-    value = getattr(args, 'value', None)
+    key, value = getattr(args, 'key', None), getattr(args, 'value', None)
     if not key or value is None:
         _usage_exit(*_USAGE_SET)
-    _run_write_command(set_config_value, key, value, bool(getattr(args, 'force', False)))
+    from hermes_cli.gateway_platform_live import set_config_value_live  # a running gateway applies it now
+    _run_write_command(set_config_value_live, key, value, bool(getattr(args, 'force', False)))
 
 
 def _cmd_config_unset(args):

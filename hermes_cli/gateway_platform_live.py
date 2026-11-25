@@ -21,13 +21,22 @@ def reconcile_running_gateway_platforms(profile_name: str, home: Path, *, timeou
     return query_gateway_control(gateway_home, "reconcile-platforms", params={"home": str(home)}, timeout=timeout)
 
 
+def set_config_value_live(key: str, value: str, force: bool = False) -> None:
+    """``hermes config set``: write the value, then print what a running gateway did with it, if anything."""
+    from hermes_cli.config import set_config_value
+    set_config_value(key, value, force)
+    note = config_set_live_note(key)
+    if note:
+        print(note)
+
+
 def config_set_live_note(key: str) -> Optional[str]:
     """After ``hermes config set <key>``: nudge the running gateway when the key can change a platform
     (an env setting such as a bot token, or a ``platforms.*`` block) and describe only what it did.
     None when nothing ran or changed, so no hint is printed that is not true."""
     from hermes_cli.gateway import _current_profile_name
     from hermes_constants import get_hermes_home
-    if not (key.isupper() or key.split(".", 1)[0] in {"platforms", "gateway"}):
+    if "." in key and key.split(".", 1)[0] not in {"platforms", "gateway"}:  # dotless = an env setting
         return None
     answer = reconcile_running_gateway_platforms(_current_profile_name() or "default", get_hermes_home())
     if not answer or not answer.get("changed"):

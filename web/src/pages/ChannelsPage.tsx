@@ -395,8 +395,8 @@ export default function ChannelsPage() {
 
       <p className="text-xs text-muted-foreground">
         {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; the
-        gateway connects each enabled channel on its next restart.
+        written to <code className="font-courier">{envPath}</code>; a running
+        gateway connects each enabled channel as soon as it is saved.
       </p>
 
       {/* Config modal */}

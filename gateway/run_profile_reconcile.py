@@ -26,6 +26,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from gateway.run_platform_reconcile import GatewayPlatformReconcileMixin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config_backend import ConfigBackendUnavailable
 from utils import file_cache_version
@@ -75,8 +76,9 @@ def _added_profile_blocker(launch: Path) -> Optional[str]:
     return implicit_multiplex_blocker()
 
 
-class GatewayProfileReconcileMixin:
-    """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
+class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
+    """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add);
+    each profile's own platform adapters follow its config through the platform reconcile base."""
 
     _served_profile_homes: Optional[dict[str, Path]] = None
     _served_profile_signatures: Optional[dict[str, tuple]] = None

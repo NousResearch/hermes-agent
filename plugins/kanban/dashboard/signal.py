@@ -252,9 +252,12 @@ def _parse_signal_ws_query(ws: WebSocket) -> tuple[str, int, str | None]:
     )
     if values["view"] != "signal":
         raise ValueError("unsupported event view")
-    auth_keys = set(values) & set(_SIGNAL_AUTH_QUERY_KEYS)
-    if len(auth_keys) != 1:
-        raise ValueError("exactly one WebSocket credential is required")
+    # The canonical gate already admitted this upgrade, possibly through the
+    # native ``X-Hermes-Gateway-Ticket`` header or the ``hermes-gateway-ticket.``
+    # subprotocol, so no query credential is required here. Several distinct
+    # query credentials are still refused as ambiguous.
+    if len(set(values) & _SIGNAL_AUTH_QUERY_KEYS) > 1:
+        raise ValueError("ambiguous WebSocket credentials")
     board = _resolve_signal_board(values["board"])
     since = values["since"] or ""
     if not re.fullmatch(r"0|[1-9][0-9]*", since):

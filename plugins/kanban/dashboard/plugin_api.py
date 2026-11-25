@@ -1822,7 +1822,9 @@ async def stream_events(ws: WebSocket):
         except (ValueError, FileNotFoundError):
             await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
             return
-        await ws.accept()
+        # A ``hermes-gateway-ticket.`` subprotocol admission selects only the
+        # public gateway protocol; browsers drop an upgrade that selects none.
+        await ws.accept(subprotocol=getattr(ws, "_hermes_ws_subprotocol", None))
         try:
             await signal_api._stream_signal_events(
                 ws, signal_board, signal_cursor, signal_generation,

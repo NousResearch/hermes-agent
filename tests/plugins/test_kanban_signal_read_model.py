@@ -16,6 +16,10 @@ from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from tests.hermes_cli import test_plugin_api_consent_gate as _consent_gate
+
+# The multiplexed-gateway stand-in that mints native ``X-Hermes-Gateway-Ticket`` grants.
+daemon = _consent_gate.daemon
 
 CAPABILITIES = {
     "kanban.read_model.signal.v1",
@@ -721,3 +725,64 @@ def test_signal_ws_accepts_sdk_profile_scope_on_real_dashboard_mount(real_dashbo
     assert frame["initial"] is True
     assert frame["reset"] is False
     assert "profile" not in frame
+
+
+def test_signal_ws_accepts_gateway_ticket_subprotocol_without_query_credential(signal_home, monkeypatch):
+    """The canonical gate admits a one-use ticket carried as the ``hermes-gateway-ticket.``
+    subprotocol; the signal view must not then demand a second credential in the query, and it
+    selects only the public gateway protocol (never the ticket) on accept."""
+    from hermes_cli import web_server
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
+    from hermes_cli.web_server_chat import _GATEWAY_WS_PROTOCOL, _GATEWAY_WS_TICKET_PROTOCOL_PREFIX
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    _reset_for_tests()
+    clear_providers()
+    register_provider(StubAuthProvider())
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(web_server.app.state, "bound_port", 9119, raising=False)
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    try:
+        client = TestClient(
+            web_server.app, base_url="http://127.0.0.1:9119", client=("127.0.0.1", 50000),
+        )
+        ticket = mint_ticket(user_id="signal-observer", provider="stub")
+        protocols = [_GATEWAY_WS_PROTOCOL, f"{_GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}"]
+        url = "/api/plugins/kanban/events?view=signal&board=default&since=0"
+        with client.websocket_connect(url, subprotocols=protocols, headers=_DASHBOARD_HOST) as websocket:
+            frame = websocket.receive_json()
+            assert websocket.accepted_subprotocol == _GATEWAY_WS_PROTOCOL
+        assert frame["initial"] is True
+        assert frame["schema"] == "kanban.events.signal.v1"
+
+        # One-use: replaying the same ticket is refused by the canonical gate.
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(url, subprotocols=protocols, headers=_DASHBOARD_HOST):
+                pass
+        assert exc.value.code == 1008
+    finally:
+        clear_providers()
+        _reset_for_tests()
+
+
+def test_signal_ws_accepts_native_gateway_ticket_header_without_query_credential(signal_home, daemon):
+    """A local Desktop's ``X-Hermes-Gateway-Ticket`` grant is redeemed by the plugin socket gate
+    and accepted by ``_ws_auth_ok``; the signal view must open without a query credential."""
+    _consent_gate._plugins(daemon.launch)
+    from hermes_cli import web_server
+
+    grant = web_server.app.state.gateway_runner.session_ticket_store.mint(
+        profile_id=str(daemon.launch), subject="desktop", purpose="native-http",
+    )
+    url = "/api/plugins/kanban/events?view=signal&board=default&since=0"
+    with daemon.client.websocket_connect(url, headers={"X-Hermes-Gateway-Ticket": grant}) as websocket:
+        frame = websocket.receive_json()
+    assert frame["initial"] is True
+    assert frame["schema"] == "kanban.events.signal.v1"
+
+    # A forged grant is refused before plugin code runs; there is no query fallback.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with daemon.client.websocket_connect(url, headers={"X-Hermes-Gateway-Ticket": "forged"}):
+            pass
+    assert exc.value.code == 1008

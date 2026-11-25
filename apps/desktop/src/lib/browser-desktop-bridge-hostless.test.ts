@@ -4,7 +4,8 @@ import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/gl
 import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { NoHostedAgentError } from './browser-saved-connections'
+import { ManagedConnectionsError, NoHostedAgentError } from './browser-saved-connections'
+import { _resetAdoptedLaunchProfileForTests, browserLaunchProfile } from './platform'
 
 /**
  * A host that runs no agent of its own (`__HERMES_HOST_AGENT__ === false`): the hosted dashboard. It
@@ -67,8 +68,16 @@ const EXPIRED = { detail: 'dashboard session expired', error: 'session_expired',
 function dashboardHost({
   agents = [ALPHA, BETA],
   primary,
-  expired = new Set<string>()
-}: { agents?: DesktopRegistryConnection[]; expired?: Set<string>; primary?: string } = {}) {
+  expired = new Set<string>(),
+  profiles = { alpha: ['default'], beta: ['default'] } as Record<string, string[]>,
+  runsAs = {} as Record<string, string>
+}: {
+  agents?: DesktopRegistryConnection[]
+  expired?: Set<string>
+  primary?: string
+  profiles?: Record<string, string[]>
+  runsAs?: Record<string, string>
+} = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
   vi.stubGlobal(
@@ -92,7 +101,11 @@ function dashboardHost({
         }
 
         if (rest === '/api/profiles') {
-          return json({ profiles: [{ name: 'default' }] })
+          return json({ profiles: (profiles[id] ?? []).map(name => ({ name })) })
+        }
+
+        if (rest === '/api/profiles/active') {
+          return json({ current: runsAs[id] ?? 'default' })
         }
 
         if (rest === '/api/portal') {
@@ -167,6 +180,7 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
   $connection.set(null)
+  _resetAdoptedLaunchProfileForTests()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -183,7 +197,7 @@ describe('a Webapp whose host runs no agent', () => {
     ])
 
     expect(config).toEqual({ from: 'alpha', path: '/api/config' })
-    expect(health).toEqual({ from: 'alpha', path: '/api/profiles/active' })
+    expect(health).toMatchObject({ current: 'default' })
     // Both waited on one read of the list.
     expect(ownRequests(requests)).toEqual(['GET /api/gateway-connections'])
   })
@@ -263,12 +277,49 @@ describe('a Webapp whose host runs no agent', () => {
     expect(ownRequests(requests).every(request => HOST_SURFACE.has(request))).toBe(true)
   })
 
-  it('follows the connection boot published for requests that name none', async () => {
-    dashboardHost()
+  it('sends REST, sockets and profile routes that name no agent to the one the window is on', async () => {
+    const requests = dashboardHost({ profiles: { alpha: ['default'], beta: ['default', 'research'] } })
     const desktop = install()
+    // Alpha is the primary; the window has moved to Beta.
     $connection.set(await desktop.getConnectionFor!({ connectionId: 'beta' }))
 
     expect(await desktop.api({ path: '/api/config' })).toEqual({ from: 'beta', path: '/api/config' })
+    expect(await desktop.api({ connectionId: 'local', path: '/api/config' })).toEqual({ from: 'beta', path: '/api/config' })
+    expect(dialed(await desktop.getGatewayWsUrl()).pathname).toBe('/api/relay/beta/api/ws')
+    expect(dialed(await desktop.getGatewayWsUrlFor!({ connectionId: 'local' })).pathname).toBe('/api/relay/beta/api/ws')
+
+    const audio = await desktop.getAudioWsUrl!({ connectionId: 'local', path: '/api/audio/transcribe-stream' })
+    expect(new URL(audio).pathname).toBe('/api/relay/beta/api/audio/transcribe-stream')
+    expect((await desktop.getConnectionFor!({ connectionId: 'local' })).connectionId).toBe('beta')
+    expect((await desktop.getProfileRoutes!(['research'])).map(route => route.connectionId)).toEqual(['beta'])
+    expect((await desktop.getAgentRoster!()).primaryConnectionId).toBe('beta')
+    expect(ownRequests(requests).every(request => HOST_SURFACE.has(request))).toBe(true)
+  })
+
+  it('routes only the profiles the agent has', async () => {
+    dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] } })
+    const routes = await install().getProfileRoutes!(['research', 'deleted', ''])
+
+    expect(routes.map(route => `${route.connectionId}/${route.profile}`)).toEqual(['alpha/research', 'alpha/default'])
+  })
+
+  it("adopts the profile the window's agent runs as, as a served page adopts its server's", async () => {
+    dashboardHost({ runsAs: { alpha: 'research' } })
+    await install().getConnection()
+
+    expect(browserLaunchProfile()).toBe('research')
+  })
+
+  it('refuses to add or remove an agent before sending anything, and says the account manages the list', async () => {
+    const requests = dashboardHost()
+    const connections = install().connections!
+
+    expect(connections.managedByHost).toBe(true)
+    await expect(
+      connections.save({ kind: 'remote', label: 'Mine', token: 'secret-token', url: 'https://mine.example' })
+    ).rejects.toBeInstanceOf(ManagedConnectionsError)
+    await expect(connections.remove('alpha')).rejects.toBeInstanceOf(ManagedConnectionsError)
+    expect(requests).toEqual([])
   })
 
   it.each([

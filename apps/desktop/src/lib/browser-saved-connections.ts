@@ -117,7 +117,17 @@ export interface BrowserSavedConnections {
   windowConnection: () => Promise<string>
   /** `windowConnection` as last read, without a read; undefined before the first one. */
   knownWindowConnection: () => string | undefined
+  /** The profile *connectionId*'s gateway runs as, read once through the relay; undefined unread. */
+  launchProfile: (connectionId: string) => Promise<string | undefined>
   connections: Bridge
+}
+
+/** A host that runs no agent keeps the list for the account; this page cannot change it. */
+export class ManagedConnectionsError extends Error {
+  constructor() {
+    super('Your Hermes Cloud account manages this list of agents.')
+    this.name = 'ManagedConnectionsError'
+  }
 }
 
 /** A host that runs no agent listed no agent for this window to open on. */
@@ -151,7 +161,8 @@ export function createBrowserSavedConnections({
 }: {
   api: Api
   bootstrap: BrowserBootstrap
-  /** The host runs no agent: a connection test asks the gateway itself, through the relay. */
+  /** The host runs no agent: it manages the list for the account, and a connection test asks the
+   *  gateway itself, through the relay. */
   hostless?: boolean
 }): BrowserSavedConnections {
   let snapshot: DesktopConnectionsRegistry | null = null
@@ -161,6 +172,10 @@ export function createBrowserSavedConnections({
     connectionId && connectionId !== LOCAL_CONNECTION_ID
       ? snapshot?.connections.find(row => row.id === connectionId && row.kind !== 'local')
       : undefined
+
+  // Bumped by every write this page makes. A read that went out before a write answers for the
+  // list before it, so it neither publishes nor serves a caller that asks after the write.
+  let generation = 0
 
   // Every read publishes what changed since the last one, so this tab follows an edit made in
   // native Desktop or another tab the way a native window follows `connections:changed`.
@@ -173,31 +188,48 @@ export function createBrowserSavedConnections({
   }
 
   const readList = async () => {
+    const started = generation
     const read = await api<DesktopConnectionsRegistry | null>({ path: ROUTE })
 
     if (!Array.isArray(read?.connections)) {
       throw new Error('Hermes did not return the saved connections')
     }
 
-    return publish(read)
+    return started === generation ? publish(read) : read
   }
 
   // Readers that start while a read is in flight share it: a roster, a dial and Settings often ask
   // in the same moment, and on a hosted dashboard each read is a call to the account service. A
-  // settled read is never reused: a caller that joins gets the answer of a read already under way.
+  // settled read is never reused, and a write starts the next caller on a read of its own.
   let reading: null | Promise<DesktopConnectionsRegistry> = null
 
-  const list = () =>
-    (reading ??= readList().finally(() => {
-      reading = null
-    }))
+  const list = () => {
+    if (reading) {
+      return reading
+    }
+
+    const read = readList().finally(() => {
+      if (reading === read) {
+        reading = null
+      }
+    })
+
+    reading = read
+
+    return read
+  }
 
   const mutated = async <T extends { registry: DesktopConnectionsRegistry }>(request: HermesApiRequest) => {
     const result = await api<T>(request)
+    generation += 1
+    reading = null
     publish(result.registry)
 
     return result
   }
+
+  // A list the host manages is refused here, before any body (a token, secret headers) leaves the page.
+  const managed = <T>(write: () => Promise<T>) => (hostless ? Promise.reject(new ManagedConnectionsError()) : write())
 
   const gateways = async () => (await list()).connections.filter(row => row.kind !== 'local')
 
@@ -365,6 +397,30 @@ export function createBrowserSavedConnections({
 
   const id = (connectionId: string) => encodeURIComponent(connectionId)
 
+  const launchProfiles = new Map<string, Promise<string | undefined>>()
+
+  const launchProfile = (connectionId: string) => {
+    let read = launchProfiles.get(connectionId)
+
+    if (!read) {
+      read = browserApi<null | { current?: string }>(bootstrapFor(connectionId), {
+        path: '/api/profiles/active',
+        timeoutMs: SERVED_SET_READ_TIMEOUT_MS
+      }).then(
+        answer => String(answer?.current ?? '').trim() || undefined,
+        () => {
+          // Not kept: the next window that asks reads again.
+          launchProfiles.delete(connectionId)
+
+          return undefined
+        }
+      )
+      launchProfiles.set(connectionId, read)
+    }
+
+    return read
+  }
+
   // A host with no agent has no test route of its own: the relay reaching the gateway's health
   // route is the leg every request of that connection takes.
   const testThroughRelay = async (connectionId: string) => {
@@ -383,14 +439,15 @@ export function createBrowserSavedConnections({
   }
 
   const connections: Bridge = {
+    ...(hostless ? { managedByHost: true } : {}),
     list,
     onChanged: callback => {
       listeners.add(callback)
 
       return () => void listeners.delete(callback)
     },
-    remove: connectionId => mutated({ method: 'DELETE', path: `${ROUTE}/${id(connectionId)}` }),
-    save: payload => mutated({ body: payload, method: 'POST', path: ROUTE }),
+    remove: connectionId => managed(() => mutated({ method: 'DELETE', path: `${ROUTE}/${id(connectionId)}` })),
+    save: payload => managed(() => mutated({ body: payload, method: 'POST', path: ROUTE })),
     setLastUsed: connectionId => mutated({ body: { id: connectionId }, method: 'POST', path: `${ROUTE}/last-used` }),
     setLaunchMode: mode => mutated({ body: { mode }, method: 'POST', path: `${ROUTE}/launch-mode` }),
     setPrimary: connectionId => mutated({ method: 'POST', path: `${ROUTE}/${id(connectionId)}/primary` }),
@@ -414,6 +471,7 @@ export function createBrowserSavedConnections({
     gateway,
     gateways,
     knownWindowConnection: () => hostedWindowConnection(snapshot),
+    launchProfile,
     windowConnection,
     localLabel: () => snapshot?.connections.find(row => row.id === LOCAL_CONNECTION_ID)?.label,
     refreshServed,

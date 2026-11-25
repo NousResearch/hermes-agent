@@ -241,6 +241,9 @@ declare global {
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections?: {
+        /** The host keeps this list for the signed-in account (the hosted dashboard): it can be
+         *  read, tested and ordered here, never added to, edited or removed from. */
+        managedByHost?: boolean
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput

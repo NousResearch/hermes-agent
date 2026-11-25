@@ -14,7 +14,7 @@ import {
   navigateToBrowserLogin,
   ticketedWebsocketUrl
 } from '@/lib/browser-transport'
-import { browserLaunchProfileOrDefault } from '@/lib/platform'
+import { adoptBrowserLaunchProfile, browserLaunchProfileOrDefault } from '@/lib/platform'
 import { withTimeout } from '@/lib/with-timeout'
 
 /** The serving origin is the only connection a browser-hosted Desktop has. */
@@ -94,9 +94,12 @@ interface BrowserConnectionOptions {
   /** This machine's saved gateway connections, reached through the serving gateway
    *  (`browser-saved-connections.ts`). Absent: only the serving gateway. */
   relays?: BrowserSavedConnections | null
-  /** The host runs no agent (`browserHostRunsNoAgent`): `local` names the window's relayed
-   *  connection, and nothing but the host's sign-in and list routes is asked of the host. */
-  hostless?: boolean
+  /**
+   * The host runs no agent (`browserHostRunsNoAgent`): the agent a request that names no
+   * connection, or names `local`, reaches. The bridge's REST door resolves through the same
+   * function, so sockets, routes and REST always name one agent.
+   */
+  hostedAgent?: ((connectionId?: null | string) => Promise<string>) | null
 }
 
 const relayed = (relays: BrowserSavedConnections | null | undefined, connectionId?: null | string) =>
@@ -116,7 +119,7 @@ function sameGateway(a: string, b: string): boolean {
 export function createBrowserConnectionBridge({
   api,
   bootstrap,
-  hostless: hostlessOption = false,
+  hostedAgent = null,
   relays
 }: BrowserConnectionOptions): Pick<
   Window['hermesDesktop'],
@@ -135,13 +138,14 @@ export function createBrowserConnectionBridge({
   | 'testConnectionConfig'
 > {
   const served = createServedProfiles(api)
-  // Without a saved-connections list there is nothing to relay to, so the flag cannot apply.
-  const hostless = hostlessOption && relays ? relays : null
+  // Without a saved-connections list there is nothing to relay to, so the mode cannot apply.
+  const hostless = hostedAgent && relays ? relays : null
+  const agentOf = (connectionId?: null | string) => hostedAgent!(connectionId)
 
   // On a host with no agent, a request that names no connection, or names `local`, is for the
-  // gateway the window opened on.
+  // agent the window is on.
   const routed = async (connectionId?: null | string) =>
-    hostless && !relayed(relays, connectionId) ? hostless.windowConnection() : connectionId
+    hostless && !relayed(relays, connectionId) ? agentOf(connectionId) : connectionId
 
   // The gateway's own profile, or another one it serves: the only profiles this tab's socket reaches.
   const reachesSocket = (profile?: null | string) => !ridesWithProfile(profile) || served.serves(profile)
@@ -267,7 +271,7 @@ export function createBrowserConnectionBridge({
   return {
     getAgentRoster: async () => {
       if (hostless) {
-        const [remote, primaryConnectionId] = await Promise.all([relayedRoster(), hostless.windowConnection()])
+        const [remote, primaryConnectionId] = await Promise.all([relayedRoster(), agentOf()])
 
         return { agents: remote.agents, primaryConnectionId, sources: remote.sources }
       }
@@ -322,13 +326,17 @@ export function createBrowserConnectionBridge({
     // profile the tab is on. A named profile the gateway serves, other than its own, is a view of
     // that same socket (sharedPrimary), so its requests carry `profile`. Routing reads the cached
     // served set and never fetches it.
-    getConnection: async (profile?: null | string) =>
-      hostless
-        ? hostless.connection(await hostless.windowConnection(), profile)
-        : {
-            ...connectionFor(bootstrap, profile, served.serves(profile)),
-            connectionId: LOCAL_CONNECTION_ID
-          },
+    getConnection: async (profile?: null | string) => {
+      if (!hostless) {
+        return { ...connectionFor(bootstrap, profile, served.serves(profile)), connectionId: LOCAL_CONNECTION_ID }
+      }
+
+      const connectionId = await agentOf()
+      // Boot adopts the profile the page's server runs as; here that is the agent's own.
+      adoptBrowserLaunchProfile(await hostless.launchProfile(connectionId))
+
+      return hostless.connection(connectionId, profile)
+    },
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async (request: { connectionId?: null | string; profile?: null | string }) => {
       const payload = { ...request, connectionId: await routed(request.connectionId) }
@@ -354,7 +362,7 @@ export function createBrowserConnectionBridge({
       }
     },
     getGatewayWsUrl: async (profile?: null | string) =>
-      hostless ? relayedGatewayWsUrl(await hostless.windowConnection(), profile) : getGatewayWsUrl(profile),
+      hostless ? relayedGatewayWsUrl(await agentOf(), profile) : getGatewayWsUrl(profile),
     getGatewayWsUrlFor: async (request: { connectionId?: null | string; profile?: null | string }) => {
       const payload = { ...request, connectionId: await routed(request.connectionId) }
 
@@ -368,14 +376,14 @@ export function createBrowserConnectionBridge({
     },
     getProfileRoutes: async (profiles: string[]) => {
       if (hostless) {
-        const connectionId = await hostless.windowConnection()
+        // Only the profiles that agent has and serves, as for the serving gateway's own below.
+        const connectionId = await agentOf()
+        const roster = await hostless.rosterAgents(connectionId)
+        const available = new Set(roster.filter(row => row.reachable !== false).map(row => row.profile))
 
-        return [...new Set(profiles.map(profile => profile.trim() || 'default'))].map(profile => ({
-          connectionId,
-          mode: 'remote' as const,
-          profile,
-          targetProfile: profile
-        }))
+        return [...new Set(profiles.map(profile => profile.trim() || 'default'))]
+          .filter(profile => available.has(profile))
+          .map(profile => ({ connectionId, mode: 'remote' as const, profile, targetProfile: profile }))
       }
 
       const available = new Set((await installedProfiles()).filter(reachesSocket))
@@ -439,7 +447,7 @@ export function createBrowserConnectionBridge({
     // is its own: one already in flight may have gone out before the create.
     refreshServedProfile: async (profile: string) => {
       if (hostless) {
-        const connectionId = await hostless.windowConnection()
+        const connectionId = await agentOf()
 
         if (!hostless.serves(connectionId, profile)) {
           await hostless.refreshServed(connectionId)

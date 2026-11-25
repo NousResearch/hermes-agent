@@ -288,6 +288,8 @@ export function ConnectionsRegistrySection() {
   remoteAuthModeRef.current = remote.credentials.authMode
 
   const bridge = window.hermesDesktop?.connections
+  // The hosted dashboard keeps this list for the account: rows are tested and ordered, not edited.
+  const editable = !bridge?.managedByHost
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
 
   const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
@@ -671,7 +673,7 @@ export function ConnectionsRegistrySection() {
                       {s.makePrimary}
                     </Button>
                   )}
-                  {conn.kind !== 'local' && (
+                  {conn.kind !== 'local' && editable && (
                     <>
                       <Button
                         aria-label={s.editConnection}
@@ -893,16 +895,18 @@ export function ConnectionsRegistrySection() {
         </div>
       ) : (
         <div className="mt-4 flex items-center gap-2">
-          <Button
-            onClick={() => {
-              triggerHaptic('selection')
-              openEditor(emptyEditor('remote'))
-            }}
-            size="sm"
-            variant="outline"
-          >
-            <Plus className="size-3.5" /> {s.addConnection}
-          </Button>
+          {editable && (
+            <Button
+              onClick={() => {
+                triggerHaptic('selection')
+                openEditor(emptyEditor('remote'))
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <Plus className="size-3.5" /> {s.addConnection}
+            </Button>
+          )}
           {bridge?.updateAll && (registry?.connections.length ?? 0) > 1 && (
             <Button
               disabled={updatingAll}

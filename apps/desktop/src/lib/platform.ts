@@ -48,7 +48,26 @@ export function browserHostRunsNoAgent(): boolean {
  * HERMES_HOME), which the browser host reads as `default`.
  */
 export function browserLaunchProfile(): string {
-  return String((window as Window & BrowserHostGlobals).__HERMES_DASHBOARD_PROFILE__ ?? '').trim()
+  return String((window as Window & BrowserHostGlobals).__HERMES_DASHBOARD_PROFILE__ ?? '').trim() || adoptedLaunchProfile
+}
+
+// On a host that runs no agent the page names no profile: the agent the window opens on does.
+let adoptedLaunchProfile = ''
+
+/**
+ * Record the profile the agent this window opened on runs as, on a host that runs no agent
+ * (`browserHostRunsNoAgent`), before boot adopts its primary profile. A page that names its own
+ * profile keeps it, and the first agent's answer stands for the page's life, as a served page's does.
+ */
+export function adoptBrowserLaunchProfile(profile: null | string | undefined): void {
+  if (!adoptedLaunchProfile) {
+    adoptedLaunchProfile = String(profile ?? '').trim()
+  }
+}
+
+/** @internal */
+export function _resetAdoptedLaunchProfileForTests(): void {
+  adoptedLaunchProfile = ''
 }
 
 /** The profile a request that names none reaches: the one the server runs as, else `default`. */

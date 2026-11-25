@@ -71,6 +71,7 @@ export function installBrowserDesktopBridge(): boolean {
   // A host that runs no agent has no `local` gateway: that name, and a request that names no
   // connection, mean the gateway this window is on, the list's primary until boot publishes one.
   // Boot sends requests before it publishes the window's connection, so those wait for the list.
+  // REST, sockets and profile routes all resolve through `routeTo`, so they name one agent.
   const hostedAgent = hostless && relays ? relays : null
 
   const ownConnection = (connectionId?: null | string) => {
@@ -192,7 +193,7 @@ export function installBrowserDesktopBridge(): boolean {
     // On a host with no agent the host's list is the account's agents, each signed in already.
     cloud: createBrowserCloudBridge({ api: agentApi, relays: hostedAgent ? null : relays }),
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
-    ...createBrowserConnectionBridge({ api, bootstrap, hostless, relays }),
+    ...createBrowserConnectionBridge({ api, bootstrap, hostedAgent: hostedAgent ? routeTo : null, relays }),
     ...(relays ? { connections: relays.connections } : {}),
     ...files,
     // The desktop-plugins folder is the serving machine's; a host with no agent has none to offer.

@@ -393,6 +393,12 @@ function storedDisplayContent(message: SessionMessage, content: unknown): string
   return timelineDisplayContent(message, displayContentForMessage(role, content))
 }
 
+function internalNotificationField(message: SessionMessage): Pick<ChatMessage, 'internalNotification'> {
+  return message.display_kind === 'internal_notification'
+    ? { internalNotification: parseDisplayMetadata(message.display_metadata)?.completion_admission ? 'note' : 'turn' }
+    : {}
+}
+
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
@@ -772,6 +778,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...internalNotificationField(message),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...promptSubmission(message),

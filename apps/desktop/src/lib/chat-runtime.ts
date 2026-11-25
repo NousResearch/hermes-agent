@@ -425,12 +425,12 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
-// The safety-refused notice rides metadata.custom on the system row, like
-// asyncResult — extracted so toRuntimeMessage keeps its complexity in budget.
-function contentRefusedMeta(
-  message: ChatMessage
-): { contentRefused: NonNullable<ChatMessage['contentRefused']> } | Record<string, never> {
-  return message.contentRefused ? { contentRefused: message.contentRefused } : {}
+// Presentation metadata for system rows, kept out of toRuntimeMessage's role conversion.
+function systemNoticeMeta(message: ChatMessage) {
+  return {
+    ...(message.contentRefused ? { contentRefused: message.contentRefused } : {}),
+    ...(message.internalNotification ? { internalNotification: message.internalNotification } : {})
+  }
 }
 
 // The thread's stopped mark (AssistantMessage's StoppedNotice). A reply the next
@@ -479,7 +479,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
           ...timelineMeta,
           ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
           ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
-          ...contentRefusedMeta(message)
+          ...systemNoticeMeta(message)
         }
       }
     } as ThreadMessage

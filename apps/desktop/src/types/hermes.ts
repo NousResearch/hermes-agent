@@ -672,6 +672,7 @@ export type TimelineDisplayMetadata =
       display_text?: string
     }
   | { display_text: string }
+  | { completion_admission: string; display_text?: string }
   | { reactions: MessageReaction[] }
   | { tool_result_metadata: ToolResultMetadata }
   | { error?: string; error_surface?: unknown }

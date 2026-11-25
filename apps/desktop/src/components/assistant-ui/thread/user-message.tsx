@@ -181,7 +181,7 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
   return out
 }
 
-const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
+export const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
   const match = AGENT_MESSAGE_RE.exec(text)
   const sender = (match?.[1] || match?.[3] || 'agent').trim()
   const handle = (match?.[2] || match?.[3] || sender).trim()
@@ -236,7 +236,7 @@ const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
   )
 }
 
-const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
+export const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
   const newline = body.indexOf('\n')
   const headline = (newline === -1 ? body : body.slice(0, newline)).trim()

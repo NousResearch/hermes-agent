@@ -112,6 +112,38 @@ def test_a_marked_profiles_container_mode_file_is_not_opened(home, monkeypatch, 
     assert str(ops / "config.yaml") in capsys.readouterr().out
 
 
+def test_a_container_mode_file_written_during_the_start_is_not_used(home, tmp_path, monkeypatch, capsys):
+    """The backend of a marked profile writes its home at any moment, between two steps of one start too.
+    Here ``.container-mode`` is gone at every look the host takes and back before every read. It is the
+    backend's all the same: no program is started for it and the command runs to its normal end."""
+    import hermes_constants
+    from hermes_cli import main_container
+
+    program, ran = _program(tmp_path, "runtime")
+    ops = home / "profiles" / "ops"
+    mode = ops / ".container-mode"
+    looked = os.path.lexists
+
+    def gone_at_the_look_and_back_before_the_read(path) -> bool:
+        if Path(path) != mode:
+            return looked(path)
+        mode.unlink(missing_ok=True)
+        there = looked(path)
+        mode.write_text(f"backend={program}\ncontainer_name=stand-in\n", encoding="utf-8")
+        return there
+
+    monkeypatch.setattr(os.path, "lexists", gone_at_the_look_and_back_before_the_read)
+    monkeypatch.delenv("HERMES_DEV", raising=False)
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    handed_over: list[list[str]] = []
+    monkeypatch.setattr(main_container.os, "execvp", lambda file, argv: handed_over.append(list(argv)))
+    _mark(home)
+    assert _hermes(monkeypatch, "config", "path") == 0
+    assert str(ops / "config.yaml") in capsys.readouterr().out
+    assert mode.exists(), "the host took no look, so the stand-in backend wrote nothing"
+    assert not ran.exists() and not handed_over
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize(("argv", "ends_with"), [(("config", "path"), 0), (("serve",), 78)], ids=["config path", "serve"])
 def test_a_marked_profiles_container_mode_fifo_is_not_opened(home, monkeypatch, argv, ends_with):

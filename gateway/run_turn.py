@@ -467,7 +467,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 return await self._execute_mcp_reload(event)
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
+            from tools.mcp_tool_discovery import discover_mcp_tools, retry_mcp_connections_now
             from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
             from tools.mcp_tool_scope import _key_name
@@ -481,12 +481,11 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
             old_servers = _scoped_server_names()
             await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
-            # Explicit reload also re-probes tool availability (check_fn).
+            # Explicit reload re-probes availability and retries cooled-down connections once.
             reprobe_tool_availability()
-            # Reconnect by discovering tools (reads config.yaml fresh). A chat command cannot finish
-            # a browser OAuth flow either: an expired token parks with a `hermes mcp login` hint.
             from tools.mcp_oauth import suppress_interactive_oauth
             with suppress_interactive_oauth():
+                await self._run_in_executor_with_context(retry_mcp_connections_now)
                 new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
 
             connected_servers = _scoped_server_names()

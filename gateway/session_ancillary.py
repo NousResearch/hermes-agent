@@ -325,6 +325,7 @@ async def reload_mcp(connection, ref, params):
 
     def reconcile():
         with suppress_interactive_oauth():
+            discovery.retry_mcp_connections_now()
             return (discovery.reconcile_mcp_servers_with_config(), discovery.mcp_servers_not_connected(),
                     discovery.mcp_servers_ready())
     result, failed, ready = await asyncio.to_thread(reconcile)

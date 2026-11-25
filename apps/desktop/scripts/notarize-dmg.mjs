@@ -5,20 +5,12 @@ import { getAppSigningResult } from './mac-sign.mjs'
 import { remainingNotaryBudgetMs, resolveNotaryAuth, runCommand, submitAndStaple, validateStapled } from './notarize.mjs'
 
 export async function resolveDmgSigningIdentity(packager, { env = process.env } = {}) {
-  const platformOptions = packager?.platformOptions
-  const signConfig = platformOptions?.sign
-  if (
-    signConfig === null ||
-    (typeof signConfig === 'object' && signConfig?.identity === null) ||
-    platformOptions?.identity === null
-  ) {
+  const signConfig = packager?.platformOptions?.sign
+  if (signConfig === null || (typeof signConfig === 'object' && signConfig?.identity === null)) {
     return { identity: null, keychain: null }
   }
 
-  const rawQualifier =
-    (typeof signConfig === 'object' && signConfig !== null ? signConfig.identity : undefined) ??
-    platformOptions?.identity ??
-    env.CSC_NAME
+  const rawQualifier = (typeof signConfig === 'object' && signConfig !== null ? signConfig.identity : undefined) ?? env.CSC_NAME
   const qualifier = typeof rawQualifier === 'string' && rawQualifier.trim() ? rawQualifier.trim() : null
   if (qualifier === '-' || (!qualifier && env.CSC_IDENTITY_AUTO_DISCOVERY === 'false')) {
     return { identity: null, keychain: null }

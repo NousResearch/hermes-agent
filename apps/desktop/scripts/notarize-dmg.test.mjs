@@ -272,7 +272,7 @@ test('unsigned local builds skip outer DMG signing even when valid Developer ID 
   const cases = [
     { name: 'CSC_IDENTITY_AUTO_DISCOVERY=false', env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' }, platformOptions: {}, keychainFile: null, stdout: TWO_IDENTITY_LIST },
     { name: 'mac.sign=null', env: {}, platformOptions: { sign: null }, keychainFile: null, stdout: TWO_IDENTITY_LIST },
-    { name: 'mac.identity=null', env: {}, platformOptions: { identity: null }, keychainFile: null, stdout: TWO_IDENTITY_LIST },
+    { name: 'mac.sign.identity=null', env: {}, platformOptions: { sign: { identity: null } }, keychainFile: null, stdout: TWO_IDENTITY_LIST },
     { name: 'ad-hoc CSC_NAME=-', env: { CSC_NAME: '-' }, platformOptions: {}, keychainFile: null, stdout: TWO_IDENTITY_LIST },
     { name: 'no Developer ID in default keychain', env: {}, platformOptions: {}, keychainFile: null, stdout: '  0 valid identities found\n' }
   ]

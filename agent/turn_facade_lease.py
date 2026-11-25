@@ -86,6 +86,25 @@ class DurableTurnLease:
     def start(self) -> None:
         with self._lock:
             self.turn_active = True
+        # Snapshot the idle gap BEFORE the activity clock is refreshed below: the
+        # idle-compaction path reads this snapshot to learn how long the session was
+        # actually idle. `_touch_activity` must stay (the liveness watchdog measures
+        # idle from the previous turn without it), so the gap is captured first.
+        #
+        # The reference point is the DURABLE activity stamp when there is one: the
+        # in-memory clock is reset at every turn entry (the gateway resets it for a
+        # cached agent), so it cannot express "this session was idle for three hours".
+        # The clock still counts as a reference: it is the only signal for an agent
+        # whose session has no durable row yet.
+        _durable_gap = 0.0
+        try:
+            from agent.agent_init import durable_activity_reference
+
+            _durable_gap = max(0.0, time.time() - durable_activity_reference(self.agent))
+        except Exception:
+            _durable_gap = 0.0
+        _clock_gap = max(0.0, time.time() - float(getattr(self.agent, "_last_activity_ts", time.time())))
+        self.agent._pending_idle_gap_seconds = max(_durable_gap, _clock_gap)
         # Stamp the activity clock at turn entry: `_last_activity_ts` persists across turns, so
         # without this the watchdog would measure idle from the PREVIOUS turn and abort a fresh one.
         self.agent._touch_activity("starting new turn")

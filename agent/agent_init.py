@@ -470,6 +470,13 @@ _TURN_STATE: dict[str, Any] = {
     "_last_activity_desc": "initializing",
     "_last_activity_provenance": ActivityProvenance.UNKNOWN,
     "_session_activity_last_persist_mono": 0.0,  # rate-limits durable SessionDB stamps
+    # Durable activity stamp: when this session was last active, read from the
+    # session row. The idle-compaction path measures its gap from this, never from
+    # `_last_activity_ts` (the watchdog's clock, reset at every turn entry).
+    "_durable_last_activity_at": None,
+    # Idle gap captured at turn entry (before the activity clock is refreshed), consumed by
+    # the idle-compaction path. None = "no snapshot for this turn".
+    "_pending_idle_gap_seconds": None,
     "_current_tool": None,
     "_api_call_count": 0,
     # Opt-out for the between-turns MCP refresh; set on forks that need byte-identical tools[].
@@ -1059,6 +1066,79 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         print(f"💾 Prompt caching: ENABLED ({source}, {ttl} TTL)")
 
 
+def _durable_activity_stamp(agent, session_id) -> float:
+    """The session's last known activity, from durable state: 0.0 when unknown.
+
+    The store's own definition of recency — the freshest of the stored activity
+    stamp and the newest message timestamp, each counted only inside the trusted
+    epoch window — so a heartbeat that has not flushed yet does not make the gap
+    look older than it is. Reads the storage interface first (the supported
+    accessor); the deprecated ``SessionDB`` is the fallback.
+    """
+    store = None
+    try:
+        from agent.agent_init_session import agent_interface
+
+        store = agent_interface(agent)
+    except Exception:
+        store = None
+    sessions = getattr(store, "sessions", None) if store is not None else None
+    last_active = getattr(sessions, "last_active", None)
+    if callable(last_active):
+        try:
+            value = last_active(session_id)
+            if value:
+                return float(value)  # type: ignore[arg-type]
+        except Exception:
+            pass
+    getter = getattr(sessions, "get", None)
+    if callable(getter):
+        try:
+            record = getter(session_id)
+            if record is not None:
+                value = getattr(record, "last_activity_at", None)
+                if value is None and isinstance(record, dict):
+                    value = dict.get(record, "last_activity_at")
+                if value:
+                    return float(value)  # type: ignore[arg-type]
+        except Exception:
+            pass
+    getter = getattr(getattr(agent, "_session_db", None), "get_session", None)
+    if callable(getter):
+        try:
+            row = getter(session_id) or {}
+            value = dict.get(row, "last_activity_at") if isinstance(row, dict) else None
+            if value:
+                return float(value)
+        except Exception:
+            pass
+    return 0.0
+
+
+def durable_activity_reference(agent) -> float:
+    """When this session was last active, for the idle-compaction gap.
+
+    Prefers durable state (the session row's recency) over the agent's in-memory
+    activity clock: the clock is reset at every turn entry (see the gateway's
+    cached-agent reset), so it cannot express "this session was idle for three
+    hours". The clock stays the fallback when no durable row exists.
+
+    This NEVER touches ``_last_activity_ts``: that clock is the liveness
+    watchdog's input, and an old stamp there makes the gateway abandon the
+    first turn of a resumed session as if it had stalled.
+    """
+    session_id = getattr(agent, "session_id", None)
+    stored = getattr(agent, "_durable_last_activity_at", None)
+    stored_value = float(stored) if isinstance(stored, (int, float)) and not isinstance(stored, bool) else 0.0
+    if session_id:
+        fresh = _durable_activity_stamp(agent, session_id)
+        if fresh > 0:
+            return max(fresh, stored_value)
+    if stored_value > 0:
+        return stored_value
+    return float(getattr(agent, "_last_activity_ts", time.time()))
+
+
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
     checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb, persistence=None):
     agent.session_start = datetime.now()
@@ -1079,6 +1159,22 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     )
 
     agent._session_db, agent.persistence = session_db, persistence  # optional store and its storage interface
+    # Remember when this session was last active, from durable state: for a RESUMED
+    # session the real idle gap is the time since its last recorded activity.
+    # Without this, the idle-compaction path can never observe a gap (the gateway
+    # evicts cached agents after 1h idle, so every resume rebuilt the agent with a
+    # fresh clock).
+    #
+    # This is stored in its OWN field, never in `_last_activity_ts`: that clock is the
+    # liveness watchdog's input, and an old stamp there makes the gateway abandon the
+    # first turn of a resumed session as if it had stalled.
+    if session_id:
+        try:
+            _last_at = _durable_activity_stamp(agent, session_id)
+            if _last_at > 0:
+                agent._durable_last_activity_at = _last_at
+        except Exception as _seed_exc:  # a missing row / broken DB must never break construction
+            logger.debug("Could not seed _durable_last_activity_at for session %s: %s", session_id, _seed_exc)
     agent._parent_session_id = parent_session_id
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,

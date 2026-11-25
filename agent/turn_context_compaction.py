@@ -149,14 +149,35 @@ def _idle_compaction(
     effective_task_id: str,
 ) -> None:
     """Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``): fires on the
-    wall-clock gap since ``_last_activity_ts``; a cheap gap check gates the estimate."""
+    wall-clock gap since the session's last durable activity; a cheap gap check gates the estimate."""
     from agent import turn_context as _tc
 
     messages = out.messages
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
+    # Consume the pre-stamp idle gap captured by DurableTurnLease.start() BEFORE the
+    # activity clock was refreshed. This happens BEFORE the guard below, so the
+    # snapshot never survives a turn that skips idle compaction and leaks a stale
+    # gap into a later turn.
+    _pending_gap = getattr(agent, "_pending_idle_gap_seconds", None)
+    agent._pending_idle_gap_seconds = None
     if not (agent.compression_enabled and _idle_after > 0 and messages):
         return
-    _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
+    if isinstance(_pending_gap, (int, float)) and not isinstance(_pending_gap, bool):
+        _idle_gap = float(_pending_gap)
+    else:
+        # No snapshot (a turn that never went through the lease): fall back to the
+        # session's last durable activity AND the in-memory clock, whichever is
+        # older — the clock is reset at every turn entry and cannot express a long
+        # idle gap, but it is the only signal for a session with no durable row.
+        _durable_gap = 0.0
+        try:
+            from agent.agent_init import durable_activity_reference
+
+            _durable_gap = max(0.0, time.time() - durable_activity_reference(agent))
+        except Exception:
+            _durable_gap = 0.0
+        _clock_gap = max(0.0, time.time() - float(getattr(agent, "_last_activity_ts", time.time())))
+        _idle_gap = max(_durable_gap, _clock_gap)
     if _idle_gap < _idle_after:
         return
     _compressor = agent.context_compressor

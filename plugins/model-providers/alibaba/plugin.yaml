@@ -1,5 +1,5 @@
 name: alibaba-provider
 kind: model-provider
 version: 1.0.0
-description: Alibaba DashScope (international)
+description: Alibaba DashScope and Token Plan (Personal/Team, Global/China)
 author: Nous Research

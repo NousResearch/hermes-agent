@@ -28,10 +28,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.session_activity import ActivityProvenance
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence_reader, store_location
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _agent_with_db(db: SessionDB, session_id: str):
+def _agent_with_db(db, session_id: str):
     """Real ``AIAgent`` wired to ``db`` and pinned to ``session_id`` (no network, no LLM)."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
@@ -41,7 +45,7 @@ def _agent_with_db(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -50,7 +54,7 @@ def _agent_with_db(db: SessionDB, session_id: str):
     return agent
 
 
-def _mid_compression_durable_stamp(agent, db: SessionDB, session_id: str) -> None:
+def _mid_compression_durable_stamp(agent, db, session_id: str) -> None:
     """Drive one heartbeat tick through the real durable path, as a long compression does."""
     from agent.conversation_compression import _CompressionActivityHeartbeat
 
@@ -58,7 +62,7 @@ def _mid_compression_durable_stamp(agent, db: SessionDB, session_id: str) -> Non
     # Open the persist window so the tick writes through, exactly like a >60s compression.
     agent._session_activity_last_persist_mono = 0.0
     heartbeat._touch("context compression in progress")
-    row = db.get_session(session_id)
+    row = session_row(db, session_id)
     assert row["last_activity_description"] == "context compression in progress"
     assert row["last_activity_provenance"] == ActivityProvenance.AGENT_COMPRESSION.value
     # Close the window again: the terminal stamp now lands inside the rate limit (the real race).
@@ -67,9 +71,9 @@ def _mid_compression_durable_stamp(agent, db: SessionDB, session_id: str) -> Non
 
 @pytest.fixture()
 def session(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "COMPRESSION_TERMINAL_ACTIVITY"
-    db.create_session(session_id, source="test")
+    seed_session(db, session_id, "test")
     agent = _agent_with_db(db, session_id)
     return SimpleNamespace(db=db, session_id=session_id, agent=agent)
 
@@ -85,7 +89,7 @@ def test_host_timeout_stamp_is_durable_inside_persist_window(session):
         total_exhausted=False, progress_observed=False,
     )
 
-    row = session.db.get_session(session.session_id)
+    row = session_row(session.db, session.session_id)
     assert row["last_activity_description"] != "context compression in progress"
     assert row["last_activity_provenance"] == ActivityProvenance.AGENT_COMPRESSION_TIMEOUT.value
 
@@ -100,7 +104,7 @@ def test_stall_interrupted_cooldown_stamp_is_durable_inside_persist_window(sessi
 
     session.agent._warn_context_overflow_blocked("cooldown:42s", 144_323, 128_000)
 
-    row = session.db.get_session(session.session_id)
+    row = session_row(session.db, session.session_id)
     assert row["last_activity_description"] != "context compression in progress"
     assert row["last_activity_provenance"] == ActivityProvenance.AGENT_COMPRESSION_COOLDOWN.value
 
@@ -123,7 +127,7 @@ def test_gateway_hygiene_terminal_stamps_are_durable(session, provenance_name, d
         session.agent, desc, getattr(ActivityProvenance, provenance_name), "test stamp failed",
     )
 
-    row = session.db.get_session(session.session_id)
+    row = session_row(session.db, session.session_id)
     assert row["last_activity_description"] == desc
     assert row["last_activity_provenance"] == getattr(ActivityProvenance, provenance_name).value
 
@@ -138,8 +142,8 @@ def test_reconnect_reader_sees_terminal_state_not_in_progress(session):
         total_exhausted=True, progress_observed=False,
     )
 
-    reconnected = SessionDB(db_path=session.db.db_path)
-    row = reconnected.get_session(session.session_id)
+    with open_persistence_reader(store_location(session.db.scope)) as reconnected:
+        row = session_row(reconnected, session.session_id)
     assert row["last_activity_description"] != "context compression in progress"
     assert row["last_activity_provenance"] == ActivityProvenance.AGENT_COMPRESSION_TIMEOUT.value
 
@@ -155,16 +159,16 @@ def test_orphan_reap_converges_terminated_compression_row(session):
     )
     # Age the row past the sweep window (the host process is gone; nothing will clear labels).
     old = time.time() - 86_400
-    session.db._write_sql(
+    raw_holder(session.db)._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET source = 'tui', started_at = ?, last_activity_at = ? WHERE id = ?",
         (old, old, session.session_id),
-    )
+    ))
 
-    reaped = session.db.sweep_orphaned_sessions(
+    reaped = session.db.maintenance.sweep_orphaned_sessions(
         max_idle_seconds=3600, sources=("tui",), respect_gateway_heartbeats=False,
     )
 
     assert session.session_id in reaped
-    row = session.db.get_session(session.session_id)
+    row = session_row(session.db, session.session_id)
     assert row["ended_at"] is not None
     assert row["last_activity_description"] != "context compression in progress"

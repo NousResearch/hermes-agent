@@ -458,7 +458,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
-| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Full prompt, response, and history. |
+| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token`, `review_signals` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -491,6 +491,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
 | `on_human_input_request` | Observer | The agent is about to block on a person — sudo password prompt, `clarify` question, or dangerous-command approval — on CLI, Ink TUI/Desktop, ACP and gateway platforms; return ignored. | `kind` (`"sudo"` \| `"clarify"` \| `"approval"`), `request_id`, `session_id`, `session_key`, `platform`, `prompt` | `prompt` is always force-redacted; the typed password or answer is never passed. |
 | `on_human_input_resolved` | Observer | Exactly once per `on_human_input_request`, when the wait ends (answered, skipped, timed out, withdrawn, or failed); return ignored. | Same as the request plus `outcome` | Outcome only — never the answer itself. |
+| `on_session_prompt` | Observer | In the gateway, once when a session's owner opens a prompt a person answers for that session's viewers (approval, clarify, sudo, secret, password-manager prompts), after it is registered; queued off the prompt path, in the owning profile; return ignored. | `session_id`, `kind`, `prompt_id`, `execution_generation`, `params` | `params` strings are always force-redacted; never the answer. |
+| `on_session_prompt_settled` | Observer | Exactly once per `on_session_prompt`, when the prompt stops being open (answered, timed out, interrupted, withdrawn, turn ended); return ignored. | `session_id`, `kind`, `prompt_id`, `execution_generation`, `reason` | Identifiers and reason only. |
 | `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
@@ -790,13 +792,35 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `conversation_history` | `list` | Copy of the full message list after the turn completed |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
-| `side_question_token` | `str \| None` | One-use token for [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), shared by every plugin of the session's profile; `None` unless a loaded plugin holds the `llm.side_question` capability, and always `None` for cron runs and subagent turns |
+| `side_question_token` | `str \| None` | One-use token for [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question) or [`ctx.fork_session`](../../developer-guide/plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session) (one request per turn), shared by every plugin of the session's profile; `None` unless a loaded plugin holds the `llm.side_question` or `llm.session_fork` capability, and always `None` for cron runs and subagent turns |
+| `review_signals` | `dict` (read-only) | The self-learning cadence this turn ended on, see [below](#review_signals) |
 
 **Fires:** In `agent/turn_finalizer.py` (`finalize_turn()`, called by `run_conversation()` in `agent/conversation_loop.py`), after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 
 **Return value:** Ignored.
 
 **Use cases:** Syncing conversation data to an external memory system, computing response quality metrics, logging turn summaries, triggering follow-up actions.
+
+<a id="review_signals"></a>
+**`review_signals`** describes the counters behind Hermes' own background memory/skill review, so a plugin that does after-turn work can follow the user's self-learning cadence instead of counting tool calls itself. The hook fires before the review decision; the due flags are the exact values that decision then uses.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `tool_iterations_since_skill_review` | `int` | Agent-loop iterations since the last skill review or `skill_manage` call (the value the trigger compared; it resets after the hook when `skill_review_due`) |
+| `user_turns_since_memory_review` | `int` | User turns since the last memory review or `memory` call (already reset to `0` on a turn where `memory_review_due`) |
+| `skill_review_due` | `bool` | The skill trigger fired this turn (`skills.creation_nudge_interval` reached and `skill_manage` available) |
+| `memory_review_due` | `bool` | The memory trigger fired this turn (`memory.nudge_interval` reached, built-in memory available) |
+| `background_review_enabled` | `bool` | A due trigger actually forks the review: `auxiliary.background_review.enabled`, not a cron run, not a subagent |
+| `skill_nudge_interval` | `int` | `skills.creation_nudge_interval` (0 = off) |
+| `memory_nudge_interval` | `int` | `memory.nudge_interval` (0 = off) |
+
+Hermes forks its review when `background_review_enabled and (skill_review_due or memory_review_due)`. The mapping is shared by every callback and cannot be modified.
+
+```python
+def on_post_llm_call(review_signals=None, side_question_token=None, **kwargs):
+    if review_signals and review_signals["skill_review_due"]:
+        ...  # the user's skill cadence is due: do the plugin's own skill follow-up now
+```
 
 **Example — sync to external memory:**
 
@@ -1130,7 +1154,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ### `on_session_delete`
 
-Fires **once per operation, after the transaction commits**, when a session actually went away: deleted (single, bulk, the empty-session sweep, retention prune, ghost-prune maintenance, profile repair) or deliberately archived. Every surface ends in the same `SessionDB` methods, so CLI (`hermes sessions delete|prune|archive`, `/exit --delete`), TUI, Desktop/dashboard (single and bulk delete, archive) and the gateway API server are all covered. Plugins that keep per-session state on disk can clean up without polling the session store.
+Fires **once per operation, after the transaction commits**, when a session actually went away: deleted (single, bulk, the empty-session sweep, retention prune, ghost-prune maintenance, profile repair) or deliberately archived. Every surface ends in the same session-store operations, so CLI (`hermes sessions delete|prune|archive`, `/exit --delete`), TUI, Desktop/dashboard (single and bulk delete, archive) and the gateway API server are all covered. Plugins that keep per-session state on disk can clean up without polling the session store.
 
 **Callback signature:**
 
@@ -1642,6 +1666,58 @@ def register(ctx):
 
 ---
 
+### `on_session_prompt`
+
+Fires in the gateway once when a session's owner opens a prompt a person answers for the viewers attached to that session (CLI, Ink TUI, Desktop, a phone app), after the prompt is registered where an answer can find it. Each call carries the id that answers the prompt, so a notification can let the person answer it in place:
+
+| `kind` | Prompt | Answered with `prompt_id` through |
+|--------|--------|-----------------------------------|
+| `"approval"` | Dangerous-command approval (`approval.request` event) | `approval.respond` |
+| `"clarify"` | A clarify question card (`clarify.request` event) | `clarify.respond` |
+| `"sudo"`, `"secret"`, `"vault.unlock_prompt"`, `"vault.code"`, `"vault.save_login"` | Masked sudo password, skill secret, password-manager unlock, one-time code, save-login prompts (server-to-client request frames) | A response frame with that `srq-` id |
+| `"clarify"` (request frame) | The classic CLI's batch clarify panel, or a plugin command's choice | A response frame or `clarify.lock` with that `srq-` id |
+
+Desktop window requests a client app answers without a person (theme, tour, preview, window and terminal reads) never fire it, and neither does a prompt that was never opened because no viewer was attached.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, kind: str, prompt_id: str,
+                execution_generation: int | None, params: dict, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The live session id the prompt was opened in (the id viewers pass back) |
+| `kind` | `str` | As in the table above |
+| `prompt_id` | `str` | The id that answers the prompt; the matching `on_session_prompt_settled` carries the same value |
+| `execution_generation` | `int \| None` | The turn's generation for `approval` / `clarify` events, `None` for request frames |
+| `params` | `dict` | A deep copy of the prompt as the viewers received it (event payload or frame `params`). Every string is redacted with the secret redactor, even when `security.redact_secrets` is off |
+
+What the person types is **never** passed. **Return value:** ignored; a raising callback is logged at debug and the prompt is unaffected. Calls run in order on one background worker, never on the agent thread or the event loop and never under a session lock, in the scope of the profile that owns the session (on a multi-profile gateway, only that profile's plugins are called). A slow callback only delays later calls of these two hooks.
+
+**When to use which:** `on_human_input_request` is surface-neutral (it also fires on messaging platforms and for the CLI's in-process prompts) but carries no answerable id, fires once for a whole multi-question clarify, and never for secret or password-manager prompts. Use `on_session_prompt` when you need to answer or track a specific prompt of a gateway session. A plugin can detect support with `importlib.util.find_spec("gateway.session_prompt_hooks")`.
+
+### `on_session_prompt_settled`
+
+Fires exactly once for every `on_session_prompt`, after it, when the prompt stops being open: answered (from any viewer, a chat button or a remote responder), timed out, interrupted, withdrawn, or its turn ended. Kwargs: `session_id`, `kind`, `prompt_id`, `execution_generation` and `reason` — the `request.cancel` reason for a request frame (`"resolved"`, `"timeout"`, `"interrupted"`), or `"settled"` for an approval or clarify event. No `params`, and never the answer.
+
+```python
+def register(ctx):
+    waiting = {}
+
+    def on_prompt(session_id, kind, prompt_id, params, **kwargs):
+        waiting[prompt_id] = (session_id, kind)  # e.g. notify, with prompt_id as the answer target
+
+    def on_settled(prompt_id, **kwargs):
+        waiting.pop(prompt_id, None)  # e.g. withdraw the notification
+
+    ctx.register_hook("on_session_prompt", on_prompt)
+    ctx.register_hook("on_session_prompt_settled", on_settled)
+```
+
+---
+
 ### `on_room_member_activity`
 
 Fires while a hosted [Group Chat](../bot-mode.md#groups-and-group-chats) member turn runs. A member executes on a hidden `Group: <room>` session that no client is attached to, so between the room log's `turn.started` and `turn.settled` the turn is a black box. This hook projects the runtime events that session already produces — tool start/complete, approval requests, streamed text and reasoning, errors — stamped with the room coordinates, so a client (Hermes Crew, a dashboard, an audit log) can render tool cards, approval prompts and live member status without inferring anything from text. The Group Chat runtime keeps ownership of execution, scheduling and the durable log; plugins only observe.
@@ -1907,7 +1983,7 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 #### `pre_auxiliary_call` / `post_auxiliary_call`
 
-Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`, `plugin_side_question` for a plugin's [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), which also carries the asking plugin's `plugin_id`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
+Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`, `plugin_side_question` for a plugin's [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question) and `plugin_fork` for each request of a plugin's [`ctx.fork_session`](../../developer-guide/plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session), both of which also carry the plugin's `plugin_id`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
 
 ### `on_skill_lifecycle`
 

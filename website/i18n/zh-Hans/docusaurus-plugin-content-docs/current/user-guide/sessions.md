@@ -498,6 +498,12 @@ session_search()
 - `sort` — `newest` 或 `oldest`，在 FTS5 排名之上排序。省略则仅按相关性排序（默认；适合探索性召回）。对于"我们在哪里停下了 X"的问题使用 `newest`，对于"X 是怎么开始的"的问题使用 `oldest`。
 - `role_filter` — 逗号分隔的角色列表。发现模式默认为 `user,assistant`（工具输出通常是噪音）。传入 `user,assistant,tool` 以包含工具输出（调试工具行为），或传入 `tool` 仅搜索工具输出。
 
+### 谁能搜索什么
+
+`session_search` 读取其所在 profile 的整个 session 存储：该 profile 中来自所有平台、所有允许名单用户的每一个对话。在共享或家庭机器人上，任何被允许与它对话的人都可以让 agent 查找并阅读其他人与它的对话。Hermes 不在同一个 profile 内区分用户（见 `SECURITY.md` §2.6），同一主机上的各个 profile 之间也不相互隔离：default profile 可以读取所有 profile 的 session（见下文），拥有终端或代码执行工具的 agent 可以读取任何 profile 的文件。需要私密历史的每个人都应使用自己的实例，运行在单独的操作系统用户或容器下（见 `SECURITY.md` §2.2）。
+
+`profile=`（以及 `@session:<profile>/<id>` 链接）读取另一个 profile 的存储。当一个进程同时服务多个 profile（多路复用的 gateway，或在拥有多个 profile 的主机上运行的 dashboard / `hermes serve` 后端）时，只有 **default** profile 可以这样做（你自己的 Desktop、TUI、CLI 和编辑器（ACP）会话除外）；来自其他 profile、指定不同 profile 的调用会被拒绝并返回错误。单独运行单个 profile 的进程保留跨 profile 读取。
+
 ### 使用时机
 
 Agent 被提示在以下情况自动使用 session 搜索：

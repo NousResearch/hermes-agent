@@ -10,9 +10,16 @@ viewer attached (the authority's own subscriber records) the executor records it
 history, where the next turn sees it, and settles the admission without a model call. Queue order, restart survival and
 exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was,
 except a local cron result, which is always a note; messaging, Kanban, ``/loop`` and heartbeat wakes
-never reach here. An async delegation whose final result has a failed child (``wakes_parent``) runs as
-a turn with no viewer too, so the parent can recover (re-dispatch, another model) without waiting for a
-human to come back: at most ``UNATTENDED_WAKE_LIMIT`` times in a row, and never in a chat its viewer closed.
+never reach here.
+
+A result the parent carries on from (``resumes_parent``: an async delegation's final result, a
+background process's exit) runs as a turn with no viewer too. A viewer going away is not the user
+ending the work: a laptop asleep, a dropped socket or a closed browser tab leaves the session's plan
+mid-flight, and the parent dispatched that work to carry on when it finished. Only a chat the user
+closed (exit, /new, a resume or branch switch) keeps its results as notes. An async delegation whose
+final result has a failed child (``wakes_parent``) is a resume too, bounded: at most
+``UNATTENDED_WAKE_LIMIT`` failed-result wakes in a row while nobody watches. Only failed delegations
+spend that limit: successful results and process exits, whatever their exit code, are not counted.
 """
 import json
 from functools import partial
@@ -43,15 +50,38 @@ def noted_completion(row):
     return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS | _ALWAYS_NOTED
 
 
-def _wakes_unviewed_parent(authority, session_id, live, descriptor):
-    """A failed async delegation (``wakes_parent``) with no viewer attached: the parent dispatched that
-    work and is waiting on it, so it runs as the parent's turn instead of stalling until a human returns.
-    Not in a chat its viewer closed (exit or /new): that ended the session's work, and its re-dispatch
-    would be refused the background and run inside the wake turn. Not past ``UNATTENDED_WAKE_LIMIT``."""
-    if not descriptor.get('wakes_parent'):
-        return False
+def _closed_by_user(authority, session_id):
+    """The user ended this chat's work: exit or /new refused its dispatches (``refuse_for_session``,
+    held in memory), its close is still pending in ``pending_closes`` (re-armed from the store after a
+    restart, while its FIFO is busy), or its row ended for a reason recovery does not resume (which
+    outlives a restart). An orphan reap (the last viewer vanished) and an agent close are not the user's.
+    A wake in a closed chat would also run its re-dispatched child inside the wake turn, refused the
+    background."""
     from tools.async_delegation import refused_for_session
-    if refused_for_session((authority.profile_id, session_id)) or live.unattended_wakes >= UNATTENDED_WAKE_LIMIT:
+    from gateway.session_viewer_close import ORPHAN_REASONS, _physical_target
+    # A close still pending (its FIFO was busy) outlives a restart in ``pending_closes``; the refusal does not.
+    pending = authority.pending_closes.get(session_id)
+    if refused_for_session((authority.profile_id, session_id)) or (
+            pending is not None and pending.reason not in ORPHAN_REASONS):
+        return True
+    from gateway.session_persistence import authority_persistence
+    from persistence.conversation.sessions import RECOVERABLE_END_REASONS
+    row = authority_persistence(authority).sessions.get(_physical_target(authority, session_id))
+    return row is not None and bool(row.ended_at) and row.end_reason not in RECOVERABLE_END_REASONS
+
+
+def _wakes_unviewed_parent(authority, session_id, live, descriptor):
+    """A result the parent carries on from (``resumes_parent``) or a failed async delegation
+    (``wakes_parent``) with no viewer attached: the parent dispatched that work and is waiting on it,
+    so it runs as the parent's turn instead of stalling until a human returns. Not in a chat the user
+    closed (``_closed_by_user``); a failed delegation not past ``UNATTENDED_WAKE_LIMIT`` (a process
+    exit is a resume whatever its exit code)."""
+    failed = descriptor.get('wakes_parent')
+    if not (failed or descriptor.get('resumes_parent')) or _closed_by_user(authority, session_id):
+        return False
+    if not failed:
+        return True
+    if live.unattended_wakes >= UNATTENDED_WAKE_LIMIT:
         return False
     live.unattended_wakes += 1
     return True
@@ -86,13 +116,14 @@ async def note_if_unviewed(authority, ref, row):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
         await reopen_for_turn(authority, ref)
         return None
+    from gateway.session_persistence import authority_persistence
     from gateway.session_viewer_close import _physical_target
     metadata = {'completion_note': sorted(set(descriptor.get('identities') or ()) | {descriptor['identity']})}
     metadata.update({key: descriptor[key] for key in ('display_text', 'notification_category') if key in descriptor})
     target = _physical_target(authority, ref.session_id)
     # Keyed by its admission: a claim is never replayed, and this keeps a write retry exact.
     await tracked_write(authority, partial(
-        authority.db.append_completion_note, target, row['admission_id'], row['payload']['text'],
+        authority_persistence(authority).messages.append_completion_note, target, row['admission_id'], row['payload']['text'],
         descriptor.get('display_kind', 'internal_notification'), metadata))
     refresh = getattr(authority.runner, '_refresh_agent_cache_message_count', None)
     if refresh is not None:  # the owner's own row: a cached agent stays, as after a turn's writes

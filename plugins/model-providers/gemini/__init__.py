@@ -20,6 +20,7 @@ class GeminiProfile(ProviderProfile):
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Native: ``thinking_config``; OpenAI-compat /openai subpath:
         ``extra_body.google.thinking_config`` (snake_case)."""
+        from agent.reasoning_effort import gemini_top_thinking_level
         from agent.transports.chat_completions import (
             _build_gemini_thinking_config,
             _is_gemini_openai_compat_base_url,
@@ -29,6 +30,7 @@ class GeminiProfile(ProviderProfile):
         raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
         if not raw:
             return {}
+        raw = gemini_top_thinking_level(context.get("model"), context.get("reasoning_config"), raw)
         base_url = context.get("base_url") or self.base_url
         if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
             thinking_config = _snake_case_gemini_thinking_config(raw)

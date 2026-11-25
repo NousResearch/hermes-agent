@@ -4,21 +4,22 @@
   "parameters": {
     "properties": {
       "action": {
-        "description": "Default 'spawn'. Live control of running children: 'list' = ids/goals/status/transcripts; 'steer' = queue course-correction text into one child without stopping it; 'stop' = end one child early (partial result still returns). Control actions return immediately; tasks are ignored unless spawning.",
+        "description": "Default 'spawn'. Live control of running children: 'list' = ids/goals/status/transcripts; 'steer' = queue course-correction text into one child without stopping it; 'stop' = end one child early (partial result still returns); 'continue' = give a FINISHED child a follow-up: it resumes its own conversation and returns like a spawn. Control actions return immediately; tasks are ignored unless spawning.",
         "enum": [
           "spawn",
           "list",
           "steer",
-          "stop"
+          "stop",
+          "continue"
         ],
         "type": "string"
       },
       "message": {
-        "description": "Required for action='steer': the course correction, appended to the child's next tool result mid-run. Be directive and specific.",
+        "description": "Required for action='steer': the course correction, appended to the child's next tool result mid-run. Be directive and specific. For 'continue': the child's next instruction.",
         "type": "string"
       },
       "subagent_id": {
-        "description": "Required for action='steer'/'stop' (ids from the spawn response or action='list').",
+        "description": "Required for action='steer'/'stop'/'continue' (ids from the spawn response or action='list').",
         "type": "string"
       },
       "tasks": {

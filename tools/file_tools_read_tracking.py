@@ -32,13 +32,44 @@ from tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_
 
 logger = logging.getLogger("tools.file_tools")
 
+
+class _PerAgentTracker(dict):
+    """``{task_id: ...}`` whose keys carry the bound hosted agent's sandbox key, so two hosted
+    agents that reuse a task id never share loop counters, read history or patch failures. With
+    no hosted scope bound a key is the task id itself, as before."""
+
+    @staticmethod
+    def _key(task_id):
+        from tools.environments.sandbox_scope import current_sandbox_key
+        sandbox = current_sandbox_key()
+        return f"{sandbox}:{task_id}" if sandbox else task_id
+
+    def __getitem__(self, task_id):
+        return super().__getitem__(self._key(task_id))
+
+    def __setitem__(self, task_id, value):
+        super().__setitem__(self._key(task_id), value)
+
+    def __contains__(self, task_id):
+        return super().__contains__(self._key(task_id))
+
+    def get(self, task_id, default=None):
+        return super().get(self._key(task_id), default)
+
+    def setdefault(self, task_id, default=None):
+        return super().setdefault(self._key(task_id), default)
+
+    def pop(self, task_id, *default):
+        return super().pop(self._key(task_id), *default)
+
+
 _read_tracker_lock = threading.Lock()
-_read_tracker: dict = {}
+_read_tracker: dict = _PerAgentTracker()
 
 # Consecutive patch failures per (task_id, resolved_path); escalates the hint
 # when the model keeps failing the same file. Reset on a successful patch.
 _patch_failure_lock = threading.Lock()
-_patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
+_patch_failure_tracker: dict = _PerAgentTracker()  # {task_id: {resolved_path: count}}
 _PATCH_FAILURE_PATHS_CAP = 64
 
 # Only the most recent reads matter for dedup, loop detection and external-edit
@@ -134,8 +165,9 @@ def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | No
             return None
     # "check → create → read" is common, so never serve a stale miss for a path
     # that now exists. The stat runs OUTSIDE the tracker lock: a hung stat on a
-    # dead network mount must not stall every task.
-    if os.path.exists(resolved_str):
+    # dead network mount must not stall every task. A sandbox path cannot be
+    # checked here, so its miss is never served from the cache.
+    if not _on_host(resolved_str) or os.path.exists(resolved_str):
         with _read_tracker_lock:
             _pop_not_found(op, resolved_str, task_id)
         return None
@@ -274,7 +306,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     """
     _invalidate_dedup_for_path(filepath, task_id)
     resolved = _resolved_or_none(filepath, task_id)
-    if resolved is None:
+    if resolved is None or not _on_host(resolved):
         return
     try:
         current_mtime = os.path.getmtime(resolved)
@@ -287,7 +319,16 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
             _cap_read_tracker_data(task_data)
 
 
+def _on_host(resolved: str) -> bool:
+    """Whether *resolved* names a file on this host. A hosted agent's paths name its sandbox: the
+    bookkeeping below (dedup, staleness, baselines) never stats or opens them here."""
+    from tools.environments.sandbox_scope import hosted_scope
+    return hosted_scope() is None
+
+
 def _file_metadata(resolved: str) -> tuple | None:
+    if not _on_host(resolved):
+        return None
     try:
         st = os.stat(resolved)
         return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
@@ -297,6 +338,8 @@ def _file_metadata(resolved: str) -> tuple | None:
 
 def _file_version(resolved: str) -> tuple | None:
     """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
+    if not _on_host(resolved):
+        return None
     try:
         if not stat.S_ISREG(os.stat(resolved).st_mode):
             return None
@@ -424,7 +467,7 @@ def _read_mtime_drifted(filepath: str, task_id: str) -> bool:
     """True when the file's mtime changed since this task last read it. False when
     never read, fresh, or unstattable (a deleted file is the write's problem)."""
     resolved = _resolved_or_none(filepath, task_id)
-    if resolved is None:
+    if resolved is None or not _on_host(resolved):
         return False
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
@@ -454,7 +497,7 @@ def _mark_verification_stale(task_id: str, resolved_paths: list[str],
     from pathlib import Path
 
     paths = [p for p in resolved_paths if p]
-    if not paths:
+    if not paths or not _on_host(paths[0]):  # project detection reads the workspace's manifests
         return
     try:
         from agent.coding_context import project_facts_for

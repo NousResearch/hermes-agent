@@ -1,15 +1,15 @@
 name: thott-bot
 title: thott.bot
 repo: https://github.com/thott-bot/plugin
-sha: "af8439ac4c4560aba5303ee7578d921a33c7b5da"
+sha: "c840b2e3b07015b93d7f4fd54f770f9c31542c8a"
 subdir: hermes
-description: "thott.bot makes your AI an expert on World of Warcraft: Forever, from Blizzard's own game files for the build you're playing, current to the latest hotfix, with Blizzard's news and credited community data, drawn right in the chat. Disclosure — hosted-only connector with no local code: every tool call goes to thott.bot's server (mcp.thott.bot), which records the queries your agent sends it (not your conversation, and not used to train models); its tool set is served remotely and is not covered by the pinned sha; it requires a free thott.bot account, signed in by running `hermes mcp add thott --url https://mcp.thott.bot/mcp --auth oauth`, whose config entry replaces the package's own server definition."
+description: "Everything about World of Warcraft: Forever in your AI, from every change to live auction prices. Disclosure — hosted-only connector with no local code: every tool call goes to thott.bot's server (mcp.thott.bot), which records the queries your agent sends it (not your conversation, and not used to train models); its tool set is served remotely and is not covered by the pinned sha; it requires a free thott.bot account, signed in by running `hermes mcp add thott --url https://mcp.thott.bot/mcp --auth oauth`, whose config entry replaces the package's own server definition."
 maintainer: thott-bot
 tier: community
 category: tools
 requires_hermes: ">=0.20.1"
 version: "1.0.0"
-docs_url: https://github.com/thott-bot/plugin/tree/af8439ac4c4560aba5303ee7578d921a33c7b5da/hermes#readme
+docs_url: https://github.com/thott-bot/plugin/tree/c840b2e3b07015b93d7f4fd54f770f9c31542c8a/hermes#readme
 readme: true
 platforms: []
 capabilities:

@@ -288,4 +288,3 @@ Cold in-process discovery is not performed by the new HTTP path because arbitrar
 | Shutdown | Fence admission first, bounded five-second drain, then report still-active effects uncertain. No fake cancellation. |
 
 Loader timeouts may be disabled, but the HTTP wait cannot. Timed-out calls retain capacity until they actually exit. Busy refuses rather than creating an unbounded queue. Operation reads retain capacity independent of effect calls. Hydration, manifest work, provider validation and cleanup happen off gateway infrastructure loops. Profile scope is entered inside that worker because hydration can block. A hung thread cannot be safely killed, so later requests return stock or provider_unavailable at their budget without spawning replacements. Worker caps are experimental constants, not new environment settings.
-

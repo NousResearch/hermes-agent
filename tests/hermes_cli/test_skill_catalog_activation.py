@@ -422,4 +422,3 @@ def test_unrelated_printing_plugin_in_eligible_sweep_is_contained(client, cold, 
     output = capfd.readouterr()
     assert 'SIDECAR PRIVATE' not in output.out + output.err
     assert 'SIDECAR PRIVATE' in (get_hermes_home() / 'logs/skill-catalog.log').read_text()
-

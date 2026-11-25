@@ -1141,7 +1141,10 @@ Expected refusals are `consent_required`, `invalid_target`, `no_conversation`, `
 `invalid_card`, `card_conflict`, `rate_limited` (more than 6 cards in 60 seconds for one session),
 `gateway_unavailable` (no live gateway, or its loop closed while the card was on its way) and `on_event_loop`.
 `cancelled` (the gateway stopped before answering), `post_failed` and `timeout` are uncertain as described
-above. An internal admission refusal is reported as `refused`, not raised into the plugin. Like `inject_message`, the card is admitted from
+above. An internal admission refusal is reported as `refused`, not raised into the plugin. `refused` is certain:
+nothing was queued, and the same card can be posted again. One expected case is a chat whose conversation moved
+(for example a `/resume`) while the card was being admitted: the retry lands on the conversation the chat now has.
+Like `inject_message`, the card is admitted from
 the gateway's own context, never the caller's: a card posted from a session fork's tool handler or from a
 hook inside a turn hands none of that turn's scopes to the session queue.
 

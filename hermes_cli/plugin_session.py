@@ -56,6 +56,28 @@ def turn_client() -> dict | None:
     return surface_turn_client()
 
 
+def turn_origin() -> str | None:
+    """The Hermes producer of the turn running in this context, the pair of ``turn_client()``, named
+    only where Hermes knows it: ``"process_notification"`` for a turn a background process's
+    completion, watch match or liveness tick started, ``"delegation_result"`` for an async
+    delegation's result re-entering its parent. ``None`` for every other turn, whoever started it:
+    a message typed in a client or sent on a messaging chat, an API request, a Bot Chat delivery or
+    ``hermes peer dm``, a restart's resume of an interrupted turn, a goal continuation, cron, Kanban
+    and other automation wakes, a message a plugin injected, and a steer or interrupt text run as the
+    next turn. ``None`` too outside a turn, in a delegated child, in a detached fork (``fork_origin()``
+    non-empty: a plugin fork, a side question, a background review runs its own prompt in a copy of the
+    turn's context) and in a managed worker. New values may be added: compare against the ones you
+    handle. A person's input that joins the running turn (an accepted steer or redirect, from a client's
+    Steer, ``/steer``, ``session.steer``/``session.redirect`` or a busy chat message) makes it ``None``
+    for the rest of that turn: the reply now answers the person too. Answers only inside the gateway
+    process: under ``plugins.isolation: host`` it is always ``None`` in the plugin's own process, where
+    ``ctx.turn_origin()`` asks the gateway instead."""
+    if _in_delegated_child() or fork_origin():
+        return None
+    from gateway.session_context import bound_turn_origin
+    return bound_turn_origin()
+
+
 def session_viewers() -> list[dict]:
     """The clients attached to the calling session right now, one dict per connection:
     ``{"name", "kind"}`` (``None`` when the connection announced nothing), ``"idle_seconds"`` since the

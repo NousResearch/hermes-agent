@@ -268,9 +268,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         cancellation while the worker thread lives on. Read live at the close gate instead of
         snapshotting.
         """
+        runs = sys.modules.get("gateway.platforms.api_server_runs")  # its state: not loaded = no worker ran
         try:
-            from gateway.platforms.api_server_runs import api_worker_live_count
-            return max(0, int(api_worker_live_count()))
+            return max(0, int(runs.api_worker_live_count())) if runs is not None else 0
         except Exception:
             return 0
 
@@ -2106,7 +2106,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 _effective_watchdog_leash(self), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
-        with disarm_after_teardown(_watchdog_done):
+        with disarm_after_teardown(_watchdog_done, getattr(self, "_shutdown_event", None), owner=self):
             await GatewayRunner._stop_begin_teardown(self, ctx)
             timeout = effective_stop_drain_timeout(self)
             if timeout < self._restart_drain_timeout:

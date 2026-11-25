@@ -1,21 +1,22 @@
 name: freebusy
 title: Freebusy
-repo: https://github.com/hmnvcb/freebusy
-sha: "71998d63d430b80915482799168b90617222721d"
-description: "Schedules meetings by email for its owner without revealing a calendar or inventing a time zone: offers come from free/busy only, every slot is held before it is offered and never offered twice, and a time is never shown in a zone the other person did not give. Replies in a compact lettered format, books and sends the invite, and tells the owner only when something is booked, nothing fits, or a person is needed. Universal rules for everyone, plus a personal profile with groups (Work 9 to 5, Family full availability), autonomy tiers starting with a Trial tier, optional travel buffers, owner-only reminders and a day-before briefing. A policy gate blocks any of the plugin's own sends or calendar writes that lack a held slot, a known zone, the right authority, or that target anyone off the thread or any calendar but the one configured. Disclosure — In its default fixture mode it makes no network calls and reads only bundled demo data. It keeps holds, settings and an audit log (secrets redacted) under its own plugin data directory, and adds a short freebusy context block (owner time zone, open holds with thread ids and times, group tiers, people's stated zones, items waiting on the owner) to every turn. Its pre_tool_call hook can block or escalate the plugin's own schedule_send, schedule_book, schedule_remind and schedule_resume actions; other plugins' send_email, email_send, gmail_send, mail_send, reply_email, calendar_create_event, create_event, calendar_write and book_event tools are vetted only if the owner turns on vet_other_tools (off by default), and post_approval_response records an owner's approval for a held action. Reminders and the day-before briefing are one-time jobs created through Hermes's cronjob_manage tool and delivered only to the owner over the owner's chosen Hermes channel; inside a cron run no job is created unless cron.allow_agent_scheduling is true. The Google Workspace adapter is inert in this version: every call raises NotImplementedError and nothing is dispatched or run."
-maintainer: hmnvcb
+repo: https://github.com/davidtsailabs/freebusy
+sha: "9436f9e683a55169df8e6233be18c64ba0e632c2"
+description: "Books meetings over email or chat from free or busy time only, with any CalDAV calendar and any IMAP/SMTP mailbox; every slot is held before it is offered. Disclosure — Fixture mode is the default: no network calls, demo data only. Connectors mode, switched on by /freebusy connect once its test passes, talks only to the CalDAV, IMAP and SMTP servers the owner sets up (https/TLS only, private and loopback addresses refused), plus one unauthenticated check of the owner's email domain for /.well-known/caldav during setup; app passwords are typed in a terminal and kept in the system keychain, never in config or chat. In that mode it reads only busy times, writes holds and bookings to the one calendar the owner picks (or a local feed file), reads only mail addressed to its agent address, and sends scheduling replies, invites and owner notes by SMTP without a per-message prompt, within the owner's groups, tiers and its own policy gate. Holds, settings and a redacted audit log stay in its data folder; a short scheduling context is added each turn. pre_tool_call gates its own actions, and other plugins' mail and calendar tools only with vet_other_tools. post_gateway_admission answers only admitted chat senders the owner lists in chat_contacts; everyone else reaches the agent as usual. Reminders are owner-only cronjob_manage jobs. Google adapter inert until 0.4."
+maintainer: davidtsailabs
 tier: community
 category: automation
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/hmnvcb/freebusy/blob/71998d63d430b80915482799168b90617222721d/README.md
-version: "0.2.0"
+docs_url: https://github.com/davidtsailabs/freebusy/blob/9436f9e683a55169df8e6233be18c64ba0e632c2/README.md
+version: "0.3.0"
 readme: true
 platforms: [linux, macos]
 known_issues:
-  - "This version runs in fixture mode: live Google Calendar and live mail are documented next steps, not wired yet. python -m freebusy.demo shows the full flow on demo data."
-  - "Reminder texts and the briefing are tested against a stubbed scheduler and fixture outbox, not yet against a running Hermes gateway."
+  - "CalDAV and IMAP/SMTP are tested against local Radicale and GreenMail servers and recorded provider replies, not yet against iCloud, Fastmail, Zoho or Nextcloud themselves."
+  - "Travel buffers read locations only on fixture data; the CalDAV adapter does not read locations yet."
+  - "No background mail watcher: /freebusy check runs one pass, and the owner can schedule it with Hermes cron."
 capabilities:
   provides_tools: [schedule_parse, schedule_offer, schedule_check, schedule_book, schedule_holds, schedule_resume]
-  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, post_approval_response]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, post_approval_response, post_gateway_admission]
   provides_middleware: []
   requires_env: []

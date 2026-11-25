@@ -522,6 +522,7 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
                      "update channel and feeds stay on the previous release (they move only when "
                      "windows and macos-arm64 are both built).")
     untested = [name for name in lane_set.NAMES if name not in lanes and name not in lane_set.LEFT_OUT
+                and name not in lane_set.DIAGNOSTIC_LANES
                 and not (name == "termux-checks" and "termux" not in lanes)]
     if untested:
         warning = f"Not tested: {', '.join(untested)}"

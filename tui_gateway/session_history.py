@@ -192,7 +192,7 @@ def _user_image_display_text(content: Any) -> str | None:
     if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
         return None
     if len(content) > 1 + len(paths):
-        from agent.memory_context import sanitize_context
+        from session_rules.turns import sanitize_context
         memory = content[-1]
         if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
             return None
@@ -299,7 +299,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
     from agent.memory_context import fence_recalled_context
-    from agent.message_metadata import withheld_prompt_text
+    from session_rules.turns import withheld_prompt_text
 
     messages = []
     tool_call_args = {}
@@ -342,9 +342,9 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             labels = _bridged_tool_labels(name, args)
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
-                             # Edit cards need the original result; other tool outputs
-                             # remain omitted from this compact display projection.
-                             **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
+                             # Edit cards and settled clarify cards need the original result; other
+                             # tool outputs remain omitted from this compact display projection.
+                             **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage", "clarify"} else {}),
                              **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
                                 if m.get(key) is not None},
                              **({"args": args} if args else {}), **({"labels": labels} if labels else {})})

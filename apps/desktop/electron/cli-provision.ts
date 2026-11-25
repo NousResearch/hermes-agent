@@ -33,6 +33,29 @@ export function removeBundleCliLinks(payloadRoot: string, binDir: string): void 
   }
 }
 
+function resolves(io: ProvisionFs, link: string): boolean {
+  try {
+    io.statSync(link)
+
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      throw error
+    }
+
+    return false
+  }
+}
+
+/** A live link into another build beside the source's own (<store>/<build>/agent-payload) is an older copy. */
+function supersededBuild(destination: string, source: string): boolean {
+  const build = (command: string): string => path.dirname(path.dirname(path.dirname(command)))
+
+  return build(destination) !== build(source) && path.dirname(build(destination)) === path.dirname(build(source))
+}
+
 export function provisionCliLinks(
   commands: Readonly<Record<string, string>>,
   binDir: string,
@@ -68,18 +91,6 @@ export function provisionCliLinks(
         continue
       }
 
-      try {
-        io.statSync(target)
-
-        continue
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code
-
-        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-          throw error
-        }
-      }
-
       const destination = io.readlinkSync(target)
       const bin = path.dirname(destination)
 
@@ -88,7 +99,8 @@ export function provisionCliLinks(
         !path.isAbsolute(destination) ||
         path.basename(destination) !== name ||
         path.basename(bin) !== 'bin' ||
-        path.basename(path.dirname(bin)) !== 'agent-payload'
+        path.basename(path.dirname(bin)) !== 'agent-payload' ||
+        (resolves(io, target) && !supersededBuild(destination, source))
       ) {
         continue
       }

@@ -7,6 +7,8 @@ class as LC-12 on the resume door). Real authority, real SQLite, real compressio
 """
 import pytest
 
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 from tests.gateway.test_local_resume_compression_child import _cold, _compressed
 
 
@@ -16,7 +18,7 @@ async def _mutate(authority, sid, request_id, operation, payload):
         'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:control']})
     try:
-        row = authority.db.get_session(sid)
+        row = session_row(authority.persistence, sid)
         return await connection.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': sid, 'request_id': request_id, 'expected_revision': row['runtime_revision'],
             'operation': operation, 'payload': payload}})
@@ -34,7 +36,7 @@ async def test_rename_and_archive_of_a_compression_segment(tmp_path, monkeypatch
     archived = await _mutate(authority, 'child-2', 'archive-1', 'archive', {'archived': True})
     assert 'result' in archived, archived
     # The write lands on the listed row (the sidebar reads the tip's title back), not on the owner.
-    assert authority.db.get_session('child-2').get('title') == 'Renamed'
+    assert authority.persistence.sessions.get('child-2').title == 'Renamed'
 
 
 @pytest.mark.asyncio
@@ -43,20 +45,18 @@ async def test_a_segment_rewind_keeps_the_owner_busy_gate(tmp_path, monkeypatch,
     """Owner authorization is for metadata only: a rewind by a compression segment's id must not
     run while the conversation's FIFO holds queued input (the ledger keys admissions by owner id),
     so it is refused exactly like the same rewind by the conversation id (review of #140971)."""
-    import hermes_state_runtime as rt
     from gateway.session_controls import AuthorityConnection
     compressed = await _compressed(tmp_path, monkeypatch)
     authority = compressed.warm
     evicted = []
     authority.runner._evict_cached_agent = lambda route, *a, **k: evicted.append(route)
-    db = authority.db
-    db.append_message('child-2', role='user', content='LIVE_Q')
-    db.append_message('child-2', role='assistant', content='LIVE_A')
-    target = next(m['id'] for m in db.get_messages('child-2') if m['content'] == 'LIVE_Q')
-    rt.admit_session_input(db, epoch=authority.epoch, principal_id='owner', session_id=compressed.owner,
+    store = authority.persistence
+    seed_messages(store, 'child-2', {'role': 'user', 'content': 'LIVE_Q'}, {'role': 'assistant', 'content': 'LIVE_A'})
+    target = next(m['id'] for m in transcript_rows(store, 'child-2') if m['content'] == 'LIVE_Q')
+    store.admissions.admit(epoch=authority.epoch, principal_id='owner', session_id=compressed.owner,
                            request_id='queued-1', payload={'text': 'queued after LIVE_A'})
     sid = compressed.owner if addressed == 'owner' else 'child-2'
-    row = db.get_session(sid)
+    row = session_row(store, sid)
     connection = AuthorityConnection(authority, object(), {
         'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:submit', 'session:control']})
@@ -68,4 +68,4 @@ async def test_a_segment_rewind_keeps_the_owner_busy_gate(tmp_path, monkeypatch,
     finally:
         await connection.close()
     assert reply.get('error', {}).get('message') in {'session_busy', 'storage_unavailable'}, reply
-    assert [m['content'] for m in db.get_messages('child-2')][-2:] == ['LIVE_Q', 'LIVE_A']
+    assert [m['content'] for m in transcript_rows(store, 'child-2')][-2:] == ['LIVE_Q', 'LIVE_A']

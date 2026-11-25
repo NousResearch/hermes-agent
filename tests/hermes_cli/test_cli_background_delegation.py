@@ -15,7 +15,7 @@ def test_background_task_delegation_runs_inline(monkeypatch):
     import tools.delegate_tool as dt
 
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: SimpleNamespace(_subagent_id="child"))
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: {
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **kw: {
         "model": "test", "provider": None, "base_url": None, "api_key": None,
         "api_mode": None, "command": None, "args": None,
     })

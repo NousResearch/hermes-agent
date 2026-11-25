@@ -172,21 +172,7 @@ class TestCollectShareBundle:
 
 
 class TestFullLogUploadLabels:
-    """build_debug_share uploads every bundle log — including the new pair."""
-
-    def test_upload_label_list_includes_update_logs(self):
-        """The paste-upload loop must not silently skip the new labels.
-
-        Asserts the label tuple (source-derived behavior contract: the
-        bundle keys are only reachable for upload if listed here).
-        """
-        import inspect
-
-        from hermes_cli import debug
-
-        source = inspect.getsource(debug.build_debug_share)
-        assert '"update.log"' in source
-        assert '"desktop-update-handoff.log"' in source
+    """--local prints every bundle log — including the new pair (--nous ships the bundle)."""
 
     def test_local_print_label_list_includes_update_logs(self):
         """run_debug_share --local prints bundle logs by the same contract."""

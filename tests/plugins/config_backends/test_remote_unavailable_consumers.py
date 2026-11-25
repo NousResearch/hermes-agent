@@ -51,12 +51,20 @@ def test_cron_tick_fails_only_that_fire_and_never_runs_on_defaults(tmp_path, mon
         scheduler._load_cron_job_config({"id": "j", "model": "m"}, "j", "job")
 
     # Through the real run_job as the fire's owner: the pre-agent gates pass, then the read refuses.
-    monkeypatch.setattr("gateway.session_cron.current_execution", lambda: (None, "s", "j", "fire"))
+    from types import SimpleNamespace
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "s", "cron")
+    monkeypatch.setattr("gateway.session_cron.current_execution", lambda: (SimpleNamespace(persistence=db), "s", "j", "fire"))
     monkeypatch.setattr(scheduler, "_prepare_job_prompt", lambda *a, **k: (None, "do the thing"))
     monkeypatch.setattr(scheduler, "_reload_dotenv_and_publish_delivery_target", lambda job: None)
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
-    success, doc, final, error = scheduler.run_job({"id": "j", "name": "job", "prompt": "p"},
-                                                   execution_id="fire")
+    with db:
+        success, doc, final, error = scheduler.run_job({"id": "j", "name": "job", "prompt": "p"},
+                                                       execution_id="fire")
+        assert db.sessions.get("s").ended_at is not None
+        assert db.sessions.get("s").end_reason == "cron_suppressed"
     assert success is False and final == ""
     assert error and "ConfigBackendUnavailable" in error and "HTTP 503" in error
     assert "FAILED" in doc

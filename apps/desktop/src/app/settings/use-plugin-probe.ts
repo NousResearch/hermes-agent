@@ -22,14 +22,16 @@ export function usePluginProbe(unavailableMessage: string, gatewayProbe?: Gatewa
     gateway.current = gatewayProbe
   }, [gatewayProbe])
 
+  // `ref` is a catalog pick's pin, which Electron reads the repository at; the backend reads a catalog
+  // entry at its own pin.
   const start = useCallback(
-    (repo: string) => {
+    (repo: string, ref?: string) => {
       const mine = ++token.current
       const probeFn = window.hermesDesktop?.probePluginRepo
       const viaGateway = gateway.current
 
       const run: Promise<ProbeResult> = probeFn
-        ? probeFn({ identifier: repo })
+        ? probeFn(ref ? { identifier: repo, ref } : { identifier: repo })
         : viaGateway
           ? viaGateway(repo)
           : Promise.resolve({

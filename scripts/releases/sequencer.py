@@ -33,8 +33,12 @@ def _key(version: str) -> tuple[int, int, int]:
 
 
 def plan(claims: list[dict], *, head: str | None,
-         requested_version: str | None = None) -> list[dict]:
-    """Return each eligible draft flip immediately followed by its head advance."""
+         requested_version: str | None = None, unfinished: dict | None = None) -> list[dict]:
+    """Return each eligible draft flip immediately followed by its head advance.
+
+    ``unfinished`` is the step that finishes the desktop head whose advance stopped after the head
+    moved (_unfinished_desktop_head); it runs before anything newer.
+    """
     ordered = sorted(claims, key=lambda claim: _key(claim["version"]))
     head_key = _key(head) if head is not None else None
     steps: list[dict] = []
@@ -46,6 +50,11 @@ def plan(claims: list[dict], *, head: str | None,
         state = claim["state"]
 
         if head_key is not None and version_key <= head_key:
+            if state == "published" and unfinished is not None and version in unfinished.values():
+                kind, = unfinished
+                log(f"  plan {version}: its advance did not finish after the head moved — {kind} again")
+                steps.append(unfinished)
+                continue
             if state in {"published", "burned"}:
                 log(f"  plan {version}: {state}, at or below head {head} — nothing to do")
                 continue
@@ -371,6 +380,64 @@ def channel_head(desktop_head: str | None, records: list[dict],
     return max(versions, key=_key, default=None)
 
 
+STABLE_POINTER = "releases/stable/release-candidates.json"
+
+
+def _alias_state(record: dict, records: list[dict]) -> str:
+    """Who holds the Docker aliases relative to ``record``: "newer", "unknown", "behind" or "current".
+
+    A digest a newer published release carries means that release owns the aliases (the
+    channel head read can have missed it on a registry error). An alias that cannot be read
+    leaves the owner unknown. Recovery moves the aliases in neither case, so a registry error
+    can never roll them back.
+    """
+    from scripts.releases import docker
+
+    alias = docker.stable_alias_digest()
+    if alias is None:
+        return "unknown"
+    if alias in {row["docker_manifest_digest"] for row in records if row["state"] == "published"
+                 and _key(row["version"]) > _key(record["version"])}:
+        return "newer"
+    if alias != record["docker_manifest_digest"] or docker.stable_desktop_alias_behind(record["claim_tag"]):
+        return "behind"
+    return "current"
+
+
+def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head: str | None) -> dict | None:
+    """The step that finishes the protected desktop head's advance, or None when it finished.
+
+    publish_release writes the candidate pointer last, after the head moves, and the Docker
+    aliases move after that, slim before desktop, so a failure there leaves the head on a
+    release that plan() would otherwise count as done. The pointer is the source channel's
+    update target and the next release's upgrade baseline. A full ``advance`` repeats the
+    Docker promotion too; while a newer release owns the aliases, or their owner cannot be
+    read, only the desktop advance repeats (``finish``).
+    """
+    from hermes_cli.release_channels import ChannelError
+    from scripts.releases import channel_releases
+
+    desktop = channel_releases.stable_head_version(env)
+    record = next((row for row in records if row["version"] == desktop and row["state"] == "published"
+                   and lane_set.advances_desktop(row["lanes"])), None)
+    if record is None:
+        return None
+    candidate = json.loads(read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json"))
+    try:
+        pointer = json.loads(read_archive(STABLE_POINTER))
+    except ChannelError:
+        pointer = None  # the head's own pointer write never landed
+    if desktop != head:
+        aliases = "newer"  # a newer release holds the channel head, and with it the aliases
+    elif "docker" in record["lanes"]:
+        aliases = _alias_state(record, records)
+    else:
+        aliases = "current"
+    if aliases in {"newer", "unknown"}:
+        return {"finish": desktop} if pointer != candidate else None
+    return {"advance": desktop} if pointer != candidate or aliases == "behind" else None
+
+
 def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
     from scripts.releases import store
 
@@ -453,8 +520,9 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     with group("Read the stable channel head"):
         head = read_head()
         log(f"Channel head: {head or '(none)'}")
+        unfinished = _unfinished_desktop_head(env, records, read_archive, head) if advance_head is None else None
     with group("Plan"):
-        steps = plan(records, head=head, requested_version=requested)
+        steps = plan(records, head=head, requested_version=requested, unfinished=unfinished)
         log("Steps: " + (", ".join(f"{kind} {version}" for step in steps
                                    for kind, version in step.items()) or "(none)"))
     by_version = {record["version"]: record for record in records}
@@ -494,6 +562,11 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                 log(f"Receipt {record['tag']}: manifest {record['candidate_manifest_sha256']}, "
                     f"docker {record['docker_manifest_digest']}")
             notice(f"{record['tag']} is public", title="Stable sequencer")
+        elif "finish" in step:
+            record = by_version[step["finish"]]
+            with group(f"[{number}/{len(steps)}] Finish {record['version']}'s desktop advance (a newer "
+                       "release owns the Docker aliases)"), tempfile.TemporaryDirectory() as directory:
+                channel_releases.advance_stable(env, record, Path(directory))
         else:
             record = by_version[step["advance"]]
             with group(f"[{number}/{len(steps)}] Advance channels to {record['version']}"):

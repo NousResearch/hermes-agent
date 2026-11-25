@@ -18,3 +18,6 @@ capabilities:
     - on_stream_end
   provides_middleware: []
   requires_env: []
+image: https://raw.githubusercontent.com/LaRoyBot/decision-brief/94aaeba39275e857e953d321b5c1add52f3d9623/assets/decision-brief-hero.png
+screenshots:
+  - https://raw.githubusercontent.com/LaRoyBot/decision-brief/94aaeba39275e857e953d321b5c1add52f3d9623/assets/decision-brief-hero.png

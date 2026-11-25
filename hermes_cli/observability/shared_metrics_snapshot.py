@@ -3,13 +3,13 @@
 Only counts, closed enums (terminal backend, bundled memory provider, shipped locale), the main
 provider id and the profile's age are read out; server names, plugin names, skill names, job
 prompts and profile names stay local (the contract buckets every count).
+The snapshot also counts the profile's group chats (``shared_metrics_group_chats``).
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
-import sqlite3
 import time
 from itertools import islice
 from pathlib import Path
@@ -90,37 +90,64 @@ _first_session_at: dict[str, float] = {}
 def _first_session_started_at(home: Path | None = None) -> float | None:
     """Epoch of the profile's first session; ``now`` when it has none yet (a brand-new install).
 
-    Raises ``sqlite3.Error`` when state.db exists but cannot be read.
+    Raises one of the store failures (``persistence.core.errors.STORE_FAILURES``) when state.db exists but cannot
+    be read.
     """
+    from persistence_assembly import open_persistence_reader
+
     home = home or get_hermes_home()
     if str(home) in _first_session_at:
         return _first_session_at[str(home)]
     database = home / "state.db"
     if not database.exists():
         return time.time()
-    from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
-    from hermes_state_holders import read_only_db_uri
-
-    with contextlib.closing(
-        connect_tracked(read_only_db_uri(database), uri=True, timeout=1, tracking_path=database)
-    ) as connection:
-        row = connection.execute("SELECT MIN(started_at) FROM sessions").fetchone()
-    if not row or row[0] is None:
+    with open_persistence_reader(database, patience_s=1) as store:
+        first = store.sessions.first_session_started_at()
+    if first is None:
         return time.time()
-    _first_session_at[str(home)] = float(row[0])
-    return _first_session_at[str(home)]
+    _first_session_at[str(home)] = first
+    return first
 
 
 def install_age_bucket(home: Path | None = None) -> str:
     """How long ago the profile's first-ever session started, bucketed; ``unknown`` if unreadable.
     ``home`` defaults to the bound profile; callers off the turn thread must pass theirs."""
+    from persistence.core.errors import STORE_FAILURES
+
     from .shared_metrics_fields import install_age_bucket as bucket
 
     try:
         first = _first_session_started_at(home)
-    except sqlite3.Error:
+    except STORE_FAILURES:
         return "unknown"
     return bucket(time.time() - first)
+
+
+def install_snapshot_fields(
+    *, memory_provider: Any, mcp_servers: int, plugins: int, skills: int, cron_jobs: int,
+    profiles: int, messaging_platforms: int, install_age_bucket: str, main_provider: Any,
+    terminal_backend: Any, display_language: Any,
+) -> dict[str, str]:
+    """Bounded daily configuration snapshot: counts, closed enums and public names only."""
+    from .shared_metrics_catalog import display_language_metric_name, provider_metric_name
+
+    size_bucket = contract.size_bucket
+    provider = contract._norm(memory_provider)
+    backend = contract._norm(terminal_backend) or "local"
+    return {
+        "cron_job_count_bucket": size_bucket(cron_jobs),
+        "display_language": display_language_metric_name(display_language),
+        "install_age_bucket": install_age_bucket if install_age_bucket in contract.INSTALL_AGE_BUCKETS else "unknown",
+        "main_provider": provider_metric_name(main_provider) if main_provider else "none",
+        "mcp_server_count_bucket": size_bucket(mcp_servers),
+        "memory_provider": "builtin" if not provider
+        else provider if provider in contract.MEMORY_PROVIDERS else "plugin",
+        "messaging_platform_count_bucket": size_bucket(messaging_platforms),
+        "plugin_count_bucket": size_bucket(plugins),
+        "profile_count_bucket": size_bucket(profiles),
+        "skill_count_bucket": size_bucket(skills),
+        "terminal_backend": backend if backend in contract.TERMINAL_BACKENDS else "other",
+    }
 
 
 def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
@@ -129,10 +156,11 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
     language = "other"
     with contextlib.suppress(Exception):
         language = _display_language()
-    from .shared_metrics_install import install_v4_snapshot_fields
+    from .shared_metrics_group_chats import group_chat_snapshot_fields
+    from .shared_metrics_install import install_hosting, install_v4_snapshot_fields
     from .shared_metrics_prepared_compaction import prepare_ahead_state
 
-    return {**contract.install_snapshot_fields(
+    return {**install_snapshot_fields(
         memory_provider=_sub(_sub(config, "memory"), "provider"),
         mcp_servers=_mcp_server_count(config),
         plugins=_plugin_count(config),
@@ -144,4 +172,5 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
         main_provider=_sub(model, "provider") if isinstance(model, dict) else None,
         terminal_backend=_sub(_sub(config, "terminal"), "backend"),
         display_language=language,
-    ), **install_v4_snapshot_fields(config), "compression_prepare_ahead": prepare_ahead_state(config)}
+    ), **install_v4_snapshot_fields(config), "compression_prepare_ahead": prepare_ahead_state(config),
+        **group_chat_snapshot_fields(), "hosting": install_hosting()}

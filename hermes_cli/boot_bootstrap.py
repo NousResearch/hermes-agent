@@ -7,6 +7,11 @@ an explicit post-update run). The one exception is a config migration that
 stopped at a failing step: the steps before it are kept, and the rest is
 retried on every start until it succeeds (one warning per start). PM owns
 runtime diagnosis, not this record.
+
+A home whose profile a plugin runs elsewhere (``hermes_cli.profiles_run_elsewhere``)
+is written by the backend the plugin runs, so no host process maintains it:
+nothing is run and nothing is recorded, and the first start after the marker
+is gone does this revision's maintenance.
 """
 from __future__ import annotations
 
@@ -224,8 +229,32 @@ class _RecordLock:
 # the boot entry point
 # ---------------------------------------------------------------------------
 
+def _home_runs_elsewhere() -> bool:
+    """Whether a plugin runs this process's profile elsewhere, with one log line when it does.
+
+    Asked only when maintenance is due (a new revision, or a step still owed), before the lock:
+    the usual start, whose record says this revision is done, never gets here. The backend the
+    plugin runs cannot list the marker folder and is answered False, like every reader of it.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli import profiles_run_elsewhere
+
+    entry = profiles_run_elsewhere.run_elsewhere_for_home(get_hermes_home())
+    if entry is None:
+        return False
+    if entry.folder_error is not None:
+        why = f"{entry.path.parent} cannot be read, so a plugin may run profile '{entry.profile}' elsewhere"
+    else:
+        owner = f"the '{entry.plugin}' plugin" if entry.plugin is not None else "a plugin"
+        why = f"{owner} runs profile '{entry.profile}' elsewhere"
+    logger.info("home maintenance: %s, so this host leaves its home alone; it is owed until the profile "
+                "runs here", why)
+    return True
+
+
 def run_boot_bootstrap(project_root: Path) -> dict:
-    """Bound home maintenance to one attempt per installed revision."""
+    """Bound home maintenance to one attempt per installed revision. A home whose profile a
+    plugin runs elsewhere gets none from this host and no record: it stays owed."""
     from hermes_cli import post_update
 
     identity = current_install_identity(project_root)
@@ -235,6 +264,8 @@ def run_boot_bootstrap(project_root: Path) -> dict:
     known = read_last_known(record)
     if known.get("identity") == identity:
         return {"home": _retry_owed_migration(record, identity, known)}
+    if _home_runs_elsewhere():
+        return {"home": "runs-elsewhere"}
     lock = _RecordLock(record)
     if not lock.acquire():
         return {"home": "lost-race"}
@@ -250,30 +281,45 @@ def run_boot_bootstrap(project_root: Path) -> dict:
         lock.release()
 
 
+def _owed_steps(known: dict) -> list[str]:
+    """Steps of this revision still owed: a config migration that stopped at a failing step, and any
+    step whose result says ``owed`` (default plugins a failed fetch left uninstalled)."""
+    results = known.get("results") or {}
+    owed = [name for name, result in results.items() if isinstance(result, dict) and result.get("owed")]
+    return owed + (["migrate_config"] if owed_config_migration(known) is not None else [])
+
+
 def _retry_owed_migration(record: Path, identity: str, known: dict):
-    """This revision's maintenance is done, but its config migration stopped at a failing step
-    (``failed_step`` in the record): rerun that one step on every start until it succeeds. It
-    warns once per start; the other steps stay bounded to one attempt per revision."""
+    """This revision's maintenance is done, but a step is still owed (:func:`_owed_steps`): rerun those
+    steps on every start until they succeed. A config migration warns once per start; the default-plugin
+    step backs off itself, on one failure stamp for every home and plugin. The other steps stay bounded
+    to one attempt per revision."""
     from hermes_cli import post_update
 
-    if owed_config_migration(known) is None:
+    if not _owed_steps(known):
         return "skipped"
+    if _home_runs_elsewhere():
+        return "runs-elsewhere"
     lock = _RecordLock(record)
     if not lock.acquire():
         return "lost-race"
     try:
         known = read_last_known(record)
-        owed = owed_config_migration(known)
-        if owed is None or known.get("identity") != identity:
+        names = _owed_steps(known)
+        if not names or known.get("identity") != identity:
             return "skipped"
-        retried = post_update.run_steps(
-            [step for step in post_update.BOOT_HOME_STEPS if step[0] == "migrate_config"])
+        owed = owed_config_migration(known)
+        retried = post_update.run_steps([step for step in post_update.BOOT_HOME_STEPS if step[0] in names])
         outcome = retried.get("migrate_config") or {}
-        if not outcome.get("ok") and not outcome.get("failed_step"):
+        if owed is not None and not outcome.get("ok") and not outcome.get("failed_step"):
             # The retry raised (a full disk, a lock): the step is still owed, so the next start
             # retries it too. Only a retry that succeeded clears it.
             retried["migrate_config"] = {**outcome, "failed_step": owed["failed_step"],
                                          "failed_warning": outcome.get("error") or owed.get("failed_warning")}
+        for name in names:
+            result = retried.get(name)
+            if name != "migrate_config" and isinstance(result, dict) and not result.get("ok"):
+                retried[name] = {**result, "owed": True}  # a retry that raised keeps the step owed
         _write_record(record, identity, {**known["results"], **retried})
         return retried
     finally:

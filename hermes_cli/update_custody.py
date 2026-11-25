@@ -322,9 +322,20 @@ def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subproces
 _DRAIN_SECONDS = 5
 
 
+# Variables that point git at a repository other than its cwd.
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
+
+
 def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess.CompletedProcess:
     """THE updater git runner: custody config in argv, the lock fd only into local mutators,
     Windows job binding inside an update. ``kwargs`` are ``subprocess.run``'s."""
+    # An inherited GIT_DIR/GIT_WORK_TREE points every stash/reset/clean at the user's other repo
+    # instead of the checkout the caller's cwd names (#146032).
+    env = dict(os.environ if kwargs.get("env") is None else kwargs["env"])
+    for key in _GIT_LOCATION_ENV:
+        env.pop(key, None)
+    kwargs["env"] = env
     argv = git_argv(git_cmd, args)
     mutator = is_local_mutator(argv[1:])
     if mutator:

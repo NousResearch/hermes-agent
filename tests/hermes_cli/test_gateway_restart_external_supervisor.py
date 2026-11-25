@@ -51,6 +51,9 @@ def restart_calls(monkeypatch):
     monkeypatch.setattr(gw, "run_gateway", lambda **k: calls.__setitem__("started", True))
     # Hermetic on Linux CI: the runner's own /proc + systemd must not make the gateway look service-owned.
     monkeypatch.setattr("hermes_cli.main_dashboard._get_systemd_service_for_pid", lambda pid: None)
+    # PID 4321 is fake, but on a busy runner it can be a real process; an unknown start time keeps the
+    # drain-timeout branch from reading that stranger as "still running live work" and returning.
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: None)
     return calls
 
 

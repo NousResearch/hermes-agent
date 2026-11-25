@@ -460,6 +460,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
         return None
+    from pm.environments import named_install_state_dir
+
+    if named_install_state_dir() is not None:
+        return None  # It keeps the interpreter its launcher chose; the install's update is not its to finish.
     stamp = read_install_stamp(root)
     if not stamp:
         from hermes_cli.post_update import step_adopt_blessed_checkout
@@ -706,6 +710,10 @@ def relaunch_command(
     # a restore re-execs sys.orig_argv and keeps it, which is why that guard re-checks currency.
     prefix = (f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
               "sys._hermes_relaunched = True; ")
+    if argv[0] == "-m" and original[index:index + 1] == ["-m"]:
+        # Python is still locating the module (a package's __init__ imported the bootstrap):
+        # argv[0] is "-m" and __main__ has no spec yet, so the module name is on the command line.
+        module = original[index + 1]
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

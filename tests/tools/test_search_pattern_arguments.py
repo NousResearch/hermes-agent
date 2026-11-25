@@ -95,6 +95,15 @@ def test_option_shaped_patterns_are_searched_as_regex(ops, tmp_path, mode, patte
     assert_result(result, mode, path, [(1, text)])
 
 
+@pytest.mark.parametrize("lane", LANES)
+@pytest.mark.parametrize("mode", MODES)
+def test_inline_ignore_case_prefix_matches_mixed_case_on_every_lane(ops, tmp_path, mode):
+    path = tmp_path / "sample.txt"
+    path.write_text("Result\nplain control\nRESULT\nresult\n")
+    result = ops.search("(?i)result", path=str(tmp_path), output_mode=mode, file_glob="*.txt")
+    assert_result(result, mode, path, [(1, "Result"), (3, "RESULT"), (4, "result")])
+
+
 @pytest.mark.parametrize("lane", ("rg-native", "rg-shell"))
 @pytest.mark.parametrize(
     "pattern,text,hidden,hint",

@@ -196,6 +196,24 @@ async def test_a_move_to_the_chats_own_folder_changes_nothing(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_a_move_to_the_chats_own_folder_by_another_path_changes_nothing(tmp_path, monkeypatch):
+    from tools import terminal_tool
+    chat = await _chat(tmp_path, monkeypatch)
+    try:
+        link = tmp_path / 'link'
+        link.symlink_to(chat.start, target_is_directory=True)
+        sub = chat.start / 'sub'
+        sub.mkdir()
+        _in_turn(chat, lambda: terminal_tool.terminal_tool(f'cd {sub}', task_id=chat.sid))
+        built = len(chat.built)
+        assert _create(chat, link)['moved'] is True
+        await _boundary(chat)
+        assert _pwd(chat) == str(sub) and len(chat.built) == built
+    finally:
+        await _closed(chat)
+
+
+@pytest.mark.asyncio
 async def test_a_missing_folder_says_so(tmp_path, monkeypatch):
     chat = await _chat(tmp_path, monkeypatch)
     try:

@@ -231,6 +231,39 @@ def _classic_key_exchange_context() -> ssl.SSLContext:
     return ctx
 
 
+# Loopback HTTP/mixed ports used by mihomo/Clash, Clash Verge and v2ray. A TCP accept alone is
+# not proof of a proxy: a local service on the same port must answer CONNECT with 2xx first.
+_LOCAL_PROXY_PORTS = (7890, 7897, 10809)
+_LOCAL_PROXY_TIMEOUT_S = 0.25
+
+
+def _local_proxy_answers_connect(port: int) -> bool:
+    """True when a loopback port answers a Bot API CONNECT like an HTTP proxy."""
+    request = (f"CONNECT {_TELEGRAM_API_HOST}:443 HTTP/1.1\r\n"
+               f"Host: {_TELEGRAM_API_HOST}:443\r\n\r\n").encode("ascii")
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=_LOCAL_PROXY_TIMEOUT_S) as sock:
+            sock.settimeout(_LOCAL_PROXY_TIMEOUT_S)
+            sock.sendall(request)
+            status = sock.recv(64).split(b"\r\n", 1)[0].split()
+            return len(status) > 1 and status[0].startswith(b"HTTP/") and status[1][:1] == b"2"
+    except OSError:
+        return False
+
+
+def detect_local_proxy_url(*, ports: Iterable[int] = _LOCAL_PROXY_PORTS,
+                           probe=_local_proxy_answers_connect) -> str | None:
+    """First loopback HTTP proxy that accepts a Bot API CONNECT, or None.
+
+    The Telegram adapter calls this only after configured, environment and NO_PROXY resolution
+    found no route. Ports are tried in order; the first 2xx answer wins.
+    """
+    for port in ports:
+        if probe(port):
+            return f"http://127.0.0.1:{port}"
+    return None
+
+
 def _resolve_proxy_url(target_hosts=None) -> str | None:
     from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)

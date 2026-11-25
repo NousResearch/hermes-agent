@@ -301,6 +301,18 @@ def test_empty_path_reports_missing_not_clt_stub():
     assert res == GitResolution(executable=None, status="missing", raw_path=None)
 
 
+def test_spawn_guard_refuses_only_the_clt_stub_not_a_git_it_cannot_find(tmp_path):
+    """A bare launch searches PATH its own way (CreateProcess reads the parent's PATH, execvp
+    follows a relative entry from the child's cwd), so "not found from here" is left to the launch
+    to report rather than refused as if it were the stub."""
+    from hermes_platform.resolver.git import is_usable_git_command
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert is_usable_git_command("git", {"PATH": str(empty)})
+    assert is_usable_git_command("git", {"PATH": ""})
+
+
 def test_is_git_command_matches_only_git():
     assert is_git_command("git") is True
     assert is_git_command("/usr/bin/git") is True

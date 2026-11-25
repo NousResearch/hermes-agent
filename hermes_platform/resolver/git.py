@@ -259,7 +259,11 @@ def is_usable_git_command(
     *,
     cached: bool = True,
 ) -> bool:
-    """True when *argv0* (bare ``git`` or an explicit executable path) can run without hitting the macOS CLT stub."""
+    """True when *argv0* (bare ``git`` or an explicit executable path) can run without hitting the macOS CLT stub.
+
+    Only the stub is refused. A bare git this lookup cannot find is left to the launch to report:
+    CreateProcess searches the parent's PATH and execvp follows a relative entry from the child's
+    cwd, so "not found from here" is not proof the launch fails."""
     if not argv0:
         return False
     raw = os.fspath(argv0).strip()
@@ -267,4 +271,4 @@ def is_usable_git_command(
         return False
     if os.sep in raw or (os.altsep and os.altsep in raw):
         return is_usable_git_executable(raw, env, cached=cached)
-    return resolve_usable_git(env, cached=cached) is not None
+    return inspect_git(env, cached=cached).status != "clt_stub"

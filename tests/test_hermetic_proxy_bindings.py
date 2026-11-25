@@ -61,7 +61,7 @@ _BINDING_MODULES = (
 
 
 def test_every_by_value_getproxies_binding_is_env_only(monkeypatch):
-    monkeypatch.setattr(urllib.request, "getproxies_environment", lambda: {})
+    monkeypatch.setattr(urllib.request, "getproxies_environment", dict)
     monkeypatch.setattr(
         urllib.request, "getproxies_macosx_sysconf",
         lambda: {"http": "http://127.0.0.1:7890"})

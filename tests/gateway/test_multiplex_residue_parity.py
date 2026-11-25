@@ -53,7 +53,7 @@ def test_per_turn_sessions_bridge_skips_secondary_scope(two_homes, monkeypatch):
 
 
 def test_resolve_proxy_url_reads_routed_profile_scope(two_homes, monkeypatch):
-    _root, alpha = two_homes
+    _root, _alpha = two_homes
     from gateway.platforms import base as gw_base
     from gateway.platforms.base import resolve_proxy_url
     # The macOS system proxy (scutil) is real config on a developer machine and would

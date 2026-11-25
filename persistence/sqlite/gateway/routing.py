@@ -37,6 +37,11 @@ __all__ = ["SQLiteRoutingRepository"]
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
+# How many routes one retirement read judges. Binding the whole index as a single ``:wanted`` parameter
+# makes ``json_each`` materialise all of it, on top of the payload dict the delta save already holds;
+# 5,000 routes a statement keeps the count in single digits without carrying the index a second time.
+_RETIRE_BATCH = 5_000
+
 
 class SQLiteRoutingRepository:
     """Routing index, routing peers and Telegram DM topic state of the bound profile's ``state.db``."""
@@ -126,9 +131,13 @@ class SQLiteRoutingRepository:
             existing = {r[0]: r[1] for r in conn.execute(
                 "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (routing_scope,))}
             wanted = {row['key'] for row in rows}
-            retired = ({r[0] for r in conn.execute(
-                ROUTE_RETIRED_MANY_SQL, route_retired_many_params([(row['key'], row['entry']) for row in rows], now))}
-                if rows else set())
+            retired = set()
+            if rows:
+                pairs = [(row['key'], row['entry']) for row in rows]
+                for start in range(0, len(pairs), _RETIRE_BATCH):
+                    retired.update(r[0] for r in conn.execute(
+                        ROUTE_RETIRED_MANY_SQL,
+                        route_retired_many_params(pairs[start:start + _RETIRE_BATCH], now)))
             stale = [key for key in existing if key not in wanted or key in retired]
             if stale:
                 conn.executemany("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",

@@ -3,17 +3,19 @@ import { isBundledLocale, useI18n } from '@/i18n'
 import type { BundledLocale } from '@/i18n/types'
 
 const copy = {
-  en: ['Pin your go-to chats.', 'Use a chat’s menu to pin it.'],
-  de: ['Wichtige Chats anpinnen.', 'Im Chat-Menü „Anpinnen“ wählen.'],
-  es: ['Fija tus chats habituales.', 'Usa el menú del chat para fijarlo.'],
-  fr: ['Épinglez vos conversations favorites.', 'Utilisez le menu de la conversation.'],
-  ja: ['よく使うチャットをピン留め。', 'チャットのメニューからピン留めできます。'],
-  zh: ['置顶常用聊天。', '在聊天菜单中选择置顶。'],
-  'zh-hant': ['釘選常用聊天。', '在聊天選單中選擇釘選。'],
-  ru: ['Закрепите нужные чаты.', 'Выберите «Закрепить» в меню чата.'],
-  ar: ['ثبّت محادثاتك المفضلة.', 'استخدم قائمة المحادثة لتثبيتها.']
+  en: ['Pin your go-to chats.', 'Drop a chat here to pin it.'],
+  de: ['Wichtige Chats anpinnen.', 'Chat hierher ziehen zum Anpinnen.'],
+  es: ['Fija tus chats habituales.', 'Arrastra un chat aquí para fijarlo.'],
+  fr: ['Épinglez vos conversations favorites.', 'Glissez une conversation ici pour l’épingler.'],
+  ja: ['よく使うチャットをピン留め。', 'チャットをここにドロップしてピン留め。'],
+  zh: ['置顶常用聊天。', '将聊天拖到此处即可置顶。'],
+  'zh-hant': ['釘選常用聊天。', '將聊天拖到此處即可釘選。'],
+  ru: ['Закрепите нужные чаты.', 'Перетащите чат сюда, чтобы закрепить.'],
+  ar: ['ثبّت محادثاتك المفضلة.', 'أسقط محادثة هنا لتثبيتها.']
 } satisfies Record<BundledLocale, [string, string]>
 
+/** What an empty Pinned shows while a session drag is in flight (HADESK-132): the section stands
+ *  down at rest, so this hint comes out with its drop target and goes away with it. */
 export function PortalPinnedEmpty() {
   const { locale } = useI18n()
   const [title, hint] = copy[isBundledLocale(locale) ? locale : 'en']

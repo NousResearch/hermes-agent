@@ -83,18 +83,15 @@ export function useGroupChatMatches(query: string): GroupChatMatches {
   }
 }
 
-/** Group rooms sit outside gateway buckets: Desktop-driven rooms may span gateways. Bot Mode owns
- *  them, so the sidebar mounts this only while that plugin is loaded. */
-export function PortalGroupChats({ matches, searching }: { matches: GroupChatMatches; searching: boolean }) {
+/** New group chat: the section's own "+", and the stand-in the Agents header carries while an
+ *  empty Group chats stands down (HADESK-132) — creating the first one is never more than a click
+ *  away. The dialog unmounts as it closes, so nothing returns focus for it: a dismissal hands focus
+ *  back to "+", while a created group chat takes it (create calls onClose, then onCreated). */
+export function PortalNewGroupChatAction() {
   const b = useBots()
   const roster = useStore($lastRoster)
-  const meta = useStore($botMeta)
-  const active = useStore($groupChatWorkspace)
-  const { names, rooms: visibleGatewayRooms } = matches
   const [creating, setCreating] = useState(false)
   const trigger = useRef<HTMLButtonElement>(null)
-  // The dialog unmounts as it closes, so nothing returns focus for it: a dismissal hands focus back
-  // to "+", while a created group chat takes it (create calls onClose, then onCreated).
   const created = useRef(false)
 
   const closeDialog = () => {
@@ -112,59 +109,68 @@ export function PortalGroupChats({ matches, searching }: { matches: GroupChatMat
     openGroupChat(...args)
   }
 
-  // A search shows only sections that answer it.
-  if (searching && visibleGatewayRooms.length + names.length === 0) {
+  return (
+    <>
+      <Tip label={b.group.newTitle}>
+        <Button
+          aria-label={b.group.newTitle}
+          className="portal-section-action"
+          onClick={() => setCreating(true)}
+          ref={trigger}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <Plus aria-hidden />
+        </Button>
+      </Tip>
+      {creating && (
+        <CreateGroupChatDialog onClose={closeDialog} onCreated={onCreated} open roster={roster} />
+      )}
+    </>
+  )
+}
+
+/** Group rooms sit outside gateway buckets: Desktop-driven rooms may span gateways. Bot Mode owns
+ *  them, so the sidebar mounts this only while that plugin is loaded. Nothing to list — no room and
+ *  no name, a search included — leaves no section behind (HADESK-132). */
+export function PortalGroupChats({ matches }: { matches: GroupChatMatches }) {
+  const b = useBots()
+  const roster = useStore($lastRoster)
+  const meta = useStore($botMeta)
+  const active = useStore($groupChatWorkspace)
+  const { names, rooms: visibleGatewayRooms } = matches
+
+  if (visibleGatewayRooms.length + names.length === 0) {
     return null
   }
 
   return (
     <section aria-label={b.roster.groupChats} className="portal-section" data-slot="group-chats-section">
-      <PortalSectionHeader
-        action={
-          <Tip label={b.group.newTitle}>
-            <Button
-              aria-label={b.group.newTitle}
-              className="portal-section-action"
-              onClick={() => setCreating(true)}
-              ref={trigger}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Plus aria-hidden />
-            </Button>
-          </Tip>
-        }
-        label={b.roster.groupChats}
-      />
-      {visibleGatewayRooms.length + names.length > 0 && (
-        <FadeScroll className="portal-section-scroll" maxHeight="12rem">
-          {visibleGatewayRooms.map(room => (
-            <CanonicalGroupRow
-              active={active === room.key}
-              key={room.key}
-              onOpen={() => openGroupChat(bindGatewayGroupRoom(room), 'key')}
-              room={room}
-            />
-          ))}
-          {names.map(name => (
-            <RowButton
-              aria-current={active === name ? 'page' : undefined}
-              className="portal-session-row"
-              key={name}
-              onClick={() => openGroupChat(name, 'name')}
-            >
-              <Codicon className="portal-group-icon" name="organization" />
-              <span className="portal-session-title">{name}</span>
-              <span className="portal-session-meta">
-                {b.group.memberCount(groupChatMemberBots(name, roster, meta).length)}
-              </span>
-            </RowButton>
-          ))}
-        </FadeScroll>
-      )}
-      {creating && (
-        <CreateGroupChatDialog onClose={closeDialog} onCreated={onCreated} open roster={roster} />
-      )}
+      <PortalSectionHeader action={<PortalNewGroupChatAction />} label={b.roster.groupChats} />
+      <FadeScroll className="portal-section-scroll" maxHeight="12rem">
+        {visibleGatewayRooms.map(room => (
+          <CanonicalGroupRow
+            active={active === room.key}
+            key={room.key}
+            onOpen={() => openGroupChat(bindGatewayGroupRoom(room), 'key')}
+            room={room}
+          />
+        ))}
+        {names.map(name => (
+          <RowButton
+            aria-current={active === name ? 'page' : undefined}
+            className="portal-session-row"
+            key={name}
+            onClick={() => openGroupChat(name, 'name')}
+          >
+            <Codicon className="portal-group-icon" name="organization" />
+            <span className="portal-session-title">{name}</span>
+            <span className="portal-session-meta">
+              {b.group.memberCount(groupChatMemberBots(name, roster, meta).length)}
+            </span>
+          </RowButton>
+        ))}
+      </FadeScroll>
     </section>
   )
 }

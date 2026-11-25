@@ -376,6 +376,35 @@
   max-height: 45%;
 }
 
+/* An empty Pinned (HADESK-132): the section stands down, but its drop target stays mounted — out of
+   flow, so it costs no space — and comes out only while a session drag is in flight, so a chat can
+   still be dropped onto Pinned (HADESK-58). The shelf keeps ONE block size whether or not its
+   caption and hint are out: the caption rides over the 6rem floor and the hint flex-fills what is
+   left, so the drop geometry a drag snapshots at lift never drifts under it. It rides a layer token
+   so it paints over the sticky machine headings (z-index: 1) it overlaps, and takes the sidebar's
+   own opaque fill — the translucent panel background let the Agents text bleed through. */
+.portal-sidebar .portal-pinned-shelf {
+  position: absolute;
+  z-index: var(--portal-layer-dock);
+  inset-inline: var(--portal-sidebar-gutter);
+  min-height: 6rem;
+  visibility: hidden;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-sidebar-background);
+}
+
+.portal-sidebar .portal-pinned-shelf[data-dragging] {
+  visibility: visible;
+}
+
+/* The hint fills the shelf, so the whole box reads as one drop target. min-height:0 lets it shrink
+   to that fill instead of pushing the shelf past its 6rem floor, keeping the box the same size
+   whether the hint is out or not (a wrapped hint overflows its own box, never the shelf's). */
+.portal-pinned-shelf .portal-pinned-empty {
+  flex: 1;
+  min-height: 0;
+}
+
 .portal-sidebar [data-slot='agent-section'][data-open='true'] {
   flex: 1 1 0%;
   min-height: 6rem;

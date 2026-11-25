@@ -3,6 +3,7 @@ import './portal-sidebar.css'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
 
+import { $sessionTileDragging } from '@/components/pane-shell/tree/store'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { useI18n } from '@/i18n'
 import {
@@ -18,6 +19,7 @@ import { sessionPinId } from '@/store/session'
 
 import type { ChatSidebar } from '../index'
 import { SidebarLoadMoreRow } from '../load-more-row'
+import { $sessionListPinDragging } from '../reorderable-list'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from '../section-states'
 import { SimplifiedAgentList } from '../simplified-agent-list'
 import { useBotModeLoaded } from '../simplified-bot-chat-row'
@@ -30,8 +32,14 @@ import { agentOwner } from '../use-simplified-agents'
 import { AGENT_CHAT_CAP } from './agent-chat-cap'
 import { arrangeAgentChats, orderAgentChats } from './agent-chat-order'
 import { CreateAccountCard } from './create-account-card'
-import { type GroupChatMatches, PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
+import {
+  type GroupChatMatches,
+  PortalGroupChats,
+  PortalNewGroupChatAction,
+  useGroupChatMatches
+} from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
+import { PortalSectionHeader } from './portal-section-header'
 import { PortalSidebarHead, PortalSidebarSearchField, usePortalSidebarSearch } from './portal-sidebar-head'
 import { UsageStatsCard } from './usage-stats-card'
 
@@ -101,6 +109,36 @@ function BotModeGroupChats({ children, query }: { children: (groups: GroupChatMa
   return children(useGroupChatMatches(query))
 }
 
+/** An empty Pinned (HADESK-132): the section stands down, but its drop target stays mounted — out
+ *  of flow, so it costs no space — and comes out only while a session drag is in flight, so a chat
+ *  dragged from the sidebar, or a session's own tab, can still be dropped onto Pinned (HADESK-58).
+ *  Its box stands the same size with and without the caption and hint, so the drop geometry the
+ *  drag snapshots at lift never moves under it. */
+function PortalPinnedShelf() {
+  const { t } = useI18n()
+  // A session dragged by its own tab, or a sidebar row dragged by dnd-kit (whose list keeps no
+  // dragging state the shelf could read), both bring the drop target out (HADESK-58, HADESK-132).
+  const tileDragging = useStore($sessionTileDragging)
+  const listDragging = useStore($sessionListPinDragging)
+  const dragging = tileDragging || listDragging
+
+  return (
+    <section
+      className="portal-section portal-pinned-shelf"
+      data-dragging={dragging ? '' : undefined}
+      data-session-pin-drop=""
+      data-slot="pinned-shelf"
+    >
+      {dragging && (
+        <>
+          <PortalSectionHeader label={t.sidebar.pinned} />
+          <PortalPinnedEmpty />
+        </>
+      )}
+    </section>
+  )
+}
+
 export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const {
     t,
@@ -144,6 +182,10 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
       !agents.agents.some(agent => agent.label.toLowerCase().includes(needle)) &&
       !(groups && groups.rooms.length + groups.names.length > 0)
 
+    // An empty Group chats leaves no section behind: New group chat moves up to the Agents header
+    // so the first one is still a click away (HADESK-132).
+    const noGroupChats = !searching && groups && groups.rooms.length + groups.names.length === 0
+
     return (
       <>
         {nothingFound && (
@@ -152,20 +194,22 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           </p>
         )}
         <div className="portal-sidebar-sections" hidden={nothingFound} onKeyDown={moveRowFocus}>
-          {(!searching || pinned.length > 0) && (
+          {pinned.length > 0 ? (
             <SimplifiedPinnedSessions
               {...shared}
-              emptyState={!searching && quiet && !error && <PortalPinnedEmpty />}
               onReorder={rows => setPinnedSessionOrder(rows.map(row => sessionPinId(row)))}
               onResumeSession={resumePinned}
               sessions={pinned}
             />
+          ) : (
+            !searching && <PortalPinnedShelf />
           )}
-          {groups && <PortalGroupChats matches={groups} searching={searching} />}
+          {groups && <PortalGroupChats matches={groups} />}
           <SimplifiedAgentList
             agents={agents}
             allSessions={all}
             expanded={expanded}
+            headerAction={noGroupChats ? <PortalNewGroupChatAction /> : undefined}
             onResumeSession={shared.onResumeSession}
             onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
             query={query}

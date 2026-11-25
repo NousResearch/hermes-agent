@@ -7,12 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $apiRequestScope } from '@/api/client'
 import * as apiClient from '@/api/client'
 import * as sessionsApi from '@/api/sessions'
+import { PIN_DROP_SELECTOR } from '@/app/chat/session-drag'
 import { useSessionListActions } from '@/app/session/hooks/use-session-list-actions'
 import { StableNavigateProvider } from '@/app/stable-navigate'
+import { $treeDragging, SESSION_TILE_DRAG } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
+import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
+import { $groupChats } from '@/plugins/hermes-bots/group-chat'
+import { botsText } from '@/plugins/hermes-bots/i18n'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import {
   $hiddenSidebarAgents,
@@ -63,9 +68,14 @@ import { deferred } from '@/test/deferred'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { PortalSidebar } from './portal/portal-sidebar'
+import { $sessionListPinDragging } from './reorderable-list'
 import { $simplifiedPinnedRows } from './use-simplified-pin-writes'
 
 vi.mock('@/plugins/hermes-bots/roster-actions', () => ({ openRosterBot: vi.fn(async () => true) }))
+vi.mock('@/plugins/hermes-bots/create-dialog', () => ({ CreateGroupChatDialog: () => <div role="dialog" /> }))
+// Bot Mode's copy hook reads the plugin runtime, which this harness never boots: bind it to the
+// bundles directly, as the other Bot Mode component tests do (botsText()).
+vi.mock('@/plugins/hermes-bots/i18n', async original => (await import('@/test/bots-screen-mocks')).botsI18nMock(original))
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<typeof ProfileModule>()),
@@ -152,6 +162,11 @@ describe('Portal sidebar', () => {
     $messagingSessions.set([])
     $cronSessions.set([])
     $pinnedSessionIds.set([])
+    $botMeta.set({})
+    $groupChats.set({})
+    $lastRoster.set([])
+    $treeDragging.set(null)
+    $sessionListPinDragging.set(false)
     $sidebarPinsOpen.set(true)
     $sidebarRecentsOpen.set(true)
     $portalAgentsSectionOpen.set(true)
@@ -167,6 +182,11 @@ describe('Portal sidebar', () => {
     await promise
     $simplifiedPinnedRows.set(new Map())
     $pluginRecords.set({})
+    $botMeta.set({})
+    $groupChats.set({})
+    $lastRoster.set([])
+    $treeDragging.set(null)
+    $sessionListPinDragging.set(false)
     vi.restoreAllMocks()
     setPortalPreferred(false)
     $sessions.set([])
@@ -335,26 +355,91 @@ describe('Portal sidebar', () => {
     act(() => $sessions.set([...$sessions.get(), makeSessionInfo({ id: 'first', title: 'First chat', profile: 'idle' })]))
     expect(within(idle).getByRole('button', { name: 'Collapse: Idle' })).toBeTruthy()
   })
-  it('shows Portal pin guidance only for a settled empty list, not loading, errors, or filtering', () => {
+  it('hides an empty Pinned, bringing its drop target out only while a chat is dragged', () => {
     vi.spyOn(apiClient, 'hermesApi').mockImplementation(() => new Promise(() => {}))
     $sessions.set([makeSessionInfo({ id: 'regular', title: 'Regular chat', profile: 'default' })])
     const view = mount()
-    const guidance = () => view.container.querySelector('[data-slot="pinned-empty"]')
-    expect(guidance()).not.toBeNull()
-    act(() => $sessionsLoading.set(true))
-    expect(guidance()).toBeNull()
+    const shelf = () => view.container.querySelector('[data-slot="pinned-shelf"]')
+
+    // At rest: no section, no caption, no hint — only the drop target it keeps for a drag.
+    expect(view.container.querySelector('[data-slot="pinned-section"]')).toBeNull()
+    expect(view.container.querySelector('[data-slot="pinned-empty"]')).toBeNull()
+    expect(screen.queryByText('Pinned')).toBeNull()
+    expect(shelf()?.hasAttribute('data-dragging')).toBe(false)
+    // The machinery's own pin target is the shelf, so a chat dropped on Pinned still pins (HADESK-58).
+    expect(view.container.querySelector(PIN_DROP_SELECTOR)).toBe(shelf())
+
+    // Dragging something that cannot pin (a pane) leaves the shelf down.
+    act(() => $treeDragging.set('terminal'))
+    expect(shelf()?.hasAttribute('data-dragging')).toBe(false)
+
+    // A session drag brings Pinned's own target out, hint and all, so its drop still lands (HADESK-58).
+    act(() => $treeDragging.set(SESSION_TILE_DRAG))
+    expect(shelf()?.getAttribute('data-dragging')).toBe('')
+    expect(screen.getByText('Pinned')).toBeTruthy()
+    expect(view.container.querySelector('[data-slot="pinned-empty"]')).not.toBeNull()
+
+    // Let go and Pinned stands down again.
+    act(() => $treeDragging.set(null))
+    expect(screen.queryByText('Pinned')).toBeNull()
+
+    // A pinned chat draws the section itself, in the shelf's place.
     act(() => {
-      $sessionsLoading.set(false)
-      $sessionsLoadError.set(true)
+      $treeDragging.set(null)
+      $sessions.set([makeSessionInfo({ id: 'pinned', title: 'Pinned plan', pinned: true })])
     })
-    expect(guidance()).toBeNull()
-    act(() => $sessionsLoadError.set(false))
-    searchFor('missing')
-    expect(guidance()).toBeNull()
-    searchFor('')
-    expect(guidance()).not.toBeNull()
-    act(() => $sessions.set([makeSessionInfo({ id: 'pinned', title: 'Pinned plan', pinned: true })]))
-    expect(guidance()).toBeNull()
+    expect(screen.getByText('Pinned')).toBeTruthy()
+    expect(shelf()).toBeNull()
+    expect(view.container.querySelector(PIN_DROP_SELECTOR)).toBeTruthy()
+  })
+
+  it('brings an empty Pinned out for a sidebar row drag too, not only a session tab', () => {
+    vi.spyOn(apiClient, 'hermesApi').mockImplementation(() => new Promise(() => {}))
+    $sessions.set([makeSessionInfo({ id: 'regular', title: 'Regular chat', profile: 'default' })])
+    const view = mount()
+    const shelf = () => view.container.querySelector('[data-slot="pinned-shelf"]')
+
+    // At rest the shelf is down: no session tab drag, no row drag.
+    expect(shelf()?.hasAttribute('data-dragging')).toBe(false)
+    expect(screen.queryByText('Pinned')).toBeNull()
+
+    // A row lifted by dnd-kit (ReorderableList) arms its own flag — it never touches $treeDragging —
+    // and the shelf comes straight out, hint and all, so elementsFromPoint can hit-test its target.
+    act(() => $sessionListPinDragging.set(true))
+    expect(shelf()?.getAttribute('data-dragging')).toBe('')
+    expect(screen.getByText('Pinned')).toBeTruthy()
+    expect(view.container.querySelector('[data-slot="pinned-empty"]')).not.toBeNull()
+    expect(view.container.querySelector(PIN_DROP_SELECTOR)).toBe(shelf())
+
+    // Let go and it stands down again.
+    act(() => $sessionListPinDragging.set(false))
+    expect(screen.queryByText('Pinned')).toBeNull()
+  })
+
+  it('hides an empty Group chats, keeping the first one a click away', async () => {
+    $pluginRecords.set({ 'hermes-bots': { id: 'hermes-bots', kind: 'bundled', name: 'Bot Mode', status: 'loaded' } })
+    mount()
+
+    // No section, so no "+" of its own: New group chat stands in the Agents header instead.
+    expect(screen.queryByText(botsText().roster.groupChats)).toBeNull()
+    const newGroupChat = screen.getAllByRole('button', { name: botsText().group.newTitle })
+    expect(newGroupChat).toHaveLength(1)
+
+    fireEvent.click(newGroupChat[0]!)
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+  })
+
+  it('draws the Group chats section once it holds a room, with its own "+"', () => {
+    $pluginRecords.set({ 'hermes-bots': { id: 'hermes-bots', kind: 'bundled', name: 'Bot Mode', status: 'loaded' } })
+    $groupChats.set({
+      Team: { engine: 'desktop', log: [], members: [{ connectionId: 'local', name: 'one' }], roomId: 'team', watermarks: {} }
+    })
+    mount()
+
+    expect(screen.getByText(botsText().roster.groupChats)).toBeTruthy()
+    expect(screen.getByText('Team')).toBeTruthy()
+    // One way in, not two: the section's own "+" is the only one on screen.
+    expect(screen.getAllByRole('button', { name: botsText().group.newTitle })).toHaveLength(1)
   })
   it('opens the agent canonical chat even while its side chats are collapsed', () => {
     $pluginRecords.set({ 'hermes-bots': { id: 'hermes-bots', kind: 'bundled', name: 'Bot Mode', status: 'loaded' } })

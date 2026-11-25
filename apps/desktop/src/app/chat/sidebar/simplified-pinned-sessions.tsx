@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps, ReactNode } from 'react'
+import type { ComponentProps } from 'react'
 
 import { FadeScroll } from '@/components/ui/fade-scroll'
 import { useI18n } from '@/i18n'
@@ -9,11 +9,9 @@ import { recordIaAction } from '@/store/ia-metrics'
 import { PortalSectionHeader } from './portal/portal-section-header'
 import { SimplifiedSessionList } from './simplified-session-list'
 
-interface SimplifiedPinnedSessionsProps extends ComponentProps<typeof SimplifiedSessionList> {
-  emptyState?: ReactNode
-}
-
-export function SimplifiedPinnedSessions({ emptyState, ...props }: SimplifiedPinnedSessionsProps) {
+/** Pinned is drawn only while it holds rows (HADESK-132); an empty one is the sidebar's own drop
+ *  shelf (see PortalPinnedShelf). */
+export function SimplifiedPinnedSessions(props: ComponentProps<typeof SimplifiedSessionList>) {
   const { t } = useI18n()
   const pinsOpen = useStore($portalPinnedSectionOpen)
 
@@ -35,7 +33,7 @@ export function SimplifiedPinnedSessions({ emptyState, ...props }: SimplifiedPin
       />
       {pinsOpen && (
         <FadeScroll className="portal-section-scroll" maxHeight="none">
-          {props.sessions.length === 0 ? emptyState : <SimplifiedSessionList {...props} showAgent />}
+          <SimplifiedSessionList {...props} showAgent />
         </FadeScroll>
       )}
     </section>

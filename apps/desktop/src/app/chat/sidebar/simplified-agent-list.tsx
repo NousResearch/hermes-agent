@@ -35,6 +35,9 @@ interface SimplifiedAgentListProps {
   agents: ReturnType<typeof useSimplifiedAgents>
   allSessions: SessionInfo[]
   expanded: Record<string, boolean>
+  /** The header's own action, ahead of New agent: New group chat while an empty Group chats stands
+   *  down (HADESK-132). */
+  headerAction?: ReactNode
   onToggle: (id: string, open: boolean) => void
   onResumeSession: (id: string, row?: SessionInfo) => void
   renderSessions: (sessions: SessionInfo[], agent: SimplifiedAgent) => ReactNode
@@ -254,7 +257,12 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       data-slot="agent-section"
     >
       <PortalSectionHeader
-        action={!rowsShown && offers.length > 0 && <NewAgentFallback offers={offers} onPick={setCreating} />}
+        action={
+          <>
+            {props.headerAction}
+            {!rowsShown && offers.length > 0 && <NewAgentFallback offers={offers} onPick={setCreating} />}
+          </>
+        }
         count={listed}
         label={t.simplifiedAgents.agents}
         onToggle={() => $portalAgentsSectionOpen.set(!open)}

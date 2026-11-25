@@ -13,10 +13,10 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $seenGroupRooms } from '@/store/seen-group-rooms'
 import { $connection } from '@/store/session'
 
-import { PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
+import { PortalGroupChats, PortalNewGroupChatAction, useGroupChatMatches } from './portal-group-chats'
 
 function GroupChats() {
-  return <PortalGroupChats matches={useGroupChatMatches('')} searching={false} />
+  return <PortalGroupChats matches={useGroupChatMatches('')} />
 }
 
 vi.mock('@/plugins/hermes-bots/canonical-group-registry', async original => ({
@@ -75,10 +75,17 @@ it('counts members from the published roster', () => {
   expect(screen.getByRole('button', { name: /Pair/ }).textContent).toContain('2')
 })
 
+it('leaves no section behind while there is nothing to list (HADESK-132)', () => {
+  vi.mocked(useGatewayGroupRooms).mockReturnValue([])
+  render(<RootTooltipProvider><GroupChats /></RootTooltipProvider>)
+  expect(screen.queryByText('Group chats')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'New group chat' })).toBeNull()
+})
+
 const nextFrame = () => act(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
 
 it('a dismissed group dialog hands focus back to its "+"; a created group chat keeps it', async () => {
-  render(<RootTooltipProvider><GroupChats /></RootTooltipProvider>)
+  render(<RootTooltipProvider><PortalNewGroupChatAction /></RootTooltipProvider>)
   const plus = screen.getByRole('button', { name: 'New group chat' })
 
   fireEvent.click(plus)

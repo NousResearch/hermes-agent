@@ -1,6 +1,7 @@
 import type { useSensors } from '@dnd-kit/core'
-import { closestCenter, DndContext, type DragEndEvent, type DragMoveEvent } from '@dnd-kit/core'
+import { closestCenter, DndContext, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { atom } from 'nanostores'
 import type * as React from 'react'
 import { useEffect, useRef } from 'react'
 
@@ -25,6 +26,22 @@ export interface OutsideDrop {
   target: () => HTMLElement | null
 }
 
+/** Whether a sidebar-row drag that can land on Pinned is in flight. An empty Pinned shelf stands out
+ *  of flow at rest; this flag — or a session's own tab drag, `$treeDragging` — brings it out so the
+ *  lifted row has a hit-testable drop target (HADESK-132). DndContext keeps no dragging state of
+ *  its own and `elementsFromPoint` skips `visibility: hidden`, so the shelf must be shown the moment
+ *  a row lifts. */
+export const $sessionListPinDragging = atom(false)
+
+/** Clears the shared pin-drag flag, but only for the list that armed it: a second list unmounting
+ *  mid-drag (a search, a fold) must not drop another list's in-flight signal. */
+function endPinDrag(armed: { current: boolean }) {
+  if (armed.current) {
+    armed.current = false
+    $sessionListPinDragging.set(false)
+  }
+}
+
 export function ReorderableList({
   children,
   ids,
@@ -40,6 +57,8 @@ export function ReorderableList({
 }) {
   // The outside target the dragged item is over, wearing the drop mark.
   const over = useRef<HTMLElement | null>(null)
+  // Whether THIS list armed the shared pin-drag flag: only then does it clear it on teardown.
+  const pinDrag = useRef(false)
 
   const mark = (target: HTMLElement | null) => {
     if (target !== over.current) {
@@ -49,8 +68,24 @@ export function ReorderableList({
     }
   }
 
-  // A list that goes away mid-drag (a search starts, the route changes) takes its mark with it.
-  useEffect(() => () => over.current?.removeAttribute(PROJECT_ROW_DROP_ATTR), [])
+  // A list that goes away mid-drag (a search starts, the route changes) takes its mark and its pin
+  // signal with it.
+  useEffect(
+    () => () => {
+      over.current?.removeAttribute(PROJECT_ROW_DROP_ATTR)
+      endPinDrag(pinDrag)
+    },
+    []
+  )
+
+  // The lift that can pin brings Pinned's shelf out at once (HADESK-132): its drop target must be
+  // visible for `elementsFromPoint` to hit-test it, and the drag snapshots geometry on the way up.
+  const handleDragStart = ({ active }: DragStartEvent) => {
+    if (outside?.accepts(String(active.id))) {
+      pinDrag.current = true
+      $sessionListPinDragging.set(true)
+    }
+  }
 
   const handleDragMove = ({ active }: DragMoveEvent) => {
     const { initial, translated } = active.rect.current
@@ -73,6 +108,7 @@ export function ReorderableList({
     const dropped = over.current
 
     mark(null)
+    endPinDrag(pinDrag)
 
     // dnd-kit only restores focus for keyboard drags; after a pointer drop the
     // browser leaves :focus on the grab handle, which keeps a focus-within
@@ -104,9 +140,13 @@ export function ReorderableList({
     <DndContext
       autoScroll={reorderAutoScroll}
       collisionDetection={closestCenter}
-      onDragCancel={() => mark(null)}
+      onDragCancel={() => {
+        mark(null)
+        endPinDrag(pinDrag)
+      }}
       onDragEnd={handleDragEnd}
       onDragMove={outside && handleDragMove}
+      onDragStart={handleDragStart}
       sensors={sensors}
     >
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>

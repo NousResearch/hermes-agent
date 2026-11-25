@@ -496,7 +496,7 @@
 /* ── Zone tab strips ──────────────────────────────────────────────────────────────────────── */
 
 /* A window-top zone's tabs ride its band on the canvas, as Figma's header tab pills
-   (906:19481): 13px labels in r3 pills, the open tab on a 5% ink fill, no underline. */
+   (906:19481): 13px labels in r3 pills, the open tab on a 5% ink fill and the one brand rule below. */
 :root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header] [data-zone-tabstrip] {
   --pane-tab-strip-bg: transparent;
   --pane-tab-active-bg: transparent;
@@ -531,6 +531,19 @@
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {
   background-color: var(--portal-surface-selected);
+}
+
+/* A 5% fill alone could not tie the open tab to the session the stage holds: with a strip of chats
+   the band's pills read alike. The primitive already draws that tie — a rule in the open tab's own
+   last pixel row, costing no layout (pane-tab.tsx, TAB_ACTIVE_UNDERLINE) — and the band's pill rules
+   above zero it; it comes back here in brand ink, on the open conversation tab alone, the panes the
+   session strips hold (workspace, session-tile:…), never on a side pane's tab. */
+:root[data-shell='portal']
+  [data-tree-group][data-window-top]:is([data-zone-pane='workspace'], [data-zone-pane^='session-tile'])
+  > [data-panel-header]
+  [data-zone-tabstrip]
+  [role='tab'][data-active='true'] {
+  box-shadow: inset 0 -2px 0 var(--portal-brand-ink);
 }
 
 /* The one ring in brand ink, not the legacy accent outline the primitive carries (--ui-accent, which
@@ -739,6 +752,18 @@
   border-radius: var(--portal-radius-floating);
   background-color: var(--portal-floating-surface);
   box-shadow: var(--portal-floating-shadow);
+}
+
+/* The stage's own top row (the machine // agent line and a tile's Agent settings) owns the 48px
+   under the band, and the transcript fades out beneath it (app/chat/stage.css), so the bar's classic
+   anchor at the band's foot (find-bar.tsx) parked it inside that faded strip and over the row's
+   trailing controls. It clears the row as classic clears the titlebar: from the stage's own header
+   height, where the transcript is whole again. Nothing paints over it there — the row and the fade
+   are the stage's, at --portal-layer-stage-overlay (20), and a mask never reaches an element outside
+   its own subtree — so the offset, not a layer of its own, is what it needed. A covered chat (a
+   workspace page or an overlay in front) and the HUD, which has no header row, keep the band anchor. */
+:root[data-shell='portal']:not([data-route-covered], [data-hud-window]) [data-slot='find-bar'] {
+  top: calc(var(--titlebar-band-height) + var(--portal-stage-header-height));
 }
 
 :root[data-shell='portal'] [data-slot='find-bar'] button {

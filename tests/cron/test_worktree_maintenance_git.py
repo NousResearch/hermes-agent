@@ -6,7 +6,7 @@ import pytest
 
 from cron import jobs, scheduler
 from cron.scheduler_worktree_maintenance import run_sweep
-from hermes_cli import worktree_registry
+from hermes_cli import worktree_ops, worktree_registry
 from hermes_platform.resolver import git as git_resolver
 
 
@@ -46,11 +46,15 @@ def test_cron_discovery_does_not_launch_uninstalled_apple_git(tmp_path, monkeypa
 @pytest.mark.platforms("posix")
 def test_cron_sweep_of_a_registered_repo_does_not_launch_uninstalled_apple_git(tmp_path, monkeypatch, stub_git_log):
     """A repo a worktree was made in earlier (before a macOS upgrade dropped the Command Line Tools)
-    reaches the six-hourly prune without any job probe."""
+    reaches the six-hourly prune without any job probe. The git-free reclaim of orphaned worktree
+    dependency states still runs."""
     repo = tmp_path / "repo"
     (repo / ".worktrees").mkdir(parents=True)
     monkeypatch.setattr(worktree_registry, "registered_repos", lambda: [str(repo)])
     monkeypatch.setattr(jobs, "load_jobs", list)
+    reclaims: list = []
+    monkeypatch.setattr(worktree_ops, "_reclaim_orphan_install_states", lambda: reclaims.append(1))
 
     run_sweep(scheduler._worktree_maintenance_repos, interval_seconds=3600.0)
     assert not stub_git_log.exists(), f"git stub was spawned: {stub_git_log.read_text()}"
+    assert reclaims == [1]

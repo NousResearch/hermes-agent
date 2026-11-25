@@ -6,8 +6,9 @@ from contextlib import contextmanager
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_session_mutation_model_busy import _owner
-from tests.gateway.test_session_stored_reads import _call, _compact_carrying_tail, _flat, _pages, _summary
+from tests.gateway.test_session_stored_reads import _append, _call, _compact_carrying_tail, _flat, _pages, _summary
 
 
 @contextmanager
@@ -24,20 +25,21 @@ def _session(tmp_path, monkeypatch):
 
 
 def _forbid_nested_reads(monkeypatch, db):
-    """A read that cannot use the WAL pool runs on the writer under ``SessionDB._lock``, which is not
+    """A read that cannot use the WAL pool runs on the writer under the store holder's ``_lock``, which is not
     reentrant, so a read opened inside another deadlocks (6bb377a51d5). Nesting fails here instead."""
-    original, depth = db._read_ctx, [0]
+    holder = raw_holder(db)
+    original, depth = holder._read_ctx, [0]
 
     @contextmanager
-    def guarded():
+    def guarded(*args, **kwargs):
         assert depth[0] == 0, 'a store read opened inside another read'
         depth[0] += 1
         try:
-            with original() as conn:
+            with original(*args, **kwargs) as conn:
                 yield conn
         finally:
             depth[0] -= 1
-    monkeypatch.setattr(db, '_read_ctx', guarded)
+    monkeypatch.setattr(holder, '_read_ctx', guarded)
 
 
 @pytest.mark.asyncio
@@ -45,8 +47,8 @@ async def test_no_stored_read_opens_a_read_inside_another(tmp_path, monkeypatch)
     from gateway.session_picker_fields import current_segments, fill_picker_fields
     from gateway.session_stored_reads import read_page
     with _session(tmp_path, monkeypatch) as (db, authority, owner, ref, target):
-        db.append_message(target, 'user', 'question 1')
-        db.append_message(target, 'assistant', 'answer 1')
+        _append(db, target, 'user', 'question 1')
+        _append(db, target, 'assistant', 'answer 1')
         _compact_carrying_tail(db, target, _summary('## Goal\nship', 2), tail_rows=1)
         _forbid_nested_reads(monkeypatch, db)
         for order in ('oldest', 'latest'):
@@ -63,8 +65,8 @@ async def test_no_stored_read_opens_a_read_inside_another(tmp_path, monkeypatch)
 async def test_a_row_too_large_for_a_page_is_bounded_whole(tmp_path, monkeypatch):
     from gateway.session_stored_reads import PAGE_BYTES
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
-        db.append_message(target, 'user', 'é' * 3_000_000)  # 6 bytes a character once JSON-escaped
-        db.append_message(target, 'assistant', 'short', reasoning='r' * 3_000_000)
+        _append(db, target, 'user', 'é' * 3_000_000)  # 6 bytes a character once JSON-escaped
+        _append(db, target, 'assistant', 'short', reasoning='r' * 3_000_000)
         cursor, truncated = None, []
         while True:
             reply = await _call(owner, 'session.transcript', session_id=ref.session_id, limit=1,
@@ -81,12 +83,12 @@ async def test_a_row_too_large_for_a_page_is_bounded_whole(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_tool_results_keep_their_calls_label_when_a_page_is_cut(tmp_path, monkeypatch):
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
-        db.append_message(target, 'user', 'write three files')
+        _append(db, target, 'user', 'write three files')
         calls = [{'id': f'c{i}', 'type': 'function',
                   'function': {'name': 'write_file', 'arguments': json.dumps({'path': f'f{i}'})}} for i in (1, 2, 3)]
-        db.append_message(target, 'assistant', '', tool_calls=calls)
+        _append(db, target, 'assistant', '', tool_calls=calls)
         for i in (1, 2, 3):
-            db.append_message(target, 'tool', 'z' * 900_000, tool_call_id=f'c{i}')
+            _append(db, target, 'tool', 'z' * 900_000, tool_call_id=f'c{i}')
         cursor, tools = None, []
         while True:
             reply = await _call(owner, 'session.transcript', session_id=ref.session_id, limit=10,
@@ -105,8 +107,8 @@ async def test_newest_first_paging_across_a_compaction_skips_and_repeats_nothing
     from agent.context_compressor import SUMMARY_PREFIX
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         for i in (1, 2, 3):
-            db.append_message(target, 'user', f'question {i}')
-            db.append_message(target, 'assistant', f'answer {i}')
+            _append(db, target, 'user', f'question {i}')
+            _append(db, target, 'assistant', f'answer {i}')
         pages = await _pages(owner, ref.session_id, 1, order='latest', between=lambda: _compact_carrying_tail(
             db, target, f'{SUMMARY_PREFIX}\n## Goal\none'))
         assert pages[0] == ['answer 3']
@@ -117,11 +119,11 @@ async def test_newest_first_paging_across_a_compaction_skips_and_repeats_nothing
 @pytest.mark.asyncio
 async def test_two_compactions_with_the_same_prose_are_both_rows(tmp_path, monkeypatch):
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
-        db.append_message(target, 'user', 'question 1')
-        db.append_message(target, 'assistant', 'answer 1')
+        _append(db, target, 'user', 'question 1')
+        _append(db, target, 'assistant', 'answer 1')
         _compact_carrying_tail(db, target, _summary('## Goal\nsame', 2), tail_rows=1)
-        db.append_message(target, 'user', 'question 2')
-        db.append_message(target, 'assistant', 'answer 2')
+        _append(db, target, 'user', 'question 2')
+        _append(db, target, 'assistant', 'answer 2')
         _compact_carrying_tail(db, target, _summary('## Goal\nsame', 4), tail_rows=1)
         rows = (await _call(owner, 'session.transcript', session_id=ref.session_id))['result']['rows']
         assert [(row['text'], row['compacted_messages']) for row in rows if row['row_kind'] == 'compaction'] == [

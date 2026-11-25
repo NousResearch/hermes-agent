@@ -56,9 +56,9 @@ def base64_sha512(data: bytes) -> str:
 
 def test_real_prune_protects_live_macos_artifacts_and_fails_closed(r2_server, monkeypatch):
     legs, _bytes = _inputs("0.28.0+canary.20200101T000000Z")
-    plan = merge_mac_feeds(legs, "v0.28.0+canary.20200101T000000Z")
+    plan = merge_mac_feeds(legs, "canary.20200101T000000Z-v0.28.0")
     references = mac_feed_references(plan["text"])
-    stale = "releases/tag/v0.27.0+canary.20200101T000000Z/unreferenced.zip"
+    stale = "releases/tag/canary.20200101T000000Z-v0.27.0/unreferenced.zip"
     for key in [plan["key"], *references, stale]:
         r2_server.store[key] = (b"x", '"e"')
     r2_server.store[plan["key"]] = (plan["text"].encode(), '"e"')
@@ -91,7 +91,7 @@ def test_merges_native_legs_and_preserves_release_metadata():
     assert r2.cache_control_for(plan["key"]) == "no-store"
     selection = _darwin_feed("canary", True)
     light_legs, _ = _inputs("0.29.0+canary.20260906T000000Z", light=True)
-    light_plan = merge_mac_feeds(light_legs, "v0.29.0+canary.20260906T000000Z", light=True)
+    light_plan = merge_mac_feeds(light_legs, "canary.20260906T000000Z-v0.29.0", light=True)
     assert light_plan["key"] == f"{selection['directory']}/{selection['fileName']}"
 
 

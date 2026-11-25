@@ -37,6 +37,18 @@ def is_managed_provider(provider: str, base_url: str = "") -> bool:
     return False
 
 
+def managed_reasoning_efforts(provider: str, base_url: str, model_id: str) -> tuple[str, ...] | None:
+    """Reasoning-effort levels the chat template of this managed model accepts. None when the
+    catalog lists none for the model (its template takes any level, or the model is not from the
+    catalog) and when the route is someone else's server."""
+    from hermes_cli.local_runtime.catalog import entry_for_model
+
+    entry = entry_for_model(model_id) if model_id else None
+    if entry is None or not entry.reasoning_efforts or not is_managed_provider(provider, base_url):
+        return None
+    return entry.reasoning_efforts
+
+
 def _props_modalities(model_id: str) -> bool | None:
     """Ask the running server whether this loaded child sees images. None when the server is down,
     the model isn't loaded, or the build doesn't report modalities."""

@@ -130,6 +130,8 @@ export const zhHantSettings = {
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       sessions: '工作階段',
+      backup: '備份與移轉',
+      backupOnly: '備份',
       about: '關於',
       billing: '帳單',
       notifications: '通知',
@@ -254,6 +256,15 @@ export const zhHantSettings = {
           insecure: '需要 HTTPS，例如 Tailscale serve。使用一般 HTTP 時只有分頁標題會閃爍。',
           unsupported: '此瀏覽器無法顯示通知。分頁標題仍會閃爍。'
         }
+      },
+      phonePresence: {
+        title: '此電腦（手機通知）',
+        description: '此視窗告訴 Hermes 你是否在這裡。如何處理由手機通知外掛決定。',
+        unsupported: '在此後端上，手機通知不受你的活動影響。',
+        disconnected: '未連線。',
+        watchingComputer: (time: string) => `當此視窗中開啟對話時，Hermes 會得知你上次使用這台電腦的時間。上次輸入在 ${time} 前。`,
+        watchingWindow: (time: string) => `當此視窗中開啟對話時，Hermes 會得知你上次使用此視窗的時間。上次輸入在 ${time} 前。`,
+        watchingWindowNoInput: '當此視窗中開啟對話時，Hermes 會得知你上次使用此視窗的時間。尚未偵測到任何輸入。'
       },
       test: '傳送測試通知',
       testTitle: 'Hermes',
@@ -823,6 +834,9 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
+      desktopReadAloudTitle: '在此應用程式中朗讀回覆',
+      desktopReadAloudDesc:
+        '在 Desktop 中朗讀每則完成的回覆。與輸入框按鈕是同一個開關；對所有開啟的視窗生效，關閉後會立即停止正在朗讀的回覆。下方的「朗讀回覆」用於訊息平台和 CLI。',
       showOptions: '顯示選項'
     },
     hudModifier: {
@@ -1218,6 +1232,8 @@ export const zhHantSettings = {
       updateTitle: '引擎有可用更新',
       updateDetail: (next, current) =>
         `新的 llama.cpp 組建（${next}）可以安裝——目前為 ${current}。下載期間模型仍可正常使用。`,
+      updateSameBuildDetail: tag =>
+        `Hermes 現在為 llama.cpp ${tag} 附帶執行所需的檔案。更新會重新下載引擎，下載期間模型仍可正常使用。`,
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',

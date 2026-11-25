@@ -36,9 +36,78 @@ def _adapter_unavailable_message(platform: Platform, *, retrying: bool = True) -
     return f"{message} Retrying in the background." if retrying else message
 
 
+# Runner reconnects after an adapter exhausted its own polling-conflict budget (``*_polling_conflict``): usually our
+# previous long poll still open on the platform's side, which it expires. A holder still there after the last one is
+# another live poller (another machine, a leftover process) the gateway must not fight forever (#146909).
+_TOKEN_CONTENTION_RECONNECT_DELAYS = (120.0, 300.0, 600.0)
+# A contention fatal this long after the previous one starts a new episode (the reconnect healed it meanwhile); a
+# persistent holder re-fatals within one delay plus the adapter's own ~200 s ladder.
+_TOKEN_CONTENTION_EPISODE_SECS = 1800.0
+
+
+# A reconnect wait that overran its planned length by more than this was a suspended host, not an outage the
+# gateway watched: Windows' ``time.monotonic()`` keeps counting through Modern Standby (#126825).
+_RECONNECT_SUSPEND_GAP_SECS = 60.0
+
+
+def discount_suspended_wait(entries, waited_from: float, planned: float) -> None:
+    """Move each reconnect entry's ``queued_at`` forward by a wait's suspend overrun, so NEEDS_ATTENTION and its
+    backdated ``retrying_since`` count only time the host was awake. An entry queued before the planned wait
+    elapsed may have slept through the overrun; one queued after resume keeps its own clock (the clock is then
+    already past ``waited_from + planned + overrun``). Only idle waits are measured: time spent in connect
+    attempts is the gateway failing and stays counted.
+
+    Any overrun above ``_RECONNECT_SUSPEND_GAP_SECS`` reads as a suspend, a starved event loop included. That
+    is deliberate: a loop blocked for over a minute per idle step is already failing in louder ways, and
+    Linux's ``time.monotonic()`` stops during suspend, so there only such stalls ever reach this branch."""
+    overrun = time.monotonic() - waited_from - planned
+    if overrun <= _RECONNECT_SUSPEND_GAP_SECS:
+        return
+    for info in entries:
+        queued_at = info.get("queued_at")
+        if queued_at is not None and queued_at <= waited_from + planned:
+            info["queued_at"] = queued_at + overrun
+
+
+def is_token_contention(error_code: Optional[str]) -> bool:
+    """True for a fatal whose cause is another poller holding the token (matched by code, never text)."""
+    return (error_code or "").strip().lower().endswith("_polling_conflict")
+
+
 class GatewaySecondaryReconnectMixin:
     """Queue, rebuild and reconnect a secondary profile's platform, plus the capped plugin-load re-arm
     that both reconnect lanes (launch profile and secondaries) share."""
+
+    def _token_contention_reconnect_delay(self, status_key: str, adapter: BasePlatformAdapter) -> float:
+        """Delay before reconnecting a fatal adapter, shared by the launch profile and secondaries: 0 unless another
+        poller holds its token. Past the delay table the adapter is re-marked non-retryable
+        ``token_in_use_elsewhere`` so every reconnect gate parks it, and status flags it NEEDS_ATTENTION."""
+        if not adapter.fatal_error_retryable or not is_token_contention(adapter.fatal_error_code):
+            return 0.0
+        strikes = getattr(self, "_token_contention_strikes", None)
+        if strikes is None:
+            strikes = self._token_contention_strikes = {}
+        now = time.monotonic()
+        count, last = strikes.get(status_key, (0, now))
+        count = 1 if now - last > _TOKEN_CONTENTION_EPISODE_SECS else count + 1
+        strikes[status_key] = (count, now)
+        if count <= len(_TOKEN_CONTENTION_RECONNECT_DELAYS):
+            delay = _TOKEN_CONTENTION_RECONNECT_DELAYS[count - 1]
+            logger.warning("%s: bot token still polled elsewhere; reconnect %d/%d in %ds", status_key, count,
+                           len(_TOKEN_CONTENTION_RECONNECT_DELAYS), delay)
+            self._update_platform_runtime_status(status_key, platform_state="retrying",
+                                                 error_code=adapter.fatal_error_code,
+                                                 error_message=adapter.fatal_error_message)
+            return delay
+        strikes.pop(status_key, None)
+        message = (f"{adapter.platform.value} bot token is in use elsewhere: another process (another machine or a "
+                   f"leftover gateway) kept polling it through {len(_TOKEN_CONTENTION_RECONNECT_DELAYS)} reconnects. "
+                   "Stop that poller, then run 'hermes gateway restart'.")
+        logger.error("%s: %s", status_key, message)
+        adapter._set_fatal_error("token_in_use_elsewhere", message, retryable=False)
+        self._update_platform_runtime_status(status_key, platform_state="fatal", error_code="token_in_use_elsewhere",
+                                             error_message=message, needs_attention=True)
+        return 0.0
 
     def _mark_adapter_unavailable(
         self, status_key: str, platform: Platform, *, retrying: bool, needs_attention: Optional[bool] = None,
@@ -111,7 +180,9 @@ class GatewaySecondaryReconnectMixin:
         to reconnect, or mid-heal), so no other profile takes the same bot meanwhile. A task owner's hold is
         released when that task finishes, however it finishes (cancelled before it ever ran included); an
         adapter owner (being connected or torn down) releases its own, so it never drops a newer hold on the
-        same platform. Unserve drops all of the profile's holds once its adapters are torn down."""
+        same platform. Once unserve has popped the profile's adapters, it drops the profile's holds however it
+        exits, except the hold of an adapter it did not pop (a fatal teardown still running, say): that hold moves
+        to ``_teardown_held_claims`` until its owner releases it."""
         held = getattr(self, "_secondary_held_claims", None)
         if held is None:
             held = self._secondary_held_claims = {}
@@ -122,19 +193,24 @@ class GatewaySecondaryReconnectMixin:
             owner.add_done_callback(lambda done: self._release_secondary_claims(profile_name, platform, done))
 
     def _release_secondary_claims(self, profile_name: str, platform: Platform, owner) -> None:
-        """Drop the hold on (profile, platform) if ``owner`` still owns it (a newer owner keeps its hold)."""
+        """Drop the hold on (profile, platform) if ``owner`` still owns it (a newer owner keeps its hold), and
+        ``owner``'s teardown hold that outlived its profile's unserve."""
         held = getattr(self, "_secondary_held_claims", None) or {}
         entry = held.get((profile_name, platform))
         if entry is not None and entry[0] is owner:
             del held[(profile_name, platform)]
+        teardown = getattr(self, "_teardown_held_claims", None) or {}
+        if (entry := teardown.get(id(owner))) is not None and entry[0] is owner:
+            del teardown[id(owner)]
 
     def _held_claim_owners(self, exclude: Optional[tuple] = None) -> dict[tuple, str]:
-        """Claim -> profile for every held secondary claim but the ``exclude`` (profile, platform) hold."""
+        """Claim -> profile for every held secondary claim, teardowns that outlived an unserve included, but
+        the ``exclude`` (profile, platform) ones."""
         held = getattr(self, "_secondary_held_claims", None) or {}
-        return {
-            claim: key[0] for key, (_owner, claims) in held.items() if key != exclude
-            for claim in claims if claim is not None
-        }
+        teardown = getattr(self, "_teardown_held_claims", None) or {}
+        holds = [*((key, claims) for key, (_owner, claims) in held.items()),
+                 *((key, claims) for _owner, key, claims in teardown.values())]
+        return {claim: key[0] for key, claims in holds if key != exclude for claim in claims if claim is not None}
 
     def _current_claim_owners(self, exclude: Optional[tuple] = None) -> dict[tuple, str]:
         """Who owns each bot/listener right now: held claims (but ``exclude``'s) plus everything live. Read at
@@ -199,7 +275,7 @@ class GatewaySecondaryReconnectMixin:
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop,
             # in this profile's scope (the registry keeps deferred loaders per profile home).
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = self._create_adapter(platform, profile_config)
+            adapter = await self._create_adapter_off_loop_deps(platform, profile_config)
             if adapter is None:
                 if self._adapter_may_heal(platform, profile_config):
                     logger.info("Secondary %s: no adapter yet (profile: %s)", platform.value, profile_name)
@@ -211,21 +287,16 @@ class GatewaySecondaryReconnectMixin:
                 self._mark_adapter_unavailable(
                     f"{profile_name}:{platform.value}", platform, retrying=False, needs_attention=True)
                 return None, None
-            if predecessor is None:
-                # Queued without an adapter, so it never passed the startup ownership check: run it before
-                # connect() against live and held owners (but this platform's own hold from an earlier tick),
-                # and hold the claim (no await between the check and the hold) so a second healing profile
-                # with the same bot is refused meanwhile.
-                claims = self._claim_secondary_platform(
-                    profile_name, profile_home, platform, adapter,
-                    self._current_claim_owners(exclude=(profile_name, platform)))
-                if claims is None:
-                    return None, None
-                self._hold_secondary_claims(profile_name, platform, asyncio.current_task(), claims)
-            else:  # re-hold what the rebuilt adapter claims now (its token may have changed; as on main, a
-                # reconnect with a predecessor is not re-checked against other owners)
-                self._hold_secondary_claims(
-                    profile_name, platform, asyncio.current_task(), self._adapter_claims(platform, adapter))
+            # Run the ownership check before connect() against live and held owners (but this platform's own
+            # hold: the predecessor's, or an earlier tick's): a never-built platform never passed the startup
+            # check, and a rebuilt one may claim a bot another profile took meanwhile. Hold the claim (no await
+            # between the check and the hold) so a second healing profile with the same bot is refused meanwhile.
+            claims = self._claim_secondary_platform(
+                profile_name, profile_home, platform, adapter,
+                self._current_claim_owners(exclude=(profile_name, platform)))
+            if claims is None:
+                return None, None
+            self._hold_secondary_claims(profile_name, platform, asyncio.current_task(), claims)
             carry_inbound_dedup(predecessor, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)
@@ -286,7 +357,7 @@ class GatewaySecondaryReconnectMixin:
                             )
                             # What a primary reconnect replays too: the owed notice spans served profiles' home
                             # channels, and sessions boot skipped for this offline adapter wait for this call.
-                            self._schedule_planned_restart_replay()
+                            self._schedule_restart_notice_replay()
                             try:
                                 self._schedule_resume_pending_sessions(platform=platform)
                             except Exception:
@@ -332,7 +403,9 @@ class GatewaySecondaryReconnectMixin:
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)", platform.value, backoff, profile_name
                 )
+                slept_from = time.monotonic()
                 await asyncio.sleep(backoff)
+                discount_suspended_wait((queue_info,), slept_from, backoff)
         finally:
             # Release our slot unless a newer task already owns it.
             pending = self._profile_failed_platforms
@@ -398,7 +471,8 @@ class GatewaySecondaryReconnectMixin:
             self._hold_secondary_claims(profile_name, platform, bridge, self._adapter_claims(platform, adapter))
 
     def _schedule_secondary_profile_reconnect(
-        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter] = None
+        self, profile_name: str, platform: Platform, adapter: Optional[BasePlatformAdapter] = None,
+        delay: float = 0.0,
     ) -> None:
         """Schedule one runner-owned reconnect without sharing primary secrets. ``adapter`` is the
         failed predecessor, or None when the platform has no adapter yet (creation returned None for a
@@ -417,8 +491,17 @@ class GatewaySecondaryReconnectMixin:
         profile_pending = pending.setdefault(profile_name, {})
         if platform in profile_pending:
             return
+        async def _after_delay() -> None:  # the token-contention back-off; the slot is held meanwhile
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                if profile_pending.get(platform) is asyncio.current_task():
+                    profile_pending.pop(platform, None)
+                raise
+            await self._run_secondary_profile_reconnect(profile_name, platform, adapter)
+
         task = profile_pending[platform] = self._retain_background_task(asyncio.create_task(
-            self._run_secondary_profile_reconnect(profile_name, platform, adapter),
+            _after_delay() if delay > 0 else self._run_secondary_profile_reconnect(profile_name, platform, adapter),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
         ))
         if adapter is not None:  # the failed predecessor still owns its bot while it waits to reconnect

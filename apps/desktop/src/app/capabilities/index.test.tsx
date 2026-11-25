@@ -171,13 +171,20 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
 
   it('leads with Connectors in the redesign, and opens there', async () => {
     expect(await tabsAt('/capabilities')).toEqual({
-      order: ['Connectors', 'Plugins', 'Skills', 'Tools'],
+      order: ['Connectors', 'Plugins', 'Skills'],
       selected: 'Connectors'
     })
   })
 
   it('still lands on the tab a link names', async () => {
     expect((await tabsAt('/capabilities?tab=skills')).selected).toBe('Skills')
+  })
+
+  it('has no Tools tab in the redesign, and an old link to it lands on the first tab', async () => {
+    expect(await tabsAt('/capabilities?tab=toolsets')).toEqual({
+      order: ['Connectors', 'Plugins', 'Skills'],
+      selected: 'Connectors'
+    })
   })
 
   it('keeps classic order and its Skills default', async () => {
@@ -233,15 +240,6 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     await waitFor(() => expect(setToolsetEnabled).toHaveBeenCalled())
     expect(setToolsetEnabled).toHaveBeenCalledWith('web', false, { connectionId: 'homelab', profile: 'researcher' })
-  })
-
-  it('keeps global Tools read-only and opens the scoped agent editor', async () => {
-    await renderSkills()
-    await screen.findByRole('button', { name: 'Web Search' })
-    expect(screen.queryByRole('switch')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Web Search' }))
-    expect(getToolsetConfig).not.toHaveBeenCalled()
-    expect(setToolsetEnabled).not.toHaveBeenCalled()
   })
 
   it.each([undefined, 'researcher'])(
@@ -584,7 +582,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       await waitFor(() => expect(getToolsets).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' }))
       fireEvent.click(screen.getByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings }))
       expect(navigateSpy).toHaveBeenCalledWith(
-        '/settings?agentProfile=default&panel=capabilities&tab=toolsets&connection=homelab'
+        '/settings?agentProfile=default&panel=capabilities&tab=connectors&connection=homelab'
       )
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop

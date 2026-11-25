@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { toolsRoute } from '@/app/capabilities/tools-route'
 import {
   HUD_HEADING,
   HUD_ITEM,
@@ -75,6 +76,7 @@ import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
 import { toggleBrowserTab } from '@/store/preview'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
@@ -1157,7 +1159,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: 'cap-toolsets',
           keywords: ['tools', 'toolsets', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabToolsets}`,
-          run: go(`${CAPABILITIES_ROUTE}?tab=toolsets`)
+          run: go(toolsRoute(portal, $activeGatewayProfile.get()))
         },
         {
           icon: Layers3,

@@ -57,8 +57,10 @@ const CAPABILITY_MODES = ['skills', 'plugins', 'connectors', 'toolsets'] as cons
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
 // The redesign's page leads with what Hermes is connected to, then what extends it, then what it
-// knows how to do; it opens on the first. Classic keeps its own order above.
-const PORTAL_CAPABILITY_MODES = ['connectors', 'plugins', 'skills', 'toolsets'] as const satisfies readonly CapabilityMode[]
+// knows how to do; it opens on the first. Classic keeps its own order above. No Tools tab: here it
+// was a list with nothing to configure, and an agent's tools are switched in that agent's settings
+// (which pins this view to `toolsets`). A link to the old tab lands on the first.
+const PORTAL_CAPABILITY_MODES = ['connectors', 'plugins', 'skills'] as const satisfies readonly CapabilityMode[]
 
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -100,7 +102,8 @@ export function CapabilitiesView({
   const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
-  const modes: readonly CapabilityMode[] = redesign ? PORTAL_CAPABILITY_MODES : CAPABILITY_MODES
+  // An agent's own settings pin this view to that agent and address every mode, Tools included.
+  const modes: readonly CapabilityMode[] = redesign && !fixedProfile ? PORTAL_CAPABILITY_MODES : CAPABILITY_MODES
   const routeTab = useRouteEnumParam('tab', modes, modes[0])
   const localTab = useState<CapabilityMode>(modes[0])
   const [selectedMode, setMode] = embedded ? localTab : routeTab

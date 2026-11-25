@@ -813,7 +813,24 @@ def backend_url_env(host, launch_env: Optional[dict]) -> dict:
     return {_URL_KEY: value} if value is not None else {}
 
 
-def secret_source_blocker(host) -> Optional[str]:
+def _loopback_public_url(address: Optional[tuple[str, int]]) -> str:
+    """A valid loopback ``webapp.public_url`` matching *address*'s IP family and port, or a placeholder."""
+    if address is None:
+        return "http://127.0.0.1:<port>"
+    bind_host, port = address
+    host = "::1" if ":" in _canonical(bind_host) else "127.0.0.1"
+    return f"http://{format_address(host, port)}"
+
+
+def _secret_source_address(item: Optional[BackendItem], host, keep_webapp: bool) -> Optional[tuple[str, int]]:
+    if keep_webapp:
+        settings = host.webapp_settings()
+        if settings.enabled:
+            return settings.host, settings.port
+    return _address_of(item, host) if item is not None else None
+
+
+def secret_source_blocker(host, *, address: Optional[tuple[str, int]] = None, nix: bool = False) -> Optional[str]:
     """An enabled external secret source (``secrets:``) may set or override HERMES_DASHBOARD_PUBLIC_URL
     after the ``.env`` loads, so which public URL the old backend serves cannot be told, unless
     ``webapp.public_url`` is already set (the plan then copies none)."""
@@ -824,9 +841,21 @@ def secret_source_blocker(host) -> Optional[str]:
     if not (isinstance(secrets, dict) and any(isinstance(v, dict) and v.get("enabled") is True
                                                 for v in secrets.values())):
         return None
-    return ("An external secret source is enabled (secrets: in config.yaml), and it may set the old backend's "
-            "HERMES_DASHBOARD_PUBLIC_URL, so the public URL it serves cannot be told. Set webapp.public_url to "
-            "the address the Webapp should be reached at, then re-run. Nothing changed.")
+    local_url = _loopback_public_url(address)
+    if nix:
+        where = (f"Set webapp.public_url in your Nix configuration to the URL you open in a browser, "
+                 f"or {local_url} for local/Desktop-only use")
+    else:
+        home = getattr(host, "home", None)
+        powershell = getattr(host, "os_family", lambda: "linux")() == "win32"
+        hermes = hermes_command(str(home) if home is not None else None, powershell=powershell)
+        where = (f"Set webapp.public_url to the URL you open in a browser, or {local_url} for local/Desktop-only "
+                 f"use (e.g. `{hermes} config set webapp.public_url {shlex.quote(local_url)}`)")
+    return ("An external secret source is enabled (secrets: in config.yaml), and it may set or override the old "
+            "backend's HERMES_DASHBOARD_PUBLIC_URL; Hermes never reads vault values to guess it. "
+            "webapp.public_url is simply the browser-facing http:// or https:// address the Webapp uses for "
+            "sign-in callbacks and Host/Origin checks — it does not need to be internet-routable (a LAN "
+            f"hostname/IP or loopback address works). {where}, then re-run. Nothing changed.")
 
 
 def _public_url(plan: BackendPlan, cfg: dict, env: Optional[dict]) -> None:
@@ -1179,8 +1208,14 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
         plan.candidates = []
         return plan
-    if (plan.unsupported or plan.candidates) and (problem := secret_source_blocker(host)):
-        plan.blockers.append(problem)
+    if plan.unsupported or plan.candidates:
+        selected = plan.candidates[0] if plan.candidates else plan.unsupported[0][0]
+        if problem := secret_source_blocker(
+            host,
+            address=_secret_source_address(selected, host, keep_webapp),
+            nix=selected is not None and selected.supervisor in ("nix-systemd", "nix-launchd"),
+        ):
+            plan.blockers.append(problem)
     if plan.unsupported:
         _manual_target(plan, host, keep_webapp)
         _manual_public_url(plan, host)

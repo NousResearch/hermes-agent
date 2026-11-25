@@ -15,17 +15,18 @@ from tools.registry import registry
 
 # Set by the GUI gateway: ``(task_id, primary_path, project_name)`` re-anchors that session's
 # workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move. It returns
-# False when it found no live session for *task_id* (or the folder is gone); ``None`` (an older
-# callback with no verdict) counts as moved, the contract before the verdict existed.
-_workspace_callback: Optional[Callable[[str, str, str], Optional[bool]]] = None
+# False when it found no live session for *task_id* (or the folder is gone), and ``"pending"`` when
+# the move is committed at the end of the calling turn; ``None`` (an older callback with no verdict)
+# counts as moved, the contract before the verdict existed.
+_workspace_callback: Optional[Callable[[str, str, str], object]] = None
 
 
-def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], Optional[bool]]]) -> None:
+def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], object]]) -> None:
     global _workspace_callback
     _workspace_callback = fn
 
 
-def get_project_workspace_callback() -> Optional[Callable[[str, str, str], Optional[bool]]]:
+def get_project_workspace_callback() -> Optional[Callable[[str, str, str], object]]:
     """The installed callback, so a second GUI host can wrap it (``gateway/local_desktop_ui.py``)."""
     return _workspace_callback
 
@@ -39,22 +40,24 @@ def _primary_path(proj) -> Optional[str]:
     return proj.folders[0].path if proj.folders else None
 
 
-def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> Optional[str]:
-    """Move the calling session into *path*: None when it moved, else why not (reported to the
-    model as ``moved: false`` — a success that silently left the chat in its old folder made the
-    agent keep working in the wrong directory)."""
+def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> tuple[object, Optional[str]]:
+    """Move the calling session into *path*: ``(moved, why_not)``. ``moved`` is True, ``"pending"``
+    (the move lands when the calling turn ends) or False with the reason, reported to the model so
+    it never keeps working in a folder it believes it left."""
     cb = _workspace_callback
     if not path:
-        return "project has no folder"
+        return False, "project has no folder"
     if not task_id:
-        return "no calling session"
+        return False, "no calling session"
     if cb is None:
-        return "no live GUI session to move (CLI/messaging): only the active project changed"
+        return False, "no live GUI session to move (CLI/messaging): only the active project changed"
     try:
         verdict = cb(task_id, path, name)
     except Exception as exc:
-        return f"workspace move failed: {exc}"
-    return "no live GUI session owns this task" if verdict is False else None
+        return False, f"workspace move failed: {exc}"
+    if verdict is False:
+        return False, "no live GUI session owns this task"
+    return ("pending" if verdict == "pending" else True), None
 
 
 def _resolve(conn, token: str):
@@ -81,14 +84,17 @@ def _activated(proj, task_id: Optional[str]) -> str:
     sidebar)."""
     from hermes_cli import projects_db as pdb
     primary = _primary_path(proj)
-    reason = _apply_workspace(task_id, primary, proj.name)
-    if reason is not None:
+    moved, reason = _apply_workspace(task_id, primary, proj.name)
+    if not moved:
         with pdb.connect_closing() as conn:
             pdb.set_active(conn, proj.id)
     result = {"success": True, "id": proj.id, "slug": proj.slug, "name": proj.name,
-              "primary_path": primary, "moved": reason is None}
+              "primary_path": primary, "moved": moved}
     if reason is not None:
         result["not_moved_reason"] = reason
+    if moved == "pending":
+        result["note"] = (f"This chat moves to {primary} when this turn ends; commands in this turn still "
+                          "run in the current folder.")
     return json.dumps(result)
 
 

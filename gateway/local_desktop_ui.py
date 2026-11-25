@@ -163,24 +163,20 @@ def _install_connection_hook() -> None:
 
 def _move_workspace(task_id, path):
     """``desktop_project``'s move for a turn of ours: None when *task_id* is not one (another host's
-    session), else whether it moved."""
+    session), False when it cannot move, else ``"pending"``: the folder is committed at the end of
+    the turn, as the user's Move to project, so the running turn keeps its own."""
     import os
     with _lock:
         route = _workspace_routes.get(str(task_id or ""))
     if route is None:
         return None
-    authority, session_id, session_key, _publish = route
+    authority, session_id, _session_key, _publish = route
     live = authority.sessions.get(session_id)
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if live is None or not os.path.isdir(resolved):
         return False
-    from tools.terminal_tool import record_session_cwd
-    # The terminal reads the cwd record by the turn's approval session key (its route); a delegated
-    # child by its task id. The boundary commit drops both along with the environment.
-    for key in dict.fromkeys(k for k in (session_key, str(task_id)) if k):
-        record_session_cwd(key, resolved)
     live.pending_workspace = resolved
-    return True
+    return "pending"
 
 
 def _install_workspace_hook() -> None:

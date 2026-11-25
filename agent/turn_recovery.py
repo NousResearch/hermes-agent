@@ -1101,13 +1101,11 @@ def nonretryable_client_error_result(
             "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry,",
             "      or check the proxy/WAF rules and your network.",
         )
-    # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
-    # or another model, not key/retry advice.
+    # A policy refusal says nothing about service health or future acceptance.
     if classified.reason == FailoverReason.content_policy_blocked:
         _vlines(
             agent,
             f"   💡 {CONTENT_POLICY_NEXT_STEPS}",
-            "      To route future blocks to another provider automatically: hermes fallback add",
         )
     # Prompt-injection guardrail (OpenRouter Guardrails #155460): an account-level content filter
     # judged the payload before any model ran, so the fix is a dashboard setting — never

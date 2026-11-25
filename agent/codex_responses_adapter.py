@@ -13,6 +13,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
+from agent.error_classifier import CONTENT_POLICY_ERROR_CODES
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
@@ -1233,6 +1234,23 @@ def _extract_responses_reasoning_text(item: Any) -> str:
     return "\n".join(chunks).strip() if chunks else (text.strip() if isinstance(text, str) else "")
 
 
+class ResponsesPolicyError(RuntimeError):
+    """Keep the provider's structured refusal available to the normal error classifier."""
+
+    def __init__(self, error: Any, status: str) -> None:
+        super().__init__(_format_responses_error(error, status))
+        self.body = {"code": _field(error, "code"), "message": _field(error, "message")}
+
+
+def raise_responses_policy_error(response: Any) -> None:
+    """A failed policy response is terminal even when it contains no output items."""
+    status = str(getattr(response, "status", "") or "").strip().lower()
+    error = getattr(response, "error", None)
+    code = str(_field(error, "code", "") or "").strip().lower()
+    if status == "failed" and code in CONTENT_POLICY_ERROR_CODES:
+        raise ResponsesPolicyError(error, status)
+
+
 def _format_responses_error(error_obj: Any, response_status: str) -> str:
     """``"<code>: <message>"`` for a ``response.error`` payload (dict or object), else whichever
     is present, else ``str(error_obj)``, else a status-based default."""
@@ -1368,6 +1386,7 @@ def _normalize_codex_response(
     ``issuer_kind`` / ``issuer_model`` are stamped onto captured reasoning items for provenance replay drops.
     ``recover_leaked_tool_call=False`` is for callers with no continuation (aux): tool-call-shaped text is
     then kept as ordinary content and judged by the same phase/completion gates as any other answer."""
+    raise_responses_policy_error(response)
     response_status = _lower_or_none(getattr(response, "status", None))
     incomplete_reason = str(_field(getattr(response, "incomplete_details", None), "reason", "") or "").strip().lower()
     response_incomplete_content_filter = response_status == "incomplete" and incomplete_reason == "content_filter"

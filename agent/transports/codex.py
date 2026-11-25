@@ -19,6 +19,7 @@ from agent.reasoning_effort import (
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+from agent.codex_responses_adapter import raise_responses_policy_error
 from agent.codex_headers import is_official_codex_base_url
 
 logger = logging.getLogger(__name__)
@@ -956,9 +957,11 @@ class ResponsesApiTransport(ProviderTransport):
     def validate_response(self, response: Any) -> bool:
         """True if response.output is a non-empty list, or a terminal content_filter refusal.
 
+        Explicit failed policy responses raise a terminal, structured error.
         An incomplete/content_filter response with no output must reach normalization,
         not a retry. Does NOT check output_text fallback — the caller handles that.
         """
+        raise_responses_policy_error(response)
         if response is None:
             return False
         output = getattr(response, "output", None)

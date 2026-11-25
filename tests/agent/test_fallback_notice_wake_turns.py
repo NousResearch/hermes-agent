@@ -69,7 +69,7 @@ def _turn(agent, shown, kind=None):
     kwargs = {"persist_user_display_kind": kind} if kind else {}
     result = agent.run_conversation("check in", conversation_history=[], **kwargs)
     assert result.get("final_response") == "ok"
-    return [line for line in shown if "Model fallback" in line or "Primary model restored" in line]
+    return [line for line in shown if "Model fallback" in line or "Retrying primary model" in line]
 
 
 def test_wake_turns_stay_quiet_and_the_next_user_turn_discloses_the_fallback(agent_and_notices):
@@ -92,3 +92,12 @@ def test_wake_turn_after_cooldown_posts_no_restore_or_switch_chatter(agent_and_n
     # it never saw.
     notices = _turn(agent, shown)
     assert len(notices) == 1 and notices[0].startswith("⚠️ Model fallback")
+
+
+def test_primary_selection_does_not_claim_recovery(agent_and_notices):
+    agent, shown = agent_and_notices
+    _turn(agent, shown)
+    agent._rate_limited_until = 0
+    notices = _turn(agent, shown)
+    assert any("Retrying primary model: primary-model" in line for line in notices)
+    assert not any("restored" in line.lower() or "✅" in line for line in shown)

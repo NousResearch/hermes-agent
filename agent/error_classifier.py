@@ -71,6 +71,9 @@ class FailoverReason(enum.Enum):
 
 # Transient transport verdicts: the provider is expected back (the aux same-provider retry, the turn ladder).
 TRANSIENT_REASONS = frozenset({FailoverReason.timeout, FailoverReason.overloaded, FailoverReason.server_error})
+# Explicit provider refusal codes are terminal across transports.
+CONTENT_POLICY_ERROR_CODES = frozenset({"cyber_policy", "content_policy_violation", "content_filter"})
+
 # A refusal of the request's content or data policy: no resend, field strip or quota reading changes it.
 POLICY_REFUSAL_REASONS = frozenset({FailoverReason.data_policy_denied, FailoverReason.content_policy_blocked,
                                     FailoverReason.guardrail_blocked})
@@ -976,6 +979,8 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # Deterministic for this context: another provider would receive the same connector result.
     if c.code == "data_policy_denied":
         return _v(_R.data_policy_denied, retryable=False, should_fallback=False)
+    if c.code in CONTENT_POLICY_ERROR_CODES:
+        return _v(_R.content_policy_blocked, retryable=False, should_fallback=False)
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome

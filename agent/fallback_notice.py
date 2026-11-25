@@ -100,7 +100,7 @@ def surface_hidden_fallback(agent) -> None:
 
 
 def announce_primary_restored(agent, previous_model: str, previous_provider: str) -> None:
-    """The recovery line after a turn-start restore. None for a switch the user never saw (hidden
+    """Announce a turn-start selection, before the primary has answered. None for a switch the user never saw (hidden
     on a wake turn), and none on a wake turn: during an outage each wake would restore, re-fail and
     post it again."""
     unseen = getattr(agent, "_hidden_fallback_notice", None)
@@ -109,7 +109,7 @@ def announce_primary_restored(agent, previous_model: str, previous_provider: str
         return
     try:
         agent._emit_diagnostic_status(
-            f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+            f"Retrying primary model: {agent.model} via {agent.provider}; "
             f"fallback {previous_model} via {previous_provider} is no longer active.")
     except Exception:  # health: allow BLE001 -- a surface failure must never undo a successful restore
         logger.debug("primary restored notice failed to emit", exc_info=True)

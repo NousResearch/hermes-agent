@@ -111,11 +111,7 @@ def _verify_macos_dmg(
     *,
     expect_feed: bool,
 ) -> None:
-    dmgs = sorted(root.glob(f"*-mac-{arch}.dmg"))
-    feeds = sorted(root.glob("*-mac.yml"))
-    if not dmgs and not feeds:
-        return
-    dmg = single(dmgs)
+    dmg = single(root.glob(f"*-mac-{arch}.dmg"))
     expected_name = package.name.removesuffix(".zip") + ".dmg"
     if dmg.name != expected_name:
         raise ValueError("macOS DMG filename differs from requested version")

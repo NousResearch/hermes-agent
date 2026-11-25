@@ -40,6 +40,7 @@ def test_macos_record_binds_filename_version_and_provenance(tmp_path, monkeypatc
             }))
             archive.writestr("Product.app/Contents/Resources/install-stamp.json",
                              json.dumps(package_stamp))
+        _add_outer_dmg(root, package, feed=not channel)
 
     def codesign(argv, **kwargs):
         assert argv[0] == "codesign"
@@ -106,6 +107,7 @@ def record_mac_update(tmp_path, monkeypatch, extra=(), size=None):
             grown.truncate(size - len(data))
             grown.seek(size - len(data))
             grown.write(data)
+    _add_outer_dmg(root, package, feed=True)
     monkeypatch.setattr(release_artifacts.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
         argv, 0, stderr="TeamIdentifier=ABCDEFGHIJ\n"))
     out = root / "metadata.json"
@@ -153,21 +155,33 @@ def _write_blockmap(path, total_size: int) -> None:
     path.write_bytes(gzip.compress(json.dumps(payload).encode("utf-8")))
 
 
+def _sha512_base64(path) -> str:
+    with path.open("rb") as handle:  # streamed: the Squirrel-limit fixtures are a sparse 1 GiB ZIP
+        return base64.b64encode(hashlib.file_digest(handle, "sha512").digest()).decode("ascii")
+
+
 def _write_mac_feed(path, version: str, zip_path, dmg_path, *, dmg_size: int | None = None, dmg_sha512: str | None = None) -> None:
-    zip_bytes = zip_path.read_bytes()
-    dmg_bytes = dmg_path.read_bytes()
-    zip_sha = base64.b64encode(hashlib.sha512(zip_bytes).digest()).decode("ascii")
-    actual_dmg_sha = base64.b64encode(hashlib.sha512(dmg_bytes).digest()).decode("ascii")
+    zip_sha = _sha512_base64(zip_path)
     feed = {
         "version": version,
         "files": [
-            {"url": zip_path.name, "sha512": zip_sha, "size": len(zip_bytes)},
-            {"url": dmg_path.name, "sha512": dmg_sha512 or actual_dmg_sha, "size": len(dmg_bytes) if dmg_size is None else dmg_size},
+            {"url": zip_path.name, "sha512": zip_sha, "size": zip_path.stat().st_size},
+            {"url": dmg_path.name, "sha512": dmg_sha512 or _sha512_base64(dmg_path),
+             "size": dmg_path.stat().st_size if dmg_size is None else dmg_size},
         ],
         "path": zip_path.name,
         "sha512": zip_sha,
     }
     path.write_text(hermes_yaml.safe_dump(feed, sort_keys=False), encoding="utf-8")
+
+
+def _add_outer_dmg(root, package, *, feed: bool) -> None:
+    """The signed DMG (and, for tagged releases, the feed) a record needs beside its update ZIP."""
+    dmg = package.with_suffix(".dmg")
+    dmg.write_bytes(b"signed-stapled-dmg")
+    _write_blockmap(dmg.with_name(dmg.name + ".blockmap"), dmg.stat().st_size)
+    if feed:
+        _write_mac_feed(root / "stable-mac.yml", "1.2.3", package, dmg)
 
 
 def test_macos_record_verifies_outer_dmg_signature_blockmap_and_feed_consistency(tmp_path, monkeypatch):
@@ -321,3 +335,33 @@ def test_macos_record_matches_commit_claim_dmg_contract_for_new_pre_pr_and_legac
     )
     assert str(legacy_dmg) not in calls
     assert json.loads((legacy_root / "meta.json").read_text(encoding="utf-8"))["legacyCommitBuild"] is True
+
+
+@pytest.mark.parametrize("kind", ["tagged", "channel", "signed commit claim"])
+def test_macos_record_refuses_a_root_without_its_outer_dmg(tmp_path, monkeypatch, kind):
+    """A record that must check the outer DMG fails closed when the root holds only the update ZIP."""
+    commit = "a" * 40
+    request = channel_request(commit, sequence=6) if kind == "channel" else None
+    tag, version, stamp = {
+        "tagged": ("v1.2.3", "1.2.3", {"commit": commit, "tag": "v1.2.3", "baseVersion": "1.2.3"}),
+        "channel": (None, request and request["version"],
+                    {"source": "channel-build", "channelBuild": request, "commit": commit, "tag": None}),
+        "signed commit claim": ("commit.20261125T000000Z-v1.2.3", "1.2.3+commit.20261125T000000Z", {
+            "source": "commit-build", "commit": commit, "tag": "commit.20261125T000000Z-v1.2.3",
+            "baseVersion": "1.2.3+commit.20261125T000000Z", "signedDmg": True,
+        }),
+    }[kind]
+    root = tmp_path / "release"
+    (root / "mac" / "Product.app").mkdir(parents=True)
+    with zipfile.ZipFile(root / f"Product-{version}-mac-arm64.zip", "w") as archive:
+        archive.writestr("Product.app/Contents/Info.plist", plistlib.dumps({
+            "CFBundleIdentifier": request["identity"]["appId"] if request else "ai.hermes.test",
+            "CFBundleShortVersionString": version,
+        }))
+        archive.writestr("Product.app/Contents/Resources/install-stamp.json", json.dumps(stamp))
+    monkeypatch.setattr(release_artifacts.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, stderr="TeamIdentifier=ABCDEFGHIJ\n"))
+    out = root / "metadata.json"
+    with pytest.raises(ValueError, match="Expected exactly one artifact"):
+        release_artifacts.record("macos", "arm64", root, tag, commit, out, channel_request=request)
+    assert not out.exists()

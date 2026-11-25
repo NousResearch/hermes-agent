@@ -407,6 +407,7 @@ def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_t
     import signal
 
     from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_cli.plugins_loader import PluginHomeMoved
     from hermes_constants import mark_named_profile_deleted
     from tests.waiting import wait_until
     from tools.registry import registry
@@ -438,7 +439,7 @@ def test_a_linked_profile_marked_under_its_new_name_after_a_rename_is_found_by_t
         assert ran.read_text(encoding="utf-8").count("ran") == 1  # unmarked: its launcher is the profile's own
         if beside == "relinked":  # the link is gone while a lookup runs, then comes back under the new name
             (root / "profiles" / "ops").unlink()
-            assert manager.owner_home == manager.home_path
+            pytest.raises(PluginHomeMoved, lambda: manager.owner_home)
             (root / "profiles" / "ops").symlink_to(target, target_is_directory=True)
         elif beside in ("_backup", "default", "deleted"):
             other = root / "profiles" / ("aaa" if beside == "deleted" else beside)
@@ -490,38 +491,6 @@ def test_a_host_whose_new_home_failed_to_bind_binds_it_on_the_next_start(tmp_pat
         assert host._base_context.run(get_hermes_home) == host.home == manager.owner_home
     finally:
         host.shutdown()
-        plugins_mod._reset_plugin_managers_for_tests()
-
-
-@pytest.mark.platforms("posix")  # a directory symlink
-def test_a_profile_link_repointed_at_another_directory_loads_plugins_under_the_new_directorys_key(
-        tmp_path, monkeypatch):
-    """A process remembers the key each home spelling resolved to. After a profile's link is repointed at another
-    directory, plugin code loaded for the new directory's manager must not run under that spelling, whose
-    remembered key is still the old directory's."""
-    from hermes_constants import hermes_home_key
-
-    out = tmp_path / "key.out"
-    monkeypatch.setenv("KEYPROBE_OUT", str(out))
-    old = _home_with_plugins(tmp_path / "old", monkeypatch, {}, isolation="in_process")
-    new = _home_with_plugins(tmp_path / "new", monkeypatch, {"keyprobe": (
-        "import os\nfrom pathlib import Path\nfrom hermes_constants import hermes_home_key\n"
-        "def register(ctx):\n    Path(os.environ['KEYPROBE_OUT']).write_text(hermes_home_key())\n")},
-        isolation="in_process")
-    link = tmp_path / "root" / "profiles" / "ops"
-    link.parent.mkdir(parents=True)
-    link.symlink_to(old, target_is_directory=True)
-    hermes_home_key(link)  # the process served the old directory under this name
-    link.unlink()
-    link.symlink_to(new, target_is_directory=True)
-    monkeypatch.setenv("HERMES_HOME", str(link))
-    plugins_mod._reset_plugin_managers_for_tests()
-    manager = plugins_mod.get_plugin_manager()
-    try:
-        manager.discover_and_load()
-        assert out.read_text() == manager.scope_key == hermes_home_key(new)
-    finally:
-        manager.unload()
         plugins_mod._reset_plugin_managers_for_tests()
 
 
@@ -582,7 +551,7 @@ def repointed_profile_link(tmp_path, monkeypatch):
 @pytest.mark.parametrize("moves", [
     # (the host's manager, opened while the link points at old; where the link points when the caller binds through
     # it; where it points when the host starts; whose runner that host runs)
-    ("link", "new", "new", "old"),  # bound after the repoint: holds new's values, the host is old's
+    ("link", "new", "new", None),  # bound after the repoint: holds new's values; no name leads to old's host
     ("link", "new", "old", "old"),  # bound while repointed, link restored before the start
     ("new", "old", "new", "new"),   # bound before the repoint: holds old's values, the host is new's
     ("launch", "old", "launch", "launch"),  # ... and the link now leads to the launch profile's directory
@@ -590,8 +559,12 @@ def repointed_profile_link(tmp_path, monkeypatch):
         "repointed_at_the_launch_directory"])
 def test_a_caller_bound_through_a_moving_profile_link_lends_its_values_to_no_host(repointed_profile_link, moves):
     """A caller bound through a profile's link holds what the link's directory held when it bound. However the
-    link moved around that bind, the host that starts expands its launcher from its own profile's sources."""
+    link moved around that bind, the host that starts expands its launcher from its own profile's sources, and a
+    host no name leads to any more starts none."""
+    import contextlib
+
     from agent import secret_scope as ss
+    from hermes_cli.plugins_loader import PluginHomeMoved
     from hermes_constants import hermes_home_key
     from tui_gateway import server
 
@@ -604,8 +577,9 @@ def test_a_caller_bound_through_a_moving_profile_link_lends_its_values_to_no_hos
     with server._session_profile_runtime_scope({"profile_home": str(env.link)}, hydrate_secrets=False):
         assert ss.get_secret("PLUGIN_RUNNER").endswith(f"{bound}-runner")
         env.point(started)
-        host.ensure_started()
-    assert env.ran() == [runs]
+        with pytest.raises(PluginHomeMoved) if runs is None else contextlib.nullcontext():
+            host.ensure_started()
+    assert env.ran() == ([runs] if runs else [])
 
 
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launchers are shell scripts
@@ -1428,7 +1402,7 @@ def test_a_host_started_by_a_caller_bound_to_a_since_renamed_link_runs_the_profi
 
 @pytest.mark.platforms("posix")  # a directory symlink
 def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path, monkeypatch):
-    """One start, one home: a profile name that appears while the host starts does not give the launcher check a
+    """One start, one home: a profile name that moves while the host starts does not give the launcher check a
     different home from the one the host's environment and working directory were built for."""
     from hermes_cli import plugin_isolation
     from hermes_cli.plugin_host import PluginHost
@@ -1441,13 +1415,15 @@ def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path
     plugins_mod._reset_plugin_managers_for_tests()
     manager = plugins_mod.get_plugin_manager()
     host = manager._plugin_host()
-    (profiles / "ops").unlink()  # no name leads to the directory: this start runs under the directory itself
-    monkeypatch.setenv("HERMES_HOME", str(target))
+    (profiles / "ops").rename(profiles / "ops2")  # this start runs under the profile's new name
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
     build, launcher, asked = PluginHost._build_base_context, plugin_isolation.host_launcher, []
 
-    def linked_while_building(self):
+    def linked_while_building(self):  # then ops3 is the name that leads to the directory
         context = build(self)
-        (profiles / "ops2").symlink_to(target, target_is_directory=True)
+        (profiles / "ops3").symlink_to(target, target_is_directory=True)
+        (profiles / "ops2").unlink()
+        (profiles / "ops2").symlink_to(tmp_path, target_is_directory=True)
         return context
 
     def recording(*args, **kwargs):
@@ -1458,7 +1434,7 @@ def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path
     monkeypatch.setattr(plugin_isolation, "host_launcher", recording)
     try:
         host.ensure_started()
-        assert host.home == manager.home_path
+        assert host.home == profiles / "ops2"
         assert asked == [host.home]
     finally:
         host.shutdown()
@@ -1608,14 +1584,14 @@ def test_a_recall_matched_by_the_recorded_repo_refuses_a_linked_profiles_plugin(
 @pytest.mark.platforms("posix")  # a directory symlink; SIGKILL
 @pytest.mark.parametrize("change", ["renamed", "removed"])
 def test_a_linked_profile_whose_link_moves_while_its_manager_is_kept_gets_its_host_plugins_back_after_a_crash(
-        change, tmp_path, monkeypatch):
+        change, tmp_path, monkeypatch, caplog):
     """A process keeps one manager per directory, so a linked profile renamed (or its link removed) while it
     runs keeps the manager it was opened by under the old name. The host restarted after a crash runs under the
-    profile's new name, or the directory when no name leads there, never the link that is gone; a reloaded
-    plugin is told the profile of the home that host runs under."""
+    profile's new name, never the link that is gone; a reloaded plugin is told the profile of the home that host
+    runs under. With no name leading to the directory, the crashed host's plugin is unloaded and stays down."""
     import signal
 
-    from hermes_cli.plugins_loader import _plugin_home_scope
+    from hermes_cli.plugins_loader import PluginHomeMoved, _plugin_home_scope
     from hermes_cli.profiles import get_active_profile_name
     from tests.waiting import wait_until
     from tools.registry import registry
@@ -1641,7 +1617,14 @@ def test_a_linked_profile_whose_link_moves_while_its_manager_is_kept_gets_its_ho
             (profiles / "ops").unlink()
             monkeypatch.setenv("HERMES_HOME", str(target))
         assert plugins_mod.get_plugin_manager() is manager
-        assert manager.owner_home == {"renamed": profiles / "ops2", "removed": manager.home_path}[change]
+        if change == "removed":
+            pytest.raises(PluginHomeMoved, lambda: manager.owner_home)
+            os.kill(first, signal.SIGKILL)
+            wait_until(lambda: "Not reloading plugin 'whereprobe'" in caplog.text, timeout=15, what="the refusal")
+            assert "whereprobe" not in manager._plugins and '"pid"' not in registry.dispatch(
+                "whereprobe_pid", {}, scope=manager.scope_key)
+            return
+        assert manager.owner_home == profiles / "ops2"
         os.kill(first, signal.SIGKILL)
 
         def served():

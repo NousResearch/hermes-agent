@@ -41,6 +41,7 @@ from hermes_cli.plugin_host_wire import (
     signature_from,
 )
 from hermes_cli._startup_fast import project_root_str
+from hermes_cli.plugins_loader import PluginHomeMoved
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -237,7 +238,10 @@ class PluginHost:
             if loaded is None or not loaded.enabled:
                 continue
             manager.unload(key)
-            manager._load_plugin(loaded.manifest)
+            try:
+                manager._load_plugin(loaded.manifest)
+            except PluginHomeMoved as exc:  # unloaded above: it stays down rather than run under no profile name
+                logger.error("Not reloading plugin '%s' after its host exited: %s", key, exc)
 
     def shutdown(self) -> None:
         self._stopping = True

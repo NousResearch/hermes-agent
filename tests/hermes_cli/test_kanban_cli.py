@@ -293,3 +293,72 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat notes must survive the event window
+# ---------------------------------------------------------------------------
+
+
+def _event(task_id: str, kind: str, payload: dict | None, *, created_at: int) -> kb.Event:
+    return kb.Event(
+        id=created_at,
+        task_id=task_id,
+        run_id=660,
+        kind=kind,
+        payload=payload,
+        created_at=created_at,
+    )
+
+def test_a_note_survives_a_wall_of_silent_ticks(kanban_home, capsys):
+    """A worker's progress note is the only thing a board reader can follow while it runs.
+
+    Silent heartbeats arrive every minute, so a plain newest-20 window buries a note within the
+    hour and leaves nothing but bare `heartbeat` lines — the shape that made a running card look
+    stalled. Driven through `show` on purpose: asserting the selector alone would keep passing if
+    `show` stopped calling it.
+    """
+    note = "9px RTL overflow left, fixing wraps"
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="noisy worker", assignee="alice")
+        kb._append_event(conn, task_id, "heartbeat", {"note": note}, run_id=660)
+        for _ in range(40):
+            kb._append_event(conn, task_id, "heartbeat", None, run_id=660)
+
+    kc._cmd_show(argparse.Namespace(task_id=task_id, json=False))
+    out = capsys.readouterr().out
+    assert f"heartbeat: {note}" in out, "the note must outlive the silent ticks that follow it"
+    assert out.count("heartbeat") > 20, "the newest events are shown alongside it"
+
+
+def test_the_note_is_rendered_as_text_not_a_bare_kind(kanban_home, capsys):
+    """`heartbeat {'note': ...}` leaks a payload dict into a human view; `heartbeat: ...` reads."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="note render", assignee="alice")
+        kb._append_event(
+            conn, task_id, "heartbeat", {"note": "epoch 12/50, loss 0.31"}, run_id=660
+        )
+
+    kc._cmd_show(argparse.Namespace(task_id=task_id, json=False))
+    out = capsys.readouterr().out
+    assert "heartbeat: epoch 12/50, loss 0.31" in out
+    assert "{'note'" not in out
+
+
+def test_a_note_less_heartbeat_is_unchanged(kanban_home, capsys):
+    """A tick with nothing to report stays a bare kind — no trailing separator to read past."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="silent tick", assignee="alice")
+        kb._append_event(conn, task_id, "heartbeat", None, run_id=660)
+
+    kc._cmd_show(argparse.Namespace(task_id=task_id, json=False))
+    out = capsys.readouterr().out
+    assert out.rstrip().endswith("heartbeat") or "heartbeat" in out.splitlines()[-1]
+    assert "heartbeat:" not in out
+
+
+def test_event_note_tolerates_a_malformed_payload(kanban_home):
+    """A corrupt payload must not take down `show`."""
+    assert kc._event_note(_event("t1", "heartbeat", None, created_at=1)) == ""
+    assert kc._event_note(_event("t1", "heartbeat", {"note": 42}, created_at=1)) == ""
+    assert kc._event_note(_event("t1", "claimed", {"lock": "x"}, created_at=1)) == ""

@@ -463,6 +463,45 @@ def _print_diagnostics(diags, indent: str, *, with_kind: bool) -> None:
                 print(f"{indent}   → {a.label}")
 
 
+# Note-bearing events kept in the display window regardless of age. Tail-capped so a board whose
+# worker heartbeats a note every few minutes for days cannot flood `show`.
+_EVENT_NOTE_KEEP = 12
+_EVENT_TAIL = 20
+
+
+def _event_note(event) -> str:
+    """The human note on a heartbeat event, or '' when it carries none.
+
+    Only ``heartbeat`` carries a ``note`` today; everything else stores structured payload dicts
+    that are rendered verbatim. A malformed payload must never take down ``show``.
+    """
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        note = payload.get("note")
+        if isinstance(note, str):
+            return " ".join(note.split())
+    return ""
+
+
+def _select_events_for_display(events) -> list:
+    """Newest ``_EVENT_TAIL`` events, plus the newest ``_EVENT_NOTE_KEEP`` note-bearing ones.
+
+    The plain tail alone is why a worker's progress note disappears: silent heartbeats arrive every
+    minute, so a note is pushed out of a twenty-event window within the hour while the ticks that
+    replaced it are all the reader ever sees. Keeping notes independently means the newest progress
+    report survives however chatty the worker is afterwards. Order is preserved (chronological) so
+    the section still reads as a timeline.
+    """
+    tail = list(events[-_EVENT_TAIL:])
+    kept_ids = {id(e) for e in tail}
+    notes = [e for e in events if _event_note(e)][-_EVENT_NOTE_KEEP:]
+    if all(id(e) in kept_ids for e in notes):
+        return tail
+    merged = list(events)
+    wanted = kept_ids | {id(e) for e in notes}
+    return [e for e in merged if id(e) in wanted]
+
+
 def _print_section(title: str, lines) -> None:
     """Blank line, ``title``, then each line (``show`` body sections)."""
     print()
@@ -551,9 +590,19 @@ def _cmd_show(args: argparse.Namespace) -> int:
         _print_section(f"Comments ({len(comments)}):",
                        (f"  [{_fmt_ts(c.created_at)}] {c.author}: {c.body}" for c in comments))
     if events:
+        # Heartbeats are the only event kind that carries a human-readable note, and they are the
+        # only progress signal a board reader has while a worker is still running. Rendering them
+        # as the bare word "heartbeat" throws that away: a worker that reports "9px RTL overflow
+        # left" and one that ticks silently print identically, and because the window below is the
+        # newest 20 events, a note scrolls out of sight within minutes while the silent ticks that
+        # follow it stay. Two changes: a note is rendered as `heartbeat: <note>` (never a bare
+        # kind), and the window keeps every note-bearing event regardless of age, tail-capped so a
+        # pathological board cannot flood the output.
+        shown = _select_events_for_display(events)
         _print_section(f"Events ({len(events)}):", (
             f"  [{_fmt_ts(e.created_at)}]{f' [run {e.run_id}]' if e.run_id else ''} {e.kind}"
-            f"{f' {e.payload}' if e.payload else ''}" for e in events[-20:]))
+            f"{f': {_event_note(e)}' if _event_note(e) else (f' {e.payload}' if e.payload else '')}"
+            for e in shown))
     if runs:
         print()
         print(f"Runs ({len(runs)}):")

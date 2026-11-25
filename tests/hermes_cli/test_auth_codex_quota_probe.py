@@ -479,3 +479,21 @@ def test_probe_counts_additional_rate_limits(monkeypatch):
     _patch_httpx(monkeypatch, _StubResponse(200, payload))
 
     assert _probe_codex_quota_restored(_jwt({"exp": time.time() + 3600})) is False
+
+
+def test_probe_reads_the_workspace_spend_limit_when_rate_limit_is_null(monkeypatch):
+    """Business/enterprise seats report ``rate_limit: null`` and 429 on the workspace spend control;
+    a raised or reset spend limit must read as restored instead of inconclusive."""
+    payload = {"rate_limit": None,
+               "spend_control": {"reached": False, "individual_limit": {"used_percent": 50}}}
+    _patch_httpx(monkeypatch, _StubResponse(200, payload))
+
+    assert _probe_codex_quota_restored(_jwt({"exp": time.time() + 3600})) is True
+
+
+def test_probe_treats_a_reached_spend_control_as_spent_even_with_open_windows(monkeypatch):
+    payload = _usage_payload(2.0, 0.0)
+    payload["spend_control"] = {"reached": True, "individual_limit": {"used_percent": 100}}
+    _patch_httpx(monkeypatch, _StubResponse(200, payload))
+
+    assert _probe_codex_quota_restored(_jwt({"exp": time.time() + 3600})) is False

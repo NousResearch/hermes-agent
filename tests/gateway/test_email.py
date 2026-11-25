@@ -844,19 +844,75 @@ class TestPollLoop(unittest.TestCase):
         mock_imap.login.side_effect = Exception("read operation timed out")
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            asyncio.run(adapter._check_inbox())
+            for _ in range(adapter._fetch_failure_threshold):
+                asyncio.run(adapter._check_inbox())
 
         self.assertEqual(len(notified), 1)
         self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
         self.assertTrue(adapter.fatal_error_retryable)
         self.assertIn("read operation timed out", adapter.fatal_error_message)
 
+    def test_transient_fetch_failure_does_not_escalate(self):
+        """Every poll opens a fresh IMAP connection, so an isolated socket timeout is routine. One or two
+        failed checks must be retried on the next poll, not tear the adapter down; a successful check resets
+        the streak so sporadic blips never accumulate into a reconnect."""
+        import asyncio
+        adapter = self._make_adapter()
+        notified = []
+
+        async def mock_fatal_handler(adapter):
+            notified.append(adapter)
+
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+        self.assertEqual(adapter._fetch_failure_threshold, 3)
+
+        failing = MagicMock()
+        failing.login.side_effect = Exception("The read operation timed out")
+        healthy = MagicMock()
+        healthy.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=failing):
+            asyncio.run(adapter._check_inbox())
+            asyncio.run(adapter._check_inbox())
+        self.assertEqual(notified, [])
+        self.assertIsNone(adapter.fatal_error_code)
+        self.assertEqual(adapter._consecutive_fetch_failures, 2)
+
+        with patch("imaplib.IMAP4_SSL", return_value=healthy):
+            asyncio.run(adapter._check_inbox())
+        self.assertEqual(adapter._consecutive_fetch_failures, 0)
+
+        with patch("imaplib.IMAP4_SSL", return_value=failing):
+            asyncio.run(adapter._check_inbox())
+            asyncio.run(adapter._check_inbox())
+        self.assertEqual(notified, [])
+        self.assertIsNone(adapter.fatal_error_code)
+
+    def test_fetch_failure_threshold_env_override(self):
+        """EMAIL_FETCH_FAILURE_THRESHOLD=1 restores escalate-on-first-failure for operators who want it."""
+        import asyncio
+        with patch.dict(os.environ, {"EMAIL_FETCH_FAILURE_THRESHOLD": "1"}):
+            adapter = self._make_adapter()
+        notified = []
+
+        async def mock_fatal_handler(adapter):
+            notified.append(adapter)
+
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+        failing = MagicMock()
+        failing.login.side_effect = Exception("EOF")
+        with patch("imaplib.IMAP4_SSL", return_value=failing):
+            asyncio.run(adapter._check_inbox())
+        self.assertEqual(len(notified), 1)
+
     def test_partial_batch_dispatched_before_escalation(self):
         """A mid-batch IMAP failure must dispatch the messages already
         fetched BEFORE escalating — dropping them would lose mail, since
         their UIDs are marked seen (#80032 review)."""
         import asyncio
-        adapter = self._make_adapter()
+        # Threshold 1 keeps this test about ordering (dispatch, then escalate), not about failure tolerance.
+        with patch.dict(os.environ, {"EMAIL_FETCH_FAILURE_THRESHOLD": "1"}):
+            adapter = self._make_adapter()
         dispatched, notified = [], []
 
         async def mock_dispatch(msg_data):

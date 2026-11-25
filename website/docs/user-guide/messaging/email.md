@@ -230,6 +230,7 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
+| `EMAIL_FETCH_FAILURE_THRESHOLD` | No | `3` | Consecutive failed inbox checks before the adapter reconnects (each poll is a fresh IMAP connection, so an isolated timeout is retried on the next poll) |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |

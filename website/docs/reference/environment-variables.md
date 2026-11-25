@@ -444,6 +444,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `EMAIL_HOME_ADDRESS` | Default recipient for proactive email delivery |
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |
+| `EMAIL_FETCH_FAILURE_THRESHOLD` | Consecutive failed IMAP checks before the email adapter reconnects (default 3) |
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |

@@ -492,6 +492,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
+        # Consecutive failed IMAP checks tolerated before escalating to the gateway's fatal/reconnect path.
+        # Each poll opens a fresh connection, so a single slow Gmail response (socket timeout) is routine, not an outage:
+        # tearing the adapter down for every one of them produces a Fatal/Disconnected/reconnected log triplet per blip.
+        self._fetch_failure_threshold = max(1, _esecret_int("EMAIL_FETCH_FAILURE_THRESHOLD", 3))
+        self._consecutive_fetch_failures = 0
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
@@ -671,14 +676,22 @@ class EmailAdapter(BasePlatformAdapter):
         # Dispatch partial results BEFORE escalating a failure — a mid-batch exception returns what was fetched (already marked seen).
         for msg_data in messages:
             await self._dispatch_message(msg_data)
-        if self._last_fetch_failed:
-            # The IMAP check itself failed (not an empty inbox): route through the fatal-error hook so the gateway's
-            # reconnect/backoff re-establishes the mailbox. The handler runs detached (gateway/run.py), so awaiting it is safe.
-            # The handler runs in a detached task (gateway/run.py), so awaiting it from our own poll task is
-            # safe even though teardown cancels this task. See #80016.
-            self._last_fetch_failed = False
-            self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
-            await self._notify_fatal_error()
+        if not self._last_fetch_failed:
+            self._consecutive_fetch_failures = 0
+            return
+        # The IMAP check itself failed (not an empty inbox). A transient failure is retried on the next poll;
+        # only a run of consecutive failures routes through the fatal-error hook so the gateway's reconnect/backoff
+        # re-establishes the mailbox. The handler runs in a detached task (gateway/run.py), so awaiting it from our
+        # own poll task is safe even though teardown cancels this task. See #80016.
+        self._last_fetch_failed = False
+        self._consecutive_fetch_failures += 1
+        if self._consecutive_fetch_failures < self._fetch_failure_threshold:
+            logger.warning("[Email] IMAP check failed (%d/%d consecutive), retrying next poll: %s",
+                           self._consecutive_fetch_failures, self._fetch_failure_threshold, self._last_fetch_error)
+            return
+        self._consecutive_fetch_failures = 0
+        self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
+        await self._notify_fatal_error()
 
     def _mark_uid_consumed(self, imap: imaplib.IMAP4, uid: Any) -> None:
         """Remember a rejected UID and mark it seen without fetching its MIME body."""
@@ -736,7 +749,7 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             # _close_imap guarantees the socket dies even when logout() raises IMAP4.abort on a broken
             # connection (#79889).
-            logger.error("[Email] IMAP fetch error: %s", e)
+            logger.debug("[Email] IMAP fetch error: %s", e)  # _check_inbox decides whether this is noise or an outage
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)

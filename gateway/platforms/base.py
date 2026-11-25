@@ -446,7 +446,7 @@ from gateway.platforms.base_exec_approval import (
     card_shows_whole_command, render_exec_approval)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, fit_name_component
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
@@ -1400,7 +1400,7 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     safe_name = (Path(filename).name if filename else "document").replace("\x00", "").strip()
     if not safe_name or safe_name in {".", ".."}:
         safe_name = "document"
-    filepath = cache_dir / f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
+    filepath = cache_dir / fit_name_component(f"doc_{uuid.uuid4().hex[:12]}_", safe_name)
     # Final safety check: ensure path stays inside cache dir
     if not filepath.resolve().is_relative_to(cache_dir.resolve()):
         raise ValueError(f"Path traversal rejected: {filename!r}")

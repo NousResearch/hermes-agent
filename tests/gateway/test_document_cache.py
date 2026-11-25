@@ -138,3 +138,22 @@ class TestCacheMediaBytes:
         assert os.path.exists(result.path)
 
 
+class TestDocumentNameLength:
+    """Inbound display names are unbounded; an oversized component raised ENAMETOOLONG on write."""
+
+    @pytest.mark.parametrize("name", [
+        "名单" * 130 + ".doc", "4-2.%E4%BB%A3%E8%A1%A8" * 24 + ".doc", "文" * 200 + ".pdf",
+        "a" * 300, "x." + "e" * 300, "😀" * 90 + ".docx"],
+        ids=["cjk", "percent-encoded", "cjk-pdf", "no-ext", "huge-ext", "emoji"])
+    def test_any_name_is_saved_within_one_component(self, name):
+        path = cache_document_from_bytes(b"x", name)
+        comp = os.path.basename(path)
+        assert os.path.exists(path) and len(comp.encode("utf-8")) <= 255
+        comp.encode("utf-8").decode("utf-8")  # never half a codepoint
+        ext = name.rpartition(".")[2]
+        if "." in name and len(ext) <= 32:
+            assert comp.endswith("." + ext)
+
+    def test_normal_names_are_untouched(self):
+        path = cache_document_from_bytes(b"x", "季度报表 2026.docx")
+        assert os.path.basename(path).endswith("_季度报表 2026.docx")

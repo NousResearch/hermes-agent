@@ -26,6 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from agent.file_safety import is_project_env_basename
+from gateway.platforms.event import fit_name_component
 from gateway.platforms.base import (
     _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
 
@@ -106,7 +107,7 @@ def fetch_remote_media(path: str) -> Optional[str]:
                 or is_project_env_basename(posixpath.basename(resolved))):
             return None
         basename = re.sub(r"[^\w.\-]", "_", posixpath.basename(resolved)) or "file"
-        dest = Path(DOCUMENT_CACHE_DIR) / f"remote_{uuid.uuid4().hex[:12]}_{basename}"
+        dest = Path(DOCUMENT_CACHE_DIR) / fit_name_component(f"remote_{uuid.uuid4().hex[:12]}_", basename)
         dest.parent.mkdir(parents=True, exist_ok=True)
         env.fetch_file(resolved, dest, max_bytes=_FETCH_MAX_BYTES)
     except FileFetchError as exc:

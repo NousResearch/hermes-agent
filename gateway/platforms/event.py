@@ -43,6 +43,23 @@ def clean_attachment_filename(name: object) -> str:
     return base
 
 
+_NAME_MAX_BYTES = 255  # per-component limit on APFS, ext4 and NTFS (UTF-16 units there)
+
+
+def fit_name_component(prefix: str, name: str) -> str:
+    """``prefix + name`` as one path component within ``_NAME_MAX_BYTES`` UTF-8 bytes.
+
+    Inbound display names are unbounded (percent-encoded CJK triples their size), and an
+    oversized component raises ENAMETOOLONG on write, dropping the attachment. The stem is cut
+    on a codepoint boundary; an extension of up to 32 bytes is kept for MIME/preview checks."""
+    stem, dot, ext = name.rpartition(".")
+    if not stem or len(ext.encode()) > 32:
+        stem, dot, ext = name, "", ""
+    budget = _NAME_MAX_BYTES - len(f"{prefix}{dot}{ext}".encode())
+    stem = stem.encode()[:budget].decode("utf-8", errors="ignore").rstrip()
+    return f"{prefix}{stem or 'document'}{dot}{ext}"
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"

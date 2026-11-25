@@ -46,20 +46,37 @@ def _board_slugs(kb: Any) -> list:
     return [b.get("slug") or kb.DEFAULT_BOARD for b in _list_boards(kb)]
 
 
-def _positive_int_setting(kanban_cfg: dict, key: str) -> Optional[int]:
-    """Parse an optional ``kanban.<key>`` int cap; None when unset or invalid (< 1 is invalid)."""
-    raw = kanban_cfg.get(key)
+def _cap_int(raw: Any) -> Optional[int]:
+    """Parse one kanban concurrency cap: a positive int, or ``None`` when unset or invalid.
+
+    One parser for both reads: :func:`_positive_int_setting` at boot and the
+    dispatcher's per-tick live view, so a cap can never mean one thing at boot
+    and another after the first live apply. Quiet by design — the live view
+    calls it every tick, so a warning here would repeat forever for one bad
+    hand-edited value; the boot wrapper logs the rejection once instead.
+    """
     if raw is None:
         return None
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        logger.warning("kanban dispatcher: invalid kanban.%s=%r; ignoring", key, raw)
         return None
-    if value < 1:
-        logger.warning("kanban dispatcher: kanban.%s=%r is below 1; ignoring", key, raw)
-        return None
-    logger.info("kanban dispatcher: %s=%d", key, value)
+    return value if value >= 1 else None
+
+
+def _positive_int_setting(kanban_cfg: dict, key: str) -> Optional[int]:
+    """Parse an optional ``kanban.<key>`` int cap at boot; None when unset or invalid (< 1 is invalid).
+
+    Wraps :func:`_cap_int` with the boot-time log line: INFO for an accepted
+    cap, one warning for a raw value the parser rejected.
+    """
+    raw = kanban_cfg.get(key)
+    value = _cap_int(raw)
+    if raw is not None:
+        if value is None:
+            logger.warning("kanban dispatcher: invalid kanban.%s=%r; ignoring", key, raw)
+        else:
+            logger.info("kanban dispatcher: %s=%d", key, value)
     return value
 
 

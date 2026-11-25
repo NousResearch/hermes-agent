@@ -131,6 +131,64 @@ def test_resolve_live_caps_explicit_or_memory_derived(monkeypatch):
     assert derived.invalid == (("max_in_progress", 0),)
 
 
+def test_boot_settings_and_live_caps_parse_a_cap_identically(monkeypatch):
+    """Boot and the per-tick view must agree on every cap value, ``max_spawn`` included.
+
+    ``max_spawn`` used to stay raw at boot: ``0`` paused dispatch there while
+    the first live apply read it as ``None`` (uncapped), so editing an
+    unrelated cap resumed spawning — and ``"4"`` stayed a string at boot.
+    ``< 1`` and non-integers now mean unset for all three caps at both reads.
+    """
+    from gateway.kanban_watchers_dispatcher import (
+        _resolve_dispatcher_settings,
+        _resolve_live_caps,
+    )
+
+    # No live-memory restriction, so max_in_progress is deterministic.
+    monkeypatch.setattr(kbd, "_system_memory_sample", dict)
+
+    cases = [
+        ({}, (None, None, None)),
+        (
+            {"max_spawn": 4, "max_in_progress": 20, "max_in_progress_per_profile": 2},
+            (4, 20, 2),
+        ),
+        ({"max_spawn": "4"}, (4, None, None)),
+        ({"max_spawn": 0}, (None, None, None)),
+        ({"max_spawn": -1}, (None, None, None)),
+        ({"max_spawn": "many"}, (None, None, None)),
+    ]
+    for cfg, expected in cases:
+        settings = _resolve_dispatcher_settings(cfg, kbd)
+        live = _resolve_live_caps(cfg)
+        assert (
+            settings.max_spawn,
+            settings.max_in_progress,
+            settings.max_in_progress_per_profile,
+        ) == expected, cfg
+        assert (
+            live.max_spawn,
+            live.max_in_progress,
+            live.max_in_progress_per_profile,
+        ) == expected, cfg
+
+
+def test_boot_rejects_a_bad_max_spawn_with_one_warning(caplog):
+    """A rejected boot value warns once and behaves as unset, not as a pause."""
+    from gateway.kanban_watchers_dispatcher import _resolve_dispatcher_settings
+
+    caplog.set_level(logging.INFO, logger="gateway.run")
+    settings = _resolve_dispatcher_settings({"max_spawn": 0}, kbd)
+
+    assert settings.max_spawn is None
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "max_spawn" in record.getMessage()
+    ]
+    assert warnings == ["kanban dispatcher: invalid kanban.max_spawn=0; ignoring"]
+
+
 def test_unchanged_caps_log_nothing_and_a_change_logs_once(caplog):
     """The change line fires on a change only — never once per tick."""
     from gateway.kanban_watchers_dispatcher import _log_live_cap_change, _resolve_live_caps

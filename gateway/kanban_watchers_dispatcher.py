@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
+from gateway.kanban_watchers_common import _board_slugs, _cap_int, _positive_int_setting, logger
 
 
 def _kbc():
@@ -41,7 +41,7 @@ class _DispatcherSettings:
     """
 
     interval: float
-    max_spawn: Any
+    max_spawn: Optional[int]
     max_in_progress: Optional[int]
     failure_limit: int
     stale_timeout_seconds: int
@@ -69,22 +69,13 @@ class _LiveCaps:
     invalid: tuple[tuple[str, Any], ...] = ()
 
 
-def _cap_int(raw: Any) -> Optional[int]:
-    """Parse one cap: a positive int, or ``None`` when unset or invalid."""
-    if raw is None:
-        return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value >= 1 else None
-
-
 def _resolve_live_caps(kanban_cfg: dict) -> _LiveCaps:
-    """Quiet twin of the boot parser: raw ``kanban.*`` caps -> effective values.
+    """Quiet live view of the boot parser: raw ``kanban.*`` caps -> effective values.
 
-    Deliberately silent: the dispatcher calls this every tick, so a warning
-    here would repeat forever for one bad hand-edited value.
+    Uses the same :func:`_cap_int` as boot, so the first tick cannot disagree
+    with the value the dispatcher started on. Deliberately silent: the
+    dispatcher calls this every tick, so a warning here would repeat forever
+    for one bad hand-edited value.
     """
     parsed = {key: _cap_int(kanban_cfg.get(key)) for key in _CAP_KEYS}
     invalid = tuple(
@@ -137,9 +128,10 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         interval = 60.0
     interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
-    max_spawn = kanban_cfg.get("max_spawn")
-    if max_spawn is not None:
-        logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
+    # Parsed by the same helper as the live per-tick re-read, so a value this
+    # boot accepts cannot turn into a different value on the first live apply
+    # (``< 1`` and non-integers mean unset for all three caps).
+    max_spawn = _positive_int_setting(kanban_cfg, "max_spawn")
 
     # Cap simultaneously running tasks so slow workers don't pile up and time
     # out. Explicit config wins; otherwise a memory-derived default (unbounded

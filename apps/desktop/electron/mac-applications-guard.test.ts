@@ -628,6 +628,33 @@ describe('guardMacApplicationsLaunch', () => {
   })
 
   it.each([
+    ['the Finder notice', { writable: (target: string) => target !== '/Applications' }, false],
+    ['the newer-copy notice', installedCopies({ '/Applications/Hermes Agent.app': '0.30.0' }), false],
+    ['the running-copy notice', {}, true]
+  ] as const)('does not report a move failure when %s fails to open', async (_label, overrides, running) => {
+    const { deps, app, dialog, logs } = makeDeps(overrides)
+
+    if (running) {
+      app.moveToApplicationsFolder.mockImplementation(options =>
+        Boolean(options?.conflictHandler?.('existsAndRunning'))
+      )
+    }
+
+    dialog.showMessageBox
+      .mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+      .mockRejectedValueOnce(new Error('notice failed'))
+
+    await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
+      action: 'continue',
+      reason: 'error',
+      location: 'read-only-volume',
+      error: 'notice failed'
+    })
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(2)
+    expect(logs.some(line => line.includes('move to /Applications failed'))).toBe(false)
+  })
+
+  it.each([
     ['a newer copy only in ~/Applications', { '/Users/alice/Applications/Hermes Agent.app': '0.30.0' }],
     [
       'a newer ~/Applications copy beside an older /Applications one',

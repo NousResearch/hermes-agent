@@ -485,26 +485,28 @@ async function attemptMoveToApplications(
 ): Promise<MacApplicationsGuardResult> {
   const readBundleVersion = deps.readBundleVersion ?? (target => readBundleShortVersion(target))
   const exists = deps.exists ?? fs.existsSync
+  const runningVersion = readBundleVersion(bundlePath) ?? deps.app.getVersion()
+
+  const checkInstalled = () => installedCopyBlockingMove(bundlePath, runningVersion, readBundleVersion, exists)
+
+  // The version answer comes first, so a newer copy gets "open that one" even when moving needs admin rights.
+  const preflight = checkInstalled()
+
+  if (preflight) {
+    return await reportInstalledCopyConflict(deps, location, runningVersion, preflight)
+  }
+
+  if (moveNeedsAdmin(bundlePath, exists, deps.writable ?? isWritable)) {
+    return await sendMoveToFinder(deps, location)
+  }
+
   let conflict: 'exists' | 'existsAndRunning' | null = null
   let blocked: InstalledCopyBlock | null = null
+  let moved: boolean
 
+  // Only Electron's mover is caught here: a notice that fails to open is not a failed move.
   try {
-    const runningVersion = readBundleVersion(bundlePath) ?? deps.app.getVersion()
-
-    const checkInstalled = () => installedCopyBlockingMove(bundlePath, runningVersion, readBundleVersion, exists)
-
-    // The version answer comes first, so a newer copy gets "open that one" even when moving needs admin rights.
-    const preflight = checkInstalled()
-
-    if (preflight) {
-      return await reportInstalledCopyConflict(deps, location, runningVersion, preflight)
-    }
-
-    if (moveNeedsAdmin(bundlePath, exists, deps.writable ?? isWritable)) {
-      return await sendMoveToFinder(deps, location)
-    }
-
-    const moved = deps.app.moveToApplicationsFolder({
+    moved = deps.app.moveToApplicationsFolder({
       conflictHandler: conflictType => {
         conflict = conflictType
 
@@ -517,63 +519,71 @@ async function attemptMoveToApplications(
         return blocked === null
       }
     })
-
-    if (moved) {
-      deps.log(`[install] relocated ${deps.appName} into /Applications from ${location}; relaunching`)
-
-      return { action: 'relaunching', location }
-    }
-
-    if (blocked) {
-      return await reportInstalledCopyConflict(deps, location, runningVersion, blocked)
-    }
-
-    if (conflict === 'existsAndRunning') {
-      deps.log(`[install] move to /Applications skipped: another copy of ${deps.appName} is already running`)
-      await deps.dialog.showMessageBox({
-        type: 'info',
-        title: `Could not move ${deps.appName}`,
-        message: `Another copy of ${deps.appName} is already running in Applications`,
-        detail:
-          `Quit the running copy in Applications, then move ${deps.appName} to Applications in Finder ` +
-          '(or reopen it from there).',
-        buttons: ['Continue'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true
-      })
-
-      return { action: 'continue', reason: 'conflict-running', location }
-    }
-
-    deps.log('[install] move to /Applications cancelled by user')
-
-    return { action: 'continue', reason: 'move-cancelled', location }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    return await reportMoveError(deps, location, error)
+  }
 
-    if (message === AUTHORIZATION_CANCELLED) {
-      deps.log('[install] move to /Applications cancelled at the admin password prompt')
+  if (moved) {
+    deps.log(`[install] relocated ${deps.appName} into /Applications from ${location}; relaunching`)
 
-      return { action: 'continue', reason: 'move-cancelled', location }
-    }
+    return { action: 'relaunching', location }
+  }
 
-    deps.log(`[install] move to /Applications failed: ${message}`)
+  if (blocked) {
+    return await reportInstalledCopyConflict(deps, location, runningVersion, blocked)
+  }
+
+  if (conflict === 'existsAndRunning') {
+    deps.log(`[install] move to /Applications skipped: another copy of ${deps.appName} is already running`)
     await deps.dialog.showMessageBox({
-      type: 'warning',
+      type: 'info',
       title: `Could not move ${deps.appName}`,
-      message: `${deps.appName} could not move itself to Applications`,
+      message: `Another copy of ${deps.appName} is already running in Applications`,
       detail:
-        `Quit ${deps.appName}, drag it into the Applications folder in Finder, then open it from there.\n\n` +
-        `Details: ${message}`,
+        `Quit the running copy in Applications, then move ${deps.appName} to Applications in Finder ` +
+        '(or reopen it from there).',
       buttons: ['Continue'],
       defaultId: 0,
       cancelId: 0,
       noLink: true
     })
 
-    return { action: 'continue', reason: 'move-failed', location, error: message }
+    return { action: 'continue', reason: 'conflict-running', location }
   }
+
+  deps.log('[install] move to /Applications cancelled by user')
+
+  return { action: 'continue', reason: 'move-cancelled', location }
+}
+
+async function reportMoveError(
+  deps: Pick<MacApplicationsGuardDeps, 'appName' | 'dialog' | 'log'>,
+  location: MacUnsafeBundleLocation,
+  error: unknown
+): Promise<MacApplicationsGuardResult> {
+  const message = error instanceof Error ? error.message : String(error)
+
+  if (message === AUTHORIZATION_CANCELLED) {
+    deps.log('[install] move to /Applications cancelled at the admin password prompt')
+
+    return { action: 'continue', reason: 'move-cancelled', location }
+  }
+
+  deps.log(`[install] move to /Applications failed: ${message}`)
+  await deps.dialog.showMessageBox({
+    type: 'warning',
+    title: `Could not move ${deps.appName}`,
+    message: `${deps.appName} could not move itself to Applications`,
+    detail:
+      `Quit ${deps.appName}, drag it into the Applications folder in Finder, then open it from there.\n\n` +
+      `Details: ${message}`,
+    buttons: ['Continue'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  })
+
+  return { action: 'continue', reason: 'move-failed', location, error: message }
 }
 
 type MacGuardPrecheck =

@@ -11,6 +11,7 @@ import threading
 from dataclasses import replace
 from datetime import datetime
 from gateway.config import Platform
+from gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
@@ -328,7 +329,6 @@ class SessionRecoveryMixin:
         chat's conversation: mark it adopted so the route guard (``is_delegate_child_row``, #138210) does
         not read the session the user chose as a stale capture and move the chat off it. ``_delegate_from``
         is kept: compression lineage and the still-running worker's publish check both read it."""
-        from gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
         store = self._persistence_for_key(session_key)
         record = store.sessions.get(session_id)
         if not (record and is_delegate_child_row(record.as_session_row())):

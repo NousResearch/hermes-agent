@@ -151,9 +151,11 @@ _COMPRESSION_LINEAGE_CTE = f"""
 # crash before ``switch_session`` still recovers it.
 # A row that also carries ``_reset_from`` is a /new continuation of the chat whose config picked up a
 # delegate marker (#109073), and one carrying ``_chat_adopted`` is a delegate row the user explicitly
-# switched the chat onto: both ARE the conversation, so they keep their route.
+# switched the chat onto: both ARE the conversation, so they keep their route. A markerless row a
+# subagent created (``created_source``, which the peer stamp never rewrites) is excluded the same way.
 _DELEGATE_CHILD_EXCLUSION_SQL = (
-    f"AND (COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
+    f"AND ((COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
+    " AND COALESCE(s.created_source, '') <> 'subagent')"
     f" OR {_sql_json_extract('s.model_config', '$._reset_from')} IS NOT NULL"
     f" OR {_sql_json_extract('s.model_config', '$._chat_adopted')} IS NOT NULL)"
 )

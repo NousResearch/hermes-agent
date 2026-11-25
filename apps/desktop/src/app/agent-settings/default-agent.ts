@@ -19,6 +19,7 @@ export function useDefaultAgent(owner: AgentSettingsOwner, profile?: ProfileInfo
   const defaultRoute = useStore($defaultProfileRoute)
   const [saving, setSaving] = useState(false)
   const route = { connectionId: owner.connectionId ?? null, profile: owner.profile }
+
   // No stored route means the app opens the backend's own default profile, so that agent is the
   // default until the user picks another (keeps this in step with the DEFAULT chip).
   const isDefault = defaultRoute

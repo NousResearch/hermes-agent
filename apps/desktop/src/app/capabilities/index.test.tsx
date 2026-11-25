@@ -187,6 +187,26 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
     })
   })
 
+  it.each([
+    [true, true],
+    [false, false]
+  ])('opens on the agent a link names in the redesign only (redesign %s)', async (redesign, linked) => {
+    $shellChoice.set(redesign)
+    getToolsets.mockClear()
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=connectors&agentProfile=ops']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    await waitFor(() => expect(getToolsets).toHaveBeenCalled())
+    expect(getToolsets.mock.calls.some(call => JSON.stringify(call).includes('ops'))).toBe(linked)
+  })
+
   it('keeps classic order and its Skills default', async () => {
     $shellChoice.set(false)
     await act(async () => {
@@ -582,7 +602,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       await waitFor(() => expect(getToolsets).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' }))
       fireEvent.click(screen.getByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings }))
       expect(navigateSpy).toHaveBeenCalledWith(
-        '/settings?agentProfile=default&panel=capabilities&tab=connectors&connection=homelab'
+        // From Connectors, which an agent's settings has no page for: the agent itself.
+        '/settings?agentProfile=default&connection=homelab'
       )
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop

@@ -20,6 +20,7 @@ it('counts toolsets that are on, skills that are on, and every routine the agent
   const counts = agentCapabilityCounts({ tools, skills, jobs, connectors: 3, plugins: 1 })
 
   expect(counts.tools).toEqual({ toolsets: 2, tools: 5 })
-  expect(counts.nav).toMatchObject({ tools: 2, skills: 1, schedules: 2, connectors: 3, plugins: 1 })
+  expect(counts.connectors).toBe(3)
+  expect(counts.nav).toMatchObject({ tools: 2, skills: 1, schedules: 2, plugins: 1 })
   expect(counts.skills).toBe(1)
 })

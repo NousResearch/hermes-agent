@@ -446,8 +446,8 @@ function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode
 
   const ownerQuery = new URLSearchParams({
     agentProfile: ownerProfile,
-    panel: 'capabilities',
-    tab: mode,
+    // Connectors have no page in an agent's settings: from that tab the link opens the agent.
+    ...(mode !== 'connectors' && { panel: 'capabilities', tab: mode }),
     connection: ownerConnection
   })
 

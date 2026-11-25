@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { AGENT_SETTINGS_GROUPS, agentSettingsSearch, resolveAgentSettingsSection } from './settings-routes'
+import {
+  AGENT_SETTINGS_GROUPS,
+  agentConnectorsHref,
+  agentSettingsSearch,
+  isAgentConnectorsLink,
+  resolveAgentSettingsSection
+} from './settings-routes'
 
 describe('agent settings routes', () => {
   it('keeps the owner when moving between config, capability and runtime controls', () => {
@@ -37,7 +43,6 @@ describe('agent settings routes', () => {
   it.each([
     ['tools', 'panel=capabilities&tab=toolsets'],
     ['skills', 'panel=capabilities&tab=skills'],
-    ['connectors', 'panel=capabilities&tab=mcp'],
     ['plugins', 'panel=capabilities&tab=plugins'],
     ['providers', 'panel=settings&tab=providers'],
     ['limits', 'panel=settings&tab=config:advanced&page=terminal'],
@@ -45,6 +50,17 @@ describe('agent settings routes', () => {
     ['browser', 'panel=settings&tab=vault&page=sources']
   ])('opens %s from the link shape app Settings and Capabilities write', (section, link) => {
     expect(resolveAgentSettingsSection(new URLSearchParams(`agentProfile=research&${link}`))).toBe(section)
+  })
+
+  it.each(['connectors', 'mcp'])('has no Connectors page: an old %s link is a link to Capabilities for that agent', tab => {
+    const params = new URLSearchParams(`agentProfile=research&connection=homelab&panel=capabilities&tab=${tab}`)
+
+    expect(resolveAgentSettingsSection(params)).toBeNull()
+    expect(isAgentConnectorsLink(params)).toBe(true)
+    expect(agentConnectorsHref({ connectionId: 'homelab', profile: 'research' })).toBe(
+      '/capabilities?tab=connectors&agentProfile=research&connection=homelab'
+    )
+    expect(AGENT_SETTINGS_GROUPS.flatMap(([, sections]) => sections)).not.toContain('connectors')
   })
 
   it('round-trips every menu section through the link it writes', () => {

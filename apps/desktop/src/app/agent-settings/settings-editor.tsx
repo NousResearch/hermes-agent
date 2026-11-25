@@ -84,7 +84,6 @@ export function useAgentSettingsLabels(): AgentSettingsLabels {
     voice: a.voice,
     tools: a.tools,
     skills: a.skills,
-    connectors: a.connectors,
     plugins: t.skills.tabPlugins,
     messaging: t.sidebar.nav.messaging,
     schedules: t.cron.title,

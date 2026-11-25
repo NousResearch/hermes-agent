@@ -1,9 +1,10 @@
+import { CAPABILITIES_ROUTE } from '../routes'
 import { CONFIG_SUBPAGES } from '../settings/config-subpages'
 
 export const AGENT_SETTINGS_GROUPS = [
   ['agent', ['general', 'instructions']],
   ['behavior', ['model', 'chat', 'memory', 'voice']],
-  ['capabilities', ['tools', 'skills', 'connectors', 'plugins', 'messaging', 'schedules']],
+  ['capabilities', ['tools', 'skills', 'plugins', 'messaging', 'schedules']],
   ['access', ['safety', 'browser', 'providers']],
   ['runtime', ['workspace', 'limits']]
 ] as const
@@ -16,7 +17,7 @@ export interface AgentSettingsPage {
   /** The ConfigSettings section its page renders. */
   config?: string
   /** The Capabilities tab its page pins. */
-  capability?: 'connectors' | 'plugins' | 'skills' | 'toolsets'
+  capability?: 'plugins' | 'skills' | 'toolsets'
 }
 
 /** What each section's page is: every route, link and editor branch below reads this one table. */
@@ -29,7 +30,6 @@ export const AGENT_SETTINGS_PAGES: Record<AgentSettingsSection, AgentSettingsPag
   voice: { configLink: true, config: 'voice' },
   tools: { capability: 'toolsets' },
   skills: { capability: 'skills' },
-  connectors: { capability: 'connectors' },
   plugins: { capability: 'plugins' },
   messaging: {},
   schedules: {},
@@ -86,10 +86,25 @@ export function resolveAgentSettingsSection(params: URLSearchParams): AgentSetti
     return 'providers'
   }
 
-  // The Capabilities page's own tabs; its old MCP tab is Connectors now.
-  const capability = tab === 'mcp' ? 'connectors' : tab
+  return SECTIONS.find(section => AGENT_SETTINGS_PAGES[section].capability === tab) ?? null
+}
 
-  return SECTIONS.find(section => AGENT_SETTINGS_PAGES[section].capability === capability) ?? null
+/** Connectors are not one of an agent's settings pages: they are set up on Capabilities, for the
+ *  agent chosen there. A link to the page they had here (`tab=connectors`, or its older `tab=mcp`)
+ *  is a link to that. */
+export function isAgentConnectorsLink(params: URLSearchParams): boolean {
+  return ['connectors', 'mcp'].includes(params.get('tab') ?? '')
+}
+
+/** Capabilities > Connectors, opened on one agent. */
+export function agentConnectorsHref(agent: { connectionId?: null | string; profile: string }): string {
+  const query = new URLSearchParams({ tab: 'connectors', agentProfile: agent.profile })
+
+  if (agent.connectionId) {
+    query.set('connection', agent.connectionId)
+  }
+
+  return `${CAPABILITIES_ROUTE}?${query}`
 }
 
 function resolveConfigSettingsSection(section: string, page: string | null): AgentSettingsSection | null {

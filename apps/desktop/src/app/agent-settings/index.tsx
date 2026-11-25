@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useLocation, useNavigate } from 'react-router'
+import { Navigate, useLocation, useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
 import { AgentScreenThumbnail, useAgentScreen } from '@/app/chat/sidebar/portal/portal-agent-screen'
@@ -62,7 +62,7 @@ import { useAgentSettingsEditorCopy } from './settings-copy'
 import { agentCapabilityCounts } from './settings-counts'
 import { AgentSettingsEditor } from './settings-editor'
 import { AgentSettingsPanel, useInlineAgentSettingsMenu } from './settings-panel'
-import { resolveAgentSettingsSection } from './settings-routes'
+import { agentConnectorsHref, isAgentConnectorsLink, resolveAgentSettingsSection } from './settings-routes'
 
 interface AgentSettingsViewProps extends SettingsPageProps {
   /** Resolved once, on entry (entry.tsx): every read, write and cache key below uses this identity. */
@@ -543,6 +543,11 @@ function AgentSettingsContent({
 
   const emptySessions = <RecentPlaceholder recent={recent} />
 
+  // An old link to the Connectors page this agent's settings had.
+  if (isAgentConnectorsLink(params)) {
+    return <Navigate replace to={agentConnectorsHref(owner)} />
+  }
+
   return (
     <Panel contentClassName="agent-management page-stage" onClose={props.onClose}>
       {selectedTab === 'settings' ? (
@@ -637,8 +642,9 @@ function AgentSettingsContent({
                   title={c.skills}
                 />
                 <SettingRow
-                  detail={pending(connectors.failed, counts.nav.connectors === undefined, counts.nav.connectors)}
-                  onClick={() => openPanel('capabilities', 'connectors')}
+                  detail={pending(connectors.failed, counts.connectors === undefined, counts.connectors)}
+                  // Connectors are set up on Capabilities, not in an agent's settings: there, for this agent.
+                  onClick={() => navigate(agentConnectorsHref(owner))}
                   title={c.connectors}
                 />
                 <SettingRow

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { DesktopRosterAgent } from '@/global'
@@ -57,7 +58,19 @@ export function useCapabilityScope({
 }): CapabilityScope {
   const redesign = usePortalShell()
   const activeProfile = useStore($activeGatewayProfile)
-  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(null)
+  const { search } = useLocation()
+
+  // The redesign's agent pages link here for one agent (its Connectors live on this page): open on
+  // that agent, as if it had been picked. Read once; the selector owns it from then on.
+  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(() => {
+    const params = new URLSearchParams(search)
+    const profile = redesign && !fixedProfile ? params.get('agentProfile') : null
+    const connectionId = params.get('connection')
+
+    return profile && connectionId && connectionId !== (activeGatewayConnectionId() ?? 'local')
+      ? { connectionId, profile }
+      : profile
+  })
 
   // The picked row, as the selector names it.
   const selection: ProfileScope = useMemo(

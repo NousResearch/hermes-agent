@@ -19,11 +19,11 @@ from pathlib import Path
 
 from hermes_cli._subprocess_compat import (
     FILTER_DISCOVERY_FAILED,
+    _git_argv0_unusable,
     harden_git_argv,
     noninteractive_git_env,
     noninteractive_repo_git_env,
 )
-from hermes_platform.resolver.git import resolve_usable_git
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -40,7 +40,10 @@ _TRUNK_BRANCHES = ("main", "master")
 def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.CompletedProcess | None:
     """Non-interactive subprocess (stdin nulled, prompts disabled): a credential prompt from
     ``fetch``/``push`` could never be answered from a REST request, so fail fast and surface
-    the real auth error in the toast. None when the process could not run at all."""
+    the real auth error in the toast. None when the process could not run at all, including a
+    git that is missing or is macOS's uninstalled CLT stub (launching it opens Apple's dialog)."""
+    if _git_argv0_unusable(argv, env):
+        return None
     try:
         return subprocess.run(
             argv, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
@@ -52,8 +55,6 @@ def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.Compl
 
 
 def _git_in(cwd: str, args: list[str], timeout: int, env: dict) -> tuple[int, str, str]:
-    if resolve_usable_git(env) is None:
-        return 1, "", "git is not available"
     proc = _run(["git", *harden_git_argv(args)], cwd, timeout, env)
     if proc is None:
         return 1, "", "git invocation failed"

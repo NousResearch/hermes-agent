@@ -287,6 +287,20 @@ def test_clt_stub_never_spawns_version_info_probes(tmp_path, clt_stub_env):
 
 
 @pytest.mark.platforms("posix")
+def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
+    """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
+    from hermes_cli import web_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+
+    with pytest.raises(RuntimeError):
+        web_git.review_commit(str(repo), "message", False)
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_resume_workspace_key_keeps_users_git_dir_and_work_tree(tmp_path, monkeypatch):
     """``--resume latest`` groups by the repo root git reports for the user's own environment:
     a dotfiles-style ``GIT_DIR``/``GIT_WORK_TREE`` pair must still name the work tree."""

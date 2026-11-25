@@ -422,3 +422,44 @@ class TestEmphasisSpanningAnotherInlineConstruct:
 
 
 
+
+
+class TestOpaqueInlineConstructs:
+    """Emphasis delimiters inside identifiers, link targets and bare URLs are text.
+
+    Regression: ``_`` was emphasis anywhere, so ``config_version`` or a path such as
+    ``/home/mike_kim/a_b`` rendered an italic fragment, and resolving emphasis before
+    links let a ``_`` in a link target pair with one in the label.
+    """
+
+    def test_intraword_underscores_stay_literal(self):
+        blocks = render_blocks("- config_version and /home/mike_kim/a_b")
+        assert _texts(blocks) == ["config_version and /home/mike_kim/a_b"]
+
+    def test_word_bounded_underscore_emphasis_still_renders(self):
+        blocks = render_blocks("- _note_ and __loud__")
+        styled = {e["text"]: e["style"] for e in _elements(blocks, "text") if e.get("style")}
+        assert styled == {"note": {"italic": True}, "loud": {"bold": True}}
+
+    def test_underscores_in_a_link_target_do_not_pair_with_the_label(self):
+        blocks = render_blocks("- see [a_b](https://example.com/x_y_z) now")
+        links = _elements(blocks, "link")
+        assert [(link["text"], link["url"]) for link in links] == [("a_b", "https://example.com/x_y_z")]
+        assert "style" not in links[0]
+
+    def test_bare_url_becomes_a_link_without_trailing_punctuation(self):
+        blocks = render_blocks("- docs: https://example.com/a_b_c.")
+        links = _elements(blocks, "link")
+        assert [link["url"] for link in links] == ["https://example.com/a_b_c"]
+        assert _texts(blocks)[-1] == "."
+
+    def test_bare_url_inside_bold_keeps_the_marker_out_of_the_href(self):
+        blocks = render_blocks("- **PR open https://example.com/pull/94** done")
+        links = _elements(blocks, "link")
+        assert [link["url"] for link in links] == ["https://example.com/pull/94"]
+        assert links[0]["style"] == {"bold": True}
+
+    def test_bare_url_stops_at_non_ascii_text(self):
+        links = _elements(render_blocks("- https://example.com/a에서 확인"), "link")
+        assert [link["url"] for link in links] == ["https://example.com/a"]
+

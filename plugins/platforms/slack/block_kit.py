@@ -87,18 +87,58 @@ _SLACK_LINK_RE = re.compile(
 _SLACK_MENTION_RE = re.compile(
     r"<(@[A-Z0-9]+|#[A-Z0-9]+|!subteam\^[A-Z0-9]+|!(?:here|channel|everyone))(?:\|[^>]*)?>"
 )
-_BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
-_ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
+# ``*`` emphasis ignores word boundaries on purpose: unspaced scripts put a particle
+# or the next word flush against the closing delimiter (``**굵게**로``, ``**太字**です``).
+# ``_`` emphasis requires them, as in CommonMark, so identifiers and paths such as
+# ``config_version`` or ``/home/a_b`` stay literal.
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|(?<![\w_])__(?![\s_])(.+?)(?<![\s_])__(?![\w_])")
+_ITALIC_RE = re.compile(
+    r"(?<![\*_])\*(?![\*\s])(.+?)(?<![\*\s])\*(?![\*_])"
+    r"|(?<![\w\*_])_(?![_\s])(.+?)(?<![_\s])_(?![\w\*_])"
+)
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
+# Bare URL: ASCII URL characters only, so text written flush against it (``…/a에서``)
+# is not swallowed; ``*`` is excluded so a closing bold marker never joins the href.
+_BARE_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()+,;=%]+")
+_URL_TRAILING_PUNCT = ".,;:!?'"
 
 # Strongest emphasis first, each paired with the width of its closing delimiter, so a
-# candidate match can be rejected when that delimiter sits inside an inline code span
-# (code is opaque: a `*` or `_` between backticks is never emphasis).
+# candidate match can be rejected when that delimiter sits inside an opaque span
+# (see _opaque_spans: a `*` or `_` there is never emphasis).
 _EMPHASIS_RULES = (
     (_BOLD_RE, "bold", 2),
     (_STRIKE_RE, "strike", 2),
     (_ITALIC_RE, "italic", 1),
 )
+
+
+def _bare_url_spans(s: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of each bare http(s) URL in ``s``, minus trailing sentence punctuation
+    and an unbalanced closing parenthesis (``(see https://x.y/z)``)."""
+    spans = []
+    for m in _BARE_URL_RE.finditer(s):
+        url = m.group(0)
+        while url and (url[-1] in _URL_TRAILING_PUNCT or (url[-1] == ")" and url.count(")") > url.count("("))):
+            url = url[:-1]
+        if len(url) > len("https://"):
+            spans.append((m.start(), m.start() + len(url)))
+    return spans
+
+
+def _opaque_spans(s: str) -> list[tuple[int, int]]:
+    """Spans whose characters are never emphasis delimiters: inline code, markdown link
+    targets, Slack ``<…>`` tokens and bare URLs."""
+    spans = [(m.start(), m.end()) for m in _INLINE_CODE_RE.finditer(s)]
+    spans += [(m.start(2), m.end(2)) for m in _LINK_RE.finditer(s)]
+    spans += [(m.start(), m.end()) for m in _SLACK_LINK_RE.finditer(s)]
+    spans += [(m.start(), m.end()) for m in _SLACK_MENTION_RE.finditer(s)]
+    spans += _bare_url_spans(s)
+    return spans
+
+
+def _emphasis_inner(m: re.Match) -> str:
+    """The span an emphasis match wraps, whichever delimiter alternative matched."""
+    return next(g for g in m.groups() if g is not None)
 
 
 def _mention_element(body: str) -> Optional[dict[str, Any]]:
@@ -136,13 +176,14 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
     # Emphasis is resolved outermost, then inline code, then links. That order is
     # the fix, not an accident: emphasis has to be found before the constructs it
     # may wrap, or its own delimiters get consumed as ordinary text by the earlier
-    # passes and leak into the rendered message (see _EMPHASIS_RULES below). Code
-    # spans stay opaque — a `*` or `_` inside backticks is never emphasis — so a
-    # candidate match is only accepted when both of its delimiters sit outside one.
+    # passes and leak into the rendered message (see _EMPHASIS_RULES). Code spans,
+    # link targets, Slack <...> tokens and bare URLs stay opaque — a `*` or `_`
+    # inside them is never emphasis — so a candidate match is only accepted when
+    # both of its delimiters sit outside one.
     def walk(s: str, style: dict[str, bool]) -> None:
         if not s:
             return
-        spans = [(m.start(), m.end()) for m in _INLINE_CODE_RE.finditer(s)]
+        spans = _opaque_spans(s)
 
         def opaque(pos: int) -> bool:
             return any(a <= pos < b for a, b in spans)
@@ -154,7 +195,7 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
                 inner_style = dict(style)
                 inner_style[key] = True
                 walk(s[: m.start()], style)
-                walk(m.group(1), inner_style)
+                walk(_emphasis_inner(m), inner_style)
                 walk(s[m.end() :], style)
                 return
         _walk_code(s, style)
@@ -187,10 +228,19 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
         # (works in section/mrkdwn; was literal in lists/quotes/table cells).
         pos = 0
         for m in _SLACK_LINK_RE.finditer(s):
-            _emit_leaf(s[pos : m.start()], style)
+            _walk_bare_urls(s[pos : m.start()], style)
             url = m.group(1)
             _emit_link(url, m.group(2) or url, style)
             pos = m.end()
+        _walk_bare_urls(s[pos:], style)
+
+    def _walk_bare_urls(s: str, style: dict[str, bool]) -> None:
+        # mrkdwn autolinks bare URLs; rich_text text does not, so emit link elements.
+        pos = 0
+        for start, end in _bare_url_spans(s):
+            _emit_leaf(s[pos:start], style)
+            _emit_link(s[start:end], s[start:end], style)
+            pos = end
         _emit_leaf(s[pos:], style)
 
     def _emit_leaf(s: str, style: dict[str, bool]) -> None:

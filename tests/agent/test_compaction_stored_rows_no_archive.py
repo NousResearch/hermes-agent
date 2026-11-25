@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
+from agent.context_compressor import _LEAN_RECOVERY_HEADING, COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
 from session_rules.turns import _DB_PERSISTED_MARKER
 from tools.tool_result_storage import ARCHIVE_LIST_HEADING, pruned_archive_refs
 
@@ -154,5 +154,14 @@ def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_fil
                              if m.get("role") == "tool" and str(m.get("content")).startswith("NEEDLE-")})
         assert replaced, "the window replaced no tool result whole"
         assert not _archived(home) - pruned_archive_refs(active)  # no file only a dropped row would name
-        hit = json.loads(session_search(query=f"NEEDLE-{replaced[0]:02d}", role_filter="tool", persistence=db))
-        assert f"NEEDLE-{replaced[0]:02d}" in json.dumps(hit)
+        # The two calls the Context Recovery footer names, made from inside the session as the agent makes them.
+        footer = summary.split(_LEAN_RECOVERY_HEADING, 1)[1]
+        assert "role_filter='user,assistant,tool'" in footer and f"session_id='{sid}', around_message_id=" in footer
+        needle = f"NEEDLE-{replaced[0]:02d}"
+        hit = json.loads(session_search(query=needle, role_filter="user,assistant,tool", persistence=db,
+                                        current_session_id=sid))
+        (match,) = [r["match_message_id"] for r in hit["results"]]
+        page = json.loads(session_search(session_id=sid, around_message_id=match, persistence=db,
+                                         current_session_id=sid))
+        (original,) = [m["content"] for m in msgs if m.get("role") == "tool" and m["content"].startswith(needle)]
+        assert original in [m.get("content") for m in page["messages"]]  # byte-exact, as the file was

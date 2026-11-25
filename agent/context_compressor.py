@@ -915,8 +915,10 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
         f"The {region_len} compacted message(s) remain fully preserved in "
         "session history. If you need any detail this summary does not carry "
         "(exact command output, file contents, error text, earlier "
-        "reasoning), recover it with: "
-        f"session_search(query='<keywords>', session_id='{session_id}') — "
+        "reasoning), find it with "
+        "session_search(query='<keywords>', role_filter='user,assistant,tool') "
+        f"and read a hit whole with session_search(session_id='{session_id}', "
+        "around_message_id=<its match_message_id>) — "
         "do not guess at lost specifics when you can look them up."
     )
 

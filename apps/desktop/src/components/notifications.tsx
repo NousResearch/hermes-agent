@@ -148,7 +148,9 @@ function TopCenterStack({
               // Clears every transient toast, as before; persistent cards in
               // this stack go too, since Clear all is the explicit dismissal.
               clearNotifications()
-              notifications.filter(notification => notification.persistent).forEach(notification => dismissNotification(notification.id))
+              notifications
+                .filter(notification => notification.persistent)
+                .forEach(notification => dismissNotification(notification.id))
             }}
             size="xs"
             type="button"

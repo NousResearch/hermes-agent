@@ -131,6 +131,7 @@ test('an SSH route is the same gateway only with the same remote profile', () =>
     mode: 'ssh',
     remote: { host: 'box.lan', user: 'me', port: 22, remoteProfile }
   })
+
   assert.equal(globalRouteRemoved(registry, route('coder')), false)
   assert.equal(globalRouteRemoved(registry, route('writer')), true, 'the removed profile route survived on a sibling')
   assert.equal(globalRouteRemoved(registry, { mode: 'local', remote: {} }), false)

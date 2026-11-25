@@ -22,7 +22,11 @@ vi.mock('@/hermes', async importOriginal => ({
 
 import { queryClient } from '@/lib/query-client'
 import { $notifications } from '@/store/notifications'
-import { $pluginInstallRequest, closePluginInstallRequest, openPluginInstallRequest } from '@/store/plugin-install-request'
+import {
+  $pluginInstallRequest,
+  closePluginInstallRequest,
+  openPluginInstallRequest
+} from '@/store/plugin-install-request'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
@@ -139,7 +143,11 @@ describe('Install after the source moved past the reviewed commit', () => {
 
     const installDesktopPlugin = vi
       .fn()
-      .mockResolvedValueOnce({ ok: false, sourceMoved: true, error: 'The commit you reviewed could not be checked out.' })
+      .mockResolvedValueOnce({
+        ok: false,
+        sourceMoved: true,
+        error: 'The commit you reviewed could not be checked out.'
+      })
       .mockResolvedValueOnce({ ok: true, pluginName: 'ui' })
 
     vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo })

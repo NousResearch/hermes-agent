@@ -40,6 +40,12 @@ vi.mock(import('@/store/terminal-backend-warning'), () => ({
 
 type ConnectionAppliedDetail = { profile?: string }
 
+interface RerouteWorld {
+  failLookups: number
+  lookupFailed?: () => void
+  sandboxed: boolean
+}
+
 let connectionApplied: null | ((detail?: ConnectionAppliedDetail) => void) = null
 
 const primaryConn = {
@@ -292,7 +298,7 @@ describe('a plugin re-routes one profile', () => {
 
   // `default` is the window's primary and `work` rides its socket (the one host backend) until a
   // plugin takes it over. The next `world.failLookups` route lookups for `work` reject.
-  function sharedThenSandboxed(world: { failLookups: number; sandboxed: boolean }) {
+  function sharedThenSandboxed(world: RerouteWorld) {
     const desktop = fakeDesktop()
     const sharedWork = { ...primaryConn, profile: 'work', sharedPrimary: true }
     const launcherWork = { ...launcherConn, profile: 'work' }
@@ -306,6 +312,7 @@ describe('a plugin re-routes one profile', () => {
 
       if (world.failLookups > 0) {
         world.failLookups -= 1
+        world.lookupFailed?.()
 
         throw new Error('route lookup failed')
       }
@@ -381,7 +388,7 @@ describe('a plugin re-routes one profile', () => {
   })
 
   it('a retry leaves the profile alone once a newer move has put it on its own socket', async () => {
-    const world = { failLookups: 0, sandboxed: false }
+    const world: RerouteWorld = { failLookups: 0, sandboxed: false }
     const { launcherWork } = sharedThenSandboxed(world)
 
     render(<Harness />)
@@ -392,8 +399,12 @@ describe('a plugin re-routes one profile', () => {
     // The first move's lookup fails and its redial waits; the second move's redial lands at once.
     world.sandboxed = true
     world.failLookups = 1
+    const firstLookupFailed = new Promise<void>(resolve => (world.lookupFailed = resolve))
+    // A zero-length retry wait: the first redial wakes before the newer move's socket is up.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
     act(() => connectionApplied?.({ profile: 'work' }))
-    await pause(5)
+    // A wall-clock pause here can outlast the first redial's wait on a loaded runner.
+    await firstLookupFailed
     act(() => connectionApplied?.({ profile: 'work' }))
 
     for (let i = 0; i < 100 && isActivePrimary(); i += 1) {

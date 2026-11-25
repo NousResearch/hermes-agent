@@ -138,9 +138,26 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
 
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, bridge_dependency_install_lock
+    if bridge_dependencies_ready(bridge_dir):
+        print("✓ Bridge dependencies already installed")
+        return True
+    try:
+        with bridge_dependency_install_lock(bridge_dir):
+            if bridge_dependencies_ready(bridge_dir):
+                return True
+            return _whatsapp_install_bridge_unlocked(bridge_dir)
+    except (OSError, TimeoutError) as exc:
+        print(f"  ✗ Bridge dependency lock failed: {exc}")
+        return False
+
+
+def _whatsapp_install_bridge_unlocked(bridge_dir) -> bool:
     from hermes_constants import find_node_executable, with_hermes_node_path
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, stamp_bridge_dependencies
     from utils import env_int
-    if _whatsapp_bridge_dependencies_current(bridge_dir):
+    if bridge_dependencies_ready(bridge_dir) or _whatsapp_bridge_dependencies_current(bridge_dir):
+        stamp_bridge_dependencies(bridge_dir)
         print("✓ Bridge dependencies already installed")
         return True
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
@@ -158,9 +175,12 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
-            encoding="utf-8", errors="replace", env=env, check=False)
-    except (pm.InstallError, OSError, subprocess.TimeoutExpired) as exc:
+            encoding="utf-8", errors="replace", env=env, check=False,
+            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300))
+    except subprocess.TimeoutExpired:
+        print("  ✗ Bridge dependency install timed out")
+        return False
+    except (pm.InstallError, OSError) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
         return False
     except KeyboardInterrupt:
@@ -171,6 +191,7 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
         _say("  ✗ npm install failed:", preview)
         return False
+    stamp_bridge_dependencies(bridge_dir)
     print("  ✓ Dependencies installed")
     return True
 
@@ -191,7 +212,24 @@ def cmd_whatsapp(args):
     from hermes_cli.main import _require_tty, get_hermes_home
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
-    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
+    from hermes_constants import (ensure_private_store, find_node_executable, profile_name_for_home,
+                                  with_hermes_node_path)
+    from hermes_cli.gateway_multiplex_served import notify_gateway_whatsapp_paired
+
+    def activate_if_running() -> bool:
+        home = get_hermes_home()
+        profile = profile_name_for_home(home) or "default"
+        answer = notify_gateway_whatsapp_paired(home, profile)
+        if answer and (answer.get("active") or answer.get("pending")):
+            print("  WhatsApp is activating on the running gateway; no restart needed.")
+            return True
+        if answer and answer.get("retrying"):
+            print("  Gateway is retrying the WhatsApp connection; check 'hermes gateway status'.")
+            return True
+        if answer and answer.get("reason"):
+            print(f"  Gateway could not activate WhatsApp ({answer['reason']}); check 'hermes gateway status'.")
+            return True
+        return False
     _say("", "☤ WhatsApp Setup", "=" * 50)
 
     wa_mode = _whatsapp_choose_mode(get_env_value, save_env_value)
@@ -235,7 +273,9 @@ def cmd_whatsapp(args):
             # Older installs may have lost WHATSAPP_ENABLED; a kept pairing re-asserts it.
             if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
                 save_env_value("WHATSAPP_ENABLED", "true")
-            _say("\n✓ WhatsApp is configured and paired!", "  Start the gateway with: hermes gateway")
+            _say("\n✓ WhatsApp is configured and paired!")
+            if not activate_if_running():
+                print("  Start or update the gateway with: hermes gateway")
             return
 
     # QR code pairing
@@ -274,9 +314,13 @@ def cmd_whatsapp(args):
     if pair_result is None or pair_result.returncode != 0 or not _whatsapp_has_paired_identity(session_dir):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
         return
+    from plugins.platforms.whatsapp.activation import stamp_whatsapp_pairing
+    stamp_whatsapp_pairing(session_dir)
     # Only enable WhatsApp now that pairing actually succeeded (see above).
     save_env_value("WHATSAPP_ENABLED", "true")
     _say("✓ WhatsApp paired successfully!", "")
+    if activate_if_running():
+        return
     if wa_mode == "bot":
         _say("  Next steps:", "    1. Start the gateway:  hermes gateway",
              "    2. Send a message to the bot's WhatsApp number",

@@ -250,7 +250,24 @@ def _session_is_reapable(sid: str, session: dict) -> bool:
     poller that delivers both, and ``agent_close`` kills the process). Kept out of ``_sessions_quiescent``: an idle
     session waiting on a wake-up does not block a memory trim."""
     return (_session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
-            and not _session_owns_pending_process_notification(session))
+            and not _session_owns_pending_process_notification(session)
+            and not _queued_prompt_is_fresh(session))
+
+
+def _queued_prompt_is_fresh(session: dict) -> bool:
+    """A queued prompt on a recently active session is pending work: it drains at the idle boundary after the
+    turn's housekeeping. Bounded by ``_QUEUED_PROMPT_SPARE_S``, so a queue that never drains does not pin the
+    session; the first time a stuck queue makes a session reapable is logged."""
+    if not session.get("queued_prompt"):
+        return False
+    idle_s = time.time() - float(session.get("last_active") or 0.0)
+    if idle_s <= _QUEUED_PROMPT_SPARE_S:
+        return True
+    if not session.get("_queued_prompt_stale_logged"):
+        session["_queued_prompt_stale_logged"] = True
+        logger.warning("reaper: session %s still holds a queued prompt after %.0fs idle; it is reapable",
+                       session.get("session_key") or "?", idle_s)
+    return False
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:

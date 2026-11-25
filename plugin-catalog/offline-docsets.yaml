@@ -1,0 +1,24 @@
+name: offline-docsets
+title: Offline Docsets
+repo: https://github.com/nftpoetrist/hermes-offline-docsets
+sha: 85e217acfbdd8c0b081d74b79703018e998ae8c0
+description: "Lets the agent look up API documentation in docsets on this machine without internet access: the offline format Dash and Zeal use, with an index of every function, class and guide plus the HTML pages (Kapeli's public feeds list about 180, among them Python, Node.js, Bash, SQLite and Vim). docset_list lists the docsets configured under plugins.entries.offline-docsets.settings.paths, docset_search looks entries up by name in Dash's searchIndex or Apple's Core Data index, and docset_read returns a page as plain text starting at the entry's own section, in parts, with in-docset links listed. Standard library only. Not affiliated with Kapeli or Zeal. Disclosure — reads only the docsets you configure, and only pages inside each docset's Documents folder (paths through .., encoded .., absolute paths or symlinks that leave it are refused); opens the SQLite index with mode=ro&immutable=1 so nothing is written, a WAL-mode index's -wal and -shm files included; makes no network calls, needs no credentials and runs no commands. Page text is returned to the model as the documentation's authors wrote it, with scripts and styles stripped."
+maintainer: nftpoetrist
+tier: community
+category: tools
+requires_hermes: ">=0.23.4"
+version: "0.1.0"
+docs_url: https://github.com/nftpoetrist/hermes-offline-docsets#readme
+readme: true
+known_issues:
+  - "Docsets without an unpacked Contents/Resources/Documents folder (for example compressed ones) are reported as unavailable."
+  - "Search matches entry names, not the full text of pages."
+  - "An index whose -wal or -journal file is not empty (another program is still writing it) is reported as unavailable until that program closes it."
+capabilities:
+  provides_tools:
+    - docset_list
+    - docset_search
+    - docset_read
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

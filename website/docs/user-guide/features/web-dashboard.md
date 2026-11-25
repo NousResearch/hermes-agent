@@ -561,7 +561,7 @@ that exist only in the old unit's environment into `.env` (names are printed, va
 gateway as a user service (`hermes gateway install`, which also tries to enable lingering; a launchd agent
 on macOS), stops and disables the old unit (its file is kept; a drop-in `UNIT.d/hermes-migrated.conf` with
 `RestartPreventExitStatus=78` makes a later manual start exit once and stay down), starts the gateway and
-checks every address it now listens on within 90 seconds: `/api/status` answers from the gateway and the
+checks every address it now listens on within 300 seconds: `/api/status` answers from the gateway and the
 Webapp page itself is served. A backend you started by hand is stopped by its recorded process ID (only
 while that ID is still the same process); there is nothing to disable. Any failure puts back what the run
 had changed, and only that: the files, the gateway service exactly as it was, and the old unit with the

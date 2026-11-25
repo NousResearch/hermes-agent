@@ -12,3 +12,5 @@ def test_the_dry_run_section_no_longer_says_apply_is_unavailable():
     assert "not available in this version" not in text
     assert "without `--dry-run` exits 2" not in text
     assert "{#moving-a-dashboard-backend-to-the-gateway}" in text  # the section the dry run points to
+    assert "within 300 seconds" in text
+    assert "within 90 seconds" not in text

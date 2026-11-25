@@ -130,6 +130,8 @@ export const zhHantSettings = {
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       sessions: '工作階段',
+      backup: '備份與移轉',
+      backupOnly: '備份',
       about: '關於',
       billing: '帳單',
       notifications: '通知',
@@ -254,6 +256,15 @@ export const zhHantSettings = {
           insecure: '需要 HTTPS，例如 Tailscale serve。使用一般 HTTP 時只有分頁標題會閃爍。',
           unsupported: '此瀏覽器無法顯示通知。分頁標題仍會閃爍。'
         }
+      },
+      phonePresence: {
+        title: '此電腦（手機通知）',
+        description: '此視窗告訴 Hermes 你是否在這裡。如何處理由手機通知外掛決定。',
+        unsupported: '在此後端上，手機通知不受你的活動影響。',
+        disconnected: '未連線。',
+        watchingComputer: (time: string) => `當此視窗中開啟對話時，Hermes 會得知你上次使用這台電腦的時間。上次輸入在 ${time} 前。`,
+        watchingWindow: (time: string) => `當此視窗中開啟對話時，Hermes 會得知你上次使用此視窗的時間。上次輸入在 ${time} 前。`,
+        watchingWindowNoInput: '當此視窗中開啟對話時，Hermes 會得知你上次使用此視窗的時間。尚未偵測到任何輸入。'
       },
       test: '傳送測試通知',
       testTitle: 'Hermes',

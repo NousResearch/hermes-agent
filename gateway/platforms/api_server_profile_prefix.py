@@ -10,6 +10,13 @@ DEFAULT_PROFILE_HANDLE = "hermes"
 # 404 body for a prefix naming no profile here. Older gateways also send it for a 'hermes' profile
 # they do not serve, so peer clients treat it as ambiguous and never reroute @hermes on it.
 UNKNOWN_PROFILE_ERROR = "Unknown or unconfigured profile"
+# The typed verdict in that body; peer clients key on it. The sentence stays byte-identical
+# because clients older than the code match it exactly.
+UNKNOWN_PROFILE_CODE = "profile_unknown"
+
+
+def unknown_profile_body() -> dict[str, str]:
+    return {"error": UNKNOWN_PROFILE_ERROR, "code": UNKNOWN_PROFILE_CODE}
 
 
 def _handle_is_free() -> bool:
@@ -43,7 +50,7 @@ def rejection_response(request: Any):
         return web.json_response({"error": {
             "message": f"Profile '{DEFAULT_PROFILE_HANDLE}' exists on this host but this gateway does not serve it",
             "code": "profile_not_served"}}, status=404)
-    return web.json_response({"error": UNKNOWN_PROFILE_ERROR}, status=404)
+    return web.json_response(unknown_profile_body(), status=404)
 
 
 def resolve_request_profile(adapter: Any, request: Any):

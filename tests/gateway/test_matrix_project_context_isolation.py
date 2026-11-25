@@ -12,7 +12,6 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
-from hermes_state import AsyncSessionDB
 from gateway.session import (
     SessionContext,
     SessionEntry,
@@ -245,7 +244,10 @@ def _entry(source: SessionSource, session_id: str, title: str | None = None) -> 
 def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
     from gateway.run import GatewayRunner
 
-    runner = object.__new__(GatewayRunner)
+    class _Runner(GatewayRunner):
+        persistence = None  # the storage interface handle the session slash commands read, set below
+
+    runner = object.__new__(_Runner)
     runner.config = GatewayConfig(platforms={Platform.MATRIX: PlatformConfig(enabled=True)})
     adapter = MagicMock()
     adapter._matrix_session_scope = "room"
@@ -262,16 +264,19 @@ def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
     runner._clear_session_boundary_security_state = MagicMock()
     runner._evict_cached_agent = MagicMock()
     runner._queue_depth = MagicMock(return_value=0)
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.list_sessions_rich.return_value = [
-        {"id": entry.session_id, "title": entry.display_name, "preview": ""}
-        for entry in entries
-    ]
-    runner._session_db._db.resolve_resume_session_id.side_effect = lambda sid: sid
-    runner._session_db._db.get_session_title.side_effect = lambda sid: {
-        entry.session_id: entry.display_name for entry in entries
-    }.get(sid)
-    runner._session_db._db.get_session.return_value = None
+    titles = {entry.session_id: entry.display_name for entry in entries}
+    runner.persistence = SimpleNamespace(aio=SimpleNamespace(
+        sessions=SimpleNamespace(
+            list_sessions=AsyncMock(return_value=tuple(
+                SimpleNamespace(session=SimpleNamespace(session_id=entry.session_id, title=entry.display_name),
+                                preview="")
+                for entry in entries)),
+            get_title=AsyncMock(side_effect=titles.get),
+            get=AsyncMock(return_value=None),
+            resolve_by_title=AsyncMock(return_value=None)),
+        lineage=SimpleNamespace(resolve_resume_target=AsyncMock(side_effect=lambda sid: sid)),
+        bindings=SimpleNamespace(handoff_head=AsyncMock(side_effect=lambda sid: (None, sid))),  # no local owner
+        usage=SimpleNamespace(recent_route=AsyncMock(return_value=None))))
     return runner
 
 
@@ -309,14 +314,14 @@ async def test_matrix_resume_quoted_title_same_room():
         source_b, "session-b-current", "Current Project B"
     )
     runner.session_store.switch_session.return_value = entry_b
-    runner._session_db._db.resolve_session_by_title.return_value = "session-b-old"
+    runner.persistence.aio.sessions.resolve_by_title.return_value = "session-b-old"
 
     result = await runner._handle_resume_command(
         _event('/resume "Project B Plan"', source_b)
     )
 
     assert "Resumed session" in result
-    runner._session_db._db.resolve_session_by_title.assert_called_once_with("Project B Plan")
+    runner.persistence.aio.sessions.resolve_by_title.assert_called_once_with("Project B Plan")
 
 
 @pytest.mark.asyncio
@@ -327,7 +332,7 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
     entry_b = _entry(source_b, "session-b", "Project B Plan")
     runner = _make_runner(source_b, [entry_a, entry_b])
     runner.session_store.switch_session.return_value = entry_a
-    runner._session_db._db.resolve_session_by_title.return_value = "session-a"
+    runner.persistence.aio.sessions.resolve_by_title.return_value = "session-a"
 
     result = await runner._handle_resume_command(
         _event("/resume --cross-room Project A Plan", source_b)

@@ -102,6 +102,8 @@ jobs:
           sparse-checkout: |
             .github/actions/detect-changes
             scripts/ci/classify_changes.py
+            hermes_agent/__init__.py
+            hermes_agent/compat/
           sparse-checkout-cone-mode: false
       - name: Detect affected areas
         id: classify

@@ -75,7 +75,7 @@ def test_aux_sync_keeps_lean_tail_policy(main_context, aux_context):
         threshold_percent=0.85, quiet_mode=True,
     )
     before = compressor.tail_token_budget
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
          patch("agent.model_metadata.get_model_context_length", return_value=aux_context):
@@ -97,7 +97,7 @@ def test_aux_sync_legacy_tail_follows_lowered_threshold():
         threshold_percent=0.85, tail_mode="legacy", quiet_mode=True,
     )
     before = compressor.tail_token_budget
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
          patch("agent.model_metadata.get_model_context_length", return_value=512_000):
@@ -140,7 +140,7 @@ def test_fallback_activation_reprobes_aux_ceiling_and_keeps_it_durable():
         nonlocal notices
         notices += 1
 
-    agent._emit_status = _count
+    agent._emit_warning = _count
     agent._config_context_length = None
     agent._compression_feasibility_checked = True  # probed on the primary; aux fit there
     agent.model = "fallback-model"
@@ -175,7 +175,7 @@ def test_unclamp_clears_stale_clamp_warning():
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._config_context_length = None
     agent._compression_feasibility_checked = True
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
@@ -201,7 +201,7 @@ def test_near_threshold_probe_clamps_before_first_compaction():
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")) as aux_client, \
@@ -228,7 +228,7 @@ def test_a_moved_compression_route_reprobes_a_warm_agent_and_drops_the_old_ceili
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
     old = {"compression": {"provider": "custom", "model": "retired", "base_url": "http://localhost/v1"}}
@@ -260,7 +260,7 @@ def test_a_route_change_reprobes_after_any_path_that_latched_the_probe(first_pro
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
     old = {"compression": {"provider": "custom", "model": "small", "base_url": "http://localhost/v1"}}
@@ -288,7 +288,7 @@ def test_a_moved_providers_entry_reprobes_a_warm_agent():
     agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
     task = {"compression": {"provider": "work-gateway", "model": "small"}}
@@ -313,7 +313,7 @@ def test_a_replacement_summariser_is_measured_with_its_own_context_length_pin():
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     agent._aux_compression_context_length_config = 80_000  # captured at agent start, for the old summariser
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
@@ -364,7 +364,7 @@ def test_the_probe_reads_provider_entries_as_configured_now(monkeypatch, tmp_pat
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._custom_providers = [{**entry, "models": {"small": {"context_length": 900_000}}}]  # agent start
     client = MagicMock(base_url="http://gateway.invalid/v1", api_key="test-key")
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "small")):
@@ -389,7 +389,7 @@ def test_a_bypass_session_measures_with_the_entries_from_agent_start(monkeypatch
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._custom_providers = [{**entry, "models": {"small": {"context_length": 900_000}}}]  # agent start
     client = MagicMock(base_url="http://gateway.invalid/v1", api_key="test-key")
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "small")), \
@@ -414,7 +414,7 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
 
     messages = []
-    agent._emit_status = lambda msg: messages.append(msg)
+    agent._emit_warning = lambda msg: messages.append(msg)
 
     agent._check_compression_model_feasibility()
 
@@ -455,7 +455,7 @@ def test_rejects_aux_below_minimum_context(mock_get_client, mock_ctx_len):
     mock_client.api_key = "sk-aux"
     mock_get_client.return_value = (mock_client, "tiny-aux-model")
 
-    agent._emit_status = lambda msg: None
+    agent._emit_warning = lambda msg: None
 
     with pytest.raises(ValueError) as exc_info:
         agent._check_compression_model_feasibility()
@@ -480,7 +480,7 @@ def test_feasibility_check_passes_live_main_runtime():
 
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "gpt-5.4")) as mock_get_client, \
          patch("agent.model_metadata.get_model_context_length", return_value=200_000):
-        agent._emit_status = lambda msg: None
+        agent._emit_warning = lambda msg: None
         agent._check_compression_model_feasibility()
 
     mock_get_client.assert_called_once_with(
@@ -509,7 +509,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     mock_client.api_key = "sk-custom"
     mock_get_client.return_value = (mock_client, "custom/big-model")
 
-    agent._emit_status = lambda msg: None
+    agent._emit_warning = lambda msg: None
     from agent.auxiliary_task_config import session_auxiliary_scope
     with session_auxiliary_scope({"compression": {"context_length": 1_000_000}}):
         agent._check_compression_model_feasibility()
@@ -535,12 +535,34 @@ def test_warns_when_no_auxiliary_provider(mock_get_client):
     mock_get_client.return_value = (None, None)
 
     messages = []
-    agent._emit_status = lambda msg: messages.append(msg)
+    agent._emit_warning = lambda msg: messages.append(msg)
 
     agent._check_compression_model_feasibility()
 
     assert len(messages) == 1
     assert agent._compression_warning is not None
+
+
+def test_unavailable_provider_notice_is_a_warning_and_never_compaction_progress():
+    """A summariser without credentials is a warning, and neither it nor its first-turn replay is
+    compaction progress: a client shown one as such draws a "Compacting context" line for a
+    compaction that never ran."""
+    from agent.conversation_compression import compaction_status_kind
+
+    agent = _make_agent()
+    events = []
+    agent.status_callback = lambda kind, msg: events.append((kind, msg))
+    with patch("agent.auxiliary_client._resolve_task_provider_model",
+               return_value=("nous", None, None, None, None)), \
+         patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)), \
+         patch("agent.auxiliary_client._try_configured_fallback_for_unavailable_client",
+               return_value=(None, None, "")):
+        agent._check_compression_model_feasibility()
+    agent._replay_compression_warning()
+
+    assert [kind for kind, _ in events] == ["warn", "lifecycle"]
+    assert "provider 'nous' is unavailable" in events[0][1]
+    assert "compacting" not in [compaction_status_kind(kind, msg) for kind, msg in events]
 
 
 def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
@@ -551,7 +573,7 @@ def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
     fallback_client.api_key = "codex-oauth-token"
 
     messages = []
-    agent._emit_status = lambda msg: messages.append(msg)
+    agent._emit_warning = lambda msg: messages.append(msg)
 
     with patch(
         "agent.auxiliary_client._resolve_task_provider_model",
@@ -597,9 +619,9 @@ def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
     mock_client.api_key = "sk-aux"
     mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
 
-    # Phase 1: __init__ — _emit_status prints (CLI) but callback is None
+    # Phase 1: __init__ — _emit_warning prints (CLI) but callback is None
     vprint_messages = []
-    agent._emit_status = lambda msg: vprint_messages.append(msg)
+    agent._emit_warning = lambda msg: vprint_messages.append(msg)
     agent._check_compression_model_feasibility()
 
     assert len(vprint_messages) == 1  # CLI got it
@@ -626,7 +648,7 @@ def test_no_replay_when_no_warning(mock_get_client, mock_ctx_len):
     mock_client.api_key = "sk-aux"
     mock_get_client.return_value = (mock_client, "big-model")
 
-    agent._emit_status = lambda msg: None
+    agent._emit_warning = lambda msg: None
     agent._check_compression_model_feasibility()
 
     assert agent._compression_warning is None
@@ -660,7 +682,7 @@ def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_
     mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
 
     messages = []
-    agent._emit_status = lambda msg: messages.append(msg)
+    agent._emit_warning = lambda msg: messages.append(msg)
 
     agent._check_compression_model_feasibility()
 
@@ -682,7 +704,7 @@ def _warm_agent_on(home, entries):
     agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     return agent
 
@@ -744,7 +766,7 @@ def test_a_route_edited_during_the_probe_is_probed_again(monkeypatch, tmp_path):
     agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     task = {"compression": {"provider": "custom", "model": "small", "base_url": "http://localhost/v1"}}
     probes = []
@@ -773,7 +795,7 @@ def test_a_moved_compression_route_clears_the_previous_summarisers_cooldown():
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
     )
-    agent._emit_status = lambda message: None
+    agent._emit_warning = lambda message: None
     agent._compression_feasibility_checked = False
     session_db = MagicMock()
     session_db.get_compression_failure_cooldown.return_value = None

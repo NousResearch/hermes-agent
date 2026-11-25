@@ -126,7 +126,7 @@ class TestStatelessChannelForcesSyncDelegation:
         }
         monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
         monkeypatch.setattr(dt, "_run_single_child", _child)
-        monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+        monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
         monkeypatch.setattr(
             "tools.async_delegation.dispatch_async_delegation_batch", _fake_dispatch
         )

@@ -3,7 +3,7 @@
 Invariant under test: every event in one batch has the same resolved session key. Seeded sequences
 of questions, photo bursts and albums (one album may span two questions, as when a question is typed
 mid-album), with topic bindings changing between them, run through the real ``_handle_text_message``
-and ``_handle_media_message`` handlers, real topic recovery over a real SessionDB, and the production
+and ``_handle_media_message`` handlers, real topic recovery over a real store, and the production
 0.8 s burst / 1.5 s album windows. For every sequence:
 
 - each question and each image lands in the topic recovery gives it on arrival (what main gives it

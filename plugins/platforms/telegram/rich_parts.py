@@ -268,7 +268,9 @@ async def send_rich_parts(
     parts = _fitting_parts(adapter, content)
     if parts is None or not all(adapter._rich_content_ok(part, check_size=False) for part in parts):
         return None
+    from plugins.platforms.telegram.telegram_split import split_reply_anchor
     sent: list[SendResult] = []
+    reply_to = split_reply_anchor(adapter, chat_id, reply_to, metadata, len(parts))
     result = await _deliver_parts(adapter, chat_id, parts, sent, reply_to, metadata, len(parts), whole=content)
     if result is not None and not result.success and sent:
         return _with_delivered_prefix(result, content, parts, sent)

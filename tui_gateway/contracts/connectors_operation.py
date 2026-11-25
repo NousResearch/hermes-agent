@@ -186,6 +186,8 @@ class ConnectionOperationTarget(Payload):
     missing_env: list[str] | None = None
     server_errors: list[CatalogServerError] | None = None
     already_installed: bool | None = None
+    # Installed skill row from an optional-skill stub that pulls a third-party repo live: that repo.
+    upstream_repo: str | None = None
 
 
 class ConnectionDisplay(Payload):

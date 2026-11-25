@@ -135,3 +135,16 @@ def test_housekeeping_runs_real_cadence_and_backs_off(homed, monkeypatch, caplog
     assert (homed / 'plugin-update-checks/last-run').is_file()
     if failed:
         assert saved['warnings'][0]['message'] in caplog.text
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_marker_write_skips_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        cad._markers_dir()
+    cad.record_check_results([], {})  # its writer catches OSError: the write is skipped, not raised
+    assert not home.exists()

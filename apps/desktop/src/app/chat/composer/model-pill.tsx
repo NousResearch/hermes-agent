@@ -151,7 +151,16 @@ export function ModelPill({
       {switchPending || !currentModel.trim() ? (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       ) : (
-        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode, serviceTier })}</span>
+        <span className="truncate">
+          {pillLabel ??
+            formatModelPillLabel(currentModel, {
+              fastMode,
+              requireCapabilities: !runtimeId,
+              serviceTier,
+              supportsFast: model.supportsFast,
+              supportsUltrafast: model.supportsUltrafast
+            })}
+        </span>
       )}
       {pinnedOverride && (
         <span

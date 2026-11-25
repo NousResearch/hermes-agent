@@ -172,6 +172,9 @@ def show_config():
     print(color("│              ☤ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
     _show_managed_banner()
+    from hermes_cli.profiles_run_elsewhere import keys_note_for_this_home
+    if note := keys_note_for_this_home():  # a profile a plugin runs elsewhere: why its keys show as not set
+        print(color(f"\n  {note}", Colors.YELLOW))
 
     _section("Paths")
     print(f"  Config:       {_cfg.get_config_path()}")

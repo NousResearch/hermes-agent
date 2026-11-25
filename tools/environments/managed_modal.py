@@ -15,9 +15,10 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, touch_activity_if_due
 from tools.interrupt import is_interrupted
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.terminal_tool_sudo_askpass import fill_timeout_token
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ class ManagedModalEnvironment(BaseEnvironment):
     """Gateway-owned Modal sandbox with Hermes-compatible execute/cleanup."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
     _CONNECT_TIMEOUT_SECONDS = _request_timeout_env("TERMINAL_MANAGED_MODAL_CONNECT_TIMEOUT_SECONDS", 1.0)
     _POLL_READ_TIMEOUT_SECONDS = _request_timeout_env("TERMINAL_MANAGED_MODAL_POLL_READ_TIMEOUT_SECONDS", 5.0)
     _CANCEL_READ_TIMEOUT_SECONDS = _request_timeout_env("TERMINAL_MANAGED_MODAL_CANCEL_READ_TIMEOUT_SECONDS", 5.0)
@@ -75,17 +79,19 @@ class ManagedModalEnvironment(BaseEnvironment):
         self._sandbox_id = self._create_sandbox()
 
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None, stdin_data: str | None = None,
-                rewrite_compound_background: bool = True, bounded_capture: bool = False) -> dict:
+                rewrite_compound_background: bool = True, bounded_capture: bool = False,
+                allow_cwd_fallback: bool = False) -> dict:
         # Signature parity with BaseEnvironment.execute only: the gateway runs commands
         # explicitly (no shell background rewriting) and returns the remote result in one
         # payload, so streaming-time bounding does not apply (the terminal tool's final
-        # truncation still caps it).
-        del rewrite_compound_background, bounded_capture
+        # truncation still caps it), and the gateway resolves the cwd itself.
+        del rewrite_compound_background, bounded_capture, allow_cwd_fallback
         exec_command, sudo_stdin = self._prepare_command(command)
         if sudo_stdin is not None:
             # Password lines lead the request's stdin, merged as in BaseEnvironment.execute.
             stdin_data = sudo_stdin + (stdin_data or "")
         timeout = timeout or self.timeout
+        exec_command = fill_timeout_token(exec_command, timeout)
         exec_id = str(uuid.uuid4())
         payload: dict[str, Any] = {"execId": exec_id, "command": exec_command, "cwd": cwd or self.cwd,
                                    "timeoutMs": int(timeout * 1000)}
@@ -117,13 +123,7 @@ class ManagedModalEnvironment(BaseEnvironment):
             if time.monotonic() >= deadline:
                 self._cancel_exec(exec_id)
                 return _result(f"Managed Modal exec timed out after {timeout}s", 124)
-            # Periodic activity touch so the gateway knows we're alive (lazy import:
-            # tests stub tools.environments.base with only BaseEnvironment)
-            try:
-                from tools.environments.base import touch_activity_if_due
-                touch_activity_if_due(_activity_state, "modal command running")
-            except Exception:
-                pass
+            touch_activity_if_due(_activity_state, "modal command running")
             time.sleep(0.25)
 
     @staticmethod

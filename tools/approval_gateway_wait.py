@@ -10,6 +10,7 @@ threads (parallel subagents, execute_code RPC handlers) can block concurrently
 call time.
 """
 
+import hashlib
 import logging
 import threading
 import time
@@ -24,20 +25,23 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "authority", "cancelled", "card_deny_only", "data", "event", "expired", "observers",
+    __slots__ = ("authority", "cancelled", "card_deny_only", "data", "event", "expired", "identity", "observers",
                  "owner", "reason", "result", "settle")
 
     def __init__(self, data: dict):
         self.owner = None
+        # Coalescing key: a digest of what will EXECUTE (set by the waiter), not just the possibly
+        # redacted text in ``data``. Kept off ``data`` like ``authority``.
+        self.identity = _identity_digest(data.get("command", ""))
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
-        # True: a card tap may only deny until a renderer proves its card shows the whole command (#62359).
-        self.card_deny_only = False
+        # Born Deny-only: a card tap may only deny until a renderer proves its card shows the whole
+        # command (#62359), so no tap can approve an entry in the window before its card is drawn.
+        self.card_deny_only = True
         # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
         self.authority = _ctx.prompt_authority()
-        self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
@@ -50,6 +54,10 @@ class _ApprovalEntry:
         self.cancelled: str | None = None
         # The prompt timed out unanswered; followers woken by its event adopt that timeout.
         self.expired = False
+
+
+def _identity_digest(text) -> str:
+    return hashlib.sha256(str(text).encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _same_answerers(leader: dict, follower: dict) -> bool:
@@ -153,7 +161,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True, **extra)
 
 
-def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway") -> dict:
+def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway",
+                            identity: str | None = None) -> dict:
     """Enqueue *approval_data*, notify the user, and block until resolved or timed
     out. Shared by the terminal command guard, the execute_code guard, the plugin
     escalation gate, and MCP elicitation. Returns ``{"resolved", "choice",
@@ -161,9 +170,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     when the notify callback raised. Persisting the choice and building the
     tool-facing result stay with the caller.
 
-    Identical concurrent approvals (same command text + pattern-key set) are
-    coalesced: parallel tool calls would otherwise fire N identical prompts
-    the user must /approve N times while the agent sits wedged. Followers adopt
+    Identical concurrent approvals (same *identity* — the executed command, defaulting to the
+    displayed ``command`` — and pattern-key set) are coalesced: parallel tool calls would
+    otherwise fire N identical prompts the user must /approve N times while the agent sits wedged. Followers adopt
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
     the leader, so the followers fall through to ONE fresh prompt they coalesce on."""
     from tools import approval as _approval
@@ -182,10 +191,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     from tools.approval_notify_lease import current
     owner = current(session_key)
     keys = list(approval_data.get("pattern_keys") or [])
-    # Born Deny-only: the mark exists before the entry is published, so no tap can approve it in the window
-    # before its renderer has decided whether the card shows the whole command.
     entry = _ApprovalEntry(approval_data)
-    entry.card_deny_only = True
+    if identity is not None:
+        # Two commands that render alike after redaction must not share one session/always answer.
+        entry.identity = _identity_digest(identity)
     entry.owner = owner
     # Captured before the entry is published: a coalesced follower can find it while the pre-request
     # hooks still run, and must wait this same timeout rather than re-read a since-edited config.
@@ -204,7 +213,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             leader = None
             if not preparing_terminal_approval():
                 leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                               if e.owner is owner and e.data.get("command") == approval_data.get("command")
+                               if e.owner is owner and e.identity == entry.identity
                                and list(e.data.get("pattern_keys") or []) == keys
                                and _same_answerers(e.authority, entry.authority)), None)
             if leader is None:

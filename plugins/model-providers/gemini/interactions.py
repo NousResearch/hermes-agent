@@ -55,6 +55,15 @@ _STATUS_FINISH = {
     "completed": "stop", "requires_action": "stop", "incomplete": "length", "budget_exceeded": "length",
     "requires_continuation": "length", "cancelled": "stop",
 }
+
+
+def _finish_reason(status: str, has_tool_calls: bool) -> str:
+    """A call claims ``tool_calls`` only on a clean stop; a truncated (``incomplete``/``budget_exceeded``) interaction
+    keeps ``length`` so the turn loop's truncation recovery runs instead of the cut-off call."""
+    mapped = _STATUS_FINISH.get(status, "stop")
+    return "tool_calls" if has_tool_calls and mapped == "stop" else mapped
+
+
 # google.rpc status names an ErrorEvent / failed interaction may carry -> the HTTP status they stand for,
 # so agent.error_classifier treats an in-band 429 like a wire 429.
 # Interactions spells them snake_case (live: ``too_many_requests``, ``service_unavailable``, ``invalid_request``).
@@ -304,12 +313,14 @@ def interaction_error(errors: Any, *, fallback: str = "Gemini interaction failed
     )
 
 
-def http_error(response: Any, *, body_text: Optional[str], api_key: str, base_url: str) -> GeminiAPIError:
+def http_error(response: Any, *, body_text: Optional[str], api_key: str, base_url: str,
+               key_guidance: bool = True) -> GeminiAPIError:
     """An Interactions HTTP error. Its body is ``{"error": {"code": "too_many_requests", "message": ...}}``
     (a snake_case string code, no ``status``), and some front-end rejections come as a one-element list of the
     generateContent body; both are normalized so ``gemini_http_error`` keeps its status mapping, Retry-After
     and key guidance. Interactions words free-tier exhaustion "on Free Tier", which the generateContent check
-    (``free_tier``) misses, so that guidance is added here."""
+    (``free_tier``) misses, so that guidance is added here. ``key_guidance=False`` (an OAuth bearer) drops
+    every API-key remedy, as on ``gemini_http_error``."""
     text = (_response_text(response) if body_text is None else body_text) or ""
     try:
         parsed = json.loads(text) if text else None
@@ -322,9 +333,9 @@ def http_error(response: Any, *, body_text: Optional[str], api_key: str, base_ur
         parsed = {"error": {**err, "status": err["code"]}}
     if isinstance(parsed, dict):
         text = json.dumps(parsed)
-    error = gemini_http_error(response, body_text=text, api_key=api_key, base_url=base_url)
+    error = gemini_http_error(response, body_text=text, api_key=api_key, base_url=base_url, key_guidance=key_guidance)
     message = str((err or {}).get("message") or "") if isinstance(err, dict) else ""
-    if error.status_code == 429 and "free tier" in message.lower() and _FREE_TIER_GUIDANCE not in str(error):
+    if key_guidance and error.status_code == 429 and "free tier" in message.lower() and _FREE_TIER_GUIDANCE not in str(error):
         return GeminiAPIError(str(error) + _FREE_TIER_GUIDANCE, code=error.code, status_code=error.status_code,
                               response=error.response, retry_after=error.retry_after, details=error.details)
     return error
@@ -360,7 +371,7 @@ def translate_interaction(interactions: list[dict[str, Any]], model: str) -> Sim
                 extra = _tool_call_extra_from_part({"thoughtSignature": signature})
                 tool_calls.append(_tool_call_ns(str(step["name"]), arguments, len(tool_calls), call_id, extra))
     status = str(last.get("status") or "completed")
-    finish = "tool_calls" if tool_calls else _STATUS_FINISH.get(status, "stop")
+    finish = _finish_reason(status, bool(tool_calls))
     usages = [i.get("usage") or {} for i in interactions]
     usage = usage_namespace(merge_usage(usages) if len(usages) > 1 else usages[0])
     joined_reasoning = "".join(reasoning) or None
@@ -532,7 +543,7 @@ def _on_completed(event: dict[str, Any], model: str, state: StreamState) -> list
     if state.status == "requires_continuation":
         return []
     usage = merge_usage(state.hop_usage) if len(state.hop_usage) > 1 else state.hop_usage[0]
-    chunk = _make_stream_chunk(model=model, finish_reason="tool_calls" if state.tool_calls else _STATUS_FINISH.get(state.status, "stop"))
+    chunk = _make_stream_chunk(model=model, finish_reason=_finish_reason(state.status, bool(state.tool_calls)))
     chunk.usage = usage_namespace(usage)
     return [chunk]
 
@@ -557,8 +568,9 @@ def event_token(event: dict[str, Any]) -> Optional[str]:
 
 
 def finish_ceiling(model: str, state: StreamState) -> Any:
-    """Finish chunk when the hop ceiling stops a long decode that still asks for continuation."""
-    chunk = _make_stream_chunk(model=model, finish_reason="tool_calls" if state.tool_calls else "length")
+    """Finish chunk when the hop ceiling stops a long decode that still asks for continuation: the output was cut
+    short, so any streamed call is truncated too and must not run."""
+    chunk = _make_stream_chunk(model=model, finish_reason="length")
     chunk.usage = usage_namespace(merge_usage(state.hop_usage))
     return chunk
 

@@ -1,6 +1,6 @@
 """Static asset lookups the SPA catch-all must not answer with ``index.html``.
 
-The sign-in page (``dashboard_auth/login_page.py``) loads its brand fonts from ``/fonts/``. Those
+The dashboard loads Mondwest and the terminal face from ``/fonts/`` and ``/fonts-terminal/``. Those
 files ship in the dashboard's ``web/public`` tree, which the dashboard build copies into its own
 dist, but the Webapp serves ``apps/desktop/dist-webapp`` and has no ``fonts/`` dir. A font missing
 from the served dist is read from the packaged dashboard dist (``HERMES_WEB_DIST`` / ``web_dist``,
@@ -10,6 +10,7 @@ checkout's ``web/public``.
 from __future__ import annotations
 
 from pathlib import Path
+from hermes_cli._startup_fast import project_root_str
 
 # Requests under these prefixes are files, never client-side routes, so a miss is a 404 rather
 # than the SPA shell (a font answered with HTML renders in a fallback face, silently).
@@ -18,7 +19,7 @@ STATIC_ASSET_PREFIXES: tuple[str, ...] = ("assets/", "ds-assets/", "fonts/", "fo
 # the SPA shell served anonymously.
 STATIC_ASSET_FILES: frozenset[str] = frozenset({"apple-touch-icon.png", "favicon.ico"})
 _PUBLIC_FONT_DIRS: tuple[str, ...] = ("fonts", "fonts-terminal")
-_WEB_PUBLIC = Path(__file__).resolve().parent.parent / "web" / "public"
+_WEB_PUBLIC = Path(project_root_str()) / "web" / "public"
 
 
 def is_static_asset_path(full_path: str) -> bool:

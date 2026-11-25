@@ -1,15 +1,20 @@
 name: evident-evidence
 title: "Evident — Is this evident?"
 repo: https://github.com/Evident-Scalelabs/evident-hermes-plugin
-sha: bfc0f924e4e4a19d950a3b275885bbd8f06fe38e
+sha: d04f9b5d729913f36dba828200e9ed80f557a856
 description: "Follow real buyer journeys, compare website claims with independent AI answers and suggested competitors, and produce one visual report with highlighted evidence, practical changes and repeatable checks. Disclosure — Opens the websites you ask it to review (and up to three suggested competitor/source pages) in a fresh headless Chromium on this machine and fetches them anonymously; when you enable `allow_model_interpretation`, the captured page text and screenshots are sent to your configured Hermes model for several extra calls per report (model cost applies), and reports include an optional link to evident.so (`show_evident_cta`, on by default; nothing is uploaded)."
 maintainer: Evident-Scalelabs
 tier: community
 category: web
 version: "0.19.4"
 platforms: [linux, macos]
+image: https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/d04f9b5d729913f36dba828200e9ed80f557a856/docs/media/cover.png
 screenshots:
-  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/bfc0f924e4e4a19d950a3b275885bbd8f06fe38e/docs/competitor-report.png
+  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/d04f9b5d729913f36dba828200e9ed80f557a856/docs/media/before-after.png
+  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/d04f9b5d729913f36dba828200e9ed80f557a856/docs/media/journey.png
+  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/d04f9b5d729913f36dba828200e9ed80f557a856/docs/media/answers.png
+  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/d04f9b5d729913f36dba828200e9ed80f557a856/docs/media/verification.png
+  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/d04f9b5d729913f36dba828200e9ed80f557a856/docs/competitor-report.png
 known_issues:
   - Requires a vision-capable configured model for interpreted reports; model calls may incur charges.
   - Anonymous desktop capture has bounded coverage; account actions, purchases and protected pages remain outside scope.

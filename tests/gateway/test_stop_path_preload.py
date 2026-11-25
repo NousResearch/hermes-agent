@@ -24,7 +24,7 @@ repo, stop = Path(sys.argv[1]), sys.argv[2]
 sys.path.insert(0, str(repo))
 import hermes_cli.env_loader as env_loader
 env_loader.load_hermes_dotenv = lambda **_kwargs: []
-from gateway import restart_when_idle, run_bootstrap, run_runtime
+from gateway import restart_when_idle, run_api, run_bootstrap, run_runtime
 from gateway.config import GatewayConfig
 from gateway.run_shutdown import GatewayShutdownMixin
 from gateway.status import write_planned_stop_marker
@@ -71,6 +71,9 @@ run_bootstrap._start_gateway_start_cron_and_housekeeping = lambda runner: (
     stopped, None, threading.Thread(target=stopped.wait, daemon=True),
     threading.Thread(target=stopped.wait, daemon=True))
 run_runtime.wait_gateway_runtime = serve_until_stop
+# The dashboard mounts in the background after READY and imports for as long as that takes under
+# load; it is not part of a stop, so it stays unmounted here.
+run_api.warm_gateway_dashboard = lambda runner: None
 get_hermes_home().chmod(0o700)
 try:
     verdict = asyncio.run(asyncio.wait_for(run_bootstrap.start_gateway(GatewayConfig()), 120))

@@ -149,3 +149,26 @@ def test_real_native_open_edit_diagnostics(tmp_path, monkeypatch):
         assert not client.is_running
 
     asyncio.run(exercise())
+
+
+def test_project_on_typescript_7_is_served_by_its_own_compiler(tmp_path, monkeypatch):
+    """TS7 ships no tsserver.js: a trusted project on it gets its own ``tsc --lsp``, never
+    typescript-language-server checking it with Hermes's older SDK; untrusted and TS6 keep the legacy route."""
+    from agent.lsp import servers
+    monkeypatch.setattr(servers, "_find_binary", lambda *a: "/hermes/typescript-language-server")
+    monkeypatch.setattr(servers, "_typescript_sdk_dir", lambda trees: "/hermes/sdk")
+    pkg = tmp_path / "node_modules" / "typescript"
+    (pkg / "lib").mkdir(parents=True)
+    (pkg / "package.json").write_text('{"version":"7.0.2"}')
+    tsc = tmp_path / "node_modules" / ".bin" / "tsc"
+    tsc.parent.mkdir()
+    tsc.write_text("#!/bin/sh\n")
+    tsc.chmod(0o755)
+    srv = _service()._server_for("a.ts")
+    build = lambda **kw: srv.build_spawn(str(tmp_path), ServerContext(str(tmp_path), install_strategy="off", **kw))
+    spec = build(trusted=True)
+    assert spec.command == [str(tsc), "--lsp", "--stdio"] and spec.initialization_options == {}
+    assert build(trusted=False).command == ["/hermes/typescript-language-server", "--stdio"]
+    assert build(trusted=True, binary_overrides={"typescript": ["/x"]}).command[0] == "/hermes/typescript-language-server"
+    (pkg / "lib" / "tsserver.js").write_text("")  # TypeScript 6: tsserver present, legacy route
+    assert build(trusted=True).command == ["/hermes/typescript-language-server", "--stdio"]

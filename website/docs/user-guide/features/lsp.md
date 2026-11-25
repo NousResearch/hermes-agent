@@ -240,7 +240,15 @@ TypeScript SDK).
 
 TypeScript 7 includes a native LSP server, launched as `tsc --lsp --stdio`.
 It is separate from `typescript-language-server` and cannot serve as that
-server's JavaScript SDK. To select it for JavaScript/TypeScript files:
+server's JavaScript SDK.
+
+A trusted project whose own `node_modules/typescript` is TypeScript 7 (it ships
+no `lib/tsserver.js`) is served by that project's `node_modules/.bin/tsc --lsp`
+automatically, with no setting: otherwise typescript-language-server would check
+it with Hermes's older SDK. An untrusted workspace never runs the project's
+compiler and keeps the pinned legacy route; a `typescript` command override wins.
+
+To use a Hermes-managed TypeScript 7 for every JavaScript/TypeScript file instead:
 
 ```yaml
 lsp:

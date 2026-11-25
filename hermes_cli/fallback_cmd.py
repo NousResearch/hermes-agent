@@ -1,7 +1,7 @@
 """hermes fallback — manage the fallback provider chain (tried in order when the primary fails).
 
 Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remove``, ``clear``, ``check``
-(readiness, in :mod:`hermes_cli.fallback_check`).
+(readiness, in :mod:`hermes_cli.fallback_check`), ``health`` (shared 429 windows).
 """
 from __future__ import annotations
 
@@ -237,13 +237,66 @@ def cmd_fallback_clear(args) -> None:
     print("\n  Fallback chain cleared.\n")
 
 
+def cmd_fallback_health(args) -> None:
+    """Show each route's shared 429 window and how often it was recorded.
+
+    Windows are written by every session/lane (agent.model_health_ledger), so a non-zero
+    remaining time means *some* process saw this model rate-limit — the same fact the
+    mid-turn re-probe consults before testing the primary again.
+    """
+    import json as _json
+    from agent.model_health_ledger import _key, model_windows_snapshot
+
+    config, chain = _load_chain("  No fallback providers configured.")
+    snapshot = model_windows_snapshot()
+    rows: list[dict[str, Any]] = []
+
+    def _row(role: str, route: dict[str, Any]) -> dict[str, Any]:
+        # Whitelist: fallback entries carry api_key/base_url, and health output must never
+        # echo credentials (it is printed to terminals, logs and --json pipelines).
+        entry = snapshot.get(_key(route.get("provider", ""), route.get("model", "")), {})
+        return {"role": role, "provider": route.get("provider", ""),
+                "model": route.get("model", ""), "base_url": route.get("base_url", ""),
+                "window_remaining_seconds": round(float(entry.get("remaining") or 0.0)),
+                "recorded_windows": int(entry.get("hits") or 0),
+                "failed_probes": int(entry.get("failures") or 0)}
+
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    primary = _extract_fallback_from_model_cfg(model_cfg) if model_cfg else None
+    if primary:
+        rows.append(_row("primary", primary))
+    for index, fb in enumerate(chain or [], start=1):
+        rows.append(_row(f"fallback {index}", fb))
+
+    if getattr(args, "json", False):
+        print(_json.dumps(rows, indent=2, default=str))
+        return
+    print()
+    if not rows:
+        print("  No primary/fallback routes configured.")
+        return
+    for row in rows:
+        remaining = float(row.get("window_remaining_seconds") or 0.0)
+        hits = int(row.get("recorded_windows") or 0)
+        failures = int(row.get("failed_probes") or 0)
+        status = f"window {remaining:6.0f}s left" if remaining > 0 else "no window"
+        print(f"  {row['role']:<11} {_format_entry(row)}")
+        detail = f"  ({hits} recorded 429s)" if hits else ""
+        if failures:
+            detail += f"  ({failures} failed probes, backing off)"
+        print(f"  {'':<11} {status}" + detail)
+    print("\n  Windows are shared by every session and lane; a fallback lane re-probes the")
+    print("  primary with a 1-token call once its window closes (fallback.reprobe_seconds,")
+    print("  default 300s), doubling the wait after each failed probe up to 4h.\n")
+
+
 def cmd_fallback(args) -> None:
     """Top-level dispatcher for ``hermes fallback [subcommand]``."""
     sub = getattr(args, "fallback_command", None)
     handler = _SUBCOMMANDS.get(sub)
     if handler is None:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear, check")
+        print("Use one of: list, add, remove, clear, check, health")
         raise SystemExit(2)
     handler(args)
 
@@ -252,4 +305,5 @@ _SUBCOMMANDS = {
     **dict.fromkeys((None, "", "list", "ls"), cmd_fallback_list), "add": cmd_fallback_add,
     **dict.fromkeys(("remove", "rm"), cmd_fallback_remove), "clear": cmd_fallback_clear,
     "check": cmd_fallback_check,
+    "health": cmd_fallback_health,
 }

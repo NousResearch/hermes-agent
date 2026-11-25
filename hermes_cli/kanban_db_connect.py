@@ -640,10 +640,23 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
         conn.row_factory = sqlite3.Row
         conn.text_factory = _kb._lossy_text
         with _INIT_LOCK:
-            # WAL doesn't work on network filesystems; the helper falls back to
-            # DELETE with one ERROR log (see sqlite_support._WAL_INCOMPAT_MARKERS).
-            from sqlite_support import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+            # Preserve an existing non-empty rollback-journal DB. A WAL DB with
+            # no -shm sidecar cannot be opened read-only, which breaks card
+            # diagnostics and mode=ro readers whenever the last writer closes.
+            # New/empty DBs still get WAL, and apply_wal_with_fallback() never
+            # live-downgrades an existing WAL DB.
+            preserve_delete = False
+            if path.exists() and path.stat().st_size > 0:
+                try:
+                    row = conn.execute("PRAGMA journal_mode").fetchone()
+                    preserve_delete = bool(row) and str(row[0]).lower() == "delete"
+                except sqlite3.Error:
+                    preserve_delete = False
+            if not preserve_delete:
+                # WAL doesn't work on network filesystems; the helper falls back to
+                # DELETE with one ERROR log (see sqlite_support._WAL_INCOMPAT_MARKERS).
+                from sqlite_support import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
             # FULL (not NORMAL): fsync before each checkpoint to narrow the
             # crash window that can leave a b-tree page header torn.
             conn.execute("PRAGMA synchronous=FULL")
@@ -714,9 +727,11 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
 
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
-    every connection so a re-created file stays robust; the first connection
-    per path auto-runs :func:`init_db`, later ones skip via
-    ``_INITIALIZED_PATHS``. Path: explicit ``db_path``, else ``board``, else
+    every connection so a re-created file stays robust; an existing non-empty
+    rollback-journal DB is preserved so read-only diagnostics work without
+    ``-shm`` sidecars. The first connection per path auto-runs
+    :func:`init_db`, later ones skip via ``_INITIALIZED_PATHS``. Path: explicit
+    ``db_path``, else ``board``, else
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)

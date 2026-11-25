@@ -28,4 +28,7 @@ def build_fallback_parser(subparsers) -> None:
     check.add_argument("--live", action="store_true",
                        help="Also send one minimal inference request per entry (on that entry's own provider/model)")
     add_json_flag(check, "Print the results as JSON")
+    health = fallback_subparsers.add_parser(
+        "health", help="Show each route's shared 429 window and recorded rate-limits")
+    add_json_flag(health, "Print the results as JSON")
     fallback_parser.set_defaults(func=cmd_fallback)

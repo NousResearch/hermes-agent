@@ -50,6 +50,32 @@ fallback:
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
 
+### Token-budget pacing
+
+Some free routes are limited by a shared **token** allowance rather than a request count: one large turn can spend a whole minute's budget, and a second lane aiming at the same allowance is refused. The pacer meters that budget across processes before a request is sent, so the second turn waits for the first instead of earning a 429.
+
+```yaml
+fallback:
+  reprobe_seconds: 300          # How often a fallback session re-probes the primary (0 = off)
+  primary_budget:
+    enabled: true               # Meter the shared token budget (default: false)
+    providers: [nous]           # Routes this pacing applies to
+    tokens_per_minute: 33000    # Refill rate of the shared bucket
+    burst_tokens: 64000         # Most a single request may reserve
+    max_wait_seconds: 600       # Longest a request waits for bucket clearance
+    max_window_wait_seconds: 120  # Skip a longer provider window instead of sleeping through it
+```
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `fallback.primary_budget.enabled` | `false` | Meter the route's shared token budget before each request. |
+| `fallback.primary_budget.providers` | `[nous]` | Providers the pacer applies to. |
+| `fallback.primary_budget.tokens_per_minute` | `33000` | Bucket refill rate; larger turns wait proportionally longer. |
+| `fallback.primary_budget.burst_tokens` | `64000` | Most a single request may reserve; a larger request reserves the whole bucket. |
+| `fallback.primary_budget.max_wait_seconds` | `240` | Longest a request waits for bucket clearance before it is sent anyway. |
+| `fallback.primary_budget.max_window_wait_seconds` | `0` (inherit) | Skip a provider-declared window longer than this instead of sleeping through it; `0` waits up to `max_wait_seconds`. |
+| `fallback.reprobe_seconds` | `300` | While on a fallback, how often to cheaply probe the primary and switch back when it is healthy; `0` disables the probe. |
+
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini
 client, including its `generationConfig.thinkingConfig` translation. A custom
@@ -136,7 +162,7 @@ fallback_providers:
 
 The fallback activates automatically when the primary model fails with:
 
-- **Rate limits** (HTTP 429) — after exhausting retry attempts
+- **Rate limits** (HTTP 429) — immediately, except that a provider-declared window the turn can afford (`agent.max_rate_limit_wait_seconds`) is waited out once and retried on the same model; an upstream-aggregator 429 and a window past the budget switch at once
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately

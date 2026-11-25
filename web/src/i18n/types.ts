@@ -119,6 +119,8 @@ export interface Translations {
     /** Optional — fall back to English literals until translated. */
     managingProfile?: string;
     currentProfileOption?: string;
+    filters?: string;
+    sessionFilters?: string;
     managingProfileBanner?: string;
     /** NS-656 memory-pressure banner — optional, English fallback. */
     memoryOomRestartBanner?: string;
@@ -197,6 +199,8 @@ export interface Translations {
     filterChats: string;
     filterAutomation: string;
     filterAll: string;
+    filterType?: string;
+    filterSources?: string;
     sourceFilter: string;
     anySource: string;
     searchPlaceholder: string;

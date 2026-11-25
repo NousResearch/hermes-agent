@@ -213,8 +213,25 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         except Exception:
             return False
 
+    def _spawn_slot_available() -> bool:
+        """Would a tick still have a spawn slot under the live caps?
+        Full lanes are correct idleness, not a stuck dispatcher."""
+        try:
+            with kbc.connect_closing() as conn:
+                return kbd.spawn_slot_available(
+                    conn,
+                    max_spawn=getattr(args, "max", None),
+                    max_in_progress=kbd.resolve_max_in_progress(
+                        kbd.configured_max_in_progress()
+                    ),
+                )
+        except Exception:  # health: allow BLE001 -- a probe failure must read as capacity (idle), never as a stuck dispatcher
+            return True
+
     def _on_tick(res):
-        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
+        ready_pending = bool(res.skipped_unassigned) or (
+            _ready_queue_nonempty() and _spawn_slot_available()
+        )
         if ready_pending and not res.spawned:
             health_state["bad_ticks"] += 1
         else:

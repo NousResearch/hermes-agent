@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- this change adds 41 lines of fallback/probe wiring to the existing completion loop; extracting the topic module is a separate refactor
 """API-call helpers extracted from :class:`AIAgent`: non-streaming and streaming
 request drivers, request kwargs builder, assistant-message materializer,
 provider-fallback activator, max-iterations handler, per-turn resource cleanup.
@@ -562,6 +563,11 @@ def _bump_stale_streak(agent) -> None:
 def _reset_stale_streak(agent) -> None:
     with contextlib.suppress(Exception):
         agent._consecutive_stale_streams = 0
+
+
+def _stale_stream_budget_exhausted(stale_kills: int, limit: int) -> bool:
+    """True once this streaming call has spent its no-first-chunk retries."""
+    return limit > 0 and stale_kills >= limit
 
 
 _INTERRUPTED_WAIT_STALE_SECONDS = 30.0
@@ -1988,7 +1994,9 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.fallback_cooldown import (
+        _arm_rate_limit_cooldown, reprobe_deadline, switch_deferred_by_reset,
+    )
     from agent.fallback_notice import announce_fallback_switch, fallback_trigger_text
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
@@ -2030,6 +2038,9 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
+            # Arm the mid-turn re-probe so a long worker turn can return to the primary once
+            # its rate-limit window reopens (see fallback_cooldown.maybe_reprobe_primary).
+            agent._fallback_reprobe_at = reprobe_deadline()
             from hermes_cli.observability.shared_metrics_events import record_fallback
             record_fallback(from_provider=old_provider, to_provider=fb_provider, reason=reason)
             # The stale-call streak measured the OLD provider; carrying it over would
@@ -2631,6 +2642,14 @@ class _BedrockStream:
         return _with_stream_emitters(self.agent, self._poll)
 
 
+# One request may be retried after a no-first-chunk stall, but not indefinitely: the outer
+# turn retry loop builds a fresh _StreamingCall, so without a per-call cap a single 68k-token
+# request can be killed (and re-charged to the pacer) eight or nine times. Two kills (about
+# two stale windows) is enough to distinguish a transient stall from a request the provider
+# is not admitting; the error classifier then hands the turn to the fallback chain.
+_STALE_KILLS_PER_CALL = 2
+
+
 class _StreamingCall(StreamingWaitMonitor):
     """One streaming request on the chat_completions / anthropic_messages wire.
     State shared between the request worker and the poll-loop monitor (heartbeat,
@@ -2658,6 +2677,8 @@ class _StreamingCall(StreamingWaitMonitor):
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
+        self._stale_kills = 0  # no-first-chunk kills in THIS call (not the cross-turn streak)
+        self._stale_kill_limit = max(0, env_int("HERMES_STREAM_STALE_ATTEMPTS", _STALE_KILLS_PER_CALL))
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
@@ -2876,6 +2897,11 @@ class _StreamingCall(StreamingWaitMonitor):
         return usage, finish_reason
 
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
+        # Meter the free route's shared token budget before opening the stream (see
+        # agent/primary_budget_pacer.py): two large turns must not collide on one allowance.
+        from agent.primary_budget_pacer import pace_primary_request
+
+        pace_primary_request(self.agent, stream_kwargs)
         # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
         # already 4xx'd on it on this route (``_stream_options_unsupported``, #9705; see route_verdicts).
         if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
@@ -3661,6 +3687,20 @@ class _StreamingCall(StreamingWaitMonitor):
         _stream_attempt = -1
         try:
             while _stream_attempt < _max_stream_retries + self._compat_retries:
+                if _stale_stream_budget_exhausted(self._stale_kills, self._stale_kill_limit):
+                    self.result["error"] = RuntimeError(
+                        "Provider has been unresponsive (no response received) for "
+                        f"{self._stale_kills} consecutive stale attempts — aborting this call to "
+                        "avoid an indefinite stall. Switch models or start a new session, then retry."
+                    )
+                    logger.warning(
+                        "Stale-stream retry budget spent after %d kill(s) (limit %d, context=~%s tokens); "
+                        "aborting this call for fallback. model=%s",
+                        self._stale_kills, self._stale_kill_limit,
+                        f"{estimate_request_context_tokens(self.api_kwargs):,}",
+                        self.api_kwargs.get("model", "unknown"),
+                    )
+                    return
                 _stream_attempt += 1
                 stream_attempt_id = self._start_stream_attempt()
                 # Else /stop closes the socket and the retry opens a fresh one (a full read timeout each).
@@ -3737,6 +3777,8 @@ class _StreamingCall(StreamingWaitMonitor):
         attempt = self._uncounted_stale_attempt()
         if attempt:
             self._stale_counted_attempts.add(attempt)
+            with self.stream_attempt_lock:
+                self._stale_kills += 1
             _bump_stale_streak(self.agent)
 
     def _kill_stale_stream(self, elapsed: float) -> None:

@@ -465,6 +465,24 @@ cloud-scale default would never bite. If the window cannot be resolved, a
 conservative 120,000-token fallback applies. Note the key lives under
 `auxiliary:`; a top-level `background_review:` block is not read.
 
+### Raising the review iteration ceiling (`max_iterations`)
+
+A review fork stops after 16 tool iterations by default. One large `SKILL.md`
+can need more reads than that, and the review then ends early with
+`Reached maximum iterations (16)` — half-read, so its findings are thin.
+`max_iterations` (1–64) raises the ceiling for automatic forks and for
+`/refine`; unset, non-integer or out-of-range values keep the 16-iteration
+default.
+
+```yaml
+auxiliary:
+  background_review:
+    max_iterations: 32  # 1..64; unset = 16
+```
+
+A higher ceiling also raises what one review may cost, so pair it with
+`max_input_tokens` rather than raising it alone.
+
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
 (`Background review complete: thread=bg-review calls=… in=… out=… result=…`).

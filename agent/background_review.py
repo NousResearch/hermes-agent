@@ -277,6 +277,22 @@ def _background_review_task_config(task_cfg: Optional[dict[str, Any]] = None) ->
         return {}
 
 
+def _review_max_iterations(task_cfg: Optional[dict[str, Any]] = None) -> int:
+    """``auxiliary.background_review.max_iterations`` (1..64), else the historical constant.
+
+    The fixed 16-iteration ceiling truncates a review fork on a large context ("Reached maximum
+    iterations (16)") before it has finished reading a big SKILL.md. Unset or out-of-range config
+    keeps the historical behaviour, mirroring the ``max_input_tokens`` override.
+    """
+    try:
+        raw = _background_review_task_config(task_cfg).get("max_iterations")
+        if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= 64:
+            return raw
+    except Exception:
+        logger.debug("background_review max_iterations parse failed", exc_info=True)
+    return _REVIEW_MAX_ITERATIONS
+
+
 def _context_derived_review_input_budget(review_agent: Any = None) -> int:
     """Default budget: 75% of the review fork's resolved context window, capped at the historical
     600k ceiling. The fork's ``context_compressor.context_length`` is already resolved by
@@ -1294,7 +1310,7 @@ def _run_review_fork(
     keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
     attended, so the unattended-only memory delete gate leaves the full operation set available."""
     st.review_agent, _rt, _routed = build_cache_parity_fork(
-        agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+        agent, task_cfg, max_iterations=_review_max_iterations(task_cfg))
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist

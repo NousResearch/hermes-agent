@@ -205,6 +205,25 @@ async def test_a_mode_pick_during_a_turn_is_refused_with_the_reason(pick):
 
 
 @pytest.mark.asyncio
+async def test_a_fork_during_a_turn_is_refused_with_the_reason():
+    """The owner branches an idle session only; the editor's error message says so, not "Internal error"."""
+    from hermes_cli.gateway_client import GatewayRPCError
+
+    async def rpc(method, **params):
+        if method == 'session.info':
+            return {}
+        if method == 'session.resume':
+            return {'revision': 3, 'execution_generation': 7}
+        raise GatewayRPCError('session_busy')
+
+    agent = _agent(rpc)
+    with pytest.raises(acp.RequestError) as refused:
+        await agent.fork_session('/tmp', 's')
+    assert 'idle' in str(refused.value), refused.value
+    assert 'Internal error' not in str(refused.value), refused.value
+
+
+@pytest.mark.asyncio
 async def test_a_mode_pick_behind_a_lost_turn_says_to_resolve_it_not_to_wait():
     """unknown_execution: no turn is running, so "after this turn" would never come true."""
     from hermes_cli.gateway_client import GatewayRPCError

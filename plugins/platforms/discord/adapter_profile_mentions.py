@@ -49,8 +49,9 @@ the typed text without its handles.
 
 A gateway can run several Discord bots (one per profile token), and every bot in the channel
 receives the same message and computes the same handles. Exactly one of them dispatches it to a
-given profile: the first bot to reach dispatch claims ``(message id, profile)`` for the whole
-gateway (``_claim``), and the others hand that profile nothing.
+given profile (``_claim``), and always the same one for that profile's session lane: the gateway
+binds a lane to the bot that carried its first turn and pauses it if a later turn comes through
+another bot. Until a lane has a recorded bot, the first bot to reach dispatch claims it.
 """
 from __future__ import annotations
 
@@ -259,20 +260,58 @@ def _profile_event(adapter: Any, event: Any, profile: str, prompt: str) -> Any:
         metadata=dict(event.metadata or {}))
 
 
-def _claim(adapter: Any, event: Any, profile: str) -> bool:
-    """True when *adapter* is the bot that dispatches *event* to *profile*: no OTHER bot in this
-    gateway did so first. The same bot may plan its own message again (its own dedup governs
-    that); a claim whose bot is gone still holds, so a later bot never re-sends the message."""
+def _bot_of(runner: Any, platform: Any, profile: str) -> Any:
+    """The Discord bot *profile* owns in this gateway, or None (``_owner_profile``'s inverse)."""
+    if profile == (getattr(runner, "_primary_profile_name", None) or "default"):
+        return (getattr(runner, "adapters", None) or {}).get(platform)
+    return ((getattr(runner, "_profile_adapters", None) or {}).get(profile) or {}).get(platform)
+
+
+def _lane(runner: Any, copy: Any) -> Optional[str]:
+    """The session lane (session key) a dispatched *copy* runs in, when the runner can tell."""
+    key_for = getattr(runner, "_session_key_for_source", None)
+    return key_for(copy.source) if callable(key_for) else None
+
+
+def _lane_carrier(adapter: Any, runner: Any, lane: Optional[str]) -> Optional[str]:
+    """The profile whose bot the gateway recorded as carrying *lane* (``SessionEntry.transport_profile``),
+    while that bot is still part of this gateway."""
+    store = getattr(runner, "session_store", None)
+    entry = store.lookup_by_session_key(lane) if lane and store is not None else None
+    name = getattr(entry, "transport_profile", None)
+    return name if name and _bot_of(runner, adapter.platform, name) is not None else None
+
+
+def _claim(adapter: Any, event: Any, profile: str, lane: Optional[str] = None) -> bool:
+    """True when *adapter* is the bot that dispatches *event* to *profile*.
+
+    A profile's session lane answers through ONE bot: the gateway records the bot that carried its
+    first turn (``SessionEntry.transport_profile``) and pauses the lane when a later turn arrives
+    through another (``check_native_route``). So once *lane* has a recorded bot, only that bot
+    dispatches to it. Before that, the first bot to reach dispatch claims the message and the lane
+    for the whole gateway, and the others hand that profile nothing. The same bot may plan its own
+    message again (its own dedup governs that); a message claim whose bot is gone still holds, so
+    a later bot never re-sends the message."""
     runner = getattr(adapter, "gateway_runner", None)
     if runner is None or not event.message_id:
         return True
-    key = (str(getattr(adapter.platform, "value", adapter.platform)), str(event.message_id), profile)
+    carrier = _lane_carrier(adapter, runner, lane)
+    if carrier is not None:
+        return carrier == _owner_profile(adapter, runner)
+    platform = str(getattr(adapter.platform, "value", adapter.platform))
+    key, lane_key = (platform, str(event.message_id), profile), (platform, "lane", lane)
     with _CLAIMS_LOCK:
         claims = _CLAIMS.setdefault(runner, OrderedDict())
         owner = claims.get(key)
         if owner is not None:
             return owner() is adapter
+        holder = claims[lane_key]() if lane and lane_key in claims else None
+        if holder is not None and holder is not adapter:
+            return False
         claims[key] = weakref.ref(adapter)
+        if lane:
+            claims[lane_key] = weakref.ref(adapter)
+            claims.move_to_end(lane_key)
         while len(claims) > _CLAIMS_MAX:
             claims.popitem(last=False)
         return True
@@ -305,14 +344,16 @@ def mention_events(adapter: Any, event: Any, typed: str) -> list:
         logger.info("[%s] Ignoring profile-mention-only message (no prompt) for %d profile(s)",
                     adapter.name, len(plan.profiles))
         return []
-    profiles = [profile for profile in plan.profiles if _claim(adapter, event, profile)]
-    if len(profiles) < len(plan.profiles):
-        logger.info("[%s] Message %s: %d mentioned profile(s) already dispatched by another bot", adapter.name,
-                    event.message_id, len(plan.profiles) - len(profiles))
-    if profiles:
+    runner = getattr(adapter, "gateway_runner", None)
+    copies = [_profile_event(adapter, event, profile, prompt) for profile in plan.profiles]
+    copies = [copy for copy in copies if _claim(adapter, event, copy.source.profile, _lane(runner, copy))]
+    if len(copies) < len(plan.profiles):
+        logger.info("[%s] Message %s: %d mentioned profile(s) dispatched by another bot", adapter.name,
+                    event.message_id, len(plan.profiles) - len(copies))
+    if copies:
         logger.info("[%s] Dispatching message %s to %d mentioned profile(s)", adapter.name,
-                    event.message_id, len(profiles))
-    return [_profile_event(adapter, event, profile, prompt) for profile in profiles]
+                    event.message_id, len(copies))
+    return copies
 
 
 class DiscordProfileMentionsMixin:

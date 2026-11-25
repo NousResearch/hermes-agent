@@ -28,11 +28,6 @@ import plugins.platforms.discord.adapter_profile_mentions as profile_mentions
 
 #: ``agent-one``/``agent-two`` opted in through their own config.yaml; ``quiet`` is served but did not.
 MENTIONABLE = {"agent-one": {"mentionable": True}, "agent-two": {"mentionable": True}, "quiet": None}
-#: KNOWN BROKEN, fixed in the next commit: with two bots, a profile's session lane is paused when a
-#: later turn arrives through another bot than its first ("could not be re-authorized (not_found)").
-_PAUSED = pytest.mark.xfail(strict=True, reason="lane paused: turn through a different bot (check_native_route)")
-
-
 _DOC = "# Runbook\n\nPage $agent-two if prod is down.\n  Indented: costs $agent-one-ish, $5\n"
 
 
@@ -131,7 +126,6 @@ async def test_case6_a_bare_handle_with_default_backfill_is_a_catch_me_up_turn(t
 # --- the review's findings and each later round's fix ---------------------------------------------
 
 
-@_PAUSED
 @pytest.mark.asyncio
 async def test_two_bots_in_one_gateway_run_the_turn_once(tmp_path, monkeypatch, authority_cwd_in_tmp):
     """Round 1: both bots receive every message; each named profile gets ONE turn, in its own session.
@@ -156,6 +150,21 @@ async def test_two_bots_in_one_gateway_run_the_turn_once(tmp_path, monkeypatch, 
         out = await rig.send("$agent-one after a restart", to=["agent-two", "default"])
         _ran_in(rig, out, "agent-one", "after a restart")
         assert [bot for bot, _ in out.replies] == ["default"], out.summary()
+
+
+@pytest.mark.asyncio
+async def test_two_bots_racing_on_a_new_lane_keep_it_on_one_bot(tmp_path, monkeypatch, authority_cwd_in_tmp):
+    """Two quick messages to a profile with no session in the channel yet, the bots seeing them in
+    opposite orders: the second arrives before the first one's turn has created the lane, so only
+    the in-memory lane claim keeps both on the bot that took the first."""
+    async with discord_gateway_rig(tmp_path, monkeypatch, profiles=MENTIONABLE, bots=("default", "agent-two")) as rig:
+        out = await rig.send("$agent-one first", to=["default", "agent-two"], wait=False)
+        await rig.send("$agent-one second", to=["agent-two", "default"], wait=False, into=out)
+        await rig.settle()
+        assert out.refusals == [] and out.errors == [], out.summary()
+        assert sorted(t.message for t in out.turns if t.profile == "agent-one") == ["first", "second"], out.summary()
+        assert len(out.turns) == 2, out.summary()
+        assert [bot for bot, _ in out.replies] == ["default", "default"], out.summary()
 
 
 _FENCED = "$agent-one\n```py\ndef f():\n    return  1\n```\n\n  keep   this   spacing\n"

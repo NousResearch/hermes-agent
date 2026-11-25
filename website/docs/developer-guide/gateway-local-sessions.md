@@ -20,11 +20,65 @@ The result preserves `session_id`, `stored_session_id`, `messages`, `message_cou
 the same stable persisted **logical** ID. Compression and reset may rotate the private
 physical transcript target without changing either client ID. Creation is lazy with respect
 to the agent, but reserves the real
-SessionDB/SessionStore identity before returning. One canonical SQLite transaction commits
+stored-session/SessionStore identity before returning. One canonical SQLite transaction commits
 the session row, route, and private `gateway.local_policy.v1:<stored-id>` creation receipt.
 Repeating the request ID for the same principal and profile reuses that identity and frozen
 policy, including after daemon death. Omit the ID for a new session; clients that need
 lost-ACK retry protection must retain it. A failed transaction publishes no live session.
+
+### Naming the client
+
+A client may say who it is with an optional `client` object on `session.create`, for example
+`"client": {"name": "my-client", "version": "1.2.0", "kind": "desktop"}`. `name` is 1-64 characters
+of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit; `version` is optional, 1-64
+printable ASCII characters without spaces; `kind` is optional, a string of 1-32 characters. The
+known kinds are `desktop`, `webapp`, `tui` and `mobile`; an unknown kind is not an error, the label
+is kept and read without it. Anything else is refused with `invalid_params` (field `client`). Send
+`name` and `version` only to an owner whose `runtime.describe` lists `client` in
+`session_create.parameters` (capability `session-client-v1`); an older owner refuses the unknown key.
+Add `kind` only when the owner also lists `client-identity-v1` in its capabilities: an owner with
+`session-client-v1` alone refuses a label that carries one.
+
+The name is stored with the frozen creation request, so it is part of the exact-retry identity
+and survives a restart. `session.info` returns it as `client` (absent when none was sent), and
+plugins read it through `hermes_cli.plugin_session.session_client()` and the `client` /
+`client_version` keys of prompt-section session info. It is attribution only: `source` still
+picks the session policy (send `source: "tui"` for terminal-client behaviour), and no toolset,
+approval, permission, prompt text or telemetry reads `client`. Hermes does not verify the name,
+so any client can claim any name: never grant anything based on it.
+
+The same label also names the connection, not just one session: after its
+`client.capabilities {server_requests: true}` call, a client sends
+`client.capabilities {"client": {...}}` as a call of its own, once per connection and again after
+every reconnect, and ignores an error reply (an older owner refuses the unknown param for that
+call only). An owner listing `client-identity-v1` in `runtime.describe` capabilities keeps it for
+the connection's life; a malformed label leaves the earlier one in place and answers `4001` (an
+unknown key in it `4000`, like any unknown param). The Desktop app sends `hermes-desktop` /
+`desktop` and the Webapp `hermes-webapp` / `webapp`.
+
+An owner listing `client-activity-v1` answers `client.capabilities` with `client_activity: true`
+on a connection that keeps presence (a WebSocket; stdio answers `false`), and only then does a
+client send `client.activity {sessions, idle_seconds, basis, can_alert?,
+away?}`: the sessions it has in view (at most 16 ids, each at most 256 characters), how long
+ago the user's last input was,
+whether that comes from the OS idle clock (`basis: "system"`) or from input inside the Hermes
+window (`"page"`), whether it can get the user's attention for those sessions itself, and
+`away: true` when the screen locks. The owner keeps, per connection and session, the newest of
+that report and the input it sees itself (prompts, answers to its requests, interrupts, steers), in
+memory only, and counts a connection only while it is attached to the session. Each report is the
+connection's whole statement: the owner drops that connection's records of every session the report
+does not list, input it saw itself included, so a client that moved to another session (or to a page
+with none) withdraws by reporting what it shows now, and `sessions: []` withdraws everything. Input
+the owner sees after a report counts again. A report names sessions by id only; on a socket that
+serves several profiles it counts for the one profile whose session of that id the connection is
+attached to, and for none while it is attached to same-id sessions in more than one. Notification plugins read it to
+stay quiet while the user is at a computer. Like the name, it is attribution only and grants
+nothing.
+
+Each turn a connection submits is stamped with its label (`surface_v1.client` on the admission,
+never a `prompt.submit` field; a retry from another or no label is the same request). Plugins read
+the turn's label with `hermes_cli.plugin_session.turn_client()` and the attached connections with
+their idle data with `session_viewers()`.
 
 Attach another authenticated viewer with `session.resume({session_id})`, and submit
 through `prompt.submit({session_id, submission_id, text})`. The accepted receipt is durable
@@ -61,7 +115,9 @@ The server issues `session:operator` only at these existing trusted boundaries:
   such a login keeps in its cookies never work there on their own: the Webapp's listener accepts a
   bearer token or a socket's `?token=`, and renews a refresh token, only when it gave that token to a
   native app's RFC 8252 sign-in (digests kept in `webapp/native-sign-in-tokens.json` in the gateway home until they
-  expire), so native apps stay signed in across a sign-out and a restart.
+  expire), so native apps stay signed in across a sign-out and a restart. The deployment session
+  token (`HERMES_DASHBOARD_SESSION_TOKEN`) also works there as a bearer token or `?token=` while the
+  session-token provider is enabled; it has no refresh token.
 - The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
   or permitted legacy session token has been accepted.
 
@@ -75,9 +131,13 @@ restriction rather than treating every accepted dashboard credential as an opera
 Cross-subject local submissions carry a private, server-written profile/session/principal
 binding for queued execution and recovery. It is not exposed in model requests or public
 session snapshots. This change does not implement OpenAI API-to-local session affinity. The gateway
-listener stays on loopback unless `webapp.host` binds a wildcard address. The Webapp's listener engages
-the dashboard sign-in gate on a wildcard bind or when `webapp.public_url` is set, on any bind, and
-one-use launch links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
+listener stays on loopback unless `webapp.host` binds a wildcard address or one IP address of this
+machine. A specific address also gets a loopback socket on the same port, serving the same app under
+the same boundary state (`loopback_companion` in `gateway/webapp_listener.py`), because native
+clients accept only a loopback origin; its Host check accepts the address, loopback names and the
+Webapp's public host, nothing else. The Webapp's listener engages the dashboard sign-in gate on a
+wildcard or specific-address bind or when `webapp.public_url` is set, on any bind, and one-use launch
+links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
 gateway's private listener for native clients reads it as main does, so hosted sign-in on that
 listener keeps working.
 
@@ -123,6 +183,92 @@ listener keeps working.
   CLI/TUI/GUI history. This read-only feed uses the native legacy-resume ownership checks,
   excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
   by listing it. Explicit resume performs adoption; the default live feed is unchanged.
+  Both scopes take `workspace`: only conversations whose first row is in that folder, by
+  `hermes -c`'s rule (`persistence.conversation.sessions.workspace_key`): the row's git repo root equals it, or
+  (no root recorded) its cwd is the folder or under it. Pass the caller's repo root (else its cwd).
+  With `picker: true` each row also carries what a picker shows (`gateway/session_picker_fields.py`):
+  `cwd` and `workspace` from the same first row the filter reads, and from the conversation's current
+  segment (the compression tip, as the stored listing projects it) `preview` (the first prompt
+  there), `last_reply` (its newest reply, shortened as `preview` is; a pure compaction handoff is no
+  reply, a carrier shows the reply it wraps), `git_branch`, `last_active_at` and `pinned`. Off by
+  default, so the 1.5 s live-list poll pays nothing; on, a page is one batched store read.
+  The stored scope also pages and searches (`gateway/session_listing.py`); runtimes that serve this
+  advertise `session-list-cursor-v1` in `runtime.describe.capabilities`:
+  - `query`: only conversations whose title or id contains this text (case-insensitive; a title
+    also matches with `-`, `_`, `.` and spaces removed, and every segment of a compression chain
+    counts). The same rule as `hermes sessions list --search`. It must be 1 to 200 characters and
+    not only spaces.
+  - Each stored result carries `next_cursor`: an opaque string when more rows may follow, `null` when
+    the listing is exhausted. A last page may be empty. Send it back as `cursor` to read the next
+    page. The live scope is not paged: its result carries no `next_cursor`.
+  - A cursor is valid only with the `workspace`, `query` and `include_hidden` of the call that
+    returned it; `limit` and `picker` may change between pages. Any other cursor, a cursor this
+    method did not issue, or `query` / `cursor` with the live scope or with `title` answers
+    `invalid_params`.
+  - On an unchanged store, following `next_cursor` to `null` lists every conversation once, in the
+    order one unpaged read would. The store can change between calls (a conversation with a new
+    message moves to the front), so a later page may repeat a row an earlier page listed: key rows
+    by `session_id`. The 200 row cap per call stays.
+- `session.transcript({session_id, subagent_id?, cursor?, limit?, order?, inline_images?})` reads a
+  conversation without attaching to it (`gateway/session_stored_reads.py`). It is authorized as
+  `session.resume`'s read (`SessionAuthority.authorize`, `session:read`: profile, owner or operator).
+  Like `session.info` that check publishes the conversation's route entry in `authority.sessions`
+  when it is not there; it builds no agent, subscribes nobody, and an ended local conversation stays
+  out of the live list. An old CLI/TUI/GUI row (no receipt or route) is judged at its compression tip
+  by the stored feed's own rule, whichever lineage id is asked, and never adopted. It runs on the
+  socket's concurrent read lane, so a prompt or interrupt never queues behind it. Runtimes that serve
+  it advertise `session-transcript-v1` (and `session-list-picker-v1` for the `session.list` options
+  above) in `runtime.describe.capabilities`.
+  It returns `{session_id, rows, next_cursor, reset}`: display rows across the compression lineage
+  (live and compaction-archived, each logical message once), oldest first within a page. Every row
+  carries `row_kind` (`gateway/session_transcript_rows.py`): `"message"` is `session.resume`'s
+  `display_messages` row; `"compaction"` is a compaction handoff at its position, with `role:
+  "system"`, `text` the summary a reader sees (without the preamble, end marker, re-quoted user
+  messages, recovery footer and ranking line written for the model), `compacted_messages` (the count
+  the footer named, else null), `timestamp` and the stored `row_id`. A later compaction that carries,
+  re-wraps or unwraps a summary carrier still shows the older handoff, each once, before the first row
+  in the whole transcript that holds it, wherever a page starts.
+  A page holds at most `limit` (1-500, default 100) rows, compaction rows included, plus up to 64 tool
+  results of the call at its edge (a row's handoffs and the row itself can fall on two pages, each sent
+  once), and at most 2 MiB of JSON, cut between tool groups (a tool result whose call sits on another
+  page is still labelled from it); a single larger row keeps only its role, kind, time, ids and the
+  head of its text and carries `truncated: true`. Images read `[image]` unless `inline_images: true`.
+  The cursor is opaque and bound to the session, the child and the order.
+  `order: "oldest"` (the default) is also the poll: `next_cursor` is never null; read until a page is
+  empty, then keep that cursor and pass it again for the rows written since. The cursor holds the
+  segment it read and `SessionDB.transcript_cursor_state` of the rows it covered (the segment's live
+  rows up to the newest row read plus every live row of its earlier segments, the lineage's inactive
+  rows, its summed `transcript_revision`). While both hold only appends happened, and the page
+  continues after the cursor (`reset: false`). Anything else (an in-place compaction, a rotation to a
+  new segment, a rewind, a rewrite or deletion of a covered row or of an earlier segment's row,
+  including rows appended and compacted between two polls) answers `reset: true` from the first page:
+  the caller replaces what it holds. The check, the page and the state the next cursor holds are read
+  in one read transaction (`SessionDB.transcript_read_snapshot`), so a cursor vouches for exactly the
+  rows its page holds. A store without a pooled reader (not WAL, read-only, or at the pool's ceiling)
+  holds no transaction across the reads: there the read counts only when no write landed in the
+  database meanwhile, else it is read once more; when that read also overlaps a write, the reply is
+  `reset: true` from the first page with a cursor whose next poll resets again. A reply without a cursor
+  is `reset: true` too.
+  `order: "latest"` starts at the newest rows and pages older until `next_cursor` is null; its cursor
+  is keyed by each message's first durable row, so a page boundary holds across later compactions.
+  A single-segment conversation is paged in SQL on its display index, in one read transaction, with
+  the resume's conversation normalization (only the page's bodies are read, and a read backfills that
+  index outside the transaction when a row lacks its slot, as REST `/messages` does, then reads again);
+  a rotated lineage is deduplicated whole, and past `sessions.max_resume_messages` only its current
+  segment is paged. A cursor also holds which of the two its page read: when appends take the lineage
+  past that guard, a reply in either order is `reset: true` from its first page. A newest-first cursor
+  of that current segment also holds the segment: once a compaction rotates it to a new one, the next
+  reply is `reset: true` from the newest page.
+  With `subagent_id` it reads a delegated child of `session_id` instead
+  (`gateway/session_transcript_subagent.py`); the reply adds `subagent_id`, `available`, `running`
+  and `child_session_id`. The session must be live on this owner (else `not_found`) and readable by
+  the caller. A running child must be in the parent's live roster (the `subagent.list` rule, nested
+  children included). A finished child is found through the `_subagent_id` stamped on its row at
+  spawn, and only when its `parent_session_id` chain reaches this conversation through delegate-child
+  or compression-continuation hops; a branch of the conversation does not lend its children. A
+  foreign or unknown child answers `available: false`, `rows: []`, `next_cursor: null`,
+  `reset: true`. A child's lineage is its own (a queued child never shows its delegator's rows), and
+  every read uses the owning profile's own store under `owner_scope`.
   `session.info({session_id})` is a lightweight,
   authorized view of source, current model, lazy-agent status, and profile ID.
 - `ping({})` returns `{pong: true}`. `runtime.describe({})` exposes only authority identity,

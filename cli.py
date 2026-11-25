@@ -5,7 +5,7 @@
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import logging
@@ -72,7 +72,6 @@ from hermes_cli.cli_shutdown import (
     _wait_for_oneshot_background_completions,
 )
 from hermes_cli.cli_auto_maintenance import (
-    _run_checkpoint_auto_maintenance,
     _run_state_db_auto_maintenance,
 )
 from hermes_cli.cli_render import (
@@ -241,6 +240,7 @@ except Exception:
     pass
 import threading
 import queue
+from hermes_cli._startup_fast import project_root_str
 
 
 def _lazy_shim(module: str, name: str, alias: str | None = None):
@@ -337,7 +337,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from agent.i18n import t as _t
 
 _hermes_home = get_hermes_home()
-_project_env = Path(__file__).parent / '.env'
+_project_env = Path(project_root_str()) / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
@@ -589,7 +589,9 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     release_lsp_clients(wt_path)
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
-    _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
+    # `branch -D` runs the repository's reference-transaction hook under a plain environment.
+    from hermes_cli._subprocess_compat import noninteractive_git_env
+    _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}", env=noninteractive_git_env())
     _cprint(f"\033[32m{_t('cli.worktree.cleaned_up', path=wt_path)}\033[0m")
 
 
@@ -1042,13 +1044,13 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         from hermes_cli.config_backend import config_exists
+        from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+        from hermes_cli.config_turn_limit import turn_limit_label
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
+        terminal_timeout = os.getenv("TERMINAL_TIMEOUT") or cfg_get(DEFAULT_CONFIG, "terminal", "timeout")
 
         config_path = _hermes_home / 'config.yaml'
-        if not config_exists(config_path):
-            config_path = Path(__file__).parent / 'cli-config.yaml'
         config_status = _t("cli.config.loaded") if config_exists(config_path) else _t("cli.config.not_found")
         from hermes_cli.config_backend import get_config_backend
         if not get_config_backend().supports_file_tooling():  # no local file: name where config comes from
@@ -1092,7 +1094,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
                 ("cli.config.label_timeout", f"{terminal_timeout}s"),
             )),
             ("cli.config.section_agent", (
-                ("cli.config.label_max_turns", self.max_turns),
+                ("cli.config.label_max_turns", turn_limit_label(self.max_turns)),
                 ("cli.config.label_toolsets", ", ".join(self.enabled_toolsets) if self.enabled_toolsets else "all"),
                 ("cli.config.label_verbose", self.verbose),
             )),
@@ -1193,9 +1195,9 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
             )
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
-        from hermes_cli.gateway_cli_commands import run as run_gateway_command
-        if run_gateway_command(self, canonical, cmd_original):
-            return True  # state the gateway session owns (checkpoints, .env, handoff)
+        from hermes_cli.gateway_cli_commands import EXIT_SESSION, run as run_gateway_command
+        if answered := run_gateway_command(self, canonical, cmd_original):
+            return answered is not EXIT_SESSION  # state the gateway session owns (checkpoints, .env, handoff)
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()
@@ -1247,6 +1249,10 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         exec_cmd = qcmd.get("command", "")
         if not exec_cmd:
             self._console_print(f"[bold red]{_t('cli.quick.no_command', command=base_cmd)}[/]")
+            return True
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if refused := run_elsewhere_refusal():  # asked per command: this chat may predate the marker
+            self._console_print(f"[bold red]{refused}[/]")
             return True
         try:
             # shell=True is intentional (user-authored config snippets, never LLM controlled);
@@ -1637,7 +1643,8 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     def _create_worktree() -> None:
         try:
             # The session freezes this cwd: recorded so a resume recreates the tree quit removed (N8).
-            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=get_hermes_home() / "state.db")
+            from hermes_cli.worktree_ops import _retention_store
+            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=_retention_store())
         except Exception:
             logger.debug("worktree setup failed", exc_info=True)
             _wt_result["info"] = None

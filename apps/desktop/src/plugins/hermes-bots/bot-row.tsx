@@ -40,7 +40,7 @@ import {
   focusedRosterOwner,
   saveSelectedRosterBot
 } from './bot-state'
-import { ensureBotMetadata } from './canonical-chat'
+import { ensureBotMetadata, ensureBotProfile } from './canonical-chat'
 import {
   $botAttention,
   $botMeta,
@@ -393,8 +393,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>
-            void ensureBotMetadata(bot)
-              .then(() => onEdit(bot))
+            void ensureBotProfile(bot)
+              .then(onEdit)
               .catch(error => host.notifyError?.(error, b.bot.loadFailed))
           }
         >
@@ -616,7 +616,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
+        <ContextMenuItem onSelect={() => onOpen(group)}>{b.canonical.openGroup}</ContextMenuItem>
         <ContextMenuSeparator />
         {/* Same affordance as a bot row's pin; pinned rooms lead the roster
             band, and the flag lives on the room record. */}
@@ -625,11 +625,11 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
             const pinned = toggleGroupChatPinned(group)
 
             if (pinned !== null) {
-              host.notify({ kind: 'info', message: `${group} ${pinned ? 'pinned to top' : 'unpinned'}` })
+              host.notify({ kind: 'info', message: pinned ? b.group.groupPinned(group) : b.group.groupUnpinned(group) })
             }
           }}
         >
-          {room.pinned ? 'Unpin' : 'Pin to top'}
+          {room.pinned ? b.group.unpinGroup : b.group.pinGroup}
         </ContextMenuItem>
         {/* Filing — the same submenu a bot row gets, driving the room-record
             assignment instead of profile meta. */}
@@ -669,7 +669,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
             })
           }
         >
-          {b.group.deleteAction}
+          {b.group.disbandAction}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

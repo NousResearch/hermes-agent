@@ -160,11 +160,7 @@ def _is_missing_gateway_relay(exc: ImportError) -> bool:
     # Absence is ModuleNotFoundError WITH a name; anything else is a fault.
     if not isinstance(exc, ModuleNotFoundError):
         return False
-    return getattr(exc, "name", None) in (
-        "gateway",
-        "gateway.relay",
-        "gateway.relay.egress",
-    )
+    return exc.name == "gateway.relay.egress" or "gateway.relay.egress".startswith(f"{exc.name}.")
 
 
 def _live_relay_fronted() -> Optional[set[str]]:
@@ -581,5 +577,5 @@ def authorize_relay_target(
     return (
         f"Refusing to send to unattested relay target '{name}:{target}': "
         "this gateway has no record of that destination. Use "
-        "send_message(action='list') to see the targets it can reach."
+        "`hermes send --list` to see the targets it can reach."
     )

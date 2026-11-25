@@ -1,0 +1,38 @@
+name: agentic-operations
+title: Agentic Operations
+repo: https://github.com/ryanteoyx/agentic-operations
+sha: dd4a6cf563a03b65231e30f3b32338ab1fe5a113
+subdir: plugin/hermes_ops
+description: Synthetic manufacturing decisions with constraint planning, durable recovery, and outcome correction.
+maintainer: ryanteoyx
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+docs_url: https://github.com/ryanteoyx/agentic-operations/blob/dd4a6cf563a03b65231e30f3b32338ab1fe5a113/plugin/hermes_ops/README.md
+screenshots:
+  - https://raw.githubusercontent.com/ryanteoyx/agentic-operations/dd4a6cf563a03b65231e30f3b32338ab1fe5a113/docs/images/operations-plan.png
+platforms:
+  - linux
+  - macos
+readme: true
+known_issues:
+  - Synthetic ERP only; production connectors and company RBAC are not included.
+  - Web dashboard supported; no native Desktop extension.
+  - Optional evidence review requires a configured Hermes model.
+capabilities:
+  provides_tools:
+    - ops_seed_demo
+    - ops_list_cases
+    - ops_case
+    - ops_investigate
+    - ops_plan
+    - ops_select_plan
+    - ops_execute
+    - ops_reconcile
+    - ops_advance_demo
+    - ops_evaluate
+    - ops_activate_correction
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

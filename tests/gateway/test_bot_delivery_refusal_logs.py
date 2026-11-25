@@ -9,7 +9,7 @@ import logging
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']
 
@@ -38,7 +38,7 @@ async def test_a_pin_mismatch_names_the_pinned_and_live_session(bot, caplog):
     """The pair the RCA had to reconstruct by hand: the dead pin and the live runner entry."""
     from gateway.session_bot import deliver
     with caplog.at_level(logging.WARNING, logger=LOGGER):
-        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
             await deliver(bot.connection, dict(
                 id=KEY, profile='default', message='ping', session_id='dead-pinned-session'))
     line = _line(caplog, KEY)
@@ -52,7 +52,7 @@ async def test_a_missing_runner_entry_names_the_session(bot, caplog, monkeypatch
     store = bot.authority.runner.session_store
     monkeypatch.setattr(store, 'lookup_by_session_key', lambda route: None)
     with caplog.at_level(logging.WARNING, logger=LOGGER):
-        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
             await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     line = _line(caplog, bot.chat)
     assert 'runner_entry=None' in line, line
@@ -61,10 +61,11 @@ async def test_a_missing_runner_entry_names_the_session(bot, caplog, monkeypatch
 @pytest.mark.asyncio
 async def test_a_missing_compression_tip_row_names_the_tip(bot, caplog, monkeypatch):
     """A title whose compression tip points at a row that no longer exists."""
+    from gateway.session_authority import authority_persistence
     from gateway.session_bot import deliver
-    monkeypatch.setattr(bot.authority.db, 'get_compression_tip', lambda sid: 'ghost-tip-row')
+    monkeypatch.setattr(authority_persistence(bot.authority).lineage, 'tip', lambda sid: 'ghost-tip-row')
     with caplog.at_level(logging.WARNING, logger=LOGGER):
-        with pytest.raises(RuntimeStoreError, match='not_found'):
+        with pytest.raises(AuthorityRefusal, match='not_found'):
             await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     line = _line(caplog, 'ghost-tip-row')
     assert 'not_found' in line, line

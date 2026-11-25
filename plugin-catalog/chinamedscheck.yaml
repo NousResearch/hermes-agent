@@ -1,0 +1,22 @@
+name: chinamedscheck
+title: ChinaMedsCheck
+repo: https://github.com/AbigailDavised/chinamedscheck-mcp
+sha: ba4a8efe911a85e3ed9b270c626930b0f4b0665b
+version: "1.0.0"
+description: "38-medication China Customs GACC Decree 442 legality screener, supply-allowance calculator, CAAC cabin sharps and cold-chain evaluator, bilingual pharmacy card generator, 4-airport Red Channel walkthroughs (PVG/PEK/CAN/PKX), and therapeutic substitute mesh through ChinaMedsCheck's official MCP server (Streamable HTTP at https://chinamedscheck.com/api/mcp, no sign-in, no keys in config). Bundles the chinamedscheck workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure - hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to chinamedscheck.com/api/mcp with only the medication name, dosage, itinerary or airport query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to chinamedscheck.com/api/mcp with only the medication name, dosage, itinerary or airport query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: ChinaMedsCheck
+tier: community
+category: tools
+docs_url: https://chinamedscheck.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/chinamedscheck-mcp/ba4a8efe911a85e3ed9b270c626930b0f4b0665b/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/chinamedscheck-mcp/ba4a8efe911a85e3ed9b270c626930b0f4b0665b/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/chinamedscheck-mcp/ba4a8efe911a85e3ed9b270c626930b0f4b0665b/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

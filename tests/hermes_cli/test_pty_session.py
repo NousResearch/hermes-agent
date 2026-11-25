@@ -345,6 +345,7 @@ async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimm
         def __init__(self, capacity):
             super().__init__(capacity)
             self.app = app
+            self.state = SimpleNamespace()
             self.query_params = {"attach": token}
             self._hermes_auth_identity = {"user_id": "owner", "provider": "local"}
 

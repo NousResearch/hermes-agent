@@ -45,3 +45,35 @@ def served_profile_runtime(
     # any custom HERMES_HOME), so its flat keys never matched (#123088).
     name = status.profile_name_for_home(home) or "default"
     return {**record, "platforms": status.profile_platforms_from_multiplexer(record, name)}
+
+
+def served_profile_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
+    """Entries a served ``profile`` mirrors from the DEFAULT (api_server/webhook listeners, and the
+    Relay adapter). The multiplexer never builds those adapters for a secondary (``gateway.run_adapters``
+    skips them: ``SHARED_LISTENER_MIRROR_PLATFORMS``), so the record has no ``<profile>:api_server``
+    entry and every reader fell through to ``pending_restart`` — "Restart needed" forever while
+    ``/p/<profile>/v1/...`` answered. A listener is mirrored only while live, with the ``/p/<profile>``
+    URL the client must call; Relay in every state, since the default's failure is the profile's too.
+    """
+    from gateway.config import (
+        SERVED_PROFILE_MIRROR_PLATFORMS, SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS,
+    )
+    plats = (runtime or {}).get("platforms")
+    if not profile or profile == "default" or not isinstance(plats, dict):
+        return {}
+    mirrored: dict[str, Any] = {}
+    for name in sorted(SERVED_PROFILE_MIRROR_PLATFORMS):
+        entry = plats.get(name)
+        if not isinstance(entry, dict):
+            continue
+        # A dead default listener has no /p/<profile> surface to mirror. A dead default Relay IS the
+        # profile's Relay state: its one adapter serves every profile, so its failure is theirs too.
+        if name in SHARED_LISTENER_MIRROR_PLATFORMS and entry.get("state") not in {"connected", "connecting", "retrying"}:
+            continue
+        # api_server and webhook bind separate ports; each mirror hangs off its own listener. A record
+        # from an older gateway carries no ``listener_base``: connected, URL unknown.
+        base = entry.get("listener_base")
+        url = f"{base}/p/{profile}{SHARED_LISTENER_MIRROR_PATHS.get(name, '')}" if isinstance(base, str) and base else None
+        mirrored[name] = {k: v for k, v in entry.items() if k != "listener_base"}
+        mirrored[name].update(ingress_url=url, mirrored_from="default")
+    return mirrored

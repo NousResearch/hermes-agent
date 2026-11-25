@@ -281,7 +281,8 @@ class TestOutboundRedaction:
 
         bodies = ("Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "QQ7ZP2MX9VLK4NRT", "b-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
                   ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "1-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
-                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
+                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
         tokens = []
         for pattern in R._PREFIX_PATTERNS + R._plugin_patterns():
             prefix = R._extract_literal_prefix(pattern)
@@ -313,6 +314,15 @@ class TestAudit:
         assert rec["direction"] == "inbound"
         assert rec["peer"] == "peer-y"
         assert rec["task_id"] == "task-1"
+
+    @pytest.mark.parametrize("move", ("delete", "rename"))
+    def test_audit_skips_a_deleted_or_renamed_profile_home(self, monkeypatch, tmp_path, move):
+        from tests.fixtures.dead_profile_home import dead_named_home
+
+        home = dead_named_home(tmp_path, move)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        security.audit("inbound", "peer-y", "task-1", "hello world")  # never raises
+        assert not home.exists()
 
 
 # --------------------------------------------------------------------------
@@ -487,6 +497,19 @@ class TestPersistence:
     def test_load_missing_is_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert protocol.load_conversation("nope") == []
+
+    @pytest.mark.parametrize("move", ("delete", "rename"))
+    def test_persist_skips_a_deleted_or_renamed_profile_home(self, monkeypatch, tmp_path, move):
+        """Every security.audit() call is followed by persist_message(): both must skip a dead home."""
+        from tests.fixtures.dead_profile_home import dead_named_home
+
+        home = dead_named_home(tmp_path, move)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(tools, "_fetch_card", lambda *a: None)
+        monkeypatch.setattr(tools, "_http_post_json", lambda url, body, *a: {"result": protocol.build_task(
+            "task-1", "ctx-abc", protocol.STATE_COMPLETED, "ok")})
+        assert tools._send_task("peer", {"url": "http://peer.example"}, "hello", "ctx-abc")[0] == "ok"
+        assert not home.exists()
 
     def test_a2a_history_tool_recalls_conversation(self, monkeypatch, tmp_path):
         """load_conversation is wired to production via the a2a_history tool."""

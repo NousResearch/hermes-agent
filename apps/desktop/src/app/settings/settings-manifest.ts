@@ -1,4 +1,5 @@
 import type { Translations } from '@/i18n'
+import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import { hostHas } from '@/lib/host-capabilities'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
 import { canUseQuickEntry } from '@/store/quick-entry'
@@ -219,6 +220,14 @@ export const SETTINGS_MANIFEST = {
         description: t.settings.notifications.browserPermission.states.default
       })
     },
+    phonePresence: {
+      subpage: 'alerts',
+      keywords: ['phone', 'mobile', 'push', 'active', 'away', 'idle', 'presence', 'quiet'],
+      copy: t => ({
+        label: t.settings.notifications.phonePresence.title,
+        description: t.settings.notifications.phonePresence.description
+      })
+    },
     muteSounds: {
       subpage: 'sounds',
       keywords: ['mute', 'silence', 'quiet', 'sound', 'chime', 'wake', 'haptics'],
@@ -268,6 +277,8 @@ export const SETTINGS_MANIFEST = {
   },
   about: {
     updates: {
+      // A Webapp served by Hermes Cloud renders no Updates section.
+      available: () => !servedByHermesCloud(),
       subpage: 'updates',
       keywords: ['update', 'auto update', 'download', 'release', 'version'],
       copy: t => ({ label: t.settings.about.updates })

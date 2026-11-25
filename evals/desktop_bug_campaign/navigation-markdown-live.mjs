@@ -1,6 +1,8 @@
-import { chromium } from '../../node_modules/playwright/index.mjs'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
+// Playwright comes from the desktop workspace that declares it.
+const { chromium } = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))('@playwright/test')
 const artifact = process.env.NAVIGATION_ARTIFACT_DIR ?? '/home/teknium/.hermes/cache/desktop-bugs-74848ed3/navigation-markdown'
 const tag = process.argv[2] ?? 'after'
 // pm's Chromium: PLAYWRIGHT_BROWSERS_PATH (from `hermes pm env`) is where channel 'chromium' finds it.

@@ -35,6 +35,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentModelSource,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -226,7 +227,10 @@ function tileRowFingerprintKey(storedSessionId: string): string {
 }
 
 /** The session row backing a tile, if it is listed in the sidebar slices.
- *  Hidden bot chats have no row — they keep fetching every tick. */
+ *  Hidden bot chats have no row — they keep fetching every tick. Listed
+ *  slices only, never ownerLookupSessionRows(): its owner-only stubs include
+ *  parked hidden rows no list page refreshes, so their fingerprint would
+ *  freeze the tile. */
 function tileListRow(storedSessionId: string) {
   return (
     $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
@@ -1617,4 +1621,23 @@ export function useBackgroundSync({
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
+
+  // A refused mid-turn pick hands new chats back to the default (deferred-pick.ts) while a draft may already
+  // be open: repaint that draft's pill with the default it now launches with.
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeSessionId) {
+      return
+    }
+
+    let last = $currentModelSource.get()
+
+    return $currentModelSource.listen(next => {
+      const released = last === 'manual' && next === 'default'
+      last = next
+
+      if (released) {
+        void refreshCurrentModel()
+      }
+    })
+  }, [activeSessionId, gatewayState, refreshCurrentModel])
 }

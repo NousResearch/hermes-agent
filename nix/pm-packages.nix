@@ -68,8 +68,23 @@ let
     ];
   });
 
+  # pnpm pins the @pnpm/exe executable and the `pnpm` launcher package, and both
+  # archives wrap their tree in package/. Unpacked over one another, the
+  # launcher's own `pnpm` script would replace the executable. Mirror
+  # pm/packages.py Pnpm.unpack instead: the launcher contributes only its dist/
+  # (the bundled node-gyp the executable looks for beside itself).
+  unpackPnpm = ''
+    tar -xzf "$curSrc"
+    if [ -d package/dist ]; then
+      mv package/dist dist
+    else
+      mv package/* .
+    fi
+    rm -r package
+  '';
+
   derive = name: pin: artifacts:
-    stdenv.mkDerivation {
+    stdenv.mkDerivation ({
       pname = name;
       version = pin.version;
 
@@ -141,7 +156,7 @@ let
           ln -sf "../$(basename "$exe")" "$out/bin/$(basename "$exe")"
         done
       '';
-    };
+    } // lib.optionalAttrs (name == "pnpm") { unpackCmd = unpackPnpm; });
 in
 lib.filterAttrs (_: v: v != null) (
   lib.mapAttrs (

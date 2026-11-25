@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { esApproval } from './es_approval'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
@@ -29,6 +30,11 @@ import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  gatewayGroupOpen: {
+    opening: "Abriendo el chat de grupo…",
+    lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
+    missing: "Este chat de grupo ya no existe."
+  },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
   intro: introEs,
@@ -497,6 +503,14 @@ export const esOverrides = {
       approvalTitleNamed: session => `Se necesita aprobación — ${session}`,
       approveAction: 'Aprobar',
       rejectAction: 'Rechazar',
+      accessTitle: 'Se necesita acceso a una carpeta',
+      accessTitleNamed: session => `Se necesita acceso a una carpeta — ${session}`,
+      accessReadBody: folder => `Solo lectura: ${folder}`,
+      accessReadWriteBody: folder => `Lectura y escritura: ${folder}`,
+      networkTitle: 'Se necesita acceso a un sitio web',
+      networkTitleNamed: session => `Se necesita acceso a un sitio web — ${session}`,
+      allowAction: 'Permitir',
+      denyAction: 'Denegar',
       inputTitle: 'Se necesita información',
       inputTitleNamed: session => `Se necesita una respuesta — ${session}`,
       inputBody: 'Hermes espera tu respuesta.',
@@ -772,6 +786,8 @@ export const esOverrides = {
       mcp: 'MCP',
       archivedChats: 'Chats archivados',
       sessions: 'Sesiones',
+      backup: 'Copia de seguridad y transferencia',
+      backupOnly: 'Copia de seguridad',
       about: 'Acerca de',
       billing: 'Facturación',
       notifications: 'Notificaciones',
@@ -1544,6 +1560,9 @@ export const esOverrides = {
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Tamaño máximo de vista previa / carga de imagen en megabytes',
+      desktopReadAloudTitle: 'Leer respuestas en voz alta en esta app',
+      desktopReadAloudDesc:
+        'Lee cada respuesta terminada en Desktop. Es el mismo interruptor que el del compositor; se aplica a todas las ventanas abiertas, y al apagarlo se detiene una respuesta a mitad de frase. «Leer respuestas en voz alta» abajo es para mensajería y la CLI.',
       showOptions: 'Mostrar opciones'
     },
     hudModifier: {
@@ -2375,15 +2394,20 @@ export const esOverrides = {
       browserRealProfile: {
         label: 'Usar mi perfil real del navegador',
         description:
-          'Copia los inicios de sesión y las cookies de tu navegador predeterminado en una instantánea administrada con la que navega el agente. Tu perfil en uso nunca se abre directamente. Se aplica a las sesiones nuevas.',
+          'Copia los inicios de sesión y las cookies de tu navegador predeterminado en una instantánea administrada con la que navega el agente, y también inicia sesión con ellos en el navegador integrado. Tu perfil en uso nunca se abre directamente. Se aplica a las sesiones nuevas.',
         enabledTitle: 'Navegación con perfil real activada',
         enabledMessage: 'Las sesiones nuevas navegarán con una instantánea de tu perfil predeterminado del navegador.',
         disabledTitle: 'Navegación con perfil real desactivada',
-        disabledMessage: 'Se eliminará la instantánea del perfil; las sesiones nuevas usan un navegador limpio.',
+        disabledMessage: 'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
         failedSave: 'No se pudo guardar el ajuste del perfil real',
+        reimportSignins: 'Volver a importar inicios de sesión',
+        signinsImportedTitle: 'Inicios de sesión del navegador integrado',
+        signinsImported: count => `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
+        signinsRemote: 'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
+        signinsFailed: 'No se pudieron importar los inicios de sesión al navegador integrado',
         prompt: {
           title: 'Mantén la sesión iniciada en tus sitios',
-          body: 'Deja que Hermes navegue con una instantánea de tu perfil predeterminado del navegador, para que los sitios se abran con la sesión ya iniciada.',
+          body: 'Deja que Hermes navegue con una instantánea de tu perfil predeterminado del navegador, para que los sitios se abran con la sesión ya iniciada, para el agente y en el navegador integrado.',
           bulletSnapshot: 'Las cookies y los inicios de sesión se copian en una instantánea administrada.',
           bulletLiveProfile: 'Tu perfil del navegador en uso nunca se abre directamente.',
           bulletLocal: 'Nada sale de este equipo.',
@@ -2592,10 +2616,6 @@ export const esOverrides = {
       openLog: 'Abrir registro',
       actionLog: 'Registro de acciones',
       alreadyInstalled: (name: string) => `"${name}" ya está instalada`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Explorar todo el hub',
-      pickerHide: 'Ocultar el explorador del hub',
-      pickerHint: 'Pulsa "+ Añadir a este agente" en cualquier skill: se instala y aparece en la lista de arriba.',
       loadFailed: 'No se pudo cargar el hub de skills',
       previewFailed: 'No se pudo cargar la vista previa de la skill',
       scanFailed: 'Falló el análisis de seguridad',
@@ -2854,7 +2874,10 @@ export const esOverrides = {
       backupDesc: 'Comprimir la configuración, memorias, skills y sesiones en un archivo ZIP',
       debugShare: 'Compartir datos de depuración',
       debugShareDesc:
-        'Sube un informe y registros con datos sensibles ocultos y obtén enlaces para compartir (se eliminan automáticamente en 6 h)',
+        'Sube un resumen (versiones, claves de configuración, recuentos de errores; sin texto de registros) y obtén un enlace para compartir (se elimina automáticamente en 6 h)',
+      debugShareConfirm: '¿Subir el informe de depuración a un paste público?',
+      debugShareConfirmDesc:
+        'Sube un resumen a un servicio de paste público: versiones de Hermes, Python y del sistema operativo, nombres de las plataformas conectadas y de los toolsets, claves de configuración (sin valores) y recuentos de advertencias/errores. No contiene líneas de registro ni texto de mensajes. Los pastes se eliminan automáticamente a las 6 horas; si paste.rs no está disponible, la alternativa dpaste.com los mantiene públicos 1 día y no se pueden eliminar antes.',
       debugShareRunning: 'Subiendo informe de depuración…',
       debugShareLinks: 'Enlaces para compartir',
       debugShareFailed: 'No se pudieron compartir los datos de depuración',
@@ -3207,6 +3230,14 @@ export const esOverrides = {
     fieldSkillsPlaceholder: 'nombres de skills separados por comas (opcional)',
     fieldDeliver: 'Entregar a',
     fieldDeliverOnly: 'Entregar solo la carga útil',
+    fieldSignature: 'Firma',
+    fieldSignatureHint: 'El único esquema de firma que acepta esta ruta. Las entregas de GitHub, GitLab y Linear necesitan su propio esquema.',
+    signatureOptions: {
+      generic: 'Genérica (con marca de tiempo)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instrucciones para el agente cuando se active este webhook (opcional)',
     nameRequired: 'Nombre obligatorio',
@@ -3271,6 +3302,8 @@ export const esOverrides = {
     remoteOverride: {
       menuItem: 'Conectar a un host remoto…',
       badge: (host: string) => `Se ejecuta en ${host}`,
+      runHere: 'Ejecutar en este equipo…',
+      sandboxed: 'En sandbox',
       title: (profile: string) => `Conectar ${profile} a un host remoto`,
       description:
         'Las sesiones de este perfil se ejecutarán en el Hermes remoto que indiques, en lugar de en este equipo.',
@@ -3737,7 +3770,10 @@ export const esOverrides = {
   },
   composer: {
     message: 'Mensaje',
-    wakingProfile: profile => `Despertando ${profile}…`,
+    switchingProfile: profile => `Cambiando a ${profile}…`,
+    switchingProfileSlow: 'Aún conectando. Los mensajes que envíes ahora esperarán y llegarán a este agente.',
+    switchProfileFailed: profile => `No se pudo cambiar a ${profile}`,
+    willSendTo: profile => `Se enviará a ${profile}`,
     placeholderStarting: 'Iniciando Hermes...',
     placeholderReconnecting: 'Reconectando con Hermes…',
     placeholderFollowUp: 'Enviar seguimiento',
@@ -3876,7 +3912,7 @@ export const esOverrides = {
       '/topup': 'Mostrar tu saldo de Nous y gestionar la facturación en el portal',
       '/platform': 'Pausar, reanudar o listar una plataforma del gateway que falla',
       '/version': 'Mostrar la versión de Hermes Agent',
-      '/debug': 'Subir un informe de depuración (información del sistema + registros) y obtener enlaces para compartir',
+      '/debug': 'Informe de depuración (versiones, claves de configuración, recuentos de errores; sin texto de registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces',
       '/model': 'Cambiar el modelo de esta sesión'
     },
     hotkeyDescs: {
@@ -4884,6 +4920,7 @@ export const esOverrides = {
       branchNewChat: 'Ramificar en chat nuevo',
       react: 'Reaccionar',
       dismissError: 'Descartar error',
+      responseContinuing: 'Continuando…',
       responseStopped: 'Respuesta detenida',
       ...esErrorLayers,
       errorCodes: {
@@ -5094,6 +5131,7 @@ export const esOverrides = {
       readAloud: 'Leer en voz alta',
       copyFullResponse: 'Copiar la respuesta completa',
       readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',
+      contentRefusedNotice: 'El filtro de seguridad del modelo rechazó este mensaje: prueba con otra consulta.',
       editMessage: 'Editar mensaje',
       expandMessage: 'Expandir mensaje',
       scrollToBottom: 'Desplazarse hacia abajo',
@@ -5110,26 +5148,7 @@ export const esOverrides = {
       sendEdited: 'Enviar edición',
       attachingFile: 'Adjuntando…'
     },
-    approval: {
-      gatewayDisconnected:
-        'Hermes está sin conexión ahora mismo. El comando sigue esperando tu respuesta (hasta que se agote el tiempo de aprobación). Reconéctate y vuelve a enviarla.',
-      sendFailed: 'No se pudo enviar tu respuesta',
-      reconnect: 'Reconectar',
-      timedOutSystemLine:
-        'Se agotó el tiempo de aprobación: el comando no se ejecutó. Pide a Hermes que lo intente de nuevo o sube el límite en Configuración → Seguridad → Tiempo de aprobación.',
-      openSafetySettings: 'Abrir configuración de seguridad',
-      run: 'Ejecutar',
-      command: 'Comando',
-      moreOptions: 'Más opciones de aprobación',
-      allowSession: 'Permitir esta sesión',
-      alwaysAllowMenu: 'Permitir siempre…',
-      jumpToApproval: 'Aprobación necesaria',
-      reject: 'Rechazar',
-      alwaysTitle: '¿Permitir siempre este comando?',
-      alwaysDescription: pattern =>
-        `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
-      alwaysAllow: 'Permitir siempre'
-    },
+    approval: esApproval,
     clarify: esClarify,
     themePicker: esThemePicker,
     catalogInstall: {

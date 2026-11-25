@@ -1,20 +1,25 @@
 name: omh
 repo: https://github.com/rlaope/oh-my-hermes
-sha: 021e5c63d976b4e0faf9cfc7d608701d98fe1722
+sha: 8ea5569fa9d4d17c4103c330b148484b58a74462
 subdir: src/plugin_bundle/omh
-description: "Oh My Hermes (OMH) bridge: routing hints and role context for OMH workflow skills, per-task delegation model routing, plan todos and a status tool, a Hermes Desktop status pane (off until enabled), bounded evidence probes that keep prepared work apart from observed results, and a file-backed memory provider. Disclosure — omh_delegate_route writes delegation.model/provider/reasoning_effort in $HERMES_HOME/config.yaml and the session hooks restore them; omh_gather_evidence runs allowlisted checks (python -m unittest with reporting flags only, python -m compileall, git diff --check, omh doctor/probe/docs/release checks) via subprocess on the host, outside any sandboxed terminal backend and without Hermes' terminal approval, in the agent working directory or below it, so it runs whatever test code that directory holds; omh_team (only with the separate OMH core package installed) asks once through the Hermes approval prompt for an exact list of up to 8 check commands from an accepted plan, then runs them on the host as each helper returns; omh_jev_ask posts model-supplied state and questions to api.typesafe.ai (openrouter.ai only when the operator opts in via ~/.omh/jev/settings.json) with the user's own TYPESAFE_API_KEY or OPENROUTER_API_KEY, only in a turn where the user names Jev; opt-in egress_attempts (re-registers chosen core tools, needs the operator's tool-override grant) and browser_adapter (vetoes core browser_* tools) settings; reads session and cost metadata from state.db read-only; state lives under ~/.omh and <project>/.omh."
+description: "Oh My Hermes (OMH) bridge: routing hints and role context for OMH workflow skills, per-task delegation model routing, plan todos and a status tool, a Hermes Desktop status pane (off until enabled), bounded evidence probes that keep prepared work apart from observed results, and a file-backed memory provider, a dag-ulw run keeper (omh_dag) whose nodes the parent dispatches with Hermes' own delegate_task, a data-only search planner (omh_search, no retrieval), and language-server navigation tools (lsp_definition, lsp_references, lsp_diagnostics, lsp_rename) over Hermes' own LSP service. Disclosure — omh_delegate_route writes delegation.model/provider/reasoning_effort in $HERMES_HOME/config.yaml and the session hooks restore them; omh_gather_evidence runs allowlisted checks (python -m unittest with reporting flags only, python -m compileall, git diff --check, omh doctor/probe/docs/release checks) via subprocess on the host, outside any sandboxed terminal backend and without Hermes' terminal approval, in the agent working directory or below it, so it runs whatever test code that directory holds; omh_team (only with the separate OMH core package installed, which the plugin imports from the directory OMH's own installer recorded) asks once through the Hermes approval prompt for an exact list of up to 8 check commands from an accepted plan, then runs them on the host as each helper returns; omh_jev_ask posts model-supplied state and questions to api.typesafe.ai (openrouter.ai only when the operator opts in via ~/.omh/jev/settings.json) with the user's own TYPESAFE_API_KEY or OPENROUTER_API_KEY, only in a turn where the user names Jev; opt-in egress_attempts (re-registers chosen core tools, needs the operator's tool-override grant) and browser_adapter (vetoes core browser_* tools) settings; the pre_tool_call hook refuses skill_manage edits and deletes of skills OMH installed; lsp_rename applies the language server's workspace edit all-or-nothing, only to files inside the session workspace root Hermes' file tools resolve (apply=false previews), and the lsp_* tools (off until OMH_LSP_TOOLS or the lsp_tools setting) drive Hermes' agent.lsp service through its private loop, answering lsp_unavailable when that seam is absent; omh_dag reads delegation.max_concurrent_children and state.db async_delegations read-only to size each ready batch and, on a Docker or SSH terminal, runs fixed read-only file and $HOME checks in that terminal without Hermes' approval prompt; the memory provider reads the profile's .env, config.yaml and pairing files to find the gateway allowlist when classifying DMs; adds system-prompt sections for delegated children and a per-model calibration block; reads session and cost metadata from state.db read-only; state lives under ~/.omh and <project>/.omh."
 maintainer: rlaope
 tier: community
 category: tools
 requires_hermes: ">=0.21.1"
 docs_url: https://github.com/rlaope/oh-my-hermes
-version: "3.0.0"
+version: "4.0.4"
 platforms: []
 capabilities:
   provides_tools:
+    - lsp_definition
+    - lsp_diagnostics
+    - lsp_references
+    - lsp_rename
     - omh_agent_board
     - omh_capabilities
     - omh_context
+    - omh_dag
     - omh_decision_gate
     - omh_delegate_route
     - omh_document_plan
@@ -30,6 +35,7 @@ capabilities:
     - omh_role
     - omh_route_answer
     - omh_run_summary
+    - omh_search
     - omh_source_trust
     - omh_status
     - omh_team

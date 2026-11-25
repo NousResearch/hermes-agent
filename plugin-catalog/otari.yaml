@@ -1,0 +1,19 @@
+name: otari
+title: Otari
+repo: https://github.com/mozilla-ai/hermes-provider-otari
+sha: 9d9ba9a55ddb713195d77d1931a4970769de7ae1
+subdir: otari
+description: Use Otari, the open-source LLM gateway by Mozilla.ai, as a model provider, with one key for every model your gateway serves.
+maintainer: mozilla-ai
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/mozilla-ai/hermes-provider-otari#readme
+image: https://raw.githubusercontent.com/mozilla-ai/hermes-provider-otari/9d9ba9a55ddb713195d77d1931a4970769de7ae1/assets/banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OTARI_API_KEY

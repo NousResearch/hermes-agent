@@ -44,7 +44,9 @@ asymmetric algorithm is ever sent to a provider; a token of another shape (the p
 whose decoder skips characters it does not know) is never read as one, and the provider turns away
 a token whose unverified issuer, audience or agent instance is not its own before it looks up any
 signing key, so an anonymous caller cannot make the listener fetch keys for tokens addressed
-elsewhere. When the provider cannot be reached the token is refused, not let through. The refresh route keeps :func:`token_works_alone`: an
+elsewhere. When the provider cannot be reached the token is refused, not let through, and for a
+while after it checks such tokens only against keys it already holds (the Nous provider's backoff),
+so the listener does not wait on an unreachable key endpoint once per request. The refresh route keeps :func:`token_works_alone`: an
 exchanged token is an access token, and the dashboard host exchanges again rather than refreshing here.
 """
 from __future__ import annotations
@@ -184,7 +186,9 @@ def is_exchanged_token(token: str) -> bool:
     """Whether a registered provider that issues exchanged tokens verifies *token* as one: its
     own token for this agent whose verified claims name an actor. Refused when no such provider
     answers (an outage included). The provider gets the unverified claims too, to turn away a token
-    that is not addressed to it before it fetches any signing key."""
+    that is not addressed to it before it fetches any signing key. The hook a provider implements:
+    ``is_exchanged_token(*, token: str, unverified_claims: dict | None) -> bool``, raising
+    ``ProviderError`` when it cannot tell."""
     claims = _unverified_exchange_claims(token)
     if claims is None:
         return False

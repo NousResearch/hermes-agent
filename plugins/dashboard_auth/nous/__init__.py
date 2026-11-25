@@ -14,6 +14,7 @@ Webapp instead of the configured one (``hermes_cli.dashboard_auth.listener_clien
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from hermes_cli.dashboard_auth import (
@@ -39,6 +40,10 @@ _TAG = "dashboard-auth-nous"
 _DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 _SCOPE = "agent_dashboard:access"  # contract C3
 _EXPECTED_CONTRACT_VERSION = 1  # contract C11
+#: After Portal's keys could not be fetched for an exchanged token, how long that check uses only
+#: keys already cached. Anyone can send a token shaped for this agent, and each fetch blocks the
+#: listener for up to the key client's timeout, so an outage costs one such wait per window.
+_EXCHANGE_KEY_BACKOFF_SECONDS = 300.0
 
 LAST_SKIP_REASON: str = ""  # cleared on every register() so restarts don't leak stale reasons
 
@@ -64,6 +69,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         self._authorize_url = f"{self._portal_url}/oauth/authorize"
         self._token_url = f"{self._portal_url}/api/oauth/token"
         self._jwks_client: Any = None  # lazily built (crypto import cost)
+        self._exchange_keys_down_until = 0.0  # monotonic; see _EXCHANGE_KEY_BACKOFF_SECONDS
 
     def start_login(self, *, redirect_uri: str) -> LoginStart:
         validate_redirect_uri(redirect_uri)
@@ -116,12 +122,30 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         ``ProviderError`` (JWKS unreachable) propagates."""
         if unverified_claims is not None and not self._addressed_here(unverified_claims):
             return False
+        if time.monotonic() < self._exchange_keys_down_until and not self._key_cached(token):
+            return False
         try:
             claims = self._claims_for(token)
         except InvalidCodeError:
             return False
+        except ProviderError:
+            self._exchange_keys_down_until = time.monotonic() + _EXCHANGE_KEY_BACKOFF_SECONDS
+            raise
         actor = claims.get("act")
         return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
+
+    def _key_cached(self, token: str) -> bool:
+        """Whether the key *token* names is in the key client's unexpired cache, so verifying it
+        fetches nothing."""
+        import jwt  # lazy, as verify_jwt
+
+        try:
+            kid = jwt.get_unverified_header(token).get("kid")
+        except jwt.PyJWTError:
+            return False
+        cache = getattr(self._get_jwks_client(), "jwk_set_cache", None)
+        keys = cache.get() if cache is not None else None
+        return bool(kid) and keys is not None and any(key.key_id == kid for key in keys.keys)
 
     def _addressed_here(self, claims: dict[str, Any]) -> bool:
         """Whether unverified *claims* name this agent: Portal's issuer, this client as audience,

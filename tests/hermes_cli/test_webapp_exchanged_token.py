@@ -55,7 +55,7 @@ def nous(gated, portal_key):
     return provider
 
 
-def _token(key, *, act=ACTOR, aud=AGENT, algorithm="RS256", **extra):
+def _token(key, *, act=ACTOR, aud=AGENT, algorithm="RS256", kid=None, **extra):
     """A Portal dashboard token for *aud* (the claims the agent's own grant mints), with *act* when given."""
     now = int(time.time())
     claims = {"iss": PORTAL, "aud": aud, "sub": "user_1", "iat": now, "exp": now + 900,
@@ -64,7 +64,7 @@ def _token(key, *, act=ACTOR, aud=AGENT, algorithm="RS256", **extra):
     if act is not None:
         claims["act"] = act
     signing = key if algorithm.startswith("RS") else "k" * 32
-    return jwt.encode(claims, signing, algorithm=algorithm)
+    return jwt.encode(claims, signing, algorithm=algorithm, headers={"kid": kid} if kid else None)
 
 
 def test_a_dashboard_token_without_act_is_still_refused_on_its_own(gated, nous, portal_key):
@@ -166,6 +166,33 @@ def test_a_token_addressed_elsewhere_fetches_no_signing_key(gated, nous, portal_
     }[addressed]()
     _refused(gated.browser().get("/api/auth/me", headers=_bearer(token)))
     assert lookups == []
+
+
+def test_while_portals_keys_cannot_be_fetched_only_cached_keys_are_tried(gated, nous, portal_key, monkeypatch):
+    """Anyone can send a token shaped for this agent. When Portal's key endpoint is down, the first
+    such token costs one fetch; for a while after, only an already cached key is used, so a stream of
+    them cannot keep the listener waiting on the endpoint. A token whose key is cached still works."""
+    from jwt import PyJWKClient, PyJWKSet
+
+    client = PyJWKClient("http://127.0.0.1:9/jwks.json", cache_keys=True, timeout=1)
+    fetches = []
+
+    def unreachable():
+        fetches.append(1)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(client, "fetch_data", unreachable)
+    nous._jwks_client = client
+    forged = _token(_key(), kid="unknown-kid")
+    for _ in range(3):
+        _refused(gated.browser().get("/api/auth/me", headers=_bearer(forged)))
+    assert len(fetches) == 1
+
+    public = json.loads(RSAAlgorithm.to_jwk(portal_key.public_key()))
+    client.jwk_set_cache.put(PyJWKSet.from_dict({"keys": [{**public, "kid": "portal-1", "use": "sig"}]}))
+    good = _token(portal_key, kid="portal-1")
+    assert gated.browser().get("/api/auth/me", headers=_bearer(good)).status_code == 200
+    assert len(fetches) == 1
 
 
 @pytest.mark.parametrize("header", [{"alg": []}, {"alg": {"x": 1}}, {"alg": None}])

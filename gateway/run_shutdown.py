@@ -2106,7 +2106,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 _effective_watchdog_leash(self), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
-        with disarm_after_teardown(_watchdog_done, getattr(self, "_shutdown_event", None)):
+        with disarm_after_teardown(_watchdog_done, getattr(self, "_shutdown_event", None), owner=self):
             await GatewayRunner._stop_begin_teardown(self, ctx)
             timeout = effective_stop_drain_timeout(self)
             if timeout < self._restart_drain_timeout:

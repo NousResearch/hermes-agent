@@ -1,0 +1,35 @@
+manifest_version: 1
+
+name: desearch
+description: Search the public web and X, then fetch pages for research.
+source: https://www.desearch.ai/docs/guide/sdk/mcp
+
+transport:
+  type: http
+  url: https://mcp.desearch.ai/mcp
+
+auth:
+  type: oauth
+
+tools:
+  default_enabled:
+    - search
+    - fetch
+    - search-api
+    - ai-search
+
+suggest:
+  keywords:
+    - desearch
+  hosts:
+    - desearch.ai
+
+post_install: |
+  On the first search, Hermes opens a browser to authorize with Desearch.
+  Paste your Desearch API key on the Desearch sign-in page and approve
+  access. Get a key at https://console.desearch.ai/api-keys.
+  Desearch API usage charges apply.
+
+  Start a new session or run /reload-mcp to load the tools.
+  To change the selected tools, run:
+    hermes mcp configure desearch

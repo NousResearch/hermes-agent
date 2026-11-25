@@ -28,6 +28,10 @@ so the reply is labelled with the profile's name (``gateway/run_turn_persistence
 A message with no mentionable handle passes through untouched. Unknown ``$handles`` are logged and
 left in the text; a handle with no prompt after it is a no-op, like a bare bot @mention.
 
+Only free-text prompts are dispatched. A slash command (``/reset $agent-one``, typed or native) is
+never re-homed: it runs exactly as it would without this feature, ``$handle`` and all, so a
+``$<profile>`` in its arguments can neither address the bot nor act on another profile's session.
+
 A gateway can run several Discord bots (one per profile token), and every bot in the channel
 receives the same message and computes the same handles. Exactly one of them dispatches it to a
 given profile: the first bot to reach dispatch claims ``(message id, profile)`` for the whole
@@ -45,6 +49,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from agent.secret_scope import is_multiplex_active
+from gateway.platforms.event import MessageType
 from hermes_constants import PROFILE_ID_RE
 
 logger = logging.getLogger(__name__)
@@ -204,8 +209,16 @@ def _active_handles(adapter: Any, text: str) -> dict[str, str]:
     return mentionable_handles(adapter)
 
 
+def _is_command_text(text: str) -> bool:
+    """A slash command, by the same ``/`` rule the adapter uses for ``MessageType.COMMAND``."""
+    return (text or "").lstrip().startswith("/")
+
+
 def addresses_profile(adapter: Any, text: str) -> bool:
-    """True when *text* names a mentionable profile, so the require_mention gate lets it through."""
+    """True when *text* names a mentionable profile, so the require_mention gate lets it through.
+    A slash command never does: it faces the gate exactly as it would without its ``$handle``."""
+    if _is_command_text(text):
+        return False
     return plan_mentions(text, _active_handles(adapter, text or "")) is not None
 
 
@@ -243,7 +256,10 @@ def _claim(adapter: Any, event: Any, profile: str) -> bool:
 def mention_events(adapter: Any, event: Any) -> list:
     """The events to dispatch for *event*: itself when it names no mentionable profile, one copy
     per named profile otherwise (unless another bot already dispatched it), or none when nothing
-    but the handles was sent."""
+    but the handles was sent. A slash command is always itself: it runs where it would without
+    this feature, with its arguments (``$handle`` included) untouched."""
+    if event.message_type == MessageType.COMMAND or _is_command_text(event.text):
+        return [event]
     text = event.text or ""
     plan = plan_mentions(text, _active_handles(adapter, text))
     if plan is None:

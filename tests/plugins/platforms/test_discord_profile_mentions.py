@@ -59,6 +59,7 @@ import plugins.platforms.discord.adapter as discord_platform
 import plugins.platforms.discord.adapter_profile_mentions as profile_mentions
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 _WRITES = itertools.count()
@@ -299,6 +300,29 @@ def test_a_dispatch_claim_outlives_the_bot_that_made_it(served):
     gc.collect()
     assert profile_mentions._claim(late, event, "agent-one") is False
     assert profile_mentions._claim(late, event, "agent-two") is True
+
+
+@pytest.mark.asyncio
+async def test_a_slash_command_is_never_rerouted_by_a_handle(adapter, monkeypatch):
+    """``$<profile>`` dispatch is for free-text prompts only. ``/reset $agent-one`` runs exactly as it
+    would with no handle at all: dropped by the require_mention gate like ``/reset $nobody``, and in
+    a free channel one COMMAND in the channel's own session, its arguments intact. A native slash
+    command's event is never re-homed either."""
+    assert await _dispatched(adapter, "/reset $nobody") == []
+    assert await _dispatched(adapter, "/reset $agent-one") == []
+    assert profile_mentions.addresses_profile(adapter, "/model x $agent-one") is False
+
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    for content in ("/reset $agent-one", "<@999> /reset $agent-one"):
+        (event,) = await _dispatched(adapter, content)
+        assert event.message_type is MessageType.COMMAND and event.get_command() == "reset"
+        assert (event.text, event.get_command_args()) == ("/reset $agent-one", "$agent-one")
+        assert event.source.profile is None and event.source.profile_mention is False
+
+    native = MessageEvent(text="/stop $agent-one $agent-two", message_type=MessageType.COMMAND,
+                          source=adapter.build_source(chat_id="555", chat_type="group", user_id="42"))
+    assert profile_mentions.mention_events(adapter, native) == [native]
+    assert native.source.profile is None and native.text == "/stop $agent-one $agent-two"
 
 
 # --- the opt-in: each profile's own config, served profiles only ------------------------------

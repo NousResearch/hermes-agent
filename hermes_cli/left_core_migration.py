@@ -1385,16 +1385,16 @@ def _gateway_serves(home: Path) -> bool:
 
 
 def settings_fingerprint(home: Path) -> str:
-    """Digest of *home*'s ``.env`` and config.yaml (missing files hash as empty): a process that already
-    tried this home tries again once either changed (credentials added while the gateway runs)."""
+    """Digest of *home*'s ``.env`` and its config layer's cache signature (``config_backend``: a remote layer
+    changes with no local file change, a same-tick rewrite of a local file still counts). A
+    process that already tried this home tries again once it changed (credentials added while it runs)."""
     import hashlib
-    digest = hashlib.sha256()
-    for name in (".env", "config.yaml"):
-        try:
-            digest.update((home / name).read_bytes())
-        except OSError:
-            pass
-        digest.update(b"\0")
+    from hermes_cli.config_backend import config_cache_version_or_none
+    digest = hashlib.sha256(repr(config_cache_version_or_none(home / "config.yaml")).encode())
+    try:
+        digest.update((home / ".env").read_bytes())
+    except OSError:
+        pass
     return digest.hexdigest()
 
 
@@ -1458,14 +1458,24 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None, gateway_s
     if key in _attempted and _attempted_with.get(key) == settings_fingerprint(home):
         return []
     _attempted.add(key)
-    try:
-        return _attempt(home, deliver=deliver, gateway_start=gateway_start)
-    finally:  # after the attempt: its own config.yaml writes (the markers) are no change by the user
+    # A gateway start is the user starting (or restarting) the gateway to serve the platform: it retries
+    # inside the failure backoff, which only spares the frequent agent starts the network round trip.
+    installed: list[str] = []
+    tried: set[str] = set()
+    for _ in range(3):
+        before = settings_fingerprint(home)
+        installed += _attempt(home, deliver=deliver, gateway_start=gateway_start, tried=tried)
         _attempted_with[key] = settings_fingerprint(home)
+        if _attempted_with[key] == before:
+            break
+        # Changed meanwhile: by this attempt's own markers, or by the user while it waited for the installer
+        # lock (credentials for another row). A re-pass sees the latter; it never retries a row already tried.
+    return installed
 
 
-def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool) -> list[str]:
-    """One :func:`recover_at_startup` attempt for *home*; outcomes go to *deliver* (and the log)."""
+def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool, tried: set[str]) -> list[str]:
+    """One :func:`recover_at_startup` pass for *home* over the rows not in *tried* (which it extends);
+    outcomes go to *deliver* (and the log)."""
 
     def report(message: str) -> None:
         message = message.strip()
@@ -1473,9 +1483,9 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool)
         deliver(message)
 
     try:
-        # A gateway start is the user starting (or restarting) the gateway to serve the platform: it retries
-        # inside the failure backoff, which only spares the frequent agent starts the network round trip.
-        features = _pending(home, say=report, process_env=True, backoff=not gateway_start)
+        features = [f for f in _pending(home, say=report, process_env=True, backoff=not gateway_start)
+                    if f.plugin not in tried]
+        tried.update(f.plugin for f in features)
         if not features:
             return []
         from pm.install import lazy_installs_allowed

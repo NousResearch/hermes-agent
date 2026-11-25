@@ -48,11 +48,6 @@ def pending_entries(home: Path) -> list:
             and not _plugins_listed(home, (entry.name,))[1]]
 
 
-def _installs_unattended(entry) -> bool:
-    from hermes_cli.default_plugins import default_entries
-    return any(default.name == entry.name for default in default_entries())
-
-
 def recover_in(home: Path, *, report: Callable[[str], None]) -> list[str]:
     """Install or point to every :func:`pending_entries` entry for *home* (the active, bound home). Returns
     the installed plugin names; never raises. Blocking: call it off the event loop."""
@@ -61,25 +56,36 @@ def recover_in(home: Path, *, report: Callable[[str], None]) -> list[str]:
     key = hermes_home_key(home)
     if _attempted.get(key) == settings_fingerprint(home):
         return []
-    try:
-        return _recover(home, report=report)
-    finally:  # after the attempt: its own config.yaml writes (the install record) are no change by the user
+    installed: list[str] = []
+    seen: set[str] = set()
+    for _ in range(3):  # again while the settings changed during the pass (left_core_migration.recover_at_startup)
+        before = settings_fingerprint(home)
+        installed += _recover(home, report=report, seen=seen)
         _attempted[key] = settings_fingerprint(home)
+        if _attempted[key] == before:
+            break
+    return installed
 
 
-def _recover(home: Path, *, report: Callable[[str], None]) -> list[str]:
+def _recover(home: Path, *, report: Callable[[str], None], seen: set[str]) -> list[str]:
+    """One pass over the pending entries not in *seen* (which it extends): a re-pass never repeats one."""
     from hermes_cli.default_plugins import fetch_allowed, install_defaults, installer_lock
     from hermes_cli.left_core_migration import _STARTUP_LOCK_WAIT
     from hermes_cli.memory_provider_migration import _install_command
     try:
-        entries = pending_entries(home)
-        unattended = [entry for entry in entries if _installs_unattended(entry)] if fetch_allowed(home) else []
+        entries = [entry for entry in pending_entries(home) if entry.name not in seen]
+        seen.update(entry.name for entry in entries)
+        if not entries:
+            return []
+        from hermes_cli.default_plugins import default_entries
+        defaults = {entry.name for entry in default_entries()}  # one catalog snapshot for the pass
+        allowed = fetch_allowed(home)
+        unattended = [entry for entry in entries if entry.name in defaults] if allowed else []
         for entry in entries:
             if entry in unattended:
                 continue
             env = ", ".join(entry.capabilities.requires_env)
-            why = ("security.allow_lazy_installs is off, so Hermes did not fetch it"
-                   if not fetch_allowed(home) and _installs_unattended(entry)
+            why = ("security.allow_lazy_installs is off, so Hermes did not fetch it" if entry.name in defaults
                    else f"Hermes installs {entry.tier}-tier plugins only when you ask")
             label = f" for {entry.title}" if entry.title else ""
             report(f"⚠ This profile sets {env}, but the '{entry.name}' platform plugin{label} is not installed, so "

@@ -14,13 +14,17 @@ import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 from urllib.parse import unquote
 
 from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 from scripts.termux.deb_version import deb_version_for_tag
+
+if TYPE_CHECKING:
+    from scripts.releases.r2 import CopySource
 
 
 def release_version(tag: str) -> str:
@@ -478,9 +482,197 @@ def publish_canary_appinstaller(root: Path, *, tag: str, variant: str, bundle: P
     put(tag=tag, key=f"{directory}/{descriptor.name}", file=descriptor, key_is_full=True)
 
 
+STABLE_DARWIN_DMG_CONTENT_TYPE = "application/x-apple-diskimage"
+STABLE_DARWIN_DMG_DISPOSITION = 'attachment; filename="HermesBundled-mac-arm64.dmg"'
+
+
+def _stable_darwin_dmg_item(manifest: dict, public_base: str) -> tuple[str, dict]:
+    from scripts.releases import r2
+
+    macos = single(row for row in manifest["packages"] if row["platform"] == "macos" and row["arch"] == "arm64")
+    files = manifest.get("files", [])
+    by_url = {item["url"]: item for item in files}
+    zip_item = by_url.get(macos["artifact"]["url"])
+    if zip_item is None or not str(zip_item.get("path", "")).endswith(".zip"):
+        raise ValueError("Missing receipt-bound macOS ZIP in candidate manifest")
+    dmg_name = zip_item["path"].removesuffix(".zip") + ".dmg"
+    matches = [item for item in files if item.get("path") == dmg_name]
+    if len(matches) != 1:
+        raise ValueError(f"Missing receipt-bound macOS DMG in candidate manifest: {dmg_name}")
+    dmg_item = matches[0]
+    source_key = r2.staging_key_for(manifest["archive"], dmg_name)
+    expected_url = f"{public_base.rstrip('/')}/{source_key}"
+    if (
+        dmg_item.get("url") != expected_url
+        or type(dmg_item.get("size")) is not int
+        or dmg_item["size"] <= 0
+        or not re.fullmatch(r"[a-f0-9]{64}", str(dmg_item.get("sha256", "")))
+    ):
+        raise ValueError(f"Invalid macOS DMG receipt in candidate manifest: {dmg_name}")
+    return source_key, dmg_item
+
+
+def _check_stable_dmg_state(
+    existing,
+    *,
+    tag: str,
+    expected_size: int,
+    expected_sha256: str,
+) -> bool:
+    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
+    from scripts.releases import semver
+
+    if existing is None:
+        return True
+    existing_release = existing.header("x-amz-meta-release")
+    if existing_release:
+        if is_canary_tag(existing_release) or is_commit_tag(existing_release):
+            raise ValueError("Refusing to overwrite non-stable macOS DMG alias")
+        existing_version = release_version(existing_release)
+        order = semver.compare(release_version(tag), existing_version)
+        if order < 0:
+            raise ValueError("Refusing to move the stable macOS DMG backward")
+        if order == 0:
+            existing_sha = existing.header("x-amz-meta-sha256")
+            if existing_sha and existing_sha != expected_sha256:
+                raise ValueError("Refusing to replace published stable macOS DMG version with different artifact")
+    matches_live = (
+        existing.header("content-length") == str(expected_size)
+        and existing.header("x-amz-meta-sha256") == expected_sha256
+        and existing.header("x-amz-meta-release") == tag
+        and existing.header("cache-control") == "no-store"
+        and existing.header("content-disposition") == STABLE_DARWIN_DMG_DISPOSITION
+        and existing.header("content-type") == STABLE_DARWIN_DMG_CONTENT_TYPE
+    )
+    return not matches_live
+
+
+def _check_stable_page_state(
+    existing: tuple[bytes, str] | None,
+    *,
+    tag: str,
+    page_bytes: bytes,
+) -> tuple[bytes | None, dict[str, str] | None]:
+    """The page bytes this promotion makes live (None: the page is not this promotion's to write
+    or read back), and the conditions for writing them (None: nothing to write).
+
+    A page that already describes a newer stable release stays as it is; a canary page at this
+    key fails closed. Feed order is checked before promotion, so a newer stable page can only come
+    from render-builds-table's `complete` step rendering a newer release while this older advance
+    was pending; refusing would wedge the sequencer, which advances oldest first."""
+    from hermes_cli.update_channel import published_canary_timestamp
+    from scripts.releases.downloads_page import recorded_build, supersedes
+
+    if existing is None:
+        return page_bytes, {"If-None-Match": "*"}
+    existing_bytes, etag = existing
+    existing_page = existing_bytes.decode("utf-8", errors="replace")
+    if not supersedes(existing_page, tag):
+        if published_canary_timestamp(recorded_build(existing_page)) is not None:
+            raise ValueError("Refusing to keep or replace a canary downloads page at the stable key")
+        print(f"::warning::the stable downloads page already describes a release newer than {tag}; "
+              "leaving it unchanged")
+        return None, None
+    if existing_bytes == page_bytes:
+        return page_bytes, None
+    return page_bytes, {"If-Match": etag}
+
+
+def _verify_public_head_size(public_base: str, key: str, expected_size: int) -> None:
+    request = urllib.request.Request(f"{public_base.rstrip('/')}/{key}", method="HEAD")
+    with urllib.request.urlopen(request, timeout=60) as response:
+        if response.headers.get("Content-Length") != str(expected_size):
+            raise ValueError(f"Channel read-back differs: {key}")
+
+
+def _verify_public_bytes(public_base: str, key: str, expected_bytes: bytes) -> None:
+    with urllib.request.urlopen(f"{public_base.rstrip('/')}/{key}", timeout=60) as response:
+        if response.read() != expected_bytes:
+            raise ValueError(f"Channel read-back differs: {key}")
+
+
+@dataclass(frozen=True)
+class StableDownloads:
+    """The stable macOS DMG alias and downloads page for one accepted candidate.
+
+    ``prepare`` runs every check (the DMG receipt, its source object and the single-copy limit,
+    the order against the live alias and page) before any feed moves. ``promote`` calls
+    ``publish_dmg`` right after the macOS feed, so a failed copy leaves the Windows and Termux
+    pointers on the previous release, and ``publish_page`` after every feed pointer, so a failed
+    feed write leaves the page there too. Each object this promotion writes or finds already in
+    place is read back through the public origin."""
+
+    tag: str
+    public_base: str
+    creds: dict[str, str] = field(repr=False)
+    base: str
+    bucket: str
+    source_dmg: CopySource
+    dmg_sha256: str
+    dmg_needs_copy: bool
+    page_bytes: bytes | None = field(repr=False)
+    page_conditions: dict[str, str] | None
+
+    @classmethod
+    def prepare(cls, manifest: dict, public_base: str) -> StableDownloads:
+        from scripts.releases import r2
+        from scripts.releases.channels import R2ChannelStore
+        from scripts.releases.downloads_page import DEFAULT_REPO, render_channel_page_from_manifest
+
+        source_dmg_key, dmg_item = _stable_darwin_dmg_item(manifest, public_base)
+        repo = os.environ.get("GITHUB_REPOSITORY") or DEFAULT_REPO
+        page_bytes = render_channel_page_from_manifest(manifest, public_base, repo=repo).encode("utf-8")
+        creds, base, bucket = r2.credentials()
+        now = r2.amz_timestamp()
+        source_dmg = r2.copy_source(creds, base, bucket, source_dmg_key, now, expected_size=dmg_item["size"])
+        dmg_needs_copy = _check_stable_dmg_state(
+            r2.head_object(creds, base, bucket, r2.channel_dmg_key_for("stable"), now),
+            tag=manifest["tag"],
+            expected_size=dmg_item["size"],
+            expected_sha256=dmg_item["sha256"],
+        )
+        page_bytes, page_conditions = _check_stable_page_state(
+            R2ChannelStore(creds, base, bucket).get(r2.channel_page_key_for("stable")),
+            tag=manifest["tag"],
+            page_bytes=page_bytes,
+        )
+        return cls(
+            tag=manifest["tag"], public_base=public_base, creds=creds, base=base, bucket=bucket,
+            source_dmg=source_dmg, dmg_sha256=dmg_item["sha256"],
+            dmg_needs_copy=dmg_needs_copy, page_bytes=page_bytes, page_conditions=page_conditions,
+        )
+
+    def publish_dmg(self) -> None:
+        from scripts.releases import r2
+
+        dmg_key = r2.channel_dmg_key_for("stable")
+        if self.dmg_needs_copy:
+            r2.copy_object(
+                self.creds, self.base, self.bucket, self.source_dmg, dmg_key, r2.amz_timestamp(),
+                content_type=STABLE_DARWIN_DMG_CONTENT_TYPE,
+                content_disposition=STABLE_DARWIN_DMG_DISPOSITION,
+                metadata={"sha256": self.dmg_sha256, "release": self.tag, "source": self.source_dmg.key},
+            )
+        _verify_public_head_size(self.public_base, dmg_key, self.source_dmg.size)
+
+    def publish_page(self) -> None:
+        from scripts.releases import r2
+
+        if self.page_bytes is None:
+            return
+        page_key = r2.channel_page_key_for("stable")
+        if self.page_conditions is not None:
+            r2.put_object(
+                self.creds, self.base, self.bucket, page_key, self.page_bytes, r2.amz_timestamp(),
+                "text/html; charset=utf-8", self.page_conditions,
+            )
+        _verify_public_bytes(self.public_base, page_key, self.page_bytes)
+
+
 def promote(manifest: dict, root: Path, public_base: str) -> None:
     """Point the release's channel at an accepted candidate: the Windows App Installer feed, the
-    merged macOS feed and the Termux APT indexes. ``release_channel`` picks stable or canary."""
+    merged macOS feed, the stable macOS DMG alias and downloads page, and the Termux APT indexes.
+    ``release_channel`` picks stable or canary."""
     from scripts.releases.r2 import finalize
 
     channel = release_channel(manifest["tag"])
@@ -490,9 +682,11 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
     windows = next(r for r in manifest["packages"] if r["platform"] == "windows")
     uri = f"{public_base.rstrip('/')}/releases/win32/{channel}/{channel}.appinstaller"
     appinstaller = root / f"{channel}.appinstaller"
+    stable_downloads: StableDownloads | None = None
     if channel == "stable":
         write_appinstaller(appinstaller, identity=windows["identity"], publisher=windows["publisher"],
                            version=windows["version"], self_uri=uri, artifact_uri=windows["artifact"]["url"])
+        stable_downloads = StableDownloads.prepare(manifest, public_base)
     apt = root / "apt"
     indexes = sorted(p for p in apt.rglob("*") if p.is_file() and not p.relative_to(apt).as_posix().startswith("pool/") and "/by-hash/" not in p.relative_to(apt).as_posix())
     indexes.sort(key=lambda p: p.name == "InRelease")
@@ -507,7 +701,8 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
     # The merged feed points at the attempt archive; the version stays plain.
     finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], verify_bytes=False)
     publish_pointer = _pointer_publisher(manifest["tag"], public_base)
-    if channel == "stable":
+    if stable_downloads is not None:
+        stable_downloads.publish_dmg()
         publish_pointer("releases/win32/stable/stable.appinstaller", appinstaller)
     else:
         # The canary feed keeps its bundle beside it, as it always has: canary archives are pruned
@@ -523,6 +718,8 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
         publish_pointer(f"releases/win32/canary/{appinstaller.name}", appinstaller, upload=False)
     for file in indexes:
         publish_pointer(f"releases/termux/{channel}/{file.relative_to(apt).as_posix()}", file)
+    if stable_downloads is not None:
+        stable_downloads.publish_page()
 
 
 def _pointer_publisher(tag: str, public_base: str):
@@ -586,6 +783,11 @@ def main(argv: list[str] | None = None) -> None:
     else:
         if not args.archive:
             parser.error(f"{args.command} requires the admitted --archive ref")
+        # read_admitted_candidate binds the manifest to --tag, so the tag decides before any read.
+        if args.command == "promote" and release_channel(args.tag) == "stable":
+            parser.error("promote refuses stable candidates: stable promotion runs only through the "
+                         "Stable Release Publication sequencer (channel_releases.advance_stable), which "
+                         "requires the published release and serializes every stable writer")
         manifest = read_admitted_candidate(args.tag, args.commit, args.public_base,
                                           os.environ.get("CANDIDATE_MANIFEST_SHA256", ""),
                                           archive=args.archive)

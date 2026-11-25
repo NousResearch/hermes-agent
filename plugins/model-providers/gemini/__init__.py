@@ -14,29 +14,36 @@ from providers.base import ProviderProfile
 logger = logging.getLogger(__name__)
 
 
+_GEMINI_FREE_TIER_NOTICE = (
+    "", "❌ This Google API key is on the free tier (<= 250 requests/day for gemini-2.5-flash).",
+    "   Hermes typically makes 3-10 API calls per user turn (tool iterations + auxiliary tasks),",
+    "   so the free tier is exhausted after a handful of messages and cannot sustain",
+    "   an agent session.", "",
+    "   To use Gemini with Hermes, enable billing on your Google Cloud project and regenerate",
+    "   the key in a billing-enabled project: https://aistudio.google.com/apikey", "",
+    "   Alternatives with workable free usage: DeepSeek, OpenRouter (free models), Groq, Nous.", "",
+    "Not saving Gemini as the default provider.")
+
+
 class GeminiProfile(ProviderProfile):
     """Gemini — translate reasoning_config to thinking_config in extra_body."""
 
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Native: ``thinking_config``; OpenAI-compat /openai subpath:
         ``extra_body.google.thinking_config`` (snake_case)."""
+        from agent.gemini_model_family import build_gemini_thinking_config, snake_case_gemini_thinking_config
+        from agent.gemini_urls import is_gemini_openai_compat_base_url, is_native_gemini_base_url
         from agent.reasoning_effort import gemini_top_thinking_level
-        from agent.transports.chat_completions import (
-            _build_gemini_thinking_config,
-            _is_gemini_openai_compat_base_url,
-            _snake_case_gemini_thinking_config,
-        )
 
-        raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
+        raw = build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
         if not raw:
             return {}
         raw = gemini_top_thinking_level(context.get("model"), context.get("reasoning_config"), raw)
         base_url = context.get("base_url") or self.base_url
-        if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
-            thinking_config = _snake_case_gemini_thinking_config(raw)
+        if self.name == "gemini" and is_gemini_openai_compat_base_url(base_url):
+            thinking_config = snake_case_gemini_thinking_config(raw)
             return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
         from agent.gemini_long_decode import long_decode_max_output_tokens
-        from agent.gemini_native_adapter import is_native_gemini_base_url
 
         # Long decode exists only on native generateContent (not /openai, not proxies).
         budget = long_decode_max_output_tokens(context.get("model") or "", context.get("reasoning_config"))
@@ -45,18 +52,41 @@ class GeminiProfile(ProviderProfile):
     def create_client(self, **client_kwargs: Any) -> Any:
         """The plugin's client (Interactions or generateContent per model) on a native Gemini base; None on
         the OpenAI-compatible ``/openai`` surface and proxies, which keep the standard OpenAI client."""
-        from agent.gemini_native_adapter import is_native_gemini_base_url
+        from agent.gemini_urls import is_native_gemini_base_url
 
         base_url = str(client_kwargs.get("base_url") or self.base_url or "")
         if not is_native_gemini_base_url(base_url):
             return None
-        from .client import GeminiClient
-
         allowed = {"api_key", "base_url", "default_headers", "timeout", "http_client"}
         kwargs = {k: v for k, v in client_kwargs.items() if k in allowed}
+        if client_kwargs.get("auxiliary_chain"):
+            from agent.gemini_native_adapter import GeminiNativeClient
+
+            return GeminiNativeClient(**kwargs)
+        from .client import GeminiClient
+
         if "http_client" not in kwargs and (http_client := _keepalive_http_client(base_url)) is not None:
             kwargs["http_client"] = http_client
         return GeminiClient(**kwargs)
+
+    def implicit_max_output_tokens(self, *, model: str | None = None, base_url: str = "") -> int | None:
+        from agent.gemini_model_family import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+    def validate_setup_api_key(self, api_key: str, *, base_url: str = "") -> bool:
+        """Gemini free-tier gate: refuse free-tier keys during setup; best-effort on errors."""
+        from agent.gemini_native_adapter import probe_gemini_tier
+
+        print("  Checking Gemini API tier...")
+        tier = probe_gemini_tier(api_key, base_url or self.base_url)
+        if tier == "free":
+            for line in _GEMINI_FREE_TIER_NOTICE:
+                print(line)
+            return False
+        print("  Tier check: paid ✓" if tier == "paid" else "  Tier check: could not verify (proceeding anyway).")
+        print()
+        return True
 
 
 def _keepalive_http_client(base_url: str) -> Any:
@@ -80,6 +110,8 @@ gemini = GeminiProfile(
     env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     base_url="https://generativelanguage.googleapis.com/v1beta", auth_type="api_key",
     default_aux_model="gemini-3.6-flash",
+    forwards_max_tokens=True,
+    strict_client=True,
 )
 
 register_provider(gemini)

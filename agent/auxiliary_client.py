@@ -2162,12 +2162,16 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 api_key = runtime["api_key"]
             via = " (session endpoint)"
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
-        # Native Gemini, else OpenAI-wire + Anthropic rewrap.
+        # Provider-owned native transport (e.g. Gemini), else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
-        if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-            if is_native_gemini_base_url(base_url):
-                return _tag_backend(GeminiNativeClient(api_key=api_key, base_url=base_url), provider_id), model
+        with contextlib.suppress(Exception):
+            from providers import get_provider_profile as _get_aux_profile
+
+            _aux_profile = _get_aux_profile(provider_id)
+            if _aux_profile is not None and getattr(_aux_profile, "strict_client", False):
+                _aux_client = _aux_profile.create_client(api_key=api_key, base_url=base_url, auxiliary_chain=True)
+                if _aux_client is not None:
+                    return _tag_backend(_aux_client, provider_id), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
@@ -4521,10 +4525,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
-    with contextlib.suppress(ImportError):
-        from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
-        if isinstance(sync_client, GeminiNativeClient):
-            return AsyncGeminiNativeClient(sync_client), model
+    async_cls = getattr(type(sync_client), "HERMES_ASYNC_CLIENT", None)
+    if callable(async_cls):
+        return async_cls(sync_client), model
     # ACP shims (subprocess, not an HTTP pool) are already async-safe and opt out of the wrapper.
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
@@ -5105,17 +5108,11 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
-    # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
+    # Consulted before the built-in OpenAI ladder so a registered native transport wins (#112384).
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
         return _route_client(req, profile_client, final_model)
-    if provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-        if is_native_gemini_base_url(base_url):
-            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     from agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses
@@ -6347,13 +6344,8 @@ def _nous_on_messages_wire(provider_norm: str, model: str) -> bool:
 
 
 _NVIDIA_PROVIDER_NAMES = {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
-_GEMINI_NATIVE_PROVIDER_NAMES = {"gemini", "google", "google-gemini", "google-ai-studio"}
-
-
 def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
-    """Gemini native by provider name, else (best-effort) by base URL shape."""
-    if provider_norm in _GEMINI_NATIVE_PROVIDER_NAMES:
-        return True
+    """Gemini native route by base URL shape (provider-name forwarding uses ``forwards_max_tokens``)."""
     if not effective_base:
         return False
     from agent.gemini_urls import is_native_gemini_base_url

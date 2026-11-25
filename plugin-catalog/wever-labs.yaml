@@ -1,0 +1,17 @@
+name: wever-labs
+repo: https://github.com/CodeWever/hermes-wever-labs
+sha: fb0acd42b431290ae8c998ec4e64be535c123cc7
+title: Wever Labs
+description: "Check agent readiness, review oversight evidence, look up records, and run treasury checks with 226 tools in the Wever Labs main catalog and 30 in the free catalog. Paid tools cost 0.10 USDC per call on Base via x402. Hermes sends tool requests and inputs to the two hosted Wever Labs MCP servers. Both connections use Hermes approval for write-capable calls. Disclosure — sends every Wever Labs tool request and its inputs to the hosted MCP servers at weverlabs.com/mcp and weverlabs.com/mcp-free (tool definitions are served by the vendor at runtime and can change without a re-pin); paid tools on the main catalog cost 0.10 USDC per call on Base via x402, which Hermes does not pay itself; both servers are declared `trust: untrusted`, so write-capable calls ask first."
+maintainer: CodeWever
+tier: community
+category: tools
+docs_url: https://github.com/CodeWever/hermes-wever-labs#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

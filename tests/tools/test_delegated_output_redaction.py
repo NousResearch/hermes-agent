@@ -2,7 +2,9 @@
 
 import json
 import queue
+import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -14,6 +16,7 @@ from tools import delegate_tool as delegate
 from tools import delegate_tool_results as results
 from tools.process_registry import process_registry
 from tests.tools.test_delegate_output_schema import _StubChild, _StubParent
+from persistence_assembly import store_location
 
 SECRET = "sk-ant-" + "syntheticdelegationcredential" * 3
 PEM = (
@@ -48,7 +51,7 @@ def test_child_result_events_memory_hooks_and_spill_use_redacted_output(
 
     hooks = Mock()
     monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", hooks)
-    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"max_summary_chars": 2000})
     events = []
     summary = text + "\n" + "ordinary explanation\n" * 180
     child = _StubChild([summary])
@@ -98,7 +101,7 @@ def test_old_durable_results_are_redacted_on_read_replay_and_failure_roster():
         "error": SECRET,
     }
     result = {"status": "failed", "summary": SECRET, "error": SECRET}
-    with ad._transaction() as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn, conn:
         conn.execute(
             "UPDATE async_delegations SET state='failed',completed_at=?,event_json=?,result_json=?",
             (time.time(), json.dumps(event), json.dumps(result)),
@@ -193,7 +196,7 @@ def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
     monkeypatch.setattr("agent.redact._redact_enabled", lambda: False)
     hooks = Mock()
     monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", hooks)
-    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"max_summary_chars": 2000})
     summary = SECRET + "\n" + "ordinary explanation\n" * 180
     parent = _Parent()
 
@@ -210,7 +213,7 @@ def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
     monkeypatch.setattr(process_registry, "completion_queue", target)
     ad._push_completion_event(record, {"status": "completed", "summary": SECRET}, "completed")
     assert SECRET in target.get_nowait()["summary"]
-    with ad._transaction() as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
     assert SECRET not in "".join(row)
 
@@ -221,7 +224,7 @@ def test_forced_copies_are_projected_from_complete_output_before_the_parent_budg
     """Opt-out + budget: the trimmed parent tail can start after a PEM BEGIN marker; the
     memory/durable copies must still hide the key body, and the spill must stay valid JSON."""
     monkeypatch.setattr("agent.redact._redact_enabled", lambda: False)
-    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"max_summary_chars": 2000})
     body = "\n".join("MC4CAQAwBQYDK2VwBCIEI" + chr(65 + i) * 43 for i in range(4))
     pem = "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----\n"
     tail = pem[pem.index("KEY-----\n") :] + "ordinary ending\n" * 10
@@ -246,6 +249,6 @@ def test_forced_copies_are_projected_from_complete_output_before_the_parent_budg
     monkeypatch.setattr(process_registry, "completion_queue", target)
     ad._push_completion_event(record, {"results": entries}, "completed")
     assert body in target.get_nowait()["results"][0]["summary"]
-    with ad._transaction() as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
     assert body[-43:] not in "".join(row) and SECRET not in "".join(row)

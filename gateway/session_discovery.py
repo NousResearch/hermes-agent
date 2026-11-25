@@ -2,16 +2,16 @@
 import asyncio
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 async def discover_commands(authority, actor, params, *, completion=False):
     if 'session:read' not in actor.capabilities or actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     allowed = {'profile', 'text', 'session_id'} if completion else {'profile', 'session_id'}
     if (not isinstance(params, dict) or set(params) - allowed
             or any(not isinstance(value, str) for value in params.values())):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     scope = None
     if params.get('session_id'):
         # Project skills resolve from the session's workspace, not the gateway process cwd.
@@ -25,7 +25,7 @@ async def discover_commands(authority, actor, params, *, completion=False):
         from hermes_cli.profiles import profile_matches_home
         home = Path(authority.profile_id)
         if params.get('profile') and not profile_matches_home(params['profile'], home):
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         from gateway.run import _profile_runtime_scope
         from tui_gateway.command_discovery import command_catalog, slash_completions
         with _profile_runtime_scope(home):
@@ -40,9 +40,9 @@ async def list_plugins(authority, actor, params):
     plugin's tool/hook/command counts and load error (the classic CLI's ``/plugins`` reads it, so the
     CLI process imports no plugin code). Plain data only."""
     if 'session:read' not in actor.capabilities or actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if params:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
 
     def rows():
         from gateway.run import _profile_runtime_scope

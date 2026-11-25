@@ -45,3 +45,20 @@ def test_app_state_comes_from_the_pinned_declaration(catalog):
     # A declared app that is absent greys the row with a reason; no declaration is unknown, never "present".
     assert rows["everywhere"]["app_state"] == "missing_app" and "Everywhere App" in rows["everywhere"]["sentence"]
     assert rows["here-only"]["app_state"] == "unknown" and rows["here-only"]["sentence"] == ""
+
+
+def test_unreadable_liveness_is_unknown_never_present(tmp_path, monkeypatch):
+    """A liveness block that fails validation must not render as a healthy 'present' card:
+    the module contract is that an unreadable declaration is unknown."""
+    import sys
+
+    from hermes_platform.declaration import parse_declaration
+
+    exe = tmp_path / "app"
+    exe.write_text("", encoding="utf-8")
+    decl = parse_declaration(
+        "App", {sys.platform: {"presence": "executable", "location": str(exe)}},
+        {"app": True}, where="test")
+    bad = {"kind": "server_json", "path": "relative/no.json"}  # unrooted on every OS
+    assert presence_mod._server_presence(decl, bad, "App") is presence_mod.UNKNOWN
+    assert presence_mod._server_presence(decl, None, "App") == presence_mod.Presence("present")

@@ -13,6 +13,16 @@ from tests.waiting import wait_until
 from gateway import hosted_room_driver as driver
 from tui_gateway.hosted_room_member_activity import project_room_member_activity
 from tui_gateway.hosted_room_service import HostedRoomService
+import pytest
+from persistence_assembly import open_persistence, profile_scope
+
+
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 class _HeldRPC:
@@ -47,9 +57,9 @@ class _HeldRPC:
         return {"active": False, "task_id": None}
 
 
-def test_status_names_the_member_answering_while_its_turn_runs(tmp_path: Path):
+def test_status_names_the_member_answering_while_its_turn_runs(tmp_path: Path, store):
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
-    service = HostedRoomService(server, db_path=tmp_path / "state.db")
+    service = HostedRoomService(server, store=store, placement="profile")
     service.rpc = service.runtime.rpc = _HeldRPC()
     service.local_profiles = lambda: ("default", "ops")
     service.create_room(
@@ -76,7 +86,7 @@ def test_status_names_the_member_answering_while_its_turn_runs(tmp_path: Path):
         assert status["max_rounds"] == service.discussion_limits.max_rounds
 
         # The member's own session frames say which tool it is in, and that it is still making progress.
-        [task] = driver.list_tasks(service.db_path, room_id="room-1")
+        [task] = driver.list_tasks(service.store, placement=service.placement, room_id="room-1")
         sessions = {"member-sid": {"_hosted_room_task": {
             "room_id": "room-1", "task_id": task["identity"].task_id, "member_id": "ops",
             "execution_generation": task["execution_generation"]}}}

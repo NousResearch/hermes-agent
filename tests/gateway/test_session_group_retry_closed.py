@@ -29,7 +29,7 @@ async def test_retry_after_lost_close_reply_cancels_the_same_attempt(gateway, mo
     with monkeypatch.context() as lost:
         lost.setattr(client, '_request', lose_close_reply)
         assert await call(gateway.owner, 'groups.discard', **control) == 'peer_unreachable'
-    assert driver.get_task(db, identity)['status'] == 'deferred'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
 
     def record_retry(path, **kwargs):
         if path == '/v1/runs' and kwargs.get('method') == 'POST':
@@ -39,7 +39,7 @@ async def test_retry_after_lost_close_reply_cancels_the_same_attempt(gateway, mo
     monkeypatch.setattr(client, '_request', record_retry)
     retried = await call(gateway.owner, 'groups.retry', **control)
     assert isinstance(retried, dict) and retried['retried'], retried
-    task = driver.get_task(db, identity)
+    task = driver.get_task(db, identity, placement='profile')
     assert (task['status'], task['execution_generation']) == ('cancelled', 1)
     assert admissions and set(admissions) == {f'room:{identity.task_id}:1'}
     assert gateway.adapter._run_statuses == {}
@@ -63,5 +63,5 @@ async def test_retry_conflict_with_an_admitted_run_keeps_the_turn(gateway, monke
     monkeypatch.setattr(client, '_request', conflicting_replay)
     assert await call(gateway.owner, 'groups.retry', room_id='linked', member_id='reviewer',
                       task_id=identity.task_id, execution_generation=1) == 'peer_unreachable'
-    assert driver.get_task(db, identity)['status'] == 'deferred'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
     assert gateway.adapter._run_statuses == before

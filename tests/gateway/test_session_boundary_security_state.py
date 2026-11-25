@@ -1,8 +1,7 @@
-from hermes_state import AsyncSessionDB
 """Regression tests for approval-state cleanup on session boundaries."""
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -22,7 +21,6 @@ def _clear_approval_state():
     approval_mod._session_approved.clear()
     approval_mod._session_yolo.clear()
     approval_mod._permanent_approved.clear()
-    approval_mod._pending.clear()
     slash_confirm_mod._pending.clear()
     yield
     approval_mod._gateway_queues.clear()
@@ -30,7 +28,6 @@ def _clear_approval_state():
     approval_mod._session_approved.clear()
     approval_mod._session_yolo.clear()
     approval_mod._permanent_approved.clear()
-    approval_mod._pending.clear()
     slash_confirm_mod._pending.clear()
 
 
@@ -73,17 +70,14 @@ def _make_resume_runner():
     runner.adapters = {}
     runner._background_tasks = set()
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._busy_ack_ts = {}
-    runner._pending_approvals = {}
     runner._agent_cache_lock = None
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = current_entry
     runner.session_store.switch_session.return_value = resumed_entry
     runner.session_store.load_transcript.return_value = []
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.resolve_session_by_title.return_value = "resumed-session"
-    runner._session_db._db.get_session_title.return_value = "Resumed Work"
+    sessions = runner.session_store.persistence.aio.sessions
+    sessions.resolve_by_title = AsyncMock(return_value="resumed-session")
+    sessions.get_title = AsyncMock(return_value="Resumed Work")
     # The resumed session is live and shares the caller's origin, so the
     # /resume IDOR guard authorizes it (this test covers the post-resume
     # security-state clearing, not the ownership check).
@@ -103,9 +97,6 @@ def _make_branch_runner():
     runner.adapters = {}
     runner.config = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._busy_ack_ts = {}
-    runner._pending_approvals = {}
     runner._agent_cache_lock = None
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = current_entry
@@ -114,9 +105,9 @@ def _make_branch_runner():
         {"role": "assistant", "content": "world"},
     ]
     runner.session_store.switch_session.return_value = branched_entry
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.get_session_title.return_value = "Current Work"
-    runner._session_db._db.get_next_title_in_lineage.return_value = "Current Work #2"
+    sessions = runner.session_store.persistence.aio.sessions
+    sessions.get_title = AsyncMock(return_value="Current Work")
+    sessions.next_title_in_lineage = AsyncMock(return_value="Current Work #2")
     return runner, session_key
 
 
@@ -129,7 +120,6 @@ def test_clear_session_boundary_security_state_is_scoped():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner._pending_approvals = {}
     runner._pending_skills_reload_notes = {}
 
     source = _make_source()
@@ -140,8 +130,8 @@ def test_clear_session_boundary_security_state_is_scoped():
     approve_session(other_key, "recursive delete")
     enable_session_yolo(session_key)
     enable_session_yolo(other_key)
-    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
-    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
+    runner._session_state(session_key).persistent.approvals = {"command": "rm -rf /tmp/demo"}
+    runner._session_state(other_key).persistent.approvals = {"command": "rm -rf /tmp/other"}
     runner._session_state(session_key).persistent.update_prompt_pending = True
     runner._session_state(other_key).persistent.update_prompt_pending = True
     runner._pending_skills_reload_notes[session_key] = (
@@ -165,14 +155,14 @@ def test_clear_session_boundary_security_state_is_scoped():
     # Target session cleared
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
-    assert session_key not in runner._pending_approvals
+    assert runner._session_state(session_key).persistent.approvals is None
     assert not runner._session_state(session_key).persistent.update_prompt_pending
     assert session_key not in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(session_key) is None
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
-    assert other_key in runner._pending_approvals
+    assert runner._session_state(other_key).persistent.approvals is not None
     assert runner._session_state(other_key).persistent.update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(other_key) is not None
@@ -190,7 +180,6 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner._pending_approvals = {}
 
     source = _make_source()
     session_key = build_session_key(source)

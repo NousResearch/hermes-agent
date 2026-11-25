@@ -104,6 +104,7 @@ def test_setup_browser_is_one_explicit_package_request(monkeypatch):
     assert calls == [("chromium", {"explicit": True})]
 
 
+@pytest.mark.platforms("any")
 @pytest.mark.parametrize("flags, profile", [([], "work"), (["-p", "other"], "other"), (["-p", "default"], None)],
                          ids=["sticky", "flag", "flag-default"])
 def test_console_script_runs_in_the_selected_profile(tmp_path, flags, profile):

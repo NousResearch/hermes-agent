@@ -57,5 +57,15 @@ export const dePreviewWeb: TranslationOverride<Translations['preview']['web']> =
   commentPlaceholder: 'Kommentar hinzufügen …',
   commentTitle: n => `Kommentar ${n}`,
   saveComment: 'Speichern',
-  cancelComment: 'Kommentar abbrechen'
+  cancelComment: 'Kommentar abbrechen',
+  vaultFill: 'Gespeicherte Anmeldung ausfüllen',
+  vaultTitle: site => `Gespeicherte Anmeldungen für ${site}`,
+  vaultLoading: 'Gespeicherte Anmeldungen werden geladen…',
+  vaultEmpty: 'Keine gespeicherte Anmeldung für diese Website',
+  vaultUnlock: name => `${name} entsperren`,
+  vaultOpenSettings: 'Einstellungen für den Anmeldedaten-Tresor öffnen',
+  vaultFilled: label => `${label} ausgefüllt. Prüfe das Formular und melde dich dann an.`,
+  vaultFillFailed: 'Die Anmeldung konnte nicht ausgefüllt werden',
+  vaultLoadFailed: 'Gespeicherte Anmeldungen konnten nicht geladen werden',
+  vaultPageNotReady: 'Die Seite lädt noch. Versuche es erneut, sobald sie fertig ist.'
 }

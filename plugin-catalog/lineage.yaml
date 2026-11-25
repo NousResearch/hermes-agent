@@ -1,16 +1,16 @@
 name: lineage
 repo: https://github.com/P0GL0L/hermes-lineage
-sha: 61de70980f4322838a9b53f4802623146f1046c2
-description: "Provenance for everything the agent produces: every file Hermes writes gets a receipt (what it was made from — files read, pages fetched, searches run — by which tool call, model and agent, with SHA-256 hashes) and a Desktop page draws the graph back to the sources, with observed / evidenced / inferred links labelled, never blended. Verify a file and its sources against recorded hashes; export Mermaid/DOT. Disclosure — hooks only (post_tool_call, pre/post_llm_call, post_api_request, api_request_error, post_auxiliary_call, subagent_start/stop, on_session_start/end); no tools, middleware, LLM calls or credentials; runs no commands. Hashes files the agent read or wrote, scans files the agent wrote (bounded text scan) and stats the working tree once after terminal/execute_code calls; receipts only for files the agent produced. Writes under plugin-data/lineage/ (SQLite, install.key) and, on request or with sidecar: true, <file>.receipt.json beside artifacts. Stores redacted, bounded previews of prompts, tool arguments and results (store_previews: false keeps ids and hashes only). Network only on an explicit `verify --refetch` (GET to the recorded source URLs, public hosts only; redirects are followed). No telemetry."
+sha: 5d9027158efd517930479bc35601d17a71452369
+description: "Provenance for everything the agent produces: every file Hermes writes gets a receipt (what it was made from — files read, pages fetched, searches run — by which tool call, model and agent, with SHA-256 hashes) and a Desktop page draws the graph back to the sources, with observed / evidenced / inferred links labelled, never blended. Verify a file and its sources against recorded hashes; export Mermaid/DOT. Disclosure — hooks only (post_tool_call, pre/post_llm_call, post_api_request, api_request_error, post_auxiliary_call, subagent_start/stop, on_session_start/end); no tools, middleware, LLM calls or credentials; runs no commands. Hashes files the agent read or wrote and files named in terminal commands (credential files such as ~/.ssh and .env are never opened), scans files the agent wrote (bounded text scan) and stats the working tree once after terminal/execute_code calls; receipts only for files the agent produced. Writes under plugin-data/lineage/ (SQLite, install.key) and, on request or with sidecar: true, <file>.receipt.json beside artifacts. Stores redacted, bounded previews of prompts, tool arguments and results (store_previews: false keeps ids and hashes only). Network only on an explicit `verify --refetch` (GET to the recorded source URLs, public hosts only; redirects are followed only to public hosts). No telemetry."
 maintainer: P0GL0L
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/P0GL0L/hermes-lineage#readme
-version: "0.1.3"
-image: https://raw.githubusercontent.com/P0GL0L/hermes-lineage/61de70980f4322838a9b53f4802623146f1046c2/docs/banner.png
+version: "0.1.5"
+image: https://raw.githubusercontent.com/P0GL0L/hermes-lineage/5d9027158efd517930479bc35601d17a71452369/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/P0GL0L/hermes-lineage/61de70980f4322838a9b53f4802623146f1046c2/docs/graph.png
+  - https://raw.githubusercontent.com/P0GL0L/hermes-lineage/5d9027158efd517930479bc35601d17a71452369/docs/graph.png
 readme: true
 platforms: []
 title: Lineage

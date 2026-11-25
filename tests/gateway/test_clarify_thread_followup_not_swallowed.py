@@ -7,7 +7,7 @@ consume ANY non-command message in the session as the clarify answer —
 arbitrary prose vanished into clarify resolution and the agent appeared to
 ignore the user's thread messages.
 
-After the fix (``tools/clarify_gateway._coerce_text_response`` rejects
+After the fix (``tools/clarify_gateway._coerce_text_response_detailed`` rejects
 arbitrary prose for native multi-choice prompts):
 
   * numeric selections ("2") and exact choice labels still resolve, and
@@ -88,7 +88,6 @@ def _clear_clarify_state():
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
-        cm._notify_cbs.clear()
 
 
 def _make_runner(adapter):

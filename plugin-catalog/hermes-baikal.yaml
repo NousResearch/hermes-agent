@@ -1,0 +1,38 @@
+name: hermes-baikal
+repo: https://github.com/tedlefter/hermes-baikal
+sha: 645e4a3179fd51229444f4d29c05f52eb9912e2b
+title: "Baïkal (CalDAV)"
+description: "Read, search and (opt-in) edit events and todos on a Baïkal or other CalDAV server, with recurrence expansion and free/busy. Disclosure — sends every request to the https URL in BAIKAL_CALDAV_URL (plain http only for localhost) with BAIKAL_USERNAME and BAIKAL_PASSWORD read through Hermes, follows no redirects and ignores proxy variables; only the six read tools register unless the plugin setting allow_write is true, and with it the agent can create, change, complete and permanently delete events and todos, visible to everyone sharing those calendars; the tools are offered on every surface where the baikal toolset is enabled, gateways included, so anyone allowed on your gateway reads your calendar; event text written by other people reaches the agent as tool output; no other endpoint, no telemetry, no file or shell access, no background process. Independent community plugin, not affiliated with Baïkal or sabre/dav."
+maintainer: tedlefter
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.2.0"
+docs_url: https://github.com/tedlefter/hermes-baikal#readme
+readme: true
+platforms: []
+known_issues:
+  - "Write tools (create, update, complete, delete) register only after `hermes config set plugins.entries.hermes-baikal.settings.allow_write true` and a new session"
+  - "When the server cannot expand recurring events (Baïkal returns HTTP 500 if a calendar's calendar-timezone is a bare TZID, which its web admin sets), the plugin expands them itself; rules using BYSETPOS, BYWEEKNO, BYYEARDAY or sub-daily frequencies come back as the stored series with an expand_error note"
+  - "Events with per-occurrence overrides can be read but not edited, editing a recurring event changes the whole series, and completing a recurring todo is refused"
+capabilities:
+  provides_tools:
+    - baikal_list_calendars
+    - baikal_list_events
+    - baikal_get_event
+    - baikal_list_todos
+    - baikal_get_todo
+    - baikal_free_busy
+    - baikal_create_event
+    - baikal_update_event
+    - baikal_delete_event
+    - baikal_create_todo
+    - baikal_update_todo
+    - baikal_complete_todo
+    - baikal_delete_todo
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BAIKAL_CALDAV_URL
+    - BAIKAL_USERNAME
+    - BAIKAL_PASSWORD

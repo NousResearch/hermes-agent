@@ -1,6 +1,6 @@
 name: shipframe
 repo: https://github.com/juanitourquiza/shipframe
-sha: 2d0a246206b7a3235c3167af5512d8dd4d8a29dd
+sha: ab0d5261011a4ea8b23bd0cc105cf1dbee0ce325
 description: >-
   AI coding workflows for teams that plan, prove, and ship — 44 read-only skills
   covering project context refresh, feature discovery, planning, implementation,
@@ -20,7 +20,7 @@ tier: community
 category: tools
 title: ShipFrame
 docs_url: https://shipframe.hackeruna.com/
-version: "1.1.0"
+version: "1.2.0"
 platforms: []
 capabilities:
   provides_tools: []

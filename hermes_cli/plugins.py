@@ -762,10 +762,10 @@ sys.modules[PluginContext.__module__].PluginManager = PluginManager
 # working — ``get_plugin_manager()`` still reads/writes this name.
 _plugin_manager: Optional[PluginManager] = None
 
-# Resolved Hermes home -> PluginManager. A process can switch profiles via
+# Hermes home key -> PluginManager. A process can switch profiles via
 # ``set_hermes_home_override()``; a single slot would leak one profile's plugin/context-engine state
-# into another, and keying by resolved home lets a re-entered profile reuse its imported modules.
-_plugin_managers_by_home: dict[Path, PluginManager] = {}
+# into another, and keying by the home's key lets a re-entered profile reuse its imported modules.
+_plugin_managers_by_home: dict[str, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 
 # Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
@@ -780,13 +780,12 @@ _published_tui_message_injector: tuple[object, Callable] | None = None
 _published_tui_host_lock = threading.Lock()
 
 
-def _plugin_home_key() -> Path:
-    """Resolved active Hermes home — the key for per-profile plugin managers (plugins capture the
-    home at registration, so a process serving several profiles cannot share one manager)."""
-    try:
-        return get_hermes_home().expanduser().resolve()
-    except Exception:
-        return get_hermes_home().expanduser()
+def _plugin_home_key() -> str:
+    """The active Hermes home's remembered key (``hermes_home_key``): the key for per-profile plugin managers
+    (plugins capture the home at registration, so a process serving several profiles cannot share one manager).
+    Not the link's live target: a name repointed while the process runs finds the manager it was opened by, which
+    refuses (``PluginManager.owner_home``), never the manager of the directory it now leads to."""
+    return hermes_home_key(get_hermes_home())
 
 
 def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
@@ -888,7 +887,7 @@ def get_plugin_manager() -> PluginManager:
         else:
             manager = _plugin_managers_by_home.get(current_home)
             if manager is None:
-                manager = PluginManager(scope_key=hermes_home_key(current_home), owner_home=get_hermes_home())
+                manager = PluginManager(scope_key=current_home, owner_home=get_hermes_home())
                 _plugin_managers_by_home[current_home] = manager
             _plugin_manager = manager
     _attach_published_gateway_host(manager)

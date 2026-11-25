@@ -1,8 +1,19 @@
 """start_gateway exits that never reach running mode must not look like a clean shutdown."""
 import asyncio
 import threading
+from unittest.mock import AsyncMock
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def stub_runtime_listeners(monkeypatch):
+    """Keep real startup/stop and database ownership without binding local sockets."""
+    monkeypatch.setattr(
+        "gateway.control_socket.GatewayControlServer.start",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr("gateway.run_runtime.start_gateway_runtime_api", AsyncMock())
 
 
 @pytest.mark.asyncio

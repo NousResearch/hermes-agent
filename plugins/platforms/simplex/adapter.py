@@ -20,7 +20,7 @@ import re
 import time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from urllib.parse import unquote
 
@@ -36,7 +36,9 @@ from gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
 
-MAX_MESSAGE_LENGTH = 8000  # SimpleX has no hard limit; chunk for sanity
+# SimpleX caps an encoded chat message at 15,602 bytes (13,380 with PQ encryption); 8,000
+# JSON-escaped bytes leaves room for the event envelope and group-forwarding overhead.
+MAX_MESSAGE_LENGTH = 8000
 WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
@@ -112,11 +114,28 @@ def _send_cmd(chat_id: str, items: list) -> str:
     return f"/_send {target} json {json.dumps(items)}"
 
 
+def _json_text_len(text: str) -> int:
+    """Bytes *text* occupies inside the chat-protocol JSON message (quotes excluded).
+
+    SimpleX's cap is on the encoded message, not on characters or raw UTF-8: Aeson escapes
+    control characters, quotes and backslashes, so measuring ``len(text)`` understates long
+    cron output with ANSI escapes or JSON-ish content."""
+    return len(json.dumps(text, ensure_ascii=False).encode("utf-8")) - 2
+
+
 class SimplexAdapter(BasePlatformAdapter):
     """SimpleX Chat adapter using the simplex-chat daemon WebSocket API."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     serial_receive_loop = True  # the WebSocket loop awaits each event before reading the next
+    # send() chunks below the 15,602-byte protocol cap, so cron delivery must hand over the full
+    # output instead of truncating it at MAX_PLATFORM_OUTPUT.
+    splits_long_messages = True
+
+    @property
+    def message_len_fn(self) -> Callable[[str], int]:
+        """SimpleX limits the encoded protocol message, not characters (CJK and escapes count more)."""
+        return _json_text_len
 
     def __init__(self, config: PlatformConfig, **kwargs):
         super().__init__(config=config, platform=Platform("simplex"))
@@ -480,8 +499,9 @@ class SimplexAdapter(BasePlatformAdapter):
         if media_paths:
             content = re.sub(r"MEDIA:\S+", "", content).strip()
         if content:
-            cmd_str = _send_cmd(chat_id, [{"msgContent": {"type": "text", "text": content}}])
-            await self._send_ws({"corrId": self._make_corr_id(), "cmd": cmd_str})
+            for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=self.message_len_fn):
+                cmd_str = _send_cmd(chat_id, [{"msgContent": {"type": "text", "text": chunk}}])
+                await self._send_ws({"corrId": self._make_corr_id(), "cmd": cmd_str})
         for path in media_paths:
             if os.path.splitext(path)[1].lower() in _VOICE_TAG_EXTS:
                 media_result = await self.send_voice(chat_id, path)
@@ -676,12 +696,14 @@ async def _standalone_send(
     if not ws_url:
         return send_error("SimpleX standalone send: SIMPLEX_WS_URL is required")
     try:
-        payload = {
-            "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",
-            "cmd": _send_cmd(chat_id, [{"msgContent": {"type": "text", "text": message}}])}
+        chunks = BasePlatformAdapter.truncate_message(message, MAX_MESSAGE_LENGTH, _json_text_len)
         async with _wsclient.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
-            await ws.send(json.dumps(payload))
-            await asyncio.sleep(0.5)  # let the daemon process the command before closing
+            for chunk in chunks:
+                payload = {
+                    "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",
+                    "cmd": _send_cmd(chat_id, [{"msgContent": {"type": "text", "text": chunk}}])}
+                await ws.send(json.dumps(payload))
+            await asyncio.sleep(0.5)  # let the daemon process the commands before closing
         return {"success": True, "platform": "simplex", "chat_id": chat_id}
     except Exception as e:
         return send_error(f"SimpleX send failed: {describe_proxy_error(e, env_proxy_for_redaction(ws_url)) or e}")  # websockets reads *_PROXY

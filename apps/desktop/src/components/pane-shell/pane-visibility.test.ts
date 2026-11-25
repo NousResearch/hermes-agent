@@ -103,6 +103,7 @@ describe('session switch transition suppression contract', () => {
   it('disables CSS transitions across hidden panes and switching surfaces (#158689)', () => {
     const rule = paneTransitionRule()
 
+    expect(rule).toContain('[data-tree-group] *')
     expect(rule).toContain('[data-pane-hidden]')
     expect(rule).toContain('[data-pane-hidden] *')
     expect(rule).toContain('[data-session-switching]')

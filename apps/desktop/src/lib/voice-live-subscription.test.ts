@@ -125,7 +125,7 @@ describe('native Live explicit billing', () => {
       expect(onDelegation).toHaveBeenCalledTimes(1)
       expect(onDelegation.mock.calls[0][0]).toBe('provider-delegation')
       expect(onDelegation.mock.calls[0][1].map((part: { text: string }) => part.text)).toEqual([
-        ...(auth === 'subscription' ? ['What should I read?'] : []),
+        ...(auth === 'subscription' ? ['What should I read?', 'the ', 'project status.'] : []),
         'Read the project status.'
       ])
       expect(onTranscript).toHaveBeenCalledTimes(auth === 'subscription' ? 3 : 1)
@@ -216,7 +216,12 @@ describe('native Live explicit billing', () => {
     wire.receive({ type: 'session.closed', reason: 'closed' })
   })
 
-  it.each([true, false])('submits only the handoff and retains the earlier user turn (turn.done: %s)', async done => {
+  it.each([
+    { prior: 'no', parts: ['play pia', 'no'], done: true, context: 'User: no\nUser: play piano' },
+    { prior: 'no', parts: ['play pia', 'no'], done: false, context: 'User: no\nUser: play piano' },
+    { prior: 'blue', parts: ['choose  ', 'blue'], done: false, context: 'User: blue\nUser: choose  blue' },
+    { prior: 'choose  blue', parts: ['choose  ', 'blue'], done: true, context: 'User: choose  blue' }
+  ])('submits only the handoff for $prior (turn.done: $done)', async ({ prior, parts, done, context }) => {
     const wire = media()
     hermesApi.mockResolvedValueOnce({ ok: true, auth: 'subscription', transport: { sdp: 'answer' } })
     const onSubmit = vi.fn()
@@ -228,13 +233,13 @@ describe('native Live explicit billing', () => {
 
     await act(async () => { await hook.result.current.start() })
     act(() => {
-      wire.receive({ type: 'input_transcript.added', item: { text: 'no' } })
+      wire.receive({ type: 'input_transcript.added', item: { text: prior } })
 
-      if (done) {wire.receive({ type: 'turn.done', turn: { role: 'user', transcript: 'no' } })}
+      if (done) {wire.receive({ type: 'turn.done', turn: { role: 'user', transcript: prior } })}
       wire.receive({ type: 'delegation.created', item: { type: 'delegation', target: 'client', id: 'd',
-        content: [{ type: 'input_text', text: 'play pia' }, { type: 'input_text', text: 'no' }] } })
+        content: parts.map(text => ({ type: 'input_text', text })) } })
     })
-    expect(onSubmit).toHaveBeenCalledExactlyOnceWith('play piano', 'User: no\nUser: play piano')
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(parts.join(''), context)
     act(() => { wire.receive({ type: 'session.closed' }) })
     hook.unmount()
   })

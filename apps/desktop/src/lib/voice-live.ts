@@ -711,29 +711,19 @@ export class VoiceLiveSession {
     const provided = event.delegationContext ?? []
     const providedText = provided.at(-1)?.text.trim()
 
-    // Replace only the trailing user fragments covered by the v3 handoff copy.
+    // A suffix alone cannot distinguish a partial ASR echo from a prior turn.
+    // Replace only a complete matching run; the handoff starts its own user turn.
     let start = context.length
-    let suffix = ''
-
-    for (let i = context.length - 1; providedText && i >= 0; i--) {
-      const part = context[i]
-
-      if (part.speaker !== 'user' || (part.endsTurn && i !== context.length - 1)) {break}
-      suffix = part.text + suffix
-      const copy = suffix.trim()
-
-      if (!providedText.endsWith(copy)) {break}
-      // A completed turn must match as a whole. For partial ASR, only replace
-      // a word-aligned suffix, never an unrelated "no" at the end of "piano".
-      const exact = providedText === copy
-      const partial = !context.at(-1)?.endsTurn && /\s/.test(providedText.charAt(providedText.length - copy.length - 1))
-
-      if (exact || partial) {start = i}
-
+    while (providedText && start > 0) {
+      const part = context[start - 1]
+      if (part.speaker !== 'user' || (start < context.length && part.endsTurn)) {break}
+      start--
       if (part.startsTurn) {break}
     }
 
-    const delegationContext = providedText ? [...context.slice(0, start), ...provided] : context
+    const copy = context.slice(start).map(part => part.text).join('').trim()
+    const prior = providedText && copy === providedText ? context.slice(0, start) : context
+    const delegationContext = providedText ? [...prior, ...provided] : context
 
     this.handlers.onDelegation(id, delegationContext)
   }

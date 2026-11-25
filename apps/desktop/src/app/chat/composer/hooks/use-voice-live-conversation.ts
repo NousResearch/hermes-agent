@@ -67,10 +67,10 @@ export function delegationPrompt(context: LiveTranscriptFragment[]): { context: 
   }
 
   const lastUser = [...turns].reverse().find(turn => turn.speaker === 'user')
-  const prompt = (lastUser?.text ?? '').replace(/\s+/g, ' ').trim()
+  const prompt = (lastUser?.text ?? '').trim()
 
   const transcript = turns
-    .map(turn => `${turn.speaker === 'user' ? 'User' : 'Voice assistant'}: ${turn.text.replace(/\s+/g, ' ').trim()}`)
+    .map(turn => `${turn.speaker === 'user' ? 'User' : 'Voice assistant'}: ${turn.text.trim()}`)
     .filter(line => !line.endsWith(': '))
     .join('\n')
 

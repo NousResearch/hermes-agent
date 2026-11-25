@@ -378,6 +378,10 @@ function buildMovePromptOptions(
   }
 }
 
+// Electron throws this when the user cancels its admin password prompt (electron_bundle_mover.mm); the user
+// chose not to move, so it is a decline, not a failure.
+const AUTHORIZATION_CANCELLED = 'User rejected the authorization request'
+
 async function reportInstalledCopyConflict(
   deps: Pick<MacApplicationsGuardDeps, 'appName' | 'dialog' | 'log'>,
   location: MacUnsafeBundleLocation,
@@ -489,6 +493,12 @@ async function attemptMoveToApplications(
     return { action: 'continue', reason: 'move-cancelled', location }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+
+    if (message === AUTHORIZATION_CANCELLED) {
+      deps.log('[install] move to /Applications cancelled at the admin password prompt')
+
+      return { action: 'continue', reason: 'move-cancelled', location }
+    }
 
     deps.log(`[install] move to /Applications failed: ${message}`)
     await deps.dialog.showMessageBox({

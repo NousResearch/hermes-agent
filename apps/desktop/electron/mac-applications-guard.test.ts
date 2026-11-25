@@ -460,7 +460,11 @@ describe('guardMacApplicationsLaunch', () => {
 
     const cancelCase = makeDeps()
 
-    cancelCase.app.moveToApplicationsFolder.mockReturnValue(false)
+    // Cancelling Electron's admin password prompt throws this literal (electron_bundle_mover.mm); the user
+    // chose not to move, so no "could not move" dialog follows.
+    cancelCase.app.moveToApplicationsFolder.mockImplementation(() => {
+      throw new Error('User rejected the authorization request')
+    })
 
     await expect(guardMacApplicationsLaunch(cancelCase.deps)).resolves.toEqual({
       action: 'continue',
@@ -468,6 +472,7 @@ describe('guardMacApplicationsLaunch', () => {
       location: 'read-only-volume'
     })
     expect(cancelCase.dialog.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(readMacApplicationsGuardPreference(cancelCase.userDataDir)).toBeNull()
 
     const errorCase = makeDeps()
 

@@ -441,18 +441,9 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     # canary's names the live canary, whose objects the R2 pruner keeps however old.
     channel = "canary" if policy == "canary-release" else "stable"
     pointer = f"releases/{channel}/release-candidates.json"
-    # A rejected older canary must not replace the pointer protecting the live
-    # canary's archive from pruning. Feed/head monotonicity checks run too late.
-    if policy == "canary-release":
-        live = publisher._read(name)
-        if live is not None and live[0]["head"] is not None:
-            live_build = live[0]["head"]["buildId"]
-            if live_build != request["buildId"]:
-                from hermes_cli.update_channel import published_canary_timestamp
-                previous = published_canary_timestamp(publisher.request(live_build)["releaseTag"])
-                candidate = published_canary_timestamp(payload_tag)
-                if previous is None or candidate is None or candidate <= previous:
-                    raise ChannelError("Refusing a stale canary publication: it cannot overwrite the live retention pointer")
+    # A release the head update would refuse must not advance feeds or overwrite the retention
+    # pointer, so the head's own ordering check runs before the first feed write.
+    publisher.require_protected_successor(request, policy=policy)
     log(f"Promoting the {channel} feeds")
     promote_stable_feeds(accepted, root, publisher.public_base)
     log(f"Promoting build {request['buildId']} to the {name} head")
@@ -475,15 +466,18 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("role", choices=("stable", "canary"), help="Protected release policy, not a channel name")
+    parser.add_argument("role", choices=("canary",),
+                        help="Protected release policy, not a channel name. Stable publication runs only "
+                             "through the Stable Release Publication workflow, which holds the "
+                             "stable-release lock and checks the final release receipt")
 
     parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)
     if args.root:
-        result = publish_release(args.role + "-release", dict(os.environ), args.root)
+        result = publish_release("canary-release", dict(os.environ), args.root)
     else:
         with tempfile.TemporaryDirectory() as directory:
-            result = publish_release(args.role + "-release", dict(os.environ), Path(directory))
+            result = publish_release("canary-release", dict(os.environ), Path(directory))
     print(json.dumps(result, sort_keys=True))
 
 

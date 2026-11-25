@@ -1751,21 +1751,29 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
+        from tools.process_registry import COMPLETION_OUTPUT_CHARS, transform_process_output
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
                                         task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
-        _LIMIT = 2000
+        # Mask before cutting: a window that starts inside a credential hides its prefix from the masker.
+        _raw = _redact_gateway_user_facing_secrets(_raw)
+        # Sized like the spawner asked: when the output IS the payload (a bot DM reply) the process
+        # carries a larger completion_output_chars, same budget as the registry's completion (#115334).
+        _LIMIT = getattr(session, "completion_output_chars", 0) or COMPLETION_OUTPUT_CHARS
         # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
+        # _LIMIT chars but snap to the nearest preceding newline, then prepend a truncation marker when
         # output was cut.
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            # The snap targets a *preceding* newline (#23284). When the only
+            # newline in the window merely terminates it (single-line JSON /
+            # results), nothing but that terminator follows, so slicing would
+            # empty the tail (#131786) — keep the full window instead.
+            if _nl != -1 and _tail[_nl + 1:].strip():
+                _tail = _tail[_nl + 1:]
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

@@ -143,3 +143,27 @@ def test_single_compaction_quotes_a_user_message():
 
     section = _verbatim_section(comp._previous_summary or "")
     assert USER_A in section
+
+
+def test_a_full_quote_budget_keeps_the_newest_user_words():
+    """Carried quotes are older than this region's; when the budget fills, the oldest go, never the new ask."""
+    from agent.context_compressor_lean import rebuild_lean_sections
+
+    old = [{"role": "user", "content": f"OLD-{k:02d} " + "x" * 3_900} for k in range(8)]
+    previous = rebuild_lean_sections("narrative", old, previous_summary="", session_id="s")
+    out = rebuild_lean_sections("narrative", [{"role": "user", "content": "NEW-ASK do the next thing"}],
+                                previous_summary=previous, session_id="s")
+
+    assert "NEW-ASK" in out and "OLD-07" in out and "OLD-00" not in out
+
+
+def test_an_anchor_index_written_before_the_separator_change_carries_per_entry():
+    """Stored summaries from before this change join entries with ", "; each must keep its own count."""
+    from agent.context_compressor_lean import rebuild_lean_sections
+
+    previous = (f"narrative\n\n{_LEAN_ANCHOR_HEADING}\nfiles: src/a.py(x3), src/b.py\n"
+                "(Exact identifiers from the compacted region.)")
+    out = rebuild_lean_sections("narrative", [{"role": "user", "content": "edit src/a.py"}],
+                                previous_summary=previous, session_id="s")
+
+    assert "src/a.py(x4)" in out and "src/b.py" in out and "src/a.py(x3), src/b.py" not in out

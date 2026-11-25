@@ -52,6 +52,8 @@ def _parse_anchor_index(section: str) -> dict[str, dict[str, int]]:
     parsed: dict[str, dict[str, int]] = {}
     if not section:
         return parsed
+    # An index written before the separator changed (still in stored summaries) joins its entries with ", ".
+    sep = _ANCHOR_ITEM_SEP if _ANCHOR_ITEM_SEP in section else ", "
     for line in section.splitlines()[1:]:
         if line.startswith("(Exact identifiers"):
             break
@@ -59,7 +61,7 @@ def _parse_anchor_index(section: str) -> dict[str, dict[str, int]]:
         if not match:
             continue
         counts = parsed.setdefault(match.group("label").strip(), {})
-        for raw in match.group("body").split(_ANCHOR_ITEM_SEP):
+        for raw in match.group("body").split(sep):
             item = raw.strip().rstrip(".,;:")
             if not item:
                 continue
@@ -182,17 +184,6 @@ def quoted_user_texts(section: str) -> list[str]:
     return quotes
 
 
-def _unique(texts: list[str], *more: list[str]) -> list[str]:
-    """Concatenated texts, order preserved, exact duplicates dropped (newest region first)."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for text in (*texts, *[t for group in more for t in group]):
-        if text not in seen:
-            seen.add(text)
-            out.append(text)
-    return out
-
-
 def rebuild_lean_sections(
     summary: str, turns: list[dict[str, Any]], *, previous_summary: str, session_id: str,
 ) -> str:
@@ -208,15 +199,15 @@ def rebuild_lean_sections(
     headings = (_LEAN_ANCHOR_HEADING, _LEAN_USER_MESSAGES_HEADING, _LEAN_RECOVERY_HEADING)
     narrative, _echoed = strip_lean_sections(summary, headings)
     _, carried = strip_lean_sections(previous_summary or "", headings)
-    quotes = _unique(
-        quoted_user_texts(_build_verbatim_user_section(turns)),
-        quoted_user_texts(carried.get(_LEAN_USER_MESSAGES_HEADING, "")),
-    )
+    # Newest first (this region, then the carried quotes); the builder walks its input from the end, so it gets
+    # them oldest first and spends the budget on the newest.
+    quotes = dict.fromkeys([*quoted_user_texts(_build_verbatim_user_section(turns)),
+                            *quoted_user_texts(carried.get(_LEAN_USER_MESSAGES_HEADING, ""))])
     # The previous index is parsed back into counts and merged numerically with this region's
     # harvest, so a value's multiplicity survives compaction instead of decaying to one per pass.
     harvested = _build_anchor_index(list(turns), carried_section=carried.get(_LEAN_ANCHOR_HEADING, ""))
     return narrative.rstrip() + "".join((
         _redact_compaction_text(harvested),
-        _redact_compaction_text(_build_verbatim_user_section([{"role": "user", "content": q} for q in quotes])),
+        _redact_compaction_text(_build_verbatim_user_section([{"role": "user", "content": q} for q in reversed(quotes)])),
         _build_recovery_footer(session_id, len(turns)),
     ))

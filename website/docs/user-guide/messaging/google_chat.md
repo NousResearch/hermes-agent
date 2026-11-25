@@ -451,7 +451,8 @@ handled once, through the app's own delivery.
 If a subscription expires anyway (the host was off or asleep for longer than
 its lifetime), Google delivers nothing for that time, also not afterwards.
 Hermes remembers each subscription's expiry in
-`~/.hermes/google_chat_workspace_spaces.json`, so after it has made the
+`~/.hermes/google_chat_workspace_spaces.json` (`…_dms.json` for the DMs of
+`answer_dms`), so after it has made the
 subscription again it reads what was said in the space since the expiry and
 hands the messages it would have admitted to the agent as **one late turn**:
 a note that the listener was down, from when to when, then each message with

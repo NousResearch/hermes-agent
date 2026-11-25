@@ -1,8 +1,9 @@
 """Google Chat: person-to-person DMs answered by the Workspace user, as that user (``answer_dms``).
 
 Covers: the scopes and allowlist requirement, DM discovery (joined vs invitation, allowed people
-only, DMs that go away), which DM messages are admitted, and that everything outbound in those
-DMs goes through the delegated user while app spaces keep using the app.
+only, DMs that go away), which DM messages are admitted, what a peer wrote while a DM's
+subscription was gone, and that everything outbound in those DMs goes through the delegated user
+while app spaces keep using the app.
 """
 
 import asyncio
@@ -13,7 +14,7 @@ import pytest
 
 from tests.gateway.test_google_chat import _FakeHttpError, _gc_mod
 from tests.gateway.test_google_chat_workspace_user import (
-    ALICE, BOB, USER, _Call, _FakeEvents, _make, _ws_pubsub,
+    ALICE, BOB, USER, _Call, _FakeEvents, _in, _make, _ws_pubsub,
 )
 
 from plugins.platforms.google_chat import workspace_user_dms as ud
@@ -164,6 +165,37 @@ class TestInbound:
         a._submit_on_loop = lambda coro: (submitted.append(coro), coro.close())
         a._handle_pubsub_message(_ws_pubsub(message))
         assert submitted == []
+
+
+    @pytest.mark.asyncio
+    async def test_what_the_peer_wrote_while_the_subscription_was_gone_is_handed_over_late(self, monkeypatch):
+        """The host was off for a day: the DM's subscription expired and Google removed it."""
+        a, user_chat = await _dm_adapter(monkeypatch)
+        dms, subs = a._workspace_user.dms, a._workspace_user.events().subscriptions_
+        a._dispatch_message = AsyncMock()
+        submitted = []
+        a._submit_on_loop = lambda coro: (submitted.append(coro), coro.close())
+        dms.keeper._expires[ALICE_DM] = _in(hours=-20)
+        subs.subs.clear()
+        subs.gone_status = 403
+
+        def said(n, text, sender, minutes):
+            return {**_dm_message(sender=sender), "name": f"{ALICE_DM}/messages/{n}", "text": text,
+                    "createTime": _in(minutes=-minutes)}
+        user_chat.messages.list.return_value.execute.return_value = {"messages": [
+            said("M1", "the server is back online", "users/alice", 40),
+            said("own", "a report the user posted itself", "users/assistant", 30),
+            said("M2", "hello?", "users/alice", 20)]}
+        await asyncio.to_thread(dms.upkeep)
+        assert len(subs.subs) == 1 and len(submitted) == 1
+        msg, envelope = a._dispatch_message.call_args.args
+        assert msg["name"] == f"{ALICE_DM}/messages/M2" and envelope["space"]["spaceType"] == "DIRECT_MESSAGE"
+        note, first, second = msg["text"].split("\n")
+        assert note.startswith("[Delivered late.") and "2 message(s)" in note
+        assert first.endswith(f"{ALICE}: the server is back online") and second.endswith(f"{ALICE}: hello?")
+        assert user_chat.messages.list.call_args.kwargs["parent"] == ALICE_DM
+        await asyncio.to_thread(dms.upkeep)  # settled: the next pass hands nothing over
+        assert len(submitted) == 1
 
 
 # ===========================================================================

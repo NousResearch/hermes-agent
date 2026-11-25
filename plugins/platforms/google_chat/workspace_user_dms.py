@@ -8,6 +8,9 @@ joined, admits every message the peer sends there, and does everything in those 
 user: replies, edits, deletes, uploads and downloads (scope ``chat.messages``). Users cannot post
 cards, so cards and clarify buttons become text there. DMs with anyone else are ignored: no
 subscription, no reply, no reaction. App spaces and the app's own DMs are unchanged.
+
+What a peer wrote while a DM's subscription was gone (it expired with the host off) is read
+and handed over late, as for the listened spaces (``workspace_events.catch_up``).
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import logging
 import re
 from typing import Any, Optional
 
-from .workspace_events import SubscriptionKeeper
+from .workspace_events import SubscriptionKeeper, catch_up, state_path
 
 logger = logging.getLogger("gateway.platforms.google_chat")
 
@@ -60,6 +63,7 @@ class DirectMessages:
         self.user_id: Optional[str] = None  # users/{id} of the Workspace user
         self.keeper: Optional[SubscriptionKeeper] = None
         self._reported: dict[str, str] = {}
+        self._catch_up_errors: dict[str, str] = {}
         self._task: Optional[asyncio.Task] = None
         self._wake: Optional[asyncio.Event] = None
 
@@ -118,9 +122,10 @@ class DirectMessages:
         return sub.topic
 
     def upkeep(self) -> None:
-        """Discover the DMs, subscribe the joined ones, drop the ones that went away (blocking)."""
+        """Discover the DMs, subscribe the joined ones (handing over what was said while a
+        subscription was gone), drop the ones that went away (blocking)."""
         if self.keeper is None:
-            self.keeper = SubscriptionKeeper(self._user.events, self._user.http, self._topic())
+            self.keeper = SubscriptionKeeper(self._user.events, self._user.http, self._topic(), state_path("dms"))
         found = self.discover()
         for space in [s for s in self.spaces if s not in found]:
             self.spaces.pop(space, None)
@@ -131,6 +136,7 @@ class DirectMessages:
             self._report(space, info)
             if info["joined"]:
                 self.keeper.ensure(space)
+                catch_up(self, space)
 
     def _drop(self, space: str) -> None:
         from . import adapter as gc

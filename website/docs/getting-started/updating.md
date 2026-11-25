@@ -82,7 +82,7 @@ A detached waiter attempts automatic relaunch after the package version changes.
 A waiter-registration failure produces a manual-reopen warning.
 
 On macOS, apply downloads the signed ZIP update and waits for Squirrel.Mac to
-accept the signed `Hermes Agent.app` before stopping backends. Only that apply
+accept the signed app before stopping backends. Only that apply
 flow requests install and relaunch. An ordinary quit does not install a pending
 download. Download or verification failures leave backends running.
 
@@ -98,7 +98,7 @@ time:
 - **macOS:** a fresh DMG install is ~948 MB, and choosing **Update** in the
   app downloads the ~983 MB signed ZIP. After the ZIP finishes downloading, Squirrel.Mac unpack,
   code-signature verification, and bundle swap take roughly **50 seconds** on
-  Apple Silicon (measured on an M4 Mac) before `Hermes Agent.app` relaunches.
+  Apple Silicon (measured on an M4 Mac) before the app relaunches.
 - **Windows:** full per-architecture MSIX packages are ~1.89 GB (ARM64) to
   ~2.86 GB (x64). Windows App Installer and the Microsoft Store download only
   your host architecture and apply differential block updates between releases,

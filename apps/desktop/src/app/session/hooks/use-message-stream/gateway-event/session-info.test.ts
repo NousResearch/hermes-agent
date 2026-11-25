@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
 import {
   $activeSessionId,
   $currentBranch,
@@ -261,5 +262,52 @@ describe('handleSessionInfoEvent rebuilt-runtime re-bind', () => {
 
     expect($activeSessionId.get()).toBe('runtime-old')
     expect(ctx.deps.activeSessionIdRef.current).toBe('runtime-old')
+  })
+})
+
+describe('handleSessionInfoEvent turn end and open approvals', () => {
+  afterEach(() => {
+    clearAllPrompts()
+  })
+
+  it('keeps folder and site cards open when a live turn reports running=false, and drops command approvals', () => {
+    // The card's sender waits on a folder or site card, so the end of the turn does not close it.
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-1',
+      cwd: '/repo/mine',
+      explicitSid: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+
+    ctx.payload = { ...ctx.payload, running: false }
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-1', {
+      ...createClientSessionState('stored-1'),
+      busy: true
+    })
+    setApprovalRequest({ command: 'rm -rf build', description: 'd', requestId: 'cmd', sessionId: 'runtime-1' })
+    setApprovalRequest({
+      command: '',
+      description: 'Allow C:\\docs',
+      kind: 'access',
+      requestId: 'folder',
+      sessionId: 'runtime-1',
+      target: { access: 'read', path: 'C:\\docs' }
+    })
+    setApprovalRequest({
+      command: '',
+      description: 'Allow the sandbox to reach pypi.org',
+      kind: 'network',
+      requestId: 'site',
+      sessionId: 'runtime-1',
+      target: { host: 'pypi.org' }
+    })
+
+    handleSessionInfoEvent(ctx)
+
+    expect(
+      sessionApprovalRequests('runtime-1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['folder', 'site'])
   })
 })

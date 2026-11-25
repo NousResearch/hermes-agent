@@ -2,12 +2,18 @@
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
+from pathlib import Path
 
-from hermes_cli.source_completion import complete_source_checkout
+import pytest
+
+from hermes_cli.source_completion import complete_source_checkout, main
 from hermes_cli.source_stamp import write_source_stamp
+from hermes_cli.update_lock import UpdateLock
+from tests.waiting import wait_until
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -30,7 +36,7 @@ def _repo(tmp_path: Path) -> Path:
 
 def _completion_dependencies(monkeypatch, maintenance):
     monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda root: None)
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products", lambda root, *, desktop: None)
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", lambda root, *, desktop, after_dependencies=None: None)
     monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", maintenance)
 
 
@@ -49,17 +55,178 @@ def test_successful_source_completion_writes_checkout_identity(tmp_path, monkeyp
 
 def test_failed_source_completion_does_not_publish_identity(tmp_path, monkeypatch):
     root = _repo(tmp_path)
-    _completion_dependencies(monkeypatch, lambda **_kwargs: False)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
 
-    assert not complete_source_checkout(root, desktop=False, assume_yes=True)
+    def broken_build(root, *, desktop, after_dependencies=None):
+        raise RuntimeError("web UI build: npm exited 1")
+
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", broken_build)
+    owed: list = []
+    assert not complete_source_checkout(root, desktop=False, assume_yes=True, followups=owed)
+    # The tail is owed, so the checkout identity is not published.
+    assert [step for step, _ in owed] == ["build"]
     assert not (root / "install-stamp.json").exists()
+
+
+def test_unsafe_sqlite_withholds_success_but_not_the_finished_tail(tmp_path, monkeypatch):
+    # Was: an unsafe SQLite verdict also withheld the stamp, so the tail stayed owed forever
+    # (re-running it cannot fix the interpreter, codemap §8 V1). The install still reports failure.
+    root = _repo(tmp_path)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: False)
+    owed: list = []
+    assert not complete_source_checkout(root, desktop=False, assume_yes=True, followups=owed)
+    assert owed == []
+    assert (root / "install-stamp.json").is_file()
+
+
+def _sandboxed_marker(tmp_path, monkeypatch):
+    """Point every update-lock reader at a marker inside this test's sandbox."""
+    marker = tmp_path / ".hermes-update-in-progress"
+    monkeypatch.setattr("hermes_cli.update_lock.update_marker_path", lambda: marker)
+    return marker
+
+
+@pytest.fixture
+def foreign_pid():
+    """A live process that is not an ancestor of this test: a stand-in updater."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                            stdin=subprocess.DEVNULL)
+    yield proc.pid
+    proc.kill()
+    proc.wait()
+
+
+def test_completion_holds_the_update_lock_during_the_tail(tmp_path, monkeypatch):
+    """Two completions must not build the same products concurrently (#123376).
+
+    A gateway restarted while an update's tail runs reaches this same function
+    through venv_sync; without the shared lock both build the same output dirs
+    and race on install-stamp.json.
+    """
+    root = _repo(tmp_path)
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    seen = {}
+
+    def build(_root, *, desktop, after_dependencies=None):
+        from hermes_cli.update_lock import read_live_update
+
+        seen["holder"] = read_live_update()
+
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", build)
+    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda root: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda **_kwargs: True)
+
+    assert complete_source_checkout(root, desktop=False, assume_yes=True)
+
+    assert seen["holder"] is not None, "the tail must hold the shared lock while it builds"
+    assert seen["holder"].pid == os.getpid()
+    assert not marker.exists(), "a completed tail must release the lock for the next launch"
+
+
+def test_completion_refuses_to_stack_on_a_live_update(tmp_path, monkeypatch, foreign_pid):
+    root = _repo(tmp_path)
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    marker.write_text(f"{foreign_pid}\n{int(time.time())}\n", encoding="utf-8")
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+
+    with pytest.raises(RuntimeError, match="an update is still running"):
+        complete_source_checkout(root, desktop=False, assume_yes=True)
+
+
+def test_installer_tail_waits_for_a_running_update_then_completes(tmp_path, monkeypatch):
+    """Regression for #157275: re-running the installer over a Desktop install failed as soon as
+    the gateway's background child (the default-plugin installer, relaunched onto the new code)
+    held the lock for the same completion, instead of waiting for it to finish."""
+    root = _repo(tmp_path)
+    (root / "hermes_cli").mkdir()
+    (root / "hermes_cli" / "source_completion.py").touch()
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+    monkeypatch.setattr("pm.environments.activate_dependencies", lambda root: None)
+    holder = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+    marker.write_text(f"{holder.pid}\n{int(time.time())}\n", encoding="utf-8")
+    refused = threading.Event()
+    acquire = UpdateLock.acquire
+
+    def observed_acquire(lock):
+        taken = acquire(lock)
+        if not taken:
+            refused.set()
+        return taken
+
+    monkeypatch.setattr(UpdateLock, "acquire", observed_acquire)
+    outcome: dict = {}
+
+    def install():
+        try:
+            outcome["exit"] = main(["--source", str(root), "--prepared"])
+        except BaseException as exc:  # health: allow BLE001 -- the assertion below reports it
+            outcome["error"] = repr(exc)
+
+    installer = threading.Thread(target=install)
+    installer.start()
+    try:
+        wait_until(lambda: refused.is_set() or not installer.is_alive(), timeout=60,
+                   what="the installer to meet the running update")
+    finally:
+        holder.communicate(b"")
+    installer.join(timeout=120)
+
+    assert outcome == {"exit": 0}
+    assert (root / "install-stamp.json").is_file()
+    assert not marker.exists(), "the installer must release the lock it took over"
+
+
+def test_installer_wait_is_bounded(tmp_path, monkeypatch, foreign_pid):
+    root = _repo(tmp_path)
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    marker.write_text(f"{foreign_pid}\n{int(time.time())}\n", encoding="utf-8")
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+
+    with pytest.raises(RuntimeError, match="an update is still running"):
+        complete_source_checkout(root, desktop=False, assume_yes=True, lock_wait=0.5)
+    assert marker.read_text(encoding="utf-8").startswith(f"{foreign_pid}\n")
+    assert not (root / "install-stamp.json").exists()
+
+
+def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path):
+    """A tail spawned by an orchestrator that holds the lock (venv_sync's
+    interrupted-update finish, the updater's own completion child) runs under
+    its parent's claim and leaves the parent's marker untouched.
+
+    Real topology: a parent process claims, then runs the tail as its child. The test
+    process's own parent can be invisible (a pid-namespaced runner), so it is never used."""
+    root = _repo(tmp_path)
+    marker = tmp_path / ".hermes-update-in-progress"
+    tail = (
+        "import json, sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n"
+        "from pathlib import Path\n"
+        "import hermes_cli.source_build, hermes_cli.update_cmd_maint, hermes_cli.update_lock, hermes_cli.venv_sync\n"
+        "from hermes_cli.source_completion import complete_source_checkout\n"
+        "hermes_cli.venv_sync.publish_launchers = lambda root: None\n"
+        "hermes_cli.source_build.build_update_products = lambda root, *, desktop, after_dependencies=None: None\n"
+        "hermes_cli.update_cmd_maint._run_post_update_maintenance = lambda **_kwargs: True\n"
+        f"hermes_cli.update_lock.update_marker_path = lambda: Path({str(marker)!r})\n"
+        f"print(json.dumps(complete_source_checkout(Path({str(root)!r}), desktop=False, assume_yes=True)))\n"
+    )
+    parent = (
+        "import os, subprocess, sys, time\n"
+        f"open({str(marker)!r}, 'w', encoding='utf-8').write(f'{{os.getpid()}}\\n{{int(time.time())}}\\n')\n"  # windows-footgun: ok — a write
+        "sys.exit(subprocess.call([sys.executable, '-c', sys.argv[1]]))\n"
+    )
+    run = subprocess.run([sys.executable, "-c", parent, tail], capture_output=True, timeout=120,
+                         text=True, encoding="utf-8", errors="replace", check=False)
+
+    assert run.returncode == 0 and run.stdout.strip().splitlines()[-1:] == ["true"], run.stdout + run.stderr
+    assert marker.exists(), "the parent still owns its claim after our tail"
 
 
 def _verify_bootstrap_receipt(root: Path) -> subprocess.CompletedProcess:
     """The same verifier the Windows install/update E2E runs after an update."""
     script = Path(__file__).resolve().parents[2] / "scripts" / "verify-bootstrap-version-stamp.py"
     return subprocess.run([sys.executable, "-B", str(script), "--stamp", str(root / ".hermes-bootstrap-complete"),
-                           "--repo", str(root)], capture_output=True, text=True, encoding="utf-8")
+                           "--repo", str(root)], capture_output=True, text=True, encoding="utf-8", check=False)
 
 
 def test_publishing_checkout_identity_moves_an_installer_receipt_to_head(tmp_path):

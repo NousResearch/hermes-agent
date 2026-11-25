@@ -10,7 +10,8 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone, UTC
 from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
 
@@ -103,7 +104,7 @@ def _hmac(key: bytes, msg: str) -> bytes:
 
 
 def signature(sts_text: str, secret_key: str, date: str, region: str, service: str) -> str:
-    k_date = _hmac(f"AWS4{secret_key}".encode("utf-8"), date)
+    k_date = _hmac(f"AWS4{secret_key}".encode(), date)
     k_region = _hmac(k_date, region)
     k_service = _hmac(k_region, service)
     k_signing = _hmac(k_service, "aws4_request")
@@ -150,7 +151,7 @@ def encode_key_path(key: str) -> str:
 
 
 def amz_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 class R2RequestError(Exception):
@@ -305,7 +306,7 @@ def verify_remote_artifact(
         response = fetcher(url)
         if response.status >= 400:
             raise R2RequestError("GET", urlparse(url).path, response.status)
-        data = response._body  # noqa: SLF001 — loopback-test responses are small
+        data = response._body
         hash_obj = hashlib.new(algorithm)
         hash_obj.update(data)
         size = len(data)
@@ -363,6 +364,10 @@ def read_public_receipt(base: str, key: str) -> dict:
         conn.close()
 
 
+class _TransferMismatch(ValueError):
+    """A completed download whose size or SHA256 disagrees with its receipt."""
+
+
 def download_public_object(base: str, key: str, file: Path, *, expected_size: int, expected_sha256: str) -> None:
     _download_url(public_artifact_url(base, key), file, lambda _attempt: {},
                   expected_size=expected_size, expected_sha256=expected_sha256)
@@ -393,12 +398,17 @@ def _download_url(url: str, file: Path, request_headers: Callable[[int], dict[st
                     digest.update(chunk)
                     size += len(chunk)
                     if size > expected_size:
-                        raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
+                        raise _TransferMismatch(f"Artifact checksum mismatch: {parsed.path}")
                     output.write(chunk)
             if size != expected_size or digest.hexdigest() != expected_sha256:
-                raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
+                raise _TransferMismatch(f"Artifact checksum mismatch: {parsed.path}")
             temporary.replace(file)
             return
+        except _TransferMismatch:
+            # The receipt is the authority: a body that disagrees with it is a bad transfer, so
+            # fetch again; a stored object that really differs fails the same way three times.
+            if attempt == 3:
+                raise
         except R2RequestError as error:
             if error.status not in _RETRYABLE_STATUSES or attempt == 3:
                 raise
@@ -440,9 +450,13 @@ def _stream_and_hash(url: str, creds: dict[str, str], now: str, algorithm: str):
 # ---------------------------------------------------------------------------
 
 def channel_for_tag(tag: str) -> str:
-    """Return the release channel encoded by a canonical tag."""
-    from hermes_cli.update_channel import is_canary_tag
+    """Return the release channel encoded by a canonical tag.
 
+    A commit build publishes to no channel; asking for its channel is a bug, never ``stable``."""
+    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
+
+    if is_commit_tag(tag):
+        raise ValueError(f"Commit builds publish to no release channel: {tag!r}")
     return "canary" if is_canary_tag(tag) else "stable"
 
 
@@ -534,13 +548,22 @@ def feed_dir_for(platform: str, channel: str) -> str:
     return f"releases/{platform}/{channel}"
 
 
+def channel_dmg_key_for(channel: str, arch: str = "arm64") -> str:
+    """The mutable unversioned macOS DMG alias for a release channel."""
+    return f"{feed_dir_for('darwin', channel)}/HermesBundled-mac-{arch}.dmg"
+
+
 def cache_control_for(key: str) -> str | None:
     """APT indexes are mutable; by-hash indexes and versioned packages are not."""
     if key.startswith("releases/channels/"):
         return "no-store"
     if key.startswith(("releases/channel-builds/", "releases/channel-identities/")):
         return "public, max-age=31536000, immutable"
-    if key.endswith((".appinstaller", ".html")) or key.startswith("releases/stable/") or (key.startswith("releases/darwin/") and key.endswith("-mac.yml")):
+    if (
+        key.endswith((".appinstaller", ".html"))
+        or key.startswith("releases/stable/")
+        or (key.startswith("releases/darwin/") and key.endswith(("-mac.yml", ".dmg")))
+    ):
         return "no-store"
     if not key.startswith("releases/termux/"):
         return None
@@ -692,12 +715,178 @@ def put_object(
     print(f"OK r2: {key} ({size} bytes)")
 
 
-def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None) -> None:
+MAX_SINGLE_COPY_SIZE = 5 * 1024**3
+_RETRYABLE_COPY_CODES = frozenset({"InternalError", "SlowDown", "ServiceUnavailable", "RequestTimeout"})
+
+
+def head_object(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    key: str,
+    now: str,
+    fetcher: Callable[..., Response] | None = None,
+) -> Response | None:
+    """HEAD one object, or None when it does not exist."""
+    url = R2Scope.configured().object_url(base, bucket, key)
+    if fetcher is not None:
+        response = fetcher(method="HEAD", url=url, body_hash=EMPTY_SHA)
+        if response.status == 404:
+            return None
+        if response.status >= 400:
+            raise R2RequestError("HEAD", key, response.status, response.text())
+        return response
+    try:
+        return signed_request("HEAD", url, creds=creds, now=now)
+    except R2RequestError as err:
+        if err.status == 404:
+            return None
+        raise
+
+
+def _parse_copy_result(dest_key: str, response: Response) -> None:
+    from xml.etree import ElementTree as ET
+
+    text = response.text().strip()
+    if not text:
+        raise R2RequestError("PUT", dest_key, 502, "Empty CopyObject response")
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise R2RequestError("PUT", dest_key, 502, text) from exc
+    if root.tag.rsplit("}", 1)[-1] == "CopyObjectResult":
+        return
+    code = root.findtext("{*}Code") or ""
+    status = 503 if code in _RETRYABLE_COPY_CODES else 400
+    raise R2RequestError("PUT", dest_key, status, text)
+
+
+def _verify_copied_destination(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    dest_key: str,
+    expected_size: int,
+    meta_headers: dict[str, str],
+    fetcher: Callable[..., Response] | None,
+) -> None:
+    dest_head = head_object(creds, base, bucket, dest_key, amz_timestamp(), fetcher=fetcher)
+    if dest_head is None or dest_head.header("content-length") != str(expected_size):
+        remote = dest_head.header("content-length") if dest_head is not None else None
+        status = 502 if dest_head is None else dest_head.status
+        raise R2RequestError("HEAD", dest_key, status, f"size mismatch (remote {remote}, expected {expected_size})")
+    for header_name, expected_val in meta_headers.items():
+        if dest_head.header(header_name) != expected_val:
+            raise ValueError(f"Copied object metadata mismatch for {header_name}: {dest_key}")
+
+
+@dataclass(frozen=True)
+class CopySource:
+    """A CopyObject source checked against its receipt size and the single-copy limit. The copy
+    is conditional on this ETag, so it fails if the object changed after the check."""
+
+    key: str
+    size: int
+    etag: str
+
+
+def copy_source(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    key: str,
+    now: str,
+    *,
+    expected_size: int,
+    fetcher: Callable[..., Response] | None = None,
+) -> CopySource:
+    """Check a CopyObject source before anything is written: its path, the single-copy limit, and
+    that the object exists at its receipt size with an ETag to bind the copy to."""
+    relative_artifact_path(key)
+    if type(expected_size) is not int or expected_size <= 0 or expected_size > MAX_SINGLE_COPY_SIZE:
+        raise ValueError(f"CopyObject size must be between 1 and {MAX_SINGLE_COPY_SIZE} bytes")
+    head = head_object(creds, base, bucket, key, now, fetcher=fetcher)
+    if head is None:
+        raise R2RequestError("HEAD", key, 404)
+    if head.header("content-length") != str(expected_size):
+        raise ValueError(f"Source artifact size mismatch: {key}")
+    etag = head.header("etag")
+    if not etag:
+        raise R2RequestError("HEAD", key, 502, "missing ETag: the copy could not be bound to this object")
+    return CopySource(key=key, size=expected_size, etag=etag)
+
+
+def copy_object(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    source: CopySource,
+    dest_key: str,
+    now: str,
+    *,
+    content_type: str | None = None,
+    content_disposition: str | None = None,
+    metadata: dict[str, str] | None = None,
+    fetcher: Callable[..., Response] | None = None,
+) -> None:
+    """Server-side S3/R2 CopyObject of a checked source, with explicit metadata replacement and
+    HEAD verification."""
+    relative_artifact_path(dest_key)
+    scope = R2Scope.configured()
+    dest_url = scope.object_url(base, bucket, dest_key)
+    # R2's S3 CopyObject requires a leading slash on x-amz-copy-source.
+    extra: dict[str, str] = {
+        "x-amz-copy-source": f"/{bucket}/{encode_key_path(scope.key(source.key))}",
+        "x-amz-copy-source-if-match": source.etag,
+        "x-amz-metadata-directive": "REPLACE",
+    }
+    cache_control = cache_control_for(dest_key)
+    if cache_control:
+        extra["Cache-Control"] = cache_control
+    if content_disposition:
+        extra["Content-Disposition"] = content_disposition
+    meta_headers = {f"x-amz-meta-{k.lower()}": str(v) for k, v in (metadata or {}).items()}
+    extra.update(meta_headers)
+    resolved_type = content_type if content_type is not None else content_type_for(dest_key)
+    # One budget for HTTP errors, error documents sent with HTTP 200 and dropped connections:
+    # signed_request gets tries=1, as multipart completion does, so 503s cannot multiply.
+    for attempt in range(3):
+        req_now = now if attempt == 0 else amz_timestamp()
+        try:
+            response = (
+                fetcher(
+                    method="PUT", url=dest_url, body_hash=EMPTY_SHA, body=None,
+                    content_length=0, content_type=resolved_type, extra_headers=extra,
+                )
+                if fetcher is not None
+                else signed_request(
+                    "PUT", dest_url, body=None, body_hash=EMPTY_SHA, content_length=0,
+                    creds=creds, now=req_now, content_type=resolved_type, extra_headers=extra, tries=1,
+                )
+            )
+            if response.status >= 400:
+                raise R2RequestError("PUT", dest_key, response.status, response.text())
+            _parse_copy_result(dest_key, response)
+            break
+        except (R2RequestError, OSError, http.client.HTTPException) as err:
+            retryable = not isinstance(err, R2RequestError) or err.status in _RETRYABLE_STATUSES
+            if retryable and attempt < 2:
+                time.sleep(float(attempt + 1))
+                continue
+            raise
+    _verify_copied_destination(creds, base, bucket, dest_key, source.size, meta_headers, fetcher)
+    from scripts.releases.upload_summary import note
+    note(dest_key)
+    print(f"OK r2: copied {source.key} -> {dest_key} ({source.size} bytes)")
+
+
+def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,
+             verify_bytes: bool = True) -> None:
     """Lazy re-export of the Darwin finalize so callers can treat
     scripts.releases.r2 as the single transport surface."""
     from . import darwin as darwin_module
 
-    darwin_module.finalize(tag=tag, dir=dir, variant=variant, archive=archive)
+    darwin_module.finalize(tag=tag, dir=dir, variant=variant, archive=archive, verify_bytes=verify_bytes)
 
 
 def put(
@@ -737,12 +926,12 @@ def parse_list_xml(xml: str) -> dict:
         if "." in text:
             return int(
                 datetime.strptime(text, "%Y-%m-%dT%H:%M:%S.%fZ")
-                .replace(tzinfo=timezone.utc)
+                .replace(tzinfo=UTC)
                 .timestamp()
             )
         return int(
             datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
-            .replace(tzinfo=timezone.utc)
+            .replace(tzinfo=UTC)
             .timestamp()
         )
 
@@ -812,15 +1001,42 @@ def get_object(
     return response.text() if response.status < 400 else None
 
 
-def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
-    """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
-    from hermes_cli.update_channel import _CANARY_TAG_RE
+# Canary archives named by either tag shape: the current ``canary.<stamp>-vX.Y.Z`` and the retired
+# ``vX.Y.Z+canary.<stamp>``, whose archives age out through the same window.
+_CANARY_KEY_RES = (
+    re.compile(r"canary\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+"),
+    re.compile(r"v\d+\.\d+\.\d+\+canary\.(20\d{6})T\d{6}Z"),
+)
 
-    tag_re = re.compile(_CANARY_TAG_RE.pattern.strip("^$"))
+
+# A commit build's claim archive (releases/tag/commit.<stamp>-vX.Y.Z/...) is kept this long, dated
+# by the claim stamp in its key; the legacy tagless commit-build prefix (releases/commit/<sha>/)
+# carries no date, so its objects age out by upload time instead.
+COMMIT_KEEP_DAYS = 90
+_COMMIT_KEY_RE = re.compile(r"^releases/tag/commit\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+/")
+
+
+def commit_doomed_keys(keys: list[str], cutoff: str, last_modified: dict[str, float],
+                       cutoff_ms: float) -> list[str]:
+    """Commit build objects past their keep window: claim archives whose stamp date is before
+    ``cutoff`` (YYYYMMDD), and legacy releases/commit/<sha>/ objects uploaded before ``cutoff_ms``."""
     doomed = []
     for key in keys:
-        match = tag_re.search(key)
-        if match and match.group(0).split("+canary.", 1)[1][:8] < cutoff:
+        match = _COMMIT_KEY_RE.match(key)
+        if match is not None:
+            if match[1] < cutoff:
+                doomed.append(key)
+        elif key.startswith("releases/commit/") and last_modified.get(key, cutoff_ms) < cutoff_ms:
+            doomed.append(key)
+    return doomed
+
+
+def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
+    """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
+    doomed = []
+    for key in keys:
+        dates = [match[1] for pattern in _CANARY_KEY_RES if (match := pattern.search(key))]
+        if dates and dates[0] < cutoff:
             doomed.append(key)
     return doomed
 
@@ -864,7 +1080,7 @@ def _feed_bundle_uris(appinstaller_xml: str | None) -> list[str]:
     if len(elements) != 1:
         return []
     uri_match = re.search(r"\bUri=\"([^\"]+)\"", elements[0])
-    if uri_match and re.search(r"\.(?:msixbundle|msix)$", uri_match.group(1), re.I):
+    if uri_match and re.search(r"\.(?:msixbundle|msix)$", uri_match.group(1), re.IGNORECASE):
         return [uri_match.group(1)]
     return []
 
@@ -900,7 +1116,7 @@ def stale_feed_bundle_keys(
         for key in keys:
             if not key.startswith(prefix):
                 continue
-            if not re.search(r"\.(?:msixbundle|msix)$", key, re.I):
+            if not re.search(r"\.(?:msixbundle|msix)$", key, re.IGNORECASE):
                 continue  # pointers + metadata stay
             if key[len(prefix):] in referenced:
                 continue
@@ -914,6 +1130,81 @@ def stale_feed_bundle_keys(
 # ---------------------------------------------------------------------------
 # prune-canaries
 # ---------------------------------------------------------------------------
+
+# Live Termux APT references: a desktop-only canary can advance the canary pointer without
+# replacing the live APT index, so the pool the index names stays independent of that head.
+TERMUX_CANARY_ROOT = "releases/termux/canary/"
+_TERMUX_CANARY_INDEX = re.compile(r"releases/termux/canary/dists/[^/]+/[^/]+/binary-[^/]+/Packages(?:\.gz)?")
+
+
+def package_filename(stanza: str) -> str:
+    """Require an unambiguous deb822 record before trusting its pool reference."""
+    fields: dict[str, str] = {}
+    previous = ""
+    for line in stanza.splitlines():
+        if line.startswith((" ", "\t")) and previous not in ("", "package", "filename"):
+            continue  # Description and other multiline fields do not identify the artifact.
+        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*):[ \t]*(.*)", line)
+        if match is None or match[1].lower() in fields:
+            raise ValueError("Malformed or duplicate APT field")
+        previous = match[1].lower()
+        fields[previous] = match[2]
+    filename = relative_artifact_path(fields.get("filename", ""))
+    if not fields.get("package") or not filename.startswith("pool/") or not filename.endswith(".deb"):
+        raise ValueError("APT record must name a package and a pool .deb")
+    return filename
+
+
+def live_pool_keys(keys: list[str], read: Callable[[str], str | None]) -> set[str]:
+    """Read the uncompressed index the APT publisher emits beside Packages.gz."""
+    indices = {key.removesuffix(".gz") for key in keys if _TERMUX_CANARY_INDEX.fullmatch(key)}
+    if not indices:
+        # A staged pool with no readable repository is not evidence that its packages are dead.
+        return {key for key in keys if key.startswith(TERMUX_CANARY_ROOT + "pool/")}
+    protected = set()
+    for key in sorted(indices):
+        text = read(key)
+        try:
+            if text is None or not text.strip():
+                raise ValueError("Missing APT index")
+            stanzas = re.split(r"\n[ \t]*\n", text.replace("\r\n", "\n").strip())
+            protected.update(TERMUX_CANARY_ROOT + package_filename(stanza) for stanza in stanzas)
+        except ValueError as exc:
+            raise RuntimeError(f"Cannot establish APT references from {key}; refusing to prune") from exc
+    return protected
+
+
+def _canary_head_tag(keys: list[str], read: Callable[[str], str | None]) -> str | None:
+    """The release tag the protected canary head serves, or None with no canary head.
+
+    publish_release writes releases/canary/release-candidates.json only after this head moves, so a
+    failed pointer write leaves the pointer naming the previous canary (or, for the first canary
+    after a legacy head, no pointer at all) while the head serves the new one, whose archive the
+    pointer then no longer protects. The channel is the one record whose policy is canary-release,
+    whatever its name, as channel_releases.select_channel picks it for publication.
+    """
+    records = []
+    for key in sorted(key for key in keys if key.startswith("releases/channels/") and key.endswith(".json")):
+        text = read(key)
+        record = json.loads(text) if text is not None else None
+        if not isinstance(record, dict):
+            raise RuntimeError(f"Cannot read the protected channel record {key}; refusing to prune")
+        if record.get("policy") == "canary-release":
+            records.append(record)
+    if len(records) > 1:
+        raise RuntimeError("More than one protected canary-release channel; refusing to prune")
+    head = records[0].get("head") if records else None
+    if head is None:
+        return None
+    manifest = read(head["manifestKey"]) if isinstance(head, dict) and isinstance(head.get("manifestKey"), str) else None
+    if manifest is None or hashlib.sha256(manifest.encode()).hexdigest() != head.get("sha256"):
+        raise RuntimeError("Cannot read the protected canary head's build manifest; refusing to prune")
+    request = json.loads(manifest).get("request")
+    tag = request.get("releaseTag") if isinstance(request, dict) else None
+    if not isinstance(tag, str):
+        raise RuntimeError("The protected canary head names no release tag; refusing to prune")
+    return tag
+
 
 def prune(
     keep_days: int,
@@ -935,7 +1226,11 @@ def prune(
     now = amz_timestamp()
 
     feed_xml_by_dir: dict[str, list[str]] = {}
-    protected: set[str] = set()
+    protected: set[str] = {
+        channel_page_key_for("stable"),
+        channel_page_key_for("canary"),
+        channel_dmg_key_for("stable"),
+    }
     for key in [k for k in keys if k.endswith(".appinstaller")]:
         dir_key = key[: key.rfind("/")]
         xml = get_object(creds, base, bucket, key, now, fetcher=fetcher)
@@ -957,11 +1252,50 @@ def prune(
         for reference in darwin_module.mac_feed_references(text):
             protected.add(reference)
 
+    # The live canary's own objects (its archive, which its upgrade baseline points into, and its
+    # Termux pool) stay while it is live however old it is: releases/canary/release-candidates.json
+    # names its archive ref, which is in every one of those keys.
+    from hermes_cli.update_channel import is_canary_tag
+
+    pointer_key = "releases/canary/release-candidates.json"
+
+    def read(key: str) -> str | None:
+        return get_object(creds, base, bucket, key, now, fetcher=fetcher)
+
+    if pointer_key in keys:
+        text = get_object(creds, base, bucket, pointer_key, now, fetcher=fetcher)
+        try:
+            payload = json.loads(text) if text is not None else None
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Cannot parse {pointer_key}: {exc}; refusing to prune") from exc
+        live = payload.get("archive") if isinstance(payload, dict) else None
+        if not isinstance(live, str) or not is_canary_tag(live):
+            raise RuntimeError(f"Cannot read a valid live canary archive from {pointer_key}; refusing to prune")
+        archive_prefix = f"releases/tag/{live}/"
+        if not any(key.startswith(archive_prefix) for key in keys):
+            raise RuntimeError(f"Live canary pointer {pointer_key} names missing archive {live}; refusing to prune")
+        head = _canary_head_tag(keys, read)
+        if head != live:
+            raise RuntimeError(f"Live canary pointer {pointer_key} names {live} but the protected canary head "
+                               f"serves {head}; rerun that canary's publish-canary job; refusing to prune")
+        protected.update(key for key in keys if live in key)
+    elif is_canary_tag(head := _canary_head_tag(keys, read)):
+        raise RuntimeError(f"The protected canary head serves {head} but {pointer_key} is missing; "
+                           "rerun that canary's publish-canary job; refusing to prune")
+
+    # A desktop-only canary can advance that pointer without replacing the live APT index.
+    protected.update(live_pool_keys(
+        keys, lambda key: get_object(creds, base, bucket, key, now, fetcher=fetcher)))
+
+    # Commit builds keep 90 days whatever the canary window (keep_days) is.
+    commit_window = max(keep_days, COMMIT_KEEP_DAYS) * 86400
+    commit_cutoff_date = time.strftime("%Y%m%d", time.gmtime(current - commit_window))
     doomed = [
         key
         for key in [
             *canary_doomed_keys(keys, cutoff_date),
             *stale_feed_bundle_keys(keys, feed_xml_by_dir, last_modified, cutoff_ms),
+            *commit_doomed_keys(keys, commit_cutoff_date, last_modified, current - commit_window),
         ]
         if key not in protected
     ]

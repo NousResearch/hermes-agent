@@ -49,7 +49,7 @@ class _Match:
     exact: bool = False
     suggestion_text: str = ""
 
-    def verdict(self, req: "_Request") -> Optional[dict[str, Any]]:
+    def verdict(self, req: _Request) -> Optional[dict[str, Any]]:
         """Accept on exact membership, else None so the branch composes its own message."""
         return _accept() if self.exact else None
 
@@ -96,7 +96,7 @@ def _match_in_catalog(
 @dataclass
 class _Request:
     requested: str
-    lookup: str                 # id used for catalog membership (copilot-normalized / preset base)
+    lookup: str                 # id used for catalog membership (profile-normalized / preset base)
     provider: Optional[str]     # raw caller value (Ollama checks look at this, not ``normalized``)
     normalized: str
     api_key: Optional[str]
@@ -748,19 +748,25 @@ def _is_custom(req: _Request) -> bool:
     return req.normalized == "custom" or req.normalized.startswith("custom:")
 
 
+def _is_openrouter_host(req: _Request) -> bool:
+    """Native OpenRouter, or a custom provider pointed at openrouter.ai: its account-scoped presets are
+    absent from /v1/models either way, so probing one only yields a false "not found" note (#97907)."""
+    return req.normalized == "openrouter" or bool(req.base_url and base_url_host_matches(req.base_url, "openrouter.ai"))
+
+
 def _for(*providers: str) -> Callable[[_Request], bool]:
     return lambda req: req.normalized in providers
 
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
 # BEHAVIOR: moa → whitespace (skipped only for self-hosted providers and a user-configured
-# base_url) → OpenRouter preset parse → LM Studio → Ollama native → custom →
+# base_url) → OpenRouter preset parse (native or openrouter.ai host) → LM Studio → Ollama native → custom →
 # codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
 # Anthropic Messages → external process → live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
     (lambda req: True, _reject_whitespace),
-    (_for("openrouter"), _parse_openrouter_preset),
+    (_is_openrouter_host, _parse_openrouter_preset),
     (_for("lmstudio"), _validate_lmstudio),
     (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),
@@ -796,9 +802,9 @@ def validate_requested_model(
     normalized = _m.normalize_provider(provider)
     if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
-    lookup = requested
-    if normalized == "copilot":
-        lookup = _m.normalize_copilot_model_id(requested, api_key=api_key) or requested
+    from providers import get_provider_profile
+    profile = get_provider_profile(normalized) if normalized else None
+    lookup = (profile.normalize_model_id(requested, api_key=api_key or "") if profile is not None else None) or requested
 
     if not requested:
         return _reject("Model name cannot be empty.")

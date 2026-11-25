@@ -1,0 +1,15 @@
+name: world-window
+repo: https://github.com/alamonato/world-window
+sha: ce125066ab422ee642bd647338d9396fd7400cbb
+description: "World news your agent walks to: headlines grouped by story across named, rated outlets, each in the outlet's own words and link. Pull only."
+maintainer: alamonato
+tier: community
+category: web
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+title: "world-window"
+capabilities:
+  provides_tools: [world_news, world_news_sources]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

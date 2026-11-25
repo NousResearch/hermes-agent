@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Web Scraping, Browser, Cloudflare, Stealth, Crawling, Spider]
-    related_skills: [duckduckgo-search, domain-intel]
+    related_skills: [domain-intel]
     homepage: https://github.com/D4Vinci/Scrapling
 prerequisites:
   commands: [scrapling, python]

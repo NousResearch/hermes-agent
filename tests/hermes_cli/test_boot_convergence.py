@@ -134,7 +134,7 @@ print(json.dumps(boot_bootstrap.run_boot_bootstrap(root)))
             assert time.monotonic() < deadline
             time.sleep(0.02)
         second = subprocess.run([*command, "go"], env=dict(env, HERMES_HOME=str(other)),
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=30, check=False)
         assert second.returncode == 0, second.stderr
         result = json.loads(second.stdout.splitlines()[-1])
         if sibling_profile:
@@ -146,7 +146,7 @@ print(json.dumps(boot_bootstrap.run_boot_bootstrap(root)))
         stdout, stderr = first.communicate(timeout=30)
         assert first.returncode == 0, stderr
         assert json.loads(stdout.splitlines()[-1])["home"]["db"]["ok"]
-        again = subprocess.run([*command, "go"], env=env, capture_output=True, text=True, timeout=30)
+        again = subprocess.run([*command, "go"], env=env, capture_output=True, text=True, timeout=30, check=False)
         assert json.loads(again.stdout.splitlines()[-1]) == {"home": "skipped"}
         for directory in {home, other}:
             assert len(list(directory.glob("config.yaml.bak-*"))) == 1
@@ -163,7 +163,7 @@ print(json.dumps(boot_bootstrap.run_boot_bootstrap(root)))
                 subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=t@example.invalid',
                                 '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'revision'],
                                cwd=root, check=True)
-            changed = subprocess.run([*command, 'go'], env=env, capture_output=True, text=True, timeout=30)
+            changed = subprocess.run([*command, 'go'], env=env, capture_output=True, text=True, timeout=30, check=False)
             assert changed.returncode == 0, changed.stderr
             assert json.loads(changed.stdout.splitlines()[-1])['home']['migrate']['ok']
             import hermes_yaml

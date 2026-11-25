@@ -70,7 +70,7 @@ class _RecordingAdapter:
         return _R()
 
 
-def _make_runner_with_adapter(session_id: str = None):
+def _make_runner_with_adapter(session_id: str | None = None):
     from gateway.run import GatewayRunner
     import uuid
 
@@ -80,8 +80,6 @@ def _make_runner_with_adapter(session_id: str = None):
     )
     runner.adapters = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._queued_events = {}
 
     src = _make_source()
     # Default to a unique session_id so parallel runs

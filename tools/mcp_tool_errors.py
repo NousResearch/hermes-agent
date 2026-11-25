@@ -11,7 +11,8 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
-from tools.mcp_tool_common import _sanitize_error, _core
+from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
+from tools.mcp_tool_node_abi import NodeAbiMismatchError
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -110,8 +111,12 @@ def _make_http_rejection_recorder(sink: dict):
                 body = " ".join(raw[:_HTTP_REJECTION_BODY_CHARS * 4].decode("utf-8", "replace").split())
             except Exception:  # the failure itself is still reported, just without the body
                 body = ""
+        # URL and body land in WARNING / ConnectionError text: a ``?token=`` credential must not ride
+        # along, including one a server or proxy echoes back in its error body.
+        from agent.redact import redact_sensitive_text
         sink.update(status=response.status_code, method=response.request.method,
-                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS])
+                    url=_shown_url(str(response.request.url)),
+                    body=redact_sensitive_text(body[:_HTTP_REJECTION_BODY_CHARS], redact_url_credentials=True))
 
     return _record
 
@@ -153,12 +158,33 @@ def _contains_only_cancellation(exc: BaseException) -> bool:
     return isinstance(exc, asyncio.CancelledError)
 
 
+def _auth_error_detail(exc: BaseException) -> str:
+    """`` <guidance>`` when *exc* (or its group root) is the SDK's ``OAuthRegistrationError``, else ``""``. The DCR
+    guard in ``HermesMCPOAuthProvider`` raises one naming the next step (pre-register an OAuth client), and the
+    generic needs-reauth text alone would hide it from the model (#78190)."""
+    try:
+        from mcp.client.auth import OAuthRegistrationError
+    except ImportError:  # pragma: no cover — SDK required in CI
+        return ""
+    root = _unwrap_exception_group(exc)
+    text = str(root).strip() if isinstance(root, OAuthRegistrationError) else ""
+    return f" {_sanitize_error(text)}" if text else ""
+
+
+def _mcp_call_failed_message(exc: BaseException) -> str:
+    """Generic tool-error text naming the group root cause: the transport's TaskGroup wrapper ``str()`` is
+    "unhandled errors in a TaskGroup (1 sub-exception)", which tells the model nothing."""
+    root = _unwrap_exception_group(exc)
+    return _sanitize_error(f"MCP call failed: {type(root).__name__}: {_exc_str(root)}")
+
+
 def _classify_mcp_failure(exc: BaseException) -> str:
     """``'permanent'`` (``run()`` parks instead of burning the retry ladder: auth 401/403,
-    NonMcpEndpointError, InvalidMcpUrlError, missing stdio command) or ``'transient'`` (backoff retry)."""
+    NonMcpEndpointError, InvalidMcpUrlError, missing stdio command, native addon built for another
+    Node) or ``'transient'`` (backoff retry)."""
     root = _unwrap_exception_group(exc)
     permanent = (_is_auth_error(root)
-                 or isinstance(root, (NonMcpEndpointError, InvalidMcpUrlError, FileNotFoundError))
+                 or isinstance(root, (NonMcpEndpointError, InvalidMcpUrlError, FileNotFoundError, NodeAbiMismatchError))
                  or (isinstance(root, OSError) and getattr(root, "errno", None) == errno.ENOENT)
                  # 401/403 HTTPStatusError that _is_auth_error's type-gate missed (auth types not importable here)
                  or getattr(getattr(root, "response", None), "status_code", None) in (401, 403))
@@ -169,7 +195,9 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     """The stripped URL if valid http(s); else InvalidMcpUrlError naming the server (non-string, other scheme —
     stdio servers use ``command`` — or empty host)."""
     def _bad(detail: str) -> InvalidMcpUrlError:
-        return InvalidMcpUrlError(f"Invalid MCP URL for '{server_name}': {detail}")
+        from agent.redact import redact_sensitive_text  # the detail echoes the URL, which can carry a credential
+        return InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': {redact_sensitive_text(detail, redact_url_credentials=True)}")
     if not isinstance(url, str):
         raise _bad(f"expected a string, got {type(url).__name__}")
     stripped = url.strip()
@@ -230,7 +258,6 @@ def _resolve_identity_header(server_name: str, config: dict):
 
     def _ignore(detail: str, *args):
         logger.warning("MCP server '%s': identity_header " + detail + " — ignoring", server_name, *args)
-        return None
     if not isinstance(raw, dict):
         return _ignore("must be a mapping with 'name' and 'value'/'value_from' keys (got %s)", type(raw).__name__)
     name = raw.get("name")
@@ -263,7 +290,7 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
 
 
 def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = False,
-                                   configured_header_names: "set[str] | frozenset[str]" = frozenset()):
+                                   configured_header_names: set[str] | frozenset[str] = frozenset()):
     """Client factory enforcing the redirect credential boundary: on a cross-origin redirect
     follow-up it strips ``Authorization``; with *strict* (Agent Plugins v1 ``strict_redirect_headers``)
     every configured header (lowercase names in *configured_header_names*) is stripped too — v1 forbids
@@ -317,6 +344,12 @@ _SSE_BOUNDARY_RE = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
 _SSE_BOUNDARY_CARRY = 3  # longest boundary ("\r\n\r\n") minus one byte
 
 
+def _shown_url(url: str) -> str:
+    """*url* for error text that reaches the model and ``hermes mcp test``: credential params masked."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(url, redact_url_credentials=True)
+
+
 def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
     """Wrap ``inner_transport`` so every response body is size-capped. ``httpx_mod`` must be the SDK's
     own httpx module (``sdk_httpx()``): the transport is handed to that SDK's ``AsyncClient``."""
@@ -326,7 +359,7 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
             self._inner, self._is_sse, self._url = inner, is_sse, url
 
         def _reject(self, kind: str):
-            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
+            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {_shown_url(self._url)})")
 
         async def __aiter__(self):
             counted = 0
@@ -368,7 +401,7 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
                 if declared is not None and int(declared) > limit:
                     await response.aclose()
                     raise httpx_mod.ReadError(f"MCP HTTP response declares Content-Length {declared} > {limit} "
-                                              f"bytes cap (from {request.url})")
+                                              f"bytes cap (from {_shown_url(str(request.url))})")
             is_sse = "text/event-stream" in response.headers.get("content-type", "").lower()
             response.stream = _CappedStream(response.stream, is_sse, str(request.url))
             return response
@@ -384,7 +417,7 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
 _EXC_TRAVERSAL_MAX_NODES = 10_000
 
 
-def _exc_children(exc: BaseException) -> List[BaseException]:
+def _exc_children(exc: BaseException) -> list[BaseException]:
     """A group's sub-exceptions (if any) followed by ``__cause__``/``__context__`` when they are exceptions — a
     group raised inside an ``except`` block carries the caught error as ``__context__``, so the chain is never
     skipped."""
@@ -392,7 +425,7 @@ def _exc_children(exc: BaseException) -> List[BaseException]:
     return [*nested, *(c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException))]
 
 
-def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
+def _iter_exception_nodes(exc: BaseException) -> list[BaseException]:
     """Pre-order, left-to-right walk of an exception tree/chain, each node once. ``__cause__``/``__context__``
     can point back at an ancestor (a raised-and-caught pair does this routinely, e.g. the same OAuth error
     raised on the Streamable-HTTP attempt and again on the SSE fallback), so a naive recursive walk dies with
@@ -400,7 +433,7 @@ def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
     blow-ups."""
     stack = [exc]
     seen: set[int] = set()
-    ordered: List[BaseException] = []
+    ordered: list[BaseException] = []
     while stack and len(ordered) < _EXC_TRAVERSAL_MAX_NODES:
         current = stack.pop()
         if id(current) in seen:
@@ -425,8 +458,8 @@ def _format_connect_error(exc: BaseException) -> str:
                     return match.group(1)
         return None
 
-    def _flatten_messages() -> List[str]:
-        messages: List[str] = []
+    def _flatten_messages() -> list[str]:
+        messages: list[str] = []
         for current in nodes:
             # A group's own str() is opaque — only its children speak; a message-less leaf still names its type.
             text = "" if getattr(current, "exceptions", None) else str(current).strip()
@@ -436,6 +469,9 @@ def _format_connect_error(exc: BaseException) -> str:
                 messages.append(current.__class__.__name__)
         return messages or [exc.__class__.__name__]
 
+    abi = next((node for node in nodes if isinstance(node, NodeAbiMismatchError)), None)
+    if abi is not None:  # already the whole story, remedy included; the SDK's "Connection closed" adds nothing
+        return _sanitize_error(str(abi))
     missing = _find_missing()
     if not missing:
         return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))

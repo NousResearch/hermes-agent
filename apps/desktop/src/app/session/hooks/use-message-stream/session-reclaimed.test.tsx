@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearAllPrompts, sessionApprovalRequest, setApprovalRequest } from '@/store/prompts'
 import { resetRuntimeGoneHealing } from '@/store/runtime-gone'
 import { $activeSessionId, $sessionResumeRequest } from '@/store/session'
 import { $sessionStates, $sessionTiles, publishSessionState } from '@/store/session-states'
@@ -43,6 +44,7 @@ beforeEach(() => {
   $sessionTiles.set([])
   $activeSessionId.set(null)
   $sessionResumeRequest.set(null)
+  clearAllPrompts()
 })
 
 afterEach(() => {
@@ -52,6 +54,7 @@ afterEach(() => {
   $sessionTiles.set([])
   $activeSessionId.set(null)
   $sessionResumeRequest.set(null)
+  clearAllPrompts()
   vi.restoreAllMocks()
 })
 
@@ -67,6 +70,21 @@ describe('session.reclaimed', () => {
     // only the survivor would pass with no handler at all.
     expect($sessionStates.get()['live-gone']).toBeUndefined()
     expect($sessionStates.get()['live-kept']).toBeDefined()
+  })
+
+  // The runtime id rotates on every resume, so a prompt keyed to the reclaimed
+  // runtime can never be cleared by the NEW runtime's turn-end edges. Left
+  // behind, it re-mounts the floating "needs approval" bar on a finished
+  // conversation whenever it is reopened (#86577).
+  it('retires only the reclaimed runtime approval', () => {
+    mountStream()
+    setApprovalRequest({ command: 'rm stale', description: 'stale request', sessionId: 'live-gone' })
+    setApprovalRequest({ command: 'rm kept', description: 'kept request', sessionId: 'live-kept' })
+
+    reclaim('live-gone')
+
+    expect(sessionApprovalRequest('live-gone').get()).toBeNull()
+    expect(sessionApprovalRequest('live-kept').get()?.command).toBe('rm kept')
   })
 
   it('ignores a payload with no runtime id instead of clearing everything', () => {

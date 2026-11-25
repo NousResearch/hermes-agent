@@ -1,45 +1,140 @@
 ---
 title: 浏览器自动化
-description: 通过多种提供商控制浏览器，支持通过 CDP 连接本地 Chromium 系浏览器或云端浏览器，用于网页交互、表单填写、数据抓取等场景。
+description: 使用 browser_exec 驱动真实浏览器——Hermes 启动的 Chromium、云端浏览器、Lightpanda，或通过 CDP 连接您自己的 Chrome——用于网页交互、表单填写、数据抓取等场景。
 sidebar_label: Browser
 sidebar_position: 5
 ---
 
 # 浏览器自动化
 
-Hermes Agent 内置完整的浏览器自动化工具集，支持多种后端选项：
+`browser` 工具集为 Agent 提供一个真实的网页浏览器。真正负责驱动的只有一个工具——**`browser_exec`**，它通过 Chrome DevTools Protocol（CDP）在浏览器上运行模型编写的 Python；另有三个配套工具（`browser_cdp` 和 `browser_dialog` 仅在配置了 CDP 端点时提供，见[配套工具](#配套工具)）：
 
-- **Browserbase 云端模式** — 通过 [Browserbase](https://browserbase.com) 使用托管云端浏览器及反机器人工具
-- **Browser Use 云端模式** — 通过 [Browser Use](https://browser-use.com) 作为备选云端浏览器提供商
-- **Firecrawl 云端模式** — 通过 [Firecrawl](https://firecrawl.dev) 使用内置抓取功能的云端浏览器
-- **Camofox 本地模式** — 通过 [Camofox](https://github.com/jo-inc/camofox-browser) 实现本地反检测浏览（基于 Firefox 的指纹伪装）
-- **本地 Chromium 系 CDP** — 使用 `/browser connect` 将浏览器工具连接到本地运行的 Chrome、Brave、Chromium 或 Edge 实例
-- **本地浏览器模式** — 通过 `agent-browser` CLI 和本地 Chromium 安装运行
+| 工具 | 用途 |
+|------|------|
+| `browser_exec` | 通过运行预导入浏览器辅助函数的 Python 来导航、读取、点击、输入、抓取和截图。 |
+| `browser_cdp` | 发送单条原始 CDP 命令（Cookie、网络控制、iframe 范围内执行，以及辅助函数未覆盖的任何操作）。 |
+| `browser_dialog` | 接受或关闭阻塞页面的原生 JavaScript 对话框（`alert` / `confirm` / `prompt` / `beforeunload`）。 |
+| `browser_vault` | 将已保存的登录信息、银行卡、地址和 2FA 验证码填入当前页面，机密信息不会进入对话。 |
 
-所有模式下，Agent 均可导航网站、与页面元素交互、填写表单并提取信息。
+浏览器来源是另一项独立选择：
 
-## 概述
+- **本地 Chromium（默认）**——Hermes 启动自己打包的 Chromium，无头模式，每个会话一个浏览器。无需 API 密钥，无需配置。
+- **云端浏览器**——[Nous 订阅](tool-gateway.md)、[Browserbase](https://browserbase.com)、[Browser Use](https://browser-use.com) 云端、[Firecrawl](https://firecrawl.dev)，或浏览器提供商插件。
+- **[Lightpanda](https://lightpanda.io)**——轻量级无头引擎，适合在小型机器上以文本为主的浏览。
+- **您自己的浏览器**——用 `/browser connect` 连接正在运行的 Chrome、Brave、Chromium 或 Edge。
+- **您的真实 profile**——您日常浏览器 profile 的托管副本，包含登录状态（需主动开启）。
 
-页面以**无障碍树**（accessibility tree，基于文本的快照）表示，非常适合 LLM Agent 使用。交互元素会获得引用 ID（如 `@e1`、`@e2`），Agent 通过这些 ID 执行点击和输入操作。
-
-核心能力：
-
-- **多提供商云端执行** — Browserbase、Browser Use 或 Firecrawl — 无需本地浏览器
-- **本地 Chromium 系集成** — 通过 CDP 连接正在运行的 Chrome、Brave、Chromium 或 Edge 浏览器，实现实时操控
-- **内置隐身功能** — 随机指纹、CAPTCHA 解决、住宅代理（Browserbase）
-- **会话隔离** — 每个任务拥有独立的浏览器会话
-- **自动清理** — 非活跃会话在超时后自动关闭
-- **视觉分析** — 截图 + AI 分析，实现视觉理解
-
-## 配置
-
-:::tip Nous 订阅用户
-如果您拥有付费 [Nous Portal](https://portal.nousresearch.com) 订阅，可通过 **[Tool Gateway](tool-gateway.md)** 使用浏览器自动化功能，无需单独的 API 密钥。新安装可运行 `hermes setup --portal` 登录并一次性开启所有 gateway 工具；已有安装可通过 `hermes model` 或 `hermes tools` 选择 **Nous Subscription** 作为浏览器提供商。
+:::tip
+对于简单的信息检索，优先使用 `web_search` 或 `web_extract`——它们更快且成本更低。仅在 Agent 需要**与页面交互**（点击按钮、填写表单、处理动态内容）时使用浏览器。
 :::
 
-### Browserbase 云端模式
+## `browser_exec` 的工作方式
 
-要使用 Browserbase 托管的云端浏览器，请添加：
+每次调用发送一段 Python（`code`），运行时浏览器辅助函数已预先导入；代码打印的内容即为返回结果。浏览器会话在调用之间保持（已打开的标签页、Cookie、当前页面），Python 变量则不保留——每次调用都从全新的解释器开始。每个会话有一个工作目录（`$BH_AGENT_WORKSPACE`，也会作为 `workspace` 返回），在调用之间保留，因此长时间的抓取可以把每批结果追加到文件中，最后再汇总。
+
+辅助函数：
+
+| 辅助函数 | 作用 |
+|----------|------|
+| `new_tab(url)` | 打开 URL（用于第一次导航）。 |
+| `goto_url(url)` | 在当前标签页导航（后续导航）。 |
+| `wait_for_load()` | 等待页面加载完成。 |
+| `page_info()` | 概述当前页面状态。 |
+| `js(expr)` | 执行 JavaScript 并返回值（函数体需写成 `js('(() => {...})()')`）。 |
+| `fill_input(selector, text)` | 向输入框输入文本。 |
+| `click_at_xy(x, y)` | 点击视口坐标。 |
+| `capture_screenshot()` | 保存截图并打印其路径。 |
+| `cdp('Domain.method', **kwargs)` | 原始 CDP——例如 `cdp('Accessibility.getFullAXTree')` 获取无障碍树，`cdp('DOM.getBoxModel', backendNodeId=n)` 获取点击坐标。 |
+| `ensure_real_tab()` | 从失效或内部标签页中恢复。 |
+
+模型会把一整段子流程（导航、等待、提取、操作）合并到一次调用中，而不是每个动作调用一次：
+
+```python
+# Searching GitHub trending for Python repos
+new_tab("https://github.com/trending/python")
+wait_for_load()
+print(js("[...document.querySelectorAll('article h2 a')].slice(0, 10).map(a => a.textContent.trim())"))
+```
+
+**截图。** 在具备原生视觉能力的模型上，`capture_screenshot()` 保存的图片会附加到工具结果中，模型直接查看。纯文本模型会被告知以文本为主（`page_info()`、`js()`、`fill_input()`），仍可把保存的路径交给 `vision_analyze`。在消息平台上，您可以让 Agent 把截图发给您——它会以原生图片附件送达。
+
+**参数。** 除 `code` 外，该工具还接受 `timeout_s`（默认 300，最大 1800）和 `session`。每个 `session` 名称拥有自己的驱动进程和自己的浏览器（本地是独立的 Chromium，云端提供商则是独立的云端浏览器），因此并行的子 Agent 或同时进行的聊天不会互相干扰同一个浏览器。省略 `session` 则使用共享的默认会话，一次只做一件浏览任务时完全够用。开启[真实 profile 浏览](#real-profile-browsing-use-your-own-logins)后，该工具还会提供一个 `local` 参数（见该小节）。
+
+:::note
+`browser_exec` 会在您的机器上执行模型编写的 Python，因此只提供给同时拥有 `terminal` 工具集的会话。未配置终端访问的平台（例如受限的消息平台）不会获得浏览器。
+:::
+
+驱动程序是 [browser-harness](https://github.com/browser-use/browser-use)，即 Browser Use CLI 的引擎。它是 Hermes 的常规 Python 依赖，因此每个安装（包括桌面应用）都自带它，无需单独下载。
+
+## 本地 Chromium（默认） {#local-chromium-default}
+
+在未配置云端提供商、`/browser connect` 端点或真实 profile 开关时，Hermes 会自己为会话启动一个 Chromium，并让 `browser_exec` 指向它。您安装的 Chrome 永远不会被触碰——无需开启 `chrome://inspect` 开关，也不会弹出"允许远程调试？"对话框——在完全没有桌面浏览器的无头服务器上也能工作。
+
+- **每个会话一个浏览器**，默认使用全新的一次性 profile：Agent 起始时未登录任何网站，会话结束后不留下任何内容。
+- **默认无头。** 设置 `browser.headed: true` 可显示窗口（见[下文](#headed-mode-visible-browser-window)）。
+- **自动清理。** 浏览器空闲 `browser.inactivity_timeout` 秒（默认 120）后、Hermes 退出时，以及进程崩溃后的孤儿清理中都会被关闭。
+
+**使用哪个 Chromium。** Hermes 按顺序选择第一个存在的：
+
+1. `browser.executable_path`（如已设置）。
+2. Hermes 包管理器安装的 Chromium（Chrome for Testing）——安装脚本和 `hermes update` 默认会安装它。
+3. 官方 Docker 镜像中的 `/etc/hermes/chromium-executable-path`。
+4. `PATH` 上的系统 `chromium` / `chromium-browser`（Android/Termux，以及包管理器没有 Chromium 构建的平台）。
+
+如果都找不到，浏览器工具会给出明确提示，而不是静默失败。如果您安装时使用了 `--skip-browser` / `-SkipBrowser`，或下载失败，可以这样安装：
+
+```bash
+hermes pm install chromium
+```
+
+这也会撤销之前的 `--skip-browser` 选择，使后续更新继续保持浏览器为最新。在 Linux 上，Chromium 可能还需要发行版的系统库（在 Debian/Ubuntu 上可用 `npx playwright install-deps chromium` 安装）。在 Android/Termux 上，如果您的软件源提供，请运行 `pkg install chromium`；没有系统 Chromium 时，该设备上无法使用浏览器。
+
+**本地选项**（`~/.hermes/config.yaml`）：
+
+```yaml
+browser:
+  executable_path: ""     # Chromium binary to launch instead of the packaged one
+  user_data_dir: ""       # persistent profile directory; "" = fresh profile per session
+  chromium_args: []       # extra Chromium command-line flags, e.g. ["--lang=de-DE"]
+  headed: false           # true = visible window
+  command_timeout: 30     # Chromium launch timeout floor (seconds)
+  inactivity_timeout: 120 # close an idle browser after N seconds
+```
+
+`browser.user_data_dir` 可在会话之间保留 Cookie 和登录状态：此后所有会话共享这一个 profile 目录。留空则为隔离的一次性浏览。
+
+### 有头模式（可见浏览器窗口） {#headed-mode-visible-browser-window}
+
+```yaml
+browser:
+  headed: true  # default: false
+```
+
+有头模式做两件事：
+
+1. **以可见窗口启动 Chromium**，您可以观看 Agent 操作，并在需要时手动介入（登录验证、CAPTCHA）。
+2. **在轮次之间保持浏览器打开。** 通常每次 Agent 回复后浏览器都会被清理；有头模式跳过每轮清理，使登录状态在整个对话中保持。
+
+空闲浏览器仍会在 `browser.inactivity_timeout` 后被回收，所有浏览器在关闭时都会退出。在无显示器的主机（服务器、CI）上，浏览器始终以无头模式运行。有头模式只影响本地浏览器——云端会话不受影响。
+
+## 云端浏览器
+
+:::tip Nous 订阅用户
+如果您拥有付费 [Nous Portal](https://portal.nousresearch.com) 订阅，可通过 **[Tool Gateway](tool-gateway.md)** 使用云端浏览器，无需单独的 API 密钥。新安装可运行 `hermes setup --portal` 登录并一次性开启所有 gateway 工具；已有安装可通过 `hermes model` 或 `hermes tools` 选择 **Nous Subscription** 作为浏览器提供商。
+:::
+
+在 `hermes tools` → Browser Automation 中选择提供商。之后 `browser_exec` 驱动该提供商的浏览器，方式与驱动本地 Chromium 完全相同。
+
+### Browser Use 云端
+
+```bash
+# Add to ~/.hermes/.env
+BROWSER_USE_API_KEY=***
+```
+
+在 [browser-use.com](https://browser-use.com) 获取 API 密钥。Browser Use Cloud 运行托管 Chromium，默认启用[隐身](https://docs.browser-use.com/cloud/browser/stealth)和[住宅代理](https://docs.browser-use.com/cloud/browser/proxies)，包含 CAPTCHA 解决，并支持用于 Cookie、localStorage 和已保存密码的[持久 profile](https://docs.browser-use.com/cloud/guides/authentication)。
+
+### Browserbase
 
 ```bash
 # Add to ~/.hermes/.env
@@ -47,52 +142,61 @@ BROWSERBASE_API_KEY=***
 BROWSERBASE_PROJECT_ID=your-project-id-here
 ```
 
-在 [browserbase.com](https://browserbase.com) 获取您的凭据。
-
-### Browser Use 云端模式
-
-要使用 Browser Use 作为云端浏览器提供商，请添加：
+在 [browserbase.com](https://browserbase.com) 获取凭据。可选配置：
 
 ```bash
-# Add to ~/.hermes/.env
-BROWSER_USE_API_KEY=***
+# Residential proxies for better CAPTCHA solving (default: "true")
+BROWSERBASE_PROXIES=true
+
+# Advanced stealth with custom Chromium — requires Scale Plan (default: "false")
+BROWSERBASE_ADVANCED_STEALTH=false
+
+# Session reconnection after disconnects — requires paid plan (default: "true")
+BROWSERBASE_KEEP_ALIVE=true
+
+# Custom session timeout in seconds (max 21600 = 6 hours) (default: project default)
+BROWSERBASE_SESSION_TIMEOUT=1800
 ```
 
-在 [browser-use.com](https://browser-use.com) 获取 API 密钥。Browser Use 通过 REST API 提供云端浏览器。若同时设置了 Browserbase 和 Browser Use 凭据，Browserbase 优先。
+Browserbase 隐身功能：
 
-### Firecrawl 云端模式
+| 功能 | 默认状态 | 说明 |
+|---------|---------|-------|
+| 基础隐身 | 始终开启 | 随机指纹、视口随机化、CAPTCHA 解决 |
+| 住宅代理 | 开启 | 通过住宅 IP 路由以提高访问成功率 |
+| 高级隐身 | 关闭 | 自定义 Chromium 构建，需要 Scale 计划 |
+| Keep Alive | 开启 | 网络中断后的会话重连 |
 
-要使用 Firecrawl 作为云端浏览器提供商，请添加：
+若付费功能在您的计划中不可用，Hermes 会自动降级——先禁用 `keepAlive`，再禁用代理——确保免费计划也能正常浏览。
+
+### Firecrawl
 
 ```bash
 # Add to ~/.hermes/.env
 FIRECRAWL_API_KEY=fc-***
-```
 
-在 [firecrawl.dev](https://firecrawl.dev) 获取 API 密钥，然后选择 Firecrawl 作为浏览器提供商：
-
-```bash
-hermes setup tools
-# → Browser Automation → Firecrawl
-```
-
-可选配置：
-
-```bash
-# Self-hosted Firecrawl instance (default: https://api.firecrawl.dev)
+# Optional: self-hosted Firecrawl instance (default: https://api.firecrawl.dev)
 FIRECRAWL_API_URL=http://localhost:3002
 
-# Session TTL in seconds (default: 300)
+# Optional: session TTL in seconds (default: 300)
 FIRECRAWL_BROWSER_TTL=600
 ```
+
+在 [firecrawl.dev](https://firecrawl.dev) 获取 API 密钥，然后在 `hermes tools` → Browser Automation 中选择 **Firecrawl**。
+
+:::note 选择提供商
+上述 `.env` 键只提供**凭据**。当前使用的浏览器由 `hermes tools` → Browser Automation 写入的 `browser.cloud_provider` 决定（`local`、`browserbase`、`browser-use`、`firecrawl`，或代表 Nous 订阅的 `nous`；提供商插件会添加自己的名称）。一旦存在选择，增删密钥不会切换提供商——已选择但缺少密钥的提供商会报错并提示运行 `hermes tools`，而不是静默改道。从未配置过的环境仍会根据可用凭据自动检测。
+:::
+
+云端会话消耗提供商额度。Hermes 会在对话结束、`browser.inactivity_timeout` 到期以及进程退出时释放它们。
 
 ### 混合路由：公网 URL 使用云端，LAN/localhost 使用本地
 
 配置云端提供商后，Hermes 会为解析到私有/回环/LAN 地址的 URL（`localhost`、`127.0.0.1`、`192.168.x.x`、`10.x.x.x`、`172.16-31.x.x`、`*.local`、`*.lan`、`*.internal`、IPv6 回环 `::1`、链路本地 `169.254.x.x`）自动启动一个**本地 Chromium 辅助进程**。公网 URL 在同一对话中继续使用云端提供商。
 
-这解决了常见的"本地开发但使用 Browserbase"场景 — Agent 可以截取 `http://localhost:3000` 上的仪表盘，同时抓取 `https://github.com`，无需切换提供商或禁用 SSRF 防护。云端提供商永远不会看到私有 URL。
+这解决了常见的"本地开发但使用 Browserbase"场景——Agent 可以截取 `http://localhost:3000` 上的仪表盘，同时抓取 `https://github.com`，无需切换提供商或禁用 SSRF 防护。云端提供商永远不会看到私有 URL。
 
-该功能**默认开启**。如需禁用（所有 URL 均走已配置的云端提供商，与之前行为一致）：
+该功能**默认开启**。如需禁用（所有 URL 均走已配置的云端提供商）：
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -103,176 +207,55 @@ browser:
 
 禁用自动路由后，私有 URL 将被拒绝并返回 `"Blocked: URL targets a private or internal address"`，除非同时设置 `browser.allow_private_urls: true`（允许云端提供商尝试访问，但通常无法成功，因为 Browserbase 等无法访问您的 LAN）。
 
-要求：本地辅助进程使用与纯本地模式相同的 `agent-browser` CLI，因此需要先安装（`hermes setup tools → Browser Automation` 会自动安装）。从公网 URL 导航后重定向到私有地址的情况仍会被阻止（无法通过公网路径的重定向访问 LAN）。
+辅助进程就是[上文](#local-chromium-default)所述的本地 Chromium，因此需要安装该 Chromium。
 
-### Camofox 本地模式
+## 真实 profile 浏览（使用您自己的登录状态） {#real-profile-browsing-use-your-own-logins}
 
-[Camofox](https://github.com/jo-inc/camofox-browser) 是一个自托管的 Node.js 服务器，封装了 Camoufox（一个带有 C++ 指纹伪装的 Firefox 分支）。它无需云端依赖即可提供本地反检测浏览。
-
-```bash
-# Clone the Camofox browser server first
-git clone https://github.com/jo-inc/camofox-browser
-cd camofox-browser
-
-# Build and start with Docker using the default container settings
-# (auto-detects arch: aarch64 on M1/M2, x86_64 on Intel)
-make up
-
-# Stop and remove the default container
-make down
-
-# Force a clean rebuild (for example, after upgrading VERSION/RELEASE)
-make reset
-
-# Just download binaries without building
-make fetch
-
-# Override arch or version explicitly
-make up ARCH=x86_64
-make up VERSION=135.0.1 RELEASE=beta.24
-```
-
-`make up` 会立即启动默认容器。如需自定义运行时设置（如更大的 Node 堆内存、VNC 或持久化 profile 目录），请先构建镜像再手动运行：
-
-```bash
-# Build the image without starting the default container
-make build
-
-# Start with persistence, VNC live view, and a larger Node heap
-mkdir -p ~/.camofox-docker
-docker run -d \
-  --name camofox-browser \
-  --restart unless-stopped \
-  -p 9377:9377 \
-  -p 6080:6080 \
-  -p 5901:5900 \
-  -e CAMOFOX_PORT=9377 \
-  -e ENABLE_VNC=1 \
-  -e VNC_BIND=0.0.0.0 \
-  -e VNC_RESOLUTION=1920x1080 \
-  -e MAX_OLD_SPACE_SIZE=2048 \
-  -v ~/.camofox-docker:/root/.camofox \
-  camofox-browser:135.0.1-aarch64
-```
-
-启用 VNC 后，浏览器以有头模式运行，可在浏览器中通过 `http://localhost:6080`（noVNC）实时查看。也可使用原生 VNC 客户端连接 `localhost:5901`。
-
-如果已运行过 `make up`，请在启动自定义容器前先停止并删除默认容器：
-
-```bash
-make down
-# then run the custom docker run command above
-```
-
-然后在 `~/.hermes/.env` 中设置：
-
-```bash
-CAMOFOX_URL=http://localhost:9377
-```
-
-或通过 `hermes tools` → Browser Automation → Camofox 进行配置。
-
-设置 `CAMOFOX_URL` 仅提供服务器地址。要启用 Camofox，请在 `hermes tools` → Browser Automation 中选择 Camofox（写入 `browser.cloud_provider: camofox`）——一旦存在浏览器后端选择，仅设置 `CAMOFOX_URL` 不再自动切换后端（从未配置过的环境仍会自动检测）。
-
-#### 持久化浏览器会话
-
-默认情况下，每个 Camofox 会话使用随机身份 — Cookie 和登录状态不会在 Agent 重启后保留。要启用持久化浏览器会话，请在 `~/.hermes/config.yaml` 中添加：
+默认情况下，本地浏览在干净的一次性 profile 中运行——Agent 未登录任何网站。开启**真实 profile 浏览**后，Agent 可以以*您*的身份浏览，使用您现有的登录状态和 Cookie：
 
 ```yaml
+# ~/.hermes/config.yaml
 browser:
-  camofox:
-    managed_persistence: true
+  use_real_profile: true
 ```
 
-然后完全重启 Hermes 以使新配置生效。
+开启后，Hermes 会把您默认浏览器的**当前活跃** profile（`Local State → profile.last_used`，包括 Cookie、已保存登录和偏好设置）复制到 `~/.hermes/browser-profile/<browser>/` 下的托管快照中，然后用您**真实的浏览器程序**在该快照上启动并连接。您正在使用的 profile **从不被直接打开**：快照是独立目录，因此不会与运行中的浏览器争抢 profile 锁，也绕开了 Chrome 136+ 对默认 profile 目录远程调试的封锁。每次启动新会话时，认证文件都会从真实 profile 重新同步。只复制活跃 profile。
 
-:::warning 嵌套路径很重要
-Hermes 读取的是 `browser.camofox.managed_persistence`，**而非**顶层的 `managed_persistence`。常见错误写法：
+快照浏览器以**无头**方式在后台运行，不抢占焦点；设置 `browser.headed: true` 可显示窗口。在无显示器的主机上始终为无头模式。如需固定快照来源，可设置 `browser.real_profile_pin: "Profile 2"`（浏览器 user-data 目录下的 profile 目录名）；指向不存在目录的固定值不会回退到其他 profile。关闭开关后，Hermes 会在下一次使用浏览器时删除快照存储（`~/.hermes/browser-profile/`）。
 
-```yaml
-# ❌ Wrong — Hermes ignores this
-managed_persistence: true
-```
+如果无法复制您的 profile（例如 Windows 上运行中的浏览器以独占锁持有 Cookie 数据库、默认浏览器不是受支持的 Chromium，或 Cookie 数据库损坏），Agent 会获得一个**不带登录状态**的全新浏览器，且第一个浏览器结果会说明原因（`real_profile_unavailable`）。设置 `browser.real_profile_autoclose: true` 后，Hermes 会在需要时**询问**是否替您关闭浏览器，获得批准后才运行 `hermes browser close-profile`。
 
-如果该标志放在错误的路径下，Hermes 会静默回退到随机临时 `userId`，您的登录状态将在每次会话后丢失。
-:::
+- **支持的浏览器：** Chrome、Edge、Brave、Brave Origin、Chromium（以系统默认为准）。
+- **适用于任何浏览器来源。** 本地浏览时开启即生效。使用**云端**提供商时，Agent 仍可通过 `browser_exec` 工具的 `local` 参数按需打开真实 profile 的本地会话（仅在开启此开关时提供该参数）。
+- **安全说明：** 这是基于授权的便利功能，而非隔离边界。默认关闭。
+- **桌面应用：** 在 **Capabilities → Tools → Browser → Use My Real Browser Profile** 中切换。
 
-##### Hermes 的行为
-- 向 Camofox 发送确定性的 profile 范围 `userId`，使服务器能够跨会话复用同一 Firefox profile。
-- 在清理时跳过服务端 context 销毁，使 Cookie 和登录状态在 Agent 任务间保留。
-- 将 `userId` 限定在当前 Hermes profile 范围内，不同 Hermes profile 对应不同浏览器 profile（profile 隔离）。
+### 定时与无人值守运行 {#scheduled-and-unattended-runs}
 
-##### Hermes 不做的事
-- 不会强制 Camofox 服务器持久化。Hermes 只发送稳定的 `userId`；服务器必须通过将该 `userId` 映射到持久化 Firefox profile 目录来支持它。
-- 如果您的 Camofox 服务器构建将每个请求视为临时的（例如始终调用 `browser.newContext()` 而不加载已存储的 profile），Hermes 无法使这些会话持久化。请确保运行的 Camofox 版本实现了基于 userId 的 profile 持久化。
+真实 profile 会话可以让 `cronjob` 操作您已登录的网站。开启开关，为任务提供 browser 工具集（`cronjob(action="create", enabled_toolsets=["browser", ...], ...)`），并预先在[凭据保险库](./credential-vault.md#headless-sessions)中保存无法仅靠同步 Cookie 使用的网站凭据（包括验证器密钥）——无人值守的会话无法回答任何提示。
 
-##### 验证是否正常工作
+## Lightpanda 本地引擎
 
-1. 启动 Hermes 和 Camofox 服务器。
-2. 在浏览器任务中打开 Google（或任意登录网站）并手动登录。
-3. 正常结束浏览器任务。
-4. 开始新的浏览器任务。
-5. 再次打开同一网站 — 应仍处于登录状态。
+[Lightpanda](https://lightpanda.io) 是一个从零编写的开源无头浏览器。它瞬间启动，速度比 Chrome 快 9 倍，内存占用低 16 倍，这对长时间运行在小型 VM 上的 Agent 很重要。
 
-如果第 5 步退出了登录，说明 Camofox 服务器未遵守稳定的 `userId`。请检查配置路径，确认编辑 `config.yaml` 后已完全重启 Hermes，并验证您的 Camofox 服务器版本是否支持基于用户的持久化 profile。
-
-##### 状态存储位置
-
-Hermes 从 profile 范围目录 `~/.hermes/browser_auth/camofox/`（非默认 profile 则在 `$HERMES_HOME` 下的对应位置）派生稳定的 `userId`。实际浏览器 profile 数据存储在 Camofox 服务器端，以该 `userId` 为键。要完全重置持久化 profile，请在 Camofox 服务器端清除对应数据，并删除相应 Hermes profile 的状态目录。
-
-#### 外部管理的 Camofox 会话
-
-当另一个应用驱动可见的 Camofox 浏览器（桌面助手、自定义集成、另一个 Agent）时，可配置 Hermes 在同一身份下运行，而非启动独立的隔离 profile。
-
-三个参数控制行为：
-
-| 设置 | 环境变量 | 效果 |
-|---------|---------|--------|
-| `browser.camofox.user_id` | `CAMOFOX_USER_ID` | Hermes 创建标签页时使用的 Camofox `userId`。设置此项即进入"外部管理"模式。 |
-| `browser.camofox.session_key` | `CAMOFOX_SESSION_KEY` | 创建标签页时发送的 `sessionKey`（即 `listItemId`）。用于接管时匹配已有标签页。未设置时默认为每任务值。 |
-| `browser.camofox.adopt_existing_tab` | `CAMOFOX_ADOPT_EXISTING_TAB` | 为 true 时，Hermes 在首次使用时调用 `GET /tabs?userId=<user_id>` 并优先复用已有标签页，而非新建。 |
-
-环境变量优先于 `config.yaml`。两种形式均可：
+Lightpanda 是**本地引擎**（与本地 Chromium 一样是浏览器来源），而非云端提供商。安装该程序并将其放到 `PATH` 上（参见 [Lightpanda 安装指南](https://lightpanda.io/docs/run-locally/installation/one-liner)），然后在 `hermes tools` → Browser Automation 中选择 **Lightpanda**，或设置：
 
 ```yaml
+# Add to ~/.hermes/config.yaml
 browser:
-  camofox:
-    user_id: shared-camofox
-    session_key: visible-tab
-    adopt_existing_tab: true
+  cloud_provider: local
+  engine: lightpanda   # auto (default, Chromium) | lightpanda
 ```
 
-```bash
-CAMOFOX_USER_ID=shared-camofox
-CAMOFOX_SESSION_KEY=visible-tab
-CAMOFOX_ADOPT_EXISTING_TAB=true
-```
+Hermes 会自己启动 `lightpanda serve --host 127.0.0.1 --port <free>`——每个 `browser_exec` 会话名（或每个任务）一个进程——并让 `browser_exec` 指向它。无需 Chromium 或 Node.js。进程会在 `browser.inactivity_timeout` 后、退出时以及 Hermes 崩溃后的孤儿清理中被回收。所有这些进程共享位于 `$HERMES_HOME/cache/browser-use/lightpanda/http-cache` 的磁盘 HTTP 缓存。
 
-**设置 `user_id` 后的变化：**
+Lightpanda 没有图形渲染器，因此 `capture_screenshot()` 不可用，工具描述会让模型以文本为主；它每个会话只保持一个页面，因此模型会被告知只调用一次 `new_tab()`，之后使用 `goto_url()`（上游跟踪：[lightpanda-io/browser#1962](https://github.com/lightpanda-io/browser/issues/1962)）。
 
-- Hermes 在任务结束时跳过破坏性清理（与 `managed_persistence: true` 相同）。其他应用的标签页/Cookie/profile 得以保留。
-- Hermes **不会**调用 `DELETE /sessions/<user_id>` — 该端点会清除所有用户数据，若触发将销毁外部应用的会话。
+**引擎何时被忽略。** `browser.engine` 是优先级最低的浏览器设置：云端提供商（包括 Nous 订阅浏览器）、`browser.cdp_url` / `/browser connect` 覆盖，或 `browser.use_real_profile` 都优先于它。`/browser status` 和 `hermes doctor` 会报告引擎已配置但被覆盖的情况，以及被什么覆盖。
 
-**标签页接管的工作方式（当 `adopt_existing_tab: true` 时）：**
+## 通过 CDP 连接你自己的浏览器（`/browser connect`）
 
-1. 进程启动后首次调用浏览器工具时，Hermes 发出 `GET /tabs?userId=<user_id>`（5 秒超时）。
-2. 若响应中有标签页的 `listItemId == session_key`，Hermes 接管该组中最近创建的一个。
-3. 否则，Hermes 接管该用户最近创建的标签页（任意 `listItemId`）。
-4. 若无标签页或请求失败，Hermes 在下次操作时回退到新建标签页。
-
-接管仅在会话的 `tab_id` 填充之前触发一次。若外部应用在运行中关闭了被接管的标签页，下次浏览器工具调用将返回 Camofox 错误 — Hermes 不会在每次调用时重新轮询新标签页。
-
-**选择 `session_key`：** 若要 Hermes 可靠地附加到*特定*已有标签页，请将 `session_key` 设置为外部应用创建该标签页时使用的 `listItemId`。若只设置 `user_id` 而不设置 `session_key`，Hermes 会生成每任务的 `session_key`（`task_<id>`）— Hermes 将与外部应用共享 Cookie 和 profile，但会并排打开自己的标签页而非复用已有标签页。
-
-**并发说明：** 外部应用和 Hermes 可同时驱动同一 Camofox `userId`，但 Camofox 不会在客户端之间协调每个标签页的焦点。请在应用层协调所有权（例如，Hermes 运行时外部应用暂停）。
-
-#### VNC 实时查看
-
-当 Camofox 以有头模式运行（带可见浏览器窗口）时，其健康检查响应中会暴露 VNC 端口。Hermes 自动发现此信息，并在导航响应中包含 VNC URL，Agent 可分享链接供您实时查看浏览器。
-
-### 通过 CDP 连接本地 Chromium 系浏览器（`/browser connect`）
-
-除云端提供商外，您还可以通过 Chrome DevTools Protocol（CDP）将 Hermes 浏览器工具连接到本地运行的 Chrome、Brave、Chromium 或 Edge 实例。当您希望实时查看 Agent 操作、与需要自身 Cookie/会话的页面交互，或避免云端浏览器费用时，此方式非常有用。
+除了 Hermes 自己启动的 Chromium 或云端提供商，您还可以通过 Chrome DevTools Protocol（CDP）将浏览器工具连接到本地运行的 Chrome、Brave、Chromium 或 Edge 实例。当您希望实时查看 Agent 操作、与需要自身 Cookie/会话的页面交互，或避免云端浏览器费用时，此方式非常有用。
 
 :::note
 `/browser connect` 是**交互式 CLI 斜杠命令** — 不由 gateway 分发。若在 WebUI、Telegram、Discord 或其他 gateway 聊天中尝试运行，消息将作为纯文本发送给 Agent，命令不会执行。请从终端启动 Hermes（`hermes` 或 `hermes chat`）并在那里执行 `/browser connect`。
@@ -327,7 +310,7 @@ google-chrome \
 **为什么需要 `--user-data-dir`？** 若不指定，在普通实例已运行时启动 Chromium 系浏览器通常只会在现有进程上打开新窗口 — 而该进程启动时未带 `--remote-debugging-port`，因此端口 9222 永远不会开启。专用的 user-data-dir 会强制启动新的浏览器进程，使调试端口正常监听。`--no-first-run --no-default-browser-check` 跳过新 profile 的首次启动向导。
 :::
 
-通过 CDP 连接后，所有浏览器工具（`browser_navigate`、`browser_click` 等）将在您的实时浏览器实例上运行，而非启动云端会话。
+连接后，`browser_exec`、`browser_cdp`、`browser_dialog` 和 `browser_vault` 都会驱动您的实时浏览器，而不再自行启动浏览器。也可以在 `config.yaml` 中设置 `browser.cdp_url`，或使用 `BROWSER_CDP_URL` 环境变量，持久指定该端点。
 
 ### WSL2 + Windows Chrome：优先使用 MCP 而非 `/browser connect`
 
@@ -345,154 +328,19 @@ google-chrome \
 
 - [在 Hermes 中使用 MCP](../../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
 
-### 本地浏览器模式
+## Bot Desktop 屏幕
 
-若**未**设置任何云端凭据且未使用 `/browser connect`，Hermes 仍可通过由 `agent-browser` 驱动的本地 Chromium 安装使用浏览器工具。
+当 gateway 运行 [Bot Desktop 屏幕](bot-screen.md)时，机器人的浏览器与 Dock 上的 **Browser** 图标是同一个有头 Chromium，每个机器人一个持久 profile，因此您可以接管、登录某个网站，再把会话交还给 Agent。profile 位置以及 `browser.executable_path` / `browser.user_data_dir` 在那里的作用，请参阅该页面。
 
-### 可选环境变量
+## 配套工具
 
-```bash
-# Residential proxies for better CAPTCHA solving (default: "true")
-BROWSERBASE_PROXIES=true
-
-# Advanced stealth with custom Chromium — requires Scale Plan (default: "false")
-BROWSERBASE_ADVANCED_STEALTH=false
-
-# Session reconnection after disconnects — requires paid plan (default: "true")
-BROWSERBASE_KEEP_ALIVE=true
-
-# Custom session timeout in milliseconds (default: project default)
-# Examples: 600000 (10min), 1800000 (30min)
-BROWSERBASE_SESSION_TIMEOUT=600000
-
-# Inactivity timeout before auto-cleanup in seconds (default: 120)
-BROWSER_INACTIVITY_TIMEOUT=120
-
-# Extra Chromium launch flags (comma- or newline-separated). Hermes auto-injects
-# `--no-sandbox,--disable-dev-shm-usage` when it detects root or AppArmor-restricted
-# unprivileged user namespaces (Ubuntu 23.10+, DGX Spark, many container images),
-# so most users don't need to set this. Set it manually only if you need a flag
-# Hermes doesn't add automatically; setting it disables the auto-injection.
-AGENT_BROWSER_ARGS=--no-sandbox
-```
-
-### 安装 agent-browser CLI
-
-```bash
-npm install -g agent-browser
-# Or install locally in the repo:
-npm install
-```
-
-:::info
-`browser` 工具集必须包含在配置的 `toolsets` 列表中，或通过 `hermes config set toolsets '["hermes-cli", "browser"]'` 启用。
-:::
-
-## 可用工具
-
-### `browser_navigate`
-
-导航到指定 URL。必须在其他任何浏览器工具之前调用。初始化 Browserbase 会话。
-
-```
-Navigate to https://github.com/NousResearch
-```
-
-:::tip
-对于简单的信息检索，优先使用 `web_search` 或 `web_extract` — 它们更快且成本更低。仅在需要**与页面交互**（点击按钮、填写表单、处理动态内容）时使用浏览器工具。
-:::
-
-### `browser_snapshot`
-
-获取当前页面无障碍树的文本快照。返回带有引用 ID（如 `@e1`、`@e2`）的交互元素，供 `browser_click` 和 `browser_type` 使用。
-
-- **`full=false`**（默认）：仅显示交互元素的紧凑视图
-- **`full=true`**：完整页面内容
-
-超过 15,000 字符的快照将按行边界自动截断（与 `web_extract` 使用相同的单页预算 —— 无 LLM 摘要）。发生截断时，完整快照会保存到 `~/.hermes/cache/web/`，工具输出中包含文件路径和可直接使用的 `read_file` 调用，代理无需重新截图即可翻阅完整的可访问性树（包括被截断部分的元素 ref）。
-
-### `browser_click`
-
-点击快照中由引用 ID 标识的元素。
-
-```
-Click @e5 to press the "Sign In" button
-```
-
-### `browser_type`
-
-向输入框输入文本。先清空字段，再输入新文本。
-
-```
-Type "hermes agent" into the search field @e3
-```
-
-### `browser_scroll`
-
-向上或向下滚动页面以显示更多内容。
-
-```
-Scroll down to see more results
-```
-
-### `browser_press`
-
-按下键盘按键。适用于提交表单或导航。
-
-```
-Press Enter to submit the form
-```
-
-支持的按键：`Enter`、`Tab`、`Escape`、`ArrowDown`、`ArrowUp` 等。
-
-### `browser_back`
-
-在浏览器历史记录中返回上一页。
-
-### `browser_get_images`
-
-列出当前页面上所有图片及其 URL 和 alt 文本。适用于查找需要分析的图片。
-
-### `browser_vision`
-
-截图并使用视觉 AI 进行分析。当文本快照无法捕获重要视觉信息时使用 — 尤其适用于 CAPTCHA、复杂布局或视觉验证挑战。
-
-截图会持久保存，文件路径与 AI 分析结果一并返回。在消息平台（Telegram、Discord、Slack、WhatsApp）上，您可以要求 Agent 分享截图 — 它将通过 `MEDIA:` 机制作为原生图片附件发送。
-
-```
-What does the chart on this page show?
-```
-
-截图存储在 `~/.hermes/cache/screenshots/`，24 小时后自动清理。
-
-### `browser_console`
-
-获取当前页面的浏览器控制台输出（log/warn/error 消息）及未捕获的 JavaScript 异常。对于检测无障碍树中不可见的静默 JS 错误至关重要。
-
-```
-Check the browser console for any JavaScript errors
-```
-
-使用 `clear=True` 可在读取后清空控制台，使后续调用只显示新消息。
-
-`browser_console` 在带有 `expression` 参数调用时也可执行 JavaScript — 与 DevTools 控制台形式相同，结果以解析后的形式返回（JSON 序列化的对象变为 dict；原始值保持原始类型）。
-
-```
-browser_console(expression="document.querySelector('h1').textContent")
-browser_console(expression="JSON.stringify(performance.timing)")
-```
-
-当当前会话存在活跃的 CDP 监督器时（通常适用于任何对 CDP 兼容后端运行过 `browser_navigate` 的会话），执行通过监督器的持久 WebSocket 进行 — 无子进程启动开销。否则回退到标准 agent-browser CLI 路径。两种方式行为完全相同，仅延迟有差异。
-
-默认情况下执行不受限制 — 代理可以使用 `fetch`、读取存储、查询表单值并执行任何 DOM 提取。针对私有/内部地址的请求在非本地后端上仍会被拦截（SSRF 防护与此设置无关）。如果你在已登录的浏览器配置文件中浏览不可信页面，希望对敏感 JS 原语（Cookie、存储、剪贴板、网络调用、表单值）启用严格的黑名单，可在 `config.yaml` 中设置 `browser.restrict_evaluate: true`。注意该黑名单按原语*名称*匹配，因此也会拦截仅包含 `fetch` 或 `cookie` 等词的合法表达式。
+`browser_vault` 作用于 `browser_exec` 正在驱动的同一个浏览器会话——本地 Chromium、云端浏览器，或通过 `/browser connect` 连接的浏览器。`browser_cdp` 和 `browser_dialog` 仅在配置了 CDP 端点（`/browser connect`、`BROWSER_CDP_URL` 或 `browser.cdp_url`）时提供，并作用于该浏览器；Hermes 启动的本地会话或云端会话不会带来这两个工具。
 
 ### `browser_cdp`
 
-原始 Chrome DevTools Protocol 直通 — 用于其他工具未覆盖的浏览器操作的逃生舱口。适用于原生对话框处理、iframe 范围内的执行、Cookie/网络控制，或 Agent 需要的任何 CDP 命令。
+原始 Chrome DevTools Protocol 直通——用于一次性操作的逃生舱口：原生对话框处理、iframe 范围内执行、Cookie/网络控制，或 Agent 需要的任何 CDP 命令。（在 `browser_exec` 中，`cdp()` 辅助函数可完成相同的多步工作。）
 
-**仅在会话启动时 CDP 端点可访问的情况下可用** — 即 `/browser connect` 已连接到运行中的 Chrome、Brave、Chromium 或 Edge 浏览器，或 `config.yaml` 中设置了 `browser.cdp_url`。默认本地 agent-browser 模式、Camofox 和云端提供商（Browserbase、Browser Use、Firecrawl）目前不向此工具暴露 CDP — 云端提供商有每会话 CDP URL，但实时会话路由是后续功能。
-
-**CDP 方法参考：** https://chromedevtools.github.io/devtools-protocol/ — Agent 可通过 `web_extract` 访问特定方法页面以查阅参数和返回结构。
+**CDP 方法参考：** https://chromedevtools.github.io/devtools-protocol/ ——Agent 可通过 `web_extract` 访问特定方法页面以查阅参数和返回结构。
 
 常见用法：
 
@@ -514,50 +362,44 @@ browser_cdp(method="Runtime.evaluate",
 browser_cdp(method="Network.getAllCookies")
 ```
 
-浏览器级方法（`Target.*`、`Browser.*`、`Storage.*`）省略 `target_id`。页面级方法（`Page.*`、`Runtime.*`、`DOM.*`、`Emulation.*`）需要来自 `Target.getTargets` 的 `target_id`。每次无状态调用相互独立 — 调用间不保留会话状态。
+浏览器级方法（`Target.*`、`Browser.*`、`Storage.*`）省略 `target_id`。页面级方法（`Page.*`、`Runtime.*`、`DOM.*`、`Emulation.*`）需要来自 `Target.getTargets` 的 `target_id`。每次无状态调用相互独立——调用间不保留会话状态。
 
-**跨域 iframe：** 传入 `frame_id`（来自 `browser_snapshot.frame_tree.children[]` 中 `is_oopif=true` 的条目）可通过监督器的实时会话路由该 iframe 的 CDP 调用。这是在 Browserbase 上对跨域 iframe 执行 `Runtime.evaluate` 的方式，避免无状态 CDP 连接遭遇签名 URL 过期问题。示例：
+**跨域 iframe：** 传入进程外（跨域）iframe 的 `frame_id`，可通过 CDP 监督器为该 frame 维护的实时会话路由调用。这是在 Browserbase 上对跨域 iframe 执行 `Runtime.evaluate` 的方式，可避免无状态 CDP 连接遭遇签名 URL 过期。同域 iframe 无需 `frame_id`——在顶层 `Runtime.evaluate` 中使用 `document.querySelector('iframe').contentDocument` 即可。
 
-```
-browser_cdp(
-  method="Runtime.evaluate",
-  params={"expression": "document.title", "returnByValue": True},
-  frame_id="<frame_id from browser_snapshot>",
-)
-```
+### `browser_dialog` {#browser_dialog}
 
-同域 iframe 无需 `frame_id` — 在顶层 `Runtime.evaluate` 中使用 `document.querySelector('iframe').contentDocument` 即可。
+响应原生 JS 对话框（`alert` / `confirm` / `prompt` / `beforeunload`）。打开的对话框会阻塞页面的 JavaScript 线程，因此在得到响应之前，该页面上的浏览器操作都会停滞。
 
-### `browser_dialog`
+持久的 **CDP 监督器**——每个任务一个 WebSocket，订阅 Page/Runtime/Target 事件——会在对话框出现时检测到它。Agent 用 `browser_dialog(action="accept")` 或 `browser_dialog(action="dismiss")` 响应；对于 `prompt()` 对话框传入 `prompt_text="..."`，有多个对话框排队时传入 `dialog_id` 指定其中一个。随后页面 JS 线程恢复运行。
 
-响应原生 JS 对话框（`alert` / `confirm` / `prompt` / `beforeunload`）。在此工具出现之前，对话框会静默阻塞页面的 JavaScript 线程，后续 `browser_*` 调用会挂起或抛出异常；现在 Agent 可在 `browser_snapshot` 输出中看到待处理对话框并显式响应。
-
-**工作流程：**
-1. 调用 `browser_snapshot`。若对话框正在阻塞页面，将显示为 `pending_dialogs: [{"id": "d-1", "type": "alert", "message": "..."}]`。
-2. 调用 `browser_dialog(action="accept")` 或 `browser_dialog(action="dismiss")`。对于 `prompt()` 对话框，传入 `prompt_text="..."` 提供响应内容。
-3. 重新快照 — `pending_dialogs` 为空；页面 JS 线程已恢复。
-
-**检测通过持久 CDP 监督器自动进行** — 每个任务一个 WebSocket，订阅 Page/Runtime/Target 事件。监督器还会在快照中填充 `frame_tree` 字段，使 Agent 可查看当前页面的 iframe 结构，包括跨域（OOPIF）iframe。
-
-**可用性矩阵：**
-
-| 后端 | 通过 `pending_dialogs` 检测 | 响应（`browser_dialog` 工具） |
-|---|---|---|
-| 通过 `/browser connect` 或 `browser.cdp_url` 连接的本地 Chrome | ✓ | ✓ 完整工作流 |
-| Browserbase | ✓ | ✓ 完整工作流（通过注入的 XHR 桥接） |
-| Camofox / 默认本地 agent-browser | ✗ | ✗（无 CDP 端点） |
-
-**在 Browserbase 上的工作原理。** Browserbase 的 CDP 代理会在约 10ms 内在服务端自动关闭真实的原生对话框，因此无法使用 `Page.handleJavaScriptDialog`。监督器通过 `Page.addScriptToEvaluateOnNewDocument` 注入一段小脚本，将 `window.alert`/`confirm`/`prompt` 替换为同步 XHR。我们通过 `Fetch.enable` 拦截这些 XHR — 页面 JS 线程在 XHR 上保持阻塞，直到我们用 Agent 的响应调用 `Fetch.fulfillRequest`。`prompt()` 的返回值原样传回页面 JS。
+**在 Browserbase 上的工作原理。** Browserbase 的 CDP 代理会在约 10ms 内在服务端自动关闭真实的原生对话框，因此无法使用 `Page.handleJavaScriptDialog`。监督器通过 `Page.addScriptToEvaluateOnNewDocument` 注入一段小脚本，将 `window.alert`/`confirm`/`prompt` 替换为同步 XHR，并通过 `Fetch.enable` 拦截这些 XHR——页面 JS 线程在 XHR 上保持阻塞，直到监督器用 Agent 的响应调用 `Fetch.fulfillRequest`。`prompt()` 的返回值原样传回页面 JS。
 
 **对话框策略**在 `config.yaml` 的 `browser.dialog_policy` 下配置：
 
 | 策略 | 行为 |
 |--------|----------|
-| `must_respond`（默认） | 捕获，在快照中显示，等待显式 `browser_dialog()` 调用。在 `browser.dialog_timeout_s`（默认 300 秒）后安全自动关闭，防止有问题的 Agent 永久阻塞。 |
-| `auto_dismiss` | 捕获，立即关闭。Agent 仍可在 `browser_state` 历史中看到对话框，但无需操作。 |
+| `must_respond`（默认） | 捕获对话框，等待显式 `browser_dialog()` 调用。在 `browser.dialog_timeout_s`（默认 300 秒）后安全自动关闭，防止有问题的 Agent 永久阻塞。 |
+| `auto_dismiss` | 捕获，立即关闭。Agent 无需操作。 |
 | `auto_accept` | 捕获，立即接受。适用于导航带有频繁 `beforeunload` 提示的页面。 |
 
-`browser_snapshot.frame_tree` 中的**帧树**上限为 30 帧、OOPIF 深度 2，以控制广告密集页面的负载大小。达到限制时会显示 `truncated: true` 标志；需要完整帧树的 Agent 可使用 `browser_cdp` 配合 `Page.getFrameTree`。
+### `browser_vault`
+
+在当前页面使用已保存的登录信息、密码、银行卡、地址和一次性验证码，机密信息永远不会进入对话。Agent 调用 `browser_vault(action="list")` 以句柄形式查看已保存条目，然后使用 `fill`、`save_login`、`enter_code` 或 `unlock`（1Password / Bitwarden）。页面来源与已保存条目不匹配时拒绝填充。设置、密码管理器后端以及无头使用方式请参阅[凭据保险库](credential-vault.md)。
+
+## 关闭浏览功能
+
+浏览器没有配置开关——请改为禁用 `browser` 工具集。运行 `hermes tools`，为不应浏览的平台取消勾选 **Browser Automation**，或在脚本中：
+
+```bash
+hermes tools disable browser                      # CLI
+hermes tools disable browser --platform telegram  # one gateway platform
+```
+
+没有 `terminal` 工具集的会话也不会出现 `browser_exec`。
+
+## Camofox
+
+Camofox 已移至插件：`hermes plugins install camofox`。现有的 Camofox 配置会在更新时自动迁移。
 
 ## 实际示例
 
@@ -566,64 +408,35 @@ browser_cdp(
 ```
 User: Sign up for an account on example.com with my email john@example.com
 
-Agent workflow:
-1. browser_navigate("https://example.com/signup")
-2. browser_snapshot()  → sees form fields with refs
-3. browser_type(ref="@e3", text="john@example.com")
-4. browser_type(ref="@e5", text="SecurePass123")
-5. browser_click(ref="@e8")  → clicks "Create Account"
-6. browser_snapshot()  → confirms success
+Agent: browser_exec(code="""
+# Opening the signup form
+new_tab("https://example.com/signup")
+wait_for_load()
+fill_input("input[name=email]", "john@example.com")
+js("document.querySelector('button[type=submit]').click()")
+wait_for_load()
+print(page_info())
+""")
 ```
+
+对于密码，Agent 使用 `browser_vault`（`save_login` 会在掩码输入框中提示您），而不是自己输入机密信息。
 
 ### 研究动态内容
 
 ```
 User: What are the top trending repos on GitHub right now?
 
-Agent workflow:
-1. browser_navigate("https://github.com/trending")
-2. browser_snapshot(full=true)  → reads trending repo list
-3. Returns formatted results
+Agent: browser_exec(code="""
+# Reading GitHub trending
+new_tab("https://github.com/trending")
+wait_for_load()
+print(js("[...document.querySelectorAll('article h2 a')].map(a => a.textContent.replace(/\\s+/g, ' ').trim())"))
+""")
 ```
-
-## 会话录制
-
-自动将浏览器会话录制为 WebM 视频文件：
-
-```yaml
-browser:
-  record_sessions: true  # default: false
-```
-
-启用后，录制在首次 `browser_navigate` 时自动开始，会话关闭时保存到 `~/.hermes/browser_recordings/`。本地模式和云端模式（Browserbase）均支持。超过 72 小时的录制文件自动清理。
-
-## 隐身功能
-
-Browserbase 提供自动隐身能力：
-
-| 功能 | 默认状态 | 说明 |
-|---------|---------|-------|
-| 基础隐身 | 始终开启 | 随机指纹、视口随机化、CAPTCHA 解决 |
-| 住宅代理 | 开启 | 通过住宅 IP 路由以提高访问成功率 |
-| 高级隐身 | 关闭 | 自定义 Chromium 构建，需要 Scale 计划 |
-| Keep Alive | 开启 | 网络中断后的会话重连 |
-
-:::note
-若付费功能在您的计划中不可用，Hermes 会自动降级 — 先禁用 `keepAlive`，再禁用代理 — 确保免费计划也能正常浏览。
-:::
-
-## 会话管理
-
-- 每个任务通过 Browserbase 获得独立的浏览器会话
-- 非活跃会话在超时后自动清理（默认：2 分钟）
-- 后台线程每 30 秒检查一次过期会话
-- 进程退出时执行紧急清理，防止孤立会话
-- 通过 Browserbase API 释放会话（`REQUEST_RELEASE` 状态）
 
 ## 限制
 
-- **基于文本的交互** — 依赖无障碍树，而非像素坐标
-- **快照大小** — 大型页面在 15,000 字符处被截断（与 `web_extract` 一致；无 LLM 摘要）；完整快照会保存到 `~/.hermes/cache/web/`，输出中给出路径供 `read_file` 翻阅
-- **会话超时** — 云端会话根据提供商计划设置过期
-- **费用** — 云端会话消耗提供商额度；对话结束或非活跃后会话自动清理。使用 `/browser connect` 可免费本地浏览。
-- **不支持文件下载** — 无法从浏览器下载文件
+- **会话超时**——云端会话根据提供商计划设置过期。
+- **费用**——云端会话消耗提供商额度；对话结束或非活跃后会话自动清理。本地 Chromium 和 `/browser connect` 免费。
+- **Lightpanda**——不支持截图，每个会话只有一个页面。
+- **没有终端就没有浏览器**——`browser_exec` 运行 Python，因此没有 `terminal` 工具集的会话无法使用它。

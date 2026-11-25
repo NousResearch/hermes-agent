@@ -1,10 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  handleServerRequest,
-  type ServerRequestContext
-} from '@/app/session/hooks/use-message-stream/gateway-event/server-requests'
+import type { ServerRequestContext } from '@/app/session/hooks/use-message-stream/gateway-event/server-request-context'
+import { handleServerRequest } from '@/app/session/hooks/use-message-stream/gateway-event/server-requests'
 import { I18nProvider } from '@/i18n'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $gateway } from '@/store/gateway'
@@ -47,6 +45,7 @@ describe('PromptOverlays', () => {
     const deps: ServerRequestContext['deps'] = {
       activeSessionIdRef: { current: 's1' },
       sessionInterrupted: () => false,
+      sessionStateByRuntimeIdRef: { current: new Map() },
       updateSessionState: (_sid, update) => update(createClientSessionState('s1')),
       upsertToolCall: () => undefined
     }

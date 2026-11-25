@@ -54,7 +54,9 @@ def emits(server, monkeypatch):
 
 
 def _relay(server, event_type, **payload):
-    """Drive _on_tool_progress the way the delegate relay does."""
+    """Drive _on_tool_progress the way the delegate relay does; the parent record
+    exists like any live turn's does (launch profile: no profile_home)."""
+    server._sessions.setdefault("parent-sid", {"session_key": "parent"})
     server._on_tool_progress(
         "parent-sid",
         event_type,
@@ -109,7 +111,7 @@ def test_live_child_session_gets_native_stream(server, emits):
     assert child[2][1] == {"text": "hmm"}
     # The rotated-out tool closes with the same id it opened with.
     assert child[3][1]["tool_id"] == first_tool["tool_id"]
-    assert child[6][1] == {"text": "done deal"}
+    assert child[6][1] == {"text": "done deal", "status": "complete"}
 
     # Parent relay is untouched alongside the mirror.
     assert [e for e, s, _ in emits if s == "parent-sid"] == [
@@ -122,10 +124,47 @@ def test_live_child_session_gets_native_stream(server, emits):
     assert server._child_mirrors == {}
 
 
+def test_completed_child_http_summary_is_not_a_desktop_failure(server, emits):
+    """A successful child watch turn must carry the gateway completion verdict.
+
+    Desktop's status-less legacy fallback otherwise mistakes this ordinary
+    summary for an HTTP provider failure and hides the child's answer.
+    """
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+
+    _relay(
+        server,
+        "subagent.complete",
+        child_session_id="child-1",
+        status="completed",
+        summary="HTTP 200 OK",
+    )
+
+    assert [(e, p) for e, s, p in emits if s == "live-1"] == [
+        ("message.start", None),
+        ("message.complete", {"text": "HTTP 200 OK", "status": "complete"}),
+    ]
+
+
+@pytest.mark.parametrize("status", ["failed", "error", "interrupted", "timeout", None])
+def test_child_that_did_not_complete_carries_no_completion_verdict(server, emits, status):
+    """Only a completed child is reported complete. Any other outcome keeps the status-less
+    frame, so the desktop still reads an error summary as a failure."""
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+    outcome = {} if status is None else {"status": status}
+
+    _relay(server, "subagent.complete", child_session_id="child-1", summary="HTTP 500 upstream", **outcome)
+
+    assert [(e, p) for e, s, p in emits if s == "live-1"] == [
+        ("message.start", None),
+        ("message.complete", {"text": "HTTP 500 upstream"}),
+    ]
+
+
 def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert "child-1" in server._child_mirrors
+    assert (None, "child-1") in server._child_mirrors
 
     # Window closes → live session gone → state dropped on the next event.
     server._sessions.clear()
@@ -152,18 +191,18 @@ def test_upgraded_child_session_not_mirrored(server, emits):
     assert [(e, s) for e, s, _ in emits] == [("subagent.tool", "parent-sid")]
     assert server._child_mirrors == {}
     # Liveness registry still updates — it serves resume, not the mirror.
-    assert "child-1" in server._active_child_runs
+    assert (None, "child-1") in server._active_child_runs
 
 
 def test_stale_child_run_not_reported_active(server, emits):
     """A leaked registry entry (lost completion event) must age out instead of
     pinning running=true on every future lazy resume of that child."""
-    server._active_child_runs["child-1"] = 0.0  # epoch — ancient
+    server._active_child_runs[(None, "child-1")] = 0.0  # epoch — ancient
 
-    assert server._child_run_active("child-1") is False
+    assert server._child_run_active("child-1", None) is False
 
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert server._child_run_active("child-1") is True
+    assert server._child_run_active("child-1", None) is True
 
 
 def test_prompt_submit_rejected_while_child_run_active(server, emits):
@@ -186,7 +225,7 @@ def test_prompt_submit_rejected_while_child_run_active(server, emits):
     # Run completes → the same submit upgrades into a real conversation
     # (passes the guard; fails later only because this test stubs no agent).
     _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="ok")
-    assert server._child_run_active("child-1") is False
+    assert server._child_run_active("child-1", None) is False
 
 
 def test_active_child_runs_registry_tracks_liveness(server, emits):
@@ -194,13 +233,13 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
     open), and completion clears it — lazy watch resumes read this registry to
     report running=true while the child is silent inside a long tool call."""
     _relay(server, "subagent.start", preview="go", child_session_id="child-1")
-    assert "child-1" in server._active_child_runs
+    assert (None, "child-1") in server._active_child_runs
 
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert "child-1" in server._active_child_runs
+    assert (None, "child-1") in server._active_child_runs
 
     _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="ok")
-    assert "child-1" not in server._active_child_runs
+    assert (None, "child-1") not in server._active_child_runs
 
 
 def test_start_mirrors_as_immediate_header_line(server, emits):

@@ -2,11 +2,34 @@ import base64
 import json
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.codex_models import (
     _FORWARD_COMPAT_TEMPLATE_MODELS,
     DEFAULT_CODEX_MODELS,
     get_codex_model_ids,
 )
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-6.2-sol", "openai/gpt-6.2-astra"])
+@pytest.mark.parametrize("filename", ["config.toml", "models_cache.json"])
+def test_prefixed_codex_hint_does_not_set_offline_default(monkeypatch, tmp_path, model, filename):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    content = f'model = "{model}"\n' if filename == "config.toml" else json.dumps({"models": [{"slug": model}]})
+    (tmp_path / filename).write_text(content, encoding="utf-8")
+    models = get_codex_model_ids()
+    assert models[0] == "gpt-6-sol"
+    assert model not in models
+
+
+@pytest.mark.parametrize("model", ["gpt-6.2-sol", "openai/gpt-6.2-astra"])
+def test_saved_gpt62_is_not_injected_into_codex_picker(model):
+    from hermes_cli.model_switch_providers import _finalize_picker_rows
+
+    for provider in ("openai-codex", "openai-api"):
+        rows = [{"slug": provider, "is_current": True, "total_models": 1, "models": ["gpt-6-sol"]}]
+        choices = _finalize_picker_rows(rows, {}, model)[0]["models"]
+        assert choices == (["gpt-6-sol"] if provider == "openai-codex" else [model, "gpt-6-sol"])
 
 
 def _codex_jwt(subject: str) -> str:
@@ -74,6 +97,22 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
     out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
     assert "gpt-5.6-sol-pro-900k" not in out
     assert "gpt-5.6-nova-900k" not in out
+
+
+def test_catalog_identity_stays_stable_for_rotation_but_changes_with_route(monkeypatch):
+    from hermes_cli import auth, codex_models
+    import agent.credential_pool as pool
+
+    credentials = {"api_key": "first-token", "base_url": "https://first.example/codex/"}
+    monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **_: dict(credentials))
+    monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *_: False)
+    monkeypatch.setattr(pool, "_codex_principal_identity", lambda _: ("account", "subject"))
+    first = codex_models.codex_catalog_credential_identity()
+    credentials["api_key"] = "rotated-token"
+    credentials["base_url"] = "https://first.example/codex"
+    assert codex_models.codex_catalog_credential_identity() == first
+    credentials["base_url"] = "https://second.example/codex"
+    assert codex_models.codex_catalog_credential_identity() != first
 
 
 

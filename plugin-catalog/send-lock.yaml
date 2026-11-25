@@ -1,0 +1,34 @@
+name: send-lock
+repo: https://github.com/percyhendrux123-prog/send-lock-kit
+sha: "9aa41a12e03a4a66b70ce0a194b53ef9ef686031"
+subdir: plugins/send-lock
+version: "2.0.0"
+title: "send-lock"
+description: >-
+  Default-deny pre_tool_call hook: it allows a short explicit list (read-only tools, ls/pwd/whoami,
+  a plain `curl -q -s <URL>` GET, and two narrow write_file paths gated by an owner step 0-4) and
+  blocks every other tool call with a plain-English reason. A friendly first layer, not a
+  containment boundary. Disclosure — it reads the owner config file (<HERMES_HOME>/axiom-owner.json
+  or the path in AXIOM_OWNER_CONFIG) and the HERMES_HOME and AXIOM_OWNER_CONFIG environment
+  variables; it writes only one log line per refusal and one at load to <HERMES_HOME>/logs/send-lock.log
+  (tool name and block kind, never arguments); it blocks every tool call not on its allowlist; it makes
+  no network calls, no subprocess calls and no model calls, and it stores no credentials and never
+  updates itself.
+maintainer: percyhendrux123-prog
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/percyhendrux123-prog/send-lock-kit/blob/9aa41a12e03a4a66b70ce0a194b53ef9ef686031/plugins/send-lock/README.md
+readme: true
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "The plugin alone is not a containment boundary. In the worker-in-wall test (a real Hermes in a container, driven by a scripted fake model, on fake services only), 14 of 46 attack cases passed the plugin and were stopped by the container wall; 32 were stopped by the plugin. With the plugin off, the wall alone stopped all 46. The test says nothing about how a real model behaves."
+  - "Default-deny: after install most tools (patch, memory, skill_manage, browser, web, code execution, messaging) and most shell commands are refused until the owner config opens specific steps. Missing or invalid owner config means step 0."
+  - "A permitted curl GET can still carry data in its URL path, and model requests carry prompts. See docs/THREAT-LIST.md in the repository."
+  - "The repository also holds non-plugin tooling (a Docker test harness and demo scripts) that Hermes does not load. The wall test runs Hermes with its own approval prompts off (--yolo) inside a throwaway container; the plugin itself never does."

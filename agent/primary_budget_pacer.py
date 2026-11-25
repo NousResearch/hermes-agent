@@ -61,7 +61,7 @@ def _settings() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         raw = ((load_config() or {}).get("fallback") or {}).get("primary_budget") or {}
-    except Exception:
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         return dict(DEFAULTS)
     cfg = dict(DEFAULTS)
     if isinstance(raw, Mapping):
@@ -108,7 +108,7 @@ def _write(state: dict) -> None:
         from utils import atomic_write_text
 
         atomic_write_text(_state_path(), json.dumps(state))
-    except Exception as exc:  # never let bookkeeping break a turn
+    except (OSError, ValueError, TypeError) as exc:  # never let bookkeeping break a turn
         logger.debug("Failed to write primary-budget state: %s", exc)
 
 
@@ -133,7 +133,7 @@ def estimate_prompt_tokens(api_kwargs: Mapping[str, Any]) -> int:
     try:
         chars = _payload_chars(api_kwargs.get("messages"))
         chars += _payload_chars(api_kwargs.get("tools"))
-    except Exception:
+    except Exception:  # health: allow BLE001 -- walks caller-supplied SDK payloads whose shapes are open-ended; an unfamiliar shape must estimate as 0, never raise mid-request
         return 0
     return chars // 4
 
@@ -209,7 +209,7 @@ def pace_primary_request(agent, api_kwargs: Mapping[str, Any], *, sleep=time.sle
             try:
                 from agent.model_health_ledger import model_window_remaining
                 return max(0.0, float(model_window_remaining(provider, model) or 0.0))
-            except Exception:
+            except (ImportError, OSError, ValueError, TypeError, KeyError):
                 return 0.0
 
         def _adopt_after_wait() -> None:

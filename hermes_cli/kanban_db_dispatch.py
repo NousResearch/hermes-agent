@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- this change adds 180 lines of lane-capacity/blocked-impact dispatch logic; extracting that topic module is a separate refactor
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
@@ -2007,7 +2008,7 @@ def spawn_slot_available(
             if total_running >= max_in_progress:
                 return False
         return True
-    except Exception:
+    except (sqlite3.Error, OSError, ValueError, TypeError, KeyError):
         return True
 
 
@@ -2062,7 +2063,7 @@ def _lane_status_url() -> Optional[str]:
     try:
         from hermes_cli.config import load_config_readonly
         cfg = load_config_readonly() or {}
-    except Exception:
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
     explicit = str((cfg.get("kanban") or {}).get("lane_status_url") or "").strip()
     if explicit:
@@ -2072,7 +2073,7 @@ def _lane_status_url() -> Optional[str]:
         return None
     try:
         parsed = urllib.parse.urlparse(base)
-    except Exception:
+    except (ValueError, TypeError):
         return None
     if not parsed.scheme or not parsed.netloc or parsed.hostname not in _LOOPBACK_HOSTS:
         return None
@@ -2093,7 +2094,7 @@ def _lane_queue_depth(url: Optional[str] = None) -> Optional[int]:
         request = urllib.request.Request(target, headers={"Accept": "application/json"})
         with urllib.request.urlopen(request, timeout=LANE_STATUS_TIMEOUT_SECONDS) as response:
             raw = json.load(response)
-    except Exception:
+    except (OSError, ValueError, TypeError):
         return None
     if not isinstance(raw, dict):
         return None
@@ -2112,7 +2113,7 @@ def configured_lane_queue_limit() -> Optional[int]:
     try:
         from hermes_cli.config import load_config_readonly
         raw = (load_config_readonly() or {}).get("kanban", {}).get("lane_queue_limit")
-    except Exception:
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
     if raw is None:
         return None

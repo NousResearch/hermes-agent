@@ -225,7 +225,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                         kbd.configured_max_in_progress()
                     ),
                 )
-        except Exception:
+        except Exception:  # health: allow BLE001 -- a probe failure must read as capacity (idle), never as a stuck dispatcher
             return True
 
     def _on_tick(res):

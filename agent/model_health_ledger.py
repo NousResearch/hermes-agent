@@ -156,7 +156,7 @@ def record_model_window(provider: str, model: str, seconds: float, *, probe_fail
             from utils import atomic_write_text
 
             atomic_write_text(_state_path(), json.dumps(windows))
-        except Exception as exc:  # never let bookkeeping break a turn
+        except (OSError, ValueError, TypeError) as exc:  # never let bookkeeping break a turn
             logger.debug("Failed to write model-window ledger: %s", exc)
             return
     if false_positive:
@@ -190,7 +190,7 @@ def mark_probe_restore(provider: str, model: str, streak: int = 0) -> None:
             from utils import atomic_write_text
 
             atomic_write_text(_state_path(), json.dumps(windows))
-        except Exception as exc:
+        except (OSError, ValueError, TypeError) as exc:
             logger.debug("Failed to write model-window ledger: %s", exc)
 
 
@@ -253,7 +253,7 @@ def clear_model_window(provider: str, model: str) -> None:
             from utils import atomic_write_text
 
             atomic_write_text(_state_path(), json.dumps(windows))
-        except Exception as exc:
+        except (OSError, ValueError, TypeError) as exc:
             logger.debug("Failed to clear model-window ledger: %s", exc)
 
 

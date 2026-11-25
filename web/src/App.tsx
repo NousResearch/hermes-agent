@@ -374,6 +374,34 @@ function buildRoutes(
 
 const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
+/** Read the persisted sidebar state; storage can be unavailable in private modes. */
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** Outer layout + the session-filter context every page and the sidebar read. */
+function AppFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <SessionFilterProvider>{children}</SessionFilterProvider>
+    </div>
+  );
+}
+
+/** Sidebar controls whose label collapses with the rail. */
+function SidebarControls({ collapsed }: { collapsed: boolean }) {
+  return (
+    <>
+      <ProfileSwitcher collapsed={collapsed} />
+      <SessionFilterMenu collapsed={collapsed} />
+    </>
+  );
+}
+
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -383,13 +411,7 @@ export default function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
@@ -404,8 +426,7 @@ export default function App() {
   const tooltipWarmRef = useRef(0);
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
-  const normalizedPath = pathname.replace(/\/$/, "") || "/";
-  const isChatRoute = normalizedPath === "/chat";
+  const isChatRoute = (pathname.replace(/\/$/, "") || "/") === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
@@ -583,8 +604,7 @@ export default function App() {
       <MultiplexStandaloneBanner status={sidebarStatus} />
       <SharedMetricsConsentBanner />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <SessionFilterProvider>
+      <AppFrame>
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
@@ -655,9 +675,7 @@ export default function App() {
               </Button>
             </div>
 
-            <ProfileSwitcher collapsed={isDesktopCollapsed} />
-
-            <SessionFilterMenu collapsed={isDesktopCollapsed} />
+            <SidebarControls collapsed={isDesktopCollapsed} />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
@@ -811,8 +829,7 @@ export default function App() {
             </div>
           </PageHeaderProvider>
         </div>
-        </SessionFilterProvider>
-      </div>
+      </AppFrame>
 
       <PluginSlot name="overlay" />
     </div>

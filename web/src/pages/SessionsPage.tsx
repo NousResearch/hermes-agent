@@ -38,6 +38,7 @@ import {
 import type {
   SessionInfo,
   SessionMessage,
+  SessionQueryOptions,
   SessionSearchResult,
   StatusResponse,
 } from "@/lib/api";
@@ -733,6 +734,54 @@ function SessionsPagination({
   );
 }
 
+/** The empty-state nudge only makes sense for an unfiltered chat list. */
+function showStartConversationHint(
+  search: string,
+  sessionCategory: string,
+  selectedSources: string[] | null,
+): boolean {
+  return !search && sessionCategory === "chats" && selectedSources === null;
+}
+
+/**
+ * Translate the global filter (category + explicit source subset) into the
+ * session-list query. Kept module-level so the component's branch budget does
+ * not grow with every new source category.
+ */
+function describeSessionQuery(
+  selectedSources: string[] | null,
+  sessionCategory: string,
+  allSourceNames: string[],
+): SessionQueryOptions {
+  if (selectedSources !== null) {
+    if (selectedSources.length === 0) {
+      return allSourceNames.length > 0
+        ? { excludeSources: allSourceNames }
+        : { source: NO_MATCHING_SESSION_SOURCE };
+    }
+    if (selectedSources.length === 1) {
+      return { source: selectedSources[0] };
+    }
+    const selected = new Set(selectedSources);
+    const excludedSources = allSourceNames.filter(
+      (source) => !selected.has(source),
+    );
+    return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
+  }
+  if (sessionCategory === "chats") {
+    return { excludeSources: AUTOMATION_SESSION_SOURCES };
+  }
+  if (sessionCategory === "automation") {
+    const excludedSources = allSourceNames.filter(
+      (source) => !isAutomationSource(source),
+    );
+    return excludedSources.length > 0
+      ? { excludeSources: excludedSources }
+      : { sources: AUTOMATION_SESSION_SOURCES };
+  }
+  return {};
+}
+
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
@@ -803,35 +852,10 @@ export default function SessionsPage() {
     [allSourceOptions],
   );
 
-  const sessionQueryOptions = useMemo(() => {
-    if (selectedSources !== null) {
-      if (selectedSources.length === 0) {
-        return allSourceNames.length > 0
-          ? { excludeSources: allSourceNames }
-          : { source: NO_MATCHING_SESSION_SOURCE };
-      }
-      if (selectedSources.length === 1) {
-        return { source: selectedSources[0] };
-      }
-      const selected = new Set(selectedSources);
-      const excludedSources = allSourceNames.filter(
-        (source) => !selected.has(source),
-      );
-      return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
-    }
-    if (sessionCategory === "chats") {
-      return { excludeSources: AUTOMATION_SESSION_SOURCES };
-    }
-    if (sessionCategory === "automation") {
-      const excludedSources = allSourceNames.filter(
-        (source) => !isAutomationSource(source),
-      );
-      return excludedSources.length > 0
-        ? { excludeSources: excludedSources }
-        : { sources: AUTOMATION_SESSION_SOURCES };
-    }
-    return {};
-  }, [selectedSources, sessionCategory, allSourceNames]);
+  const sessionQueryOptions = useMemo(
+    () => describeSessionQuery(selectedSources, sessionCategory, allSourceNames),
+    [selectedSources, sessionCategory, allSourceNames],
+  );
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -1830,7 +1854,7 @@ export default function SessionsPage() {
                   ? t.sessions.noSessionsInFilter
                   : t.sessions.noSessions}
             </p>
-            {!search && sessionCategory === "chats" && selectedSources === null && (
+            {showStartConversationHint(search, sessionCategory, selectedSources) && (
               <p className="text-xs mt-1 text-text-tertiary">
                 {t.sessions.startConversation}
               </p>

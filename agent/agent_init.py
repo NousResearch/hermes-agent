@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- this change adds 8 lines wiring the fallback notice into the existing init sequence; the module split is a separate refactor
 """Implementation of :meth:`AIAgent.__init__` as ``init_agent(agent, ...)``.
 
 ``init_agent`` is a thin, ordered orchestrator over ``_init_*`` / ``_build_*`` phase

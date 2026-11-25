@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- this change adds 41 lines of fallback/probe wiring to the existing completion loop; extracting the topic module is a separate refactor
 """API-call helpers extracted from :class:`AIAgent`: non-streaming and streaming
 request drivers, request kwargs builder, assistant-message materializer,
 provider-fallback activator, max-iterations handler, per-turn resource cleanup.

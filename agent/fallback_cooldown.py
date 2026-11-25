@@ -89,8 +89,8 @@ def _arm_rate_limit_cooldown(
     try:
         from agent.model_health_ledger import record_model_window
         record_model_window(getattr(agent, "provider", ""), getattr(agent, "model", ""), backoff_seconds)
-    except Exception:
-        pass
+    except (ImportError, OSError, ValueError, TypeError, KeyError) as exc:
+        logging.debug("model-window ledger unavailable: %s", exc)
     logging.info(
         "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d, %s)",
         backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1, source,
@@ -180,7 +180,7 @@ def probe_primary_route(agent) -> tuple[bool, float | None]:
             model=model, messages=[{"role": "user", "content": "ping"}], max_tokens=1,
         )
         return True, None
-    except Exception as exc:  # any failure is evidence, not a crash
+    except Exception as exc:  # health: allow BLE001 -- a probe's failure is its evidence: the handler reads status/headers off whatever the SDK raised, including its own error types
         retry_after = None
         headers = getattr(getattr(exc, "response", None), "headers", None)
         raw = headers.get("retry-after") if headers is not None else None
@@ -200,7 +200,7 @@ def _reprobe_interval_seconds() -> float:
         from hermes_cli.config import load_config
         raw = (load_config() or {}).get("fallback", {}).get("reprobe_seconds", DEFAULT_REPROBE_SECONDS)
         value = float(raw)
-    except Exception:
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         return DEFAULT_REPROBE_SECONDS
     if not math.isfinite(value) or value <= 0:
         return 0.0
@@ -251,7 +251,7 @@ def maybe_reprobe_primary(agent) -> bool:
         shared_remaining = model_window_remaining(
             str(primary.get("provider") or ""), str(primary.get("model") or "")
         )
-    except Exception:
+    except (ImportError, OSError, ValueError, TypeError, KeyError):
         shared_remaining = 0.0
     if shared_remaining > 0:
         # Past the window plus a little spread; the next probe is the one that tests it.
@@ -264,7 +264,7 @@ def maybe_reprobe_primary(agent) -> bool:
             mark_probe_restore, model_failure_streak, record_model_window,
         )
         streak = model_failure_streak(provider, model)
-    except Exception:
+    except (ImportError, OSError, ValueError, TypeError, KeyError):
         mark_probe_restore = record_model_window = None  # type: ignore[assignment]
         streak = 0
     # One token now beats a whole turn's context a second later: a still-throttled primary

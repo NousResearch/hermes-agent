@@ -273,7 +273,7 @@ class _KanbanDispatcher:
                         board=slug,
                     ):
                         return True
-                except Exception:
+                except Exception:  # health: allow BLE001 -- one board's probe (DB open + two reads) failing must not abort the health sweep for every other board
                     continue
                 finally:
                     if conn is not None:

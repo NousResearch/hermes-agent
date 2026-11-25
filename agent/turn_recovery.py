@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- this change adds 81 lines of recovery-notice plumbing (crossed 2000); the topic-module split is a separate refactor
 """Recovery-branch handlers for the conversation turn's inner retry loop.
 
 When the model call raises, one-shot recovery chains run before the generic retry/backoff

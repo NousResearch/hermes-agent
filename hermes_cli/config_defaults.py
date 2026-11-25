@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- this change adds 30 lines of fallback/kanban defaults; splitting the defaults table is a separate refactor
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing

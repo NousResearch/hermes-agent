@@ -154,6 +154,14 @@ export const zhOverrides = {
       startingDesktopConnection: '正在启动桌面连接',
       startingHermesDesktop: '正在启动 Hermes 桌面版…'
     },
+    // Webapp 的启动文字：浏览器标签页不称作桌面应用（lib/boot-copy）。
+    webapp: {
+      ready: 'Hermes 已就绪',
+      steps: {
+        startingConnection: '正在启动连接',
+        startingHermes: '正在启动 Hermes…'
+      }
+    },
     errors: {
       backgroundExited: 'Hermes 后台进程已退出。',
       backgroundExitedDuringStartup: 'Hermes 后台进程在启动期间退出。',

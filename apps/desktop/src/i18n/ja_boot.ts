@@ -13,6 +13,14 @@ export const jaBoot = {
       startingDesktopConnection: 'デスクトップ接続を開始中',
       startingHermesDesktop: 'Hermes Desktop を起動中…'
     },
+    // Webapp の起動時テキスト：ブラウザータブはデスクトップアプリを名乗らない（lib/boot-copy）。
+    webapp: {
+      ready: 'Hermes の準備ができました',
+      steps: {
+        startingConnection: '接続を開始中',
+        startingHermes: 'Hermes を起動中…'
+      }
+    },
     errors: {
       backgroundExited: 'Hermes バックグラウンドプロセスが終了しました。',
       backgroundExitedDuringStartup: '起動中に Hermes バックグラウンドプロセスが終了しました。',

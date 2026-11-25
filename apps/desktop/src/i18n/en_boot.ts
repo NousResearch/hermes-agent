@@ -13,6 +13,14 @@ export const enBoot = {
       startingDesktopConnection: 'Starting desktop connection',
       startingHermesDesktop: 'Starting Hermes Desktop…'
     },
+    // The Webapp's boot copy: a browser tab does not name the Desktop app (lib/boot-copy).
+    webapp: {
+      ready: 'Hermes is ready',
+      steps: {
+        startingConnection: 'Starting connection',
+        startingHermes: 'Starting Hermes…'
+      }
+    },
     errors: {
       backgroundExited:
         'The service that runs your chats closed unexpectedly. Restart it to keep going — your chats and settings are safe.',

@@ -13,6 +13,14 @@ export const frBoot = {
       startingDesktopConnection: 'Démarrage de la connexion desktop',
       startingHermesDesktop: 'Démarrage de Hermes Desktop…'
     },
+    // Les textes de démarrage de la Webapp : un onglet de navigateur ne nomme pas l’app de bureau (lib/boot-copy).
+    webapp: {
+      ready: 'Hermes est prêt',
+      steps: {
+        startingConnection: 'Démarrage de la connexion',
+        startingHermes: 'Démarrage de Hermes…'
+      }
+    },
     errors: {
       backgroundExited: "Le processus en arrière-plan de Hermes s'est arrêté.",
       backgroundExitedDuringStartup: "Le processus en arrière-plan de Hermes s'est arrêté pendant le démarrage.",

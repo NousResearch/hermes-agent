@@ -13,6 +13,14 @@ export const deBoot = {
       startingDesktopConnection: 'Desktop-Verbindung wird gestartet',
       startingHermesDesktop: 'Hermes Desktop wird gestartet…'
     },
+    // Die Boot-Texte der Webapp: ein Browser-Tab nennt nicht die Desktop-App (lib/boot-copy).
+    webapp: {
+      ready: 'Hermes ist bereit',
+      steps: {
+        startingConnection: 'Verbindung wird gestartet',
+        startingHermes: 'Hermes wird gestartet…'
+      }
+    },
     errors: {
       backgroundExited: 'Der Hermes-Hintergrundprozess wurde beendet.',
       backgroundExitedDuringStartup: 'Der Hermes-Hintergrundprozess wurde während des Starts beendet.',

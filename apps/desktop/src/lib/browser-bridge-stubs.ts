@@ -1,6 +1,6 @@
 import type { DesktopBootProgress, DesktopBootstrapState } from '@/global'
+import { bootReadyCopy } from '@/lib/boot-copy'
 import { shellCopy } from '@/lib/shell-copy'
-
 function noopUnsubscribe(): () => void {
   return () => undefined
 }
@@ -9,7 +9,7 @@ function readyBootProgress(): DesktopBootProgress {
   return {
     error: null,
     fakeMode: false,
-    message: 'Hermes browser-hosted desktop is ready',
+    message: bootReadyCopy(),
     phase: 'runtime.ready',
     progress: 100,
     running: false,

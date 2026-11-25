@@ -14,6 +14,14 @@ export const zhHantBoot = {
       startingDesktopConnection: '正在啟動桌面連線',
       startingHermesDesktop: '正在啟動 Hermes Desktop…'
     },
+    // Webapp 的啟動文字：瀏覽器分頁不稱作桌面應用程式（lib/boot-copy）。
+    webapp: {
+      ready: 'Hermes 已就緒',
+      steps: {
+        startingConnection: '正在啟動連線',
+        startingHermes: '正在啟動 Hermes…'
+      }
+    },
     errors: {
       backgroundExited: 'Hermes 背景程序已結束。',
       backgroundExitedDuringStartup: 'Hermes 背景程序在啟動期間結束。',

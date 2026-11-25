@@ -17,6 +17,7 @@ import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reau
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { bootStepCopy } from '@/lib/boot-copy'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import {
   decideLivenessForceClose,
@@ -1193,7 +1194,7 @@ export function useGatewayBoot({
 
     setDesktopBootStep({
       phase: 'renderer.boot',
-      message: translateNow('boot.steps.startingDesktopConnection'),
+      message: bootStepCopy('startingDesktopConnection'),
       progress: 6
     })
 

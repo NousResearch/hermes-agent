@@ -81,6 +81,36 @@ def test_a_qqbot_home_gets_the_plugin_once_with_no_placement_notice(tmp_path):
     assert "'qqbot'" in said[0] and "not supported" not in said[0] and "Labs" not in said[0]
 
 
+@pytest.mark.parametrize(("config", "sentence"), [
+    ("plugins:\n  disabled: [qqbot]\n", "plugins.disabled lists 'qqbot', which now turns QQ Bot off"),
+    ("plugins:\n  isolation: host\n", "This profile sets plugins.isolation: host"),
+    ("", ""),
+])
+def test_the_notice_says_only_what_changed_for_the_home(tmp_path, config, sentence):
+    home = _home(tmp_path, env=_CREDS, config=config)
+    (home / "plugins" / "qqbot").mkdir(parents=True)  # the install just placed it
+    notice = next(f for f in lcm.LEFT_CORE if f.plugin == "qqbot").notice(home)
+    assert sentence in notice if sentence else notice == ""
+
+
+def test_the_new_key_wins_over_the_old_one_in_the_same_layer(tmp_path):
+    home = _home(tmp_path, env=_CREDS,
+                 config="platforms:\n  qqbot-platform:\n    enabled: true\n  qqbot:\n    enabled: false\n")
+    assert _qqbot_in_use(home) is False
+
+
+def test_the_gateway_reads_the_old_manifest_key_as_qqbot_once_the_plugin_registers():
+    from gateway.config import Platform
+    Platform._add_pseudo_member("qqbot")  # what the plugin's platform registration yields
+    try:
+        assert Platform("qqbot-platform") is Platform("qqbot")
+    finally:
+        for value in ("qqbot-platform", "qqbot"):
+            member = Platform._value2member_map_.pop(value, None)
+            if member is not None and member.value == value:
+                Platform._member_map_.pop(member._name_, None)
+
+
 def test_a_fresh_or_shipped_default_home_installs_nothing(tmp_path):
     for config in ("", _SHIPPED_PLATFORM_TOOLSETS):
         home = tmp_path / ("shipped" if config else "fresh")

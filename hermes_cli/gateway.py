@@ -42,7 +42,7 @@ from gateway.restart import (
     is_gateway_supervisor_process,
     parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
-    parse_restart_drain_timeout,
+    parse_restart_drain_timeout, planned_stop_wait,
     resolve_restart_exit_wait_budget,
     resolve_systemd_timeout_stop_sec,
 )
@@ -5320,7 +5320,7 @@ def _restart_all_as_host(owner, system: bool, detach: bool = False, owe_online_n
         total = kill_gateway_processes(all_profiles=True) + (1 if service_stopped else 0)
         if total:
             print(f"✓ Stopped {total} gateway process(es) across all profiles")
-    _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    _wait_for_gateway_exit(**planned_stop_wait(_get_restart_drain_timeout()))
     _wait_for_api_server_port_free()
     # Retract the stopped owner's rendezvous record. Leaving it made this very function a silent
     # no-op: the re-entered `gateway run` below read the corpse's record and ATTACHED to it.
@@ -5432,7 +5432,7 @@ def _cmd_restart(args):
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
-    _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    _wait_for_gateway_exit(**planned_stop_wait(_get_restart_drain_timeout()))
     _wait_for_api_server_port_free()
     _forget_host_gateway_probe()
     print("Starting gateway...")

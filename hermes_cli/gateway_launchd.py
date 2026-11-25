@@ -860,7 +860,8 @@ def launchd_stop():
         # below.
         if not (_launchd_error_indicates_unloaded(e) or _launchctl_domain_unsupported(e.returncode)):
             raise
-    _gw()._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    from gateway.restart import planned_stop_wait
+    _gw()._wait_for_gateway_exit(**planned_stop_wait(_gw()._get_restart_drain_timeout()))
     print("✓ Service stopped")
 
 

@@ -356,6 +356,24 @@ def resolve_systemd_timeout_stop_sec(
     return int(max(_seconds(floor_s), max(drain, cron_budget) + _seconds(headroom_s)))
 
 
+def planned_stop_wait(drain_timeout: float) -> dict[str, float]:
+    """``(timeout, force_after)`` for a PLANNED stop/restart of the gateway process.
+
+    A planned stop SIGTERMs the gateway, which drains in-flight turns for
+    ``agent.restart_drain_timeout``, waits up to 5 s for interrupted agents to unwind, and only
+    then tears adapters / stores / browsers down. A fixed 5 s force killed every turn that was
+    still running, and the lifecycle ledger then recorded an unclean exit: the drain setting had
+    no effect on stops at all. The reserve is that drain plus the unwind window and the teardown
+    that follows (10-15 s measured on a 44-profile multiplexed gateway). A non-finite drain waits
+    without forcing, like ``resolve_restart_exit_wait_budget``.
+    """
+    drain = _seconds(drain_timeout)
+    if not math.isfinite(drain):
+        return {"timeout": math.inf, "force_after": math.inf}
+    grace = max(20.0, drain + 20.0)
+    return {"timeout": grace + 15.0, "force_after": grace}
+
+
 def resolve_restart_exit_wait_budget(
     drain_timeout: float, after_turn_timeout: float, cron_drain_timeout: float, *, headroom: float = 15.0,
 ) -> float:

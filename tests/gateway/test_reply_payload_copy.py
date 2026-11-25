@@ -1,7 +1,5 @@
-"""A turn's completion is published with the reply objects the turn produced; a str subclass whose
-``__new__`` needs more than the text could not be deep-copied, so ``SessionEvents.publish`` raised and
-the turn's ``message.complete`` never went out (#156709). Each such reply type must publish and copy
-back as itself, fields included."""
+"""``SessionEvents.publish`` deep-copies its payload, so every str subclass whose ``__new__`` takes
+more than the text must copy and pickle back as itself, fields included."""
 import copy
 import pickle
 import sqlite3
@@ -37,9 +35,12 @@ def _fields(value):
 
 @pytest.mark.parametrize("reply", REPLIES, ids=lambda r: type(r).__name__)
 def test_reply_publishes_and_round_trips_as_itself(reply):
-    events = SessionEvents()
+    events, received = SessionEvents(), []
+    events.observers.add(received.append)
     events.publish("s1", {"text": reply, "messages": [{"content": reply}]})
-    for clone in (copy.deepcopy(reply), pickle.loads(pickle.dumps(reply))):
+    [frame] = received
+    published = frame["params"]["payload"]["text"]
+    for clone in (published, copy.deepcopy(reply), pickle.loads(pickle.dumps(reply))):
         assert type(clone) is type(reply)
         assert str(clone) == str(reply)
         assert _fields(clone) == _fields(reply)

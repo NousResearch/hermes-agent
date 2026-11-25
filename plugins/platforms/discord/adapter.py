@@ -3241,6 +3241,18 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a Discord message by ID without fetching the message first."""
+        if not self._client:
+            return False
+        try:
+            channel = await self._resolve_channel(chat_id)
+            await channel.get_partial_message(int(message_id)).delete()
+        except Exception:  # health: allow BLE001 -- best-effort deletion across Discord client and transport errors
+            logger.debug("[%s] Failed to delete Discord message %s", self.name, message_id, exc_info=True)
+            return False
+        return True
+
     @staticmethod
     def _is_reply_reference_rejected(err: Exception) -> bool:
         """Discord refused the reply anchor: system-message target (50035) or deleted target (10008)."""

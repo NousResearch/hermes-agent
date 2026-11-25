@@ -672,7 +672,12 @@ class GatewayTurnProgressMixin:
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
-        return await st.adapter.edit_message(**kwargs)
+        result = await st.adapter.edit_message(**kwargs)
+        if result.success:
+            logger.debug("[%s] Edited progress bubble %s", st.adapter.name, message_id)
+        else:
+            logger.warning("[%s] Failed to edit progress bubble %s", st.adapter.name, message_id)
+        return result
 
     @staticmethod
     def _progress_text(lines: list) -> str:
@@ -707,6 +712,8 @@ class GatewayTurnProgressMixin:
             chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
         )
         self._track_progress_result(result)
+        if result.success and result.message_id:
+            logger.info("[%s] Created progress bubble %s", st.adapter.name, result.message_id)
         return result
 
     @staticmethod
@@ -828,16 +835,31 @@ class GatewayTurnProgressMixin:
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
+                st.progress_lines.append(base_msg)
                 return base_msg
             st.progress_lines[-1] = _append_progress_repeat_count(base_msg, count + 1)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw
 
-    async def _flush_progress_edit(self, st) -> None:
-        if st.can_edit and st.progress_lines and st.progress_msg_id and not _in_flood_window(st):
+    async def _flush_progress_on_cancel(self, st) -> None:
+        if not st.progress_msg_id:
+            return
+        text = self._progress_text(st.progress_lines)
+        if not text.strip():
+            try:
+                deleted = await st.adapter.delete_message(self._ctx.source.chat_id, st.progress_msg_id)
+            except Exception:  # health: allow BLE001 -- plugin cleanup is best-effort during cancellation
+                logger.debug("[%s] Failed to delete blank progress bubble %s",
+                             st.adapter.name, st.progress_msg_id, exc_info=True)
+            else:
+                if deleted:
+                    logger.info("[%s] Deleted blank progress bubble %s", st.adapter.name, st.progress_msg_id)
+                else:
+                    logger.debug("[%s] Failed to delete blank progress bubble %s", st.adapter.name, st.progress_msg_id)
+        elif st.can_edit and not _in_flood_window(st):
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                await self._edit_progress_message(st, st.progress_msg_id, text)
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -848,7 +870,7 @@ class GatewayTurnProgressMixin:
                     # Content-bubble marker during drain: close the current progress bubble
                     # and start a fresh one for tool lines that arrived after.
                     await self._roll_progress_overflow_if_needed(st)
-                    await self._flush_progress_edit(st)
+                    await self._flush_progress_on_cancel(st)
                     self._reset_progress_bubble(st)
                 else:
                     self._progress_absorb(st, raw)
@@ -856,7 +878,7 @@ class GatewayTurnProgressMixin:
         # Final edit with all remaining tools (only if editing works)
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             await self._roll_progress_overflow_if_needed(st)
-        await self._flush_progress_edit(st)
+        await self._flush_progress_on_cancel(st)
 
     async def _progress_restore_typing(self, st) -> None:
         ctx = self._ctx
@@ -867,7 +889,7 @@ class GatewayTurnProgressMixin:
                 st.adapter, ctx.source.chat_id, ctx.event_message_id, ctx._progress_metadata))
 
     async def _progress_send_or_edit(self, st, msg) -> bool:
-        """Deliver this tick's bubble. Returns False on a transient edit failure (retry next tick).
+        """Deliver this tick's bubble. Returns False when delivery should wait for another tick.
 
         Transient network errors (ConnectError, timeouts) must not disable editing; only permanent
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
@@ -900,7 +922,11 @@ class GatewayTurnProgressMixin:
                 _settle_progress_send(st, result)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        text = "\n".join(st.progress_lines) if st.can_edit else msg
+        if not text.strip():
+            logger.warning("[%s] Suppressed empty progress bubble send", st.adapter.name)
+            return False
+        result = await self._send_progress_text(st, text)
         if self._settle_partial_progress(st, result, []):
             return True
         if st.owed_fresh and not result.success and not _note_flood(st, result) and _owed_send_failed(st):

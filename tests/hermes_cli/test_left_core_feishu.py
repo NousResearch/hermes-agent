@@ -159,3 +159,25 @@ def test_explicit_legacy_feishu_bundle_selects_the_installed_plugin_tools(monkey
         reset_hermes_home_override(token)
 
     assert not validate_toolset("hermes-feishu")
+
+
+@pytest.mark.parametrize("present", [True, False], ids=["kept", "removed"])
+def test_a_feishu_home_the_default_installer_reached_first_keeps_its_scope_and_is_not_reinstalled(tmp_path, present):
+    """feishu is a ``default: true`` plugin, so ``hermes update``'s default installer can place it before the
+    first start's migration runs. The migration must not install it again (a removal sticks), but must still
+    keep the feishu_* tools off where core had them off."""
+    home = _home(tmp_path, env=_CREDS, config="_default_plugins_installed: [feishu]\n")
+    if present:
+        (home / "plugins" / "feishu").mkdir(parents=True)
+    calls, said = [], []
+    assert lcm.migrate_home(home, install=lambda name: calls.append(name) or {"ok": True}, say=said.append) == []
+    assert calls == [] and said == []
+    config = lcm._read_config(home)
+    assert config["known_plugin_toolsets"]["telegram"] == ["feishu_doc", "feishu_drive"]
+
+
+def test_the_default_installer_skips_feishu_the_left_core_migration_placed(tmp_path):
+    from hermes_cli import default_plugins
+    home = _home(tmp_path, config="_left_core_installed: [feishu]\n")
+    assert "feishu" in default_plugins._recorded(home)
+    assert default_plugins._recorded(home, own_only=True) == set()

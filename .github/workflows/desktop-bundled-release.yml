@@ -860,6 +860,8 @@ jobs:
               unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o -name 'Store-*' -o ! -name "*-win-${arch}.msix" \) -print)"
               ;;
             darwin-*)
+              # This arch's one .dmg and one .zip and their blockmaps, none hidden: the globs below skip
+              # hidden names, the uploader's Path.glob does not.
               platform=macos; arch="${TARGET##*-}"
               unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o ! \( -name "*-mac-${arch}.dmg" -o -name "*-mac-${arch}.zip" -o -name "*-mac-${arch}.dmg.blockmap" -o -name "*-mac-${arch}.zip.blockmap" \) \) -print)"
               for blockmap in "$root"/*.blockmap; do [ -f "${blockmap%.blockmap}" ] || unexpected+=" $blockmap"; done

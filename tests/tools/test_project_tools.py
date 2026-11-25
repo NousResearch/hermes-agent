@@ -244,3 +244,47 @@ def test_idempotent_create_from_a_session_keeps_profile_active_pointer(gui_sessi
     assert tab["cwd"] == str(folders["existing"])
     with pdb.connect_closing() as conn:
         assert pdb.get_active_id(conn) == foreground
+
+
+def test_switch_reports_moved_when_the_callback_moved_the_session(monkeypatch, tmp_path):
+    db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
+    with connect_closing(db_path=db_path) as conn:
+        target_id = pdb.create_project(conn, name="Target", folders=["/work/target"])
+    project_tools.set_project_workspace_callback(lambda *args: True)
+    try:
+        result = json.loads(project_tools.project_switch(target_id, task_id="gui-session"))
+    finally:
+        project_tools.set_project_workspace_callback(None)
+    assert result["moved"] is True and "not_moved_reason" not in result
+
+
+def test_legacy_callback_returning_none_counts_as_moved(monkeypatch, tmp_path):
+    """Before the verdict existed a callback returned None; no exception still means it moved."""
+    _use_projects_db(monkeypatch, tmp_path)
+    project_tools.set_project_workspace_callback(lambda *args: None)
+    try:
+        result = json.loads(project_tools.project_create("Legacy", path="/work/legacy", task_id="gui-session"))
+    finally:
+        project_tools.set_project_workspace_callback(None)
+    assert result["moved"] is True
+
+
+@pytest.mark.parametrize("callback, task_id, reason", [
+    (None, "cli-session", "no live GUI session"),
+    (lambda *args: True, None, "no calling session"),
+    (lambda *args: False, "gui-session", "no live GUI session owns"),
+    (lambda *args: (_ for _ in ()).throw(RuntimeError("boom")), "gui-session", "workspace move failed: boom"),
+], ids=["no-callback", "no-task", "no-session", "raised"])
+def test_create_that_could_not_move_says_so_and_switches_the_pointer(monkeypatch, tmp_path, callback, task_id, reason):
+    """A success that left the chat in its old folder made the agent keep working there: the result
+    names the miss, and the profile-global pointer takes the switch instead."""
+    db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
+    project_tools.set_project_workspace_callback(callback)
+    try:
+        result = json.loads(project_tools.project_create("Wt", path="/work/wt", task_id=task_id))
+    finally:
+        project_tools.set_project_workspace_callback(None)
+    with connect_closing(db_path=db_path) as conn:
+        assert pdb.get_active_id(conn) == result["id"]
+    assert result["success"] is True and result["moved"] is False
+    assert reason in result["not_moved_reason"]

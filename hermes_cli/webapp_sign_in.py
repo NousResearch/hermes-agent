@@ -41,8 +41,10 @@ of its own, signature, issuer, ``aud``, agent instance and scope included, and i
 name an actor. Another issuer's token carrying an ``act`` claim (a self-hosted OIDC ID token) stays
 bound to its login. A cheap shape check comes first, so only a well-formed compact JWS signed with an
 asymmetric algorithm is ever sent to a provider; a token of another shape (the password provider's,
-whose decoder skips characters it does not know) is never read as one. When the provider cannot be
-reached the token is refused, not let through. The refresh route keeps :func:`token_works_alone`: an
+whose decoder skips characters it does not know) is never read as one, and the provider turns away
+a token whose unverified issuer, audience or agent instance is not its own before it looks up any
+signing key, so an anonymous caller cannot make the listener fetch keys for tokens addressed
+elsewhere. When the provider cannot be reached the token is refused, not let through. The refresh route keeps :func:`token_works_alone`: an
 exchanged token is an access token, and the dashboard host exchanges again rather than refreshing here.
 """
 from __future__ import annotations
@@ -158,26 +160,33 @@ def _segment(part: str) -> object:
         return None
 
 
-def reads_as_exchanged(token: str) -> bool:
-    """Whether *token* is shaped like one minted by RFC 8693 token exchange: a compact JWS, signed
-    with an asymmetric algorithm, whose claims carry an ``act`` object naming its actor. Read WITHOUT
-    verifying anything; it only decides whether a provider is asked (:func:`is_exchanged_token`)."""
+def _unverified_exchange_claims(token: str) -> Optional[dict]:
+    """*token*'s claims, decoded WITHOUT verification, when it is shaped like one minted by RFC 8693
+    token exchange: a compact JWS, signed with an asymmetric algorithm, whose claims carry an ``act``
+    object naming its actor. Else None. Only decides whether a provider is asked."""
     if not token or len(token) > 16384 or not _COMPACT_JWS.fullmatch(token):
-        return False
+        return None
     header_part, claims_part, _signature = token.split(".")
     header, claims = _segment(header_part), _segment(claims_part)
     algorithm = header.get("alg") if isinstance(header, dict) else None
-    if not isinstance(algorithm, str) or algorithm not in _EXCHANGE_ALGORITHMS:
-        return False
-    actor = claims.get("act") if isinstance(claims, dict) else None
-    return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
+    if not isinstance(algorithm, str) or algorithm not in _EXCHANGE_ALGORITHMS or not isinstance(claims, dict):
+        return None
+    actor = claims.get("act")
+    return claims if isinstance(actor, dict) and isinstance(actor.get("sub"), str) and actor["sub"] else None
+
+
+def reads_as_exchanged(token: str) -> bool:
+    """Whether *token* is shaped like an exchanged token (:func:`_unverified_exchange_claims`)."""
+    return _unverified_exchange_claims(token) is not None
 
 
 def is_exchanged_token(token: str) -> bool:
     """Whether a registered provider that issues exchanged tokens verifies *token* as one: its
     own token for this agent whose verified claims name an actor. Refused when no such provider
-    answers (an outage included)."""
-    if not reads_as_exchanged(token):
+    answers (an outage included). The provider gets the unverified claims too, to turn away a token
+    that is not addressed to it before it fetches any signing key."""
+    claims = _unverified_exchange_claims(token)
+    if claims is None:
         return False
     from hermes_cli.dashboard_auth import ProviderError, list_session_providers
 
@@ -186,7 +195,7 @@ def is_exchanged_token(token: str) -> bool:
         if not callable(verdict):
             continue
         try:
-            if verdict(token=token):
+            if verdict(token=token, unverified_claims=claims):
                 return True
         except ProviderError as exc:
             _log.warning("Could not check an exchanged token with provider %r: %s", provider.name, exc)

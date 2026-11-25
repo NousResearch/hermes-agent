@@ -140,11 +140,32 @@ def test_another_issuers_token_with_an_actor_stays_bound_to_its_login(gated, nou
 def test_an_unreachable_portal_refuses_an_exchanged_token(gated, nous, portal_key, monkeypatch):
     from hermes_cli.dashboard_auth import ProviderError
 
-    def unreachable(*, token):
+    def unreachable(*, token, unverified_claims=None):
         raise ProviderError("JWKS unreachable")
 
     monkeypatch.setattr(nous, "is_exchanged_token", unreachable)
     _refused(gated.browser().get("/api/auth/me", headers=_bearer(_token(portal_key))))
+
+
+@pytest.mark.parametrize("addressed", ["another_issuer", "another_agent", "another_instance"])
+def test_a_token_addressed_elsewhere_fetches_no_signing_key(gated, nous, portal_key, addressed):
+    """An anonymous caller cannot make the listener look up Portal's keys for a token that is not
+    addressed to this agent: the provider turns it away on its unverified claims."""
+    lookups = []
+
+    class CountingKeys:
+        def get_signing_key_from_jwt(self, token):
+            lookups.append(token)
+            raise AssertionError("no key lookup expected")
+
+    nous._jwks_client = CountingKeys()
+    token = {
+        "another_issuer": lambda: _token(portal_key, iss="https://elsewhere.example"),
+        "another_agent": lambda: _token(portal_key, aud="agent:inst-beta"),
+        "another_instance": lambda: _token(portal_key, agent_instance_id="inst-beta"),
+    }[addressed]()
+    _refused(gated.browser().get("/api/auth/me", headers=_bearer(token)))
+    assert lookups == []
 
 
 @pytest.mark.parametrize("header", [{"alg": []}, {"alg": {"x": 1}}, {"alg": None}])

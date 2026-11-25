@@ -107,17 +107,30 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             raise InvalidCodeError(f"token does not grant {_SCOPE}")
         return claims
 
-    def is_exchanged_token(self, *, token: str) -> bool:
+    def is_exchanged_token(self, *, token: str, unverified_claims: Optional[dict[str, Any]] = None) -> bool:
         """Whether *token* is a dashboard token Portal minted for this agent by RFC 8693 token
         exchange: verified like any session token, and its claims name the client it was exchanged
         for (``act.sub``). The authorization-code grant a browser login uses never sets ``act``.
-        A ``ProviderError`` (JWKS unreachable) propagates."""
+        *unverified_claims* (the caller's decode, NOT verified) turns away a token whose issuer,
+        audience or agent instance is not this agent's before any signing key is looked up. A
+        ``ProviderError`` (JWKS unreachable) propagates."""
+        if unverified_claims is not None and not self._addressed_here(unverified_claims):
+            return False
         try:
             claims = self._claims_for(token)
         except InvalidCodeError:
             return False
         actor = claims.get("act")
         return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
+
+    def _addressed_here(self, claims: dict[str, Any]) -> bool:
+        """Whether unverified *claims* name this agent: Portal's issuer, this client as audience,
+        and (when present) this instance. Only a pre-filter; verification decides."""
+        audience = claims.get("aud")
+        audiences = audience if isinstance(audience, list) else [audience]
+        instance = claims.get("agent_instance_id")
+        return (claims.get("iss") == self._portal_url and self._client_id in audiences
+                and instance in (None, self._agent_instance_id))
 
     def verify_peer_pass(self, *, token: str) -> Optional[TokenPrincipal]:
         try:

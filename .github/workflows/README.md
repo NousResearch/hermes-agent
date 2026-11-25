@@ -149,9 +149,10 @@ starts no `workflow_run` workflow when it completes. This is why:
 ### Runners
 
 `blacksmith-*` labels are Blacksmith runners (`2vcpu`/`4vcpu` for small jobs,
-`16vcpu`/`32vcpu` for test suites and builds, `-arm` for native arm64). A job stays on
-the larger size only where the smaller one measured at least 15% slower (catalog-tests
-and docs-site-checks moved anyway: under a minute of extra time). The only GitHub-hosted
+`16vcpu`/`32vcpu` for test suites and builds, `-arm` for native arm64). For the CI jobs
+measured when right-sizing, the larger runner was kept only where the smaller one was
+15% or more slower; `catalog-tests` and `docs-site-checks` moved anyway (each added under
+a minute), and unmeasured jobs (the disabled Desktop E2E) kept their size. The only GitHub-hosted
 label is `windows-latest-32-arm-core`: Blacksmith has no Windows arm64 runners.
 No workflow runs on Intel macOS. Jobs that only run `docker buildx imagetools`
 (manifest lists, alias promotion) set up buildx with `docker/setup-buildx-action`

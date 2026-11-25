@@ -43,11 +43,15 @@ def test_snapshot_carries_revision_bytes_regardless_of_builder_eol_config(tmp_pa
     (repo / ".gitattributes").write_bytes(b"*.ps1 text eol=crlf\n")
     (repo / "plain.json").write_bytes(b'{\n"a": 1\n}\n')
     (repo / "script.ps1").write_bytes(b"one\ntwo\n")
+    # Archived by the second, runtime-tree pass after scripts/ is excluded.
+    (repo / "scripts/whatsapp-bridge").mkdir(parents=True)
+    (repo / "scripts/whatsapp-bridge/notes.txt").write_bytes(b"one\ntwo\n")
     subprocess.run([*git, "add", "."], cwd=repo, check=True, capture_output=True)
     subprocess.run([*git, "commit", "-qm", "fixture"], cwd=repo, check=True)
     out = tmp_path / "out"
-    snapshot(repo, "HEAD", out)
+    snapshot(repo, "HEAD", out, exclude=INERT_SNAPSHOT_DIRS)
     assert (out / "plain.json").read_bytes() == b'{\n"a": 1\n}\n'
+    assert (out / "scripts/whatsapp-bridge/notes.txt").read_bytes() == b"one\ntwo\n"
     # Committed eol attributes still apply: only builder config is ignored.
     assert (out / "script.ps1").read_bytes() == b"one\r\ntwo\r\n"
 

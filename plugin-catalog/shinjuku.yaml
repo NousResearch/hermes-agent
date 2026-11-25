@@ -16,7 +16,7 @@ screenshots:
   - https://raw.githubusercontent.com/ShinjukuStaition/shinjuku-shield/f1e63ac0134a6da00f671cf0542177551fbfddb2/docs/hermes/hermes-price-and-approval.png
 platforms: [windows, linux]
 known_issues:
-  - "Install the wallet first, in a terminal: npm install -g shinjuku, then shinjuku setup (on Windows npm.cmd install -g shinjuku, then shinjuku.cmd setup). Then reload the wallet in Hermes: /reload-mcp (in the desktop app: Ctrl+K, Restart gateway)."
+  - "If the Shinjuku tools do not connect, install the wallet in a terminal first: npm install -g shinjuku. Then reload."
 capabilities:
   provides_tools: []
   provides_hooks: []

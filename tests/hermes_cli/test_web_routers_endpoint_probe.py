@@ -219,3 +219,100 @@ def test_custom_endpoint_probe_passes_on_a_json_models_reply(monkeypatch):
     assert data["ok"] is True and data["reachable"] is True
     assert data["models"] == ["gpt-4o", "gpt-4o-mini"]
     assert data["message"] == ""
+
+
+@pytest.mark.parametrize("route", ["/api/providers/validate", "/api/providers/custom-endpoints/validate"])
+def test_v1_auth_rejection_is_not_overwritten_by_root_spa_html(route, monkeypatch):
+    """When ``/v1/models`` rejects the key (401) and stripping ``/v1`` hits an SPA catch-all
+    (200 ``text/html``), the probe must report the 401 key rejection rather than claiming the
+    URL is an SPA catch-all."""
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate, EnvVarUpdate
+
+    class _Resp:
+        def __init__(self, status, content_type, body):
+            self.status_code = status
+            self.is_success = 200 <= status < 300
+            self.headers = {"content-type": content_type}
+            self._body = body
+
+        def json(self):
+            if isinstance(self._body, str):
+                raise ValueError("not JSON")
+            return self._body
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, *a, **k):
+            if url.endswith("/v1/models"):
+                return _Resp(401, "application/json", {"error": "Invalid token"})
+            return _Resp(200, "text/html", "<html><body><div id=root></div></body></html>")
+
+    monkeypatch.setattr(mod, "_endpoint_probe_client", lambda url, timeout: _Client())
+    monkeypatch.setattr(mod, "_require_token", lambda request: None)
+    if route == "/api/providers/validate":
+        body = EnvVarUpdate(key="OPENAI_BASE_URL", value="http://127.0.0.1:12168/v1", api_key="")
+        data = asyncio.run(mod.validate_provider_credential(body, request=None))  # type: ignore[arg-type]
+        assert "401" in data["message"]
+    else:
+        body = CustomEndpointUpdate(id="", name="myapi", base_url="http://127.0.0.1:12168/v1", api_key="", model="")
+        data = asyncio.run(mod.validate_custom_endpoint(body))
+        assert "rejected the API key" in data["message"]
+    assert data["ok"] is False and data["reachable"] is True
+    assert "text/html" not in data["message"]
+
+
+@pytest.mark.parametrize("route", ["/api/providers/validate", "/api/providers/custom-endpoints/validate"])
+def test_root_spa_html_falls_through_to_v1_models(route, monkeypatch):
+    """A bare root URL on a gateway with an SPA frontend answers 200 ``text/html`` on ``/models``;
+    the probe must still try ``/v1/models`` and resolve to the ``/v1`` base when it serves models."""
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate, EnvVarUpdate
+
+    class _Resp:
+        def __init__(self, status, content_type, body):
+            self.status_code = status
+            self.is_success = 200 <= status < 300
+            self.headers = {"content-type": content_type}
+            self._body = body
+
+        def json(self):
+            if isinstance(self._body, str):
+                raise ValueError("not JSON")
+            return self._body
+
+    seen = []
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, *a, **k):
+            seen.append(url)
+            if url.endswith("/v1/models"):
+                return _Resp(200, "application/json", {"data": [{"id": "gemini-3.8-flash"}]})
+            return _Resp(200, "text/html", "<html><body><div id=root></div></body></html>")
+
+        async def post(self, url, *a, **k):
+            return _Resp(200, "application/json", {"choices": []})
+
+    monkeypatch.setattr(mod, "_endpoint_probe_client", lambda url, timeout: _Client())
+    monkeypatch.setattr(mod, "_require_token", lambda request: None)
+    if route == "/api/providers/validate":
+        body = EnvVarUpdate(key="OPENAI_BASE_URL", value="http://127.0.0.1:12168", api_key="sk-test")
+        data = asyncio.run(mod.validate_provider_credential(body, request=None))  # type: ignore[arg-type]
+    else:
+        body = CustomEndpointUpdate(id="", name="myapi", base_url="http://127.0.0.1:12168", api_key="sk-test", model="")
+        data = asyncio.run(mod.validate_custom_endpoint(body))
+
+    assert seen == ["http://127.0.0.1:12168/models", "http://127.0.0.1:12168/v1/models"]
+    assert data["ok"] is True and data["models"] == ["gemini-3.8-flash"]
+    assert data["resolved_base_url"] == "http://127.0.0.1:12168/v1"

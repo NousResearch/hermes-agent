@@ -253,7 +253,8 @@ def test_imported_prompts_are_deduplicated(tmp_path):
         assert get_session(db, "s2")["system_prompt"] == prompt
 
 
-def test_v24_inline_prompts_migrate_once_to_content_addressed_storage(tmp_path):
+@pytest.mark.parametrize("as_blob", [False, True])
+def test_v24_inline_prompts_migrate_once_to_content_addressed_storage(tmp_path, as_blob):
     home = tmp_path / "legacy-prompts"
     legacy_prompt = "Legacy system prompt\n" + ("same policy\n" * 20)
 
@@ -265,7 +266,7 @@ def test_v24_inline_prompts_migrate_once_to_content_addressed_storage(tmp_path):
         def inline_v24(conn):
             conn.execute(
                 "UPDATE sessions SET system_prompt = ?, system_prompt_hash = NULL",
-                (legacy_prompt,),
+                (legacy_prompt.encode("utf-8") if as_blob else legacy_prompt,),
             )
             conn.execute("UPDATE schema_version SET version = 24")
         db._execute_write(inline_v24)

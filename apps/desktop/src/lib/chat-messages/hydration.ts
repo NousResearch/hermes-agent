@@ -49,6 +49,46 @@ function persistedImageRefs(text: string) {
   return { cleanedText: extracted.cleanedText, refs: [...extracted.refs, ...paths.map(path => `@image:${formatRefValue(path)}`)] }
 }
 
+// A carried native image can be stored as multipart content instead of its
+// flattened form. Normalize only the complete hint/image suffix, so hydration
+// and retained composer rows compare the same caption without serializing bytes.
+function nativeUserContentText(content: unknown): string {
+  if (
+    !Array.isArray(content) ||
+    content.length < 2 ||
+    content[0]?.type !== 'text' ||
+    typeof content[0].text !== 'string'
+  ) {
+    return textFromUnknown(content)
+  }
+
+  const images = content.slice(1)
+
+  if (
+    !images.every(
+      part =>
+        part?.type === 'image_url' && (typeof part.image_url === 'string' || typeof part.image_url?.url === 'string')
+    )
+  ) {
+    return textFromUnknown(content)
+  }
+
+  const text = content[0].text
+  const suffix = /\n\n((?:\[Image attached(?: at)?: [^\n]+\](?:\n|$))+)((?:\[screenshot\](?:\n|$))*)$/.exec(text)
+  const paths = suffix ? [...suffix[1].matchAll(/^\[Image attached(?: at)?: (.+)\]$/gm)] : []
+  const placeholders = suffix ? suffix[2].split('[screenshot]').length - 1 : 0
+
+  if (!suffix || paths.length !== images.length || (placeholders !== 0 && placeholders !== images.length)) {
+    return textFromUnknown(content)
+  }
+
+  const caption = text.slice(0, suffix.index)
+
+  return caption.trim()
+    ? `${caption}\n\n${suffix[1].trimEnd()}\n${images.map(() => '[screenshot]').join('\n')}`
+    : paths.map(match => `@image:${formatRefValue(match[1])}`).join('\n')
+}
+
 // Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
 // Current gateways persist the authored text; this heals rows written before that fix. Only
 // the note is model-facing — the `[Replying to: …]` pointer next to it is kept.
@@ -124,7 +164,7 @@ function codexMessageItemText(message: SessionMessage): { commentary: string[]; 
 }
 
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
-  const rawText = textFromUnknown(content)
+  const rawText = role === 'user' ? nativeUserContentText(content) : textFromUnknown(content)
 
   if (role !== 'user') {
     return rawText

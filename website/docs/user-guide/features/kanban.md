@@ -900,13 +900,25 @@ Every handler is a thin wrapper and adds no new task-domain logic. Mutation and 
 
 ### Sanitized signal contract
 
-`GET /read-model/signal` is intended for status views, graph visualizations, and other observability-only dashboard plugins. It requires one explicit canonical `board` parameter, rejects duplicate or unknown parameters, returns `Cache-Control: private, no-store`, and advertises `kanban.read_model.signal.v1` plus `kanban.events.signal.v1`.
+`GET /read-model/signal` is intended for status views, graph visualizations, and other observability-only dashboard plugins. It requires one explicit canonical `board` parameter, rejects duplicate or unknown parameters, returns `Cache-Control: private, no-store`, and advertises `kanban.read_model.signal.v1` plus `kanban.events.signal.v1`. The `profile` parameter that the Plugin SDK (`fetchJSON`, `authedFetch`, `buildWsUrl`) appends to every plugin URL is accepted on both signal routes; the dashboard's profile scope consumes it and it never selects or filters signal data.
 
 The projection exposes only bounded task identity/status/timing fields, parent-child links, and bounded run identity/status/timing fields. It never returns task titles, bodies, results, prompts, workspace or branch paths, claim locks, raw errors, summaries, metadata, or event payloads.
 
 When `truncated` is `true`, tasks are partial and links and runs cover only that visible task set. Clients must not infer board-wide completeness or compute integral board metrics from that response; they should render an explicit partial state or fail closed.
 
-Signal WebSocket frames carry `generation`, `cursor`, `reset`, and allowlisted event identity fields. Event-history deletion rotates the generation in the same SQLite transaction. Fresh streams may use `since=0` without `generation`; reconnects with `since>0` must send the generation received with their snapshot or prior frame. A mismatch returns an initial `reset: true`, and the client must fetch a fresh signal read model before applying more events. Omitting `view` preserves the legacy WebSocket protocol unchanged.
+Signal WebSocket frames carry `generation`, `cursor`, `reset`, and allowlisted event identity fields. Event-history deletion rotates the generation in the same SQLite transaction. Fresh streams may use `since=0` without `generation`; reconnects with `since>0` must send the generation received with their snapshot or prior frame. A mismatch returns an initial `reset: true`, and the client must fetch a fresh signal read model before applying more events. Importing a board (`hermes kanban boards import`) also gives it a new generation. Omitting `view` preserves the legacy WebSocket protocol unchanged.
+
+The signal WebSocket needs no query credential of its own: whatever the canonical upgrade gate admitted (the SDK's `buildWsUrl` URL, a Desktop's `X-Hermes-Gateway-Ticket` grant, or a `hermes-gateway-ticket.` subprotocol ticket) is enough. Several distinct query credentials are refused as ambiguous.
+
+Unavailable boards answer with stable codes and never create, initialize, or migrate a database:
+
+| Board state | `GET`/`HEAD` | Signal WebSocket |
+|---|---|---|
+| Unknown slug, archived (tombstone `board.json`), or no `kanban.db` | `404` | close `1008` before accept |
+| Database written by an older Hermes without the event generation | `503` | accept, then close `1011` |
+| Read failure while streaming | — | close `1011` (`1008` if the board disappeared) |
+
+**Mixed versions.** Only writers from this release rotate the generation. An older Hermes binary still writing to a board (a gateway, dispatcher, or CLI started before the upgrade) can garbage-collect, delete, renumber, or import event history without rotating it, so a reconnecting client may resume across that change without `reset`. Boards that binary creates stay `503` until a current binary opens them. After upgrading, restart the gateway and other long-running Hermes processes so only current writers touch the boards.
 
 ### Dashboard config
 

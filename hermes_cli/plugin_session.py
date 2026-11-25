@@ -91,6 +91,35 @@ def session_viewers() -> list[dict]:
     return viewers(authority, session_id)
 
 
+def session_source() -> str:
+    """The label the calling session was created with: its launch policy's ``source``. ``cli``,
+    ``tui``, ``gui`` or ``acp`` for a chat opened in that client, ``tool`` for a run a third-party
+    integration launched (``hermes chat --source tool``), ``oneshot`` for a finite ``chat -q`` /
+    ``-z`` run; any other non-empty value is a label Hermes gives a session it starts itself. It is a
+    launch label, not proof that a person is waiting. ``""`` says only that no launch policy is
+    bound: outside a session, for a person's messaging chat turn and for a cron run
+    (``current_cron_execution`` names that one). A delegated child runs in its parent turn's context
+    and reads the parent session's label. Never read from ``os.environ``."""
+    policy = _active_policy()
+    return policy.source if policy is not None else ""
+
+
+def in_delegated_child(*, include_subprocesses: bool = False) -> bool:
+    """``True`` while the calling code runs for a ``delegate_task`` child. With
+    ``include_subprocesses=True``, also ``True`` in a process a delegated child started (Hermes marks
+    that process's environment)."""
+    from agent.delegation_context import is_delegated_child_context, is_delegated_child_process_context
+    return is_delegated_child_process_context() if include_subprocesses else is_delegated_child_context()
+
+
+def fork_origin() -> str:
+    """The running detached fork's label: ``"background_review"``, ``"side_question"``, or
+    ``"plugin_fork:<plugin id>"``. ``""`` outside a detached fork, regardless of which skill or
+    memory write rules apply. Use ``ctx.fork_origin()`` from a hosted plugin."""
+    from agent.turn_facade import detached_fork_origin
+    return detached_fork_origin()
+
+
 def _in_delegated_child():
     """A delegated child runs in a copy of its parent turn's context (stamp and session vars
     included), yet no admission of its own executes there: the turn's facts are not the child's."""

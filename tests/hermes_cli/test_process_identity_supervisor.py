@@ -875,6 +875,10 @@ def test_a_supervisor_killed_on_its_own_is_restarted_with_every_group_replayed(m
     restarted however young the supervisor is (a new one starts after every idle period)."""
     import psutil
 
+    from agent.monitoring import managed_processes
+    exits = []
+    monkeypatch.setattr(managed_processes, "record",
+                        lambda subsystem, action, outcome, **k: exits.append((action, outcome, k.get("count"))))
     child = subprocess.Popen(_VICTIM, start_new_session=True)
     try:
         process_identity.own_process_groups([child.pid])
@@ -886,6 +890,7 @@ def test_a_supervisor_killed_on_its_own_is_restarted_with_every_group_replayed(m
         wait_until(lambda: not psutil.pid_exists(first.pid), timeout=10, what="the killed supervisor reaped")
         assert child.poll() is None, "restarting the supervisor touched a live group"
 
+        assert ("supervisor_exit", "restarted", 1) in exits, "a supervisor that died and was restarted went unreported"
         second.stdin.close()  # the EOF our death sends: the replayed group must be reaped
         wait_until(lambda: child.poll() is not None, timeout=15,
                    what="the group registered before the restart killed by the replacement")

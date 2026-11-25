@@ -7,13 +7,15 @@ tmux, nohup, or a plain shell without a sidecar/watchdog dependency.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import logging
 import os
 import threading
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from agent.monitoring import emitter, otlp_exporter
 from agent.monitoring.gateway_health import (
@@ -51,7 +53,15 @@ _OBSERVABLE_METRIC_NAMES = (
     "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
     "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
     "hermes.cron.jobs.overdue", "hermes.cron.store.writable", "hermes.cron.store.skipped_runs",
+    "hermes.bot_desktop.screens.running", "hermes.bot_desktop.screens.human_held", "hermes.owned_children.groups",
 )
+# The homes whose managed processes (Bot Desktop screens, spooled events) this gateway reports.
+Homes = Callable[[], Iterable[Path]]
+
+
+def _own_home() -> list[Path]:
+    from hermes_constants import get_hermes_home
+    return [get_hermes_home()]
 
 
 def _diagnostic_log_attributes(event: dict[str, Any]) -> dict[str, Any]:
@@ -69,6 +79,9 @@ class GatewayHealthExportRuntime:
     log_streamer: Any = None
     thread: Optional[threading.Thread] = None
     stop_event: Optional[threading.Event] = None
+    # True once the diagnostics pass drains managed-process spools. It stays True after shutdown: a served-set
+    # change during teardown must keep the spools for this gateway's restart.
+    spooling: bool = False
 
     def shutdown(self) -> None:
         if self.stop_event is not None:
@@ -170,7 +183,8 @@ def _read_background_delegations_count() -> int:
     return _count("background-delegations count failed", "tools.async_delegation", lambda m: m.active_count())
 
 
-def _read_runtime_snapshot(config: dict[str, Any]):
+def _read_runtime_snapshot(config: dict[str, Any], homes: Homes = _own_home, *, managed: bool = True):
+    """``managed=False``: skip the managed-process gauges (the events-only pass discards metrics anyway)."""
     gateway_snapshot = _read_gateway_snapshot(config)
     # Background/subagent work is appended to the gateway snapshot so it rides the same base
     # resource attributes (service.instance.id etc.).
@@ -191,20 +205,44 @@ def _read_runtime_snapshot(config: dict[str, Any]):
         # the exception *type* (the message could carry paths); exc_info stays on DEBUG.
         logger.warning("cron health snapshot unavailable; cron telemetry not exported (error_type=%s)", type(exc).__name__)
         logger.debug("cron health snapshot traceback", exc_info=True)
+    if not managed:
+        return gateway_snapshot
+    try:
+        from agent.monitoring.managed_processes import build_managed_process_metrics
+        gateway_snapshot.metrics.extend(build_managed_process_metrics(homes))
+    except Exception as exc:
+        logger.warning("managed-process snapshot unavailable; metric not exported (error_type=%s)", type(exc).__name__)
+        logger.debug("managed-process snapshot traceback", exc_info=True)
     return gateway_snapshot
 
 
-def _emit_snapshot_events(config: dict[str, Any]) -> None:
+def _emit_spooled_events(homes: Homes) -> None:
+    """Export what processes without an exporter left in the spool (a screen's own idle check, the
+    owner-death supervisor after its owner died), and keep each served home's spool in place: a profile
+    served since the last pass starts spooling too."""
+    try:
+        from agent.monitoring.managed_processes import drain_spool, set_spooling
+        current = list(homes())
+        set_spooling(current, True)
+        for event in drain_spool(current):
+            emitter.emit(event)
+    except Exception as exc:
+        logger.warning("managed-process spool drain failed; events not exported (error_type=%s)", type(exc).__name__)
+        logger.debug("managed-process spool drain traceback", exc_info=True)
+
+
+def _emit_snapshot_events(config: dict[str, Any], homes: Homes = _own_home) -> None:
     if not _gateway_health_config(config).get("diagnostic_events_enabled", True):
         return
     try:
-        for event in _read_runtime_snapshot(config).events:
+        for event in _read_runtime_snapshot(config, homes, managed=False).events:
             emitter.emit(event)
     except Exception:
         logger.debug("gateway health snapshot emit failed", exc_info=True)
+    _emit_spooled_events(homes)
 
 
-def _start_metric_provider(config: dict[str, Any], sdk: dict[str, Any]) -> Any:
+def _start_metric_provider(config: dict[str, Any], sdk: dict[str, Any], homes: Homes = _own_home) -> Any:
     exporter = sdk["OTLPMetricExporter"](**_exporter_kwargs(config, "metrics"))
     interval_ms = max(5, int(_gateway_health_config(config).get("export_interval_seconds", 60))) * 1000
     reader = sdk["PeriodicExportingMetricReader"](exporter, export_interval_millis=interval_ms)
@@ -216,7 +254,7 @@ def _start_metric_provider(config: dict[str, Any], sdk: dict[str, Any]) -> Any:
     def callback(name: str):
         def _cb(_options=None):
             try:
-                return [Observation(m.value, m.attributes) for m in _read_runtime_snapshot(config).metrics if m.name == name]
+                return [Observation(m.value, m.attributes) for m in _read_runtime_snapshot(config, homes).metrics if m.name == name]
             except Exception:
                 logger.debug("gateway metric callback failed", exc_info=True)
                 return []
@@ -267,7 +305,7 @@ class GatewayDiagnosticLogStreamer(EmitterStreamer):
 
 
 def _gateway_health_event(ev: dict[str, Any]) -> bool:
-    return ev.get("event") in {"gateway_health", "cron_execution"}
+    return ev.get("event") in {"gateway_health", "cron_execution", "managed_process"}
 
 
 def _fail(runtime: GatewayHealthExportRuntime, log: Callable[..., None], msg: str, reason: str) -> GatewayHealthExportRuntime:
@@ -276,8 +314,40 @@ def _fail(runtime: GatewayHealthExportRuntime, log: Callable[..., None], msg: st
     return GatewayHealthExportRuntime(enabled=False, reason=reason)
 
 
-def start_gateway_health_export(config: dict[str, Any]) -> GatewayHealthExportRuntime:
-    """Start P0 gateway health export if configured. Never raises."""
+def note_served_homes(runtime: Optional[GatewayHealthExportRuntime], homes: Iterable[Path]) -> None:
+    """The served set changed. A gateway that does not drain spools removes the new homes' spools (a profile
+    can arrive after startup, with a spool left by an earlier exporting run); a draining one keeps them, its
+    next pass creates any missing."""
+    if runtime is not None and not runtime.spooling:  # None: not started yet, or shut down; decided at start
+        _stop_spooling(homes)
+
+
+def _stop_spooling(homes: Iterable[Path]) -> None:
+    """Nothing drains the spool: remove it, so out-of-process writers stop leaving events there."""
+    try:
+        from agent.monitoring.managed_processes import set_spooling
+        set_spooling(homes, False)
+    except Exception:
+        logger.debug("managed-process spool removal failed", exc_info=True)
+
+
+def _removes_undrained_spools(start: Callable[..., GatewayHealthExportRuntime]) -> Callable[..., GatewayHealthExportRuntime]:
+    """Whatever way the start ends without a draining pass (export or diagnostics off, the SDK missing, a
+    failed start), nothing will drain this gateway's spools: remove them, so out-of-process writers stop.
+    A wrapper rather than a check at each of the start's many returns, so a new return cannot skip it."""
+    @functools.wraps(start)
+    def wrapper(config: dict[str, Any], *, homes: Homes = _own_home) -> GatewayHealthExportRuntime:
+        runtime = start(config, homes=homes)
+        if not runtime.spooling:
+            _stop_spooling(homes())
+        return runtime
+    return wrapper
+
+
+@_removes_undrained_spools
+def start_gateway_health_export(config: dict[str, Any], *, homes: Homes = _own_home) -> GatewayHealthExportRuntime:
+    """Start P0 gateway health export if configured. Never raises. ``homes``: the homes this gateway serves
+    (its own first), whose Bot Desktop screens and spooled managed-process events it reports."""
     if not _enabled(config):
         return GatewayHealthExportRuntime(enabled=False, reason="disabled")
     gh = _gateway_health_config(config)
@@ -293,7 +363,7 @@ def start_gateway_health_export(config: dict[str, Any]) -> GatewayHealthExportRu
             return GatewayHealthExportRuntime(enabled=False, reason="otlp_unavailable")
     if metrics_on and sdk is not None:
         try:
-            runtime.metric_provider = _start_metric_provider(config, sdk)
+            runtime.metric_provider = _start_metric_provider(config, sdk, homes)
         except Exception:
             return _fail(runtime, logger.warning, "gateway health OTLP metrics failed to start", "metrics_start_failed")
     if diagnostics_on and sdk is not None:
@@ -317,20 +387,21 @@ def start_gateway_health_export(config: dict[str, Any]) -> GatewayHealthExportRu
         logger.debug("gateway diagnostic log handler failed to attach", exc_info=True)
     if diagnostics_on:
         try:
-            _emit_snapshot_events(config)
+            _emit_snapshot_events(config, homes)
             stop_event = runtime.stop_event = threading.Event()
             interval = max(5, int(gh.get("logs_export_interval_seconds", 5)))
 
             def _run() -> None:
                 while not stop_event.wait(interval):
-                    _emit_snapshot_events(config)
+                    _emit_snapshot_events(config, homes)
 
             thread = threading.Thread(target=_run, name="hermes-gateway-health-export", daemon=True)
             thread.start()
             runtime.thread = thread
+            runtime.spooling = True
         except Exception:
             logger.debug("gateway health snapshot thread failed to start", exc_info=True)
     return runtime
 
 
-__all__ = ["GatewayHealthExportRuntime", "start_gateway_health_export"]
+__all__ = ["GatewayHealthExportRuntime", "note_served_homes", "start_gateway_health_export"]

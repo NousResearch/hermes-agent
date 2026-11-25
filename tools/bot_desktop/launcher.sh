@@ -305,7 +305,23 @@ if [[ -n "${HERMES_BD_IDLE_CMD:-}" ]]; then
       [[ "$delay" =~ ^[0-9]+$ ]] || delay=300
       sleep "$delay" & sleeper=$!
       # Killed (status > 128): check now. A sleep that cannot sleep at all would spin the check: give up.
-      wait "$sleeper" || (( $? > 128 )) || { echo "idle self-stop: sleep failed; off for this screen" >&2; exit 0; }
+      wait "$sleeper" || (( $? > 128 )) || {
+        # Telemetry (agent/monitoring/managed_processes.py): runtime.py passes this home's spool, which exists only
+        # while a gateway exports for it. Full (same cap as managed_processes._MAX_SPOOLED): nothing drains it.
+        spool="${HERMES_BD_SPOOL:-}"
+        if [[ -n "$spool" && -d "$spool" ]]; then
+          n=0
+          for f in "$spool"/*.json "$spool"/.*.tmp; do [[ -e "$f" ]] && n=$((n + 1)); done  # dying writers' temps count
+          if (( n < 1000 )); then
+            ts=$(date +%s 2>/dev/null) && [[ "$ts" =~ ^[1-9][0-9]*$ ]] && ts="${ts}000000000" || ts=0
+            tmp="$spool/.launcher-$$.tmp"
+            printf '{"event":"managed_process","subsystem":"bot_desktop","action":"self_stop_off","outcome":"sleep_failed","actor":"screen","ts_ns":%s}\n' \
+              "$ts" >"$tmp" 2>/dev/null && mv -f "$tmp" "$spool/$ts-$$.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+          fi
+        fi
+        echo "idle self-stop: sleep failed; off for this screen" >&2  # after the record: tests wait on it
+        exit 0
+      }
       sleeper=
       kill -0 "$$" 2>/dev/null || exit 0
       eval "set -- $HERMES_BD_IDLE_CMD"

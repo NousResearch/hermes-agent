@@ -859,6 +859,39 @@ def test_apply_adopts_a_completed_generation_built_for_the_same_inputs(locked_pr
     assert third["environment"].is_dir()
 
 
+def test_apply_never_adopts_or_removes_a_generation_leased_by_another_process(locked_project, tmp_path, monkeypatch):
+    """The adoption guard must see the lease the current release actually takes:
+    lease_directory writes under installs/<key>/leases/environments/<generation>, not
+    <generation>/.leases, so a guard that tests only for .leases lets an apply seize the
+    tree another sync is running — and delete it if its verification re-check fails. A
+    fingerprint-matching generation held by a real lease is neither adopted nor removed."""
+    from hermes_cli.runtime_state import lease_directory
+    from pm.packages import Venv
+    import pm.paths
+
+    source, uv, env = locked_project
+    metadata = source / "pyproject.toml"
+    metadata.write_text(metadata.read_text(encoding="utf-8-sig").replace('[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
+    _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
+    monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: source)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))
+    # This process has adopted nothing: whoever holds the lease below is "another process".
+    monkeypatch.setattr("pm.packages._adopted_generations", {})
+
+    member = source / "member"
+    first = Venv().apply(["chosen"], plugin_dirs=[member])
+    generation = first["environment"].parent
+    hold = lease_directory(generation)
+    try:
+        second = Venv().apply(["chosen"], plugin_dirs=[member])
+    finally:
+        hold()
+    assert second["environment"] != first["environment"], "a generation held by a current-release lease is never adopted"
+    assert generation.is_dir(), "a tree another process holds is never removed for failing the adopter's re-check"
+
+
 def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
     """no_config must isolate the pinned runtime builder from ambient INDEX
     redirection: --no-config covers config files, but PM's pip-mirror bridge

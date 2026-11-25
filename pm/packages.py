@@ -608,7 +608,11 @@ class Venv(StatePackage):
 _GENERATION_FINGERPRINT = ".fingerprint"
 # Generations this process adopted: the lease pinning each one is held for the process, so
 # the collector can never sweep a tree this apply handed back — and a second apply in the
-# same process still sees its own first probe's tree as adoptable despite that lease.
+# same process still sees its own first probe's tree as adoptable despite that lease. The
+# leases last until process exit: a rounding error in the one-request PM worker, and only
+# conservative retention in the longer-lived processes that reach sync_venv in-process
+# (pm/client.py is_runtime() path) — an adopted tree simply outlives a collection cycle
+# there rather than being swept out from under a caller mid-flight.
 _adopted_generations: dict[Path, object] = {}
 
 
@@ -649,8 +653,7 @@ def _reuse_completed_generation(project: Path, fingerprint: str) -> Optional[dic
         record = directory / _GENERATION_FINGERPRINT
         if (directory == selected or not record.is_file() or record.read_text(encoding="utf-8") != fingerprint
                 or not (directory / "venv").is_dir() or not (directory / "workspace" / "uv.lock").is_file()
-                or directory not in _adopted_generations
-                and (directory / ".leases").is_dir() and leases_held(directory)):
+                or directory not in _adopted_generations and leases_held(directory)):
             continue
         if directory not in _adopted_generations:
             _adopted_generations[directory] = lease_directory(directory)

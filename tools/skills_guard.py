@@ -19,6 +19,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
+from agent.markdown_fences import fenced_flags
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 
@@ -704,37 +705,12 @@ def _mask_markdown_link_destinations(line: str) -> str:
     return "".join(masked)
 
 
-# A fenced code block opens with 3+ backticks or 3+ tildes indented at most 3 spaces (CommonMark
-# §4.5); a backtick fence's info string may not contain a backtick. It closes only on a line whose
-# fence uses the same marker, is at least as long, and carries nothing else — so a ``~~~`` line
-# inside a backtick fence, a shorter fence, or a fence line with an info string is all content.
-_FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
-# A fence may open (and close) inside a container: a bullet ``- ```sh``, an ordered item ``1. ```sh``,
-# a blockquote ``> ```sh``, or a nest of them (§5.1/§5.2). Strip those prefixes before fence matching.
-_CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
-
-
 def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
     ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
-    scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
-    mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
-    code to EOF (fail-safe)."""
-    out: list[str] = []
-    fence = None  # (marker char, opener length) while a fenced block is open
-    for line in lines:
-        match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
-        if fence is not None:
-            if (match and match["marker"][0] == fence[0] and len(match["marker"]) >= fence[1]
-                    and not match["info"].strip()):
-                fence = None
-            code = True
-        else:
-            if match and not (match["marker"][0] == "`" and "`" in match["info"]):
-                fence = (match["marker"][0], len(match["marker"]))
-            code = fence is not None or line.startswith(("\t", "    "))  # indented code block (§4.4)
-        out.append(line if code else _mask_markdown_link_destinations(line))
-    return out
+    scan verbatim (``agent.markdown_fences.fenced_flags``: an unclosed fence stays code to EOF)."""
+    return [line if fenced or line.startswith(("\t", "    ")) else _mask_markdown_link_destinations(line)
+            for line, fenced in zip(lines, fenced_flags(lines))]  # indented code block (§4.4)
 
 
 # Only python_os_environ was tuned for docstring prose; every other pattern must still fire inside a

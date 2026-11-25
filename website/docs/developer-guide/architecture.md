@@ -128,7 +128,8 @@ hermes-agent/
 │                             #   buzz, ntfy, photon, raft, simplex, whatsapp_cloud,
 │                             #   signal, weixin, bluebubbles
 │                             #   (Home Assistant: `homeassistant` catalog plugin;
-│                             #    Yuanbao, QQ Bot: Hermes Labs plugins)
+│                             #    QQ Bot: official `qqbot` plugin, installed by default;
+│                             #    Yuanbao: `yuanbao` Hermes Labs plugin)
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)

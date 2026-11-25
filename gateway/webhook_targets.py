@@ -7,7 +7,7 @@ BUILTIN_DELIVER_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix", "mattermost",
     "email", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin",
     "bluebubbles",
-    # Left core for a Labs plugin, still a saved route's target: a route a secondary profile's plugin serves is
+    # Left core for a catalog plugin, still a saved route's target: a route a secondary profile's plugin serves is
     # checked against the launch registry, and a skipped route is not re-read until its file changes.
     "qqbot"})
 _NON_PLATFORM_TARGETS = frozenset({"log", "github_comment"})

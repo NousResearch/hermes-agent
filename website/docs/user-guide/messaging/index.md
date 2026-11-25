@@ -51,7 +51,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
-| QQ (Labs plugin) | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| QQ (plugin) | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao (Labs plugin) | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
@@ -847,7 +847,7 @@ Each platform has its own toolset:
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
-| QQBot (Labs plugin) | `hermes-qqbot` | Full tools including terminal, from the `qqbot` Hermes Labs plugin |
+| QQBot (plugin) | `hermes-qqbot` | Full tools including terminal, from the official `qqbot` plugin (installed by default) |
 | Yuanbao (Labs plugin) | `hermes-yuanbao` | Full tools + the `yb_*` group/DM/sticker tools from the `yuanbao` Hermes Labs plugin |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
@@ -1106,7 +1106,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Weixin Setup (WeChat)](weixin.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Photon Setup (iMessage)](photon.md)
-- [QQ Bot](qqbot.md) (Hermes Labs plugin)
+- [QQ Bot](qqbot.md) (official plugin, installed by default)
 - [Yuanbao](yuanbao.md) (Hermes Labs plugin)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)

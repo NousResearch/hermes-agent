@@ -31,7 +31,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
-| QQ（Labs 插件） | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| QQ（插件） | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao（Labs 插件） | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
@@ -443,7 +443,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | WeCom Callback | `hermes-wecom-callback` | 完整工具，包括终端 |
 | Weixin | `hermes-weixin` | 完整工具，包括终端 |
 | BlueBubbles | `hermes-bluebubbles` | 完整工具，包括终端 |
-| QQBot（Labs 插件） | `hermes-qqbot` | 完整工具，包括终端，由 `qqbot` Hermes Labs 插件提供 |
+| QQBot（插件） | `hermes-qqbot` | 完整工具，包括终端，由默认安装的官方 `qqbot` 插件提供 |
 | Yuanbao（Labs 插件） | `hermes-yuanbao` | 完整工具，外加 `yuanbao` Hermes Labs 插件提供的 `yb_*` 群组/私聊/贴纸工具 |
 | Microsoft Teams | `hermes-teams` | 完整工具，包括终端 |
 | API Server | `hermes-api-server` | 完整工具（去除 `clarify`、`send_message`、`text_to_speech`——程序化访问没有交互用户） |
@@ -567,7 +567,7 @@ display:
 - [WeCom Callback 配置](wecom-callback.md)
 - [Weixin 配置（微信）](weixin.md)
 - [BlueBubbles 配置（iMessage）](bluebubbles.md)
-- [QQ Bot](qqbot.md)（Hermes Labs 插件）
+- [QQ Bot](qqbot.md)（官方插件，默认安装）
 - [Yuanbao](yuanbao.md)（Hermes Labs 插件）
 - [Microsoft Teams 配置](teams.md)
 - [Teams 会议流水线](teams-meetings.md)

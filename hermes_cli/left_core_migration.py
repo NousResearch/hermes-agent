@@ -211,16 +211,31 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
 # platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
 _YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant", "qqbot")
 
-def _labs_notice(plugin: str, label: str) -> Callable[..., str]:
-    """A Labs plugin's migration notice. Core's adapter ignored a bare *plugin* in ``plugins.disabled``; the
-    catalog plugin does not, and the automatic install keeps the entry: its kept-off notice (_install_locked)
-    names the enable command."""
-    base = (f"{label} is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
-            "maintained going forward. Fixes from the community are welcome.")
+_YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
+                   "maintained going forward. Fixes from the community are welcome.")
 
-    def notice(home: Path, *, process_env: bool = False) -> str:
-        return base
-    return notice
+
+def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
+    # Core's adapter ignored a bare ``yuanbao`` there; the catalog plugin does not. The install's enable
+    # purges the entry from the user's list, so this fires only when it survived (a managed overlay pin).
+    if plugin_present("yuanbao", home) and _plugins_listed(home, ("yuanbao",))[1]:
+        return (f"{_YUANBAO_NOTICE} plugins.disabled lists 'yuanbao', which now turns Yuanbao off; "
+                "remove it to keep using Yuanbao.")
+    return _YUANBAO_NOTICE
+
+
+def _qqbot_notice(home: Path, *, process_env: bool = False) -> str:
+    """An official plugin like the other official rows: no placement sentence, only what changed for *home*."""
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    notes = []
+    # Core's adapter ignored a bare ``qqbot`` in plugins.disabled; the catalog plugin does not (see _yuanbao_notice).
+    if plugin_present("qqbot", home) and _plugins_listed(home, ("qqbot",))[1]:
+        notes.append("plugins.disabled lists 'qqbot', which now turns QQ Bot off; remove it to keep using QQ Bot.")
+    # The bundled adapter was exempt from host isolation; a catalog platform adapter cannot run in the host.
+    if isolation_mode(_read_config(home)) == ISOLATION_HOST:
+        notes.append("This profile sets plugins.isolation: host, where platform adapters cannot load: QQ Bot "
+                     "stays off until the profile loads plugins in-process.")
+    return " ".join(notes)
 
 
 def _auth_store(home: Path) -> dict:
@@ -722,7 +737,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                      "YUANBAO_HOME_CHANNEL_NAME"),
         toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
-        platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_labs_notice("yuanbao", "Yuanbao"),
+        platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
     ),
     LeftCoreFeature(
         # QQ_STT_API_KEY stays on local_env_policy's own short list, as core had it. QQ_* channel ownership
@@ -734,7 +749,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         private_env=("QQ_APP_ID", "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS",
                      "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME", "QQBOT_HOME_CHANNEL_THREAD_ID",
                      "QQ_MARKDOWN_SUPPORT", "QQ_SANDBOX", "QQ_PORTAL_HOST", "QQ_STT_BASE_URL", "QQ_STT_MODEL"),
-        platform="qqbot", enable_env=("QQ_APP_ID", "QQ_CLIENT_SECRET"), notice=_labs_notice("qqbot", "QQ Bot"),
+        platform="qqbot", enable_env=("QQ_APP_ID", "QQ_CLIENT_SECRET"), notice=_qqbot_notice,
     ),
 )
 

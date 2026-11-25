@@ -66,7 +66,7 @@ def test_qqbot_in_use_matches_what_core_ran(tmp_path, env, config, in_use):
     assert _qqbot_in_use(_home(tmp_path, env=env, config=config)) is in_use
 
 
-def test_a_qqbot_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
+def test_a_qqbot_home_gets_the_plugin_once_with_no_placement_notice(tmp_path):
     home = _home(tmp_path, env=_CREDS)
     calls, said = [], []
 
@@ -78,8 +78,7 @@ def test_a_qqbot_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
     assert lcm.migrate_home(home, install=install, say=said.append) == ["qqbot"]
     assert lcm.migrate_home(home, install=install, say=said.append) == []
     assert calls == ["qqbot"]
-    assert ("QQ Bot is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
-            "maintained going forward. Fixes from the community are welcome.") in said[0]
+    assert "'qqbot'" in said[0] and "not supported" not in said[0] and "Labs" not in said[0]
 
 
 def test_a_fresh_or_shipped_default_home_installs_nothing(tmp_path):
@@ -226,3 +225,19 @@ def test_saved_qqbot_preset_still_selects_core_tools_at_runtime(monkeypatch, col
     tools = _select_tool_names(picks, None, quiet_mode=True)
     assert {"terminal", "web_search"} <= tools
     assert ("mcp_fixture_echo" in tools) is collision
+
+
+def test_a_qqbot_the_default_installer_placed_and_the_user_removed_stays_removed(tmp_path):
+    # default_plugins recorded it (qqbot is a default plugin); the user removed the tree; creds are still there.
+    home = _home(tmp_path, env=_CREDS, config="_default_plugins_installed: [qqbot]\n")
+    calls = []
+    assert lcm.migrate_home(home, install=lambda name: calls.append(name) or {"ok": True},
+                            say=lambda message: None) == []
+    assert calls == []
+
+
+def test_the_default_installer_skips_a_plugin_the_left_core_migration_placed(tmp_path):
+    from hermes_cli import default_plugins
+    home = _home(tmp_path, config="_left_core_installed: [qqbot]\n")
+    assert "qqbot" in default_plugins._recorded(home)
+    assert default_plugins._recorded(home, own_only=True) == set()

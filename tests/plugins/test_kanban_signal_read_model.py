@@ -956,3 +956,11 @@ def test_signal_stream_failure_closes_1011_and_releases_connection(signal_client
     assert exc.value.code == 1011
     assert len(opened) == 1
     assert not has_live_connection(kb.kanban_db_path(board="default"))
+
+
+def test_kanban_dashboard_modules_do_not_shadow_the_standard_library():
+    """plugin_api imports its sibling by absolute path; a sibling named like a stdlib module
+    (``signal``) would shadow it for anything importing from that directory."""
+    dashboard = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard"
+    stems = {path.stem for path in dashboard.glob("*.py")}
+    assert stems.isdisjoint(sys.stdlib_module_names), stems & sys.stdlib_module_names

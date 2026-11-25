@@ -28,7 +28,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from plugins.kanban.dashboard import signal as signal_api
+from plugins.kanban.dashboard import signal_read_model as signal_api
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_workflow

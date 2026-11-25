@@ -591,7 +591,11 @@ class GatewaySecondaryReconnectMixin:
                         rearm = True  # no adapter yet but it can heal: re-arm the failed load, then retry
                     elif success and self._running:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
-                        if platform not in profile_map:
+                        # Never publish once superseded: a reconcile that retired this reconnect cancels
+                        # it (an attempt that swallowed the cancel still sees it) or gives the slot away.
+                        slot = ((self._profile_failed_platforms or {}).get(profile_name) or {}).get(platform)
+                        superseded = bool(current_task and current_task.cancelling()) or slot not in (None, current_task)
+                        if platform not in profile_map and not superseded:
                             profile_map[platform] = adapter
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)

@@ -116,7 +116,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
         (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
         socket for an immediate rescan); a gateway standalone only because the host had one profile
         starts multiplexing here once a second one exists."""
-        await self._note_primary_platform_baseline()
+        await self._start_primary_platform_watch()
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:

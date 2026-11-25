@@ -867,6 +867,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
             success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
+            if self._failed_platforms.get(platform) is not info:
+                # The slot was retired or rebuilt while this attempt connected (a live config change):
+                # what this older attempt built is discarded, never published over its replacement.
+                logger.info("Reconnect %s: superseded by a configuration change, discarding", platform.value)
+                await _dispose_unused_adapter(adapter)
+                return
             if success:
                 await self._install_reconnected_adapter(platform, adapter)
             elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
@@ -903,6 +909,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 await _dispose_unused_adapter(adapter)
                 if self.adapters.get(platform) is not adapter:  # an installed adapter owns its queue
                     hand_over_held_inbound(adapter, info.get("predecessor"))
+            if self._failed_platforms.get(platform) is not info:
+                return  # superseded meanwhile: the new slot owns the status and the backoff
             # A reconnect exception is transient; keep retrying at the cap rather than auto-pausing.
             backoff = self._bump_reconnect_backoff(platform, info, attempt, None, str(e))
             logger.warning("Reconnect %s error: %s, next retry in %ds", platform.value, e, backoff)
@@ -1347,6 +1355,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             )
             return None
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+            build_print = await self._run_in_executor_with_context(
+                self._secondary_build_print, profile_home, platform, platform_config)
             try:
                 adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
             except Exception:
@@ -1357,6 +1367,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         if not adapter:
             self._note_unbuilt_secondary_platform(profile_name, platform, heals)
             return None
+        self._note_secondary_build(profile_name, platform, build_print)
         return adapter
 
     async def _prepare_one_profile_adapters(
@@ -1367,10 +1378,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         configs = getattr(self, "_profile_configs", None)
         if configs is None:
             configs = self._profile_configs = {}
-        previous = configs.get(profile_name)
+        rescan = profile_name in configs
         configs[profile_name] = profile_cfg
-        if previous is not None:  # a rescan: retire what is no longer wanted or runs on stale credentials
-            await self._retire_stale_profile_platforms(profile_name, profile_home, previous, profile_cfg)
+        if rescan:  # retire what is no longer wanted or was built from inputs that changed since
+            await self._retire_stale_profile_platforms(profile_name, profile_home, profile_cfg, claimed)
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         checkpoint = batch.checkpoint()

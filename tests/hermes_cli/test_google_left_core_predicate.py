@@ -61,7 +61,7 @@ def test_env_key_used_only_for_tts_with_another_selected_provider_does_not_trigg
     assert google_in_use(home) is False
 
 
-@pytest.mark.parametrize("higher_var", ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "LM_API_KEY"])
+@pytest.mark.parametrize("higher_var", ["OPENROUTER_API_KEY", "OPENAI_API_KEY"])
 def test_env_key_outranked_by_higher_priority_provider_does_not_trigger(tmp_path, higher_var):
     home = tmp_path / "home"
     home.mkdir()
@@ -69,4 +69,33 @@ def test_env_key_outranked_by_higher_priority_provider_does_not_trigger(tmp_path
         f"GEMINI_API_KEY=AQ.real-test-key-value\n{higher_var}=sk-higher-priority-key\n",
         encoding="utf-8",
     )
+    assert google_in_use(home) is False
+
+
+def test_lm_studio_key_does_not_outrank_gemini_autodetect(tmp_path):
+    """LM Studio is excluded from env auto-detect, so GEMINI_API_KEY still wins auto."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("GEMINI_API_KEY=AQ.real-test-key-value\nLM_API_KEY=lm-local-token\n", encoding="utf-8")
+    assert google_in_use(home) is True
+
+
+def test_openrouter_pool_credential_outranks_gemini_env_key(tmp_path):
+    import json
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("GEMINI_API_KEY=AQ.real-test-key-value\n", encoding="utf-8")
+    (home / "auth.json").write_text(
+        json.dumps({"credential_pool": {"openrouter": [{"source": "manual", "api_key": "sk-or-v1-real"}]}}),
+        encoding="utf-8",
+    )
+    assert google_in_use(home) is False
+
+
+def test_custom_loopback_base_url_prevents_gemini_env_key_trigger(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("GEMINI_API_KEY=AQ.real-test-key-value\n", encoding="utf-8")
+    (home / "config.yaml").write_text("model:\n  base_url: http://127.0.0.1:8000/v1\n", encoding="utf-8")
     assert google_in_use(home) is False

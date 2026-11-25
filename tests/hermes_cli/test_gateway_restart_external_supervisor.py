@@ -46,7 +46,7 @@ def restart_calls(monkeypatch):
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda home, **k: None)
     monkeypatch.setattr(supervised, "SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT", 0.5)
     monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", _sigusr1)
-    monkeypatch.setattr(gw, "stop_profile_gateway", lambda: calls.__setitem__("stopped", True) or True)
+    monkeypatch.setattr(gw, "stop_profile_gateway", lambda **kw: calls.__setitem__("stopped", True) or True)
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     monkeypatch.setattr(gw, "run_gateway", lambda **k: calls.__setitem__("started", True))
     # Hermetic on Linux CI: the runner's own /proc + systemd must not make the gateway look service-owned.

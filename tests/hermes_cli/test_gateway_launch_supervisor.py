@@ -62,7 +62,7 @@ def test_restart_of_a_manual_gateway_stops_it_and_runs_a_new_one(monkeypatch):
     monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: PLAIN_ARGV)
     monkeypatch.setattr(control_socket, "identify_gateway", lambda home, **k: MANUAL)
     monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", lambda *a, **k: calls.__setitem__("sigusr1", True))
-    monkeypatch.setattr(gw, "stop_profile_gateway", lambda: calls.__setitem__("stopped", True) or True)
+    monkeypatch.setattr(gw, "stop_profile_gateway", lambda **kw: calls.__setitem__("stopped", True) or True)
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     monkeypatch.setattr(gw, "_wait_for_api_server_port_free", lambda *a, **k: None)
     monkeypatch.setattr(gw, "run_gateway", lambda **k: calls.__setitem__("started", True))

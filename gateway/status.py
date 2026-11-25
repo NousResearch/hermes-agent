@@ -1869,13 +1869,12 @@ def _terminate_verified_owner(
     return None
 
 
-def write_planned_stop_marker(target_pid: int) -> bool:
-    """Record that ``target_pid`` is being stopped intentionally: unexpected SIGTERM exits non-zero
-    so service managers revive the gateway; the CLI writes this first so a deliberate stop exits
-    cleanly."""
+def write_planned_stop_marker(target_pid: int, *, restart: bool = False) -> bool:
+    """Record that ``target_pid`` is being stopped intentionally (unexpected SIGTERM exits non-zero so
+    service managers revive the gateway); ``restart``: a CLI stop + start, so it drains as a restart."""
     return _write_marker(_get_planned_stop_marker_path(), {
         "target_pid": target_pid, "target_start_time": _get_process_start_time(target_pid),
-        "stopper_pid": os.getpid(), "written_at": _utc_now_iso(),
+        "stopper_pid": os.getpid(), "written_at": _utc_now_iso(), **({"restart": True} if restart else {}),
     })
 
 
@@ -1930,12 +1929,13 @@ def consume_planned_stop_marker_for_self() -> bool:
                                             keep=True, on_consume=update_pause_record.mark_stop_accepted)
 
 
-def planned_stop_marker_targets_self() -> bool:
-    """Non-destructive watcher probe: True when a live planned-stop marker names us. Never unlinks a
-    matching marker (the shutdown handler does the authoritative consume); malformed/expired ones
-    are still cleaned up; markers naming another PID are left alone."""
+def planned_stop_marker_targets_self(*, restart: bool = False) -> bool:
+    """Non-destructive watcher probe: True when a live planned-stop marker names us (``restart``: and it
+    asks for a restart, the CLI's stop + start). Never unlinks a matching marker (the shutdown handler
+    does the authoritative consume); malformed/expired ones are still cleaned up; others are left alone."""
     parsed = _read_live_pid_marker(_get_planned_stop_marker_path(), _PLANNED_STOP_MARKER_TTL_S)
-    return parsed is not None and _pid_marker_names_self(parsed[1], parsed[2])
+    wanted = not restart or parsed is not None and parsed[0].get("restart") is True
+    return parsed is not None and wanted and _pid_marker_names_self(parsed[1], parsed[2])
 
 
 def get_running_pid(

@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: dream
+description: Hand phone calls and web tasks to Dream's human secretaries, then get a receipt.
+source: https://usedream.ai/connect
+
+# Dream ships a remote MCP server with native OAuth 2.1 + Dynamic Client
+# Registration over Streamable HTTP, so nothing is installed locally.
+transport:
+  type: http
+  url: https://apiv2.usedream.ai/mcp
+
+auth:
+  type: oauth
+
+tools:
+  # Start with read-only tools. Tools that plan, start, answer or pay for jobs
+  # (real calls and real spending) stay disabled until the user selects them in
+  # mcp configure.
+  default_enabled:
+    - list_jobs
+    - list_cards
+
+suggest:
+  keywords:
+    - dream
+    - secretary
+    - phone call
+    - make a call
+  hosts:
+    - usedream.ai
+
+post_install: |
+  On first connection, Hermes opens a browser to sign in to Dream and approve
+  access to your account. By default, this catalog entry enables only the
+  read-only tools that list your jobs and saved cards (last four digits only).
+  Tools that plan and start jobs, answer a secretary's questions, approve
+  spending, cancel or retry jobs, and manage cards remain disabled until you
+  explicitly select them with:
+    hermes mcp configure dream
+
+  Jobs started through Dream are carried out by real people and can cost
+  money. Start jobs and approve spending only when the account owner has asked
+  for them, and review the quote before proceeding.

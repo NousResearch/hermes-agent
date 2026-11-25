@@ -31,7 +31,7 @@ Download the package for your platform from the
   ownership.
 - **macOS (macOS 13 Ventura or later, Apple Silicon `arm64`):** open the DMG,
   then copy `Hermes Agent.app` to Applications. The ZIP artifact carries the
-  signed app used by the automatic updater.
+  signed app used by the in-app updater.
 
 Bundled packages contain the agent, Python, supported dependencies, and prebuilt
 interfaces. First launch does not build that base runtime. Provider access and

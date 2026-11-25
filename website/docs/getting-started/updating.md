@@ -95,8 +95,8 @@ outside the package. See [Desktop installation](../user-guide/desktop.md#install
 download time (which depends on your connection) and local verification/swap
 time:
 
-- **macOS:** a fresh DMG install is ~948 MB and an in-app update downloads the
-  ~983 MB signed ZIP. After the ZIP finishes downloading, Squirrel.Mac unpack,
+- **macOS:** a fresh DMG install is ~948 MB, and choosing **Update** in the
+  app downloads the ~983 MB signed ZIP. After the ZIP finishes downloading, Squirrel.Mac unpack,
   code-signature verification, and bundle swap take roughly **50 seconds** on
   Apple Silicon (measured on an M4 Mac) before `Hermes Agent.app` relaunches.
 - **Windows:** full per-architecture MSIX packages are ~1.89 GB (ARM64) to

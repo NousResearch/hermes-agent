@@ -33,7 +33,7 @@ hermes update --set-channel stable   # 恢复为仅正式版本
 
 桌面软件包的更新耗时由**网络下载时间**（取决于带宽）与**本地校验和替换时间**两部分组成：
 
-- **macOS：** 首次安装的 DMG 约 948 MB，应用内自动更新会下载约 983 MB 的签名 ZIP。下载完成后，Squirrel.Mac 在本地解压、校验代码签名并替换 `Hermes Agent.app` 约需 **50 秒**（在 Apple Silicon M4 上实测），随后自动重启应用。
+- **macOS：** 首次安装的 DMG 约 948 MB。在应用内选择**更新**后，应用会下载约 983 MB 的签名 ZIP。下载完成后，Squirrel.Mac 在本地解压、校验代码签名并替换 `Hermes Agent.app` 约需 **50 秒**（在 Apple Silicon M4 上实测），随后自动重启应用。
 - **Windows：** 分架构完整 MSIX 包约为 1.89 GB（ARM64）至 2.86 GB（x64）。Windows App Installer 和 Microsoft Store 仅下载当前主机架构并支持版本间差分块更新，因此常规增量下载量小于完整安装包，随后执行本地包部署与重启。
 
 ### 更新过程

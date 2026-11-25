@@ -1765,6 +1765,22 @@ def _upload_flag_owner_ranges(command: str) -> tuple[list[int], list[int]]:
     may expand to one to the end of its simple command, and covers the inside of a quoted word
     (``eval "curl -d …"``, ``ssh host "curl …"``) that another program may re-parse as a command.
     Built once per command, so many delimiter flags cost one parse instead of one parse each."""
+    starts: list[int] = []
+    ends: list[int] = []
+    for range_start, range_end in sorted(_upload_flag_owner_spans(command, 0)):
+        if ends and range_start <= ends[-1]:
+            ends[-1] = max(ends[-1], range_end)
+        else:
+            starts.append(range_start)
+            ends.append(range_end)
+    return starts, ends
+
+
+def _upload_flag_owner_spans(command: str, base: int) -> list[tuple[int, int]]:
+    """Unmerged ranges for :func:`_upload_flag_owner_ranges`, shifted by *base*. A quoted word that
+    :func:`_reparsed_quoted_body` can read byte for byte is judged by the commands inside it, so
+    ``ssh host 'php -d auto_prepend_file=… x.php'`` is not a curl upload (#159682); any other quoted
+    word holding whitespace stays covered as a whole."""
     ranges = []
     for start, _, _ in _iter_shell_command_word_spans(command):
         end = start + len(_shell_command_segment(command, start))
@@ -1777,20 +1793,41 @@ def _upload_flag_owner_ranges(command: str) -> tuple[list[int], list[int]]:
             word_start, pos, word = _read_shell_word(command, pos)
             if word_start == pos:
                 break
+            spaced = any(ch.isspace() for ch in word)
+            body = _reparsed_quoted_body(word) if spaced else None
+            if body is not None:
+                ranges.extend(_reparsed_body_spans(body, base + word_start + 1, base + end))
+                continue
             if _word_may_run_curl_or_wget(word):
-                ranges.append((word_start, end))
+                ranges.append((base + word_start, base + end))
                 break
-            if any(ch.isspace() for ch in command[word_start:pos]):
-                ranges.append((word_start + 1, pos))
-    starts: list[int] = []
-    ends: list[int] = []
-    for range_start, range_end in sorted(ranges):
-        if ends and range_start <= ends[-1]:
-            ends[-1] = max(ends[-1], range_end)
-        else:
-            starts.append(range_start)
-            ends.append(range_end)
-    return starts, ends
+            if spaced:
+                ranges.append((base + word_start + 1, base + pos))
+    return ranges
+
+
+def _reparsed_body_spans(body: str, body_start: int, command_end: int) -> list[tuple[int, int]]:
+    """Ranges inside a verbatim quoted *body* starting at *body_start*. A range reaching the end of the
+    body runs on to *command_end*: ssh and eval join the words after the closing quote into the same
+    command line (``ssh host 'cd /srv; $CURL' -d @.env …``)."""
+    spans = _upload_flag_owner_spans(body, body_start)
+    body_end = body_start + len(body.rstrip())
+    if any(span_end >= body_end for _, span_end in spans):
+        spans.append((body_end, command_end))
+    return spans
+
+
+def _reparsed_quoted_body(word: str) -> str | None:
+    """Inside of *word* when it is one quoted string another program receives verbatim and that names
+    neither curl nor wget: ``'…'``, or ``"…"`` with no ``\\``, ``$`` or backtick for the shell to rewrite
+    first. A body naming curl/wget stays covered whole, since a language other than the shell may run
+    it from any position (``perl -e 'system q{curl -d @.env …}'``)."""
+    if len(word) < 2 or word[0] not in "'\"" or word[-1] != word[0]:
+        return None
+    body = word[1:-1]
+    if word[0] in body or (word[0] == '"' and any(ch in body for ch in "\\$`")):
+        return None
+    return None if re.search(r"curl|wget", body, re.IGNORECASE) else body
 
 
 def _upload_flag_owned_by_curl_or_wget(owner_ranges: tuple[list[int], list[int]], flag_start: int) -> bool:

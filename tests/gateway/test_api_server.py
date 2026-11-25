@@ -336,6 +336,34 @@ class TestRuntimeStatusMetrics:
         assert metrics["last_heartbeat"] is not None
 
     @pytest.mark.asyncio
+    async def test_run_agent_records_metrics_on_session_authority_path(self, adapter):
+        """Regression for #160213: with the session authority active, _run_agent
+        early-returned via run_api_turn and skipped _record_api_metrics, so
+        metrics_today stayed at zero even though chat completions succeeded
+        and returned usage."""
+        adapter._running = True
+        adapter.gateway_runner = types.SimpleNamespace(session_authority=object())
+
+        with patch.object(adapter, "_write_runtime_status_safe"):
+            with patch(
+                "gateway.session_api_turn.run_api_turn", new_callable=AsyncMock
+            ) as mock_turn:
+                mock_turn.return_value = (
+                    {"final_response": "ok"},
+                    {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+                )
+                result, usage = await adapter._run_agent(
+                    user_message="hi", conversation_history=[]
+                )
+
+        assert result == {"final_response": "ok"}
+        assert usage == {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}
+        assert adapter._metrics_requests_today == 1
+        assert adapter._metrics_messages_today == 1
+        assert adapter._metrics_tokens_today == 7
+        assert adapter._metrics_last_request_at is not None
+
+    @pytest.mark.asyncio
     async def test_heartbeat_loop_publishes_once_when_stopped(self, adapter):
         adapter._running = True
         calls = []

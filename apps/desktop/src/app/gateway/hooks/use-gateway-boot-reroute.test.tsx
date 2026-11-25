@@ -177,6 +177,7 @@ afterEach(() => {
   setActiveSessionId(null)
   endGatewaySwitch()
   vi.useRealTimers()
+  vi.restoreAllMocks()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -867,7 +868,6 @@ describe('a plugin re-routes one profile', () => {
     }
 
     await pause(50)
-    random.mockRestore()
 
     const askedWhileSecondIsOut = lookups
 

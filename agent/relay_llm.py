@@ -97,16 +97,21 @@ class _ManagedAttempt:
             codec_baseline_body=self.codec_baseline, metadata=self.metadata,
         )
 
-    def run_callback(self, callback: Callable[..., Any], *args: Any) -> Any:
+    def callback_stack(self) -> Any:
+        fork = getattr(self.runtime.relay, "fork_scope_stack", None)
+        return fork() if fork is not None and self.runtime.relay.scope_stack_active() else None
+
+    def run_callback(self, callback: Callable[..., Any], *args: Any, scope_stack: Any = None) -> Any:
         """Run a Hermes callback in a fresh copy of the captured context.
         Relay can invoke callbacks while another still owns the captured Context (hence the
-        copy); nested relay calls run unmanaged — see relay_runtime.managed_callback_guard."""
+        copy). Bind the provider's Relay scope after restoring the Hermes context."""
         def guarded() -> Any:
-            # See #77244.
-            # See #77244.
-            # Hermes-side callbacks run while the native pipeline drives this stream; nested relay calls
-            # they make must bypass managed execution (#77244).
-            with relay_runtime.managed_callback_guard():
+            # Nested model calls must not re-enter Relay's managed execution (#77244).
+            binding = (
+                self.runtime.relay.use_scope_stack(scope_stack)
+                if scope_stack is not None else contextlib.nullcontext()
+            )
+            with binding, relay_runtime.managed_callback_guard():
                 return callback(*args)
 
         return self.context.copy().run(guarded)
@@ -127,12 +132,15 @@ class _ManagedAttempt:
     def invoke(self, callback: Callable[..., Any], next_request: Any) -> Any:
         """Provider callback handed to Relay: run ``callback`` on Relay's (possibly rewritten) request."""
         with self._recording_errors():
-            raw = self.run_callback(callback, self.provider_request(next_request))
+            raw = self.run_callback(callback, self.provider_request(next_request), scope_stack=self.callback_stack())
         return self._record(raw)
 
     async def invoke_async(self, callback: Callable[..., Any], next_request: Any) -> Any:
+        stack = self.callback_stack()
+
         async def call_provider() -> Any:
-            with relay_runtime.managed_callback_guard():  # nested relay calls run unmanaged
+            binding = self.runtime.relay.use_scope_stack(stack) if stack is not None else contextlib.nullcontext()
+            with binding, relay_runtime.managed_callback_guard():  # nested relay calls run unmanaged
                 return await callback(final_request)
 
         with self._recording_errors():
@@ -347,7 +355,7 @@ class ManagedLlmStream(Iterator[Any]):
 
     async def _provider_stream(self, attempt: _ManagedAttempt, next_request: Any):
         """Relay's provider callback: run the factory and yield JSON-encoded chunks."""
-        run_callback = attempt.run_callback
+        run_callback = partial(attempt.run_callback, scope_stack=attempt.callback_stack())
         raw_stream = None
         try:
             raw_stream = run_callback(self._stream_factory, attempt.provider_request(next_request))

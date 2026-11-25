@@ -59,7 +59,7 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
-_HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
+_HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop", "llm_http_response"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
@@ -570,6 +570,8 @@ class PluginDispatchMixin:
         the user first, so this profile's replies are not streamed (:meth:`holds_stream`)."""
         from hermes_cli.plugins import VALID_HOOKS
 
+        if hook_name == "llm_http_response" and inspect.iscoroutinefunction(callback):
+            raise TypeError("llm_http_response callbacks must be synchronous and nonblocking")
         handle = context._track_callback("hook", hook_name, callback, self._hooks, VALID_HOOKS)
         if hold_stream and hook_name != STREAM_HOLDING_HOOK:
             logger.warning("Plugin '%s' set hold_stream on '%s'; only %s rewrites the reply, ignored",

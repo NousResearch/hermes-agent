@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from agent.served_model import install_llm_response_hook
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import _FULL_ARGS_LOG_BOUND, coerce_tool_name
 from session_rules.turns import coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
@@ -1529,12 +1530,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
     # leaks into later requests (a torn-down httpx transport got reused).
-    # Callers pass agent._client_kwargs (or shallow copies of it) in; any in-place mutation leaks back into
-    # the stored dict and is reused on subsequent requests. #10933 hit this by injecting an httpx.Client
-    # transport that was torn down after the first request, so the next request wrapped a closed transport
-    # and raised "Cannot send a request, as the client has been closed" on every retry. The revert resolved
-    # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
-    # the same class of bug.
     client_kwargs = dict(client_kwargs)
     if client_kwargs.get("base_url"):
         client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
@@ -1578,7 +1573,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             "%s client created from provider profile (%s, shared=%s) %s",
             agent.provider, reason, shared, agent._client_log_context(),
         )
-        return provider_client
+        return install_llm_response_hook(provider_client)
     from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
     if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
@@ -1636,7 +1631,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     from agent.served_model import install_served_model_capture
     install_served_model_capture(agent, client)
     _ra().logger.info("OpenAI client created (%s, shared=%s) %s", reason, shared, agent._client_log_context())
-    return client
+    return install_llm_response_hook(client)
 
 
 def _apply_switched_provider_request_overrides(agent, new_provider):

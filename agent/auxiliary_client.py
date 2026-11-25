@@ -23,6 +23,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
+from agent.served_model import install_llm_response_hook
 
 from agent.local_prompt_progress import (
     PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
@@ -199,14 +200,8 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
-    # Hermes owns auxiliary retry + provider/model fallback policy (the same-provider transient retry in
-    # call_llm plus the except-chain fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
-    # attempts) silently multiplies the effective wall time of every aux call by 3× on a slow/hung endpoint,
-    # so a 120s timeout can stall ~360s before Hermes sees a single failure (issue #54465). Disable
-    # SDK-internal retries by default and let Hermes control the budget; explicit callers can still override
-    # via kwargs.
     kwargs.setdefault("max_retries", 0)
-    return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
+    return install_llm_response_hook(OpenAI(api_key=api_key, base_url=base_url, **kwargs))
 
 
 # Interrupt protection for atomic aux tasks: a compression summary killed by an ordinary
@@ -4555,7 +4550,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.
     async_kwargs.setdefault("max_retries", 0)
-    return AsyncOpenAI(**async_kwargs), model
+    return install_llm_response_hook(AsyncOpenAI(**async_kwargs)), model
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
@@ -4630,7 +4625,7 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
             "base_url": bedrock_openai_base_url(region),
         }
         configure_bedrock_openai_client_kwargs(client_kwargs)
-        client = OpenAI(**client_kwargs)
+        client = install_llm_response_hook(OpenAI(**client_kwargs))
         logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
         return (client if raw_codex else CodexAuxiliaryClient(client, final_model)), final_model
     base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
@@ -4666,7 +4661,7 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
     try:
         # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
         from openai import OpenAI as _VertexOpenAI
-        client = _VertexOpenAI(api_key=token, base_url=base_url)
+        client = install_llm_response_hook(_VertexOpenAI(api_key=token, base_url=base_url))
     except Exception as exc:
         logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
         return None, None
@@ -5061,7 +5056,7 @@ def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any
     if profile is None:
         return None
     try:
-        return profile.create_client(**client_kwargs)
+        return install_llm_response_hook(profile.create_client(**client_kwargs))
     except Exception:
         logger.warning("resolve_provider_client: provider profile %r failed to create an "
                        "auxiliary client; falling back to the standard client path",
@@ -5115,7 +5110,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
         if is_native_gemini_base_url(base_url):
             client = GeminiNativeClient(api_key=api_key, base_url=base_url)
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return _route_client(req, client, final_model)
+            return _route_client(req, install_llm_response_hook(client), final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     from agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses

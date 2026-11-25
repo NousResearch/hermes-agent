@@ -30,6 +30,7 @@ from agent.errors import EmptyStreamError
 from agent.tool_history_as_text import tool_history_for_request
 
 from hermes_cli.version_info import get_version_info
+from agent.served_model import install_llm_response_hook
 
 
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
@@ -454,7 +455,7 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
     merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
-    return sdk.Anthropic(**kwargs)
+    return install_llm_response_hook(sdk.Anthropic(**kwargs))
 
 
 def _custom_provider_extra_headers(base_url) -> dict[str, str]:
@@ -538,11 +539,11 @@ def build_anthropic_bedrock_client(region: str, timeout: float | None = None):
     scoped = scoped_aws_session_kwargs()
     aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
                   "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
-    return sdk.AnthropicBedrock(
+    return install_llm_response_hook(sdk.AnthropicBedrock(
         aws_region=region, timeout=_client_timeout(timeout), **{k: v for k, v in aws_kwargs.items() if v},
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
         default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
-    )
+    ))
 
 
 def _normalize_to_mcp_wire(name: str) -> str:

@@ -1443,6 +1443,12 @@ gateway:
   # its stack; "raise" fails the call (CI / development). Off by default.
   # sessiondb_loop_guard: off
 
+  # Linux only: let a managed-worker turn (a Kanban task, a gateway.managed_workers
+  # session) keep running through a gateway stop or restart; the next gateway of
+  # this profile reattaches it. Under systemd it needs the user's session bus
+  # (`loginctl enable-linger <user>` for a system-level unit). Off by default.
+  # detached_workers: false
+
 # =============================================================================
 # Toolsets
 # =============================================================================

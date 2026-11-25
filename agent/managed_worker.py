@@ -228,12 +228,14 @@ def _drain_background_delegations(budget):
         time.sleep(0.2)
 
 
-def _die_with_owner(delay=ORPHAN_GRACE_SECONDS):
+def _die_with_owner(delay=ORPHAN_GRACE_SECONDS, before=None):
     """Then end this worker and, on POSIX, every descendant still in its process group: the owner
     spawns it as a group leader (``start_new_session``). Tools that open their own session (the
     terminal tool, background processes meant to outlive the turn) are not in it. Never a group
-    this process does not lead."""
+    this process does not lead. ``before`` runs first (what a SIGKILL would leave on disk)."""
     def kill():
+        if before is not None:
+            before()
         if os.name != 'nt' and os.getpgrp() == os.getpid():
             import signal
             os.killpg(os.getpid(), signal.SIGKILL)  # windows-footgun: ok — POSIX only

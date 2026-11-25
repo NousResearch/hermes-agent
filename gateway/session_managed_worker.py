@@ -338,6 +338,9 @@ class ManagedWorker:
         with self.write_lock:
             self.process.stdin.write(encode_frame(frame))
             self.process.stdin.flush()
+            if self.handed_off:
+                # A hand_off that found this write in progress left the hang-up to it.
+                self._hang_up()
 
     def _signal_worker(self, kill):
         """Signal the verified interpreter, not only the handle: a launcher that exec-chained
@@ -369,21 +372,31 @@ class ManagedWorker:
 
     def hand_off(self):
         """Leave the worker running for the next owner: close this side's control stream (the
-        worker reads EOF and listens on its socket). No signal is sent."""
+        worker reads EOF and listens on its socket). No signal is sent. Called on the loop, so it
+        never waits for a control write in progress (a worker that stopped reading can hold one
+        forever): that write's ``send`` hangs up as soon as it returns."""
         self.handed_off = True
-        with self.write_lock:
-            hangup = getattr(self.process, 'hangup', None)
-            with suppress(OSError, ValueError):
-                (hangup or self.process.stdin.close)()
+        if self.write_lock.acquire(blocking=False):
+            try:
+                self._hang_up()
+            finally:
+                self.write_lock.release()
+
+    def _hang_up(self):
+        hangup = getattr(self.process, 'hangup', None)
+        with suppress(OSError, ValueError):
+            (hangup or self.process.stdin.close)()
 
     def release(self):
-        """``close`` without the signals and the wait: a handed-off worker keeps running."""
+        """``close`` without the signals and the wait: a handed-off worker keeps running. A writer
+        still blocked in a control write keeps the stream: that ``send`` hangs up when it returns."""
         self.closed.set()
         self._demand.release()
         if self.writer.ident is not None:
             self.writer.join(timeout=5)
-        with suppress(OSError, ValueError):
-            self.process.stdin.close()
+        if not self.writer.is_alive():
+            with suppress(OSError, ValueError):
+                self.process.stdin.close()
         if self.reader is None:
             self.process.stdout.close()
         else:
@@ -652,31 +665,49 @@ async def _settle_lost(authority, row, scope, recording):
         await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
 
 
-def _worker_argv(authority, row, policy):
-    """A detachable worker of a systemd-supervised gateway runs in its own transient user scope
+def _worker_launch(authority, row, policy):
+    """The worker's ``(argv, env, detachable)``, prepared together and off the loop (the scope probe may block).
+
+    A detachable worker of a systemd-supervised gateway runs in its own transient user scope
     (``systemd-run --scope`` execs in place: same pid, same pipes), so the service's cgroup kill
-    on a restart does not reach it. Everywhere else ``start_new_session`` already detaches it."""
-    argv = [sys.executable, '-m', 'agent.managed_worker']
+    on a restart does not reach it. The wrapper gets the user-bus variables the probe was given
+    (derived from this process's environ: a system-level unit inherits no session variables) over
+    the worker's own env. Without a scope there (``degraded``) the restart kills the worker anyway,
+    so it is not detachable and keeps the ordinary Stop. Everywhere else ``start_new_session``
+    already detaches it, with ``_worker_env`` unchanged."""
+    argv, env = [sys.executable, '-m', 'agent.managed_worker'], _worker_env(authority)
     from gateway.session_detached_workers import detach_enabled
     if policy is None or not detach_enabled(policy):
-        return argv
-    from tools.process_registry import restart_safe_gateway_child_argv
-    return restart_safe_gateway_child_argv(argv, unit_suffix='mw-' + row['admission_id'][:12],
-                                           require_restart_safe_scope=False).argv
+        return argv, env, False
+    from tools.process_registry import restart_safe_gateway_child_argv, systemd_user_bus_env
+    dispatch = restart_safe_gateway_child_argv(argv, unit_suffix='mw-' + row['admission_id'][:12],
+                                               require_restart_safe_scope=False,
+                                               degraded_consequence=_UNSCOPED_DETACH_CONSEQUENCE)
+    if dispatch.mode != 'scoped':
+        return argv, env, dispatch.mode == 'in_process'
+    probed = systemd_user_bus_env()
+    bus = {name: probed[name] for name in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS') if name in probed}
+    return dispatch.argv, {**(os.environ if env is None else env), **bus}, True
+
+
+_UNSCOPED_DETACH_CONSEQUENCE = (
+    "gateway.detached_workers is off for managed workers until then: they run inside the gateway's "
+    "cgroup and a gateway restart stops them as without the setting."
+)
 
 
 async def _spawn_registered_worker(authority, ref, row, policy=None):
-    """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
-    interrupted result is already recorded). The generation stays marked spawning until registration."""
+    """Spawn the turn's child and register it for Stops: ``(worker, process, detachable)``, or None when the spawn was
+    cancelled (the interrupted result is already recorded). The generation stays marked spawning until registration."""
     spawning = _mark_spawning(authority, ref, row)
     generation = row.get('generation')
     try:
-        env = await asyncio.to_thread(_worker_env, authority)
+        argv, env, detachable = await asyncio.to_thread(_worker_launch, authority, row, policy)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
         from gateway.session_worker_spawn import acquire_process
         from gateway.session_managed_worker_log import worker_log_path
         log_path = worker_log_path(authority.profile_id)
-        process = await acquire_process(subprocess.Popen, _worker_argv(authority, row, policy),
+        process = await acquire_process(subprocess.Popen, argv,
             cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, **WORKER_POPEN)
     except asyncio.CancelledError:
@@ -696,7 +727,7 @@ async def _spawn_registered_worker(authority, ref, row, policy=None):
     workers[ref.session_id] = worker
     spawning.pop(ref.session_id, None)
     worker.stop_cause = _latched_stop_cause(authority, ref.session_id, generation)
-    return worker, process
+    return worker, process, detachable
 
 
 async def admit_managed(authority, ref, row, policy):
@@ -772,7 +803,7 @@ async def execute_managed(authority, ref, row, policy):
     spawned = await _spawn_registered_worker(authority, ref, row, policy)
     if spawned is None:
         return ''
-    worker, process = spawned
+    worker, process, detachable = spawned
     workers = authority._managed_workers
     # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
     # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
@@ -785,9 +816,9 @@ async def execute_managed(authority, ref, row, policy):
         if worker.stop.is_set():
             # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
             raise AuthorityRefusal('managed_worker_stopped')
-        from gateway.session_detached_workers import detach_enabled, socket_path
+        from gateway.session_detached_workers import socket_path
         detach = (await asyncio.to_thread(socket_path, authority.profile_id, 'admission-worker:' + row['admission_id'])
-                  if policy is not None and detach_enabled(policy) else None)
+                  if detachable else None)
         # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
         from gateway.session_runtime_workers import tracked_write
         scope = await tracked_write(authority, partial(reserve_admission_worker, authority,

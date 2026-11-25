@@ -12,9 +12,11 @@ Imported only after the bootstrap frame is read; nothing here runs at import.
 """
 from collections import deque
 import contextlib
+import errno
 import os
 from pathlib import Path
 import socket
+import stat
 import struct
 import threading
 import time
@@ -69,6 +71,7 @@ class DetachableChannel(WorkerChannel):
         self.buffer, self.buffered = deque(), 0
         self.inbound = self.conn = None
         self.timer = None
+        self.made_dir = None  # the fallback listener directory this worker created, while it listens
         self.result = None  # the sent result frame until the owner's finish acknowledges it
         self.prompts = {}  # open approval/clarify frames by prompt id: a new owner must see them
 
@@ -120,12 +123,38 @@ class DetachableChannel(WorkerChannel):
         os.dup2(null, 2)
         os.close(null)
         from agent.managed_worker import _die_with_owner
-        self.timer = _die_with_owner(ADOPT_GRACE_SECONDS)
+        self.timer = _die_with_owner(ADOPT_GRACE_SECONDS, before=self._withdraw)
         from agent.memory_provider import spawn_context_thread
         spawn_context_thread(self._listen, name='managed-detached-listener').start()
         self.changed.notify_all()
 
+    def _claim_directory(self):
+        """A fallback listener's directory (``socket_path``) exists only while this worker waits for
+        an owner: create it 0700. An existing one (the outbox) must be this user's private directory."""
+        parent = os.path.dirname(self.path)
+        try:
+            os.mkdir(parent, 0o700)
+        except FileExistsError:
+            info = os.lstat(parent)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:  # windows-footgun: ok — POSIX only (detach_spec refuses nt)
+                raise PermissionError(errno.EPERM, 'unsafe detached listener directory', parent) from None
+        else:
+            self.made_dir = parent
+
+    def _release_directory(self):
+        made, self.made_dir = self.made_dir, None
+        if made is not None:
+            with contextlib.suppress(OSError):
+                os.rmdir(made)
+
+    def _withdraw(self):
+        """No owner within the grace: the process is about to be killed; its listener goes first."""
+        with contextlib.suppress(OSError):
+            os.unlink(self.path)
+        self._release_directory()
+
     def _listen(self):
+        self._claim_directory()
         with contextlib.suppress(FileNotFoundError):
             os.unlink(self.path)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -155,6 +184,7 @@ class DetachableChannel(WorkerChannel):
         finally:
             server.close()
             unpublish()
+            self._release_directory()
 
     def _reattach(self, conn, *, unpublish=None):
         """Hand the turn to a verified same-user owner: hello, its epoch, then the buffered frames."""

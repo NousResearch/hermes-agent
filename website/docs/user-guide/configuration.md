@@ -1310,6 +1310,43 @@ gateway in the middle of its drain. launchd caps its stop timeout at 60 s, so on
 is limited to what fits inside that.
 :::
 
+### Detached managed workers
+
+With `gateway.managed_workers: true`, a CLI session on a custom OpenAI-compatible provider
+(`--provider custom --base-url ...`) runs each turn in its own worker process instead of inside the
+gateway; safe-mode, config-only and Kanban sessions always run this way. By default a worker ends
+with its gateway: a restart or crash in the middle of a turn ends the turn.
+`gateway.detached_workers: true` lets those turns survive the restart:
+
+```yaml
+gateway:
+  detached_workers: false   # default; true lets managed-worker turns survive a gateway restart
+```
+
+- **Linux only.** The worker and the gateway check each other's identity with `SO_PEERCRED`; on
+  macOS and Windows the setting is ignored.
+- **Which sessions.** Each new worker reads the option from its session's frozen launch policy:
+  editing `config.yaml` does not change sessions that already exist, and a running worker keeps
+  the mode it started with.
+- **On restart.** A stopping or restarting gateway hands these turns over instead of interrupting
+  them (`agent.restart_drain_timeout` does not apply to them); a user Stop still stops them. The
+  worker buffers its output and waits on a private unix socket that only your user can connect
+  to: in the profile's `worker-outboxes/` directory, or, when that path is too long for a unix
+  socket, in a directory of its own under `XDG_RUNTIME_DIR` (or the temp directory) that exists
+  only while it waits. The next gateway reattaches it once its API is up: same worker process,
+  same turn, which then settles normally (`gateway.log` logs `Re-adopted managed worker`).
+- **systemd.** Under a systemd service each such worker runs in its own transient user scope
+  (`systemd-run --user --scope`, unit `hermes-worker-mw-<id>`), so the service's restart does not
+  kill it. That needs the gateway user's session bus (`/run/user/<uid>/bus`); for a system-level
+  unit, `sudo loginctl enable-linger <user>`. Without a reachable bus the gateway logs a warning
+  and does not detach the worker: a restart ends its turn as without the setting.
+- **Still `unknown`.** The turn is recorded `unknown`, as without the setting, when no gateway
+  reattaches the worker within 15 minutes (it then ends itself and its process group), when it
+  crashed or was killed first, when its identity check fails, and when the gateway stops in the
+  short window after the worker recorded its final result but before the gateway closed the
+  turn: that already finished turn is not taken over. A worker killed while it waits can leave
+  its empty socket directory behind.
+
 ## Session Stall Watchdog
 
 The gateway runs a notify-only stall watchdog (`agent.session_stall_timeout`, default `300` seconds, `0` = disabled). When a busy session has a **pending inbound follow-up** and the agent's shared activity clock has been idle for at least this long, the gateway logs a WARNING and sends the user a one-shot notification:

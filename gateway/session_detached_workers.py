@@ -20,6 +20,7 @@ import io
 import logging
 import os
 from pathlib import Path
+import secrets
 import socket
 import struct
 import subprocess
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 HANDSHAKE_SECONDS = 15
 _MAX_UNIX_PATH = 100  # sun_path is 104 bytes on macOS/BSD, 108 on Linux
+# Last fallback root for a listener directory, as in gateway.control_socket.
+_LAST_RESORT_ROOT = '/tmp'  # no-tmp: ok — AF_UNIX path limit needs the short root; the worker's own dir is 0700
 _PEERCRED = struct.Struct('3i')
 
 
@@ -49,16 +52,39 @@ def detach_enabled(policy):
     return isinstance(gateway, dict) and gateway.get('detached_workers') is True
 
 
+def _fits(path):
+    return len(os.fsencode(path)) <= _MAX_UNIX_PATH  # the bytes bind() receives, not characters
+
+
+def _listener_roots():
+    """Short roots for a fallback listener, in order; one that cannot be resolved is skipped."""
+    from gateway.control_socket import _private_runtime_dir
+    try:
+        temp = tempfile.gettempdir()
+    except OSError:  # no usable temp directory at all (FileNotFoundError)
+        temp = None
+    return [str(root) for root in (_private_runtime_dir(), temp, _LAST_RESORT_ROOT) if root is not None]
+
+
 def socket_path(home, execution_id):
-    """The worker's private listener: in its 0700 outbox directory when that fits ``sun_path``,
-    else in a fresh 0700 ``mkdtemp`` directory (a long profile home)."""
+    """The worker's private listener: in its 0700 outbox directory when that fits ``sun_path``
+    (a short profile home), else ``hmw-<random>/w.sock`` under the first writable short root it
+    fits in, measured in bytes (the random name is not predictable by another user). That directory
+    is the worker's (``agent/managed_worker_detach.py``): it creates it 0700 only while it waits for
+    a new owner and removes it once reattached or exiting, so a turn that never changes owner leaves
+    nothing behind. None when no root fits: the turn then
+    runs without a detached reservation."""
     direct = outbox_dir(home, execution_id) / 'control.sock'
-    if len(str(direct).encode()) <= _MAX_UNIX_PATH:
+    if _fits(direct):
         direct.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         return str(direct)
-    from gateway.control_socket import _private_runtime_dir
-    root = _private_runtime_dir() or Path(tempfile.gettempdir())
-    return str(Path(tempfile.mkdtemp(prefix='hmw-', dir=root)) / 'w.sock')
+    name = Path('hmw-' + secrets.token_hex(8), 'w.sock')
+    for root in _listener_roots():
+        path = Path(root) / name
+        if _fits(path) and os.access(root, os.W_OK | os.X_OK):
+            return str(path)
+    logger.warning('No directory is short enough for a detached worker listener; the turn runs undetached.')
+    return None
 
 
 def _worker_alive(record, *, numeric_uid=False):

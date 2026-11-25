@@ -90,6 +90,28 @@ def test_a_link_repointed_at_another_homes_directory_is_refused_and_leaves_that_
 
 
 @pytest.mark.platforms("posix")  # a directory symlink
+def test_a_profile_directory_replaced_by_a_link_while_the_process_runs_is_refused(tmp_path, monkeypatch):
+    """A profile opened as a plain directory and then replaced by a link to another home refuses plugin work,
+    rather than read the other home's plugins under the key of the directory it replaced."""
+    from hermes_cli.plugins_loader import PluginHomeMoved
+
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {"tiny": "def register(ctx):\n    pass\n"},
+                               isolation="in_process")
+    ops = _home_with_plugins(tmp_path / "root" / "profiles" / "ops", monkeypatch, {}, isolation="in_process")
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        plugins_mod.get_plugin_manager()  # HERMES_HOME is the plain directory
+        ops.rename(tmp_path / "ops-was-here")
+        ops.symlink_to(other, target_is_directory=True)
+        manager = plugins_mod.get_plugin_manager()
+        with pytest.raises(PluginHomeMoved):
+            manager.discover_and_load()
+        assert "tiny" not in manager._plugins
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # a directory symlink
 @pytest.mark.parametrize("link", ["kept", "removed"])
 def test_unloading_runs_under_the_profile_name_or_under_the_directory_once_no_name_leads_there(
         link, tmp_path, monkeypatch):

@@ -374,7 +374,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """:attr:`owner_home`, or None when no name leads here. The old name is kept then, so a name that leads
         here later is still found."""
         named = self._named_home
-        if named == self.home_path or self._leads_here(named):
+        if self._leads_here(named):  # even a name equal to the directory: it may have been replaced by a link
             return named
         renamed = next((p for p in self._profile_names_beside(named) if self._leads_here(p)), None)
         if renamed is not None:

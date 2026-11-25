@@ -239,6 +239,21 @@ async def _bounded_body(request):
             return request._body
 
 
+async def _refuse_oversized(request, deadline):
+    # A foreign live lease is sufficient authority. Do not wait for a local
+    # service or provider bootstrap just to reject an over-limit body.
+    profiles = request.query_params.getlist('profile') or [None]
+    for profile in dict.fromkeys(profiles):
+        try:
+            required = await _discovery_required(profile, deadline)
+        except HTTPException:
+            if len(profiles) == 1:
+                raise
+            continue
+        if required:
+            raise CatalogError('request_too_large', 'Catalog request body exceeds 256 KiB.')
+
+
 async def _delegate(request, stock, provider_deadline):
     route = request.url.path.rsplit('/', 1)[-1]
     if not request.url.path.startswith('/api/skills/hub/'):
@@ -248,8 +263,7 @@ async def _delegate(request, stock, provider_deadline):
     if raw is None:
         # Never partially parse an oversized body to infer authority. The query
         # selector (or current profile) determines whether stock bypass is safe.
-        if await _selected_service(request, None, provider_deadline) is not None:
-            raise CatalogError('request_too_large', 'Catalog request body exceeds 256 KiB.')
+        await _refuse_oversized(request, provider_deadline)
         return await stock(request)
     # Keep every selector until optional-provider admission has resolved it.
     # Providerless requests retain the stock last-value/body-profile behavior.

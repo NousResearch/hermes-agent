@@ -72,6 +72,21 @@ def test_remote_live_owner_is_source_unavailable_not_stock(client, remote, monke
     assert calls == []
 
 
+def test_oversized_remote_live_provider_refuses_before_stock(client, remote, monkeypatch):
+    from hermes_cli.web_routers import skills
+    source, process = remote
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    import json
+    raw = json.dumps(dict(identifier=source + ':item')).encode()
+    result = client.post('/api/skills/hub/install', content=raw + b' ' * (262145 - len(raw)),
+                         headers={'content-type': 'application/json'})
+    assert process.is_alive()
+    assert result.status_code == 413, result.text
+    assert result.json()['error']['code'] == 'request_too_large'
+    assert spawned == []
+
+
 @pytest.mark.platforms('posix')
 def test_dead_remote_owner_does_not_retain_http_catalog_authority(client, remote):
     source, process = remote

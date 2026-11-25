@@ -225,6 +225,24 @@
   line-height: var(--portal-panel-title-line);
 }
 
+/* Short (breakpoints.ts SHORT_QUERY, a landscape phone or a raised keyboard): the panel's 30px top
+   and the 122px title block under it would leave the list almost no room, so the panel tightens to
+   the compact rhythm — the title 12px under the panel's top, the first row 80px under it instead of
+   122 (its 36px line, a tight gap, then the panel's own 2 × 12px gap) — and the list keeps the rest.
+   Only its own geometry: the rows and the scroll are untouched, and heads at normal heights keep the
+   full block. */
+@media (max-height: 30rem) {
+  :where(:root[data-shell='portal']) .page-sidebar-panel {
+    --portal-panel-title-top: var(--portal-space-compact);
+    --portal-panel-first-row: calc(
+      var(--portal-panel-title-top) + var(--portal-panel-title-line) + var(--portal-space-tight) +
+        var(--portal-space-compact) * 2
+    );
+
+    padding-block-end: var(--portal-space-compact);
+  }
+}
+
 /* The start row (New agent, New routine): New chat's slab (16292:15511), 40px, radius 3, no rim,
    12px sides, 10px gap, a 16px glyph, Medium label. A secondary button reads its fill and rim from
    the control tokens (portal-controls.css), so the row restyles it through them. */
@@ -414,6 +432,13 @@
   :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-split'] > [data-slot='overlay-main'] {
     grid-row: 2;
     grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1023.98px) and (max-height: 30rem) {
+  :root[data-shell='portal'] [data-page-surface] .page-sidebar-panel {
+    padding-top: calc(var(--titlebar-band-height) + var(--portal-space-compact));
+    padding-bottom: var(--portal-space-compact);
   }
 }
 

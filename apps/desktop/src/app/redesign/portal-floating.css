@@ -145,6 +145,62 @@
   letter-spacing: 0.02em;
 }
 
+/* ── Menu switches ────────────────────────────────────────────────────────── */
+
+/* A settings row says which state it is in. Radix mounts a checkbox item's indicator only while the
+   item is on, which left "off" a blank row, so the item draws the redesign's own checkbox either
+   way (878:5039: 16px, r3, the 28% ink stroke at rest, the brand fill checked) at the row's end
+   inset, where a checkable menu keeps its indicator: the empty outline here, the row's own
+   indicator under the check when on. The row reserves the tile's room (that inset, the tile, its
+   gap) so no label runs under it — the agent menu's settings reserve it themselves and wider
+   (portal-sidebar.css), which still wins there — and both states sit at one inset, so toggling
+   never moves the row. */
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-checkbox-item'], [data-slot='context-menu-checkbox-item']) {
+  /* The tile's seat. A context menu's checkbox rows keep that menu's own row shape, whose end inset
+     is 0.5rem (the row list above names no checkbox slot there), so the seat is set here. */
+  padding-inline-end: 0.625rem;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-checkbox-item'], [data-slot='context-menu-checkbox-item'])[data-state='unchecked'] {
+  padding-inline-end: calc(0.625rem + 1rem + 0.625rem);
+}
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='context-menu-checkbox-item']
+  )[data-state='unchecked']::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0.625rem;
+  width: 1rem;
+  height: 1rem;
+  margin-block: auto;
+  border: 1px solid var(--portal-stroke-strong);
+  border-radius: var(--portal-radius-control);
+}
+
+/* On, the check rides in that tile: the row's own indicator span becomes the brand fill (its 0.5rem
+   lead is the tile's centring now), so both states are the same 16px box at the row's end. */
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='context-menu-checkbox-item']
+  )[data-state='checked']
+  > span:last-child {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
 /* ── Command palette (HUD) ────────────────────────────────────────────────── */
 
 :root[data-shell='portal'] .hermes-floating-surface [data-slot='command-input-wrapper'] {

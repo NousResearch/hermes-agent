@@ -100,13 +100,8 @@ export function CapabilitiesView({
   const presentation = capabilitiesPresentation(redesign, embedded, Boolean(fixedProfile))
   const pageDescription = useCapabilitiesPageDescription()
   const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
-  // Both hooks run unconditionally (rules of hooks); embedded picks the local
-  // one so tab clicks inside a dialog don't rewrite the page URL.
-  // An agent's own settings pin this view to that agent and address every mode, Tools included.
-  const modes: readonly CapabilityMode[] = redesign && !fixedProfile ? PORTAL_CAPABILITY_MODES : CAPABILITY_MODES
-  const routeTab = useRouteEnumParam('tab', modes, modes[0])
-  const localTab = useState<CapabilityMode>(modes[0])
-  const [selectedMode, setMode] = embedded ? localTab : routeTab
+  const modes = capabilityModes(redesign, Boolean(fixedProfile))
+  const [selectedMode, setMode] = useSelectedMode(modes, embedded)
   const mode = fixedMode ?? selectedMode
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
   const reloadsOwnerChat = useReloadsOwnerChat()
@@ -140,11 +135,7 @@ export function CapabilitiesView({
 
   // Plugins is small enough to warm from any tab. Skills (~100k rows) only
   // loads when asked for: an idle parse of it would still block the page.
-  // An agent's own pages list only what it has installed: nothing there reads the library.
-  useEffect(
-    () => (mode === 'plugins' || presentation.agentLayout ? undefined : prefetchCatalogWhenIdle('plugins')),
-    [mode, presentation.agentLayout]
-  )
+  usePluginCatalogWarmup(mode, presentation.agentLayout)
   useEffect(syncCatalogArcs, [])
 
   // Rotating placeholder nudges from the user's own data — teach that search
@@ -407,6 +398,28 @@ function useReloadsOwnerChat(): boolean {
   const activeProfile = useStore($activeGatewayProfile)
 
   return !owner || normalizeProfileKey(owner.profile) === normalizeProfileKey(activeProfile)
+}
+
+/** The modes the page addresses. An agent's own settings pin this view to that agent and address
+ *  every mode, Tools included. */
+const capabilityModes = (redesign: boolean, pinned: boolean): readonly CapabilityMode[] =>
+  redesign && !pinned ? PORTAL_CAPABILITY_MODES : CAPABILITY_MODES
+
+/** Plugins is small enough to warm from any other tab. An agent's own pages list only what it has
+ *  installed: nothing there reads the library. */
+function usePluginCatalogWarmup(mode: CapabilityMode, agentLayout: boolean) {
+  const warms = mode !== 'plugins' && !agentLayout
+
+  useEffect(() => (warms ? prefetchCatalogWhenIdle('plugins') : undefined), [warms])
+}
+
+/** The tab the page is on, and its setter. Both hooks run unconditionally (rules of hooks); embedded
+ *  picks the local one so tab clicks inside a dialog don't rewrite the page URL. */
+function useSelectedMode(modes: readonly CapabilityMode[], embedded?: boolean) {
+  const routeTab = useRouteEnumParam('tab', modes, modes[0])
+  const localTab = useState<CapabilityMode>(modes[0])
+
+  return embedded ? localTab : routeTab
 }
 
 /** The page's tabs; the two installed lists count on theirs (`null` reserves a count still loading). */

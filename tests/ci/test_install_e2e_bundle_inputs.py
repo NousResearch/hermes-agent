@@ -100,8 +100,7 @@ def test_downstream_jobs_handle_skipped_bundle_inputs_and_manifest_rehearsals():
     assert not _job_runs(jobs["bundle-inputs"], release_inputs)
     assert not _job_runs(jobs["windows-bundled"], release_inputs, _SKIPPED_NEED_STATUS)
     assert not _job_runs(jobs["macos-bundled"], release_inputs, _SKIPPED_NEED_STATUS)
-    assert "bundle-inputs" not in jobs["source-gate"]["needs"]
-    assert _job_runs(jobs["source-gate"], release_inputs)
+    assert _job_runs(jobs["source-gate"], release_inputs, _SKIPPED_NEED_STATUS)
     assert _job_runs(jobs["report"], release_inputs, _SKIPPED_NEED_STATUS)
 
     win_inputs = _typed_inputs(

@@ -19,6 +19,7 @@ import {
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu'
 import { $registryVersion, registry } from '@/contrib/registry'
+import type { PluginWorkspaceOptions } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { Zap, ZapFilled } from '@/lib/icons'
 import {
@@ -31,7 +32,7 @@ import {
 import { $lastApprovalContentPane, isApprovalContentPane } from '@/store/session-focus'
 
 const declaresPerProfileApprovals = (paneId: string): boolean =>
-  (registry.getArea('panes').find(c => c.id === paneId)?.data as { approvalScope?: string } | undefined)
+  (registry.getArea('panes').find(c => c.id === paneId)?.data as Partial<PluginWorkspaceOptions> | undefined)
     ?.approvalScope === 'per-profile'
 
 // A workspace that declares `approvalScope: 'per-profile'` (a group room) runs several
@@ -106,12 +107,12 @@ export function useApprovalModeStatusbarItem(
     // optimistic 'smart' default until some later session event reconciles
     // it. Gate on the open socket and re-run when it opens (or a reconnect
     // lands), the same way useStatusSnapshot does.
-    if (gatewayState !== 'open' || !hasProfileTarget) {
+    if (gatewayState !== 'open') {
       return
     }
 
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
-  }, [gatewayState, hasProfileTarget, profile, requestGateway, routeIdentity])
+  }, [gatewayState, profile, requestGateway, routeIdentity])
 
   if (!hasProfileTarget) {
     return {

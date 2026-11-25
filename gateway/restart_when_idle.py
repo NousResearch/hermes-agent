@@ -172,6 +172,7 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
             runner._restart_task_started = runner._restart_requested = False
             # Drop the failed restart's plan too: a later plain stop would otherwise exit 75 and be relaunched.
             runner._restart_detached = runner._restart_via_service = False
+            runner._restart_command_source = None  # a /restart's requester: the next restart is not theirs
             runner._restart_force_event = None
             budgets = runner.__dict__.pop("_budgets_before_force", None)
             if budgets is not None:  # the force expected a stop that never came: drain as before it

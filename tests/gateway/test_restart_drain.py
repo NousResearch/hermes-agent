@@ -311,6 +311,27 @@ async def test_a_planned_stop_after_a_failed_service_restart_exits_cleanly(monke
 
 
 @pytest.mark.asyncio
+async def test_a_failed_chat_restart_does_not_claim_the_next_restart(monkeypatch):
+    """A /restart that fails before its stop drops its requester too: the next restart (the CLI's, an
+    update's) would otherwise pass as that chat's, with no home-channel notice and no planned-restart marker."""
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+    runner._restart_command_source = make_restart_source()
+
+    def units(_runner):
+        raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+    monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    assert runner.request_restart(detached=True, via_service=False) is True
+    await asyncio.gather(runner._restart_task, return_exceptions=True)
+    monkeypatch.undo()
+    runner.stop = AsyncMock()
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await runner._restart_task
+    assert runner._home_shutdown_broadcast_skip_reason() != "in-chat restart"
+
+
+@pytest.mark.asyncio
 async def test_a_failed_restart_keeps_an_external_drain_in_the_status(monkeypatch):
     """While an operator's external drain refuses new turns, a restart that fails before its stop does
     not report the gateway as running."""

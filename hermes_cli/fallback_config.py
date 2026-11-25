@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,29 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     """
     if not isinstance(entry, dict):
         return None
+    if "key_env_exclusive" in entry and not isinstance(entry["key_env_exclusive"], bool):
+        raise ValueError("key_env_exclusive must be boolean")
+    if "key_source" in entry and entry.get("key_env_exclusive") is not True:
+        raise ValueError("key_source requires exclusive fallback")
+    if entry.get("key_env_exclusive") is True:
+        # Opt-in source pin: never read process env on a scope miss.
+        from agent.secret_scope import current_secret_scope, current_secret_scope_home
+        from hermes_constants import get_hermes_home, hermes_home_key
+        name = entry.get("key_env")
+        if (str(entry.get("provider") or "").strip().lower() != "openrouter"
+                or not isinstance(name, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", name)
+                or "api_key" in entry or "api_key_env" in entry):
+            raise ValueError("Exclusive fallback requires OpenRouter and one key_env reference")
+        scope, home = current_secret_scope(), current_secret_scope_home()
+        if scope is None or not home or hermes_home_key(home) != hermes_home_key(get_hermes_home()):
+            raise ValueError("Exclusive fallback requires matching profile secret scope")
+        if entry.get("key_source") != "bitwarden":
+            raise ValueError("Exclusive fallback requires key_source bitwarden")
+        from agent.secret_scope import get_source_pinned_secret
+        value = get_source_pinned_secret(name, "bitwarden", get_hermes_home())
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Exclusive fallback credential unavailable")
+        return value.strip()
     if inline := str(entry.get("api_key") or "").strip():
         return inline
     if key_env := str(entry.get("key_env") or entry.get("api_key_env") or "").strip():

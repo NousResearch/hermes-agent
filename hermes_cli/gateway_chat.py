@@ -17,17 +17,17 @@ from hermes_cli.gateway_connection import RESUME_REFUSALS
 _UNSUPPORTED = (
     "image", "worktree", "w",
     "no_restore_cwd",
-    "run_budget", "verbose", "compact",
+    "verbose", "compact",
 )
 _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url", "ignore_rules", "api_key",
-           "yolo", "safe_mode", "ignore_user_config", "skills", "checkpoints", "accept_hooks", "pass_session_id")
+           "yolo", "safe_mode", "ignore_user_config", "skills", "checkpoints", "accept_hooks", "pass_session_id",
+           "run_budget")
 # Where each refused option lives now; the refusal names it so the user is not left guessing.
 _RELOCATED = {
     "image": "`hermes --tui` or the Desktop app to attach the image",
     "worktree": "`hermes --tui -w`",
     "w": "`hermes --tui -w`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
-    "run_budget": "`agent.run_budget_seconds` in config.yaml",
     "verbose": "`hermes logs --follow`, or `hermes chat --tui -v`",
     "compact": "`display.compact: true` in config.yaml",
     "create-if-missing without -c <name>": "`-c <name> --create-if-missing`",
@@ -174,9 +174,13 @@ async def run_gateway_chat(args, emitter=None):
         title = continue_title(args)
         create_if_missing = bool(title and getattr(args, "create_if_missing", False))
         latest = wants_latest(args)
+        key_verification = bool(getattr(args, "api_key", None) and
+                                (latest or getattr(args, "resume", None) or title))
+        if key_verification and "launch-key-verify-v1" not in description.get("capabilities", []):
+            raise GatewayClientError("Gateway cannot verify the launch credential on resume; update the gateway.")
         if latest:
             snapshot = await _resume_latest(client, args)
-            check_resume_policy(args, snapshot)
+            check_resume_policy(args, snapshot, credential_verified=key_verification)
         elif getattr(args, "resume", None) or (title and not create_if_missing):
             name = getattr(args, "resume", None) or title
             try:
@@ -193,7 +197,7 @@ async def run_gateway_chat(args, emitter=None):
                     raise GatewayClientError(
                         f"No session found matching '{name}'. Use 'hermes sessions list' to see available "
                         "sessions, or pass -c <name> --create-if-missing to start a new session with that title.")
-            check_resume_policy(args, snapshot)
+            check_resume_policy(args, snapshot, credential_verified=key_verification)
         else:
             contract = description.get("session_create", {})
             # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
@@ -221,6 +225,12 @@ async def run_gateway_chat(args, emitter=None):
             if missing:
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
+            # A titled create may return an existing session: check its frozen launch
+            # before attaching or submitting, exactly as for an explicit resume.
+            if create_if_missing:
+                if key_verification:
+                    snapshot = await _resume(client, args, session_id=snapshot["stored_session_id"])
+                check_resume_policy(args, snapshot, credential_verified=key_verification)
             if (warning := (snapshot.get("info") or {}).get("config_warning")) and not isinstance(oneshot_prompt, str):
                 print(f"Warning: {warning}", file=sys.stderr)
         if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success
@@ -250,7 +260,8 @@ _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overr
 # A refused resume flag as the user typed it, and the slash command that changes it on the resumed session.
 _RESUME_FLAG_HINTS = {"model": ("-m/--model", "/model"), "provider": ("--provider", "/model"),
                       "base_url": ("--base-url", "/model"), "reasoning": ("--reasoning", "/reasoning"),
-                      "yolo": ("--yolo", "/yolo"), "toolsets": ("-t/--toolsets", None),
+                      "yolo": ("--yolo", "/yolo"), "run_budget": ("--run-budget", None),
+                      "toolsets": ("-t/--toolsets", None),
                       "skills": ("-s/--skills", None), "verbose": ("-v/--verbose", None), "cwd": ("--in", None)}
 
 
@@ -296,10 +307,11 @@ def _requested_policy(args):
     return policy
 
 
-def check_resume_policy(args, snapshot):
+def check_resume_policy(args, snapshot, *, credential_verified=False):
     """A resume may repeat the flags the session was created with (scripts re-run one command
     line); anything that would CHANGE the frozen route is refused, as before."""
     requested = _requested_policy(args)
+    requested.update(env_launch_flags())
     if getattr(args, "in_dir", None):
         requested["cwd"] = str(Path(args.in_dir).expanduser().resolve())
     if not requested:
@@ -317,8 +329,9 @@ def check_resume_policy(args, snapshot):
         from hermes_constants import get_hermes_home
         flags = {key: requested[key] for key in ("model", "provider", "base_url", "api_key") if key in requested}
         requested["model"] = resolve_launch_route(flags, load_user_config_effective(get_hermes_home() / "config.yaml"))["model"]
-    # api_key is never durable; a repeated key is not a policy change.
-    differs = [key for key, value in requested.items() if key != "api_key" and frozen.get(key) != value]
+    # Credentials are not exposed in the snapshot: only an owner-confirmed rebind proves equality.
+    differs = [key for key, value in requested.items()
+               if (not credential_verified if key == "api_key" else frozen.get(key) != value)]
     if differs:
         raise resume_policy_error(differs)
 

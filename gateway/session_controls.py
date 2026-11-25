@@ -594,7 +594,7 @@ class AuthorityConnection:
         from gateway.session_skin import resolved_skin
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
-                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
+                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'launch-key-verify-v1', 'acp-editor-policy-v1',
                                  'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1',
                                  'session-list-cursor-v1', 'client-identity-v1', 'client-activity-v1'],
                 'session_create': {'sources': sorted(SURFACES),

@@ -2270,7 +2270,9 @@ def _warn_paid_lane_once(model: str) -> None:
 
 
 def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, model: str | None = None,
-                    explicit_base_url: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
+                    explicit_base_url: Optional[str] = None, *, exclusive_api_key: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
+    if exclusive_api_key and (not isinstance(explicit_api_key, str) or not explicit_api_key.strip()):
+        raise ValueError("Exclusive OpenRouter credential unavailable")
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
     if free_only and not _is_free_model(or_model):
@@ -2286,7 +2288,7 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
     # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) is
     # authoritative over both the pool row and the canonical host (#121359).
     override_url = (explicit_base_url or "").strip().rstrip("/")
-    pool_present, entry = _select_pool_entry("openrouter", or_model)
+    pool_present, entry = (False, None) if exclusive_api_key else _select_pool_entry("openrouter", or_model)
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if or_key:
@@ -4259,6 +4261,7 @@ def _resolve_fallback_entry(entry: dict[str, Any]) -> tuple[Optional[Any], Optio
         provider, model=model, explicit_base_url=str(entry.get("base_url") or "").strip() or None,
         explicit_api_key=_fallback_entry_api_key(entry),
         api_mode=str(entry.get("api_mode") or entry.get("transport") or "").strip() or None,
+        **({"exclusive_api_key": True} if entry.get("key_env_exclusive") is True else {}),
     )
     if client is not None:
         with contextlib.suppress(Exception):
@@ -4688,6 +4691,7 @@ class _ResolveRequest(NamedTuple):
     is_vision: bool
     task: Optional[str]
     pool_choice: Optional[Any] = None  # hermes_cli.runtime_provider.PoolChoice
+    exclusive_api_key: bool = False
 
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
@@ -4808,8 +4812,10 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
 def _resolve_openrouter_branch(req: _ResolveRequest) -> _ResolveResult:
     """OpenRouter."""
     client, default = _try_openrouter(explicit_api_key=req.explicit_api_key, model=req.model,
-                                      explicit_base_url=req.explicit_base_url)
+                                      explicit_base_url=req.explicit_base_url, exclusive_api_key=req.exclusive_api_key)
     if client is None:
+        if req.exclusive_api_key:
+            return None, None
         logger.warning("resolve_provider_client: openrouter requested but %s",
                        _describe_openrouter_unavailable(model=req.model))
         return None, None
@@ -5219,7 +5225,7 @@ def resolve_provider_client(
     provider: str, model: str | None = None, async_mode: bool = False, raw_codex: bool = False,
     explicit_base_url: str | None = None, explicit_api_key: Optional[str | Callable[[], str]] = None,
     api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
-    task: Optional[str] = None, pool_choice: Optional[Any] = None,
+    task: Optional[str] = None, pool_choice: Optional[Any] = None, exclusive_api_key: bool = False,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Central router: return a configured client (auth, base URL, API format) for a provider + optional model.
     The client always exposes ``.chat.completions.create()``; Codex/Responses providers get an adapter.
@@ -5229,6 +5235,9 @@ def resolve_provider_client(
     "anthropic_messages" instead of auto-detect. ``pool_choice`` (a ``PoolChoice``): a registry API-key
     provider takes its key from its credential pool the way a direct pick does, and the pick is left
     on it. Returns (client, resolved_model) or (None, None)."""
+    if exclusive_api_key and ((provider or "").strip().lower() != "openrouter"
+                              or not isinstance(explicit_api_key, str) or not explicit_api_key.strip()):
+        raise ValueError("Exclusive credentials require an explicit OpenRouter key")
     _validate_proxy_env_urls()
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
@@ -5286,6 +5295,7 @@ def resolve_provider_client(
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task, pool_choice,
+        exclusive_api_key,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     alias_identity = original_provider.removeprefix("custom:")

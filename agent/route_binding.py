@@ -50,7 +50,8 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
     choice = PoolChoice(model) if provider != "moa" else None  # MoA keys stay with the preset's own resolution
     client, _resolved_model = resolve_provider_client(
         provider, model=model, raw_codex=raw_codex, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
-        api_mode=api_mode, pool_choice=choice)
+        api_mode=api_mode, pool_choice=choice,
+        **({"exclusive_api_key": True} if entry.get("key_env_exclusive") is True else {}))
     if client is not None and provider != "moa":
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
@@ -103,9 +104,13 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         agent._transport_cache.clear()
     reset_route_verdicts(agent)
     agent._fallback_activated = True
+    agent._fallback_credential_exclusive = entry.get("key_env_exclusive") is True
 
     choice = agent._route_pool_choice = route.pool_choice
-    _rebind_fallback_credential_pool(agent, provider, model, choice.pool if choice is not None else None)
+    if entry.get("key_env_exclusive") is True:
+        agent._credential_pool = agent._credential_pool_entry_id = None
+    else:
+        _rebind_fallback_credential_pool(agent, provider, model, choice.pool if choice is not None else None)
     if provider == "moa":
         from agent.moa_loop import bind_moa_runtime
         bind_moa_runtime(agent, model)
@@ -177,11 +182,19 @@ def reinstall_primary_runtime(
     """Put ``agent`` back on its ``_primary_runtime`` snapshot ``rt`` and clear the fallback state."""
     from agent.agent_runtime_helpers import _rebind_primary_credential_pool
     reinstall_runtime_snapshot(agent, rt)
+    if (getattr(agent, "_fallback_credential_exclusive", False) is True
+            and getattr(agent, "_credential_pool", None) is None):
+        try:
+            agent._credential_pool = prefetched_pool if prefetched else load_primary_pool()
+        except Exception as exc:
+            logger.warning("Exclusive fallback primary pool restore failed (%s)", type(exc).__name__)
+            agent._credential_pool = None
     _rebind_primary_credential_pool(
         agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched
     )
     from agent.route_verdicts import restore_primary_route_verdicts
     restore_primary_route_verdicts(agent, rt)
     agent._fallback_activated = False
+    agent._fallback_credential_exclusive = False
     agent._fallback_index = 0
     agent._rate_limit_backoff_count = 0

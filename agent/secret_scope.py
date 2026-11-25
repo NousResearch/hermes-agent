@@ -432,6 +432,37 @@ def load_env_file(env_path: Path, *, for_overwrite_check: bool = False) -> dict[
     return secrets
 
 
+class _ProfileSecretScope(dict):
+    """Compatibility mapping; construction-time binding is read-only and redacted."""
+    __slots__ = ('_source_home', '_source_snapshot')
+
+    def __init__(self, values, home, snapshot):
+        super().__init__(values)
+        object.__setattr__(self, '_source_home', home)
+        object.__setattr__(self, '_source_snapshot', snapshot)
+
+    def __setattr__(self, name, value):
+        raise AttributeError('Source binding is immutable')
+
+    def __repr__(self):
+        return '<profile secret scope: redacted>'
+
+    __str__ = __repr__
+
+
+def get_source_pinned_secret(name, source, profile_home):
+    from hermes_constants import hermes_home_key
+    from hermes_cli.env_loader import read_pinned_source_snapshot
+    bound = _SECRET_SCOPE.get()
+    home = hermes_home_key(profile_home)
+    if bound is None or not bound.profile_home or hermes_home_key(bound.profile_home) != home:
+        return None
+    mapping = bound.mapping
+    if not isinstance(mapping, _ProfileSecretScope) or mapping._source_home != home:
+        return None
+    return read_pinned_source_snapshot(mapping._source_snapshot, home, source, name)
+
+
 def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
@@ -470,7 +501,10 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     managed = {k: v for k, v in load_managed_env().items() if not _is_global_env(k)}
     secrets.update(managed)
     _expand_dotenv_templates(secrets, hermes_home, {**dotenv, **managed})
-    return secrets
+    from hermes_cli.env_loader import get_pinned_source_snapshot
+    from hermes_constants import hermes_home_key
+    return _ProfileSecretScope(secrets, hermes_home_key(hermes_home),
+                               get_pinned_source_snapshot(hermes_home, "bitwarden"))
 
 
 def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: dict[str, str]) -> None:

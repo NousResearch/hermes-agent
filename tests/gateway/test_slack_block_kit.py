@@ -463,3 +463,40 @@ class TestOpaqueInlineConstructs:
         links = _elements(render_blocks("- https://example.com/a에서 확인"), "link")
         assert [link["url"] for link in links] == ["https://example.com/a"]
 
+
+class TestParagraphsRenderAsRichText:
+    """Paragraphs use rich_text so emphasis does not depend on mrkdwn word boundaries.
+
+    Regression: paragraphs were ``section`` blocks holding mrkdwn, and Slack only
+    closes ``*bold*`` when the next character is not a letter or digit. Unspaced text
+    (Korean particles, Japanese, Chinese) therefore showed literal asterisks:
+    ``**Claude Opus 5.5(`m`)**로`` rendered as ``*Claude Opus 5.5(m)*로``.
+    """
+
+    def test_bold_flush_against_unspaced_text_is_styled(self):
+        blocks = render_blocks("지금 **Claude Opus 5.5(`m`)**로 응답해요.")
+        assert _types(blocks) == ["rich_text"]
+        assert [t for t in _texts(blocks) if "*" in t] == []
+        bold = [e["text"] for e in _elements(blocks, "text") if e.get("style", {}).get("bold")]
+        assert bold == ["Claude Opus 5.5(", "m", ")"]
+        assert _texts(blocks)[-1] == "로 응답해요."
+
+    def test_paragraph_lines_keep_their_line_breaks(self):
+        blocks = render_blocks("first line\nsecond **line**")
+        assert "".join(_texts(blocks)) == "first line\nsecond line"
+
+    def test_paragraph_text_is_not_html_escaped(self):
+        blocks = render_blocks("A & B <not a token>")
+        assert _texts(blocks) == ["A & B <not a token>"]
+
+    def test_mentions_and_links_in_paragraphs_become_elements(self):
+        blocks = render_blocks("ping <@U123> about <https://example.com|the doc>")
+        assert _elements(blocks, "user") == [{"type": "user", "user_id": "U123"}]
+        assert [link["url"] for link in _elements(blocks, "link")] == ["https://example.com"]
+
+    def test_oversized_paragraph_is_split_across_blocks(self):
+        line = "x" * 1000
+        blocks = render_blocks("\n".join([line] * 7))
+        assert len(blocks) > 1
+        assert all(len("".join(_texts([b]))) <= MAX_SECTION_TEXT for b in blocks)
+        assert "".join(_texts(blocks)).replace("\n", "") == "x" * 7000

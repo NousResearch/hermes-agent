@@ -319,6 +319,18 @@ def _quote_block(lines: list[str]) -> Block:
     return _rich_text_block("rich_text_quote", section_children)
 
 
+def _paragraph_block(text: str) -> Block:
+    """A paragraph as ``rich_text``, not a mrkdwn ``section``: rich_text carries explicit
+    styles, so emphasis renders even where mrkdwn's word-boundary rule would leave the
+    markers literal (a closing ``*`` flush against a letter, as in ``**굵게**로``)."""
+    children: list[dict[str, Any]] = []
+    for k, line in enumerate(text.split("\n")):
+        if k:
+            children.append({"type": "text", "text": "\n"})
+        children.extend(_inline_elements(line))
+    return _rich_text_block("rich_text_section", children)
+
+
 def _list_block(items: list[tuple[int, bool, str]]) -> Block:
     """Build ONE rich_text block from consecutive list items.
     ``items`` is a list of ``(indent, ordered, text)``. Each contiguous run sharing the same
@@ -338,10 +350,6 @@ def _list_block(items: list[tuple[int, bool, str]]) -> Block:
         cur["elements"].append(
             {"type": "rich_text_section", "elements": _nonempty_elements(_inline_elements(text))})
     return {"type": "rich_text", "elements": elements}
-
-
-def _section_block(text: str) -> Block:
-    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
 
 # ----------------------------------------------------------------------------
@@ -432,13 +440,10 @@ def _render_table(rows: list[str]) -> str:
 # ----------------------------------------------------------------------------
 
 
-def render_blocks(markdown: str, mrkdwn_fn=None) -> Optional[list[Block]]:
+def render_blocks(markdown: str) -> Optional[list[Block]]:
     """Convert agent markdown to a Slack Block Kit ``blocks`` list.
     Args:
         markdown: The agent's response text (standard markdown).
-        mrkdwn_fn: Optional callable converting a markdown paragraph to Slack
-            mrkdwn for ``section`` blocks (the adapter passes
-            ``format_message``).  When ``None``, the raw paragraph text is used.
 
     Returns:
         A list of Block Kit block dicts, or ``None`` when the content is empty,
@@ -446,7 +451,6 @@ def render_blocks(markdown: str, mrkdwn_fn=None) -> Optional[list[Block]]:
         caller then falls back to the flat ``text`` payload.  Never raises."""
     if not markdown or not markdown.strip():
         return None
-    fmt = mrkdwn_fn or (lambda s: s)
 
     try:
         blocks: list[Block] = []
@@ -462,10 +466,9 @@ def render_blocks(markdown: str, mrkdwn_fn=None) -> Optional[list[Block]]:
             para.clear()
             if not text:
                 return
-            rendered = fmt(text)
-            # Split oversized sections on the 3000-char limit.
-            for chunk in _split_text(rendered, MAX_SECTION_TEXT):
-                blocks.append(_section_block(chunk))
+            # Oversized paragraphs split on line boundaries at the 3000-char limit.
+            for chunk in _split_text(text, MAX_SECTION_TEXT):
+                blocks.append(_paragraph_block(chunk))
         while i < n:
             line = lines[i]
 

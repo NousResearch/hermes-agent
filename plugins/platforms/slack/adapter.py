@@ -3086,7 +3086,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         if not self._extra_flag("rich_blocks"):
             return None
         try:
-            blocks = render_blocks(content, mrkdwn_fn=self.format_message)
+            blocks = render_blocks(content)
             return sanitize_blocks(self._append_feedback_block(blocks))
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)

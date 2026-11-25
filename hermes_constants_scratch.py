@@ -413,6 +413,82 @@ def release_git_worktrees(repos: set[str]) -> None:
             logger.debug("git worktree prune in %s failed: %s", repo, exc)
 
 
+# ── Operator-protected scratch entries (2026-11-23, F4) ──────────────────
+# WHY (MEASURED 2026-11-22): the built-in idle pruner removed
+# `cache/scratch/arc_verify` (979,371,788 B of UNIQUE archive content, the
+# only copy) and `cache/scratch/costprobe.db` (4,053,192,704 B) — both are
+# named by the operator's protected patterns in `state/scratch_governance.json`.
+# The two PROFILE rules (quota + age) consulted that list through
+# `scripts/scratch_protected_filter.py`; the rule that actually DELETES never
+# did, so the protected content was removable (and was removed).
+#
+# THE SOURCE IS THE SAME ONE the profile rules use: `scratch_governance.py`
+# (whose patterns come from `state/scratch_governance.json`), loaded by FILE
+# PATH so this module stays importable without the profile on sys.path.
+# There is ONE implementation of the protection rule — not a second copy.
+_PROTECTED_SOURCE_MODULE = "scratch_governance.py"
+
+
+def _load_protected_rule(root: Path):
+    """The profile's protection rule, or None when this install has none.
+
+    None means "no protection source installed" (a stock upstream install):
+    the pruner then behaves exactly as before.  An exception means the source
+    EXISTS but could not be read — the caller must fail closed.
+    """
+    home = root.parent.parent  # <home>/cache/scratch -> <home>
+    src = home / "scripts" / _PROTECTED_SOURCE_MODULE
+    if not src.is_file():
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_hermes_scratch_protection_source", src)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load the protection source {src}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    cfg = mod.load_quota_config(write_if_missing=False)
+    return mod, mod.protected_patterns(cfg)
+
+
+def _protected_scratch_entries(root: Path) -> tuple[str, set[str]]:
+    """``(state, keep_names)`` — top-level entries under *root* to keep.
+
+    state is:
+      "none"     no protection source installed -> prune as before
+      "ok"       keep_names is the set of top-level entries to keep
+      "unknown"  the source exists but could not be read -> the caller must
+                 delete NOTHING this pass (fail closed)
+    """
+    try:
+        loaded = _load_protected_rule(root)
+    except Exception:
+        return "unknown", set()
+    if loaded is None:
+        return "none", set()
+    mod, pats = loaded
+    if not pats:
+        return "ok", set()
+    keep: set[str] = set()
+    try:
+        for entry in root.iterdir():
+            if mod.is_protected(str(entry), pats, root=root):
+                keep.add(entry.name)
+        # A pattern that names a DIRECTORY protects its whole subtree, so a
+        # protected path NESTED under an entry protects that entry too:
+        # deleting the entry would delete the protected content.
+        for dirpath, dirnames, filenames in os.walk(root):
+            for name in list(dirnames) + list(filenames):
+                child = os.path.join(dirpath, name)
+                if mod.is_protected(child, pats, root=root):
+                    rel = os.path.relpath(child, root)
+                    keep.add(rel.split(os.sep)[0])
+    except OSError:
+        return "unknown", set()
+    return "ok", keep
+
+
 def prune_idle_entries(
     root: Path, max_idle_hours: float, skip_names: frozenset[str], log_file: Path | None = None,
 ) -> int:
@@ -441,6 +517,20 @@ def _prune_idle_entries(
         entries = [e for e in root.iterdir() if e.name not in skip_names]
     except OSError:
         return 0
+    # 2026-11-23 (F4): the operator's protected patterns apply to the
+    # built-in pruner too.  Before this guard the built-in pruner deleted
+    # protected, UNIQUE content on 2026-11-22 (979 MB of archives + 4 GB of
+    # costprobe.db).  "unknown" (the protection source exists but cannot be
+    # read) fails CLOSED: nothing is deleted this pass.
+    prot_state, prot_keep = _protected_scratch_entries(root)
+    if prot_state == "unknown":
+        audit.info("scratch prune: protection source unreadable — nothing deleted this pass")
+        return 0
+    if prot_keep:
+        audit.info("scratch prune: keeping %d protected entr%s: %s",
+                   len(prot_keep), "y" if len(prot_keep) == 1 else "ies",
+                   ", ".join(sorted(prot_keep)[:10]))
+        entries = [e for e in entries if e.name not in prot_keep]
     doomed = []
     for e in entries:
         state, denied_dir = _scan_subtree(e, cutoff)

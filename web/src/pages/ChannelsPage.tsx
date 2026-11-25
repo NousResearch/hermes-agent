@@ -256,16 +256,18 @@ export default function ChannelsPage() {
         ...(clearEnv.length ? { clear_env: clearEnv } : {}),
       };
       const result = await api.updateMessagingPlatform(editing.id, body);
+      const live = result.live ? result.live.applied : Boolean(result.hot_served);
+      const reason = result.live?.applied === false ? result.live.detail : undefined;
       showToast(
-        result.hot_served
+        live
           ? `${editing.name} saved; the running gateway is connecting`
-          : `${editing.name} saved`,
+          : `${editing.name} saved${reason ? ` (${reason})` : ""}`,
         "success",
       );
       setEditing(null);
-      if (!result.hot_served) setRestartNeeded(true);
+      if (!live) setRestartNeeded(true);
       await load();
-      if (result.hot_served) setTimeout(() => void load(), 4000);
+      if (live) setTimeout(() => void load(), 4000);
     } catch (e) {
       showToast(`Failed to save: ${errorMessage(e)}`, "error");
     } finally {
@@ -278,14 +280,15 @@ export default function ChannelsPage() {
     setTogglingId(platform.id);
     try {
       const result = await api.updateMessagingPlatform(platform.id, { enabled: next });
+      const live = result.live ? result.live.applied : Boolean(result.hot_served);
       setPlatforms((prev) =>
         prev.map((p) =>
           p.id === platform.id
-            ? { ...p, enabled: next, state: next ? "pending_restart" : "disabled" }
+            ? { ...p, enabled: next, state: next ? (live ? "connecting" : "pending_restart") : "disabled" }
             : p,
         ),
       );
-      if (result.hot_served) setTimeout(() => void load(), 4000);
+      if (live) setTimeout(() => void load(), 4000);
       else setRestartNeeded(true);
     } catch (e) {
       showToast(`Could not update the channel: ${errorMessage(e)}`, "error");

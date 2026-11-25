@@ -20,6 +20,7 @@ import {
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
+  type MessagingPlatformUpdateResponse,
   type PairingUser,
   revokePairing,
   type TelegramOnboardingApplyResponse,
@@ -48,6 +49,7 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
+import { appliedLive, optimisticToggleState, restartReason } from './live-apply'
 import { PlatformAvatar } from './platform-icon'
 import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
@@ -187,10 +189,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [])
 
-  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
-  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
-  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
-    if (hotServed) {
+  // The running gateway applied the save itself (any profile): no restart banner; re-read status once
+  // the adapter had a moment to connect. Only a gateway that could not (or an older one) needs a restart.
+  const settleAfterUpdate = useCallback((result: MessagingPlatformUpdateResponse) => {
+    if (appliedLive(result)) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
 
       return
@@ -386,16 +388,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               ? {
                   ...row,
                   enabled,
-                  state: enabled ? (row.configured ? 'pending_restart' : 'not_configured') : 'disabled'
+                  state: optimisticToggleState(enabled, row.configured, appliedLive(result))
                 }
               : row
           ) ?? current
       )
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(result)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: result.hot_served ? m.appliedLive : m.restartToApply
+        message: appliedLive(result) ? m.appliedLive : restartReason(result, m.restartToApply)
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -418,11 +420,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
       setEdits(current => ({ ...current, [platform.id]: {} }))
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(result)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: result.hot_served ? m.connectingLive : m.restartToReconnect
+        message: appliedLive(result) ? m.connectingLive : restartReason(result, m.restartToReconnect)
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -444,7 +446,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(result)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))

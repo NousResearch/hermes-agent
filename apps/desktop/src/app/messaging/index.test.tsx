@@ -455,6 +455,26 @@ describe('MessagingView restart banner', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
   })
+
+  it.each([
+    ['the gateway applied it live', { applied: true, state: 'connected' }, false],
+    ['the gateway could not build the adapter', { applied: false, detail: 'no adapter', state: 'unavailable' }, true]
+  ])('asks for a restart after a save only when %s says so', async (_label, live, wantsRestart) => {
+    // The running gateway answers for every profile (the default one included); `hot_served`
+    // stays unset as an older backend would leave it, so only `live` decides.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    updateMessagingPlatform.mockResolvedValue({ live, ok: true, platform: 'teams' })
+
+    await renderMessaging()
+
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'secret-1' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+
+    await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalled())
+    await waitFor(() => expect(Boolean(screen.queryByRole('button', { name: 'Restart now' }))).toBe(wantsRestart))
+  })
 })
 
 describe('MessagingView allowlist editor', () => {

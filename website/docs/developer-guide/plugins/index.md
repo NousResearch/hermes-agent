@@ -2292,6 +2292,40 @@ def register(ctx):
 
 This is the public, stable interface for tool dispatch from plugin commands. Plugins should not reach into `ctx._cli_ref.agent` or similar private state.
 
+### Run tool calls the plugin owns
+
+`ctx.dispatch_tool()` is the bare registry call: no hooks, no middleware, no approvals. A plugin that
+runs tool calls on someone's behalf (a call another machine sent it, a queued job) uses
+`ctx.run_tool_call()` instead, which takes the same path as a call Hermes runs outside its agent loop:
+
+```python
+def register(ctx):
+    def run_lent_call(name, args, session):
+        return ctx.run_tool_call(name, args, task_key=session)   # JSON string, like any tool result
+
+    def session_closed(session):
+        ctx.release_tool_task(session)
+```
+
+- **`ctx.run_tool_call(name, args, *, task_key) -> str`** runs tool_request middleware, `pre_tool_call`
+  hooks (block, approve, modify), ACP edit approval, `tool_execution` middleware, the tool, then
+  `post_tool_call` and `transform_tool_result`. Its terminal and file state live under the task id
+  `plugin:<plugin id>:<task_key>`, which no session uses, so the call never lands in a user's session.
+  `task_key` is a non-empty string without `:`.
+- **`ctx.release_tool_task(task_key)`** releases what Hermes keeps for that task (its cached
+  environment and file state), as a session teardown does; shared containers are not stopped. It
+  reaches only this plugin's own task ids.
+- **`tools.interrupt.InterruptScope`** stops work the plugin runs on a thread of its own: enter
+  `with scope:` on the worker and call `scope.interrupt()` from anywhere else; the worker's terminal
+  wait then kills its command as on `/stop`. It reaches only the thread that entered it, only while
+  the scope is open, and on exit clears only the interrupt it set. `tools.interrupt.is_interrupted()`
+  tells the worker a stop has landed.
+- **`tools.approval.check_dangerous_command(command, env_type)`** puts a command through Hermes's
+  dangerous-command gate for the calling session: its floors and deny rules, the session and permanent
+  allowlists, and the approval prompt (CLI card or gateway approval), with the same unattended rules as
+  a terminal call. Returns `{"approved": bool, "message": str | None, ...}`. Use it when a command you
+  run somewhere else was flagged there and needs the person here to decide.
+
 ### Act from inside a hook (profile + tools)
 
 `ctx._cli_ref` is only populated in an **interactive CLI** session. It is `None` in the gateway, in non-interactive `hermes chat -q` runs, and in **kanban-spawned worker sessions** — so any plugin logic that reaches through `_cli_ref` silently no-ops in exactly those contexts. Two stable, session-agnostic APIs cover what hooks actually need:

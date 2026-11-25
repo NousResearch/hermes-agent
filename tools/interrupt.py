@@ -119,3 +119,41 @@ def clear_current_thread_interrupt() -> None:
     this call re-sets the bit and is still observed by the executor's poll loop. Call
     directly on the executing thread."""
     set_interrupt(False)
+
+
+class InterruptScope:
+    """A stop handle for work a plugin runs on a thread of its own.
+
+    The thread that enters the scope is the only one :meth:`interrupt` can reach, and only while the
+    scope is open: ``with scope: run()`` on the worker, ``scope.interrupt()`` from anywhere else, and
+    the worker's terminal wait (``is_interrupted``) kills its command as it would on ``/stop``. On exit
+    the scope clears only the interrupt it set itself, so a reused thread starts clean and a ``/stop``
+    that reached the thread some other way is kept. A scope is entered once."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tid: int | None = None
+        self._open = False
+        self._used = False
+        self._set = False
+
+    def __enter__(self) -> "InterruptScope":
+        with self._lock:
+            if self._used:
+                raise RuntimeError("an InterruptScope is entered once")
+            self._used, self._open = True, True
+            self._tid = threading.current_thread().ident
+        return self
+
+    def interrupt(self, reason: str | None = None) -> None:
+        """Stop the scope's thread now (a no-op before it entered or after it left)."""
+        with self._lock:
+            if self._open and not self._set and not is_thread_interrupted(self._tid):
+                set_interrupt(True, self._tid, reason=reason)
+                self._set = True
+
+    def __exit__(self, *exc: object) -> None:
+        with self._lock:
+            self._open = False
+            if self._set:
+                set_interrupt(False, self._tid)

@@ -240,3 +240,5 @@ with a name allows that one name only.
 | `hermes_cli.auth` | `resolve_nous_access_token` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
 | `hermes_cli.config_providers` | `get_custom_provider_tls_settings` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
 | `tools.schema_sanitizer` | `normalize_type_array` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
+| `tools.interrupt` | `InterruptScope` | plugins/index.md § Run tool calls the plugin owns |
+| `tools.approval` | `check_dangerous_command` | plugins/index.md § Run tool calls the plugin owns |

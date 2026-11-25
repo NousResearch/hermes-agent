@@ -114,12 +114,15 @@ class GatewayProfileReconcileMixin:
         (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
         socket for an immediate rescan); a gateway standalone only because the host had one profile
         starts multiplexing here once a second one exists."""
+        await self._note_primary_platform_baseline()
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:
                 return
             try:
                 await self._sync_hooks_on_consent_change()
+                # Every gateway: the launch profile's own platforms follow its config/.env too.
+                await self._reconcile_primary_platforms_if_changed()
                 # A standalone gateway never runs a profile reconcile from the watcher, unless it is the
                 # single-profile boot that starts multiplexing in place for a newly created profile.
                 if self._multiplex_on() or await self._multiplex_for_added_profile():

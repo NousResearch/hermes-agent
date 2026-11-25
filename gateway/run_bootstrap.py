@@ -326,6 +326,7 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.run_platform_reconcile import reconcile_platforms_verb
         from gateway.run_active_work_verb import active_work_verb
         from gateway.relay.link import relay_link_verb
         from gateway.drain_control import RESTART_WAIT_REASON
@@ -409,6 +410,9 @@ async def _start_gateway_start_control_socket(runner):
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop),
+                           # A platform saved by another process (dashboard, Desktop, `config set`)
+                           # starts/restarts/stops now; the answer is each platform's live state.
+                           "reconcile-platforms": reconcile_platforms_verb(runner, _main_loop),
                            # The per-gateway relay secret exists only in this process: the dashboard
                            # mints Team Gateway link codes through it.
                            "relay-link": relay_link_verb})

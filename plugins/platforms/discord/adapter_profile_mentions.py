@@ -35,6 +35,9 @@ turn for that profile; with no context and no media it is a no-op.
 Only free-text prompts are dispatched. A slash command (``/reset $agent-one``, typed or native) is
 never re-homed: it runs exactly as it would without this feature, ``$handle`` and all, so a
 ``$<profile>`` in its arguments can neither address the bot nor act on another profile's session.
+Neither is a message that becomes a command once its handles are stripped (``$agent-one /new``):
+the gateway tells a command by its text (``MessageEvent.is_command``), not its ``MessageType``, so
+the copy would run ``/new`` in that profile's session. It stays plain text in the channel's own.
 
 Only what the user TYPED is scanned, the same text the ``require_mention`` gate reads. Text the
 adapter inlines from an attached document (``[Content of notes.md]: ...``) never routes a message,
@@ -58,7 +61,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from agent.secret_scope import is_multiplex_active
-from gateway.platforms.event import MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import PROFILE_ID_RE
 
 logger = logging.getLogger(__name__)
@@ -219,16 +222,26 @@ def _active_handles(adapter: Any, text: str) -> dict[str, str]:
 
 
 def _is_command_text(text: str) -> bool:
-    """A slash command, by the same ``/`` rule the adapter uses for ``MessageType.COMMAND``."""
-    return (text or "").lstrip().startswith("/")
+    """Text the gateway runs as a slash command. The gateway classifies by text, not by
+    ``MessageType`` (``MessageEvent.is_command``: a leading ``/``, after any ``@file:`` refs)."""
+    return MessageEvent(text=text or "").is_command()
+
+
+def _prompt_plan(adapter: Any, typed: str) -> Optional[MentionPlan]:
+    """The plan to dispatch *typed* by, or None. A slash command is never dispatched, nor is a
+    message that becomes one once its handles are stripped (``$agent-one /new``): its copy would
+    run ``/new`` in that profile's session."""
+    if _is_command_text(typed):
+        return None
+    plan = plan_mentions(typed, _active_handles(adapter, typed))
+    return None if plan is None or _is_command_text(plan.prompt) else plan
 
 
 def addresses_profile(adapter: Any, text: str) -> bool:
     """True when *text* names a mentionable profile, so the require_mention gate lets it through.
-    A slash command never does: it faces the gate exactly as it would without its ``$handle``."""
-    if _is_command_text(text):
-        return False
-    return plan_mentions(text, _active_handles(adapter, text or "")) is not None
+    A slash command never does, ``$handle`` before or after it: it faces the gate exactly as it
+    would without the handle."""
+    return _prompt_plan(adapter, text or "") is not None
 
 
 def _profile_event(adapter: Any, event: Any, profile: str, prompt: str) -> Any:
@@ -277,12 +290,11 @@ def mention_events(adapter: Any, event: Any, typed: str) -> list:
     attachment text): itself when it names no mentionable profile, one copy per named profile
     otherwise (unless another bot already dispatched it), or none when nothing but the handles was
     sent and there is no backfilled context or media (a bare @mention's rule). A slash command is
-    always itself: it runs where it would without this feature, with its arguments (``$handle``
-    included) untouched."""
-    typed = typed or ""
-    if event.message_type == MessageType.COMMAND or _is_command_text(typed):
+    always itself, also with a ``$handle`` in front of it: it runs where it would without this
+    feature, its text (``$handle`` included) untouched."""
+    if event.message_type == MessageType.COMMAND:
         return [event]
-    plan = plan_mentions(typed, _active_handles(adapter, typed))
+    plan = _prompt_plan(adapter, typed or "")
     if plan is None:
         return [event]
     prompt = _rebuild_prompt(event.text or "", typed, plan.prompt)

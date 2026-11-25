@@ -9,6 +9,7 @@ the live tests flip the flag in a served profile's config.yaml and prove the run
 hot-serve rescan (and, for the bot's own profile, its live config refresh) applies it.
 """
 
+import dataclasses
 import itertools
 import os
 import sys
@@ -445,6 +446,147 @@ async def test_a_slash_command_is_never_rerouted_by_a_handle(adapter, monkeypatc
                           source=adapter.build_source(chat_id="555", chat_type="group", user_id="42"))
     assert profile_mentions.mention_events(adapter, native, native.text) == [native]
     assert native.source.profile is None and native.text == "/stop $agent-one $agent-two"
+
+
+_HANDLE_FIRST_COMMANDS = ["$agent-one /new", "$agent-one: /reset", "$agent-one\n/compact", "$agent-one $agent-two /new",
+                          "$Agent-One   /model x", "$agent-one @file:notes.md\n/new"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", _HANDLE_FIRST_COMMANDS)
+async def test_a_handle_in_front_of_a_slash_command_never_reroutes_it(adapter, monkeypatch, content):
+    """Stripping the handles from ``$agent-one /new`` leaves ``/new``, and the gateway tells a command
+    by its TEXT (``MessageEvent.is_command``), not by the adapter's ``MessageType``: the copy would
+    run ``/new`` in agent-one's session (see the end-to-end test below). So it is a slash command
+    with a handle in front, treated like ``/new $agent-one``: dropped by the require_mention gate,
+    and in a free channel one plain-text event in the channel's own session, text intact."""
+    assert profile_mentions.addresses_profile(adapter, content) is False
+    assert await _dispatched(adapter, content) == []
+
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    (event,) = await _dispatched(adapter, content)
+    assert (event.source.profile, event.source.profile_mention) == (None, False)
+    assert (event.message_type, event.text, event.get_command()) == (MessageType.TEXT, content, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("content", "prompt"), [
+    ("$agent-one please explain what /new does", "please explain what /new does"),
+    ("$agent-one\nwhat does `/reset` do?", "what does `/reset` do?"),
+    ("hey $agent-one /new", "hey /new"),
+])
+async def test_a_slash_later_in_the_prompt_still_dispatches(adapter, content, prompt):
+    """Only a prompt that STARTS with ``/`` once its handles are gone is a command; a ``/`` anywhere
+    later is prompt text, and the message is dispatched as usual."""
+    (event,) = await _dispatched(adapter, content)
+    assert (event.source.profile, event.source.profile_mention) == ("agent-one", True)
+    assert (event.message_type, event.text, event.get_command()) == (MessageType.TEXT, prompt, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("authority_cwd_in_tmp")
+async def test_a_handle_prefixed_slash_command_never_runs_in_that_profiles_session(tmp_path, monkeypatch):
+    """End to end on a really multiplexed gateway: real DiscordAdapter, real GatewayRunner with
+    ``multiplex_profiles``, the process latch on, and a session authority per served profile in a
+    multiplexed registry. Only the turn body is a stand-in; ``/new`` runs the real reset handler.
+
+    The rig can run ``/new`` in agent-one's session: a plain-TEXT event whose text is ``/new``,
+    stamped for agent-one (exactly the copy dispatch used to make of ``$agent-one /new``), resets
+    agent-one's session in agent-one's home. ``$agent-one /new`` itself must never do that: it is
+    one plain-text turn in the channel's own session. (A ``/`` later in the prompt still dispatches:
+    ``test_a_slash_later_in_the_prompt_still_dispatches``.)"""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.platforms.base import SendResult
+    from gateway.run import GatewayRunner
+    from gateway.session_authorities import SessionAuthorities
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_results import execution_result
+    from hermes_constants import get_hermes_home
+    from tests.gateway.fixtures.storage_handles import storage_handle
+    from tests.waiting import async_wait_until
+
+    root = tmp_path / "hh"
+    agent_one = root / "profiles" / "agent-one"
+    agent_one_cfg = _profile_config(monkeypatch, agent_one, {"mentionable": True})
+    _write_config(root, {"model": {"default": "m"}})
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    for var in ("DISCORD_FREE_RESPONSE_CHANNELS", "DISCORD_ALLOWED_CHANNELS", "DISCORD_IGNORED_CHANNELS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")  # every message reaches the gateway
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
+    served = [("default", root), ("agent-one", agent_one)]
+    monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: served)
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda n: root if n == "default" else root / "profiles" / n)
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda n: n in {"default", "agent-one"})
+    set_multiplex_active(True)  # the real process latch (the conftest resets it); nothing patched
+    runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
+    runner.config._runtime_profile_homes = tuple(served)  # what the server's reservation records
+    runner._served_profile_homes = dict(served)
+    runner._profile_configs = {"agent-one": agent_one_cfg}
+    launch = await initialize_session_authority(runner, profile_id=str(root), instance_id="owner",
+                                                persistence=storage_handle(root))
+    one = await initialize_session_authority(runner, profile_id=str(agent_one), instance_id="owner",
+                                             persistence=storage_handle(agent_one), register=False)
+    runner.session_authorities = SessionAuthorities(root, multiplexed=True)
+    runner.session_authorities.add(root, launch)
+    runner.session_authorities.add(agent_one, one, name="agent-one")
+    bot = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
+    bot._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    bot._text_batch_delay_seconds = 0
+    sent, handed, turns, resets = [], [], [], []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        return SendResult(success=True, message_id=f"s{len(sent)}")
+
+    async def turn(event, source, quick_key, run_generation):
+        turns.append((event.text, source.profile))
+        captured = execution_result.get()
+        if captured is not None:
+            captured["result"] = {"final_response": "ok", "messages": []}
+        return "ok"
+    real_reset = runner._handle_reset_command
+
+    async def reset(event):
+        resets.append((event.text, event.source.profile, get_hermes_home()))
+        return await real_reset(event)
+    monkeypatch.setattr(bot, "send", send)
+    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
+    monkeypatch.setattr(runner, "_handle_reset_command", reset)
+    monkeypatch.setattr(runner, "_read_user_config", lambda: {"approvals": {"destructive_slash_confirm": False}})
+    bot.gateway_runner = runner
+    runner.adapters = {Platform.DISCORD: bot}
+    runner._wire_adapter_handlers(bot)
+    real_handle = bot.handle_message
+
+    async def hand_over(event):
+        handed.append((event.message_type, event.text, event.source.profile, event.get_command()))
+        return await real_handle(event)
+    monkeypatch.setattr(bot, "handle_message", hand_over)
+
+    async def settled(content, message_id):
+        handed.clear(), resets.clear(), turns.clear()
+        before = len(sent)
+        message = _message(content)
+        message.id = message_id
+        await bot._handle_message(message)
+        await async_wait_until(lambda: turns or resets or len(sent) > before, timeout=15, what=content)
+
+    # The threat is real in this rig: such a copy runs the real /new in agent-one's own home.
+    copy = MessageEvent(text="/new", message_id="900", source=dataclasses.replace(
+        bot.build_source(chat_id="555", chat_type="group", user_id="42", guild_id="777"),
+        profile="agent-one", profile_mention=True))
+    await bot.handle_message(copy)
+    await async_wait_until(lambda: resets, timeout=15, what="the copy's /new")
+    assert resets == [("/new", "agent-one", agent_one)]
+
+    await settled("$agent-one /new", 901)
+    assert handed == [(MessageType.TEXT, "$agent-one /new", None, None)]
+    assert resets == [] and turns == [("$agent-one /new", None)]  # a plain turn, channel's own session
 
 
 @pytest.mark.asyncio

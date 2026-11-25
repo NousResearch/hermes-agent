@@ -5,12 +5,7 @@ import path from 'node:path'
 import type { App, Dialog, MessageBoxOptions } from 'electron'
 
 import type { InstallStamp } from './install-stamp'
-import {
-  ephemeralMacBundleLocation,
-  isAppTranslocated,
-  type MacEphemeralBundleLocation,
-  resolveMacAppBundle
-} from './mac-bundle-location'
+import { ephemeralMacBundleLocation, type MacEphemeralBundleLocation, resolveMacAppBundle } from './mac-bundle-location'
 
 export const MAC_APPLICATIONS_GUARD_FILENAME = 'mac-applications-guard.json'
 
@@ -549,9 +544,10 @@ function precheckMacApplicationsGuard(deps: MacApplicationsGuardDeps): MacGuardP
     return { prompt: false, result: { action: 'continue', reason: 'api-unavailable' } }
   }
 
-  const translocated = isAppTranslocated(bundlePath)
-
-  if (!translocated && deps.app.isInApplicationsFolder()) {
+  // The same native check as the mover's early return: when it is true, moveToApplicationsFolder returns true
+  // without moving, relaunching or quitting, so a prompt here could only stall startup. A translocated
+  // bundle reports false, since its resolved path is the translocation mount, so it still gets the prompt.
+  if (deps.app.isInApplicationsFolder()) {
     return { prompt: false, result: { action: 'continue', reason: 'already-in-applications' } }
   }
 

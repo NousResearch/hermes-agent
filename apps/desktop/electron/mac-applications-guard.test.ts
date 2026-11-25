@@ -361,10 +361,13 @@ describe('guardMacApplicationsLaunch', () => {
     }
   )
 
-  it('still prompts for App Translocation even if isInApplicationsFolder reports true', async () => {
+  it('never prompts when Electron counts the bundle as installed, since its move would then do nothing', async () => {
     const { deps, app, dialog, userDataDir } = makeDeps({ access: () => undefined })
 
+    // isInApplicationsFolder and the mover's early return are the same native check: when it is true,
+    // moveToApplicationsFolder returns true without moving, relaunching or quitting.
     app.isInApplicationsFolder.mockReturnValue(true)
+    app.moveToApplicationsFolder.mockImplementation(() => app.isInApplicationsFolder())
     app.getPath = vi.fn((name: string) =>
       name === 'exe'
         ? '/private/var/folders/aa/bb/T/AppTranslocation/DEAD-BEEF/d/Hermes Agent.app/Contents/MacOS/Hermes Agent'
@@ -372,10 +375,10 @@ describe('guardMacApplicationsLaunch', () => {
     ) as unknown as MacApplicationsGuardDeps['app']['getPath']
 
     await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
-      action: 'relaunching',
-      location: 'app-translocation'
+      action: 'continue',
+      reason: 'already-in-applications'
     })
-    expect(dialog.showMessageBox).toHaveBeenCalledOnce()
+    expect(dialog.showMessageBox).not.toHaveBeenCalled()
   })
 
   it('keeps running without persisting when user declines without checking Do not ask again', async () => {

@@ -1,12 +1,61 @@
 """Persistent Feishu message-id claims and safe release before gateway admission."""
 
 import asyncio
+import concurrent.futures
+import contextvars
 import json
 import logging
+import threading
 import time
 
 logger = logging.getLogger("plugins.platforms.feishu.adapter")
 _DEDUP_TTL_SECONDS = 24 * 60 * 60
+_APP_FINALIZERS = {}
+_APP_FINALIZERS_LOCK = threading.Lock()
+
+
+def _register_app_finalizer(app_id, task):
+    if not app_id:
+        return
+    gate = concurrent.futures.Future()
+    with _APP_FINALIZERS_LOCK:
+        _APP_FINALIZERS.setdefault(app_id, set()).add(gate)
+
+    def settle(done):
+        error = RuntimeError("Feishu disconnect was cancelled") if done.cancelled() else done.exception()
+        if error is None:
+            with _APP_FINALIZERS_LOCK:
+                remaining = _APP_FINALIZERS.get(app_id)
+                if remaining is not None:
+                    remaining.discard(gate)
+                    if not remaining:
+                        _APP_FINALIZERS.pop(app_id, None)
+            gate.set_result(None)
+        else:
+            gate.set_exception(error)
+    task.add_done_callback(settle)
+
+
+async def _wait_app_finalizers(app_id):
+    while app_id:
+        with _APP_FINALIZERS_LOCK:
+            pending = tuple(_APP_FINALIZERS.get(app_id, ()))
+        if not pending:
+            break
+        outcomes = await asyncio.shield(asyncio.gather(
+            *(asyncio.wrap_future(gate) for gate in pending), return_exceptions=True))
+        if any(isinstance(outcome, BaseException) for outcome in outcomes):
+            return False
+    return True
+
+
+async def _acquire_after_app_finalizers(app_id, acquire):
+    while True:
+        if not await _wait_app_finalizers(app_id):
+            return None
+        with _APP_FINALIZERS_LOCK:
+            if not _APP_FINALIZERS.get(app_id):
+                return acquire()
 
 
 class _Claim:
@@ -128,16 +177,20 @@ class FeishuDedupMixin:
         await super().cancel_session_processing(session_key, release_guard=release_guard, discard_pending=discard_pending)
 
     async def cancel_background_tasks(self):
-        await super().cancel_background_tasks()
-        await self._release_held_busy_bursts()
-        tracked = self.__dict__.get("_feishu_ingress_busy_bursts", {})
-        for burst, entries in list(tracked.items()):
-            if (burst.commit is not None and burst.commit.cancelled() and not entries
-                    and burst.head._ingress_handler_entries == entries and burst.head._ingress_controls_unchanged()):
-                await burst.head._release_unadmitted_claims()
-            tracked.pop(burst, None)
+        try:
+            await super().cancel_background_tasks()
+        finally:
+            events = self._take_held_busy_bursts()
+            tracked = self.__dict__.get("_feishu_ingress_busy_bursts", {})
+            for burst, entries in list(tracked.items()):
+                if (burst.commit is not None and burst.commit.cancelled() and not entries
+                        and burst.head._ingress_handler_entries == entries and burst.head._ingress_controls_unchanged()):
+                    events.append(burst.head)
+                tracked.pop(burst, None)
+            if cleanup := self._schedule_ingress_cleanup(events):
+                await asyncio.shield(cleanup)
         while pending := tuple(self.__dict__.get("_feishu_ingress_cleanups", ())):
-            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
 
     def adopt_inbound_dedup(self, previous):
         """Share claims with a reconnecting instance while the old instance still has work."""
@@ -150,6 +203,7 @@ class FeishuDedupMixin:
             self._dedup_claim_tokens = previous.__dict__.setdefault("_dedup_claim_tokens", {})
             self._dedup_persist_lock = previous._dedup_persist_lock_or_create()
             self._dedup_lock = previous._dedup_lock
+            self._feishu_disconnect_finalizers = previous.__dict__.setdefault("_feishu_disconnect_finalizers", set())
 
     def _load_seen_message_ids(self) -> None:
         try:
@@ -180,7 +234,25 @@ class FeishuDedupMixin:
 
     async def _persist_seen_async(self):
         async with self._dedup_persist_lock_or_create():
-            await self._run_blocking(self._persist_seen_message_ids)
+            if not getattr(self, "_dedup_persistence_retired", False):
+                await self._run_blocking(self._persist_seen_message_ids)
+
+    async def _persist_seen_during_teardown(self):
+        lock = self.__dict__.setdefault("_feishu_cleanup_executor_lock", threading.Lock())
+        with lock:
+            executor = self.__dict__.get("_feishu_cleanup_executor")
+            if executor is None:
+                executor = self._feishu_cleanup_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="hermes-feishu-dedup-cleanup")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(executor, contextvars.copy_context().run, self._persist_seen_message_ids)
+
+    def _shutdown_dedup_cleanup_executor(self):
+        lock = self.__dict__.setdefault("_feishu_cleanup_executor_lock", threading.Lock())
+        with lock:
+            executor = self.__dict__.pop("_feishu_cleanup_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     async def _claim_message_id(self, message_id):
         now, token = time.time(), object()
@@ -240,12 +312,24 @@ class FeishuDedupMixin:
                     owners.pop(message_id, None)
                     self._seen_message_ids.pop(message_id, None)
                 self._seen_message_order[:] = [item for item in self._seen_message_order if item not in ids]
+            if getattr(self, "_dedup_persistence_retired", False):
+                return  # another process may own the on-disk cache after the app lock was released
             # A retired adapter cannot restart its SDK executor, but a late failure still
-            # needs to persist the release for a replacement that has not adopted its state.
+            # needs to persist while it still owns the app lock.
             if getattr(self, "_sdk_executor_closing", False):
-                await asyncio.to_thread(self._persist_seen_message_ids)
+                await self._persist_seen_during_teardown()
             else:
-                await self._run_blocking(self._persist_seen_message_ids)
+                try:
+                    await self._run_blocking(self._persist_seen_message_ids)
+                except asyncio.CancelledError:
+                    # Executor shutdown can cancel a queued write without cancelling this cleanup task.
+                    if asyncio.current_task().cancelling() or not self._sdk_executor_closing:
+                        raise
+                    await self._persist_seen_during_teardown()
+                except RuntimeError:
+                    if not self._sdk_executor_closing:
+                        raise
+                    await self._persist_seen_during_teardown()
 
     def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
         lock = getattr(self, "_dedup_persist_lock", None)
@@ -253,20 +337,42 @@ class FeishuDedupMixin:
             lock = self._dedup_persist_lock = asyncio.Lock()
         return lock
 
-    async def _release_buffered_ingress(self):
-        for event in [*self._pending_text_batches.values(), *self._pending_media_batches.values()]:
-            await event._release_unadmitted_claims()
-        await self._release_held_busy_bursts()
+    def _schedule_ingress_cleanup(self, events):
+        if not events:
+            return None
 
-    async def _release_held_busy_bursts(self):
+        async def release_all():
+            for event in events:
+                await event._release_unadmitted_claims()
+
+        cleanups = self.__dict__.setdefault("_feishu_ingress_cleanups", set())
+        task = asyncio.create_task(release_all())
+        cleanups.add(task)
+        task.add_done_callback(cleanups.discard)
+        return task
+
+    def _begin_buffered_ingress_cleanup(self):
+        # Detach before any await: a timed-out disconnect must not later dispatch these inputs.
+        for task in (*self._pending_text_batch_tasks.values(), *self._pending_media_batch_tasks.values()):
+            if task and not task.done():
+                task.cancel()
+        events = [*self._pending_text_batches.values(), *self._pending_media_batches.values()]
+        self._reset_batch_buffers()
+        events.extend(self._take_held_busy_bursts())
+        return self._schedule_ingress_cleanup(events)
+
+    def _take_held_busy_bursts(self):
+        events = []
         bursts = self.__dict__.get("_shared_bursts", {})
         for key, burst in list(bursts.items()):
             if burst.commit is not None or bursts.get(key) is not burst:
                 continue
             del bursts[key]
+            self.__dict__.get("_feishu_ingress_busy_bursts", {}).pop(burst, None)
             if burst.timer is not None:
                 burst.timer.cancel()
             if not burst.done.done():
                 burst.done.cancel()
             if burst.head._ingress_controls_unchanged():
-                await burst.head._release_unadmitted_claims()
+                events.append(burst.head)
+        return events

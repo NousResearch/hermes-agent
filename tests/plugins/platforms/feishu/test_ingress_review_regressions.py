@@ -177,11 +177,13 @@ async def test_executor_cancels_queued_claim_write_before_dispatch():
 
 
 @pytest.mark.asyncio
-async def test_late_failure_after_disconnect_persists_release():
+async def test_late_failure_after_disconnect_allows_shared_replacement_retry():
     from gateway.config import PlatformConfig
+    from gateway.platforms.helpers import carry_inbound_dedup
     from plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = adapter_for_test()
+    replacement = None
     started, finish = asyncio.Event(), asyncio.Event()
 
     async def fail_after_disconnect(_event, _fence):
@@ -197,10 +199,566 @@ async def test_late_failure_after_disconnect_persists_release():
         finish.set()
         with pytest.raises(RuntimeError, match="before admission"):
             await task
-        reloaded = FeishuAdapter(PlatformConfig())
-        assert "om_late_disconnect" not in reloaded._seen_message_ids
+        replacement = FeishuAdapter(PlatformConfig())
+        carry_inbound_dedup(adapter, replacement)
+        assert await replacement._is_duplicate("om_late_disconnect") is False
     finally:
         finish.set()
+        await close_adapter(adapter)
+        if replacement is not None:
+            await close_adapter(replacement)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["merged_text", "separate_text", "text_and_media", "held_burst"])
+async def test_timed_out_disconnect_releases_detached_inputs(tmp_path, kind):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.helpers import carry_inbound_dedup
+    from gateway.run import GatewayRunner
+
+    old, new = adapter_for_test(), adapter_for_test()
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    runner._adapter_disconnect_timeout_secs = lambda: 0.05
+    deliveries = [incoming("om_detached_a"), incoming("om_detached_b")]
+    lock, locked = None, False
+    try:
+        if kind == "held_burst":
+            class Handler:
+                session_authority = object()
+
+                async def handle(self, _event):
+                    raise AssertionError("held burst must not execute")
+
+            old.set_message_handler(Handler().handle)
+            old._busy_text_mode = "queue"
+            old._busy_text_debounce_seconds = old._busy_text_hard_cap_seconds = 3600
+            first = await capture_event(old, "om_detached_a")
+            second = await capture_event(old, "om_detached_b")
+            key = old._event_session_key(first)
+            old._active_sessions[key] = asyncio.Event()
+            old._session_tasks[key] = asyncio.current_task()
+            await old.handle_message(first)
+            await old.handle_message(second)
+        else:
+            await old._handle_message_event_data(deliveries[0])
+            if kind == "separate_text":
+                deliveries[1].event.message.chat_id = "oc_other"
+            if kind == "text_and_media":
+                old._extract_message_content.return_value = ("", MessageType.PHOTO, ["/tmp/photo.png"], ["image/png"], [], [])
+            await old._handle_message_event_data(deliveries[1])
+        carry_inbound_dedup(old, new)
+        lock = old._dedup_persist_lock
+        await lock.acquire()
+        locked = True
+        await runner._safe_adapter_disconnect(old, Platform.FEISHU)
+        assert old.__dict__.get("_feishu_ingress_cleanups")
+        assert not old._pending_text_batches and not old._pending_media_batches
+        assert not old.__dict__.get("_shared_bursts")
+        lock.release()
+        locked = False
+        await asyncio.wait_for(asyncio.gather(*list(old._feishu_ingress_cleanups)), 5)
+        await asyncio.wait_for(asyncio.gather(*list(old._feishu_disconnect_finalizers)), 5)
+        new._process_inbound_message = AsyncMock()
+        for delivery in deliveries:
+            await new._handle_message_event_data(delivery)
+        assert new._process_inbound_message.await_count == 2
+    finally:
+        if locked:
+            lock.release()
+        await close_adapter(old)
+        await close_adapter(new)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_background_wait_does_not_cancel_ingress_cleanup(tmp_path):
+    from gateway.config import GatewayConfig
+    from gateway.platforms.helpers import carry_inbound_dedup
+    from gateway.run import GatewayRunner
+
+    old, new = adapter_for_test(), adapter_for_test()
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    old.set_message_handler(AsyncMock())
+    old._start_typing_refresh = lambda *_args, **_kwargs: None
+    old._stop_typing_refresh = AsyncMock()
+    entered = asyncio.Event()
+
+    async def hook(name, *_args):
+        if name == "on_processing_start":
+            entered.set()
+            await asyncio.Event().wait()
+
+    old._run_processing_hook = hook
+    lock, locked = None, False
+    try:
+        event = await capture_event(old, "om_background_timeout")
+        carry_inbound_dedup(old, new)
+        await old.handle_message(event)
+        await asyncio.wait_for(entered.wait(), 5)
+        lock = old._dedup_persist_lock
+        await lock.acquire()
+        locked = True
+        assert not await runner._await_adapter_cleanup_with_timeout(old.cancel_background_tasks(), 0.05)
+        assert old.__dict__.get("_feishu_ingress_cleanups")
+        lock.release()
+        locked = False
+        await asyncio.wait_for(asyncio.gather(*list(old._feishu_ingress_cleanups)), 5)
+        new._process_inbound_message = AsyncMock()
+        await new._handle_message_event_data(incoming("om_background_timeout"))
+        assert new._process_inbound_message.await_count == 1
+    finally:
+        if locked:
+            lock.release()
+        await close_adapter(old)
+        await close_adapter(new)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_begins_cleanup_before_waiting_for_timers(tmp_path):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.helpers import carry_inbound_dedup
+    from gateway.run import GatewayRunner
+
+    old, new = adapter_for_test(), adapter_for_test()
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    runner._adapter_disconnect_timeout_secs = lambda: 0.05
+    cancel_pending = old._cancel_pending_tasks
+
+    async def stalled_timers(_tasks):
+        await asyncio.Event().wait()
+
+    try:
+        await old._handle_message_event_data(incoming("om_timer_timeout"))
+        carry_inbound_dedup(old, new)
+        old._cancel_pending_tasks = stalled_timers
+        await runner._safe_adapter_disconnect(old, Platform.FEISHU)
+        pending = list(old.__dict__.get("_feishu_ingress_cleanups", ()))
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending), 5)
+        new._process_inbound_message = AsyncMock()
+        await new._handle_message_event_data(incoming("om_timer_timeout"))
+        assert new._process_inbound_message.await_count == 1
+    finally:
+        old._cancel_pending_tasks = cancel_pending
+        for finalizer in list(old.__dict__.get("_feishu_disconnect_finalizers", ())):
+            finalizer.cancel()
+        await asyncio.gather(*list(old.__dict__.get("_feishu_disconnect_finalizers", ())), return_exceptions=True)
+        await close_adapter(old)
+        await close_adapter(new)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_cleanup_does_not_skip_transport_teardown(tmp_path):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+
+    adapter = adapter_for_test()
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    runner._adapter_disconnect_timeout_secs = lambda: 0.05
+    ws = adapter._ws_client = SimpleNamespace(_auto_reconnect=True)
+    adapter._teardown_ws_thread = AsyncMock()
+    adapter._stop_webhook_server = AsyncMock()
+    adapter._release_app_lock = AsyncMock()
+    lock, locked = None, False
+    try:
+        await adapter._handle_message_event_data(incoming("om_slow_cleanup"))
+        lock = adapter._dedup_persist_lock
+        await lock.acquire()
+        locked = True
+        await runner._safe_adapter_disconnect(adapter, Platform.FEISHU)
+        assert ws._auto_reconnect is False and adapter._ws_client is None
+        adapter._teardown_ws_thread.assert_awaited_once()
+        adapter._release_app_lock.assert_not_awaited()
+        lock.release()
+        locked = False
+        await asyncio.wait_for(asyncio.gather(*list(adapter._feishu_disconnect_finalizers)), 5)
+        adapter._release_app_lock.assert_awaited_once()
+        assert "om_slow_cleanup" not in adapter._seen_message_ids
+    finally:
+        if locked:
+            lock.release()
+        await close_adapter(adapter)
+
+
+@pytest.mark.asyncio
+async def test_replacement_waits_for_old_app_lock_finalizer(tmp_path, monkeypatch):
+    import plugins.platforms.feishu.adapter as feishu
+    from gateway import status
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.helpers import carry_inbound_dedup
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setattr(feishu, "_load_lark_oapi", lambda: True)
+    old, new = adapter_for_test(), adapter_for_test()
+    for adapter in (old, new):
+        adapter._app_id, adapter._app_secret = "test-shared-app", "fake"
+        adapter._connection_mode, adapter._verification_token = "webhook", "fake"
+        adapter._connect_with_retry = AsyncMock()
+        adapter._wire_plugin_handlers = lambda *_args, **_kwargs: None
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    runner._adapter_disconnect_timeout_secs = lambda: 0.05
+    locked, connecting = False, None
+    try:
+        assert await old.connect()
+        await old._handle_message_event_data(incoming("om_app_lock_transfer"))
+        lock = old._dedup_persist_lock
+        await lock.acquire()
+        locked = True
+        await runner._safe_adapter_disconnect(old, Platform.FEISHU)
+        carry_inbound_dedup(old, new)
+        connecting = asyncio.create_task(new.connect())
+        await asyncio.sleep(0)
+        assert not connecting.done()
+        lock.release()
+        locked = False
+        assert await asyncio.wait_for(connecting, 5)
+        lock_path = status._get_scope_lock_path(feishu._FEISHU_APP_LOCK_SCOPE, new._app_id)
+        assert lock_path.exists()
+        new._process_inbound_message = AsyncMock()
+        await new._handle_message_event_data(incoming("om_app_lock_transfer"))
+        assert new._process_inbound_message.await_count == 1
+    finally:
+        if locked:
+            lock.release()
+        if connecting and not connecting.done():
+            connecting.cancel()
+            await asyncio.gather(connecting, return_exceptions=True)
+        await new.disconnect()
+        await close_adapter(old)
+        await close_adapter(new)
+
+
+@pytest.mark.asyncio
+async def test_app_lock_finalizer_fences_other_profile_with_same_app(tmp_path, monkeypatch):
+    import plugins.platforms.feishu.adapter as feishu
+    from gateway import status
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setattr(feishu, "_load_lark_oapi", lambda: True)
+
+    def create(home, app_id):
+        token = set_hermes_home_override(str(home))
+        try:
+            adapter = adapter_for_test()
+        finally:
+            reset_hermes_home_override(token)
+        adapter._app_id, adapter._app_secret = app_id, "fake"
+        adapter._connection_mode, adapter._verification_token = "webhook", "fake"
+        adapter._connect_with_retry = AsyncMock()
+        adapter._wire_plugin_handlers = lambda *_args, **_kwargs: None
+        return adapter
+
+    async def in_home(home, operation):
+        token = set_hermes_home_override(str(home))
+        try:
+            return await operation()
+        finally:
+            reset_hermes_home_override(token)
+
+    alice, bob, carol = (tmp_path / name for name in ("alice", "bob", "carol"))
+    old = create(alice, "test-cross-profile-app")
+    new = create(bob, "test-cross-profile-app")
+    other = create(carol, "test-different-app")
+    assert old._dedup_state_path != new._dedup_state_path
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    runner._adapter_disconnect_timeout_secs = lambda: 0.05
+    lock, locked, connecting = None, False, None
+    try:
+        assert await in_home(alice, old.connect)
+        await in_home(alice, lambda: old._handle_message_event_data(incoming("om_cross_profile")))
+        lock = old._dedup_persist_lock
+        await lock.acquire()
+        locked = True
+        await in_home(alice, lambda: runner._bounded_adapter_teardown(old, Platform.FEISHU, profile="alice"))
+        connecting = asyncio.create_task(in_home(bob, new.connect))
+        await asyncio.sleep(0)
+        assert not connecting.done()
+        assert await asyncio.wait_for(in_home(carol, other.connect), 5)
+        lock.release()
+        locked = False
+        assert await asyncio.wait_for(connecting, 5)
+        path = status._get_scope_lock_path(feishu._FEISHU_APP_LOCK_SCOPE, new._app_id)
+        assert path.exists()
+    finally:
+        if locked:
+            lock.release()
+        if connecting and not connecting.done():
+            connecting.cancel()
+            await asyncio.gather(connecting, return_exceptions=True)
+        await in_home(bob, new.disconnect)
+        await in_home(carol, other.disconnect)
+        for adapter in (old, new, other):
+            await close_adapter(adapter)
+
+
+@pytest.mark.asyncio
+async def test_connect_rechecks_app_finalizers_after_sdk_load(tmp_path, monkeypatch):
+    import plugins.platforms.feishu.adapter as feishu
+    from gateway import status
+    from gateway.platforms.helpers import carry_inbound_dedup
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setattr(feishu, "_load_lark_oapi", lambda: True)
+    old, new = adapter_for_test(), adapter_for_test()
+    for adapter in (old, new):
+        adapter._app_id, adapter._app_secret = "test-sdk-load-race", "fake"
+        adapter._connection_mode, adapter._verification_token = "webhook", "fake"
+        adapter._connect_with_retry = AsyncMock()
+        adapter._wire_plugin_handlers = lambda *_args, **_kwargs: None
+    started, resume, loaded = threading.Event(), threading.Event(), threading.Event()
+
+    def blocked_load():
+        started.set()
+        assert resume.wait(5)
+        loaded.set()
+        return True
+
+    locked, connecting, closing = False, None, None
+    try:
+        assert await old.connect()
+        await old._handle_message_event_data(incoming("om_sdk_load_race"))
+        carry_inbound_dedup(old, new)
+        monkeypatch.setattr(feishu, "_load_lark_oapi", blocked_load)
+        connecting = asyncio.create_task(new.connect())
+        assert await asyncio.to_thread(started.wait, 5)
+        lock = old._dedup_persist_lock
+        await lock.acquire()
+        locked = True
+        closing = asyncio.create_task(old.disconnect())
+
+        async def wait_for_finalizer():
+            while not old.__dict__.get("_feishu_disconnect_finalizers"):
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_finalizer(), 5)
+        resume.set()
+        assert await asyncio.to_thread(loaded.wait, 5)
+        await asyncio.sleep(0)
+        assert not connecting.done()
+        lock.release()
+        locked = False
+        await asyncio.wait_for(closing, 5)
+        assert await asyncio.wait_for(connecting, 5)
+        path = status._get_scope_lock_path(feishu._FEISHU_APP_LOCK_SCOPE, new._app_id)
+        assert path.exists()
+    finally:
+        resume.set()
+        if locked:
+            lock.release()
+        if closing and not closing.done():
+            await asyncio.gather(closing, return_exceptions=True)
+        if connecting and not connecting.done():
+            connecting.cancel()
+            await asyncio.gather(connecting, return_exceptions=True)
+        await new.disconnect()
+        await close_adapter(old)
+        await close_adapter(new)
+
+
+@pytest.mark.asyncio
+async def test_retired_adapter_does_not_overwrite_new_owner_seen_ids():
+    from gateway.config import PlatformConfig
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    old = adapter_for_test()
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def delayed_failure(_event, _fence):
+        entered.set()
+        await finish.wait()
+        raise RuntimeError("before admission")
+
+    new = None
+    try:
+        event = await capture_event(old, "om_old")
+        task = asyncio.create_task(authority_with(delayed_failure).admit_native(event))
+        await asyncio.wait_for(entered.wait(), 5)
+        await old.disconnect()
+        new = FeishuAdapter(PlatformConfig())  # a distinct owner has its own in-memory cache
+        assert await new._is_duplicate("om_new_owner") is False
+        finish.set()
+        with pytest.raises(RuntimeError, match="before admission"):
+            await task
+        reloaded = FeishuAdapter(PlatformConfig())
+        assert "om_new_owner" in reloaded._seen_message_ids
+    finally:
+        finish.set()
+        await close_adapter(old)
+        if new is not None:
+            await close_adapter(new)
+
+
+@pytest.mark.asyncio
+async def test_failed_teardown_retires_old_writes_and_blocks_replacement(monkeypatch):
+    import plugins.platforms.feishu.adapter as feishu
+    from gateway.platforms.helpers import carry_inbound_dedup
+
+    old, new = adapter_for_test(), adapter_for_test()
+    old._stop_webhook_server = AsyncMock(side_effect=RuntimeError("webhook teardown failed"))
+    old._teardown_ws_thread = AsyncMock()
+    old._release_app_lock = AsyncMock()
+    new._app_id, new._app_secret = "fake", "fake"
+    new._connection_mode, new._verification_token = "webhook", "fake"
+    new._connect_with_retry = AsyncMock()
+    new._wire_plugin_handlers = lambda *_args, **_kwargs: None
+    new._release_app_lock = AsyncMock()
+    monkeypatch.setattr(feishu, "_load_lark_oapi", lambda: True)
+    monkeypatch.setattr(feishu, "acquire_scoped_lock", lambda *_args, **_kwargs: (True, None))
+    try:
+        await old._handle_message_event_data(incoming("om_failed_teardown"))
+        with pytest.raises(RuntimeError, match="webhook teardown failed"):
+            await old.disconnect()
+        old._teardown_ws_thread.assert_awaited_once()
+        old._release_app_lock.assert_not_awaited()  # incomplete teardown keeps the old ownership fence
+        assert old._dedup_persistence_retired is True
+        carry_inbound_dedup(old, new)
+        assert not await new.connect()
+    finally:
+        await close_adapter(old)
+        await close_adapter(new)
+
+
+@pytest.mark.asyncio
+async def test_executor_shutdown_during_cleanup_releases_all_buffers():
+    from gateway.config import PlatformConfig
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = adapter_for_test()
+    first, second = incoming("om_queued_cleanup_a"), incoming("om_queued_cleanup_b")
+    second.event.message.chat_id = "oc_other"
+    started, finish = threading.Barrier(11), threading.Event()
+    submitted, cancelled_write = asyncio.Event(), asyncio.Event()
+
+    def block_worker():
+        started.wait(timeout=5)
+        finish.wait(5)
+
+    blockers = []
+    try:
+        assert await adapter._is_duplicate("om_accepted") is False
+        await adapter._handle_message_event_data(first)
+        await adapter._handle_message_event_data(second)
+        executor = adapter._get_sdk_executor()
+        blockers = [executor.submit(block_worker) for _ in range(10)]
+        await asyncio.to_thread(started.wait, 5)
+        run_blocking = adapter._run_blocking
+
+        async def watched_run(func, *args):
+            task = asyncio.create_task(run_blocking(func, *args))
+            await asyncio.sleep(0)  # let the task enqueue its write before teardown continues
+            submitted.set()
+            try:
+                return await task
+            except asyncio.CancelledError:
+                cancelled_write.set()
+                raise
+
+        async def wait_for_submit(*_args):
+            await asyncio.wait_for(submitted.wait(), 5)
+
+        adapter._run_blocking = watched_run
+        adapter._teardown_ws_thread = wait_for_submit
+        await asyncio.wait_for(adapter.disconnect(), 5)
+        assert cancelled_write.is_set()
+        reloaded = FeishuAdapter(PlatformConfig())
+        assert "om_accepted" in reloaded._seen_message_ids
+        assert "om_queued_cleanup_a" not in reloaded._seen_message_ids
+        assert "om_queued_cleanup_b" not in reloaded._seen_message_ids
+    finally:
+        finish.set()
+        if blockers:
+            await asyncio.gather(*(asyncio.wrap_future(future) for future in blockers), return_exceptions=True)
+        await close_adapter(adapter)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cleanup_survives_default_executor_shutdown():
+    import concurrent.futures
+    import json
+
+    adapter = adapter_for_test()
+    loop = asyncio.get_running_loop()
+    original_executor = loop._default_executor
+    try:
+        await adapter._handle_message_event_data(incoming("om_default_executor_closed"))
+        closed_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(closed_executor)
+        closed_executor.shutdown(wait=True)
+        await adapter.disconnect()
+        payload = json.loads(adapter._dedup_state_path.read_text())
+        assert "om_default_executor_closed" not in payload["message_ids"]
+        assert "_feishu_cleanup_executor" not in adapter.__dict__
+    finally:
+        loop._default_executor = original_executor
+        await close_adapter(adapter)
+
+
+@pytest.mark.asyncio
+async def test_late_inbound_during_disconnect_is_released_even_if_caller_cancelled():
+    adapter = adapter_for_test()
+    dispatch = adapter._dispatch_inbound_event
+    locked = False
+    try:
+        event = await capture_event(adapter, "om_late_during_close")
+        adapter._ingress_closing = True
+        lock = adapter._dedup_persist_lock
+        await lock.acquire()
+        locked = True
+        caller = asyncio.create_task(dispatch(event))
+        while not adapter.__dict__.get("_feishu_ingress_cleanups"):
+            await asyncio.sleep(0)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert not adapter._pending_text_batches
+        lock.release()
+        locked = False
+        await asyncio.wait_for(asyncio.gather(*list(adapter._feishu_ingress_cleanups)), 5)
+        assert await adapter._is_duplicate("om_late_during_close") is False
+    finally:
+        if locked:
+            lock.release()
+        await close_adapter(adapter)
+
+
+@pytest.mark.asyncio
+async def test_reusing_adapter_does_not_keep_finished_busy_bursts(monkeypatch):
+    import plugins.platforms.feishu.adapter as feishu
+
+    adapter = adapter_for_test()
+
+    class Handler:
+        session_authority = object()
+
+        async def handle(self, _event):
+            raise AssertionError("held burst must not execute")
+
+    adapter.set_message_handler(Handler().handle)
+    adapter._busy_text_mode = "queue"
+    adapter._busy_text_debounce_seconds = adapter._busy_text_hard_cap_seconds = 3600
+    adapter._app_id, adapter._app_secret = "fake", "fake"
+    adapter._connection_mode, adapter._verification_token = "webhook", "fake"
+    adapter._connect_with_retry = AsyncMock()
+    adapter._wire_plugin_handlers = lambda *_args, **_kwargs: None
+    adapter._release_app_lock = AsyncMock()
+    monkeypatch.setattr(feishu, "_load_lark_oapi", lambda: True)
+    monkeypatch.setattr(feishu, "acquire_scoped_lock", lambda *_args, **_kwargs: (True, None))
+    try:
+        for index in range(3):
+            assert await adapter.connect()
+            first = await capture_event(adapter, f"om_reuse_{index}_a")
+            second = await capture_event(adapter, f"om_reuse_{index}_b")
+            key = adapter._event_session_key(first)
+            adapter._active_sessions[key] = asyncio.Event()
+            adapter._session_tasks[key] = asyncio.current_task()
+            await adapter.handle_message(first)
+            await adapter.handle_message(second)
+            await adapter.disconnect()
+            assert not adapter.__dict__.get("_feishu_ingress_busy_bursts")
+    finally:
         await close_adapter(adapter)
 
 

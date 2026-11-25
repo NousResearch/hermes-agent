@@ -96,7 +96,7 @@ from gateway.platforms.helpers import caption_is_command, prompt_id_counter, sen
 from .cards import map_chat_type, pop_validated_prompt_state, resolve_source_chat_type, validate_card_action
 from .adapter_choice_cards import FeishuChoiceCardsMixin
 from .adapter_synthetic_events import FeishuSyntheticEventsMixin
-from .dedup import FeishuDedupMixin
+from .dedup import FeishuDedupMixin, _acquire_after_app_finalizers, _register_app_finalizer, _wait_app_finalizers
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1499,6 +1499,16 @@ class FeishuAdapter(FeishuDedupMixin, FeishuChoiceCardsMixin, FeishuSyntheticEve
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Feishu/Lark."""
+        if not await _wait_app_finalizers(self._app_id):
+            logger.error("[Feishu] Cannot reconnect after a failed prior disconnect")
+            return False
+        while pending := tuple(self.__dict__.get("_feishu_disconnect_finalizers", ())):
+            outcomes = await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+            if any(isinstance(outcome, BaseException) for outcome in outcomes):
+                logger.error("[Feishu] Cannot reconnect after a failed prior disconnect")
+                return False
+        self._ingress_closing = False
+        self._dedup_persistence_retired = False
         self._sdk_executor_closing = False  # re-arm the SDK executor after a prior disconnect
         if not self._app_id or not self._app_secret:
             logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
@@ -1517,10 +1527,14 @@ class FeishuAdapter(FeishuDedupMixin, FeishuChoiceCardsMixin, FeishuSyntheticEve
             return False
 
         try:
-            self._app_lock_identity = self._app_id
-            acquired, existing = acquire_scoped_lock(
-                _FEISHU_APP_LOCK_SCOPE, self._app_lock_identity, metadata={"platform": self.platform.value},
+            result = await _acquire_after_app_finalizers(
+                self._app_id, lambda: acquire_scoped_lock(
+                    _FEISHU_APP_LOCK_SCOPE, self._app_id, metadata={"platform": self.platform.value}),
             )
+            if result is None:
+                logger.error("[Feishu] Cannot reconnect after a failed prior disconnect")
+                return False
+            acquired, existing = result
             if not acquired:
                 owner_pid = existing.get("pid") if isinstance(existing, dict) else None
                 message = (
@@ -1531,6 +1545,7 @@ class FeishuAdapter(FeishuDedupMixin, FeishuChoiceCardsMixin, FeishuSyntheticEve
                 logger.error("[Feishu] %s", message)
                 self._set_fatal_error("feishu_app_lock", message, retryable=False)
                 return False
+            self._app_lock_identity = self._app_id
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
@@ -1551,14 +1566,28 @@ class FeishuAdapter(FeishuDedupMixin, FeishuChoiceCardsMixin, FeishuSyntheticEve
 
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
+        previous = self.__dict__.get("_feishu_disconnect_task")
+        if previous is not None and not previous.done():
+            await asyncio.shield(previous)
+            return
         self._running = False
+        self._ingress_closing = True
         if self._ws_supervisor is not None:
             self._ws_supervisor.cancel()
             self._ws_supervisor = None
-        await self._cancel_pending_tasks(self._pending_text_batch_tasks)
-        await self._cancel_pending_tasks(self._pending_media_batch_tasks)
-        await self._release_buffered_ingress()
-        self._reset_batch_buffers()
+        ingress_cleanup = self._begin_buffered_ingress_cleanup()
+        finalizers = self.__dict__.setdefault("_feishu_disconnect_finalizers", set())
+        task = self._feishu_disconnect_task = asyncio.create_task(self._finish_disconnect(ingress_cleanup))
+        finalizers.add(task)
+        _register_app_finalizer(self._app_lock_identity, task)
+
+        def settle(done):
+            if not done.cancelled() and done.exception() is None:
+                finalizers.discard(done)
+        task.add_done_callback(settle)
+        await asyncio.shield(task)
+
+    async def _finish_disconnect(self, ingress_cleanup) -> None:
         # ``_disable_websocket_auto_reconnect()`` nils ``_ws_client`` — capture first.
         # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the thread loop. Without this, Feishu's
         # server never learns the connection is dead and continues routing messages to the stale endpoint —
@@ -1567,17 +1596,41 @@ class FeishuAdapter(FeishuDedupMixin, FeishuChoiceCardsMixin, FeishuSyntheticEve
         ws_client = self._ws_client
         ws_thread_loop = self._ws_thread_loop
         self._disable_websocket_auto_reconnect()
-        await self._stop_webhook_server()
-        await self._teardown_ws_thread(ws_client, ws_thread_loop)
+        failure = None
+        for name, operation in (
+            ("text timers", lambda: self._cancel_pending_tasks(self._pending_text_batch_tasks)),
+            ("media timers", lambda: self._cancel_pending_tasks(self._pending_media_batch_tasks)),
+            ("webhook", self._stop_webhook_server),
+            ("websocket", lambda: self._teardown_ws_thread(ws_client, ws_thread_loop)),
+        ):
+            try:
+                await operation()
+            except Exception as exc:
+                logger.warning("[Feishu] Disconnect failed while closing %s", name, exc_info=True)
+                failure = failure or exc
         self._ws_future = None
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
-        self._shutdown_sdk_executor()
-        async with self._dedup_persist_lock_or_create():
-            self._persist_seen_message_ids()
-        await self._release_app_lock()
+        try:
+            self._shutdown_sdk_executor()
+            if ingress_cleanup is not None:
+                await asyncio.shield(ingress_cleanup)
+            async with self._dedup_persist_lock_or_create():
+                try:
+                    await self._persist_seen_during_teardown()
+                finally:
+                    self._dedup_persistence_retired = True
+        except Exception as exc:
+            logger.warning("[Feishu] Disconnect could not finish dedup persistence", exc_info=True)
+            failure = failure or exc
+        finally:
+            self._dedup_persistence_retired = True
+            self._shutdown_dedup_cleanup_executor()
         self._mark_disconnected()
+        if failure is not None:
+            raise failure  # keep the app lock and block replacement after an incomplete teardown
+        await self._release_app_lock()
         logger.info("[Feishu] Disconnected")
 
     async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
@@ -2564,6 +2617,10 @@ class FeishuAdapter(FeishuDedupMixin, FeishuChoiceCardsMixin, FeishuSyntheticEve
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        if getattr(self, "_ingress_closing", False):
+            cleanup = self._schedule_ingress_cleanup([event])
+            await asyncio.shield(cleanup)
+            return
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return

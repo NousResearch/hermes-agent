@@ -1,0 +1,27 @@
+name: "spellcheck-plus"
+repo: "https://github.com/samieshmil-blip/hermes-spellcheck-plus"
+sha: "3584e6ba2fb5faa3cdd9dc2a114c126b36aab707"
+title: "Spellcheck Plus"
+description: "Replacement suggestions for misspelled words in the Hermes Desktop composer: right-click a word and the custom context menu lists up to four candidates plus \"Add to dictionary\". Ten bundled frequency dictionaries (ru 200k word forms, en 46 691, uk 44 303, de 49 305, fr 46 687, es 49 520, it 45 114, pt 43 952, pl 49 635, tr 48 515), each language toggled in Settings ▸ Plugins and only decompressed when enabled; the entry is named in the UI language (\"Проверка орфографии\" in Russian). Desktop-only, built on the plugin SDK: it registers a `composer.contextMenu` provider and a settings page, never touches the app's DOM and patches no core file. Disclosure: Storage — one JSON preference blob via `ctx.storage` (the enabled language list) and, when the user picks \"Add to dictionary\", one word written through `host.spellcheck.addWord` into Chromium's own spell-check dictionary; no files, no database. Network — none: dictionaries ship inside `desktop/plugin.js` (gzip+base64) and suggestions are computed in the renderer; the plugin opens no connection and reads no credentials. Prompt — none: nothing is added to any turn, no tool, hook or middleware is registered. Identity — none beyond the plugin id. Known limits: suggestions are heuristic (Damerau distance ≤ 1 everywhere, ≤ 2 only as a capped fallback of 45 ms / 30 000 candidates), so rare or technical words can come back empty while Chromium still underlines them, and the dictionaries are corpus frequency lists rather than a morphological spell checker. It exists because the app-owned context menu never receives Chromium's spell-check payload today (upstream fix in review, NousResearch/hermes-agent#157448); once that lands this entry keeps its value as multi-language suggestion dictionaries and per-language switches."
+maintainer: "samieshmil-blip"
+tier: "community"
+category: "desktop"
+requires_hermes: ">=0.9.0"
+version: "0.2.1"
+docs_url: "https://github.com/samieshmil-blip/hermes-spellcheck-plus"
+readme: true
+platforms:
+  - "windows"
+  - "macos"
+  - "linux"
+image: "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/menu-ru.png"
+screenshots:
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/menu-en.png"
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/menu-de.png"
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/settings-ru.png"
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/where-to-find.png"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

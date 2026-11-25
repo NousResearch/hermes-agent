@@ -155,6 +155,21 @@ def _price_float(raw: Any, *, positive: bool) -> float | None:
     return n
 
 
+def model_pricing_is_free(row: Any) -> bool:
+    """A picker pricing row bills nothing: both rates parse to $0 (the output rate may be
+    unset while the input rate is 0), or the row is explicitly flagged free. A missing or
+    unknown row is NOT free — no price shown is not a price of zero."""
+    if not isinstance(row, dict):
+        return False
+    if row.get("is_free") is True:
+        return True
+    inp = _price_float(row.get("prompt", ""), positive=False)
+    if inp != 0:
+        return False
+    out = _price_float(row.get("completion", ""), positive=False)
+    return out == 0 or out is None
+
+
 def _sale_pct(current: Any, original: Any) -> int | None:
     """Percent discount when *current* is strictly below *original* (both positive finite)."""
     cur, orig = _price_float(current, positive=True), _price_float(original, positive=True)
@@ -513,6 +528,64 @@ def _fetch_kilocode_pricing_for_provider(*, force_refresh: bool = False) -> dict
     return _fetch_kilocode_pricing(force_refresh=force_refresh)
 
 
+_CHEAPER_INFERENCE_PRICING_BASE = "https://api.cheaperinference.com"
+# Exact host only (pricing is a trust boundary): a custom entry pointing at this
+# origin is the canonical upstream even though no provider profile exists for it.
+_CHEAPER_INFERENCE_HOST = "api.cheaperinference.com"
+
+
+def _fetch_cheaper_inference_pricing(timeout: float = 8.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
+    """Cheaper Inference public catalog (``{base}/public/models``, no key required) —
+    per-million ``input_per_million`` / ``output_per_million`` strings → per-token
+    ``prompt`` / ``completion`` (the picker shape), ``cache_read_per_million`` →
+    ``input_cache_read``. The explicit ``is_free`` flag is authoritative over the
+    rates, zeroed like kilocode's ``isFree``; rows with unusable rates are skipped
+    rather than shown blank. Cached on the catalog base like every other fetcher."""
+    from hermes_cli.version_info import hermes_user_agent
+
+    if not force_refresh:
+        cached = _cached_catalog(_CHEAPER_INFERENCE_PRICING_BASE)
+        if cached is not None:
+            return cached
+
+    payload = _get_json(
+        _CHEAPER_INFERENCE_PRICING_BASE + "/public/models",
+        {"Accept": "application/json", "User-Agent": hermes_user_agent()},
+        timeout,
+    )
+    if payload is None:
+        return _cache_catalog(_CHEAPER_INFERENCE_PRICING_BASE, {})
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("models", []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        if not mid:
+            continue
+        entry: dict[str, str] = {}
+        for theirs, ours in (("input_per_million", "prompt"), ("output_per_million", "completion"),
+                             ("cache_read_per_million", "input_cache_read")):
+            per_m = _price_float(item.get(theirs), positive=False)
+            if per_m is None:
+                continue
+            entry[ours] = _per_token(per_m)
+        if item.get("is_free"):
+            entry["prompt"] = entry["completion"] = "0"
+            entry.pop("input_cache_read", None)
+        # A row we cannot price (missing rates, non-numeric junk) is dropped, not shown blank.
+        if "prompt" not in entry or "completion" not in entry:
+            continue
+        result[str(mid)] = entry
+
+    return _cache_catalog(_CHEAPER_INFERENCE_PRICING_BASE, result)
+
+
+def _fetch_cheaper_inference_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    _remember_provider_cache_key("cheaperinference", _CHEAPER_INFERENCE_PRICING_BASE)
+    return _fetch_cheaper_inference_pricing(force_refresh=force_refresh)
+
+
 def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     api_key, base_url = _resolve_nous_pricing_credentials()
     if not base_url:
@@ -562,6 +635,7 @@ _STATIC_PRICING_SCOPES = {
     "novita": _novita_pricing_scope,
     "kilocode": _kilo_pricing_scope,
     "fireworks": lambda: _FIREWORKS_PRICING_KEY,
+    "cheaperinference": lambda: _CHEAPER_INFERENCE_PRICING_BASE,
 }
 
 
@@ -575,6 +649,8 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
     from hermes_cli.models import normalize_provider
 
     normalized = normalize_provider(provider)
+    if normalized == "cheaper-inference":
+        normalized = "cheaperinference"
     if not normalized.startswith("custom:"):
         return normalized
     if not base_url:
@@ -595,6 +671,11 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
         provider == inferred and base_url_host_matches(base_url, host)
         for host, provider in _URL_TO_PROVIDER.items()
     )):
+        # Cheaper Inference has no provider profile and no _URL_TO_PROVIDER row;
+        # a custom entry pointing at its public catalog origin is still the
+        # canonical upstream, or its models would never show a price.
+        if base_url_hostname(base_url) == _CHEAPER_INFERENCE_HOST:
+            return "cheaperinference"
         return ""
     return normalize_provider(inferred)
 
@@ -748,5 +829,6 @@ _PRICING_FETCHERS = {
     "deepinfra": _fetch_deepinfra_pricing,
     "fireworks": _fetch_fireworks_pricing_for_provider,
     "kilocode": _fetch_kilocode_pricing_for_provider,
+    "cheaperinference": _fetch_cheaper_inference_pricing_for_provider,
     "nous": _fetch_nous_pricing_for_provider,
 }

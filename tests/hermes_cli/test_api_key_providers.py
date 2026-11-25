@@ -1006,6 +1006,105 @@ class TestKilocodePricingFetcher:
         assert get_pricing_for_provider("kilocode", force_refresh=True) == {}
 
 
+@pytest.fixture
+def _cheaper_inference_pricing_isolation(monkeypatch):
+    """Reset the shared pricing caches around each Cheaper Inference pricing test.
+
+    The fetcher keys the shared pricing cache by its catalog base URL; without
+    a reset, one test's payload (or its negative cache entry) would answer
+    the next test's read.
+    """
+    import hermes_cli.models_pricing as _mp
+    monkeypatch.setattr(_mp, "_pricing_cache", {})
+    monkeypatch.setattr(_mp, "_pricing_cache_retry_after", {})
+    monkeypatch.setattr(_mp, "_pricing_provider_cache_keys", {})
+
+
+@pytest.mark.usefixtures("_cheaper_inference_pricing_isolation")
+class TestCheaperInferencePricingFetcher:
+    """_fetch_cheaper_inference_pricing maps the Cheaper Inference public catalog
+    (per-million input/output rates + explicit is_free, no key required) into
+    picker pricing, and is wired into the get_pricing_for_provider dispatch and
+    the custom-endpoint host match."""
+
+    def test_pricing_shape_and_dispatch(self, monkeypatch):
+        payload = {"models": [
+            # $5.72/$0 per million → per-token picker strings; the cache rate rides along.
+            {"id": "paid-model", "input_per_million": "0.005720",
+             "output_per_million": "0.000000", "cache_read_per_million": "0.005720"},
+            # The explicit is_free flag is authoritative (a free row can carry
+            # rounding artifacts); it also drops the cache rate.
+            {"id": "free-model", "input_per_million": "0.000001",
+             "output_per_million": "0.000000", "cache_read_per_million": "0.000001",
+             "is_free": True},
+            # Malformed records must be skipped, not crash the parser or show blank.
+            {"id": "no-rates"},
+            {"id": "junk-rates", "input_per_million": "not-a-number",
+             "output_per_million": "0.000000"},
+            {"id": ""},
+            "not-a-dict",
+        ]}
+        from hermes_cli import models
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            _make_urlopen_returning(payload),
+        )
+        from hermes_cli.models_pricing import get_pricing_for_provider
+
+        # get_pricing_for_provider → _fetch_cheaper_inference_pricing dispatch path
+        result = get_pricing_for_provider("cheaperinference")
+        assert set(result) == {"paid-model", "free-model"}
+        # Per-million rates → per-token strings (the picker shape); cache-read kept.
+        assert float(result["paid-model"]["prompt"]) == pytest.approx(0.005720 / 1_000_000)
+        assert float(result["paid-model"]["completion"]) == pytest.approx(0.0)
+        assert "input_cache_read" in result["paid-model"]
+        # Free: explicit zero mapping, ignoring the non-zero underlying rates.
+        assert result["free-model"] == {"prompt": "0", "completion": "0"}
+
+    def test_custom_endpoint_host_match_and_no_key(self, monkeypatch):
+        """A custom entry pointing at the public catalog origin resolves to the
+        canonical provider (host-matching trust boundary); the catalog is fetched
+        without a key; a failing endpoint yields {} without raising."""
+        from hermes_cli import models
+        from hermes_cli.models_pricing import (
+            get_pricing_for_provider,
+            resolve_pricing_provider,
+        )
+
+        assert resolve_pricing_provider(
+            "custom:cheaper", base_url="https://api.cheaperinference.com/v1"
+        ) == "cheaperinference"
+        # A lookalike host does NOT pass the trust boundary.
+        assert resolve_pricing_provider(
+            "custom:cheaper", base_url="https://api.cheaperinference.com.evil.test/v1"
+        ) == ""
+        # The bare alias name resolves to the canonical fetcher key too.
+        assert resolve_pricing_provider("cheaper-inference") == "cheaperinference"
+
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append((req.full_url, req.get_header("Authorization")))
+            return _make_urlopen_returning(
+                {"models": [{"id": "m", "input_per_million": "1", "output_per_million": "2"}]}
+            )(req, timeout=timeout)
+
+        monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_urlopen)
+        result = get_pricing_for_provider(
+            "custom:cheaper", base_url="https://api.cheaperinference.com/v1"
+        )
+        assert result == {"m": {"prompt": str(1 / 1_000_000), "completion": str(2 / 1_000_000)}}
+        assert seen == [("https://api.cheaperinference.com/public/models", None)]
+
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("endpoint down")),
+        )
+        assert get_pricing_for_provider("cheaperinference", force_refresh=True) == {}
+
+
 class TestDeepInfraProviderProfile:
     """plugins/model-providers/deepinfra registration + aux resolution."""
 

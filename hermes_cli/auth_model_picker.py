@@ -55,6 +55,11 @@ _GAUGE_GAP = "  "
 _LEVEL_STYLE = {"free": "green", "top_tier": "yellow"}
 
 
+def _model_pricing_is_free(row: Optional[dict]) -> bool:
+    from hermes_cli.models_pricing import model_pricing_is_free
+    return model_pricing_is_free(row)
+
+
 class _ModelPickerRows:
     """Column-aligned picker rows.
 
@@ -74,6 +79,9 @@ class _ModelPickerRows:
         self.current_model = current_model
         # Per-model dim annotation (e.g. "usage credits"); the row stays selectable.
         self.notes = notes or {}
+        # Models whose pricing row bills nothing ($0 both sides or is_free) — the row
+        # keeps its price columns ("free") and gains a green Free tag after them.
+        self.free_models: set[str] = set()
         self.window_mode = usage is not None
         if self.window_mode:
             # The gateway's ``top_tier`` marks decide which rows a full large-model limit dims.
@@ -132,6 +140,8 @@ class _ModelPickerRows:
             self._price_cache[mid] = (inp, out, cache, pct, was_inp, was_out)
             self.price_col = max(self.price_col, len(inp), len(out))
             self.cache_col = max(self.cache_col, len(cache))
+            if _model_pricing_is_free(p):
+                self.free_models.add(mid)
         if self.has_cache:
             self.cache_col = max(self.cache_col, 5)  # minimum: "Cache" header
 
@@ -165,6 +175,10 @@ class _ModelPickerRows:
         if self.has_cache:
             price_part += f"  {cache:>{self.cache_col}}"
         segs.append((price_part, None))
+        if mid in self.free_models:
+            # After the columns, like the sale chrome: a free row's columns already
+            # read "free", the tag is the unmistakable word.
+            segs.append((f"{_GAUGE_GAP}Free", "green"))
         if on_sale:
             segs.append((f"  -{pct}%", "yellow"))
             if was_inp or was_out:
@@ -210,11 +224,16 @@ class _ModelPickerRows:
         return TOP_TIER_FOOTNOTE
 
 
-def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tuple[list[str], dict[int, str], int]:
+def _picker_order(
+    model_ids: list[str], current_model: str, window_usage,
+    pricing: Optional[dict[str, dict[str, str]]] = None,
+) -> tuple[list[str], dict[int, str], int]:
     """``(ordered ids, {row index: section heading}, cursor start)`` for the picker.
 
     Window plan: "Recommended" (the plan's featured picks) then "Other models", with the current
-    model left in its own section (the cursor starts on it). Everyone else: current first.
+    model left in its own section (the cursor starts on it). Everyone else: current first, then
+    the models that bill nothing (a $0 / is_free pricing row), then the paid rest — each group
+    in its original order.
     """
     sections: dict[int, str] = {}
     if window_usage is not None:
@@ -230,6 +249,17 @@ def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tup
         ordered = list(dict.fromkeys(
             ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
         ))
+        if pricing:
+            free_set = {
+                mid for mid in ordered
+                if mid != current_model and _model_pricing_is_free(pricing.get(mid))
+            }
+            if free_set:
+                ordered = (
+                    ([current_model] if current_model in ordered else [])
+                    + [mid for mid in ordered if mid in free_set]
+                    + [mid for mid in ordered if mid != current_model and mid not in free_set]
+                )
     return ordered, sections, (ordered.index(current_model) if current_model in ordered else 0)
 
 
@@ -294,7 +324,7 @@ def _prompt_model_selection(
 
     # All models for column-width computation (selectable + unavailable). Plan usage is Nous-only chrome.
     window_usage = usage if sale_chrome else None
-    ordered, sections, start = _picker_order(model_ids, current_model, window_usage)
+    ordered, sections, start = _picker_order(model_ids, current_model, window_usage, pricing=pricing)
 
     rows = _ModelPickerRows(
         ordered + list(_unavailable), pricing, current_model=current_model, sale_chrome=sale_chrome,

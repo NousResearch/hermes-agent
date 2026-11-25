@@ -484,10 +484,25 @@ def window_row_labels(provider_row: Any, model_ids: list) -> list[str]:
 
 def picker_row_suffix(provider_row: Any, model_id: str) -> str:
     """Messaging pickers: ``Large`` / ``Free`` for one row, from the labels
-    ``model_switch_providers._attach_window_model_notes`` stamps (window plans only); "" otherwise."""
+    ``model_switch_providers._attach_window_model_notes`` stamps (Nous window plans, plus every
+    provider's cached pricing); a row that itself carries ``pricing``
+    (``inventory._apply_pricing`` shape: ``{input, output, free}``) is read directly and gets
+    ``Free`` when the model bills nothing. "" otherwise."""
     if not isinstance(provider_row, dict):
         return ""
-    return str((provider_row.get("model_labels") or {}).get(model_id) or "")
+    label = str((provider_row.get("model_labels") or {}).get(model_id) or "")
+    if label:
+        return label
+    from hermes_cli.models_pricing import model_pricing_is_free
+    pricing = provider_row.get("pricing")
+    row = pricing.get(model_id) if isinstance(pricing, dict) else None
+    if isinstance(row, dict) and (
+        row.get("free") is True
+        or str(row.get("input") or "").strip().lower() == "free"
+        or model_pricing_is_free(row)
+    ):
+        return "Free"
+    return ""
 
 
 def _gauge_name(g: UsageGauge) -> str:

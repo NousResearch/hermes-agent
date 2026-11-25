@@ -484,6 +484,84 @@ def test_messaging_pickers_get_large_free_labels_and_the_limit_line(monkeypatch)
     assert mpu.picker_row_suffix(plain[0], "example/model-b") == ""
 
 
+def test_picker_rows_tag_free_models_and_sort_them_first():
+    """A $0 (or is_free) pricing row: a green Free tag after the price columns, and
+    free models listed before the paid rest (current model still first)."""
+    from hermes_cli.auth_model_picker import _picker_order
+
+    pricing = {
+        "free/a": {"prompt": "0", "completion": "0"},
+        "free/b": {"prompt": "0.000001", "completion": "0", "is_free": True},
+        "paid/m": {"prompt": "0.000003", "completion": "0.000015"},
+    }
+    rows = _ModelPickerRows(["paid/m", "free/a", "free/b"], pricing, current_model="", sale_chrome=False)
+    free_label, paid_label = rows.label("free/a"), rows.label("paid/m")
+    assert "Free" in free_label and "$" in paid_label and "Free" not in paid_label
+    # Unknown pricing is not free: no tag, no free-first claim.
+    rows_unknown = _ModelPickerRows(["paid/m"], {}, current_model="", sale_chrome=False)
+    assert "Free" not in rows_unknown.label("paid/m")
+
+    # Free-first: current model, then the zero-cost rows, then the paid rest —
+    # each group keeps its original order.
+    ordered, _sections, start = _picker_order(
+        ["paid/m", "free/b", "free/a"], "paid/m", None, pricing=pricing)
+    assert ordered == ["paid/m", "free/b", "free/a"] and start == 0
+    ordered2, _s, start2 = _picker_order(
+        ["paid/m", "free/a", "free/b"], "", None, pricing=pricing)
+    assert ordered2 == ["free/a", "free/b", "paid/m"] and start2 == 0
+    # No pricing (or no free rows): the historical current-first order.
+    assert _picker_order(["b", "a", "c"], "a", None)[0] == ["a", "b", "c"]
+    assert _picker_order(["b", "a", "c"], "a", None, pricing={"b": {"prompt": "0.1"}})[0] == ["a", "b", "c"]
+
+
+def test_messaging_picker_suffix_reads_free_from_the_pricing_row():
+    from hermes_cli.model_picker_usage import picker_row_suffix as s
+
+    # inventory._apply_pricing shape: {input, output, cache, free}.
+    row = {"pricing": {"free/m": {"input": "free", "output": "", "free": True},
+                       "paid/m": {"input": "$3.00", "output": "$15.00", "free": False}}}
+    assert s(row, "free/m") == "Free"
+    assert s(row, "paid/m") == ""
+    assert s(row, "unknown/m") == ""
+    # No pricing on the row, non-dict rows: unchanged "".
+    assert s({"slug": "openrouter"}, "free/m") == ""
+    assert s(None, "free/m") == ""
+    # Raw picker-shape rows (per-token prompt/completion) are recognized too.
+    raw = {"pricing": {"free/m": {"prompt": "0", "completion": "0"}}}
+    assert s(raw, "free/m") == "Free"
+    # A window-plan label still wins over the pricing read.
+    assert s({**row, "model_labels": {"free/m": "Large"}}, "free/m") == "Large"
+
+
+def test_messaging_rows_get_free_labels_from_cached_pricing(monkeypatch):
+    from hermes_cli import model_picker_usage as mpu
+    from hermes_cli import model_switch_providers as msp
+    import hermes_cli.models_pricing as mp
+
+    providers = [
+        {"slug": "cheaperinference", "models": ["free-model", "paid-model"]},
+        {"slug": "nous", "models": ["gift/m"]},
+    ]
+    monkeypatch.setattr(
+        mp, "get_pricing_for_provider",
+        lambda slug, **kw: {"free-model": {"prompt": "0", "completion": "0"},
+                            "paid-model": {"prompt": "0.000001", "completion": "0.000002"}}
+        if slug == "cheaperinference" else {})
+    monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
+    msp._attach_window_model_notes(providers)
+    # The cheaperinference row carries Free labels for its zero-cost rows only.
+    assert providers[0]["model_labels"] == {"free-model": "Free"}
+    assert mpu.picker_row_suffix(providers[0], "free-model") == "Free"
+    assert mpu.picker_row_suffix(providers[0], "paid-model") == ""
+    # Nous keeps plan-only chrome: no cached-pricing labels, no field when empty.
+    assert "model_labels" not in providers[1]
+    # A cold cache labels nothing rather than blocking.
+    monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: {})
+    cold = [{"slug": "cheaperinference", "models": ["free-model"]}]
+    msp._attach_window_model_notes(cold)
+    assert "model_labels" not in cold[0]
+
+
 def test_large_model_notice_window_plans_only(monkeypatch):
     from dataclasses import replace as _replace
     from hermes_cli import model_picker_usage as mpu

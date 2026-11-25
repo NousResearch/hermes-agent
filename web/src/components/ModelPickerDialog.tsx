@@ -6,7 +6,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import type { ModelOptionProvider, ModelOptionsResult } from "@hermes/shared";
+import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -250,9 +250,12 @@ export function ModelPickerDialog(props: Props) {
   // Fuzzy-ranked models carrying the matched character positions so the model
   // list can highlight why each entry matched. modelSearchText adds aliases
   // for brand-less wire ids (e.g. Kimi Coding `k3` ↔ search "kimi").
+  // Free models (the provider's cached pricing bills nothing) float above the
+  // paid rest, stably within each group — same order the CLI picker uses.
+  const providerPricing = selectedProvider?.pricing ?? null;
   const filteredModels = useMemo(
-    () =>
-      fuzzyRank(
+    () => {
+      const ranked = fuzzyRank(
         models,
         queryMatchesSelectedProviderOnly ? "" : trimmedQuery,
         modelSearchText,
@@ -260,8 +263,13 @@ export function ModelPickerDialog(props: Props) {
         model: r.item,
         // Positions may land in alias suffixes — keep only in-id highlights.
         positions: r.positions.filter((i) => i >= 0 && i < r.item.length),
-      })),
-    [models, trimmedQuery, queryMatchesSelectedProviderOnly],
+      }));
+      if (!providerPricing) return ranked;
+      const isFree = (m: string) => providerPricing[m]?.free === true;
+      const free = ranked.filter((r) => isFree(r.model));
+      return free.length ? [...free, ...ranked.filter((r) => !isFree(r.model))] : ranked;
+    },
+    [models, trimmedQuery, queryMatchesSelectedProviderOnly, providerPricing],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
@@ -654,6 +662,7 @@ function ModelColumn({
               <span className="flex-1 truncate">
                 <HighlightedText text={m} positions={positions} />
               </span>
+              <ModelPriceTag entry={provider.pricing?.[m]} />
               {isCurrent && <CurrentTag />}
             </ListItem>
           );
@@ -667,6 +676,30 @@ function CurrentTag() {
   return (
     <span className="text-display text-xs tracking-wider text-primary shrink-0">
       current
+    </span>
+  );
+}
+
+/**
+ * Per-model price chrome next to every row, from the provider's cached pricing
+ * (same formatted $/Mtok strings the TUI columns and desktop picker use).
+ * A model that bills nothing gets a green Free tag; a priced one shows its
+ * in / out $/Mtok pair; unknown pricing renders nothing rather than a guess.
+ */
+function ModelPriceTag({ entry }: { entry?: ModelPricing | null }) {
+  if (!entry) return null;
+  if (entry.free || entry.input === "free") {
+    return (
+      <span className="text-display text-xs tracking-wider text-emerald-600 dark:text-emerald-400 shrink-0">
+        Free
+      </span>
+    );
+  }
+  const price = [entry.input, entry.output].filter(Boolean).join(" / ");
+  if (!price) return null;
+  return (
+    <span className="text-text-secondary shrink-0 tabular-nums" title="$ per million tokens">
+      {price}
     </span>
   );
 }

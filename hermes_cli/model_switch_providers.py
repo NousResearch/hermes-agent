@@ -1434,34 +1434,53 @@ def list_picker_providers(
 
 
 def _attach_window_model_notes(providers: list[dict]) -> None:
-    """Nous on a usage-window plan, for the messaging pickers (same words as the CLI/TUI/desktop pickers):
-    ``model_labels`` {id: "Large" | "Free"} (plan shape, any-age snapshot; other levels carry no tag), and
-    from a fresh snapshot only (a stale percent would mislabel it) ``plan_line`` (the limit line: "Weekly
-    limit reached · resets in 21h · paid models now use your credits (pay as you go)").
-    Every field is omitted when empty and for any account not on a window plan. Never raises."""
+    """Picker-row chrome for the messaging pickers (same words as the CLI/TUI/desktop pickers).
+    Nous on a usage-window plan: ``model_labels`` {id: "Large" | "Free"} (plan shape, any-age
+    snapshot; other levels carry no tag), and from a fresh snapshot only (a stale percent would
+    mislabel it) ``plan_line`` (the limit line: "Weekly limit reached · resets in 21h · paid models
+    now use your credits (pay as you go)"). Every other provider: ``model_labels`` {id: "Free"} for
+    the models its cached pricing bills nothing ($0 both rates or an explicit is_free —
+    per-million catalogs like Cheaper Inference included); a cold cache labels nothing rather than
+    blocking the picker on a fetch. Every field is omitted when empty. Never raises."""
     try:
         nous = next((p for p in providers if str(p.get("slug", "")).lower() == "nous"), None)
-        if nous is None:
-            return
-        from hermes_cli.model_picker_usage import nous_picker_usage, usage_level_label, usage_tag_levels
-        fresh = nous_picker_usage()
-        usage = fresh or nous_picker_usage(any_age=True)
-        if usage is None:
-            return
-        from agent.plan_limits import cached_pricing
-        pricing = cached_pricing()  # this profile's catalog only (cache-only, no credential refresh)
-        models = [str(m) for m in nous.get("models", [])]
-        # Subscription-billed rows carry no tag (usage_tag_levels).
-        labels = {m: label for m, lv in usage_tag_levels(models, pricing).items() if (label := usage_level_label(lv))}
-        if labels:
-            nous["model_labels"] = labels
-        if fresh is None:
-            return
-        line = usage.limit_line()
-        if line:
-            nous["plan_line"] = line
+        if nous is not None:
+            from hermes_cli.model_picker_usage import nous_picker_usage, usage_level_label, usage_tag_levels
+            fresh = nous_picker_usage()
+            usage = fresh or nous_picker_usage(any_age=True)
+            if usage is not None:
+                from agent.plan_limits import cached_pricing
+                pricing = cached_pricing()  # this profile's catalog only (cache-only, no credential refresh)
+                models = [str(m) for m in nous.get("models", [])]
+                # Subscription-billed rows carry no tag (usage_tag_levels).
+                labels = {m: label for m, lv in usage_tag_levels(models, pricing).items() if (label := usage_level_label(lv))}
+                if labels:
+                    nous["model_labels"] = labels
+                if fresh is not None:
+                    line = usage.limit_line()
+                    if line:
+                        nous["plan_line"] = line
     except Exception:
         logger.debug("window model notes failed", exc_info=True)
+
+    # Free tags for every other provider: one cache-only pricing read per row (a picker build
+    # already runs off the response path), so free models are named the same word everywhere.
+    for row in providers:
+        try:
+            if not isinstance(row, dict) or row.get("model_labels"):
+                continue
+            slug = str(row.get("slug") or "").strip().lower()
+            models = [str(m) for m in row.get("models") or []]
+            if not slug or slug == "nous" or not models:
+                continue
+            from hermes_cli.models_pricing import get_pricing_for_provider, model_pricing_is_free
+            kwargs = {"base_url": str(row.get("api_url") or "")} if slug.startswith("custom:") else {}
+            pricing = get_pricing_for_provider(slug, cached_only=True, **kwargs) or {}
+            labels = {m: "Free" for m in models if model_pricing_is_free(pricing.get(m))}
+            if labels:
+                row["model_labels"] = labels
+        except Exception:
+            logger.debug("free model labels failed", exc_info=True)
 
 
 def _saved_entry_on_other_origin(name: str, base_url: str) -> bool:

@@ -75,6 +75,11 @@ interface CatalogBrowserProps {
   renderInstalledDetail?: (entry: CatalogEntry) => ReactNode
   renderInstalledAction?: (entry: CatalogEntry) => ReactNode
   selectedEntryId?: string | null
+  /** List what is installed and nothing else: no library section, and no library fetch. Installing
+   *  happens on the page the banner links to. */
+  installedOnly?: boolean
+  /** What an installed-only list says when nothing is installed. */
+  emptyInstalled?: string
 }
 
 const PAGE_SIZE = 60
@@ -85,8 +90,12 @@ const NO_ROWS: CatalogEntry[] = []
 /** Deriving the page from the ~100k-row feed is the costly render. Deferred, the page frame
  *  commits in the click's own frame and the shelves follow in an interruptible render; until
  *  then the page reads as loading (or keeps its previous rows on a refetch). */
-function useDeferredCatalog(kind: CatalogKind, installedEntries: CatalogEntry[] | undefined) {
-  const { data: fetched, isPending, error, refetch } = useCatalog(kind)
+function useDeferredCatalog(kind: CatalogKind, installedEntries: CatalogEntry[] | undefined, installedOnly: boolean) {
+  const feed = useCatalog(kind, !installedOnly)
+  // Installed only: the library is neither fetched nor read, even where another page has cached it.
+  const fetched = installedOnly ? undefined : feed.data
+  const isPending = !installedOnly && feed.isPending
+  const { error, refetch } = feed
   const data = useDeferredValue(fetched, NO_ROWS)
   // Until the deferred feed lands, the installed rows alone would render a throwaway page of cards
   // (about a thousand nodes in the click's frame) that the feed replaces a moment later: the page
@@ -437,7 +446,15 @@ function CatalogNoResults({ onClear }: { onClear: () => void }) {
 
 interface AgentCatalogProps extends Pick<
   CatalogBrowserProps,
-  'kind' | 'query' | 'onQueryChange' | 'searchHints' | 'isInstalled' | 'actions' | 'headerActions' | 'notice'
+  | 'kind'
+  | 'query'
+  | 'onQueryChange'
+  | 'searchHints'
+  | 'isInstalled'
+  | 'actions'
+  | 'headerActions'
+  | 'notice'
+  | 'emptyInstalled'
 > {
   entries: CatalogEntry[]
   /** Every entry the library offers, for the banner's count; undefined while it loads. */
@@ -469,6 +486,7 @@ function AgentCatalog({
   actions,
   headerActions,
   notice,
+  emptyInstalled,
   entries,
   libraryCount,
   facets,
@@ -591,7 +609,20 @@ function AgentCatalog({
           </AgentCapabilitySection>
         )
       })}
-      {entries.length === 0 && !pending && !error && <CatalogNoResults onClear={onClear} />}
+      {entries.length === 0 &&
+        !pending &&
+        !error &&
+        (emptyInstalled && !query && !installedPending ? (
+          // A section's head with no rows under it: the page's own voice, and the banner above links out.
+          <section className="agent-capability-section">
+            <header>
+              <h3>{copy.plugins.onAgent}</h3>
+              <p>{emptyInstalled}</p>
+            </header>
+          </section>
+        ) : (
+          <CatalogNoResults onClear={onClear} />
+        ))}
       {selected && (
         <CatalogDetailDialog
           onOpenChange={onDetailOpenChange}
@@ -623,6 +654,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   notice,
   renderInstalledDetail,
   renderInstalledAction,
+  installedOnly,
+  emptyInstalled,
   selectedEntryId,
   query,
   onQueryChange,
@@ -631,7 +664,13 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const { t } = useI18n()
   const c = t.catalog
   const cardView = useStore($catalogCardView)
-  const { data, fetched, installed, isPending, error, refetch } = useDeferredCatalog(kind, installedEntries)
+
+  const { data, fetched, installed, isPending, error, refetch } = useDeferredCatalog(
+    kind,
+    installedEntries,
+    Boolean(installedOnly)
+  )
+
   const deferredQuery = useDeferredValue((query ?? '').trim().toLowerCase())
   const [selectedId, setSelectedId] = useState<string | null>(selectedEntryId ?? null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -759,6 +798,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         actions={actions}
         detailOpen={detailOpen}
         details={details}
+        emptyInstalled={installedOnly ? emptyInstalled : undefined}
         entries={filtered}
         error={error}
         facets={facets}

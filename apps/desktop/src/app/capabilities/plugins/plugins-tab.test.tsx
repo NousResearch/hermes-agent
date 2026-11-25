@@ -5,6 +5,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
+import { TRANSLATIONS } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsOwnerKey, $agentPluginsProfile, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
@@ -831,6 +832,110 @@ describe('PluginsTab catalog UX', () => {
       )
     )
     await waitFor(() => expect(screen.queryByText('demo-weather')).toBeNull())
+  })
+
+  describe('an agent’s own Plugins page (installed only)', () => {
+    const agentPage = (props: Partial<ComponentProps<typeof PluginsTab>> = {}) =>
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <PluginsHarness agentControls agentLayout profile="workbot" {...props} />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+
+    const installed = (source: string) => ({
+      description: '',
+      key: 'demo-weather',
+      name: 'demo-weather',
+      source,
+      status: 'enabled' as const,
+      version: '1.0.0'
+    })
+
+    beforeEach(() => {
+      $shellChoice.set(true)
+      $agentPluginsProfile.set('workbot')
+      $agentPluginsOwnerKey.set(undefined)
+      queryClient.clear()
+    })
+
+    it('lists what the agent has and nothing from the library, without asking for the library', async () => {
+      const fetchCatalog = vi.fn().mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
+      vi.stubGlobal('fetch', fetchCatalog)
+      // Another page may already hold the library: it is still not this page's to show.
+      seedCatalog()
+      $agentPlugins.set([installed('git')])
+      requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByText('demo-weather')).toBeTruthy()
+      expect(screen.queryByText('weather-plugin')).toBeNull()
+      expect(fetchCatalog).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })).toBeNull()
+      expect(screen.getByRole('link', { name: 'Browse the plugin catalog' }).getAttribute('href')).toBe(
+        '/capabilities?tab=plugins'
+      )
+    })
+
+    it('uninstalls from the row, for that agent, only after the confirm is accepted', async () => {
+      $agentPlugins.set([installed('git')])
+      requestGateway.mockImplementation(async (_method, params) =>
+        params?.action === 'remove' ? { ok: true, name: 'demo-weather' } : { plugins: $agentPlugins.get() }
+      )
+
+      await act(async () => {
+        agentPage()
+      })
+      ;(await screen.findByRole('button', { name: 'Uninstall: demo-weather' })).click()
+
+      await waitFor(() => expect($confirmRequest.get()?.title).toContain('demo-weather'))
+      expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+
+      settleConfirm(true)
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'remove', name: 'demo-weather', profile: 'workbot' })
+        )
+      )
+    })
+
+    it('offers no uninstall for a plugin the backend cannot remove, and still its switch', async () => {
+      $agentPlugins.set([installed('entrypoint')])
+      requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByRole('switch', { name: 'demo-weather' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Uninstall: demo-weather' })).toBeNull()
+    })
+
+    it('says so in a line when nothing is installed', async () => {
+      $agentPlugins.set([])
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Browse the plugin catalog' })).toBeTruthy()
+    })
+  })
+
+  it('keeps Install from Git on the Capabilities page', async () => {
+    await act(async () => {
+      renderPlugins({ profile: 'workbot' })
+    })
+
+    expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })).toBeTruthy()
   })
 
   it('uninstalls a standalone desktop plugin through Electron only after the confirm dialog is accepted', async () => {

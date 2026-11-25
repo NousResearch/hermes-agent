@@ -523,6 +523,16 @@ Hosted connector accounts belong to the Nous identity: agents
 sharing that identity share those accounts, and removing one affects them all.
 Read-only command search must not replace an agent editor's writable inventory.
 
+Capabilities has three tabs, in this order: Connectors, Plugins, Skills, and opens on the first.
+It has no Tools tab: tools are switched per agent, in that agent's settings (the palette's Tools
+row opens that page). Connectors are set up on Capabilities only, for the agent chosen in its
+header: an agent's settings have no Connectors page, and the agent Overview's Connectors row and
+any older link to that page open Capabilities > Connectors on that agent. An agent's Plugins page
+is its installed plugins and nothing else, like a phone's list of installed apps: each row has
+its switch, and Uninstall where the plugin can be removed (not bundled or package-installed ones);
+it neither lists nor fetches the library, and one link in its banner goes to Capabilities >
+Plugins, where installing lives. An agent's Skills page keeps its "not added" section.
+
 Usage collection belongs to a consenting connection/profile, not merely the
 foreground UI. Changing scope revokes the old metrics binding immediately;
 events during rebinding are discarded, never replayed under later consent.

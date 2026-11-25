@@ -242,6 +242,11 @@ function Dash() {
   )
 }
 
+// Only what lives under the profile's plugins dir ("user", or "git" when it was cloned there) can
+// be uninstalled: bundled plugins are refused by the backend and entrypoint (pip-installed) ones go
+// with their package.
+const removableAgentPlugin = (agent: AgentPluginRow) => agent.source === 'user' || agent.source === 'git'
+
 function UninstallRow({
   name,
   note,
@@ -369,10 +374,7 @@ function PackageRow({
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
-  // Only what lives under the profile's plugins dir ("user", or "git" when it
-  // was cloned there) can be uninstalled here: bundled plugins are refused by
-  // the backend and entrypoint (pip-installed) ones go with their package.
-  const agentRemovable = agent?.source === 'user' || agent?.source === 'git'
+  const agentRemovable = agent ? removableAgentPlugin(agent) : false
   const unavailableServers = agent?.servers?.filter(server => server.state !== 'connected') ?? []
   // A STANDALONE desktop plugin (a folder in <HERMES_HOME>/desktop-plugins with
   // no agent package behind it) is deleted by Electron. A unified package's
@@ -595,7 +597,9 @@ function PackageRow({
   )
 }
 
-export function PluginActions({ profile }: { profile: ProfileScope }) {
+/** The Plugins header's actions. `install` off where the page lists only what is installed: the
+ *  ways in (the catalog, a Git repository) are on the Capabilities page. */
+export function PluginActions({ profile, install = true }: { profile: ProfileScope; install?: boolean }) {
   const { t } = useI18n()
   const d = t.settings.plugins
   const requestGateway = useSettingsGatewayRequest()
@@ -604,19 +608,21 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
   return (
     <>
       <PluginUpdateAllActions scope={scope} />
-      <Button
-        onClick={() =>
-          openPluginInstallRequest({
-            profile: scope,
-            repo: '',
-            ...(requestGateway.ownerKey ? { legacyHint: 'agent' as const } : {})
-          })
-        }
-        size="xs"
-        variant="textStrong"
-      >
-        {d.installModal.installFromGit}
-      </Button>
+      {install && (
+        <Button
+          onClick={() =>
+            openPluginInstallRequest({
+              profile: scope,
+              repo: '',
+              ...(requestGateway.ownerKey ? { legacyHint: 'agent' as const } : {})
+            })
+          }
+          size="xs"
+          variant="textStrong"
+        >
+          {d.installModal.installFromGit}
+        </Button>
+      )}
       {!requestGateway.ownerKey && (
         <Tip label={d.openFolder}>
           <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost">
@@ -884,8 +890,12 @@ export const PluginsTab = memo(function PluginsTab({
   return (
     <CatalogBrowser
       agentLayout={agentLayout}
-      headerActions={<PluginActions profile={profile} />}
+      emptyInstalled={p.emptyAll}
+      headerActions={<PluginActions install={!agentLayout} profile={profile} />}
       installedEntries={installedEntries}
+      // An agent's own Plugins page is its installed plugins and nothing else, like a phone's list
+      // of installed apps: switch one, or uninstall it. Installing is the Capabilities page's.
+      installedOnly={agentLayout}
       installedPending={status !== 'ready' || !ownsList}
       isInstalled={isInstalled}
       kind="plugins"
@@ -899,7 +909,29 @@ export const PluginsTab = memo(function PluginsTab({
       renderInstalledAction={entry => {
         const pkg = packageById.get(entry.id)
 
-        return pkg ? packageSwitch(pkg) : null
+        if (!pkg) {
+          return null
+        }
+
+        const { agent, desktop } = pkg
+
+        return agentLayout && agent && removableAgentPlugin(agent) ? (
+          <>
+            <Button
+              aria-label={`${p.uninstall}: ${pkg.name}`}
+              className="text-destructive hover:text-destructive"
+              disabled={agentBusy(agent)}
+              onClick={() => handleAgentRemove(agent, desktop ?? null)}
+              size="xs"
+              variant="text"
+            >
+              {p.uninstall}
+            </Button>
+            {packageSwitch(pkg)}
+          </>
+        ) : (
+          packageSwitch(pkg)
+        )
       }}
       renderInstalledDetail={entry => {
         const pkg = packageById.get(entry.id)

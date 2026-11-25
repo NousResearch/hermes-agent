@@ -492,7 +492,7 @@ export const en: Translations = {
     catalogHeading: "Plugin catalog",
     catalogHint:
       "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
-    catalogSearchPlaceholder: "Search catalog...",
+    catalogSearchPlaceholder: "Search plugins...",
     catalogEmpty: "No catalog entries match.",
     catalogEmptyDocsLink: "Learn about Hermes plugins",
     catalogInstallBtn: "Install",

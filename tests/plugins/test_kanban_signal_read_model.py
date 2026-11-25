@@ -617,9 +617,14 @@ def test_signal_event_batches_are_bounded_and_empty_batch_keeps_cursor(signal_ho
         generation = kb.event_generation(conn)
     finally:
         conn.close()
-    first = module._signal_event_frame("default", 0, initial=True)
-    second = module._signal_event_frame("default", first["cursor"], initial=False, expected_generation=generation)
-    empty = module._signal_event_frame("default", second["cursor"], initial=False, expected_generation=generation)
+    reader = kbc._connect_existing_query_only(board="default")
+    try:
+        first = module._signal_event_frame(reader, 0, initial=True)
+        second = module._signal_event_frame(reader, first["cursor"], initial=False, expected_generation=generation)
+        empty = module._signal_event_frame(reader, second["cursor"], initial=False, expected_generation=generation)
+        assert not reader.in_transaction
+    finally:
+        reader.close()
     assert len(first["events"]) == 200
     assert len(second["events"]) == 1
     assert empty["events"] == []
@@ -786,3 +791,48 @@ def test_signal_ws_accepts_native_gateway_ticket_header_without_query_credential
         with daemon.client.websocket_connect(url, headers={"X-Hermes-Gateway-Ticket": "forged"}):
             pass
     assert exc.value.code == 1008
+
+
+def _counting_signal_opens(monkeypatch):
+    opened: list = []
+    real = kbc._connect_existing_query_only
+
+    def counting(*, board):
+        conn = real(board=board)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(kbc, "_connect_existing_query_only", counting)
+    return opened
+
+
+def test_signal_ws_reuses_one_query_only_connection_per_socket(signal_client, monkeypatch):
+    """Polling every 0.3 s must not open (and WAL/SHM-churn) a fresh SQLite connection per poll:
+    one query-only connection serves the socket's lifetime and is closed on disconnect."""
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    module = sys.modules["hermes_dashboard_plugin_kanban_signal_test"]
+    monkeypatch.setattr(module, "_EVENT_POLL_SECONDS", 0.01)
+    opened = _counting_signal_opens(monkeypatch)
+    db_path = kb.kanban_db_path(board="default")
+    path = "/api/plugins/kanban/events?view=signal&board=default&since=0&token=test"
+
+    with signal_client.websocket_connect(path) as websocket:
+        initial = websocket.receive_json()
+        cursor = initial["cursor"]
+        for title in ("one", "two", "three"):
+            conn = kbc.connect()
+            try:
+                kb.create_task(conn, title=title, assignee="qa")
+            finally:
+                conn.close()
+            frame = websocket.receive_json()
+            assert frame["reset"] is False
+            assert frame["cursor"] > cursor
+            cursor = frame["cursor"]
+        assert has_live_connection(db_path)
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].in_transaction  # noqa: B018 - property raises once closed
+    assert not has_live_connection(db_path)

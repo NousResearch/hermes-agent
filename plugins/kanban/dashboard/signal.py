@@ -5,6 +5,8 @@ import asyncio
 import re
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket
@@ -274,15 +276,16 @@ def _parse_signal_ws_query(ws: WebSocket) -> tuple[str, int, str | None]:
 
 
 def _signal_event_frame(
-    board: str,
+    conn: sqlite3.Connection,
     cursor: int,
     *,
     initial: bool,
     expected_generation: str | None = None,
 ) -> dict:
-    conn = kbc._connect_existing_query_only(board=board)
     try:
-        # Generation, bounds, and events must describe one WAL snapshot.
+        # Generation, bounds, and events must describe one WAL snapshot; the
+        # read transaction ends with every poll so the reused connection
+        # never pins an old snapshot (or blocks checkpoints) between polls.
         conn.execute("BEGIN")
         generation = kanban_db.event_generation(conn)
         bounds = conn.execute(
@@ -326,7 +329,52 @@ def _signal_event_frame(
     finally:
         if conn.in_transaction:
             conn.rollback()
-        conn.close()
+
+
+class _SignalEventReader:
+    """Per-socket signal reader: ONE existing-only, query-only connection,
+    opened, used, and closed only on a dedicated single-thread executor
+    (sqlite3 connections are thread-affine). Reusing it avoids churning the
+    WAL/SHM sidecars on every poll, like the legacy ``_EventTail``."""
+
+    def __init__(self, board: str) -> None:
+        self._board = board
+        self._conn: sqlite3.Connection | None = None
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="kanban-signal"
+        )
+
+    def _frame(
+        self, cursor: int, initial: bool, expected_generation: str | None
+    ) -> dict:
+        if self._conn is None:
+            self._conn = kbc._connect_existing_query_only(board=self._board)
+        return _signal_event_frame(
+            self._conn,
+            cursor,
+            initial=initial,
+            expected_generation=expected_generation,
+        )
+
+    def _close(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            conn.close()
+
+    async def frame(
+        self, cursor: int, *, initial: bool, expected_generation: str | None
+    ) -> dict:
+        return await asyncio.get_running_loop().run_in_executor(
+            self._executor,
+            partial(self._frame, cursor, initial, expected_generation),
+        )
+
+    async def aclose(self) -> None:
+        # Queued behind any in-flight poll on the same thread; shutdown(wait=False)
+        # never cancels it and shield keeps a second cancellation from doing so.
+        closing = self._executor.submit(self._close)
+        self._executor.shutdown(wait=False)
+        await asyncio.shield(asyncio.wrap_future(closing))
 
 
 async def _stream_signal_events(
@@ -337,33 +385,29 @@ async def _stream_signal_events(
     *,
     poll_seconds: float,
 ):
-    frame = await asyncio.to_thread(
-        _signal_event_frame,
-        board,
-        cursor,
-        initial=True,
-        expected_generation=expected_generation,
-    )
-    await ws.send_json(frame)
-    cursor = int(frame["cursor"])
-    generation = str(frame["generation"])
-    while True:
-        try:
-            message = await asyncio.wait_for(
-                ws.receive(), timeout=poll_seconds
-            )
-            if message["type"] == "websocket.disconnect":
-                return
-        except TimeoutError:
-            pass
-        frame = await asyncio.to_thread(
-            _signal_event_frame,
-            board,
-            cursor,
-            initial=False,
-            expected_generation=generation,
+    reader = _SignalEventReader(board)
+    try:
+        frame = await reader.frame(
+            cursor, initial=True, expected_generation=expected_generation
         )
-        if frame["reset"] or frame["events"]:
-            await ws.send_json(frame)
-            cursor = int(frame["cursor"])
-            generation = str(frame["generation"])
+        await ws.send_json(frame)
+        cursor = int(frame["cursor"])
+        generation = str(frame["generation"])
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    ws.receive(), timeout=poll_seconds
+                )
+                if message["type"] == "websocket.disconnect":
+                    return
+            except TimeoutError:
+                pass
+            frame = await reader.frame(
+                cursor, initial=False, expected_generation=generation
+            )
+            if frame["reset"] or frame["events"]:
+                await ws.send_json(frame)
+                cursor = int(frame["cursor"])
+                generation = str(frame["generation"])
+    finally:
+        await reader.aclose()

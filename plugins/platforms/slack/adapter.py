@@ -3195,10 +3195,18 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self, channel: str, timestamp: str, emoji: str, team_id: str = "") -> bool:
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
+    def _reactions_setting(self) -> str:
+        """Lower-cased ``reactions`` value (scoped ``SLACK_REACTIONS`` → ``extra.reactions`` → ``true``)."""
+        return str(_extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")).lower()
+
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (scoped ``SLACK_REACTIONS`` → ``extra.reactions`` → on)."""
-        configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
-        return str(configured).lower() not in {"false", "0", "no"}
+        """Whether message reactions are enabled (``progress`` counts as enabled)."""
+        return self._reactions_setting() not in {"false", "0", "no"}
+
+    def _success_reaction_enabled(self) -> bool:
+        """``reactions: progress`` keeps the in-progress :eyes: (removed once the turn ends) and :x: on
+        failure, but no :white_check_mark: — "seen, working" without a mark left on every message."""
+        return self._reactions_setting() != "progress"
 
     def _reacting_target(self, event: MessageEvent) -> Optional[tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
@@ -3231,6 +3239,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             return
         await self._react(channel_id, ts, "eyes", team_id, remove=True)
         final = {ProcessingOutcome.SUCCESS: "white_check_mark", ProcessingOutcome.FAILURE: "x"}
+        if not self._success_reaction_enabled():
+            final.pop(ProcessingOutcome.SUCCESS)
         if outcome in final:
             await self._react(channel_id, ts, final[outcome], team_id, remove=False)
 

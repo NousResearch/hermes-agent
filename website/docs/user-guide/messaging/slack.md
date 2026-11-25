@@ -107,6 +107,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
+| `reactions:write` | Add the processing reactions (`:eyes:` while working, then `:white_check_mark:` / `:x:`; see [Processing Reactions](#processing-reactions)). Without it the reaction calls fail silently. |
 | `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the status call (`agents.sessions.setStatus` on slack-sdk 3.44+, `assistant.threads.setStatus` on older SDKs) fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
 
 ---
@@ -511,6 +512,25 @@ The same key customizes Google Chat's visible working-state marker message
 (`platforms.google_chat.typing_status_text`, default `"Hermes is thinking…"`) —
 note that on Google Chat it is a real posted message that gets patched into the
 reply, not an ephemeral status.
+
+### Processing Reactions
+
+When a 1:1 DM or an `@mention` reaches the bot, Hermes adds `:eyes:` while it works, then swaps it
+for `:white_check_mark:` (success) or `:x:` (failure). Requires the `reactions:write` scope.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      # true (default): eyes, then a check mark or x
+      # progress: eyes while working, removed when the turn ends; only a failure leaves :x:
+      # false: no reactions
+      reactions: progress
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.extra.reactions` | `true` | `true`, `progress` or `false` (see above). `SLACK_REACTIONS` sets the same value. |
 
 ### Live Status (per-tool)
 

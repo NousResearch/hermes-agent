@@ -129,6 +129,32 @@ def test_secrets_fully_redacted():
     assert secret[-4:] not in message["content"]
 
 
+_OPAQUE = "opaqueSecretValue12345"
+
+
+@pytest.mark.parametrize("content", [
+    f"my DB_PASSWORD={_OPAQUE} ok",
+    '{"api_key": "' + _OPAQUE + '"}',
+    f"api_key: {_OPAQUE}",
+    f"export MY_SERVICE_TOKEN={_OPAQUE}",
+])
+def test_opaque_assignment_values_become_non_reusable_sentinels(content):
+    """A prefix-less credential assigned to a credential-shaped key is masked, never echoed or head/tail-kept."""
+    message = routes._session_activity_message({"id": 1, "role": "user", "content": content})
+    assert message is not None
+    assert _OPAQUE not in message["content"]
+    assert _OPAQUE[:6] not in message["content"] and _OPAQUE[-4:] not in message["content"]
+    assert "«redacted" in message["content"]
+
+
+def test_opaque_assignment_redacted_over_http(activity_store):
+    store, _ = activity_store
+    store.messages.append("session-root", NewMessage("user", f"my DB_PASSWORD={_OPAQUE} ok"))
+    response = client().get("/api/sessions/session-root/activity")
+    assert response.status_code == 200
+    assert _OPAQUE[:6] not in response.text and _OPAQUE[-4:] not in response.text
+
+
 def test_redactor_failure_fails_closed(monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("unavailable")

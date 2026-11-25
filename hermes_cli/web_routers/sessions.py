@@ -339,10 +339,13 @@ def _session_activity_message(row: dict[str, Any]) -> Optional[dict[str, Any]]:
     if not text:
         return None
     try:
+        # file_read: non-reusable sentinels. secret_file: transcript text is secret-bearing, so the
+        # ENV/JSON/YAML assignment passes that file_read alone skips (it implies code_file) still run.
         text = redact_sensitive_text(
             text,
             force=True,
             file_read=True,
+            secret_file=True,
             redact_url_credentials=True,
         )
         text = _session_activity_redact_paths(text)

@@ -27,7 +27,7 @@ def test_cron_discovery_does_not_launch_uninstalled_apple_git(tmp_path, monkeypa
     monkeypatch.setenv("PATH", str(trap_git.parent))
     workdir = tmp_path / "job"
     workdir.mkdir()
-    monkeypatch.setattr(worktree_registry, "registered_repos", lambda: [])
+    monkeypatch.setattr(worktree_registry, "registered_repos", list)
     monkeypatch.setattr(jobs, "load_jobs", lambda: [{"workdir": str(workdir)}])
     monkeypatch.setattr(scheduler, "project_root_str", lambda: str(tmp_path))
 

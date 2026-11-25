@@ -24,6 +24,10 @@ _SIGNAL_TASK_LIMIT = 500
 _SIGNAL_LINK_LIMIT = 2000
 _SIGNAL_RUN_LIMIT = 1000
 _SIGNAL_AUTH_QUERY_KEYS = frozenset({"token", "ticket", "internal"})
+# Consumed by the dashboard's ``_plugin_route_secret_scope`` dependency (the SDK's
+# fetchJSON/authedFetch/buildWsUrl append it to every /api/plugins/ URL). Known
+# here only so the allowlist accepts it; it never selects or shapes signal data.
+_SIGNAL_SCOPE_QUERY_KEYS = frozenset({"profile"})
 
 
 def supports_signal_view() -> bool:
@@ -199,7 +203,9 @@ def _build_signal_read_model(board: str) -> dict:
 def _signal_http_response(request: Request):
     try:
         values = _strict_query_values(
-            request.query_params, allowed={"board"}, required={"board"}
+            request.query_params,
+            allowed={"board"} | _SIGNAL_SCOPE_QUERY_KEYS,
+            required={"board"},
         )
         board = _resolve_signal_board(values["board"])
     except FileNotFoundError as exc:
@@ -234,8 +240,10 @@ def head_signal_read_model(request: Request):
 
 
 def _parse_signal_ws_query(ws: WebSocket) -> tuple[str, int, str | None]:
-    allowed = {"view", "board", "since", "generation"} | set(
-        _SIGNAL_AUTH_QUERY_KEYS
+    allowed = (
+        {"view", "board", "since", "generation"}
+        | _SIGNAL_AUTH_QUERY_KEYS
+        | _SIGNAL_SCOPE_QUERY_KEYS
     )
     values = _strict_query_values(
         ws.query_params,

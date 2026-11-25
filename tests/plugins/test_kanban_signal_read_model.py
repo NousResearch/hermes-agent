@@ -650,3 +650,74 @@ def test_signal_real_canonical_token_and_origin_gates(signal_home, monkeypatch, 
                 with client.websocket_connect(url, headers={"origin": origin}):
                     pass
             assert exc.value.code == 1008
+
+
+# ---------------------------------------------------------------------------
+# Real dashboard mount: the SDK scope parameter and canonical WS credentials
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_HOST = {"Host": "127.0.0.1:9119"}
+
+
+@pytest.fixture
+def real_dashboard(signal_home, monkeypatch):
+    """``hermes_cli.web_server.app`` as served: the bundled kanban router mounted
+    behind ``_plugin_route_secret_scope`` and the plugin WebSocket gate."""
+    from hermes_cli import profiles, web_server
+
+    app = web_server.app
+    mounted = {getattr(route, "path", "") for route in app.routes}
+    assert "/api/plugins/kanban/read-model/signal" in mounted
+    assert "/api/plugins/kanban/events" in mounted
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: signal_home)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: signal_home / "profiles")
+    monkeypatch.setattr(app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(app.state, "bound_port", 9119, raising=False)
+    monkeypatch.setattr(app.state, "auth_required", False, raising=False)
+    client = TestClient(app)
+    client.headers.update({
+        **_DASHBOARD_HOST, web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN,
+    })
+    return client, web_server._SESSION_TOKEN
+
+
+@pytest.mark.parametrize("profile", ["default", "current"])
+def test_signal_http_accepts_sdk_profile_scope_on_real_dashboard_mount(real_dashboard, profile):
+    """fetchJSON/authedFetch append ``profile`` to every /api/plugins/ URL (PLG-3)."""
+    client, _token = real_dashboard
+    url = f"/api/plugins/kanban/read-model/signal?board=default&profile={profile}"
+
+    response = client.get(url)
+    assert response.status_code == 200, response.text
+    assert response.json()["board"] == "default"
+    assert "profile" not in response.json()
+    assert response.headers["cache-control"] == "private, no-store"
+    head = client.head(url)
+    assert head.status_code == 200
+    assert head.content == b""
+
+
+@pytest.mark.parametrize("query,status_code", [
+    ("?board=default&profile=default&profile=default", 400),
+    ("?board=default&profile=default&extra=1", 400),
+    ("?profile=default", 400),
+])
+def test_signal_http_scope_param_keeps_allowlist_strict_on_real_mount(real_dashboard, query, status_code):
+    client, _token = real_dashboard
+    response = client.get(f"/api/plugins/kanban/read-model/signal{query}")
+    assert response.status_code == status_code, response.text
+
+
+@pytest.mark.parametrize("profile", ["default", "current"])
+def test_signal_ws_accepts_sdk_profile_scope_on_real_dashboard_mount(real_dashboard, profile):
+    """buildWsUrl adds ``profile`` to every /api/plugins/ socket URL."""
+    client, token = real_dashboard
+    url = (
+        "/api/plugins/kanban/events?view=signal&board=default&since=0"
+        f"&token={token}&profile={profile}"
+    )
+    with client.websocket_connect(url, headers=_DASHBOARD_HOST) as websocket:
+        frame = websocket.receive_json()
+    assert frame["initial"] is True
+    assert frame["reset"] is False
+    assert "profile" not in frame

@@ -1256,7 +1256,8 @@ class GatewayStartupMixin:
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
+            with self._default_root_adapter_scope():
+                adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 if platform.value in {m.value for m in Platform.__members__.values()}:
@@ -1291,7 +1292,9 @@ class GatewayStartupMixin:
                 p.value, platform_state="connecting", error_code=None, error_message=None,
             )
             try:
-                ok = await self._connect_initial_adapter_with_timeout(adp, p)
+                # Primary connect: tasks connect() starts inherit the default root's secret scope.
+                async with self._async_default_root_adapter_scope():
+                    ok = await self._connect_initial_adapter_with_timeout(adp, p)
             except Exception as _exc:
                 return (p, adp, p_cfg, "exception", _exc)
             return (p, adp, p_cfg, "ok" if ok else "failed", None)

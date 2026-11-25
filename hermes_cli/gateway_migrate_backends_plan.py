@@ -126,6 +126,7 @@ class BackendPlan:
 
     def step_titles(self) -> list[dict]:
         """The steps a migration runs, in order, each with its name and a one-line title."""
+        from hermes_cli.gateway_migrate_backends_apply import VERIFY_SECONDS
         manual = self.rec.get("supervisor") == "manual"
         titles = {
             "preflight": "check that the move can run (nothing changed yet)",
@@ -138,7 +139,7 @@ class BackendPlan:
                                 + (", then the gateway running outside its service" if self.stray_gateway else ""),
             "start_gateway": "start or restart the gateway",
             "verify": "verify " + " and ".join(format_address(h, self.new_port) for h in self.verify_hosts)
-                      + ": /api/status 200 from the gateway and the Webapp page served, within 90 s",
+                      + f": /api/status 200 from the gateway and the Webapp page served, within {int(VERIFY_SECONDS)} s",
         }
         return [{"name": n, "title": titles[n]} for n in APPLY_STEPS]
 

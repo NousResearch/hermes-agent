@@ -162,7 +162,10 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
     if probe_env is None:
         return mark_worktree_payload_unproven(payload, "filter discovery failed", unmeasured="dirty")
     failed, unmeasured = [], []
-    probes = (("commits", "rev-list", ["rev-list", "--count", f"{base_commit}..HEAD"],
+    # The branch counts too: a child that checked out or detached elsewhere leaves its commits on
+    # the branch the prune below deletes.
+    tips = ["HEAD", f"refs/heads/{branch}"] if branch else ["HEAD"]
+    probes = (("commits", "rev-list", ["rev-list", "--count", *tips, "--not", base_commit],
                lambda s: int(s or 0)),
               ("dirty", "status", ["status", "--porcelain", "--untracked-files=normal"], bool))
     try:

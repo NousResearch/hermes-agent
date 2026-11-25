@@ -750,23 +750,52 @@ let prevBusyByRuntime: Record<string, boolean> = Object.fromEntries(
   Object.entries($sessionStates.get()).map(([runtimeId, state]) => [runtimeId, state.busy])
 )
 
+// Per-cwd monotonic generation for in-flight turn-baseline captures, bounded at
+// MAX_TURN_BASES alongside the baseline maps. An older turn's slower IPC reply
+// must never overwrite a newer turn's baseline after either await.
+let turnBaselineSeq = 0
+const turnBaselineGenByCwd = new Map<string, number>()
+
+function nextTurnBaselineGen(cwd: string): number {
+  const gen = (turnBaselineSeq += 1)
+
+  turnBaselineGenByCwd.delete(cwd)
+  turnBaselineGenByCwd.set(cwd, gen)
+
+  while (turnBaselineGenByCwd.size > MAX_TURN_BASES) {
+    const oldest = turnBaselineGenByCwd.keys().next().value
+
+    if (oldest !== undefined) {
+      turnBaselineGenByCwd.delete(oldest)
+    }
+  }
+
+  return gen
+}
+
 // HEAD first: it is the diff base, and a cwd with no resolvable HEAD has no
 // lastTurn at all, so the untracked snapshot is only worth reading once it lands.
 // The paths (not their contents) are what the pane subtracts, so this is one
 // extra status read per turn start rather than a per-file stat/read pass.
 async function captureTurnBaseline(cwd: string): Promise<void> {
   const review = desktopGit()?.review
+  const gen = nextTurnBaselineGen(cwd)
+  const isCurrent = () => turnBaselineGenByCwd.get(cwd) === gen
 
   try {
     const sha = await review?.revParse?.(cwd, 'HEAD')
 
-    if (!sha) {
+    if (!sha || !isCurrent()) {
       return
     }
 
     recordTurnBase(cwd, sha)
 
     const untracked = await review?.untracked?.(cwd)
+
+    if (!isCurrent()) {
+      return
+    }
 
     if (untracked) {
       recordTurnUntracked(cwd, untracked)

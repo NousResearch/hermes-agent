@@ -749,6 +749,101 @@ describe('turn baseline capture', () => {
     expect($reviewTurnBase.get()).toEqual({ '/repo': 'deadbeef' })
     expect($reviewTurnUntracked.get()).toEqual({})
   })
+
+  it('ignores a stale turn baseline when a newer turn in the same cwd resolves first', async () => {
+    const revParseA = deferred<null | string>()
+    const revParseB = deferred<null | string>()
+    const untrackedA = deferred<string[]>()
+    const untrackedB = deferred<string[]>()
+    let revParseCall = 0
+    let untrackedCall = 0
+
+    const review = stubReview({
+      revParse: vi.fn(() => (++revParseCall === 1 ? revParseA.promise : revParseB.promise)),
+      // Turn B resolves revParse first, so its untracked call lands first; turn A's
+      // would be second if the stale-generation guard were missing.
+      untracked: vi.fn(() => (++untrackedCall === 1 ? untrackedB.promise : untrackedA.promise))
+    })
+
+    // Turn A starts in /repo, then finishes busy before turn B starts in the same cwd.
+    $sessionStates.set({ rt_race: sessionState(true, '/repo') })
+    $sessionStates.set({ rt_race: sessionState(false, '/repo') })
+    $sessionStates.set({ rt_race: sessionState(true, '/repo') })
+
+    // Turn B finishes both probes before turn A resolves revParse.
+    revParseB.resolve('sha-turn-b')
+    untrackedB.resolve(['b-preexisting.ts'])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($reviewTurnBase.get()).toEqual({ '/repo': 'sha-turn-b' })
+    expect($reviewTurnUntracked.get()).toEqual({ '/repo': ['b-preexisting.ts'] })
+
+    // Turn A resolves late and must not clobber turn B's HEAD or untracked baseline.
+    revParseA.resolve('sha-turn-a')
+    untrackedA.resolve(['a-preexisting.ts'])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($reviewTurnBase.get()).toEqual({ '/repo': 'sha-turn-b' })
+    expect($reviewTurnUntracked.get()).toEqual({ '/repo': ['b-preexisting.ts'] })
+    expect(review.untracked).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores a stale untracked snapshot when a newer turn starts mid-capture', async () => {
+    const revParseA = deferred<null | string>()
+    const revParseB = deferred<null | string>()
+    const untrackedA = deferred<string[]>()
+    const untrackedB = deferred<string[]>()
+    let revParseCall = 0
+    let untrackedCall = 0
+
+    stubReview({
+      revParse: vi.fn(() => (++revParseCall === 1 ? revParseA.promise : revParseB.promise)),
+      untracked: vi.fn(() => (++untrackedCall === 1 ? untrackedA.promise : untrackedB.promise))
+    })
+
+    // Turn A starts and finishes revParse, suspending on untracked.
+    $sessionStates.set({ rt_mid: sessionState(true, '/repo') })
+    revParseA.resolve('sha-turn-a')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // Turn B starts in the same cwd and completes both probes first.
+    $sessionStates.set({ rt_mid: sessionState(false, '/repo') })
+    $sessionStates.set({ rt_mid: sessionState(true, '/repo') })
+    revParseB.resolve('sha-turn-b')
+    untrackedB.resolve(['b-preexisting.ts'])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($reviewTurnBase.get()).toEqual({ '/repo': 'sha-turn-b' })
+    expect($reviewTurnUntracked.get()).toEqual({ '/repo': ['b-preexisting.ts'] })
+
+    // Turn A's in-flight untracked probe resolves late and must be discarded.
+    untrackedA.resolve(['a-preexisting.ts'])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($reviewTurnBase.get()).toEqual({ '/repo': 'sha-turn-b' })
+    expect($reviewTurnUntracked.get()).toEqual({ '/repo': ['b-preexisting.ts'] })
+  })
+
+  it('keeps concurrent captures in distinct cwds independent', async () => {
+    const revParseA = deferred<null | string>()
+    const revParseB = deferred<null | string>()
+
+    stubReview({
+      revParse: vi.fn((cwd: string) => (cwd === '/repo-a' ? revParseA.promise : revParseB.promise)),
+      untracked: vi.fn(async (cwd: string) => [`${cwd}/pre.ts`])
+    })
+
+    $sessionStates.set({ rt_a: sessionState(true, '/repo-a') })
+    $sessionStates.set({ rt_a: sessionState(true, '/repo-a'), rt_b: sessionState(true, '/repo-b') })
+
+    revParseB.resolve('sha-b')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    revParseA.resolve('sha-a')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($reviewTurnBase.get()).toEqual({ '/repo-b': 'sha-b', '/repo-a': 'sha-a' })
+    expect($reviewTurnUntracked.get()).toEqual({ '/repo-b': ['/repo-b/pre.ts'], '/repo-a': ['/repo-a/pre.ts'] })
+  })
 })
 
 describe('lastTurn scope', () => {

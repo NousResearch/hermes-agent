@@ -122,7 +122,7 @@ class SubscriptionKeeper:
         if self._state_path is None:
             return
         try:
-            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            data = json.loads(self._state_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return  # first run, or unreadable: nothing is known, so nothing is caught up
         subs = data.get("subscriptions") if isinstance(data, dict) else None
@@ -316,12 +316,12 @@ def catch_up(part: Any, space: str) -> int:
     start = _stamp(max(_parse(since) or oldest, oldest))
     try:
         messages = _list_messages(part._user.chat(), part._user.http, space, start, _stamp(_parse(until)))
-    except Exception as exc:  # health: allow BLE001 -- the read is retried at the next upkeep pass
+    except Exception as exc:  # retried at the next upkeep pass; logged with its traceback
         msg = gc._redact_sensitive(str(exc))[:300]
         if part._catch_up_errors.get(space) != msg:
             part._catch_up_errors[space] = msg
             logger.warning("[GoogleChat] reading what was said in %s between %s and %s failed (retried at the next "
-                           "pass): %s", space, start, until, msg)
+                           "pass): %s", space, start, until, msg, exc_info=True)
         return 0
     part._catch_up_errors.pop(space, None)
     admitted = []

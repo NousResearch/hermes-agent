@@ -532,6 +532,9 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
         extras["setup_help"] = setup_help
     if capture_result["gateway_setup_hint"]:
         extras["gateway_setup_hint"] = capture_result["gateway_setup_hint"]
+    if captured := [e["name"] for e in missing_required_env_vars if e["name"] not in remaining]:
+        # This view prompted the user and stored a value: it is an event, not a repeat read.
+        extras["captured_environment_variables"] = captured
     if refused:  # otherwise the skill's commands fail auth with no hint why
         extras["env_passthrough_refused"] = (
             f"{', '.join(refused)} is a Hermes-managed credential and is never passed to the "

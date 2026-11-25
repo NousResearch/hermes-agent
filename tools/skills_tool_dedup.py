@@ -34,8 +34,11 @@ def dedup_skill_view(task_id, name, file_path, payload: dict, result: str) -> st
     file; otherwise record ``result``'s digest and return None (serve the full result)."""
     # Never dedup setup-needed views: readiness depends on config/env state that
     # changes without the file changing; the model must see the refreshed status.
+    # Nor a view that just prompted for and stored a secret: a stub would hide that the
+    # prompt ran, so the model reports "no prompt opened" while the value sits in .env.
     if (not task_id or payload.get("setup_needed")
-            or payload.get("readiness_status") == "setup_needed"):
+            or payload.get("readiness_status") == "setup_needed"
+            or payload.get("captured_environment_variables")):
         return None
     from tools.approval_context import _approval_tool_call_id
 

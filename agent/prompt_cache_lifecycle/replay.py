@@ -37,16 +37,30 @@ def is_replayable(api_kwargs: dict[str, Any]) -> bool:
     thinking = api_kwargs.get("thinking")
     if isinstance(thinking, dict) and thinking.get("type") == "enabled" and "budget_tokens" in thinking:
         return False
-    # Chat Completions gateways turn ``reasoning`` into a thinking budget for Claude models that
+    # Chat Completions gateways turn a requested effort into a thinking budget for Claude models that
     # predate adaptive thinking, so a bounded replay would change (or be refused for) that budget.
-    reasoning = (api_kwargs.get("extra_body") or {}).get("reasoning")
     model = str(api_kwargs.get("model") or "")
-    if ("claude" in model.lower() and isinstance(reasoning, dict) and reasoning.get("enabled", True)
-            and reasoning.get("effort") != "none"):
+    if "claude" in model.lower() and _requests_effort(api_kwargs):
         from agent.anthropic_adapter import _supports_adaptive_thinking
 
         return _supports_adaptive_thinking(model)
     return True
+
+
+_EFFORT_OFF = frozenset({"none", "disabled", "off"})
+
+
+def _requests_effort(api_kwargs: dict[str, Any]) -> bool:
+    """Whether a Chat Completions request asks for reasoning, in any shape the transports emit:
+    ``extra_body.reasoning`` (``{"enabled", "effort"}``, OpenRouter/Nous profile path), top-level
+    ``reasoning_effort`` (the custom/OpenAI-compatible profiles, Nous via ``provider: custom``) or
+    ``extra_body.reasoning_effort`` (``request_overrides``). Effort ``none`` or disabled is not a request."""
+    extra = api_kwargs.get("extra_body") or {}
+    reasoning = extra.get("reasoning") if isinstance(extra, dict) else None
+    if isinstance(reasoning, dict) and reasoning.get("enabled", True) and reasoning.get("effort") not in _EFFORT_OFF:
+        return True
+    efforts = (api_kwargs.get("reasoning_effort"), extra.get("reasoning_effort") if isinstance(extra, dict) else None)
+    return any(isinstance(e, str) and e.strip().lower() not in _EFFORT_OFF for e in efforts)
 
 
 def replay_output_cap(model: str) -> int:

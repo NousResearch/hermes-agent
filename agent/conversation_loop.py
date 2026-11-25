@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
-from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.codex_responses_adapter import _summarize_user_message_for_log, extract_developer_prompt
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
@@ -509,9 +509,11 @@ def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
 
 
 def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
-    """System prompt as sent to the provider (``system`` / ``instructions`` / ``messages[0]``)
+    """System prompt as sent to the provider (``system`` / ``developer`` / ``instructions`` / ``messages[0]``)
     for observability hooks; None when the request carries none."""
     system_prompt = api_kwargs.get("system")
+    if system_prompt is None:
+        system_prompt = extract_developer_prompt(request_messages)
     if system_prompt is None:
         system_prompt = api_kwargs.get("instructions")
     if system_prompt is None and isinstance(request_messages, list) and request_messages:

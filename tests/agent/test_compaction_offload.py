@@ -270,10 +270,12 @@ def test_lean_tail_demotion_archives_the_demoted_originals(home):
     assert again == demoted and len(_archived(home)) == count
 
 
-@pytest.mark.parametrize("backend, archives", [("local", True), ("docker", False), ("ssh", False)])
-def test_only_a_backend_that_reads_host_files_gets_archive_pointers(home, monkeypatch, summarizer, backend, archives):
-    """The same compaction archives on the local backend and keeps plain stubs where the model cannot
-    ``read_file`` a host path; either way the summarizer reads the original results."""
+@pytest.mark.parametrize("backend, archives", [
+    ("local", True), ("docker", True), ("ssh", True), ("some_plugin_backend", False)])
+def test_only_a_backend_that_can_open_archives_gets_archive_pointers(home, monkeypatch, summarizer, backend, archives):
+    """The same compaction archives where the model's ``read_file`` can open ``cache/pruned`` (local, or a
+    backend that mounts/syncs it) and keeps plain stubs elsewhere; either way the summarizer reads the
+    original results."""
     monkeypatch.setenv("TERMINAL_ENV", backend)
     msgs = _transcript()
     c = _compressor()
@@ -284,6 +286,19 @@ def test_only_a_backend_that_reads_host_files_gets_archive_pointers(home, monkey
     (prompt,) = summarizer
     assert bool(_archived(home)) is archives
     assert ARCHIVE_POINTER_SEP not in prompt
+
+
+@pytest.mark.parametrize(("backend", "visible"), [("docker", "/root/.hermes/cache/pruned/"),
+                                                 ("ssh", "~/.hermes/cache/pruned/")])
+def test_the_summary_window_offload_names_the_sandbox_path_on_a_publishing_backend(home, monkeypatch, backend, visible):
+    """The results a summary replaces are archived on a sandboxed backend too, with the path its read_file opens."""
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    msgs = _round("window", "W" * 12_000)
+
+    projected, count, written, _failed = _compressor()._offload_window_results(msgs, 0, len(msgs))
+
+    assert count == 1 and len(written) == 1
+    assert f"{ARCHIVE_POINTER_SEP}{visible}" in projected[1]["content"]
 
 
 def test_compaction_window_archives_structured_tool_text_instead_of_losing_it(home):

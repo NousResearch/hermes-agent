@@ -226,6 +226,29 @@ class TestProposalRedaction:
         approval_module.load_permanent(set(approval_module.load_permanent_allowlist()))
         assert not _command_matches_permanent_allowlist("GITHUB_TOKEN=x sudo git push --force origin main")
 
+    @pytest.mark.parametrize("home, command", [
+        ("/home/tester", "/home/tester/bin/docker restart web"),
+        ("/home/John Smith", r"/home/John\ Smith/bin/docker restart web"),
+    ])
+    def test_glob_that_cannot_match_its_source_is_not_proposed(self, monkeypatch, home, command):
+        """The home fold rewrites the executable to `~/bin/docker`, but the runtime matches the
+        command as written, so `~/bin/docker restart *` would never approve the command it came from.
+        The class key would approve every docker restart, so the command is not proposed at all."""
+        monkeypatch.setenv("HOME", home)
+        mixed = [(command, "docker restart/stop/kill (container lifecycle)")] * 3
+        mixed += [("docker restart web", "docker restart/stop/kill (container lifecycle)")] * 2
+        assert [(p.pattern, p.count) for p in build_proposals(mixed)] == [("docker restart *", 2)]
+
+    @pytest.mark.parametrize("command, proposed", [
+        ("git push -f\necho hi", []),
+        ("  git push --force  ", [("git push *", 2)]),
+    ])
+    def test_proposal_counts_only_commands_the_runtime_would_approve(self, command, proposed):
+        """The runtime strips the command and refuses a multi-line one before any glob compare,
+        so a newline-joined command must not be credited to `git push *`, a padded one must."""
+        records = [(command, "git push --force")] * 2
+        assert [(p.pattern, p.count) for p in build_proposals(records)] == proposed
+
 
 # ---------------------------------------------------------------------------
 # --apply / dry-run

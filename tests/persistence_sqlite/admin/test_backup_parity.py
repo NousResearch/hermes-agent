@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from contextlib import closing
@@ -24,6 +26,7 @@ from persistence.sqlite import SQLiteBackend
 from persistence.sqlite.admin import SQLiteStoreAdmin
 from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.hermes_cli.test_session_recovery import _corrupt_middle_table_leaf, _make_page_spanning_source
+from tests.waiting import wait_until
 from tests.persistence_sqlite.admin._main_reference import (
     _count_session_rows, _has_ledger_rows, _pre_runtime_snapshot, _safe_restore_db,
 )
@@ -205,6 +208,68 @@ def test_a_wal_snapshot_finishes_while_another_connection_keeps_writing(tmp_path
     assert finished and result == [True]
     with closing(sqlite3.connect(snapshot)) as copied:
         assert copied.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+_HOLD_WAL_RECOVERY = """
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+fcntl.lockf(fd, fcntl.LOCK_SH | fcntl.LOCK_NB, 1, 128)  # DMS: a live connection has the WAL index open
+fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 1, 120)  # WAL_WRITE_LOCK
+fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 1, 122)  # WAL_RECOVER_LOCK: walIndexRecover() is running
+print("held", flush=True)
+sys.stdin.read()
+"""
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("recovery_ends", [True, False], ids=["recovery-ends", "recovery-stuck"])
+@pytest.mark.parametrize("side", ["legacy", "admin"])
+def test_a_wal_snapshot_waits_out_another_process_rebuilding_the_wal_index(tmp_path, monkeypatch, side,
+                                                                         recovery_ends):
+    # The first connection to open a WAL file after the last one closed rebuilds its index; a reader arriving
+    # meanwhile gets SQLITE_BUSY_RECOVERY, which sqlite3's backup loop ends on instead of retrying.
+    # A recovery that never ends still fails closed at the busy deadline.
+    db = _rows_db(tmp_path / "state.db", 10, "WAL")
+    Path(f"{db}-shm").write_bytes(bytes(32768))
+    busy_statuses: list = []
+    real_connect = sqlite3.connect
+
+    class RecordingStatuses(sqlite3.Connection):
+        def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+            def record(status, remaining, total):
+                busy_statuses.append(status)
+                return progress(status, remaining, total)
+            return super().backup(target, pages=pages, progress=record, name=name, sleep=sleep)
+
+    def connect(database, *args, **kwargs):
+        if "mode=ro" in str(database):
+            kwargs["factory"] = RecordingStatuses
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    snapshot = tmp_path / "snapshot.db"
+    limit = 10.0 if recovery_ends else 1.0
+    copy = ((lambda: _safe_copy_db(db, snapshot, timeout_seconds=limit)) if side == "legacy"
+            else (lambda: SQLiteStoreAdmin(db).backup_to(snapshot, timeout_seconds=limit)))
+    recovering = subprocess.Popen([sys.executable, "-c", _HOLD_WAL_RECOVERY, f"{db}-shm"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    result: list = []
+    try:
+        assert recovering.stdout.readline() == "held\n"
+        thread = threading.Thread(target=lambda: result.append(copy()), daemon=True)
+        thread.start()
+        wait_until(lambda: sqlite3.SQLITE_BUSY_RECOVERY in busy_statuses, what="the copy meeting the recovery")
+        if not recovery_ends:
+            thread.join(20)  # the locks stay held until the copy has given up
+    finally:
+        recovering.communicate("")  # releases the locks: recovery has finished
+    thread.join(20)
+    if not recovery_ends:
+        assert result == [False] and not snapshot.exists()
+        return
+    assert result == [True]
+    with closing(real_connect(snapshot)) as copied:
+        assert copied.execute("SELECT count(*) FROM messages").fetchone() == (10,)
 
 
 def test_a_rollback_journal_snapshot_lets_a_live_writer_commit_between_steps(tmp_path, monkeypatch):

@@ -30,9 +30,12 @@ from tools.environments.local_env_policy import (
     _home_adapter_secret_env, _home_declared_key_env, _matches_terminal_first_party_prefix,
     _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
-    strip_profile_gate_env, strip_supervised_process_identity)
+    DEPLOYMENT_STAMP_ENV, strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
+from tools.environments.base_session_env import (
+    _secret_fd_token, _secret_gen_token, _secret_restore_token, _secret_src_token)
+from tools.environments.local_secret_handoff import SecretHandoff, profile_secret_names
 from hermes_cli._startup_fast import project_root_str
 
 
@@ -451,7 +454,22 @@ def served_profile_child_env(
     (``get_secret``'s fail-closed contract): minting with the launch environ would sign in as the wrong
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
-    ``hermes_subprocess_env`` snapshot."""
+    ``hermes_subprocess_env`` snapshot. The deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) are
+    removed last, whatever *base* or the profile overlay carried."""
+    return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials))
+
+
+def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
+    """Remove ``DEPLOYMENT_STAMP_ENV`` from *env* in place, any casing (a Windows env block is not
+    case-sensitive), for a child built from an unscrubbed base that is not a gateway."""
+    for name in [key for key in env if key.upper() in DEPLOYMENT_STAMP_ENV]:
+        del env[name]
+    return env
+
+
+def _profile_child_env(
+    base: Mapping[str, str] | None, target_home: str | Path | None, inherit_credentials: bool,
+) -> dict[str, str]:
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
@@ -481,6 +499,17 @@ def served_profile_child_env(
     return env
 
 
+def keep_deployment_stamps(env: dict, source: Mapping[str, str] | None = None) -> dict:
+    """Put the deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) from *source* (the process env)
+    into the env of a gateway this process starts, where the scrub removed them. A value already in
+    *env* (the target profile's own ``GATEWAY_RELAY_SLEEP_URL``) is kept."""
+    source = os.environ if source is None else source
+    for name in DEPLOYMENT_STAMP_ENV:
+        if source.get(name) and not env.get(name):
+            env[name] = source[name]
+    return env
+
+
 def _carry_bridge_markers(env: dict, source: Mapping[str, str], *, own_profile: bool) -> None:
     """Keep a YAML-bridge ownership marker only on a child that serves the launch profile itself and
     still holds the exact value the marker's digest names: that child (a daemon restart) re-bridges
@@ -505,6 +534,12 @@ def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) ->
             env[name] = source[name]
 
 
+def gateway_child_env(target_home: str | Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Child env for a gateway this process starts on *target_home*: that profile's environment,
+    with each launch stamp it lacks filled from *base* (``keep_deployment_stamps``)."""
+    return keep_deployment_stamps(_profile_child_env(base, target_home, True), os.environ if base is None else base)
+
+
 def host_gateway_child_env(
     base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
@@ -515,9 +550,7 @@ def host_gateway_child_env(
     multiplexer that owns the primary adapter map.
     """
     from hermes_constants import get_default_hermes_root
-    return served_profile_child_env(
-        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
-    )
+    return gateway_child_env(get_default_hermes_root(), base)
 
 
 def _is_routed_home(target_home: str | Path) -> bool:
@@ -1135,7 +1168,20 @@ class LocalEnvironment(BaseEnvironment):
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
+        self._secret_handoff = SecretHandoff()
         self.init_session()
+
+    def _secret_dump_args(self) -> dict:
+        """Secret exports leave the snapshot file through a pipe ``_run_bash`` hands the shell and
+        reach the next command as process env (``local_secret_handoff``, #62336). The script names
+        the pipe by a per-session token; ``_run_bash`` swaps in the fd number it opened. Windows has
+        no ``pass_fds``, so Git Bash keeps the on-disk snapshot as it was."""
+        if _IS_WINDOWS or getattr(self, "_secret_handoff", None) is None:
+            return {}
+        names = (*profile_secret_names(), *self._secret_handoff.names())
+        return {"secret_fd": _secret_fd_token(self._session_id), "secret_names": names,
+                "secret_gen": _secret_gen_token(self._session_id), "secret_src": _secret_src_token(self._session_id),
+                "secret_restore": _secret_restore_token(self._session_id)}
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
@@ -1214,6 +1260,23 @@ class LocalEnvironment(BaseEnvironment):
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
         run_env = _make_run_env(self.env)
+        handoff = getattr(self, "_secret_handoff", None)  # absent on bare test doubles (__new__)
+        session_id = getattr(self, "_session_id", "")
+        token = _secret_fd_token(session_id)
+        secret_fd, source_fd, restore_fd, secret_reader = -1, -1, -1, None
+        if handoff is not None and token in cmd_string:
+            # This session's secret exports ride the command's own env, never the snapshot file;
+            # the dump writes the new set to the pipe (``local_secret_handoff``, #62336). Names the
+            # wrapper save/restores (declared key holders, profile passthrough) take the run env's
+            # value, exactly as when the snapshot carried them, so a scrubbed key stays scrubbed.
+            if not login:
+                source_fd, restore_fd = handoff.open_source(
+                    self._shell_state_paths(), skip=self._snapshot_excluded_passthrough_names())
+                cmd_string = (cmd_string.replace(_secret_src_token(session_id), str(source_fd))
+                              .replace(_secret_restore_token(session_id), str(restore_fd)))
+            generation = handoff.new_generation()
+            secret_fd, secret_reader = handoff.start_reader(self._snapshot_write_path(login), generation)
+            cmd_string = cmd_string.replace(token, str(secret_fd)).replace(_secret_gen_token(session_id), generation)
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
         # spawn env's dirs a resetting profile dropped are re-appended (#56634).
@@ -1223,13 +1286,20 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
-        proc = subprocess.Popen(
-            args, text=True, env=run_env, encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            # detached-spawn: ok — owned via own_process_groups right below
-            start_new_session=True, cwd=self._spawn_cwd(),
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        try:
+            proc = subprocess.Popen(
+                args, text=True, env=run_env, encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                # detached-spawn: ok — owned via own_process_groups right below
+                start_new_session=True, cwd=self._spawn_cwd(),
+                pass_fds=tuple(fd for fd in (secret_fd, source_fd, restore_fd) if fd >= 0),
+                creationflags=windows_hide_flags() if _IS_WINDOWS else 0)
+        finally:
+            for fd in (secret_fd, source_fd, restore_fd):
+                if fd >= 0:
+                    os.close(fd)  # the child holds its copy; the reader sees EOF once it is gone
+        proc._hermes_secret_reader = secret_reader
         if not _IS_WINDOWS:
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
@@ -1251,10 +1321,13 @@ class LocalEnvironment(BaseEnvironment):
         """Base wait, then hand the command's group back from the owner-death supervisor: once the
         command returned, what it left running in the background (`server &`) is not ours to kill,
         exactly as on a graceful exit. A command that yielded to background took the group with it
-        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``)."""
+        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``). The secret hand-off reader
+        is joined first, so the next command sees what this one exported."""
         try:
             return super()._wait_for_process(proc, *args, **kwargs)
         finally:
+            if (reader := getattr(proc, "_hermes_secret_reader", None)) is not None:
+                reader.join(timeout=2)
             if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
                 proc._hermes_owned_pgid = None
                 release_process_groups([owned_pgid])
@@ -1328,3 +1401,5 @@ class LocalEnvironment(BaseEnvironment):
         for f in (self._snapshot_path, self._cwd_file, *stale):
             with contextlib.suppress(OSError):
                 os.unlink(f)
+        if (handoff := getattr(self, "_secret_handoff", None)) is not None:
+            handoff.forget()

@@ -214,4 +214,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "show", aliases=["info"], help="Show details for a single plugin (including emits/listens)")
     plugins_show.add_argument("name", help="Plugin name or key to show")
 
+    plugins_config = plugins_subparsers.add_parser(
+        "config", aliases=["configure", "settings"], help="View and edit a plugin's settings",
+        description="Interactive editor for the settings a plugin declares in its manifest "
+            "(config_schema and requires_env). Without a terminal, prints them instead.")
+    plugins_config.add_argument("name", help="Plugin name or key to configure")
+
     plugins_parser.set_defaults(func=cmd_plugins)

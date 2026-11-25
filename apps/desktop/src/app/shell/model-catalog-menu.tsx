@@ -1011,6 +1011,31 @@ interface ModelFamilyRowProps {
   search: string
 }
 
+function rowSpeedSetting(
+  fastControl: FastControl,
+  tier: string | undefined,
+  ultrafastSupported: boolean,
+  labels: { fast: string; ultrafast: string }
+): string | null {
+  if (fastControl.kind === 'none' || !fastControl.on) {
+    return null
+  }
+
+  if (fastControl.kind === 'variant') {
+    return labels.fast
+  }
+
+  if (fastControl.canEnable === false) {
+    return null
+  }
+
+  if (tier === 'ultrafast') {
+    return ultrafastSupported ? labels.ultrafast : null
+  }
+
+  return labels.fast
+}
+
 /** One model family row: the favorite star, the trigger that commits the
  *  model, plus the hover-revealed options submenu. Shared by the Favorites
  *  section and the provider groups, so the two can never paint a model
@@ -1086,11 +1111,10 @@ function ModelFamilyRow({
   // be the same chip on every row, so it shows only on the active model and
   // on a row whose remembered preset chose one.
   const settings = [
-    fastControl.kind !== 'none' && fastControl.on && !(fastControl.kind === 'param' && fastControl.canEnable === false)
-      ? effTier === 'ultrafast'
-        ? t.shell.modelOptions.ultrafast
-        : copy.fast
-      : null,
+    rowSpeedSetting(fastControl, effTier, Boolean(caps?.ultrafast), {
+      fast: copy.fast,
+      ultrafast: t.shell.modelOptions.ultrafast
+    }),
     daybreak?.on ? t.shell.modelOptions.daybreak : null,
     (caps?.reasoning ?? true) && (isCurrent ? !current.effortPending : Boolean(effEffort))
       ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)

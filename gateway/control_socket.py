@@ -231,6 +231,12 @@ class GatewayControlServer:
     async def start(self) -> bool:
         """Bind and start serving. Returns True on success, False otherwise."""
         try:
+            # Build one default ``identify`` answer before accepting. A fresh process's first answer
+            # pays every lazy cost (the code-identity git walk, the first psutil process probe),
+            # which a loaded host stretches past a client's identify deadline; warm, it takes
+            # milliseconds. It also pins the code identity the gateway booted with, not a checkout
+            # an update swapped in before the first client asked.
+            await asyncio.to_thread(build_identify_payload)
             return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
         except Exception as exc:
             await self.stop()

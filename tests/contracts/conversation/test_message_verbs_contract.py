@@ -377,16 +377,14 @@ def test_has_any_message_and_spillover_reference_rows_read_the_whole_scope(backe
     repo.append(OTHER, msg("short", 2, api_content="full text in spillover/def.txt"))
     repo.append(OTHER, msg("spillover again", 3))
     assert repo.has_any_message() is True and store_b.messages.has_any_message() is False
-    assert repo.spillover_reference_rows() == (
-        ("see /tmp/spillover/abc.txt", None), ("short", "full text in spillover/def.txt"), ("spillover again", None))
-    assert store_b.messages.spillover_reference_rows() == ()
+    assert sorted(repo.spillover_reference_rows()) == [
+        ("see /tmp/spillover/abc.txt", None), ("short", "full text in spillover/def.txt"), ("spillover again", None)]
+    assert list(store_b.messages.spillover_reference_rows()) == []
 
 
-def test_spillover_reference_rows_stop_at_the_row_cap(backend, scope_a):
+def test_spillover_reference_rows_have_no_row_cap(backend, scope_a):
     store_a = backend.open(scope_a)
     store_a.sessions.create(NewSession(session_id=S, source="cli"))
     store_a.messages.append_batch(S, [msg(f"spillover/{i}.txt") for i in range(20002)])
-    rows = store_a.messages.spillover_reference_rows()
-    # CONTRACT: at most 20001 rows in no defined order, so only the count and membership are pinned.
-    assert len(rows) == 20001 and len(set(rows)) == 20001
-    assert set(rows) <= {(f"spillover/{i}.txt", None) for i in range(20002)}
+    # CONTRACT: every referencing row, in no defined order (a capped read left the sweep unable to remove anything).
+    assert set(store_a.messages.spillover_reference_rows()) == {(f"spillover/{i}.txt", None) for i in range(20002)}

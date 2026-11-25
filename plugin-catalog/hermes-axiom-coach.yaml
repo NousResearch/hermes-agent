@@ -1,13 +1,13 @@
 name: hermes-axiom-coach
 title: Axiom Coach
 repo: https://github.com/percyhendrux123-prog/hermes-axiom-coach
-sha: "505892ab32ca9c1787656df6a227069e19da7bc7"
-version: "0.1.0"
+sha: "24c7e8244b8036ae3f40c3e24654a2a6c28d5099"
+version: "0.1.1"
 maintainer: percyhendrux123-prog
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
-docs_url: https://github.com/percyhendrux123-prog/hermes-axiom-coach/blob/505892ab32ca9c1787656df6a227069e19da7bc7/README.md
+docs_url: https://github.com/percyhendrux123-prog/hermes-axiom-coach/blob/24c7e8244b8036ae3f40c3e24654a2a6c28d5099/README.md
 readme: true
 platforms: []
 description: >-
@@ -30,7 +30,8 @@ description: >-
 known_issues:
   - "The coach-desk, my-plan and deploy skills need a running copy of the open coach app; without one only the Lite tools and the deploy skill are useful."
   - "Lite results are estimates for general education, not medical advice, and are not saved or synced."
-  - "A full OAuth sign-in followed by an app tool call, and a model-driven session using the skills, were not observed for this release; Hermes's OAuth discovery, client registration and PKCE authorize request against the app's connector were."
+  - "0.1.0 named its Lite toolset like the connector its setup steps add, which hid the app's tools from model sessions; fixed in 0.1.1 (toolset axiom-lite). Observed on 0.1.1: a full OAuth sign-in, an app tool call, and a model-driven coach-desk session on a demo workspace."
+  - "Not observed for this release: a my-plan session with a self-serve member sign-in, and an app write through Hermes's approval prompt."
 capabilities:
   provides_tools: [axiom_lite_split, axiom_lite_macros, axiom_lite_cardio]
   provides_hooks: []

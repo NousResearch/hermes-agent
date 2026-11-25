@@ -1,0 +1,28 @@
+name: abliteratedllm
+title: AbliteratedLLM
+repo: https://github.com/abliteratedllm/hermes-provider-abliteratedllm
+sha: 0f5f6d975f167a1c4a9179b68ba1eda5ef510fb6
+description: >-
+  AbliteratedLLM as a Hermes model provider (`--provider abliteratedllm`, alias `abl`) over the
+  OpenAI-compatible Chat Completions API: 16 abliterated and stock open-weights models including
+  GLM-5.3 Flash Abliterated, GLM-5.3 Cyber Abliterated, DeepSeek V4.1 Flash, Kimi K3, Qwen3.8, and
+  MiniMax M3. The /model picker reads the live public GET /v1/models catalog (with all 16 models
+  built in as offline fallback) and declares per-model context windows, vision, and reasoning-effort
+  clamping. Disclosure: registers one model provider at import and nothing else (no tools, hooks,
+  middleware, commands, background threads, shell commands, or file access). Prompts, tool schemas,
+  and tool results go to https://api.abliteratedllm.dev/v1 (or a user-configured
+  ABLITERATEDLLM_BASE_URL) through Hermes's own client with ABLITERATEDLLM_API_KEY read via
+  Hermes's profile secret scope; the plugin itself makes one request, GET
+  https://api.abliteratedllm.dev/v1/models without the key, and sends no telemetry.
+maintainer: abliteratedllm
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/abliteratedllm/hermes-provider-abliteratedllm#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ABLITERATEDLLM_API_KEY

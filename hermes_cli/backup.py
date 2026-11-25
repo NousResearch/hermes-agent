@@ -29,7 +29,8 @@ from hermes_cli.backup_integrity import verify_sqlite_integrity
 from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
 from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
-from hermes_cli.home_data_layout import BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
+from hermes_cli.home_data_layout import (
+    BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, PROVIDER_PLUGIN_SNAPSHOT_PARTS, SECRET_CACHE_FILES, profile_root_entry)
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
@@ -122,7 +123,8 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
     parts = rel_path.parts
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
-    return parts in BRIDGE_LOG_PARTS or (len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS)
+    return (parts in BRIDGE_LOG_PARTS or parts[:2] == PROVIDER_PLUGIN_SNAPSHOT_PARTS
+            or (len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS))
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:

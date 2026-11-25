@@ -757,7 +757,7 @@ class ResponsesApiTransport(ProviderTransport):
             payload_messages = messages[1:]
         instructions = instructions or DEFAULT_AGENT_IDENTITY
 
-        from agent.codex_responses_adapter import responses_endpoint_quirks
+        from agent.codex_responses_adapter import apply_developer_instructions_if_needed, responses_endpoint_quirks
 
         endpoint = responses_endpoint_quirks(params.get("base_url"))
         is_codex_backend = params.get("is_codex_backend") is True
@@ -834,6 +834,11 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
+
+        apply_developer_instructions_if_needed(
+            kwargs, wire_model, is_xai_responses=is_xai_responses,
+            system_prompt=instructions, keep_instructions="instructions" in request_overrides,
+        )
 
         # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
         # top-level copy (e.g. from request_overrides) fails the call with TypeError before any
@@ -920,7 +925,8 @@ class ResponsesApiTransport(ProviderTransport):
             alias_map = self._last_wire_aliases
             for tc in msg.tool_calls:
                 provider_data = {
-                    key: getattr(tc, key) for key in ("call_id", "response_item_id") if getattr(tc, key, None)
+                    key: value for key in ("call_id", "response_item_id", "_codex_output_index")
+                    if (value := getattr(tc, key, None)) is not None
                 }
                 has_fn = hasattr(tc, "function")
                 name = tc.function.name if has_fn else getattr(tc, "name", "")

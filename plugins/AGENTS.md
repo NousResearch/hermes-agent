@@ -178,6 +178,9 @@ every plugin author: never list one just to pass the lint.
 you meant. Run it for an intended crossing (say why in the PR body), for an import moved to
 another file (the baseline counts per importing file), or after removing crossings, so the lower
 count sticks. Never run it just to turn CI green.
+Catalog plugins get the same rule from the other side: `scripts/ci/catalog_core_imports.py check`
+(Repository guards) warns, never fails, when a core PR removes a module or name a pinned catalog plugin
+imports, naming the core name, whether it is private, and each plugin's catalog entry, repo and line.
 
 ## Internal import paths are not API
 

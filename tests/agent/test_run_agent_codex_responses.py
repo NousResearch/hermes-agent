@@ -731,7 +731,7 @@ def test_consume_codex_stream_collects_refusal_deltas_as_text(monkeypatch):
 
 def test_extract_responses_message_text_reads_refusal_parts():
     """Refusal content parts inside a message item surface as text."""
-    from agent.codex_responses_adapter import _extract_responses_message_text
+    from agent.codex_responses_adapter import _normalize_codex_response
 
     item = SimpleNamespace(
         type="message",
@@ -740,7 +740,7 @@ def test_extract_responses_message_text_reads_refusal_parts():
             SimpleNamespace(type="refusal", refusal="I must decline."),
         ],
     )
-    assert _extract_responses_message_text(item) == "I must decline."
+    assert _normalize_codex_response(SimpleNamespace(output=[item]))[0].content == "I must decline."
 
     mixed = SimpleNamespace(
         type="message",
@@ -750,7 +750,7 @@ def test_extract_responses_message_text_reads_refusal_parts():
             SimpleNamespace(type="refusal", refusal="But no more."),
         ],
     )
-    assert _extract_responses_message_text(mixed) == "Hello. But no more."
+    assert _normalize_codex_response(SimpleNamespace(output=[mixed]))[0].content == "Hello. But no more."
 
 
 def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):

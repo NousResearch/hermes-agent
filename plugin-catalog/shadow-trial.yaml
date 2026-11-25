@@ -1,6 +1,6 @@
 name: shadow-trial
 repo: https://github.com/akinduroifedayo/shadow
-sha: "16ebe83fb0135eb2ea3aa053e4cfc731bb43da5b"
+sha: "e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0"
 description: >-
   Try a model on your real Hermes conversations with blind judging in both
   orders and switch models with undo, warning first if a saved test does not
@@ -21,17 +21,17 @@ maintainer: akinduroifedayo
 tier: community
 category: models
 requires_hermes: ">=0.23.1"
-version: "0.1.0"
+version: "0.1.1"
 title: "Shadow"
 platforms: [macos, linux]
-docs_url: https://github.com/akinduroifedayo/shadow
+docs_url: https://github.com/akinduroifedayo/shadow/blob/e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0/README.md
 screenshots:
-  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/desktop-home.png
-  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/model-picker.png
-  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/judging-rule.png
-  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/verdict.png
-  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/side-by-side.png
-  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/no-verdict.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0/docs/images/desktop-home.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0/docs/images/model-picker.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0/docs/images/judging-rule.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0/docs/images/verdict.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0/docs/images/side-by-side.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/e2174545b1c5f7f6c7f92bf81ddee6c10b0c04b0/docs/images/no-verdict.png
 capabilities:
   provides_tools:
     - shadow_read

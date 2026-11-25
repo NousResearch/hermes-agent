@@ -319,6 +319,32 @@ def _pinned_tool_defs(saved, fresh, keep_bytes=False) -> tuple:
     return pinned, same_code, [d for d in map(_pinned_def, pinned) if d]
 
 
+def _refresh_name_dependent_defs(merged: list, dropped: set, fresh: dict) -> list:
+    """A restore that drops a pinned tool has already moved tools[] (the cached prefix is broken
+    there), so a surviving tool whose ``_DYNAMIC_SCHEMA_REWRITERS`` entry derives its text from the
+    other tool names takes this build's definition: pinned bytes would still name what was dropped
+    (execute_code's sandbox list, delegate_task's sibling line). A carried survivor this process did
+    not build is rewritten from its registry schema against the final names. Nothing dropped: bytes untouched."""
+    if not dropped:
+        return merged
+    from model_tools import _DYNAMIC_SCHEMA_REWRITERS
+    from tools.registry import registry
+    from tools.schema_sanitizer import sanitize_tool_schemas
+    available = {_def_name(t) for t in merged}
+
+    def _current(tool):
+        name = _def_name(tool)
+        rewrite = _DYNAMIC_SCHEMA_REWRITERS.get(name)
+        if rewrite is None or name in fresh:
+            return fresh.get(name, tool)
+        entry = registry.definition_for(name)  # the build's steps short of check_fn: overrides, rewrite, sanitize
+        rebuilt = rewrite(entry, available) if entry else None
+        # None only for a gated tool, which _drop_gated_carried_tools already removed
+        return sanitize_tool_schemas([rebuilt])[0] if rebuilt else tool
+
+    return [_current(t) for t in merged]
+
+
 def pinned_tool_defs(saved) -> list:
     """``saved``'s tool definitions as a fresh agent restores them, for an estimate with no agent built:
     pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
@@ -360,6 +386,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
+    merged = _refresh_name_dependent_defs(merged, {_def_name(d) for d in pinned_defs} - merged_names, fresh)
     changed = merged != fresh_defs
     if changed:
         with _agent_tools_lock:

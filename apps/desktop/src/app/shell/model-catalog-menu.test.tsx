@@ -910,3 +910,35 @@ describe('the catalog renders per-model pricing', () => {
     expect(screen.queryByText('free')).toBeNull()
   })
 })
+
+describe('row speed chip gating', () => {
+  it('never labels a fast-only or -fast variant row as Ultrafast when serviceTier is ultrafast', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: {
+            'claude-opus-4.8': { fast: true, reasoning: true },
+            'claude-sonnet-5': { fast: false, reasoning: true },
+            'claude-sonnet-5-fast': { fast: false, reasoning: true }
+          },
+          models: ['claude-opus-4.8', 'claude-sonnet-5', 'claude-sonnet-5-fast'],
+          name: 'Anthropic',
+          slug: 'anthropic'
+        }
+      ]
+    })
+
+    renderMenu({ fast: true, model: 'claude-sonnet-5-fast', provider: 'anthropic', serviceTier: 'ultrafast' })
+
+    const variantRow = (await screen.findByText('Sonnet 5')).closest('[role="menuitem"]')!
+    expect(variantRow.textContent).toContain('Fast')
+    expect(variantRow.textContent).not.toContain('Ultrafast')
+    cleanup()
+
+    renderMenu({ fast: true, model: 'claude-opus-4.8', provider: 'anthropic', serviceTier: 'ultrafast' })
+
+    const paramRow = (await screen.findByText('Opus 4.8')).closest('[role="menuitem"]')!
+    expect(paramRow.textContent).not.toContain('Ultrafast')
+    expect(paramRow.textContent).not.toContain('Fast')
+  })
+})

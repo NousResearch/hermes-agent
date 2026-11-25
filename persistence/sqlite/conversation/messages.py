@@ -735,15 +735,14 @@ class SQLiteMessageRepository:
                     return False
                 return conn.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
-    def spillover_reference_rows(self) -> tuple[tuple[Optional[str], Optional[str]], ...]:
-        # At most 20001 rows: one past the reference set the spillover sweep trusts.
+    def spillover_reference_rows(self) -> Iterator[tuple[Optional[str], Optional[str]]]:
+        # No row cap: a capped read answered "unknown" past it and the sweep then kept every file for good.
         holder = self._store.holder()
         with _refusals(holder):
             with holder._read_ctx() as conn:
-                rows = conn.execute(
-                    f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
-                ).fetchall()
-        return tuple((content, api_content) for content, api_content in rows)
+                cur = conn.execute(f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER}")
+                while rows := cur.fetchmany(2000):
+                    yield from ((content, api_content) for content, api_content in rows)
 
     def read_snapshot(self) -> ContextManager[ReadCheck]:
         return self._store.holder().transcript_read_snapshot()

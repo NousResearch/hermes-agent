@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,7 +83,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
     async def build(*args, **kwargs):
         return authority
 
-    def recover_local(_authority, schedule):
+    async def recover_local(_authority, schedule):
         assert schedule is True
 
         async def background():
@@ -110,7 +111,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
     unbound = []
     monkeypatch.setattr(run_runtime, "_build_profile_authority", build)
     monkeypatch.setattr(
-        "gateway.session_local_recovery.recover_local_sessions", recover_local)
+        "gateway.session_local_startup.recover_local_sessions_async", recover_local)
     monkeypatch.setattr(
         "gateway.platforms.webhook_ingress.recover_webhook_finalizations",
         recover_webhook,
@@ -159,6 +160,24 @@ async def test_settle_gateway_runtime_waits_for_bot_receipt_tasks():
 
     assert task.done()
     assert finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_settle_gateway_runtime_survives_an_acp_sweep_that_cannot_import(monkeypatch):
+    """Ending idle ACP sessions is best-effort: its module failing to import (a tree replaced under the
+    running gateway) must not abort the stop before the teardown that follows it (#158360)."""
+    revoked = []
+    authority = SimpleNamespace(sessions={}, _bot_receipt_tasks=set())
+    runner = SimpleNamespace(
+        session_authority=authority,
+        session_ticket_store=SimpleNamespace(revoke=lambda: revoked.append(True)),
+    )
+    authority.runner = runner
+    monkeypatch.setitem(sys.modules, "gateway.session_acp_lifecycle", None)  # importing it raises
+
+    await asyncio.wait_for(run_runtime.settle_gateway_runtime(runner), 5)
+
+    assert revoked == [True]
 
 
 @pytest.mark.asyncio
@@ -215,7 +234,9 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
     monkeypatch.setattr(run_runtime, "TURN_SETTLE_SECONDS", 0.05)
     monkeypatch.setattr(run_runtime, "_record_parked_profiles", lambda value: parked.update(value))
     monkeypatch.setattr("gateway.session_bot.recover_bot_deliveries", recover_bot)
-    monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions", lambda a, schedule: None)
+    async def no_local(authority, *, schedule):
+        return None
+    monkeypatch.setattr("gateway.session_local_startup.recover_local_sessions_async", no_local)
     monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
     monkeypatch.setattr("gateway.session_cron.unbind_owner", lambda authority: None)
     monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda **kw: list(homes.items()))

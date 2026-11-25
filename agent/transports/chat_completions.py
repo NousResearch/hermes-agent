@@ -44,7 +44,7 @@ _STRIP_MSG_KEYS = (
     "platform_message_id", "message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
     MESSAGE_UID, DATA_USE,
 )
-_STRIP_TC_KEYS = ("call_id", "response_item_id")
+RESPONSES_TOOL_CALL_FIELDS = frozenset({"call_id", "response_item_id", "_codex_output_index"})
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
@@ -509,7 +509,7 @@ def _sanitize_message(
         for tc_idx, tc in enumerate(tool_calls):
             if not isinstance(tc, dict):
                 continue
-            keys = [k for k in _STRIP_TC_KEYS if k in tc]
+            keys = [k for k in RESPONSES_TOOL_CALL_FIELDS if k in tc]
             if "extra_content" in tc and (
                 strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
             ):

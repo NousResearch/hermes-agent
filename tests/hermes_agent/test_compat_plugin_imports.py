@@ -10,12 +10,14 @@ from hermes_agent.compat.finder import Finder
 from hermes_agent.compat.moves import MOVES
 
 # (module, names) a catalog plugin imports at module top level, so without them it never registers:
-# OpenViking 2.1.2 (plugin-catalog/openviking.yaml), hermes-council and Honcho 1.2.0 (plugin-catalog/honcho.yaml).
+# OpenViking 2.1.2 (plugin-catalog/openviking.yaml), hermes-council, Honcho 1.2.0 (plugin-catalog/honcho.yaml)
+# and holographic 0.29.x (plugin-catalog/holographic.yaml).
 # Every MOVES key is checked as well.
 _PLUGIN_IMPORTS = {
     "agent.message_content": ("flatten_message_text", "_text_from_part"),
     "agent.skill_commands": ("extract_user_instruction_from_skill_message",),
     "hermes_state_common": ("TITLE_SOURCE_DERIVED", "TITLE_SOURCE_LLM"),
+    "hermes_state_wal": ("apply_wal_with_fallback",),
 }
 
 

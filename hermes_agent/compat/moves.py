@@ -12,4 +12,6 @@ MOVES: dict[str, str] = {
     "tools.plugin_guard": "hermes_cli.plugins_install_scan",
     # Folded into session_rules.turns by the storage interface (#149567); the OpenViking and hermes-council pins import it.
     "agent.message_content": "session_rules.turns",
+    # Folded into sqlite_support by the storage interface (#151855); the holographic 0.29.x pin imports it.
+    "hermes_state_wal": "sqlite_support",
 }

@@ -147,7 +147,7 @@ def _install_modal_test_modules(
             registry_calls.append((image, setup_dockerfile_commands))
             return {"kind": "registry", "image": image}
 
-    async def _lookup_aio(_name: str, create_if_missing: bool = False):
+    async def _lookup_aio(_name: str, create_if_missing: bool = False, client=None):
         return types.SimpleNamespace(name="hermes-agent", create_if_missing=create_if_missing)
 
     class _FakeSandboxInstance:

@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
 
+from .cards import resolve_source_chat_type
+
 if TYPE_CHECKING:
     from plugins.platforms.feishu.adapter import RejectReason
 
@@ -136,7 +138,7 @@ class FeishuSyntheticEventsMixin:
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=event_chat_type),
+            chat_type=resolve_source_chat_type(chat_info=chat_info, event_chat_type=event_chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=None,

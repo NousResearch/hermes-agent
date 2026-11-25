@@ -391,7 +391,9 @@ run while the host is off.
 Noninteractive setup and imports do not install a missing service, even when the imported
 config says `install`. Existing installed services remain authoritative and can be started
 regardless of the saved preference. To opt in explicitly later, run `hermes gateway install`;
-the choice is recorded only after successful installation. To be asked again during setup,
+the choice is recorded only after successful installation. The installers' step after setup,
+`hermes gateway install --if-missing`, is not a second opt-in: it installs nothing after a
+recorded decline and asks the same question when setup never did. To be asked again during setup,
 reset the choice with `hermes config set gateway.service_install_choice null`.
 
 Setup orchestration lives in `hermes_cli/gateway_setup_service.py`. Its
@@ -436,6 +438,10 @@ queries the actual task XML, principal, and installed launcher.
   arbitrary shell launchers and modified Windows launcher scripts are not
   interpreted by `ensure`. Restore an explicit supported definition through an
   intentional service-management operation before retrying.
+- `profile_runs_elsewhere` (state `inaccessible`): a plugin runs this profile's
+  backend somewhere other than this host and has marked it under
+  `<hermes root>/profiles_run_elsewhere/<profile>.json`. `detail` names the
+  profile and the plugin. Turn it off in that plugin to run the profile here.
 
 These refusals do not start a service, rewrite configuration, or launch an
 unmanaged replacement. Standard explicitly bound default and custom-root installs

@@ -42,13 +42,36 @@ def _service(profile, *, deadline=None):
 _lookup_lock = threading.Lock()
 _lookup_slots = threading.BoundedSemaphore(4)
 _lookup_executor = None
+_discovery_slots = threading.BoundedSemaphore(4)
+_discovery_executor = None
+
+
+async def _discovery_required(profile, deadline):
+    """Cheap stock checks and manifest I/O use separate bounded preflight slots."""
+    global _discovery_executor
+    from hermes_cli.skill_catalog.bootstrap import discovery_required
+    if not _discovery_slots.acquire(blocking=False):
+        raise CatalogError('busy', 'Catalog discovery is busy.')
+    try:
+        with _lookup_lock:
+            if _discovery_executor is None:
+                _discovery_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='catalog-preflight')
+        future = _discovery_executor.submit(contextvars.copy_context().run, discovery_required, profile)
+    except BaseException:
+        _discovery_slots.release()
+        raise
+    future.add_done_callback(lambda _future: _discovery_slots.release())
+    try:
+        return await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)),
+                                      max(0, deadline - time.monotonic()))
+    except TimeoutError:
+        raise CatalogError('timeout', 'Catalog discovery timed out.') from None
 
 
 async def _lookup_service(profile, deadline):
     """Cold joins own bounded capacity, never the stock public-search executor."""
     global _lookup_executor
-    from hermes_cli.skill_catalog.bootstrap import discovery_required
-    if not discovery_required(profile):
+    if not await _discovery_required(profile, deadline):
         return None
     if not _lookup_slots.acquire(blocking=False):
         raise CatalogError('busy', 'Catalog discovery is busy.')

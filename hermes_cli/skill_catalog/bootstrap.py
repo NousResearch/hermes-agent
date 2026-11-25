@@ -85,6 +85,9 @@ def discovery_required(profile):
     try:
         with _plugin_home_scope(Path(home)):
             config = load_config_readonly()
+            entries = (config.get('plugins') or {}).get('entries') or {}
+            if not any(plugin_capability_granted(key, 'skills.catalog', config=config) for key in entries):
+                return False  # No consent means manifests cannot grant catalog authority.
             return isolation_mode(config) == 'host' and _eligible(config)
     except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- match cold bootstrap's stock fallback on loader/config failures
         return False

@@ -37,7 +37,7 @@ def _effective(raw: dict[str, Any]) -> dict[str, Any]:
     return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
 
 
-def _effective_cache_hit(path_key: str, cache_sig: Any) -> Optional[Tuple[Any, ...]]:
+def _effective_cache_hit(path_key: str, cache_sig: Any) -> Optional[tuple[Any, ...]]:
     """The cached entry for ``path_key`` if its file signatures equal ``cache_sig`` and every ``${VAR}`` it was
     expanded against still has the same value, else ``None``. Shared by the lock-free and the locked lookup."""
     cached = _EFFECTIVE_CACHE.get(path_key)

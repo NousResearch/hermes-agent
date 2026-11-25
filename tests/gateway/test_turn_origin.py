@@ -238,3 +238,103 @@ async def test_a_restart_resume_of_an_interrupted_turn_reads_no_origin(named):
     await runner._run_startup_resume_event(adapter, event, KEY)
     await async_wait_until(lambda: seen, timeout=10, what="the resumed turn")
     assert seen == [(True, named)]
+
+
+# -- A person's input joining a running wake turn clears its origin ----------------------------------
+
+class _Receiver:
+    """A running agent that takes (or refuses) a steer and an active-turn redirect."""
+    _supports_active_turn_redirect = True
+
+    def __init__(self, accept=True):
+        self.accept = accept
+
+    def steer(self, text):
+        return self.accept
+
+    def redirect(self, text):
+        return self.accept
+
+
+def _wake_turn(runner, key, receiver, origin='delegation_result', rewritten=False):
+    """*key*'s slot runs a wake turn *origin* started (optionally a plugin's rewrite of it); returns
+    that turn's event and a person's message on the same chat."""
+    import dataclasses
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='c1', user_id='u1', chat_type='dm')
+    wake = MessageEvent(text='[result]', source=source, internal=True, message_id='W')
+    wake.set_turn_origin(origin)
+    if rewritten:
+        copy = dataclasses.replace(wake, text='rewritten by a plugin')
+        copy._rewritten_from = wake
+        wake = copy
+    turn = runner._session_state(key).turn
+    turn.agent, turn.event = receiver, wake
+    return wake, MessageEvent(text='use the staging db', source=source, message_id='P')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['busy_steer', 'busy_redirect', 'priority_steer', 'priority_redirect', 'steer_command'])
+@pytest.mark.parametrize('origin', ['delegation_result', 'process_notification'])
+async def test_a_person_s_accepted_steer_or_redirect_clears_the_wake_turn_s_origin(route, origin, monkeypatch):
+    from gateway.run import GatewayRunner
+    runner = GatewayRunner(config=GatewayConfig())
+    receiver = _Receiver()
+    wake, person = _wake_turn(runner, 'key', receiver, origin, rewritten=route == 'busy_steer')
+    assert wake.turn_origin() == origin
+    if route == 'busy_steer':
+        assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'steer', receiver)).steered is True
+    elif route == 'busy_redirect':
+        assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'interrupt', receiver)).redirected is True
+    elif route == 'priority_steer':
+        runner._hm_busy_steer(person, receiver, 'key')
+    elif route == 'priority_redirect':
+        await runner._hm_busy_interrupt(person, person.source, receiver, 'key')
+    else:
+        runner._fold_into_running_turn(receiver, 'key', person)  # the tail every accepted /steer runs
+    assert wake.turn_origin() is None
+    assert wake.internal is True  # execution trust is not the origin: untouched
+
+
+@pytest.mark.asyncio
+async def test_a_refused_steer_or_a_turn_nobody_steered_keeps_its_origin():
+    from gateway.run import GatewayRunner
+    runner = GatewayRunner(config=GatewayConfig())
+    refusing = _Receiver(accept=False)
+    wake, person = _wake_turn(runner, 'key', refusing)
+    assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'steer', refusing)).steered is False
+    assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'interrupt', refusing)).redirected is False
+    assert wake.turn_origin() == 'delegation_result'
+    untouched, _ = _wake_turn(runner, 'other', _Receiver(), 'process_notification')
+    assert untouched.turn_origin() == 'process_notification'
+    # A steer that reaches an agent no longer owning the slot (a newer turn claimed it) lands nowhere.
+    displaced_wake, displaced_person = _wake_turn(runner, 'key3', _Receiver())
+    assert runner._fold_into_running_turn(_Receiver(), 'key3', displaced_person) is None
+    assert displaced_wake.turn_origin() == 'delegation_result'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('verb,outcome,clears', [
+    ('steer', 'accepted', True), ('redirect', 'accepted', True), ('steer', 'latched', True),
+    ('steer', 'refused', False), ('redirect', 'refused', False), ('steer', 'no_agent', False),
+])
+async def test_session_steer_and_redirect_clear_the_origin_only_once_accepted(verb, outcome, clears, tmp_path, monkeypatch):
+    """``session.steer`` / ``session.redirect`` (both apps' Steer and ``/steer`` while a turn runs)."""
+    from gateway.session_busy_controls import correct
+    from gateway.session_state import TurnState
+    from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
+    _db, authority = _authority(tmp_path, monkeypatch)
+    wake = MessageEvent(text='[result]', source=SimpleNamespace(), internal=True)
+    wake.set_turn_origin('delegation_result')
+    turn = TurnState()
+    turn.event = wake
+    authority.runner._peek_session_state = {'route': SimpleNamespace(turn=turn)}.get
+    monkeypatch.setattr(authority, 'check_approval_generation', lambda *a: None)
+    agent = None if outcome == 'no_agent' else _Receiver(accept=outcome != 'refused')
+    monkeypatch.setattr(authority, 'steer_agent', lambda *a: (None, True) if outcome == 'latched' else (agent, False))
+    reply = await correct(SimpleNamespace(authority=authority, actor=ACTOR), REF,
+                          {'session_id': 's', 'text': 'use the staging db', 'execution_generation': 1}, verb=verb)
+    assert (reply['status'] != 'rejected') is clears
+    assert wake.turn_origin() == (None if clears else 'delegation_result')

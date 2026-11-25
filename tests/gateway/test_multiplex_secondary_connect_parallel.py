@@ -10,13 +10,16 @@ reached ``ready``. These tests prove:
    scope (``get_hermes_home()`` and ``get_secret()``) isolated.
 2. Multiple platforms within a single secondary profile also connect
    concurrently.
-3. All pre-connect safety invariants remain preserved: duplicate credential /
-   listener refusal, ``MultiplexConfigError`` propagation (with staged holds
-   released), transient profile failure isolation (omitted from
-   ``_served_profile_signatures`` and ``_profile_configs``), per-adapter
-   connect failure isolation + reconnect scheduling, parked-profile skipping,
-   single-profile (multiplex off) unchanged, and single max-budget systemd
-   boot timeout extension.
+3. All pre-connect and lifecycle safety invariants remain preserved: duplicate
+   credential / listener refusal, provisional claim deferral letting a healthy
+   sibling connect after a permanent predecessor failure, ``MultiplexConfigError``
+   propagation (with staged holds released), cancellation cleanup across
+   preparation / pre-gather / in-flight handshakes, transient profile failure
+   isolation (omitted from ``_served_profile_signatures`` and
+   ``_profile_configs``), per-adapter connect failure isolation + reconnect
+   scheduling, parked-profile skipping, single-profile (multiplex off)
+   unchanged, class-level mixin monkeypatch fallback, and systemd boot timeout
+   renewal during preparation plus max-budget batch extension.
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ from agent.secret_scope import get_secret, is_multiplex_active, set_multiplex_ac
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner, MultiplexConfigError
+from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.status import flush_runtime_status, read_runtime_status
 from hermes_constants import get_hermes_home
 
@@ -509,8 +513,9 @@ async def test_parked_profiles_skipped_and_single_profile_unchanged(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_systemd_boot_extension_uses_max_budget_once_for_batch(tmp_path, monkeypatch):
-    """Concurrent secondary connects extend systemd's start deadline once with the largest
-    platform budget, so a shorter-budget sibling cannot overwrite a longer deadline."""
+    """Sequential preparation renews per platform and the concurrent connect batch extends
+    with the largest platform budget, so a shorter-budget sibling prepared last cannot leave
+    the parallel connect wave with a shorter deadline."""
     runner, home = _make_runner(tmp_path, monkeypatch)
     runner.config.systemd_watchdog_seconds = 30.0
     _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
@@ -532,5 +537,280 @@ async def test_systemd_boot_extension_uses_max_budget_once_for_batch(tmp_path, m
     assert connected == 2
     tg_budget = runner._platform_connect_timeout_secs(Platform.TELEGRAM, initial=True)
     dc_budget = runner._platform_connect_timeout_secs(Platform.DISCORD, initial=True)
-    assert len(extensions) == 1
-    assert extensions[0] == max(tg_budget, dc_budget) + 30.0
+    assert extensions[-1] == max(tg_budget, dc_budget) + 30.0
+
+
+@pytest.mark.asyncio
+async def test_slow_preparation_renews_systemd_boot_deadline(tmp_path, monkeypatch):
+    """Slow sequential preparation renews systemd's start deadline as each profile prepares
+    so 3x35s preparations never exhaust a 90s unit start timeout before notification."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    runner.config.systemd_watchdog_seconds = 30.0
+    for name in ("alpha", "beta", "gamma"):
+        _mkprofile(home, name, f"TELEGRAM_BOT_TOKEN=tok-{name}\n")
+
+    now = 0.0
+    deadline = 90.0
+    expired: list[tuple[str, float, float]] = []
+    real_load = runner._load_secondary_profile_config
+
+    async def slow_load(profile_name, profile_home):
+        nonlocal now
+        now += 35.0
+        if now >= deadline:
+            expired.append((profile_name, now, deadline))
+        return await real_load(profile_name, profile_home)
+
+    def notify(secs: float) -> bool:
+        nonlocal deadline
+        deadline = max(deadline, now + secs)
+        return True
+
+    runner._load_secondary_profile_config = slow_load
+    monkeypatch.setattr("gateway.systemd_notify.extend_start_timeout", notify)
+    runner._create_adapter = lambda platform, cfg: _FakeAsyncAdapter(platform, cfg, AsyncMock(return_value=True))
+
+    try:
+        connected = await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert connected == 3
+    assert not expired, f"crossed systemd start deadline before notification: {expired}"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_prepare_releases_staged_claims_without_disconnect(tmp_path, monkeypatch):
+    """Cancellation while preparing a later profile releases earlier provisional claims
+    without disconnecting never-started adapters."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    for name in ("alpha", "beta"):
+        _mkprofile(home, name, f"TELEGRAM_BOT_TOKEN=tok-{name}\n")
+
+    created: dict[str, _FakeAsyncAdapter] = {}
+
+    def make_adapter(platform, cfg):
+        adapter = _FakeAsyncAdapter(platform, cfg, AsyncMock(return_value=True))
+        created[Path(get_hermes_home()).name] = adapter
+        return adapter
+
+    runner._create_adapter = make_adapter
+    real_load = runner._load_secondary_profile_config
+
+    async def cancelling_load(profile_name, profile_home):
+        if profile_name == "beta":
+            raise asyncio.CancelledError
+        return await real_load(profile_name, profile_home)
+
+    runner._load_secondary_profile_config = cancelling_load
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert not getattr(runner, "_secondary_held_claims", {})
+    assert created["alpha"].connect_calls == 0
+    assert created["alpha"].disconnect_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cancellation_before_gather_workers_releases_all_claims_without_disconnect(tmp_path, monkeypatch):
+    """Cancellation right before concurrent connect workers start releases every staged
+    provisional hold and never calls disconnect() on never-started adapters."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    for name in ("alpha", "beta"):
+        _mkprofile(home, name, f"TELEGRAM_BOT_TOKEN=tok-{name}\n")
+
+    created: dict[str, _FakeAsyncAdapter] = {}
+
+    def make_adapter(platform, cfg):
+        adapter = _FakeAsyncAdapter(platform, cfg, AsyncMock(return_value=True))
+        created[Path(get_hermes_home()).name] = adapter
+        return adapter
+
+    runner._create_adapter = make_adapter
+    runner._extend_systemd_boot_for_batch = lambda _plats: asyncio.get_running_loop().call_soon(
+        asyncio.current_task().cancel
+    )
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert not getattr(runner, "_secondary_held_claims", {})
+    assert created["alpha"].connect_calls == 0 and created["alpha"].disconnect_calls == 0
+    assert created["beta"].connect_calls == 0 and created["beta"].disconnect_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_handshake_disconnects_untracked_and_preserves_holds(tmp_path, monkeypatch):
+    """Cancellation mid-handshake disconnects started-but-untracked adapters under their own
+    profile scopes, releases abandoned provisional holds, leaves already-tracked adapters
+    alone, and preserves holds already transferred to reconnect bridge tasks."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    homes = {
+        name: _mkprofile(home, name, f"TELEGRAM_BOT_TOKEN=tok-{name}\n")
+        for name in ("alpha", "beta", "gamma", "delta")
+    }
+
+    boot = asyncio.current_task()
+    alpha_done = asyncio.Event()
+    beta_done = asyncio.Event()
+    delta_in_flight = asyncio.Event()
+    disconnect_scopes: dict[str, Path] = {}
+    created: dict[str, _FakeAsyncAdapter] = {}
+
+    class _ScopedAdapter(_FakeAsyncAdapter):
+        async def disconnect(self) -> None:
+            disconnect_scopes[self._hermes_profile_name] = Path(get_hermes_home()).resolve()
+            await super().disconnect()
+
+    async def handshake(adapter: _FakeAsyncAdapter, *, is_reconnect: bool = False) -> bool:
+        name = adapter._hermes_profile_name
+        if name == "alpha":
+            alpha_done.set()
+            return True  # already tracked before cancellation
+        if name == "beta":
+            beta_done.set()
+            return False  # retryable failure transfers hold to reconnect bridge
+        if name == "delta":
+            delta_in_flight.set()
+            await asyncio.Event().wait()
+        # gamma waits for alpha (connected), beta (queued), and delta (in flight), then cancels boot.
+        await asyncio.wait_for(alpha_done.wait(), timeout=0.4)
+        await asyncio.wait_for(beta_done.wait(), timeout=0.4)
+        await asyncio.wait_for(delta_in_flight.wait(), timeout=0.4)
+        # Let beta finish its post-failure disconnect + reconnect-bridge handoff before cancelling boot.
+        for _ in range(5):
+            if ("beta", Platform.TELEGRAM) in getattr(runner, "_secondary_held_claims", {}) and (
+                runner._secondary_held_claims[("beta", Platform.TELEGRAM)][0] is not created["beta"]
+            ):
+                break
+            await asyncio.sleep(0)
+        asyncio.get_running_loop().call_soon(boot.cancel)
+        await asyncio.Event().wait()
+        return False
+
+    def make_adapter(platform, cfg):
+        adapter = _ScopedAdapter(platform, cfg, handshake)
+        created[Path(get_hermes_home()).name] = adapter
+        return adapter
+
+    runner._create_adapter = make_adapter
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await runner._start_secondary_profile_adapters()
+        held_after_cancel = dict(getattr(runner, "_secondary_held_claims", {}))
+    finally:
+        await _drain_background_tasks(runner)
+
+    # Tracked alpha was NOT disconnected; in-flight gamma/delta WERE disconnected under their scopes.
+    assert runner._profile_adapters["alpha"][Platform.TELEGRAM] is created["alpha"]
+    assert created["alpha"].disconnect_calls == 0
+    assert created["gamma"].disconnect_calls == 1
+    assert created["delta"].disconnect_calls == 1
+    assert disconnect_scopes["gamma"] == homes["gamma"].resolve()
+    assert disconnect_scopes["delta"] == homes["delta"].resolve()
+    # Provisional holds for gamma/delta were released; beta's reconnect-bridge hold was preserved.
+    assert ("gamma", Platform.TELEGRAM) not in held_after_cancel
+    assert ("delta", Platform.TELEGRAM) not in held_after_cancel
+    assert ("beta", Platform.TELEGRAM) in held_after_cancel
+    assert held_after_cancel[("beta", Platform.TELEGRAM)][0] is not created["beta"]
+
+
+@pytest.mark.asyncio
+async def test_provisional_claim_released_on_permanent_failure_lets_sibling_connect(tmp_path, monkeypatch):
+    """A provisional listener/credential conflict is deferred instead of stamped fatal upfront:
+    if alpha fails permanently (non-retryable) and releases its hold, beta connects in the next
+    wave; if alpha fails retryably and keeps a reconnect hold, beta is refused as duplicate."""
+    photon = Platform("photon")
+
+    # 1. Permanent failure on alpha releases the shared listener -> beta connects.
+    runner, home = _make_runner(tmp_path / "perm", monkeypatch)
+    for name in ("alpha", "beta"):
+        _mkprofile(home, name)
+
+    def load_cfg():
+        name = Path(get_hermes_home()).name
+        cfg = GatewayConfig(multiplex_profiles=True)
+        cfg.platforms = {photon: PlatformConfig(enabled=True, token=f"key-{name}")}
+        return cfg
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", load_cfg)
+
+    async def perm_handshake(adapter: _FakeAsyncAdapter, *, is_reconnect: bool = False) -> bool:
+        if adapter._hermes_profile_name == "alpha":
+            adapter._set_fatal_error("MISSING_CREDENTIALS", "missing project ID", retryable=False)
+            return False
+        return True
+
+    runner._create_adapter = lambda p, c: _FakeAsyncAdapter(
+        p, c, perm_handshake, sidecar_bind="127.0.0.1", sidecar_port=8789, project_secret=c.token,
+    )
+    try:
+        connected = await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert connected == 1
+    assert photon not in runner._profile_adapters.get("alpha", {})
+    assert photon in runner._profile_adapters["beta"]
+
+    # 2. Retryable failure on alpha transfers hold to reconnect bridge -> beta is refused fatal.
+    retry_runner, retry_home = _make_runner(tmp_path / "retry", monkeypatch)
+    for name in ("alpha", "beta"):
+        _mkprofile(retry_home, name)
+    created_retry: dict[str, _FakeAsyncAdapter] = {}
+
+    async def retry_handshake(adapter: _FakeAsyncAdapter, *, is_reconnect: bool = False) -> bool:
+        return adapter._hermes_profile_name != "alpha"
+
+    def make_retry_adapter(p, c):
+        adapter = _FakeAsyncAdapter(
+            p, c, retry_handshake, sidecar_bind="127.0.0.1", sidecar_port=8789, project_secret=c.token,
+        )
+        created_retry[Path(get_hermes_home()).name] = adapter
+        return adapter
+
+    retry_runner._create_adapter = make_retry_adapter
+    try:
+        retry_connected = await retry_runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(retry_runner)
+
+    assert retry_connected == 0
+    assert created_retry["beta"].connect_calls == 0
+    assert photon not in retry_runner._profile_adapters.get("beta", {})
+    flush_runtime_status()
+    state = read_runtime_status(retry_home / "gateway_state.json")
+    beta_status = (state.get("platforms") or {}).get("beta:photon") or {}
+    assert beta_status.get("state") == "fatal"
+    assert beta_status.get("error_code") == "duplicate_listener"
+
+
+@pytest.mark.asyncio
+async def test_class_level_mixin_monkeypatch_uses_patched_starter(tmp_path, monkeypatch):
+    """Patching GatewayAdapterLifecycleMixin._start_one_profile_adapters with a plain async
+    function must fall back to the patched method instead of bypassing it."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
+
+    calls: list[str] = []
+
+    async def override(self, profile_name, profile_home, claimed):
+        calls.append(profile_name)
+        return 0
+
+    monkeypatch.setattr(GatewayAdapterLifecycleMixin, "_start_one_profile_adapters", override)
+    try:
+        connected = await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert connected == 0
+    assert calls == ["alpha"]

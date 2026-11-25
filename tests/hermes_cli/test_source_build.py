@@ -421,6 +421,7 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
     assert (root / "apps/desktop/release/linux-unpacked/hermes").exists() == desktop
 
 
+@pytest.mark.platforms("posix")
 def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypatch):
     """The update skips the desktop build only when the shipped app's baked commit is HEAD
     and its receipt is current; a moved HEAD or an unreadable stamp means build."""
@@ -542,6 +543,8 @@ def test_freshness_cli_answers_through_a_symlinked_script_path(tmp_path):
     """isMain compares argv[1] against Node's realpath'd import.meta.url. Resolve argv[1] the
     same way, or a symlinked script path (macOS /var -> /private/var, /tmp -> /private/tmp)
     turns the freshness CLI into a silent no-op: empty stdout reads as a stale product."""
+    import json
+
     copy_freshness_scripts(tmp_path)
     dist = tmp_path / "out"
     dist.mkdir()

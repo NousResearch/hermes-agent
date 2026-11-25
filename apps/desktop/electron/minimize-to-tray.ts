@@ -334,12 +334,14 @@ export function createMinimizeToTray(options: Options) {
     return operation
   }
 
-  ipcMain.handle('hermes:minimize-to-tray:get', status)
-  ipcMain.handle('hermes:minimize-to-tray:set', (_event, on) => setEnabled(on === true))
-  app.on('will-quit', () => {
+  function dispose() {
     quitting = true
     destroyTray()
-  })
+  }
+
+  ipcMain.handle('hermes:minimize-to-tray:get', status)
+  ipcMain.handle('hermes:minimize-to-tray:set', (_event, on) => setEnabled(on === true))
+  app.on('will-quit', dispose)
 
   return {
     start,
@@ -347,6 +349,7 @@ export function createMinimizeToTray(options: Options) {
     setEnabled,
     registerWindow,
     restore,
+    dispose,
     // Call only AFTER the active-work guard accepts the quit. Cancelling the
     // prompt must leave hiding and its recovery affordance intact.
     beginQuit: () => {

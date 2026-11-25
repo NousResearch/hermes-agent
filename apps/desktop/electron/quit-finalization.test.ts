@@ -22,18 +22,21 @@ test('forces a single exit once the admitted quit exceeds its deadline; never ar
   let onTimeout: (() => void) | undefined
   const hardExit = vi.fn()
 
+  const activeSchedule = vi.fn((callback: () => void) => {
+    onTimeout = callback
+
+    return 'timer'
+  })
+
   const finalization = createQuitFinalization({
     enabled: true,
-    schedule: callback => {
-      onTimeout = callback
-
-      return 'timer'
-    },
+    schedule: activeSchedule,
     hardExit
   })
 
   finalization.arm()
   finalization.arm()
+  assert.equal(activeSchedule.mock.calls.length, 1)
   assert.ok(onTimeout)
   onTimeout()
   onTimeout()

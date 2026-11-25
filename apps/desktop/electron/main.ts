@@ -11187,16 +11187,45 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   }
 })
 
+let willQuitCleanupRan = false
+
+function runWillQuitCleanup(): void {
+  if (willQuitCleanupRan) {
+    return
+  }
+
+  willQuitCleanupRan = true
+  closeGatewayTicketBridges()
+  killTimedGitChildren()
+  sshIsolatedKeepalives.stopAll()
+  destroyKeepaliveAgents()
+  nativeNotifications.dispose()
+  minimizeToTray.dispose()
+}
+
 const quitFinalization = createQuitFinalization({
   enabled: shouldArmQuitFinalization(process.platform),
   hardExit: code => {
+    runWillQuitCleanup()
     rememberLog(`[quit] forcing ${process.platform} process exit after Electron quit finalization stalled`)
+    flushDesktopLogBufferSync()
     app.exit(code)
   }
 })
 
-const quitTeardown = createQuitTeardownCoordinator(() => {
+function armQuitFinalization(): void {
+  // Packaged macOS Squirrel updates (`quitAndInstall()`) set
+  // `isQuittingForHandoff` and may pause for an admin password prompt before
+  // emitting `quit`; never hard-exit out from under Squirrel handoff.
+  if (IS_MAC && isQuittingForHandoff) {
+    return
+  }
+
   quitFinalization.arm()
+}
+
+const quitTeardown = createQuitTeardownCoordinator(() => {
+  armQuitFinalization()
   app.quit()
 })
 
@@ -11885,6 +11914,10 @@ function spawnSecondaryWindow({
 
 // Open (or focus) a standalone window for a single chat session.
 function createSessionWindow(sessionId, { connectionId = null, profile = null, watch = false } = {}) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
 }
 
@@ -11972,6 +12005,10 @@ function spawnBrowserWindow(tabId) {
 }
 
 function createBrowserWindow(tabId) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
 }
 
@@ -12012,6 +12049,10 @@ function createInstanceWindow(
   options?: DesktopProfileRoute,
   source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
 ) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   const route = resolveDesktopWindowLaunch(
     options,
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
@@ -12260,6 +12301,10 @@ function spawnPetOverlayWindow(bounds) {
 }
 
 function openPetOverlay(bounds) {
+  if (isAppQuitUnderway()) {
+    return
+  }
+
   if (petOverlayWindow && !petOverlayWindow.isDestroyed() && !petOverlayClosing) {
     if (bounds) {
       petOverlayWindow.setBounds({
@@ -12819,6 +12864,10 @@ function destroyHudWindow(win: BrowserWindow) {
 }
 
 function openHudWindow(sessionId, profile) {
+  if (isAppQuitUnderway()) {
+    return null
+  }
+
   const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
 
   if (hudWindow && !hudWindow.isDestroyed()) {
@@ -14598,6 +14647,11 @@ async function requestManagedSshUpdate(rawId) {
   }
 
   const correlationId = crypto.randomUUID()
+
+  if (isAppQuitUnderway()) {
+    return refusedManagedSshUpdate(connectionId, correlationId, 'Hermes Desktop is quitting.')
+  }
+
   const registry = readDesktopConnectionsRegistry()
   const source = registry.connections.find(connection => connection.id === connectionId)
 
@@ -16204,12 +16258,8 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
-  closeGatewayTicketBridges()
-  killTimedGitChildren()
-  sshIsolatedKeepalives.stopAll()
-  destroyKeepaliveAgents()
-  nativeNotifications.dispose()
-  quitFinalization.arm()
+  runWillQuitCleanup()
+  armQuitFinalization()
 })
 
 app.on('quit', () => {
@@ -17441,7 +17491,7 @@ app.whenReady().then(() => {
   installHudModifierTap({
     rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
     summon: () => {
-      if (!isQuittingForHandoff && !backendShutdown.hasStarted()) {
+      if (!isAppQuitUnderway()) {
         openHudWindow(null, null)
       }
     }
@@ -17492,7 +17542,7 @@ app.whenReady().then(() => {
     const isQuitting = isAppQuitUnderway()
 
     if (isQuitting && quitTeardown.isFinished()) {
-      quitFinalization.arm()
+      armQuitFinalization()
       setTimeout(() => app.quit(), 0)
     }
 
@@ -17725,6 +17775,10 @@ app.on('before-quit', event => {
     return
   }
 
+  // Latch past the managed-update join once we enter teardown so a late IPC
+  // update cannot re-defer before-quit under an armed quitFinalization timer.
+  managedUpdateQuitWaitDone = true
+
   // A prevented first quit leaves the renderer alive while teardown runs.
   // Seal the SSH coordinator before touching connections so reconnect
   // callbacks cannot recreate a backend for a registration whose app is
@@ -17751,7 +17805,7 @@ app.on('before-quit', event => {
   if (quitTeardown.begin(teardownTasks)) {
     event.preventDefault()
   } else {
-    quitFinalization.arm()
+    armQuitFinalization()
   }
 
   // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).

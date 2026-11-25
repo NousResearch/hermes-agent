@@ -63,13 +63,16 @@ test('one final quit waits for every required teardown branch', async () => {
     { run: sshRun, waitForCompletion: true }
   ]
 
+  assert.equal(coordinator.isFinished(), false)
   assert.equal(coordinator.begin(tasks), true)
+  assert.equal(coordinator.isFinished(), false)
   assert.equal(coordinator.begin(tasks), true, 'a re-entrant quit stays deferred while teardown is pending')
   assert.equal(backendRun.mock.calls.length, 1)
   assert.equal(sshRun.mock.calls.length, 1)
 
   backend.resolve()
   await Promise.resolve()
+  assert.equal(coordinator.isFinished(), false)
   assert.equal(requestFinalQuit.mock.calls.length, 0)
 
   ssh.resolve()

@@ -266,3 +266,84 @@ def test_a_delegated_child_reads_nothing_of_its_parent_s_turn():
     finally:
         clear_session_vars(tokens)
     assert seen == ['process_notification', None]
+
+
+@pytest.mark.parametrize('fork', ['plugin_fork:wisdom', 'side_question', 'background_review'])
+def test_a_detached_fork_reads_nothing_of_its_parent_s_turn(fork):
+    """A detached fork runs its own prompt in a copy of the turn's context: neither ``turn_origin()``
+    nor ``ctx.turn_origin()`` names the parent's producer there, and both read it again outside."""
+    from agent.turn_facade import bind_detached_fork_origin
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_cli.plugin_session import turn_origin
+    from hermes_cli.plugins import PluginManifest
+    from hermes_cli.plugins_context import PluginContext
+    ctx = PluginContext(PluginManifest(name='wisdom'), SimpleNamespace())
+    event = _named(MessageEvent(text='[process done]', source=_source('local'), internal=True), 'process_notification')
+    tokens = set_session_vars(platform='local', chat_id='s', session_key='s', session_id='agent-s', turn_event=event)
+    try:
+        seen = [turn_origin(), ctx.turn_origin()]
+        with bind_detached_fork_origin(fork):
+            seen += [turn_origin(), ctx.turn_origin()]
+            # The fork's own thread, as ``plugin_session_fork`` runs it, sees the copied context.
+            copied = contextvars.copy_context()
+        seen += copied.run(lambda: [turn_origin(), ctx.turn_origin()])
+        seen += [turn_origin(), ctx.turn_origin()]
+    finally:
+        clear_session_vars(tokens)
+    assert seen == ['process_notification'] * 2 + [None] * 4 + ['process_notification'] * 2
+
+
+@pytest.mark.asyncio
+async def test_a_pre_upgrade_local_watch_match_retry_is_acknowledged_and_runs_once(tmp_path, monkeypatch):
+    """A local watch match an older build admitted (no origin named) and retried after the upgrade
+    with the identical event is acknowledged against the committed row and runs once, as the
+    process notification it is."""
+    from gateway.config import GatewayConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_context
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import SessionActor
+    from gateway.session_local import create_local_session
+    from hermes_cli.plugin_session import turn_origin
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    seen = []
+
+    async def answer(event):
+        entry = runner.session_store.lookup_by_session_key(authority.sessions[ref.session_id].route)
+        tokens = runner._set_session_env(build_session_context(event.source, runner.config, entry, event))
+        try:
+            seen.append((event.text.split(']')[0] + ']', turn_origin()))
+        finally:
+            runner._clear_session_env(tokens)
+        return 'ok'
+
+    monkeypatch.setattr(runner, '_handle_message', answer)
+    try:
+        viewer = SessionActor('test-owner', 'default', frozenset(
+            {'session:create', 'session:submit', 'session:read'}), 'viewer')
+        ref = create_local_session(authority, viewer, dict(request_id='gui', source='gui', model='fixture', toolsets=[]))
+        await authority.attach(viewer, ref)  # a viewer is attached: the notice runs as a turn
+        live = authority.sessions[ref.session_id]
+        entry = runner.session_store.lookup_by_session_key(live.route)
+        evt = {'type': 'watch_match', 'event_id': 'w1', 'session_id': 'proc_1', 'started_at': 1.0, 'session_key': live.route,
+               'parent_session_id': entry.session_id, 'command': 'make test', 'output': 'ok', 'exit_code': 0}
+        with monkeypatch.context() as held:
+            held.setattr(type(authority), '_schedule', lambda self, r: None)  # hold the drain for the retry
+            with monkeypatch.context() as old_build:
+                old_build.setattr(MessageEvent, 'set_turn_origin', lambda self, origin: None)
+                assert await runner._inject_watch_notification('[watch matched]', dict(evt)) is True
+            assert await runner._inject_watch_notification('[watch matched]', dict(evt)) is True
+        rows = [r for r in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)
+                if 'local_automation_v1' in r.payload]
+        assert len(rows) == 1 and 'turn_origin' not in rows[0].payload['local_automation_v1']
+        authority._schedule(ref)
+        await async_wait_until(lambda: seen, timeout=10, what='the watch match')
+        await asyncio.sleep(0.2)
+    finally:
+        runner.session_store.close_all_db_handles()
+    assert seen == [('[watch matched]', 'process_notification')]

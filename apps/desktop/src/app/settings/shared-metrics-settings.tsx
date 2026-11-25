@@ -1,13 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { DocsLink } from '@/components/onboarding/flow'
 import { useI18n } from '@/i18n'
 import { $activeConnectionId } from '@/store/connections'
-import { setDesktopMetricsGate } from '@/store/desktop-metrics'
+import { captureDesktopMetricsGate } from '@/store/desktop-metrics'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 import {
   readSharedMetricsConsent,
@@ -27,28 +26,47 @@ import { ToggleRow } from './primitives'
  * rolled back on failure.
  */
 export function SharedMetricsSettings() {
+  const profile = useStore($settingsScopeProfile)
+  const connectionId = useStore($activeConnectionId)
+
+  return (
+    <SharedMetricsSettingsForOwner
+      connectionId={connectionId}
+      key={JSON.stringify([connectionId, profile])}
+      profile={profile}
+    />
+  )
+}
+
+interface SharedMetricsOwnerProps {
+  connectionId: string | null
+  profile: string
+}
+
+function SharedMetricsSettingsForOwner({ connectionId, profile }: SharedMetricsOwnerProps) {
   const { t } = useI18n()
   const copy = t.sharedMetrics
-  const scopeProfile = useStore($settingsScopeProfile)
-  const connectionId = useStore($activeConnectionId)
   const [consent, setConsent] = useState<SharedMetricsConsent | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
+  const mounted = useRef(false)
 
   const request = useMemo(
     () =>
       sharedMetricsProfileRequester(
         <T,>(method: string, params: Record<string, unknown> = {}) =>
-          requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
+          requestGatewayForAgent<T>(connectionId, profile, method, params, undefined, undefined, {
             spawnPriority: 'foreground'
           }),
-        scopeProfile
+        profile
       ),
-    [connectionId, scopeProfile]
+    [connectionId, profile]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- component lifetime flag, not a reactive-value mirror
   useEffect(() => {
     let cancelled = false
+    mounted.current = true
 
     setLoaded(false)
     void readSharedMetricsConsent(request).then(next => {
@@ -58,7 +76,10 @@ export function SharedMetricsSettings() {
       }
     })
 
-    return () => void (cancelled = true)
+    return () => {
+      cancelled = true
+      mounted.current = false
+    }
   }, [request])
 
   const save = async (flags: { enabled: boolean; send: boolean }) => {
@@ -68,17 +89,18 @@ export function SharedMetricsSettings() {
     setConsent({ ...flags, send: flags.enabled && flags.send, decided: true })
 
     try {
+      const applyGate = await captureDesktopMetricsGate(`${connectionId ?? ''}|${profile}`)
       const saved = await saveSharedMetricsConsent(request, flags)
 
       setConsent(saved)
 
-      // This page applies to the focused profile (unscoped, or scoped to it by name): Desktop
-      // telemetry follows its switch at once.
-      const focused =
-        scopeProfile === null || normalizeProfileKey(scopeProfile) === normalizeProfileKey($activeGatewayProfile.get())
+      if (!(await applyGate(saved.enabled ? 'on' : 'off')) && mounted.current) {
+        const applyCurrent = await captureDesktopMetricsGate(`${connectionId ?? ''}|${profile}`)
+        const current = await readSharedMetricsConsent(request)
 
-      if (saved && focused) {
-        setDesktopMetricsGate(saved.enabled ? 'on' : 'off')
+        if (mounted.current && current?.decided && await applyCurrent(current.enabled ? 'on' : 'off', current.decided)) {
+          setConsent(current)
+        }
       }
     } catch (err) {
       setConsent(previous)

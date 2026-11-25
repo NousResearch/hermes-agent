@@ -303,7 +303,26 @@ export const zhHantAssistant = {
       alwaysTitle: '一律允許此指令？',
       alwaysDescription: pattern =>
         `這會將「${pattern}」模式加入永久允許清單（~/.hermes/config.yaml）。Hermes 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
-      alwaysAllow: '一律允許'
+      alwaysAllow: '一律允許',
+      deny: '拒絕',
+      allow: '允許',
+      allowHint: '直到關閉沙箱',
+      denyReason: '拒絕原因',
+      denyReasonPlaceholder: '告訴 Hermes 原因（選填）',
+      access: {
+        title: '資料夾存取',
+        readOnly: '唯讀',
+        readWrite: '讀寫',
+        timedOut: folder => `要求已逾時 — 未授予資料夾 ${folder} 的存取權。請讓 Hermes 重試。`,
+        alwaysTitle: '一律允許此資料夾？',
+        alwaysDescription: '此資料夾將加入此設定檔的沙箱。Hermes 在任何對話中都不會再詢問。'
+      },
+      network: {
+        title: '網站存取',
+        timedOut: site => `要求已逾時 — 未授予 ${site} 的存取權。請讓 Hermes 重試。`,
+        alwaysTitle: '一律允許此網站？',
+        alwaysDescription: '此網站將加入此設定檔的允許網站。Hermes 在任何對話中都不會再詢問。'
+      }
     },
     clarify: {
       notReady: '澄清請求尚未就緒',

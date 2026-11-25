@@ -145,3 +145,33 @@ describe('WebhooksView profile ownership', () => {
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
   })
 })
+
+describe('WebhooksView signature pin', () => {
+  it('pins a new route to generic unless another scheme is picked', async () => {
+    mocks.createWebhook.mockResolvedValue({ secret: 's', url: 'https://alpha.example/hook' })
+    renderView()
+
+    fireEvent.click(await screen.findByRole('button', { name: /new subscription/i }))
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'plain-hook' } })
+    fireEvent.click(screen.getByRole('button', { name: /^create$/i }))
+    await waitFor(() =>
+      expect(mocks.createWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'plain-hook', signature: 'generic' }),
+        'alpha'
+      )
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: /^done$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /new subscription/i }))
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'gh-hook' } })
+    fireEvent.click(screen.getByRole('combobox', { name: /^signature$/i }))
+    fireEvent.click(screen.getByRole('option', { name: 'GitHub' }))
+    fireEvent.click(screen.getByRole('button', { name: /^create$/i }))
+    await waitFor(() =>
+      expect(mocks.createWebhook).toHaveBeenLastCalledWith(
+        expect.objectContaining({ name: 'gh-hook', signature: 'github' }),
+        'alpha'
+      )
+    )
+  })
+})

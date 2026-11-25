@@ -176,18 +176,18 @@ async def probe():
                         receipt["same_agent"] = server._sessions[sid].get("agent") is warm_agent
             receipt["messaging_outputs"] = adapter.sent
             if getattr(runner, 'session_authority', None) is not None:
-                from hermes_state_runtime import list_session_admissions
+                from gateway.session_authority import admission_row
                 await adapter.handle_message(MessageEvent(text='BLOCK_FIFO', source=source, message_id='fifo-1'))
                 assert await asyncio.to_thread(peer.blocked.wait, 5)
                 queued_event = MessageEvent(text='FIFO_SECOND', source=source, message_id='fifo-2')
                 queued_task = asyncio.create_task(adapter.handle_message(queued_event))
                 try:
-                    await async_wait_until(lambda: any(r['request_id'] == 'fifo-2' for r in list_session_admissions(
-                        runner.session_authority.db, session_id=entry.session_id)), timeout=3,
+                    await async_wait_until(lambda: any(r.request_id == 'fifo-2' for r in runner.session_authority.persistence.admissions.list(
+                        session_id=entry.session_id)), timeout=3,
                         what='the queued FIFO_SECOND admission')
                     assert not adapter._pending_messages, 'second frontend queue owns accepted work'
                     receipt['durable_native_fifo'] = True
-                    pending = list_session_admissions(runner.session_authority.db, session_id=entry.session_id)
+                    pending = [admission_row(record) for record in runner.session_authority.persistence.admissions.list(session_id=entry.session_id)]
                     queued_row = next(r for r in pending if r['request_id'] == 'fifo-2')
                     envelope = queued_row['payload'].get('native_text_v1')
                     assert envelope is not None, 'ACK has no durable native source envelope'
@@ -213,8 +213,8 @@ async def probe():
                     task_owner = runner.session_authority.sessions[entry.session_id].task
                     if task_owner is not None:
                         await task_owner
-                rows = list_session_admissions(runner.session_authority.db,
-                                                session_id=entry.session_id, pending_only=False)
+                rows = [admission_row(record) for record in runner.session_authority.persistence.admissions.list(
+                    session_id=entry.session_id, pending_only=False)]
                 assert [r['request_id'] for r in rows] == ['warm-1', 'ws-1', 'fifo-1', 'fifo-2'], rows
                 assert all(r['status'] == 'terminal' and r['outcome'] == 'completed' for r in rows), rows
                 assert runner._cached_agent_for(entry.session_key) is warm_agent
@@ -227,7 +227,7 @@ async def probe():
                 rejected = MessageEvent(text='UNAUTHORIZED', message_id='denied', source=SessionSource(
                     platform=Platform.TELEGRAM, chat_id='fixture-chat', chat_type='group', user_id='foreign'))
                 await runner._handle_message(rejected)
-                assert len(list_session_admissions(runner.session_authority.db,
+                assert len(runner.session_authority.persistence.admissions.list(
                            session_id=entry.session_id, pending_only=False)) == before
                 receipt['admissions'] = rows
                 await verify_envelope_guards(runner, source)

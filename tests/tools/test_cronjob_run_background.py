@@ -14,7 +14,12 @@ Sync fallbacks preserved:
 """
 import json
 import threading
+import time
 from unittest.mock import patch
+
+import pytest
+
+from tests.waiting import wait_until
 
 from tools.cronjob_tools import (
     _try_dispatch_background_run,
@@ -94,7 +99,9 @@ class TestBackgroundDispatch:
                  patch("cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None,
-                                     "next_run_at": "2026-08-07T09:00:00"}):
+                                     "next_run_at": "2026-08-07T09:00:00"}), \
+                 patch("tools.cronjob_tools._latest_job_output_excerpt",
+                       return_value="LOCAL JOB PAYLOAD"):
                 res = _try_dispatch_background_run(_job('job-bg-02'))
                 assert res["dispatched"] is True
 
@@ -115,6 +122,69 @@ class TestBackgroundDispatch:
         assert found["session_key"] == "agent:main:telegram:dm:777"
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
+        assert "LOCAL JOB PAYLOAD" in found["summary"]
+
+    @pytest.mark.parametrize("delivery_error, reached_none, echoed", [
+        (None, None, False), ("chat not found", True, True),
+        ("telegram:-100999:7 failed; 1 attachment dropped", None, False)])
+    def test_external_delivery_echoes_job_output_only_when_no_target_got_it(
+            self, delivery_error, reached_none, echoed):
+        """A delivery that failed everywhere reached nobody, so its output stays in the completion
+        the agent relays; a delivered or partly delivered one is not copied into the invoking
+        session (it already reached a chat)."""
+        from tools.cronjob_tools import _manual_run_completion
+
+        refreshed = {"last_status": "ok", "last_delivery_error": delivery_error,
+                     "last_delivery_reached_none": reached_none}
+        with patch("tools.cronjob_tools.get_job", return_value=refreshed), \
+             patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
+            out = _manual_run_completion(
+                {"success": True}, "j1", "nightly", "telegram:-100999", time.time())
+        assert ("THE REPORT" in out["summary"]) is echoed
+
+    def test_external_delivery_completion_does_not_echo_job_output(self):
+        """A manual run's completion returns to the invoking session, which may
+        be unrelated to the job's explicit destination. Once the scheduler has
+        delivered externally, the completion must report status without copying
+        the payload into that other session.
+        """
+        from tools.process_registry import process_registry
+
+        job = {
+            **_job("job-bg-explicit-target"),
+            "deliver": "telegram:170829464:539316",
+        }
+        with _bound_session_key("agent:main:telegram:dm:170829464:581299"):
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire",
+                return_value={**job, "fire_claim": {"by": "bg-owner"}},
+            ), patch(
+                "cron.scheduler.run_one_job", return_value=True
+            ), patch(
+                "tools.cronjob_tools.get_job",
+                return_value={"last_status": "ok", "last_error": None},
+            ), patch(
+                "tools.cronjob_tools._latest_job_output_excerpt",
+                return_value="PAYLOAD FOR THREAD 539316",
+            ):
+                res = _try_dispatch_background_run(job)
+                assert res["dispatched"] is True
+
+                def _ours():
+                    try:
+                        evt = process_registry.completion_queue.get_nowait()
+                    except Exception:
+                        return None
+                    if evt.get("delegation_id") == res["delegation_id"]:
+                        return evt
+                    process_registry.completion_queue.put(evt)
+                    return None
+
+                found = wait_until(_ours, timeout=10, what="the manual-run completion event")
+
+        assert found["session_key"].endswith(":581299")
+        assert "Delivery target: telegram:170829464:539316" in found["summary"]
+        assert "PAYLOAD FOR THREAD 539316" not in found["summary"]
 
     def test_failed_run_reports_error_status_in_event(self):
         import time

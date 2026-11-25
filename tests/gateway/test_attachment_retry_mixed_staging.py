@@ -2,7 +2,7 @@
 import pytest
 
 from gateway.session_ingress_media import admit_attachments
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 @pytest.mark.parametrize('missing_index', [0, 1])
@@ -18,7 +18,7 @@ def test_missing_staging_sibling_does_not_skip_remaining_image_hashes(missing_in
     paths[missing_index].unlink()
     remaining = paths[1 - missing_index]
     remaining.write_bytes(b'\x89PNG\r\n\x1a\nchanged')
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         admit_attachments(attachments, admitted=lambda: row)
 
     # Restore the surviving file: a partially pruned exact retry remains valid.

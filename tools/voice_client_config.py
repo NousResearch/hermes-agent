@@ -102,7 +102,7 @@ def _resolve_stt_client_config() -> dict[str, Any]:
     provider = tt._get_provider(stt_config)
     # Server-host-only: local whisper, the env-var command escape hatch,
     # declared command providers, and anything plugin-registered.
-    if tt._is_local_stt_provider(provider, stt_config):
+    if tt._is_local_stt_provider(provider):
         return _relay("local provider")
     if provider not in tc.BUILTIN_STT_PROVIDERS:
         return _relay("command/plugin provider")

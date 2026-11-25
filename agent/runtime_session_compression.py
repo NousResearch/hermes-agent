@@ -9,7 +9,7 @@ def _handoff_rows(messages):
     that SessionDB's insert simply never reads. The owner's boundary stays closed; sending those keys
     would fail the receipt and leave the journal stuck pending, refusing every later write.
     """
-    from hermes_state_runtime import HANDOFF_MESSAGE_FIELDS
+    from persistence.workers.vocabulary import HANDOFF_MESSAGE_FIELDS
     return [{k: v for k, v in m.items() if k in HANDOFF_MESSAGE_FIELDS} if isinstance(m, dict) else m
             for m in messages]
 
@@ -79,7 +79,7 @@ class RuntimeSessionCompressionMixin:
         # The lease-less staleness fence (#124102): the owner re-verifies the caller's held rows
         # inside its commit transaction. The projection keeps the closed handoff fields plus the
         # persistence marker the CAS compare reads; anything else stays worker-local.
-        from hermes_state_runtime import HANDOFF_MESSAGE_FIELDS
+        from persistence.workers.vocabulary import HANDOFF_MESSAGE_FIELDS
         cas = None if held_for_cas is None else [
             {k: v for k, v in m.items()
              if k in HANDOFF_MESSAGE_FIELDS or k == '_db_persisted'}
@@ -90,6 +90,9 @@ class RuntimeSessionCompressionMixin:
             unresolved_held=unresolved, held_for_cas=cas))
         from agent.runtime_session_store import apply_row_annotations
         apply_row_annotations(compacted_messages, result['annotations'])
+        # The worker's local context version (the prompt-cache clock's compaction witness): every
+        # in-place rewrite archives through here, a prune or micro-compaction included.
+        self.context_rewrites = getattr(self, 'context_rewrites', 0) + 1
         return result['value']
 
     def publish_compression_child(self, *, parent_session_id, child_session_id, source, messages,

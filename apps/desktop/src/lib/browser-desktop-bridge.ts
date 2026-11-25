@@ -3,6 +3,7 @@ import { externalUrlTarget, LOCAL_CONNECTION_ID } from '@hermes/shared'
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
+import { createBrowserCloudBridge } from '@/lib/browser-cloud'
 import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
@@ -148,6 +149,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
+    cloud: createBrowserCloudBridge({ api, relays }),
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
     ...createBrowserConnectionBridge({ api, bootstrap, relays }),
     ...(relays ? { connections: relays.connections } : {}),
@@ -170,6 +172,11 @@ export function installBrowserDesktopBridge(): boolean {
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
     notify: async payload => showBrowserNotification(payload),
+    // A browser has no idle clock that counts other apps; the reporter falls back to input in this tab.
+    presence: {
+      get: async () => ({ system: false, idleSeconds: null, locked: false, suspended: false, seq: 0, sampledAt: Date.now() }),
+      onChange: () => () => undefined
+    },
     onFocusSession: onBrowserFocusSession,
     openExternal,
     openPreviewInBrowser: async url => {

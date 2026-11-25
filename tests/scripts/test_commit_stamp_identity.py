@@ -71,6 +71,17 @@ def test_stamp_uses_built_commit_even_with_dispatch_sha_and_refuses_mismatch(tmp
                   {'HERMES_BUILD_COMMIT': ' ' + feature}):
         assert run(override=extra).returncode != 0
         assert out.read_bytes() == before
+    # A commit build on the release pipeline carries its own claim tag and stays a commit build.
+    claim = 'commit.20261026T180000Z-v0.28.0'
+    result = run('--commit', feature, override={'HERMES_PAYLOAD_TAG': claim})
+    assert result.returncode == 0, result.stderr
+    claimed = json.loads(out.read_text(encoding='utf-8'))
+    assert claimed['tag'] == claim and claimed['source'] == 'commit-build'
+    assert claimed['updateMechanism'] == 'external' and claimed['branch'] is None
+    # Without HERMES_BUILD_COMMIT, a commit claim is refused rather than stamped as a release.
+    kept = out.read_bytes()
+    assert run('--commit', feature, override={'HERMES_BUILD_COMMIT': '', 'HERMES_PAYLOAD_TAG': claim}).returncode != 0
+    assert out.read_bytes() == kept
     result = run('--commit', feature, override={'HERMES_BUILD_COMMIT': '', 'HERMES_PAYLOAD_TAG': 'v1.2.3'})
     assert result.returncode == 0, result.stderr
     assert json.loads(out.read_text(encoding='utf-8'))['tag'] == 'v1.2.3'

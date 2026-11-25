@@ -96,9 +96,10 @@ download time (which depends on your connection) and local verification/swap
 time:
 
 - **macOS:** a fresh DMG install is ~948 MB, and choosing **Update** in the
-  app downloads the ~983 MB signed ZIP. After the ZIP finishes downloading, Squirrel.Mac unpack,
-  code-signature verification, and bundle swap take roughly **50 seconds** on
-  Apple Silicon (measured on an M4 Mac) before the app relaunches.
+  app downloads the signed update ZIP (~983 MB in full). After the ZIP finishes
+  downloading, Squirrel.Mac unpack, code-signature verification, and bundle
+  swap take roughly **50 seconds** on Apple Silicon (measured on an M4 Mac)
+  before the app relaunches.
 - **Windows:** full per-architecture MSIX packages are ~1.89 GB (ARM64) to
   ~2.86 GB (x64). Windows App Installer and the Microsoft Store download only
   your host architecture and apply differential block updates between releases,

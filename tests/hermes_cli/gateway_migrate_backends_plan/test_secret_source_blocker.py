@@ -1,0 +1,154 @@
+"""UX and contract tests for ``secret_source_blocker`` (issue #159818)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from gateway.webapp_listener import _public_url as accepted_public_url
+from hermes_cli import gateway_migrate_backends_plan as plan_mod
+from hermes_cli.web_server_boundary import public_hosts_engage_gate, public_url_hosts
+from tests.hermes_cli.test_gateway_migrate_backends_apply import FakeHost
+
+_GUIDE = Path(__file__).resolve().parents[3] / "website" / "docs" / "user-guide" / "features" / "web-dashboard.md"
+
+
+def _write_config(home: Path, body: str) -> None:
+    (home / "config.yaml").write_text("model:\n  default: fake-model\n" + body, encoding="utf-8")
+
+
+def _host_on(home: Path, *, bind: str = "0.0.0.0", port: int = 9119, supervisor: str = "systemd") -> FakeHost:
+    host = FakeHost(home, host=bind, supervisor=supervisor)
+    host.argv = [
+        "/venv/bin/python", "-m", "hermes_cli.main", "dashboard", "--no-open",
+        "--host", bind, "--port", str(port),
+    ]
+    return host
+
+
+def test_secret_source_blocker_explains_why_and_local_lan_options(home):
+    """Issue #159818 repro: LAN/Desktop-only user with an enabled external secret source gets a clear
+    explanation of what webapp.public_url is, why Hermes asks, and a valid loopback example."""
+    _write_config(home, "secrets:\n  bitwarden:\n    enabled: true\n")
+    plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119))
+
+    assert plan.exit_code() == plan_mod.EXIT_BLOCKED
+    assert len(plan.blockers) == 1
+    blocker = plan.blockers[0]
+    assert "external secret source is enabled" in blocker
+    assert "HERMES_DASHBOARD_PUBLIC_URL" in blocker
+    assert "never reads vault values" in blocker
+    assert "browser-facing" in blocker
+    assert "http:// or https://" in blocker
+    assert "sign-in callbacks" in blocker
+    assert "Host/Origin" in blocker
+    assert "internet-routable" in blocker
+    assert "LAN" in blocker
+    assert "Desktop-only" in blocker
+    assert "http://127.0.0.1:9119" in blocker
+    assert "hermes -p default config set webapp.public_url http://127.0.0.1:9119" in blocker
+    assert blocker.endswith("Nothing changed.")
+
+
+@pytest.mark.parametrize(("bind", "port", "expected_url", "expected_arg"), [
+    ("0.0.0.0", 9119, "http://127.0.0.1:9119", "http://127.0.0.1:9119"),
+    ("127.0.0.1", 8443, "http://127.0.0.1:8443", "http://127.0.0.1:8443"),
+    ("192.168.1.50", 9120, "http://127.0.0.1:9120", "http://127.0.0.1:9120"),
+    ("::", 9119, "http://[::1]:9119", "'http://[::1]:9119'"),
+    ("::1", 8080, "http://[::1]:8080", "'http://[::1]:8080'"),
+])
+def test_suggested_loopback_url_matches_backend_and_unblocks_migration(
+    home, bind, port, expected_url, expected_arg,
+):
+    """The loopback URL the blocker suggests is valid for webapp.public_url, does not engage the auth
+    gate on loopback, and unblocks build_plan once configured."""
+    _write_config(home, "secrets:\n  vault:\n    enabled: true\n")
+    blocked = plan_mod.build_plan(_host_on(home, bind=bind, port=port))
+
+    assert blocked.exit_code() == plan_mod.EXIT_BLOCKED
+    assert expected_url in blocked.blockers[0]
+    assert f"config set webapp.public_url {expected_arg}" in blocked.blockers[0]
+    assert accepted_public_url(expected_url) == expected_url
+    assert public_hosts_engage_gate(public_url_hosts(expected_url)) is False
+
+    _write_config(home, f"secrets:\n  vault:\n    enabled: true\nwebapp:\n  public_url: {expected_url}\n")
+    unblocked = plan_mod.build_plan(_host_on(home, bind=bind, port=port))
+
+    assert unblocked.exit_code() == plan_mod.EXIT_OK
+    assert unblocked.blockers == []
+
+
+def test_secret_source_blocker_does_not_suggest_config_set_on_nix(home):
+    """Nix-managed installs refuse `hermes config set`, so the blocker points at Nix configuration."""
+    _write_config(home, "secrets:\n  vault:\n    enabled: true\n")
+    plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119, supervisor="nix-systemd"))
+
+    assert plan.exit_code() == plan_mod.EXIT_BLOCKED
+    assert len(plan.blockers) == 1
+    blocker = plan.blockers[0]
+    assert "external secret source is enabled" in blocker
+    assert "Nix configuration" in blocker
+    assert "http://127.0.0.1:9119" in blocker
+    assert "config set" not in blocker
+
+
+def test_secret_source_blocker_uses_kept_webapp_port_with_keep_webapp_address(home):
+    """With --keep-webapp-address, the loopback example uses the already-enabled Webapp's port."""
+    _write_config(
+        home,
+        "secrets:\n  vault:\n    enabled: true\nwebapp:\n  enabled: true\n  host: 127.0.0.1\n  port: 9200\n",
+    )
+    plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119), keep_webapp=True)
+
+    assert plan.exit_code() == plan_mod.EXIT_BLOCKED
+    assert "http://127.0.0.1:9200" in plan.blockers[0]
+    assert "http://127.0.0.1:9119" not in plan.blockers[0]
+
+
+def test_secret_source_blocker_direct_call_without_address_uses_port_placeholder(home):
+    """Direct 1-arg callers stay compatible and never guess port 9119 when no address is supplied."""
+    _write_config(home, "secrets:\n  vault:\n    enabled: true\n")
+    blocker = plan_mod.secret_source_blocker(FakeHost(home))
+
+    assert blocker is not None
+    assert "external secret source is enabled" in blocker
+    assert "http://127.0.0.1:<port>" in blocker
+    assert "http://127.0.0.1:9119" not in blocker
+
+
+def test_secret_source_blocker_keeps_fail_closed_and_url_validation_invariants(home):
+    """Control checks: disabled secret sources never block; bare IP without scheme is still rejected;
+    valid LAN and HTTPS URLs unblock the plan."""
+    _write_config(home, "secrets:\n  vault:\n    enabled: false\n")
+    assert plan_mod.secret_source_blocker(FakeHost(home)) is None
+
+    _write_config(home, "secrets:\n  vault:\n    enabled: true\nwebapp:\n  public_url: 127.0.0.1\n")
+    bare_ip = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119))
+    assert bare_ip.exit_code() == plan_mod.EXIT_BLOCKED
+    assert any("webapp.public_url must be an http:// or https://" in b for b in bare_ip.blockers)
+
+    for valid_url in ("http://mybox.local:9119", "https://hermes.example.com"):
+        _write_config(home, f"secrets:\n  vault:\n    enabled: true\nwebapp:\n  public_url: {valid_url}\n")
+        ok = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119))
+        assert ok.exit_code() == plan_mod.EXIT_OK, valid_url
+        assert ok.blockers == [], valid_url
+
+
+def test_secret_source_blocker_minimal_stub_host_does_not_crash():
+    """A minimal host double providing only effective_config() still works without home/os_family."""
+    stub = SimpleNamespace(effective_config=lambda: {"secrets": {"bitwarden": {"enabled": True}}})
+    blocker = plan_mod.secret_source_blocker(stub)
+
+    assert blocker is not None
+    assert "external secret source is enabled" in blocker
+    assert "hermes -p default config set webapp.public_url" in blocker
+
+
+def test_migration_docs_explain_secret_source_public_url_guidance():
+    text = " ".join(_GUIDE.read_text(encoding="utf-8-sig").split())
+    assert "HERMES_DASHBOARD_PUBLIC_URL" in text
+    assert "secrets:" in text
+    assert "browser-facing" in text
+    assert "http://127.0.0.1:9119" in text

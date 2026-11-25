@@ -43,6 +43,14 @@ def summary_view(
     return [*plan[:start], *window, *plan[end:]]
 
 
+def _stored(message: dict[str, Any]) -> bool:
+    """A row the session store already holds. A compaction archives it there (``active=0``), so its exact text
+    stays reachable through ``session_search`` and the retention sweep still reads any archive it names."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    return bool(message.get(_DB_PERSISTED_MARKER)) or isinstance(message.get("_row_id"), int)
+
+
 class CompactionWindowMixin:
     """Window planning shared by compress() and the background pass."""
 
@@ -123,10 +131,13 @@ class CompactionWindowMixin:
         replaces, each stub naming its file, and (lean mode) demote the stale tail results the same way. Returns
         ``(rows to assemble from, pruned_count)``. *originals* is the unpruned transcript without blank echoes
         (index-aligned with *plan*). The boundaries stay as summarized even when a failed write keeps an
-        original whole."""
+        original whole. A replaced row the session store already holds gets no file: the store keeps its
+        original, and a file named only by a row the summary drops would just be listed in the summary."""
         from tools.tool_result_storage import archive_compaction_drops
 
         session_id = getattr(self, "_session_id", "") or ""
+        if len(originals) == len(plan):
+            plan = [originals[i] if start <= i < end and _stored(originals[i]) else row for i, row in enumerate(plan)]
         if pruned_count:
             plan, _written, kept = archive_compaction_drops(originals, plan, session_id)
             pruned_count -= kept
@@ -145,21 +156,15 @@ class CompactionWindowMixin:
     def _assemble_with_archive_list(
         self, messages: list[dict[str, Any]], start: int, end: int, scan: Any, summary: str,
     ) -> list[dict[str, Any]]:
-        """``_assemble_compressed`` with every archive a replaced row named, that neither the kept head and tail
-        nor the generated summary still name, listed in the summary row: the summarizer never saw the pointers
-        (it read the originals), and the list keeps the model's path back and the reference the retention
-        sweep keeps the file for. An earlier handoff row that is already stored counts only for its unwrapped
-        prior-tail content: its own archive list stays on that stored row, which the sweep still reads, so
-        lists never re-stack. An unstored handoff (no session store) is the list's only copy, so it carries over."""
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        """``_assemble_compressed`` with every archive an unstored replaced row named, that neither the kept head
+        and tail nor the generated summary still name, listed in the summary row: the summarizer never saw the
+        pointers (it read the originals), and the list keeps the model's path back and the reference the
+        retention sweep keeps the file for. A stored row (an earlier handoff with its own list included) adds
+        nothing: the store keeps it and every pointer it holds, so lists never re-stack and a session with a
+        store commits none. Without a store the list is the only copy, so it carries over."""
         from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
 
-        named = pruned_archive_refs(
-            row for idx, msg in enumerate(messages)
-            if (row := msg if idx not in scan.summary_indices
-                or not (msg.get(_DB_PERSISTED_MARKER) or isinstance(msg.get("_row_id"), int))
-                else self._strip_context_summary_handoff_message(msg)) is not None
-        )
+        named = pruned_archive_refs(msg for msg in messages if not _stored(msg))
         # What the committed transcript really keeps: assembly drops standalone handoffs from the head and tail.
         kept = [*self._assemble_head(messages, start), {"content": summary},
                 *self._assemble_tail(messages, end, scan.tail_start, scan.summary_indices)]
@@ -168,9 +173,9 @@ class CompactionWindowMixin:
     def _offload_window_results(
         self, plan: list[dict[str, Any]], start: int, end: int,
     ) -> tuple[list[dict[str, Any]], int, list[str], int]:
-        """The tool results the summary replaced, saved after it was generated: each one the prune left whole
-        inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the model can still
-        open the exact output. Only where ``read_file`` opens archives (local, or a backend that publishes
+        """The tool results the summary replaced, saved after it was generated: each unstored one the prune left
+        whole inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the model can
+        still open the exact output. Only where ``read_file`` opens archives (local, or a backend that publishes
         ``cache/pruned``). Returns ``(rows, stubbed, written paths, failed writes)``."""
         from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
         from tools.tool_result_storage import _archive_backend, archive_pruned_originals, has_archive_pointer
@@ -180,6 +185,8 @@ class CompactionWindowMixin:
         demoted, calls = list(plan), _tool_calls_by_id(plan)
         changed = 0
         for i in range(start, end):
+            if _stored(plan[i]):
+                continue
             if self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS):
                 changed += 1
             elif (plan[i].get("role") == "tool" and plan[i].get("content")

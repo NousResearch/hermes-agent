@@ -77,6 +77,21 @@ class TestRasterPathUnchanged:
         assert cached.kind == "image"
 
 
+class TestSvgBookkeeping:
+    """SVG must be a first-class document type, not only a flipped branch."""
+
+    def test_document_type_table_knows_svg(self):
+        assert base.SUPPORTED_DOCUMENT_TYPES[".svg"] == "image/svg+xml"
+
+    def test_svg_source_is_text_injectable(self):
+        assert ".svg" in base._TEXT_INJECT_EXTENSIONS
+
+    def test_cached_svg_reports_its_mime(self):
+        cached = base.cache_media_bytes(SVG_BYTES, filename="logo.svg")
+        assert cached is not None
+        assert cached.media_type == "image/svg+xml"
+
+
 class TestTelegramPairingClassifier:
     """``is_image_document`` gates the Telegram download path; SVG must opt out."""
 

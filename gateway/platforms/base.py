@@ -1103,6 +1103,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".log": "text/plain", ".json": "application/json", ".xml": "application/xml",
     ".yaml": "application/yaml", ".yml": "application/yaml", ".toml": "application/toml",
     ".ini": "text/plain", ".cfg": "text/plain", ".zip": "application/zip",
+    ".svg": "image/svg+xml",
     ".doc": "application/msword", ".xls": "application/vnd.ms-excel",
     ".ppt": "application/vnd.ms-powerpoint",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1113,7 +1114,7 @@ SUPPORTED_DOCUMENT_TYPES = {
 # Files safe to inline into the prompt when small. An extension gate, NOT a blind UTF-8 decode
 # (PDF/zip/docx can start with decodable ASCII). Non-members are still cached by path.
 _TEXT_INJECT_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".jsonl", ".ndjson", ".xml",
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".jsonl", ".ndjson", ".xml", ".svg",
     ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties", ".html", ".htm",
     ".css", ".scss", ".sass", ".less", ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
     ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".c", ".h", ".cpp", ".cc", ".hpp", ".cs",

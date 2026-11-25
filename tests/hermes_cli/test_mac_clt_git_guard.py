@@ -272,6 +272,21 @@ def test_clt_stub_doctor_reports_honest_warning_and_install_hint(tmp_path, monke
 
 
 @pytest.mark.platforms("posix")
+def test_clt_stub_never_spawns_version_info_probes(tmp_path, clt_stub_env):
+    """The startup banner, dashboard and ``hermes dump`` read an unstamped checkout's version from git."""
+    from hermes_cli import version_info
+
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+
+    info = version_info._git_version_info(checkout)
+    assert (info.commit, info.dirty) == (None, False)
+    assert version_info._run_git(checkout, "rev-parse", "HEAD") is None
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_resume_workspace_key_keeps_users_git_dir_and_work_tree(tmp_path, monkeypatch):
     """``--resume latest`` groups by the repo root git reports for the user's own environment:
     a dotfiles-style ``GIT_DIR``/``GIT_WORK_TREE`` pair must still name the work tree."""

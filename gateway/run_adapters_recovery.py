@@ -14,9 +14,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from pathlib import Path
 import time
 from typing import Optional
 
+from agent.async_utils import consume_detached_task_result
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
@@ -218,6 +220,159 @@ class GatewaySecondaryReconnectMixin:
         go meanwhile)."""
         active = getattr(self, "_primary_profile_name", None) or "default"
         return {**self._held_claim_owners(exclude), **self._live_resource_claims(active)}
+
+    def _external_claim_owners(self, profile_name: str, platform: Platform, staged_owners: set) -> dict[tuple, str]:
+        """Claim owners excluding provisional holds owned by ``staged_owners``."""
+        mine = (profile_name, platform) if any(key == (profile_name, platform) for _o, key, _c in (
+            getattr(self, "_teardown_held_claims", None) or {}).values()) else None
+        owners = self._current_claim_owners(mine) if getattr(self, "_running", False) else self._held_claim_owners(mine)
+        if not staged_owners:
+            return owners
+        held = getattr(self, "_secondary_held_claims", None) or {}
+        provisional = {
+            c for key, (owner, cl) in held.items()
+            if id(owner) in staged_owners and key != mine for c in cl if c is not None
+        }
+        return {c: who for c, who in owners.items() if c not in provisional} if provisional else owners
+
+    def _stage_or_defer_adapter(
+        self, profile_name: str, profile_home: Path, platform: Platform, adapter: BasePlatformAdapter,
+        claimed: dict[tuple, str], staged: list, deferred: list, staged_owners: set, pending_claims: set,
+    ) -> bool:
+        """Stage adapter for current wave, defer on provisional conflict, or refuse external duplicate."""
+        raw_claims = self._adapter_claims(platform, adapter)
+        non_none = [c for c in raw_claims if c is not None]
+        external = {**claimed, **self._external_claim_owners(profile_name, platform, staged_owners)}
+        if any(c in external for c in non_none):
+            self._claim_secondary_platform(profile_name, profile_home, platform, adapter, external)
+            return False
+        if any(c in pending_claims for c in non_none):
+            deferred.append((profile_name, profile_home, platform, adapter))
+            pending_claims.update(non_none)
+            return True
+        claims = self._claim_secondary_platform(profile_name, profile_home, platform, adapter, external)
+        if claims is None:
+            return False
+        self._configure_profile_adapter(adapter, profile_name, platform)
+        self._hold_secondary_claims(profile_name, platform, adapter, claims)
+        staged_owners.add(id(adapter))
+        pending_claims.update(c for c in claims if c is not None)
+        staged.append((profile_name, profile_home, platform, adapter, claims))
+        return True
+
+    async def _cancel_and_drain_wave_tasks(self, tasks: list[asyncio.Task]) -> None:
+        """Cancel unfinished wave tasks and wait (bounded) for them to unwind."""
+        if not tasks:
+            return
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        timeout = self._adapter_disconnect_timeout_secs()
+        if timeout <= 0:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        for task in pending:
+            task.add_done_callback(consume_detached_task_result)
+
+    async def _cleanup_abandoned_staged(self, staged: list, started: set, disconnected: set) -> None:
+        """Release abandoned provisional holds and disconnect any started-but-untracked adapters."""
+        from gateway.run import _profile_runtime_scope
+        for profile_name, profile_home, platform, adapter, _claims in staged:
+            self._release_secondary_claims(profile_name, platform, adapter)
+            if id(adapter) not in started or id(adapter) in disconnected:
+                continue
+            if (getattr(self, "_profile_adapters", None) or {}).get(profile_name, {}).get(platform) is adapter:
+                continue
+            disconnected.add(id(adapter))
+            with _log_suppressed(
+                logging.DEBUG, "Cancelled %s disconnect failed (profile: %s)",
+                platform.value, profile_name, exc_info=True,
+            ):
+                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                    await self._safe_adapter_disconnect(adapter, platform)
+
+    async def _connect_profile_adapter_wave(
+        self, staged: list, claimed: dict[tuple, str], transient_failed: Optional[set[str]] = None,
+    ) -> int:
+        """Connect one conflict-free wave of staged secondary adapters concurrently."""
+        if not staged:
+            return 0
+        started: set = set()
+        disconnected: set = set()
+        tasks: list[asyncio.Task] = []
+
+        async def _run_one(item) -> int:
+            profile_name, profile_home, platform, adapter, claims = item
+            try:
+                return await self._connect_prepared_profile_adapter(
+                    profile_name, profile_home, platform, adapter, claims, claimed,
+                    started=started, disconnected=disconnected,
+                )
+            except Exception as exc:
+                if transient_failed is None:
+                    raise
+                logger.error("Failed to start adapters for profile '%s': %s", profile_name, exc, exc_info=True)
+                transient_failed.add(profile_name)
+                return 0
+
+        try:
+            self._extend_systemd_boot_for_batch(plat for _pn, _ph, plat, _ad, _cl in staged)
+            if len(staged) == 1:
+                return await _run_one(staged[0])
+            tasks = [asyncio.create_task(_run_one(item)) for item in staged]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except BaseException:
+            await self._cancel_and_drain_wave_tasks(tasks)
+            await self._cleanup_abandoned_staged(staged, started, disconnected)
+            raise
+        connected = 0
+        first_exc: Optional[BaseException] = None
+        for outcome in results:
+            if isinstance(outcome, BaseException):
+                if first_exc is None:
+                    first_exc = outcome
+                continue
+            connected += outcome
+        if first_exc is not None:
+            await self._cleanup_abandoned_staged(staged, started, disconnected)
+            raise first_exc
+        return connected
+
+    async def _connect_staged_profile_adapters(
+        self, staged: list, deferred: list, claimed: dict[tuple, str],
+        transient_failed: Optional[set[str]] = None,
+    ) -> int:
+        """Connect staged adapters in conflict-free waves, re-evaluating deferred siblings."""
+        connected, wave = 0, staged
+        while wave or deferred:
+            if wave:
+                connected += await self._connect_profile_adapter_wave(wave, claimed, transient_failed)
+                wave = []
+            if not deferred:
+                break
+            next_deferred: list = []
+            wave_owners: set = set()
+            wave_pending: set = set()
+            try:
+                for p_name, p_home, plat, adp in deferred:
+                    p_map = self._profile_adapters.setdefault(p_name, {})
+                    if plat in p_map or plat in (
+                            (getattr(self, "_profile_failed_platforms", None) or {}).get(p_name) or {}) or (
+                            (p_name, plat) in (getattr(self, "_secondary_held_claims", None) or {})):
+                        continue
+                    self._stage_or_defer_adapter(
+                        p_name, p_home, plat, adp, claimed, wave, next_deferred, wave_owners, wave_pending,
+                    )
+            except BaseException:
+                for p_name, _p_home, plat, adp, _claims in wave:
+                    self._release_secondary_claims(p_name, plat, adp)
+                raise
+            deferred = next_deferred
+        return connected
 
     def _note_unbuilt_secondary_platform(self, profile_name: str, platform: Platform, heals: bool) -> None:
         """A secondary platform whose ``_create_adapter`` returned None at startup: say why, stamp its

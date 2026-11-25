@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli import web_server
 from hermes_cli.web_routers import sessions as routes
 from persistence.conversation.messages import NewMessage
@@ -231,6 +232,19 @@ def test_inline_reasoning_fails_closed(tag):
     assert "PRIVATE REASONING" not in message["content"]
 
 
+_REASONING_TAGS = (*THINK_TAG_NAMES, "analysis")
+
+
+@pytest.mark.parametrize("name", _REASONING_TAGS)
+@pytest.mark.parametrize("shape", ["{open}PRIVATE REASONING", "PRIVATE REASONING{close}public answer"])
+def test_every_reasoning_tag_fails_closed(name, shape):
+    """Open-only and orphan-close reasoning of every shared tag name redacts as reasoning, not as a path."""
+    content = shape.format(open=f"<{name}>", close=f"</{name}>")
+    message = routes._session_activity_message({"id": 1, "role": "assistant", "content": content})
+    assert message is not None
+    assert message["content"] == "[REDACTED: reasoning content]"
+
+
 def test_hidden_scaffolds_and_compaction_never_project(activity_store):
     store, _ = activity_store
     for message in (NewMessage("user", "PRIVATE HIDDEN", display_kind="hidden"),
@@ -297,6 +311,53 @@ def test_invalid_query_does_not_echo_secret(query):
     assert response.status_code in (400, 422)
     assert "ghp_" not in response.text
     assert "TAIL" not in response.text
+
+
+@pytest.mark.parametrize("raw", ["%EF%BC%95", "%D9%A5", "1_0", "%2B5", "%205", "5%20", "0x5"])
+def test_limit_accepts_only_ascii_decimal_digits(raw):
+    """``int()`` accepts Unicode digits, underscores, signs and padding; the snapshot does not, and never echoes them."""
+    response = client().get("/api/sessions/session-root/activity?limit=" + raw)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid_limit"}
+
+
+@pytest.fixture
+def storeless_home(tmp_path, monkeypatch):
+    home = tmp_path / "storeless"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize("endpoint,status", [
+    ("/api/sessions/session-root/activity?bad=1", 400), ("/api/sessions/session-root/activity?limit=0", 422),
+    ("/api/sessions/missing/activity", 404), ("/api/sessions/capabilities?bad=1", 400)])
+def test_error_responses_are_not_cacheable(activity_store, method, endpoint, status):
+    response = client().request(method, endpoint)
+    assert response.status_code == status
+    assert response.headers.get("cache-control") == "private, no-store"
+
+
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+def test_reserved_capability_mutation_refusal_is_not_cacheable(method):
+    response = client().request(method, "/api/sessions/capabilities")
+    assert response.status_code == 405
+    assert response.headers.get("allow") == "GET, HEAD"
+    assert response.headers.get("cache-control") == "private, no-store"
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_unavailable_store_response_is_not_cacheable(storeless_home, method):
+    response = client().request(method, "/api/sessions/session-root/activity")
+    assert response.status_code == 503
+    assert response.headers.get("cache-control") == "private, no-store"
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_profile_error_response_is_not_cacheable(method):
+    response = client().request(method, "/api/sessions/session-root/activity?profile=no-such-profile-zz")
+    assert response.status_code in (400, 404)
+    assert response.headers.get("cache-control") == "private, no-store"
 
 
 @pytest.mark.parametrize("method", ["GET", "HEAD"])

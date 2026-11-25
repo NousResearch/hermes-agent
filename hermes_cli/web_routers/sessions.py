@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.redact import redact_sensitive_text
+from agent.think_scrubber import THINK_TAG_NAMES
 
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
@@ -207,8 +208,6 @@ def _resolve_session_id(store, session_id: str) -> Optional[str]:
             raise
 
 
-# ``le=100`` on limit: an unbounded limit lets one request drag every session
-# row (plus correlated-subquery preview work) out of SQLite in a single hit.
 _SESSION_ACTIVITY_CAPABILITIES = ("sessions.activity.read_model.v1",)
 _SESSION_ACTIVITY_SCHEMA = "sessions.activity.read_model.v1"
 _SESSION_ACTIVITY_CONTENT_LIMIT = 500
@@ -216,6 +215,12 @@ _SESSION_ACTIVITY_PUBLIC_BLOCK_TYPES = frozenset({"text", "input_text", "output_
 _SESSION_ACTIVITY_PATH_HINT_RE = re.compile(
     r"(?i)(?:\bfile://|(?:^|[\s:(])(?:~[/\\]|[A-Z]:[/\\]|\\\\|\.{0,2}[/\\]|/)"
     r"|(?:^|[\s:(])[^\s:/\\]+[/\\][^\s]+)"
+)
+# Every shared reasoning tag name (agent.think_scrubber), opening or orphan closing, plus ``analysis``.
+_SESSION_ACTIVITY_REASONING_TAG_RE = re.compile(
+    r"(?i)</?(?:"
+    + "|".join(re.escape(name) for name in sorted({*THINK_TAG_NAMES, "analysis"}, key=len, reverse=True))
+    + r")(?=[\s/>])"
 )
 
 
@@ -287,14 +292,14 @@ def _validate_session_activity_query(request: Request) -> None:
         raise HTTPException(
             status_code=400,
             detail="invalid_query",
+            headers=_session_activity_headers(),
         )
     raw_limit = request.query_params.get("limit", "100")
-    try:
-        valid_limit = 1 <= int(raw_limit) <= 200
-    except ValueError:
-        valid_limit = False
+    # int() also takes Unicode digits, "_" separators, signs and padding, which FastAPI's own parse
+    # then refuses with the raw value echoed: a limit is plain ASCII decimal digits only.
+    valid_limit = re.fullmatch(r"[0-9]{1,3}", raw_limit) is not None and 1 <= int(raw_limit) <= 200
     if not valid_limit:
-        raise HTTPException(status_code=422, detail="invalid_limit")
+        raise HTTPException(status_code=422, detail="invalid_limit", headers=_session_activity_headers())
 
 
 def _session_activity_public_text(content: Any) -> Optional[str]:
@@ -338,21 +343,22 @@ def _session_activity_message(row: dict[str, Any]) -> Optional[dict[str, Any]]:
     ).strip()
     if not text:
         return None
-    try:
-        # file_read: non-reusable sentinels. secret_file: transcript text is secret-bearing, so the
-        # ENV/JSON/YAML assignment passes that file_read alone skips (it implies code_file) still run.
-        text = redact_sensitive_text(
-            text,
-            force=True,
-            file_read=True,
-            secret_file=True,
-            redact_url_credentials=True,
-        )
-        text = _session_activity_redact_paths(text)
-    except Exception:
-        text = "[REDACTED: content unavailable]"
-    if role == "assistant" and re.search(r"(?i)<(?:think|analysis|reasoning)\b", text):
+    if role == "assistant" and _SESSION_ACTIVITY_REASONING_TAG_RE.search(text):
         text = "[REDACTED: reasoning content]"
+    else:
+        try:
+            # file_read: non-reusable sentinels. secret_file: transcript text is secret-bearing, so the
+            # ENV/JSON/YAML assignment passes that file_read alone skips (it implies code_file) still run.
+            text = redact_sensitive_text(
+                text,
+                force=True,
+                file_read=True,
+                secret_file=True,
+                redact_url_credentials=True,
+            )
+            text = _session_activity_redact_paths(text)
+        except Exception:
+            text = "[REDACTED: content unavailable]"
     truncated = oversized or len(text) > _SESSION_ACTIVITY_CONTENT_LIMIT
     return {
         "message_id": str(message_id),
@@ -415,6 +421,8 @@ def _session_activity_model(
     }
 
 
+# ``le=100`` on limit: an unbounded limit lets one request drag every session
+# row (plus correlated-subquery preview work) out of SQLite in a single hit.
 @list_router.get("/api/sessions")
 def get_sessions(
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
@@ -805,7 +813,7 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
 )
 def get_session_capabilities(request: Request):
     if request.query_params:
-        raise HTTPException(status_code=400, detail="invalid_query")
+        raise HTTPException(status_code=400, detail="invalid_query", headers=_session_activity_headers())
     response = JSONResponse(
         {"capabilities": list(_SESSION_ACTIVITY_CAPABILITIES)},
         headers=_session_activity_headers(),
@@ -821,7 +829,8 @@ def head_session_capabilities(request: Request):
 @manage_router.api_route("/api/sessions/capabilities", methods=["PATCH", "DELETE"], include_in_schema=False)
 def refuse_session_capability_mutation():
     # Reserve the discovery literal before /sessions/{session_id}'s mutation routes.
-    raise HTTPException(status_code=405, detail="Method Not Allowed", headers={"Allow": "GET, HEAD"})
+    raise HTTPException(status_code=405, detail="Method Not Allowed",
+                        headers={"Allow": "GET, HEAD", **_session_activity_headers()})
 
 
 @manage_router.get("/api/sessions/stats")
@@ -1044,16 +1053,18 @@ def _open_activity_store(profile: Optional[str]):
     try:
         path = _session_db_path_for_profile(profile)
     except HTTPException as exc:
-        raise HTTPException(status_code=exc.status_code, detail="Profile unavailable") from exc
+        raise HTTPException(status_code=exc.status_code, detail="Profile unavailable",
+                            headers=_session_activity_headers()) from exc
     try:
         info = path.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
-            raise HTTPException(status_code=503, detail="Session store unavailable")
+            raise HTTPException(status_code=503, detail="Session store unavailable", headers=_session_activity_headers())
         with open_persistence_reader(path, check_drift=True) as store:
             store.ready()
             yield store
     except (OSError, sqlite3.Error, PersistenceError, UnicodeDecodeError) as exc:
-        raise HTTPException(status_code=503, detail="Session store unavailable") from exc
+        raise HTTPException(status_code=503, detail="Session store unavailable",
+                            headers=_session_activity_headers()) from exc
 
 
 async def _session_activity_http_response(
@@ -1093,7 +1104,7 @@ async def _session_activity_http_response(
 
     model = await asyncio.to_thread(_read)
     if model is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Session not found", headers=_session_activity_headers())
     headers = _session_activity_headers()
     response = JSONResponse(model, headers=headers)
     return _session_activity_representation(request, response)

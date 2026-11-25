@@ -1,6 +1,6 @@
 """``desktop_project`` create during a Desktop chat served by the session authority moves the chat like
-the user's Move to project: the next ``pwd`` in the same turn runs in the project folder, and the turn
-boundary commits the session's ``workspace`` mutation (its policy cwd). Before the gateway wired
+the user's Move to project: the turn boundary commits the session's ``workspace`` mutation (its policy
+cwd), and the turn's own commands keep their folder. Before the gateway wired
 ``set_project_workspace_callback`` the tool reported success while the chat stayed put."""
 import json
 from types import SimpleNamespace
@@ -51,8 +51,8 @@ async def test_desktop_project_create_in_a_local_viewer_turn_moves_the_session(t
         finally:
             clear_session_vars(tokens)
             local_desktop_ui.release(token)
-        assert created['success'] is True and created['moved'] is True, created
-        assert built[-1].ran[-1] == str(worktree), [(b.cwd, b.ran) for b in built]
+        assert created['success'] is True and created['moved'] == 'pending', created
+        assert built[-1].ran[-1] == str(start), [(b.cwd, b.ran) for b in built]
         with connect_closing(db_path=db_path) as conn:
             assert pdb.get_active_id(conn) is None  # a moved chat leaves the profile-global pointer alone
         assert authority.sessions[sid].pending_workspace == str(worktree)

@@ -2534,17 +2534,13 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
     if not legacy:
         print("No legacy Hermes gateway units found.")
         return 0, []
-
-    print()
-    print("Legacy Hermes gateway unit(s) found:")
+    print("\nLegacy Hermes gateway unit(s) found:")
     for name, path, is_system in legacy:
         print(f"  {path}  ({_service_scope_label(is_system)} scope)")
     print()
-
     if dry_run:
         print("(dry-run — nothing removed)")
         return 0, [p for _, p, _ in legacy]
-
     if interactive and not prompt_yes_no("Remove these legacy units?", True):
         print("Skipped. Run again with: hermes gateway migrate-legacy")
         return 0, [p for _, p, _ in legacy]
@@ -2573,8 +2569,6 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
     system_units = [(n, p) for n, p, is_sys in legacy if is_sys]
     if user_units:
         _remove_units(user_units, system=False)
-
-    # System-scope removal (needs root)
     if system_units:
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd removal path, guarded by `if system == "Linux"` / systemd-only branch
             print()
@@ -2583,13 +2577,11 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
             remaining.extend(path for _, path in system_units)
         else:
             _remove_units(system_units, system=True)
-
     print()
     if remaining:
         print_warning(f"{len(remaining)} legacy unit(s) still present — see messages above.")
     else:
         print_success(f"Removed {removed} legacy unit(s).")
-
     return removed, remaining
 
 
@@ -3469,8 +3461,15 @@ def systemd_install(
         print_legacy_unit_warning()
         print()
         if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
-            remove_legacy_hermes_units(interactive=False)
+            res = remove_legacy_hermes_units(interactive=False)
             print()
+            remaining = res[1] if isinstance(res, tuple) and len(res) == 2 else []
+            if remaining:
+                is_root = os.geteuid() == 0  # windows-footgun: ok — Linux systemd-only function
+                unremovable_sys = set() if is_root else {p for _, p, s in _find_legacy_hermes_units() if s}
+                if any(p not in unremovable_sys for p in remaining):
+                    print_error("Could not remove legacy unit(s); aborting install to avoid running two gateways.")
+                    sys.exit(1)
 
     scope_label = _service_scope_label(system)
     sudo, scope_flag, user_flag = _systemd_cli_bits(system)

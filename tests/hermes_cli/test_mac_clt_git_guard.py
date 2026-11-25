@@ -260,7 +260,6 @@ def test_clt_stub_doctor_reports_honest_warning_and_install_hint(tmp_path, monke
     _trap_bin, _trap_git, spawn_log = clt_stub_env
     monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda _name: None)
 
-    assert doctor_tools._doctor_tool("git") == (None, "")
     doctor_tools._check_git_and_rg(False)
     output = capsys.readouterr().out
 

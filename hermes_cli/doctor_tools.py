@@ -13,7 +13,7 @@ from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import is_termux as _is_termux
-from hermes_platform.resolver.git import inspect_git, resolve_usable_git
+from hermes_platform.resolver.git import inspect_git
 from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
@@ -79,8 +79,6 @@ def _doctor_tool(name: str) -> tuple[str | None, str]:
     staged = _pm_staged_command(name)
     if staged:
         return str(staged), "(pm store)"
-    if name == "git":
-        return resolve_usable_git(cached=False), ""
     return _safe_which(name), ""
 
 

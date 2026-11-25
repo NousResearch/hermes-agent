@@ -29,8 +29,8 @@ _PREVIOUS_EXIT_PRECEDENCE = (
     ("suspected_oom", lambda s: s.get("last_boot_suspected_oom") is True),
     ("unclean", lambda s: s.get("last_boot_unclean") is True),
 )
-# Every gauge callback of one collection rebuilds the snapshot; they share one read for 1 s
-# (the export interval is >= 5 s, so the next collection reads fresh files).
+# Every gauge callback of one collection rebuilds the snapshot: reuse a read for up to 1 s so the
+# callbacks of one collection normally share it (two cold callbacks at once may both read).
 _STATUS_TTL_S = 1.0
 _status_lock = threading.Lock()
 _status_memo: dict[str, Any] = {}

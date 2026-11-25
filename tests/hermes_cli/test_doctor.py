@@ -1,6 +1,8 @@
 """Tests for hermes_cli.doctor."""
 
+import asyncio
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -160,47 +162,92 @@ class TestDoctorToolAvailabilitySummary:
         assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
         assert any("hermes setup" in issue for issue in f.issues)
 
-    def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
-        """#78412: selected firecrawl with is_available=False must warn."""
-        class _Unavailable:
-            name = "firecrawl"
+    @staticmethod
+    def _real_web_config(monkeypatch, web):
+        """Real config.yaml in the temp HERMES_HOME and real bundled provider discovery; only the
+        managed-gateway probe and the ddgs package probe are pinned so autodetect is env-independent."""
+        from hermes_cli.config import atomic_config_write
+        from hermes_constants import get_hermes_home
+        from tools import web_tools
 
-            def is_available(self):
-                return False
+        atomic_config_write(get_hermes_home() / "config.yaml", {"web": web})
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        web_tools._ensure_web_plugins_loaded()
+        return web_tools
 
-        unavailable = _Unavailable()
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
-            lambda: unavailable,
-        )
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_extract_provider",
-            lambda: unavailable,
-        )
+    @pytest.mark.parametrize("web,refused", [
+        ({"backend": "ddgs"}, True),
+        ({"search_backend": "ddgs", "extract_backend": "exa"}, False),
+        ({}, False),
+    ], ids=["shared-ddgs", "split-ddgs-exa", "never-configured"])
+    def test_web_extract_row_matches_what_web_extract_dispatches(self, monkeypatch, web, refused):
+        """Doctor's extract row gives the verdict a real web_extract call gives for the same config.
 
-        rows = doctor_tools._doctor_web_capability_rows()
-        assert rows
-        assert all(status == "warn" for status, _, _ in rows)
+        With ``web.backend: ddgs`` the dispatcher refuses (ddgs is search-only, #98618) while the rows
+        added in #78412 resolved through the permissive registry getter and showed a green keyless
+        vendor. The keyless ring vendor is per-process, so the never-configured case compares names
+        instead of pinning one; the ring only advances inside the stubbed fetch layer.
+        """
+        web_tools = self._real_web_config(monkeypatch, web)
+        dispatched = []
 
-    def test_web_capability_rows_ok_when_provider_ready(self, monkeypatch):
-        class _Ready:
-            name = "ddgs"
+        async def _safe_url(_url):
+            return True
 
-            def is_available(self):
-                return True
+        async def _fetch(provider, urls, _format):
+            dispatched.append(provider.name)
+            return [{"url": u, "title": "Page", "content": "synthetic page", "error": None} for u in urls]
 
-        ready = _Ready()
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
-            lambda: ready,
-        )
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_extract_provider",
-            lambda: ready,
-        )
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _safe_url)
+        monkeypatch.setattr(web_tools, "_extract_safe_urls", _fetch)
 
-        rows = doctor_tools._doctor_web_capability_rows()
-        assert rows and all(status == "ok" for status, _, _ in rows)
+        result = json.loads(asyncio.run(web_tools.web_extract_tool(["https://example.com/page"])))
+        rows = {label: (status, detail) for status, label, detail in doctor_tools._doctor_web_capability_rows()}
+        status, detail = rows["web extract"]
+
+        assert bool(dispatched) is not refused
+        assert (status == "ok") == bool(dispatched)
+        if refused:
+            assert "search-only" in result["error"]
+            assert result["error"] in detail
+        else:
+            assert detail == f"({dispatched[0]})"
+            assert dispatched[0] == web.get("extract_backend", dispatched[0])
+
+    @pytest.mark.parametrize("web,env,expect_ok", [
+        ({"backend": "no-such-vendor"}, {}, False),
+        ({"backend": "searxng"}, {}, False),
+        ({"backend": "searxng"}, {"SEARXNG_URL": "http://127.0.0.1:8888"}, True),
+    ], ids=["unregistered", "searxng-unconfigured", "searxng-ready"])
+    def test_web_search_row_matches_what_web_search_dispatches(self, monkeypatch, web, env, expect_ok):
+        """Doctor's search row names the provider web_search dispatches to, or carries its refusal.
+
+        An unregistered explicit backend is refused by dispatch (strict selection) while the registry
+        getter fell through to another provider (#98618 class). A selected provider that resolves but
+        is not configured must still warn (#78412).
+        """
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        web_tools = self._real_web_config(monkeypatch, web)
+        dispatched = []
+
+        def _search(provider, _query, _limit):
+            dispatched.append(provider.name)
+            return {"success": True, "data": {"web": []}}
+
+        monkeypatch.setattr(web_tools, "_memoized_search", _search)
+
+        result = json.loads(web_tools.web_search_tool("hermes agent"))
+        rows = {label: (status, detail) for status, label, detail in doctor_tools._doctor_web_capability_rows()}
+        status, detail = rows["web search"]
+
+        assert (status == "ok") is expect_ok
+        if dispatched:
+            assert detail.startswith(f"({dispatched[0]}")
+        else:
+            assert result["success"] is False
+            assert result["error"] in detail
 
 
 class TestDoctorEnvFileEncoding:

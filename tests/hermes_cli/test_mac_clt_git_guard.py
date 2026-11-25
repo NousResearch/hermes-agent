@@ -567,9 +567,11 @@ def test_macos_native_custom_git_works_with_absent_clt(tmp_path, monkeypatch, ca
     assert "✓ git" in capsys.readouterr().out
 
 
-def test_subprocess_compat_imports_and_runs_in_cold_bootstrap_without_hermes_platform(tmp_path):
-    """Cold bootstrap (python -I -S with only hermes_cli, no hermes_platform) must import and
-    run _subprocess_compat without ModuleNotFoundError."""
+def test_subprocess_compat_imports_in_cold_bootstrap_and_git_guard_degrades_open(tmp_path):
+    """Cold bootstrap (python -I -S with only hermes_cli, no hermes_platform) must import
+    _subprocess_compat, and the git guard degrades open: without the resolver it refuses nothing,
+    so source_check's direct git reads still run. (bounded_probe_run itself needs psutil, which
+    -S leaves out, so a probe through it proves nothing here.)"""
     import sys
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -585,7 +587,9 @@ def test_subprocess_compat_imports_and_runs_in_cold_bootstrap_without_hermes_pla
         "from hermes_cli import _subprocess_compat as sc; "
         "sc.suppress_platform_ver_console(); "
         "assert sc.windows_hide_flags() >= 0; "
-        "assert sc.bounded_git_probe(['git', '--version'], timeout=5, env={'PATH': ''}) == ''"
+        "assert sc._git_resolver() is None, 'hermes_platform was importable'; "
+        "assert sc._git_argv0_unusable(['git']) is False; "
+        "assert sc._git_usable({'PATH': ''}) is True"
     )
     proc = subprocess.run(
         [sys.executable, "-I", "-S", "-B", "-c", script],

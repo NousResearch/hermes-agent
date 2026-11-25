@@ -8,11 +8,13 @@ at once.
 """
 import asyncio
 import errno
+import logging
 import types
 
 import pytest
 
 from gateway import run_api, run_runtime
+from gateway.control_socket import GatewayControlServer
 
 
 def _api(failures):
@@ -96,3 +98,151 @@ def test_a_garbage_override_falls_back_to_the_default(monkeypatch):
 def test_no_override_uses_the_default(monkeypatch):
     monkeypatch.delenv("HERMES_WEBAPP_ADDRESS_WAIT", raising=False)
     assert run_runtime._webapp_address_wait_seconds() == run_runtime.WEBAPP_ADDRESS_WAIT_SECONDS
+
+
+def test_start_gateway_runtime_api_waits_for_late_webapp_host_and_warns_once(monkeypatch, tmp_path, caplog):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "webapp:\n  enabled: true\n  host: 100.64.0.5\n  port: 9119\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
+    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01, raising=False)
+
+    webapp_calls = []
+    remaining_failures = [OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")] * 3
+
+    async def start(runner, *, host="127.0.0.1", port=0, webapp=None):
+        if webapp is not None:
+            webapp_calls.append((host, port))
+            if remaining_failures:
+                raise remaining_failures.pop(0)
+            return types.SimpleNamespace(api_origin=f"http://127.0.0.1:{port}")
+        return types.SimpleNamespace(api_origin="http://127.0.0.1:50001")
+
+    monkeypatch.setattr(run_api, "start_gateway_api", start)
+    runner = types.SimpleNamespace(
+        session_runtime_descriptor={},
+        session_authorities=[],
+        session_control_server=GatewayControlServer(home),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
+        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+
+    assert runner.webapp_status == {
+        "state": "serving",
+        "url": "http://127.0.0.1:9119",
+        "reason": None,
+        "address": "http://100.64.0.5:9119",
+    }
+    assert len(webapp_calls) == 4
+    retry_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "not assigned to any interface yet" in r.getMessage()
+    ]
+    assert len(retry_warnings) == 1
+
+
+@pytest.mark.parametrize(("err_no", "msg"), [
+    (errno.EADDRINUSE, "Address already in use"),
+    (errno.EACCES, "Permission denied"),
+])
+def test_non_eaddrnotavail_oserrors_fail_immediately_without_sleeping(fast, caplog, err_no, msg):
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    api, calls = _api([OSError(err_no, msg)])
+    with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
+        with pytest.raises(OSError) as caught:
+            _start(api)
+    assert caught.value.errno == err_no
+    assert len(calls) == 1
+    assert sleeps == []
+    assert not any("not assigned to any interface yet" in r.getMessage() for r in caplog.records)
+
+
+def test_zero_wait_does_not_sleep_or_warn(fast, caplog):
+    fast.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "0")
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
+    with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
+        with pytest.raises(OSError) as caught:
+            _start(api)
+    assert caught.value.errno == errno.EADDRNOTAVAIL
+    assert len(calls) == 1
+    assert sleeps == []
+    assert not any("not assigned to any interface yet" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+def test_non_finite_override_falls_back_to_default(monkeypatch, caplog, raw):
+    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", raw)
+    with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
+        assert run_runtime._webapp_address_wait_seconds() == run_runtime.WEBAPP_ADDRESS_WAIT_SECONDS
+    assert any("HERMES_WEBAPP_ADDRESS_WAIT" in r.getMessage() for r in caplog.records)
+
+
+def test_negative_override_clamps_to_zero_without_waiting(fast):
+    fast.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "-5")
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    assert run_runtime._webapp_address_wait_seconds() == 0.0
+    api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
+    with pytest.raises(OSError) as caught:
+        _start(api)
+    assert caught.value.errno == errno.EADDRNOTAVAIL
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_cancellation_during_wait_sleep_propagates(monkeypatch):
+    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
+    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 10.0)
+    real_sleep = asyncio.sleep
+
+    async def run_and_cancel():
+        entered_sleep = asyncio.Event()
+
+        async def tracked_sleep(delay):
+            entered_sleep.set()
+            await real_sleep(delay)
+
+        monkeypatch.setattr(run_runtime.asyncio, "sleep", tracked_sleep)
+        api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")] * 5)
+        task = asyncio.create_task(run_runtime._start_gateway_api_waiting_for_address(
+            api, object(), host="100.64.0.5", port=9119, webapp="mount"))
+        await asyncio.wait_for(entered_sleep.wait(), timeout=2.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(calls) == 1
+
+    asyncio.run(run_and_cancel())
+
+
+def test_cancellation_during_bind_propagates_without_retrying(fast):
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    api, calls = _api([asyncio.CancelledError()])
+    with pytest.raises(asyncio.CancelledError):
+        _start(api)
+    assert len(calls) == 1
+    assert sleeps == []

@@ -15,6 +15,7 @@ import asyncio
 from contextlib import suppress
 import errno
 import logging
+import math
 import os
 from pathlib import Path
 import threading
@@ -599,15 +600,19 @@ _WEBAPP_ADDRESS_POLL_SECONDS = 0.5
 
 def _webapp_address_wait_seconds() -> float:
     """How long to wait for ``webapp.host`` to be assigned to an interface (see above)."""
+    # health: allow HX002 -- process-level boot-timing override for systemd/supervisor startup ordering (shared by the gateway process, not per-profile)
     raw = os.environ.get("HERMES_WEBAPP_ADDRESS_WAIT")
     if raw is None or not raw.strip():
         return WEBAPP_ADDRESS_WAIT_SECONDS
     try:
-        return max(0.0, float(raw))
+        seconds = float(raw)
     except ValueError:
+        seconds = float("nan")
+    if not math.isfinite(seconds):
         logger.warning("HERMES_WEBAPP_ADDRESS_WAIT=%r is not a number of seconds; using %.0fs",
                        raw, WEBAPP_ADDRESS_WAIT_SECONDS)
         return WEBAPP_ADDRESS_WAIT_SECONDS
+    return max(0.0, seconds)
 
 
 async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port, webapp):
@@ -618,6 +623,7 @@ async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port,
     loopback companion's own failure (``ListenerAddressError``) are reported at once, as before.
     """
     deadline = time.monotonic() + _webapp_address_wait_seconds()
+    warned = False
 
     async def _start():
         # Without the Webapp the listener is main's: the same call, a private ephemeral port.
@@ -633,8 +639,10 @@ async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port,
             remaining = deadline - time.monotonic()
             if exc.errno != errno.EADDRNOTAVAIL or remaining <= 0:
                 raise
-            logger.warning("Webapp: %s is not assigned to any interface yet; retrying for up to %.0fs",
-                           host, remaining)
+            if not warned:
+                logger.warning("Webapp: %s is not assigned to any interface yet; retrying for up to %.0fs",
+                               host, remaining)
+                warned = True
             await asyncio.sleep(min(_WEBAPP_ADDRESS_POLL_SECONDS, remaining))
 
 

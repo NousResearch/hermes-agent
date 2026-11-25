@@ -8,10 +8,13 @@ session create/switch re-anchors only that session; it must not move the profile
 Desktop selection shared by concurrent chats."""
 
 import json
+import logging
 import os
 from typing import Callable, Optional
 
 from tools.registry import registry
+
+logger = logging.getLogger(__name__)
 
 # Set by the GUI gateway: ``(task_id, primary_path, project_name)`` re-anchors that session's
 # workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move. It returns
@@ -54,6 +57,7 @@ def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> 
     try:
         verdict = cb(task_id, path, name)
     except Exception as exc:
+        logger.warning("desktop_project workspace callback failed for %s", task_id, exc_info=True)
         return False, f"workspace move failed: {exc}"
     if verdict is False:
         return False, "no live GUI session owns this task"

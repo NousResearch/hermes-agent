@@ -319,7 +319,7 @@ jobs:
     # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
     name: e2e-upgrade (${{ matrix.shard }})
     needs: e2e-upgrade-plan
-    # 8 vCPU ran each shard within 13% of 16; git was already 11% slower on 16
+    # 8 vCPU ran each moved shard within 13% of 16; git was already 11% slower on 16
     # than on 32 vCPU, so it was not halved again.
     runs-on: ${{ matrix.shard == 'git' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60

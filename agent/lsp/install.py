@@ -158,7 +158,7 @@ def existing_recipe_binary(pkg: str) -> Optional[str]:
         # A stale/manual prefix containing TS6's tsc is not an installed native language server.
         if major := recipe.get("package_major"):
             try:
-                metadata = json.loads((modules / recipe["package_name"] / "package.json").read_text(encoding="utf-8"))
+                metadata = json.loads((modules / recipe["package_name"] / "package.json").read_text(encoding="utf-8-sig"))
                 if int(metadata["version"].split(".")[0]) != major:
                     return None
             except (OSError, ValueError, KeyError, TypeError, AttributeError):

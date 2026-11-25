@@ -2330,8 +2330,7 @@ DEFAULT_CONFIG = {
     # dormant and the in-process syntax check is the only tier.
     "lsp": {
         "enabled": True,  # False disables the whole subsystem: no servers, no event loop, no cost.
-        # native = TypeScript 7's own LSP in an isolated prefix; legacy preserves tsserver plugins.
-        "typescript_backend": "legacy",
+        "typescript_backend": "legacy",  # native = TypeScript 7's own LSP (isolated prefix)
         # document = wait up to wait_timeout seconds for the current file's diagnostics; full = also
         # request workspace-wide diagnostics (slower).
         "wait_mode": "document",
@@ -2361,14 +2360,12 @@ DEFAULT_CONFIG = {
         # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",
         # Node package manager for the npm-recipe servers: npm | pnpm | yarn. Installs still land in
-        # <HERMES_HOME>/lsp/node_modules (native TypeScript has its own subdirectory); a configured
-        # manager that is not installed, or an unknown
+        # <HERMES_HOME>/lsp/node_modules; a configured manager that is not installed, or an unknown
         # value, skips the install (no silent fallback to npm) so a pnpm/yarn supply-chain policy is
         # never bypassed.
         "package_manager": "npm",
-        # Idle seconds before a server is shut down (respawned on demand), so long- running
-        # processes don't accumulate stale children (hundreds of MB + pipe FDs each) across
-        # worktrees. 0 = keep servers for process lifetime.
+        # Idle seconds before a server is shut down (respawned on demand), so long-running processes
+        # don't accumulate stale children (hundreds of MB + pipe FDs each). 0 = process lifetime.
         "idle_timeout": 600.0,
         # Per-server overrides keyed by registry server_id (pyright, gopls...): disabled: true;
         # command: ["path/to/server", "--stdio"] (bypasses auto- install); env: {...};

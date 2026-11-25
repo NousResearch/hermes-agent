@@ -378,6 +378,185 @@ class TestPlatformReconnectWatcher:
         mock_create.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_auto_paused_platform_is_probed_and_recovers(self):
+        """An auto-paused platform (circuit breaker) must self-heal: once the
+        probe interval has elapsed the watcher retries, and a successful
+        connect drops the platform from the retry queue entirely.
+        """
+        runner = _make_runner()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": float("inf"),  # parked by _pause_failed_platform
+            "paused": True,
+            "auto_paused": True,
+            "paused_at": time.monotonic() - 9999,  # long past the interval
+            "pause_reason": "connect timed out after 30s",
+        }
+
+        ok_adapter = StubAdapter(succeed=True)
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=ok_adapter), patch.object(
+            runner, "_connect_adapter_with_timeout", new=AsyncMock(return_value=True)
+        ):
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        # Successful probe → platform is live again, not queued for retry.
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert Platform.TELEGRAM in runner.adapters
+
+    @pytest.mark.asyncio
+    async def test_auto_paused_platform_retrips_breaker_on_failed_probe(self):
+        """A failed probe must put the platform straight back into the paused
+        state (no slow backoff ramp) so the breaker keeps protecting us.
+        """
+        runner = _make_runner()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "auto_paused": True,
+            "paused_at": time.monotonic() - 9999,
+            "pause_reason": "connect timed out after 30s",
+        }
+
+        fail_adapter = StubAdapter(
+            succeed=False, fatal_error="still offline", fatal_retryable=True
+        )
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=fail_adapter):
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["paused"] is True
+        assert info["auto_paused"] is True
+        assert "paused_at" in info
+
+    @pytest.mark.asyncio
+    async def test_manual_pause_is_never_probed(self):
+        """`/platform pause` must stay in effect: a manual pause carries no
+        auto_paused flag, so the self-heal probe never fires on it.
+        """
+        runner = _make_runner()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": time.monotonic() - 1,
+            "paused": True,
+            "pause_reason": "paused via /platform pause",
+        }
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter") as mock_create:
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        mock_create.assert_not_called()
+        assert runner._failed_platforms[Platform.TELEGRAM]["paused"] is True
+
+    @pytest.mark.asyncio
+    async def test_pause_probe_interval_respects_env(self, monkeypatch):
+        """HERMES_PAUSED_PROBE_INTERVAL must be honoured, with a 30s floor so a
+        typo cannot turn the probe into a reconnect hammer.
+        """
+        runner = _make_runner()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "auto_paused": True,
+            # Paused 60s ago: below a 300s default, above a 30s override.
+            "paused_at": time.monotonic() - 60,
+            "pause_reason": "connect timed out after 30s",
+        }
+
+        real_sleep = asyncio.sleep
+
+        async def run_one_iteration():
+            runner._running = True
+            call_count = 0
+
+            async def fake_sleep(n):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    runner._running = False
+                await real_sleep(0)
+
+            with patch("asyncio.sleep", side_effect=fake_sleep):
+                await runner._platform_reconnect_watcher()
+
+        with patch.object(runner, "_create_adapter") as mock_create:
+            # Default 300s: 60s of pause is not enough → no probe.
+            monkeypatch.delenv("HERMES_PAUSED_PROBE_INTERVAL", raising=False)
+            await run_one_iteration()
+            mock_create.assert_not_called()
+
+            # 30s override: 60s of pause is enough → probe fires.
+            monkeypatch.setenv("HERMES_PAUSED_PROBE_INTERVAL", "30")
+            mock_create.return_value = StubAdapter(succeed=True)
+            with patch.object(
+                runner, "_connect_adapter_with_timeout", new=AsyncMock(return_value=True)
+            ):
+                await run_one_iteration()
+            mock_create.assert_called()
+
+    @pytest.mark.asyncio
     async def test_reconnect_skips_when_not_time_yet(self):
         """Watcher should skip platforms whose next_retry is in the future."""
         runner = _make_runner()

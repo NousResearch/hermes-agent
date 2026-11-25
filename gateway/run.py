@@ -2185,14 +2185,19 @@ class GatewayRunner:
     # watcher when a retryable failure recurs past a threshold, and by the
     # /platform pause|resume slash command for manual control.
     # ------------------------------------------------------------------
-    def _pause_failed_platform(self, platform, *, reason: str = "") -> None:
+    def _pause_failed_platform(self, platform, *, reason: str = "", auto: bool = False) -> None:
         """Mark a queued platform as paused — keep it in ``_failed_platforms``
         but stop the reconnect watcher from hammering it.
 
         Used by the circuit breaker after ``_PAUSE_AFTER_FAILURES`` consecutive
-        retryable failures, and by ``/platform pause <name>`` for manual
-        intervention.  Paused platforms are surfaced in ``/platform list``
-        and resumed with ``/platform resume <name>``.
+        retryable failures (``auto=True``), and by ``/platform pause <name>``
+        for manual intervention (``auto=False``).
+
+        ``auto=True`` pauses are self-healing: the watcher probes them every
+        ``HERMES_PAUSED_PROBE_INTERVAL`` seconds and resumes the platform on
+        its own once connectivity returns. Manual pauses stay put until the
+        user runs ``/platform resume <name>`` — an operator's explicit "off"
+        must not be overridden by a background timer.
         """
         info = getattr(self, "_failed_platforms", {}).get(platform)
         if info is None:
@@ -2200,6 +2205,9 @@ class GatewayRunner:
         if info.get("paused"):
             return
         info["paused"] = True
+        if auto:
+            info["auto_paused"] = True
+            info["paused_at"] = time.monotonic()
         info["pause_reason"] = reason or "auto-paused after repeated failures"
         # Push next_retry far enough out that even if "paused" is missed
         # by a stale code path, the watcher won't fire on it.
@@ -2233,6 +2241,8 @@ class GatewayRunner:
             return False
         info["paused"] = False
         info.pop("pause_reason", None)
+        info.pop("paused_at", None)
+        info.pop("auto_paused", None)
         info["attempts"] = 0
         info["next_retry"] = time.monotonic()  # retry on next watcher tick
         try:
@@ -5051,6 +5061,16 @@ class GatewayRunner:
         """
         _BACKOFF_CAP = 300  # 5 minutes max between retries
         _PAUSE_AFTER_FAILURES = 10  # circuit-breaker threshold
+        # A tripped breaker is NOT permanent: every this-many seconds an
+        # auto-paused platform gets ONE probe attempt, so it heals itself
+        # once connectivity returns (power / ISP / VPN outage). Manual
+        # pauses are excluded — see _pause_failed_platform(auto=...).
+        try:
+            _PAUSED_PROBE_INTERVAL = max(
+                30, int(os.getenv("HERMES_PAUSED_PROBE_INTERVAL", "300"))
+            )
+        except (TypeError, ValueError):
+            _PAUSED_PROBE_INTERVAL = 300
 
         await asyncio.sleep(10)  # initial delay — let startup finish
         while self._running:
@@ -5067,10 +5087,34 @@ class GatewayRunner:
                 if not self._running:
                     return
                 info = self._failed_platforms[platform]
-                # Skip paused platforms entirely — they need explicit
-                # /platform resume to come back.
+                # Auto-paused platforms (circuit breaker tripped after
+                # _PAUSE_AFTER_FAILURES consecutive failures) are not dead
+                # forever: every _PAUSED_PROBE_INTERVAL seconds they get ONE
+                # probe attempt, so the platform recovers on its own once the
+                # network comes back instead of staying silent until someone
+                # runs `/platform resume` by hand. Manual pauses
+                # (`/platform pause`) carry no auto_paused flag and are left
+                # alone — an explicit operator "off" must stay off.
                 if info.get("paused"):
-                    continue
+                    if not info.get("auto_paused"):
+                        continue
+                    paused_for = now - info.get("paused_at", now)
+                    if paused_for < _PAUSED_PROBE_INTERVAL:
+                        continue
+                    logger.info(
+                        "%s paused for %ds — probing reconnect (self-heal)",
+                        platform.value, int(paused_for),
+                    )
+                    info["paused"] = False
+                    info.pop("pause_reason", None)
+                    info.pop("paused_at", None)
+                    info.pop("auto_paused", None)
+                    # _pause_failed_platform parks next_retry at infinity —
+                    # reset it or the probe would be skipped below.
+                    info["next_retry"] = now
+                    # Leave attempts one short of the threshold so a single
+                    # failed probe re-trips the breaker right away.
+                    info["attempts"] = _PAUSE_AFTER_FAILURES - 1
                 if now < info["next_retry"]:
                     continue  # not time yet
 
@@ -5150,6 +5194,7 @@ class GatewayRunner:
                                     adapter.fatal_error_message
                                     or "failed to reconnect"
                                 ),
+                                auto=True,
                             )
                 except Exception as e:
                     self._update_platform_runtime_status(
@@ -5166,7 +5211,7 @@ class GatewayRunner:
                         platform.value, e, backoff,
                     )
                     if attempt >= _PAUSE_AFTER_FAILURES:
-                        self._pause_failed_platform(platform, reason=str(e))
+                        self._pause_failed_platform(platform, reason=str(e), auto=True)
 
             # Check every 10 seconds for platforms that need reconnection
             for _ in range(10):

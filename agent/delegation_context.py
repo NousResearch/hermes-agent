@@ -8,6 +8,7 @@ closed for them without mutating the process-global environment.
 from __future__ import annotations
 
 import os
+import shlex
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping, overload
@@ -159,17 +160,18 @@ def worker_plain_shell_vars() -> dict[str, str]:
 def worker_plain_shell_command_prefix() -> str:
     """Command-string form of :func:`worker_plain_shell_vars` for spawn paths that prefix the
     user's command (background/PTY login shells in ``tools.process_registry``) instead of
-    sourcing a wrapper script. ``unset`` first: the spawn env is scrubbed, but a login/interactive
-    rc file could still export the name, and a plain re-assignment would keep its export
-    attribute. Non-bash shells have no ``export -n``, so the ``set -a`` corner (an rc that left
-    allexport on) stays closed only on the wrapper's bash path."""
-    import shlex
-
+    sourcing a wrapper script. POSIX-only, shell-agnostic (``sh``/``bash``/``zsh``): ``unset``
+    first, because the spawn env is scrubbed but a login/interactive rc file could still have
+    exported the name and a plain re-assignment would keep its export attribute; then the
+    ``set -a`` guard, because ``-lic`` shells source rc files where a lingering
+    ``set -a; . ~/.env`` turns every assignment into an export — the wrapper path closes that
+    with bash-only ``export -n``, this form closes it everywhere."""
     vars_ = worker_plain_shell_vars()
     if not vars_:
         return ""
     return "".join(
-        f"unset {name} 2>/dev/null; {name}={shlex.quote(value)}; "
+        f"unset {name} 2>/dev/null; "
+        f"case $- in *a*) set +a; {name}={shlex.quote(value)}; set -a;; *) {name}={shlex.quote(value)};; esac; "
         for name, value in sorted(vars_.items()))
 
 

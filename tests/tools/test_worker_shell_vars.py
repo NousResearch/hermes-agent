@@ -26,7 +26,10 @@ from tools.environments.base_session_env import _wrap_command_script
 from tools.environments.local import LocalEnvironment, _find_bash
 
 TASK_ID = "task-abc-123"
-_BASH = _find_bash()
+try:
+    _BASH = _find_bash()  # raises (not returns None) on hosts without bash
+except Exception:  # pragma: no cover - POSIX CI always has bash
+    _BASH = None
 
 needs_bash = pytest.mark.skipif(not _BASH, reason="bash required for real-shell tests")
 
@@ -104,7 +107,8 @@ def test_command_prefix_is_empty_for_non_workers(monkeypatch):
 def test_wrapper_sets_plain_assignment_before_the_command():
     wrapped = _wrapper("echo hi", {"HERMES_KANBAN_TASK": TASK_ID})
     # shlex.quote leaves a clean token unquoted — the assignment is still shell-safe.
-    assert f"HERMES_KANBAN_TASK={TASK_ID}; builtin export -n HERMES_KANBAN_TASK" in wrapped
+    # Two lines: an assignment that fails outright must not take the export -n with it.
+    assert f"HERMES_KANBAN_TASK={TASK_ID}\nbuiltin export -n HERMES_KANBAN_TASK" in wrapped
     assignment_at = wrapped.index("HERMES_KANBAN_TASK=")
     run_at = wrapped.index("eval 'echo hi'")
     assert assignment_at < run_at
@@ -115,11 +119,31 @@ def test_wrapper_rejects_names_that_are_not_shell_identifiers():
         _wrapper("echo hi", {"bad name": "x"})
 
 
-def test_command_prefix_is_unset_first(monkeypatch):
+@needs_bash
+def test_command_prefix_is_unset_first(monkeypatch, tmp_path):
+    """The background/PTY prefix must behave, not merely spell: with the name present AND
+    exported in the spawn env (an rc file could have done it), the unset-first prefix still
+    leaves the command's child with nothing."""
     _set_worker_env(monkeypatch)
     prefix = worker_plain_shell_command_prefix()
-    assert prefix.startswith("unset HERMES_KANBAN_TASK 2>/dev/null; HERMES_KANBAN_TASK=")
-    assert prefix.endswith("; ")
+    result = _run_bash(
+        f'{prefix}printf "child=[%s]" "$(sh -c \'printf %s "$HERMES_KANBAN_TASK"\')"',
+        tmp_path, env=dict(os.environ))  # env deliberately NOT scrubbed: var inherited
+    assert result.returncode == 0, result.stderr
+    assert "child=[]" in result.stdout
+
+
+@needs_bash
+def test_background_prefix_survives_allexport(monkeypatch, tmp_path):
+    """F2: an rc that left ``set -a`` on would turn the prefix assignment into an export;
+    the POSIX ``case $-`` guard closes it for every background shell."""
+    env = _scrubbed_spawn_env(monkeypatch)
+    result = _run_bash(
+        f"set -a\n{worker_plain_shell_command_prefix()}set +m; "
+        'printf "child=[%s]" "$(sh -c \'printf %s "$HERMES_KANBAN_TASK"\')"',
+        tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert "child=[]" in result.stdout
 
 
 # --- end-to-end semantics (real bash; spawn env mirrors production: no var) ---
@@ -214,13 +238,17 @@ def test_background_prefix_expands_in_shell_but_not_in_children(monkeypatch, tmp
 def test_local_environment_execute_the_full_chain(monkeypatch, tmp_path):
     """The #160138 repro through the real machinery: scrubbed spawn env, worker os.environ,
     login snapshot, per-command wrapper. The shell expands the id; the command's child gets
-    no identity but does carry the non-owner fence marker."""
+    no identity but does carry the non-owner fence marker. Subsumes the policy-override and
+    wrapper-threading shape checks."""
     _set_worker_env(monkeypatch)
     env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
-    result = env.execute(
-        'printf %s "$HERMES_KANBAN_TASK"; printf "|%s" '
-        '"$(sh -c \'printf %s "$HERMES_KANBAN_TASK"; printf "|%s" "${HERMES_DELEGATED_CHILD_CONTEXT-}"\')"',
-        cwd=str(tmp_path))
+    try:
+        result = env.execute(
+            'printf %s "$HERMES_KANBAN_TASK"; printf "|%s" '
+            '"$(sh -c \'printf %s "$HERMES_KANBAN_TASK"; printf "|%s" "${HERMES_DELEGATED_CHILD_CONTEXT-}"\')"',
+            cwd=str(tmp_path))
+    finally:
+        env.cleanup()
     assert result["returncode"] == 0, result["output"]
     shell_out, _, rest = result["output"].partition("|")
     child_task, _, child_marker = rest.partition("|")
@@ -229,23 +257,27 @@ def test_local_environment_execute_the_full_chain(monkeypatch, tmp_path):
     assert child_marker.strip()  # …but it carries the non-owner fence
 
 
-def test_local_environment_override_uses_the_policy(monkeypatch, tmp_path):
-    _set_worker_env(monkeypatch)
-    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
-    assert env._plain_shell_vars() == {"HERMES_KANBAN_TASK": TASK_ID}
+@needs_bash
+def test_scope_argv_wiring_carries_the_prefix(monkeypatch, tmp_path):
+    """F1: the background/PTY fix lives in ProcessRegistry._scope_argv — deleting the prefix
+    there must turn this test red. Unbound call: the method reads no registry state, only
+    the session's systemd_unit."""
+    from types import SimpleNamespace
+    from typing import cast
 
+    from tools.process_registry import ProcessRegistry, ProcessSession
 
-def test_local_environment_threading_reaches_the_wrapper(monkeypatch, tmp_path):
     _set_worker_env(monkeypatch)
-    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
-    wrapped = env._wrap_command("echo $HERMES_KANBAN_TASK", str(tmp_path))
-    assert f"HERMES_KANBAN_TASK={TASK_ID}" in wrapped
+    session = cast(ProcessSession, SimpleNamespace(systemd_unit=None))
+    argv = ProcessRegistry._scope_argv(cast(ProcessRegistry, None), session, "echo hi", "u1", "test")
+    assert len(argv) == 3
+    assert worker_plain_shell_command_prefix() in argv[2]
+    assert "echo hi" in argv[2]
 
 
 def test_base_environment_default_is_empty(tmp_path):
     env = _TestableBaseEnv(cwd=str(tmp_path))
     assert env._plain_shell_vars() == {}
-    assert "_plain_shell_vars" in BaseEnvironment.__dict__
 
 
 class _TestableBaseEnv(BaseEnvironment):

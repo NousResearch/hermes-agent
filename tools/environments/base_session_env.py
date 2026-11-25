@@ -338,7 +338,10 @@ def _wrap_command_script(
     for name, value in sorted((plain_vars or {}).items()):
         if not isinstance(name, str) or not _SHELL_ENV_NAME_RE.fullmatch(name):
             raise ValueError(f"plain shell var name is not a shell identifier: {name!r}")
-        parts.append(f"{name}={shlex.quote(value)}; builtin export -n {name} 2>/dev/null")
+        # Two lines, not one: an assignment that fails outright (a hostile `readonly` made the
+        # name readonly before this command) must not take the export -n down with it.
+        parts.append(f"{name}={shlex.quote(value)}")
+        parts.append(f"builtin export -n {name} 2>/dev/null")
     run = _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'"
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',

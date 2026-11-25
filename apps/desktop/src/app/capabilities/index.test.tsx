@@ -204,6 +204,7 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
     [false, false]
   ])('opens on the agent a link names in the redesign only (redesign %s)', async (redesign, linked) => {
     $shellChoice.set(redesign)
+    getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }, { name: 'ops' }] })
     getToolsets.mockClear()
     await act(async () => {
       render(
@@ -224,6 +225,7 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
     [false, 'classic as it was']
   ])('manages connectors on the page itself, for the agent chosen (redesign %s: %s)', async redesign => {
     $shellChoice.set(redesign)
+    getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }, { name: 'ops' }] })
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -244,6 +246,7 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
   })
 
   it('hands off to the agent\'s settings from Skills, where its switches are', async () => {
+    getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }, { name: 'ops' }] })
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -257,6 +260,23 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
     fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings }))
 
     expect(navigateSpy).toHaveBeenCalledWith(expect.stringContaining('agentProfile=ops&panel=capabilities&tab=skills'))
+  })
+
+  it('falls back to the active agent when a link names one that is not there', async () => {
+    getToolsets.mockClear()
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=skills&agentProfile=deleted-agent']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    await waitFor(() =>
+      expect(JSON.stringify(getToolsets.mock.calls.at(-1))).not.toContain('deleted-agent')
+    )
   })
 
   it('keeps classic order and its Skills default', async () => {

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -172,6 +172,14 @@ export function useCapabilityScope({
 
     return selection ?? ''
   }, [multiConnection, rosterData, selection])
+
+  // A link can name an agent that is gone, or a machine that is not saved here: once the list is
+  // known and does not hold it, the page is the active agent's, not a blank selector over failed loads.
+  useEffect(() => {
+    if (scopeOverride !== null && options.length > 0 && !options.some(option => option.value === value)) {
+      setScopeOverride(null)
+    }
+  }, [options, scopeOverride, value])
 
   // Selector option values are `connectionId::profile` on multi-connection
   // desktops (the roster path) and bare profile names otherwise, so one

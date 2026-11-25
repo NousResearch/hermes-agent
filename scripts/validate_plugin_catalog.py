@@ -322,13 +322,17 @@ def validate_removed(data: object) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
+def _read_yaml(path: Path) -> object:
+    reader = YAML(typ="safe")
+    reader.version = (1, 1)
+    with open(path, encoding="utf-8-sig") as fh:
+        return reader.load(fh)
+
+
 def validate_file(path: Path) -> tuple[list[str], list[str]]:
     """Validate one YAML file (dispatching on filename). Returns (errors, warnings)."""
     try:
-        reader = YAML(typ="safe")
-        reader.version = (1, 1)
-        with open(path, encoding="utf-8-sig") as fh:
-            data = reader.load(fh)
+        data = _read_yaml(path)
     except OSError as exc:
         return [f"cannot read file: {exc}"], []
     except YAMLError as exc:
@@ -374,8 +378,16 @@ def main(argv: list[str] | None = None) -> int:
 
     report = []
     any_errors = False
+    # The catalog resolves a name to one repo and pin, so a name may appear in one entry file only.
+    first_with_name: dict[str, Path] = {}
     for path in files:
         errors, warnings = validate_file(path)
+        if not errors and path.name != "removed.yaml":
+            name = _read_yaml(path)["name"]
+            if name in first_with_name:
+                errors.append(f"duplicate name {name!r}: {first_with_name[name]} already uses it")
+            else:
+                first_with_name[name] = path
         any_errors = any_errors or bool(errors)
         report.append(
             {

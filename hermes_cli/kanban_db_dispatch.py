@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -85,6 +86,27 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+# Owner/repo/number of a PR URL, for the state lookup. Same shape as
+# ``_RESPAWN_GUARD_PR_URL_RE`` but with the parts captured.
+_RESPAWN_GUARD_PR_PARTS_RE = re.compile(
+    r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)",
+    re.IGNORECASE,
+)
+
+# ``gh pr view`` budget. A dispatcher tick must never hang on GitHub: the lookup
+# is a short, cached probe, and anything slower is "unknown" (fail closed).
+_RESPAWN_GUARD_PR_LOOKUP_TIMEOUT = 5  # seconds
+
+# How long a PR's state is trusted. One minute keeps a merge that lands mid-tick
+# from pinning the card until the 24h comment window elapses, while a busy board
+# still issues at most one ``gh`` call per PR per minute.
+_RESPAWN_GUARD_PR_STATE_TTL = 60  # seconds
+
+# (owner, repo, number) -> (monotonic stamp, state or None). Process-local: a
+# dispatcher restart just re-probes. ``None`` means the lookup failed and is
+# cached too, so an unauthenticated/missing ``gh`` is not retried on every tick.
+_respawn_guard_pr_state_cache: dict[tuple[str, str, int], tuple[float, Optional[str]]] = {}
 
 
 @dataclass
@@ -1555,6 +1577,81 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _lookup_pr_state(owner: str, repo: str, number: int) -> Optional[str]:
+    """Ask ``gh`` whether one GitHub PR is ``OPEN``, ``MERGED`` or ``CLOSED``.
+
+    Returns ``None`` when the state cannot be established (``gh`` missing, not
+    authenticated, repo not visible, timeout, malformed output). Callers treat
+    ``None`` as still-active: losing the lookup must not open the duplicate-PR
+    door, so the guard stays closed exactly as it did before the lookup existed.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", str(number), "--repo", f"{owner}/{repo}",
+             "--json", "state,mergedAt"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,  # never let an auth prompt eat the dispatcher's stdin
+            text=True, encoding="utf-8", errors="replace",
+            timeout=_RESPAWN_GUARD_PR_LOOKUP_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        data = json.loads(proc.stdout or "")
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("mergedAt"):
+        # AUTHORITATIVE: a merged PR reports state MERGED, but mergedAt is the
+        # proof and survives any future state spelling.
+        return "MERGED"
+    state = data.get("state")
+    if isinstance(state, str) and state.upper() in ("OPEN", "MERGED", "CLOSED"):
+        return state.upper()
+    return None
+
+
+def _pr_state(owner: str, repo: str, number: int) -> Optional[str]:
+    """``_lookup_pr_state`` with a short process-local cache (failures included)."""
+    key = (owner.lower(), repo.lower(), int(number))
+    now = time.monotonic()
+    cached = _respawn_guard_pr_state_cache.get(key)
+    if cached is not None and (now - cached[0]) < _RESPAWN_GUARD_PR_STATE_TTL:
+        return cached[1]
+    state = _lookup_pr_state(owner, repo, number)
+    if len(_respawn_guard_pr_state_cache) >= 1024:
+        _respawn_guard_pr_state_cache.clear()
+    _respawn_guard_pr_state_cache[key] = (now, state)
+    return state
+
+
+def _comment_pr_is_active(body: str) -> bool:
+    """True when ``body`` carries a PR URL that still blocks a re-spawn.
+
+    A merged or closed PR no longer represents duplicate work — the work is
+    done, and the card must be free to spawn (t1634: a child PR merged hours
+    earlier still held its parent for 61 dispatch ticks). Only an OPEN PR, or a
+    PR whose state could not be read, counts as active. Comments without a PR
+    URL are unaffected.
+    """
+    text = body or ""
+    if not _RESPAWN_GUARD_PR_URL_RE.search(text):
+        return False
+    saw_url = False
+    for match in _RESPAWN_GUARD_PR_PARTS_RE.finditer(text):
+        saw_url = True
+        if _pr_state(match.group(1), match.group(2), int(match.group(3))) not in ("MERGED", "CLOSED"):
+            return True
+    # The broad pattern matched but the parsing pattern did not: never lift a
+    # guard on a comment we could not interpret.
+    return not saw_url
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1570,11 +1667,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    (an OPEN-or-unverifiable PR URL in a recent comment; re-spawning risks a
+    duplicate PR — unless a handoff event followed the comment: the named
+    profile must work on that PR). The review lane skips the last two: they are
+    the *inputs* to a review handoff. Stale / dead claim locks are NOT a guard
+    reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1640,14 +1737,18 @@ def check_respawn_guard(
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
+    #    Only an OPEN PR is duplicate work: a merged/closed PR is finished, and
+    #    holding the card for it strands the parent/child drain (t1634: 61
+    #    guarded ticks on a 24h-old comment for a PR merged hours earlier).
+    #    Exception: a handoff AFTER the newest active PR comment (operator
+    #    reassign, reviewer changes_requested, review reopen) names the profile
+    #    that must now work on THAT PR — a closer or the implementer finishing
+    #    it, not a duplicate implementation (#111910). A crash/reclaim is not a
+    #    handoff, so the worker that opened the PR is still not re-spawned
+    #    against it.
     pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
                                           cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
-                if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
+                if _comment_pr_is_active(_kb._lossy_text(c["body"]) or "")]
     if pr_times:
         # Strictly after: a same-second tie stays guarded (fail closed).
         if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(

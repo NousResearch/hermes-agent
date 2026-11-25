@@ -11,6 +11,7 @@ These tests cover the two review models that must coexist:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import time
 from pathlib import Path
 
@@ -29,6 +30,16 @@ def conn(tmp_path: Path):
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def _pin_pr_state_open(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Time-window tests around a PR comment must not shell out to ``gh``:
+    pin the lookup to OPEN, which is the state they were written against."""
+    kbd._respawn_guard_pr_state_cache.clear()
+    monkeypatch.setattr(kbd, "_lookup_pr_state", lambda owner, repo, number: "OPEN")
+    yield
+    kbd._respawn_guard_pr_state_cache.clear()
 
 
 def _event(events, kind: str):

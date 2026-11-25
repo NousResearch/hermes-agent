@@ -275,6 +275,30 @@ def _wake_turn(runner, key, receiver, origin='delegation_result', rewritten=Fals
     return wake, MessageEvent(text='use the staging db', source=source, message_id='P')
 
 
+async def _busy_steer(runner, person, receiver):
+    assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'steer', receiver)).steered is True
+
+
+async def _busy_redirect(runner, person, receiver):
+    assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'interrupt', receiver)).redirected is True
+
+
+async def _priority_steer(runner, person, receiver):
+    runner._hm_busy_steer(person, receiver, 'key')
+
+
+async def _priority_redirect(runner, person, receiver):
+    await runner._hm_busy_interrupt(person, person.source, receiver, 'key')
+
+
+async def _steer_command(runner, person, receiver):
+    runner._fold_into_running_turn(receiver, 'key', person)  # the tail every accepted /steer runs
+
+
+_STEER_ROUTES = {'busy_steer': _busy_steer, 'busy_redirect': _busy_redirect, 'priority_steer': _priority_steer,
+                 'priority_redirect': _priority_redirect, 'steer_command': _steer_command}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('route', ['busy_steer', 'busy_redirect', 'priority_steer', 'priority_redirect', 'steer_command'])
 @pytest.mark.parametrize('origin', ['delegation_result', 'process_notification'])
@@ -284,16 +308,7 @@ async def test_a_person_s_accepted_steer_or_redirect_clears_the_wake_turn_s_orig
     receiver = _Receiver()
     wake, person = _wake_turn(runner, 'key', receiver, origin, rewritten=route == 'busy_steer')
     assert wake.turn_origin() == origin
-    if route == 'busy_steer':
-        assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'steer', receiver)).steered is True
-    elif route == 'busy_redirect':
-        assert (await runner._resolve_busy_steer_or_redirect(person, 'key', 'interrupt', receiver)).redirected is True
-    elif route == 'priority_steer':
-        runner._hm_busy_steer(person, receiver, 'key')
-    elif route == 'priority_redirect':
-        await runner._hm_busy_interrupt(person, person.source, receiver, 'key')
-    else:
-        runner._fold_into_running_turn(receiver, 'key', person)  # the tail every accepted /steer runs
+    await _STEER_ROUTES[route](runner, person, receiver)
     assert wake.turn_origin() is None
     assert wake.internal is True  # execution trust is not the origin: untouched
 

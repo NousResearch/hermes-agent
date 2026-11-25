@@ -239,3 +239,29 @@ async def test_a_delegated_childs_call_moves_the_parent_chat(tmp_path, monkeypat
             assert pdb.get_active_id(conn) is None
     finally:
         await _closed(chat)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('target, moved', [('worktree', True), ('start', 'pending')])
+async def test_a_background_childs_call_checks_the_chats_current_folder(tmp_path, monkeypatch, target, moved):
+    import contextvars
+    from gateway.session_persistence import authority_persistence
+    from tools import project_tools
+    from tools.terminal_tool import register_container_alias
+    chat = await _chat(tmp_path, monkeypatch)
+    try:
+        def spawn():
+            register_container_alias('child-task', chat.sid)
+            return contextvars.copy_context()  # the child keeps the turn it was spawned in
+        child = _in_turn(chat, spawn)
+        row = authority_persistence(chat.authority).sessions.get(chat.sid)
+        await _call(chat.owner, 'session.mutate', session_id=chat.sid, request_id='user-move', operation='workspace',
+                    payload={'cwd': str(chat.worktree)}, expected_revision=row.runtime_revision,
+                    expected_generation=row.runtime_generation)
+        path = getattr(chat, target)
+        result = _in_turn(chat, lambda: child.run(lambda: json.loads(
+            project_tools.project_create('Folder', path=str(path), task_id='child-task'))))
+        assert result['moved'] == moved
+        assert chat.authority.sessions[chat.sid].pending_workspace == (None if moved is True else str(path))
+    finally:
+        await _closed(chat)

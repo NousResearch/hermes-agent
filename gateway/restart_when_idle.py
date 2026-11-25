@@ -166,7 +166,8 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
                              "next restart request will run")
             if getattr(runner, "_detached_restart_helper_started", False):
                 logger.warning("The detached restart helper launched for this restart still runs and will "
-                               "restart the gateway")
+                               "restart the gateway; this process launches no second helper, so if that "
+                               "restart fails, a later detached /restart stops the gateway without relaunching it")
             runner._draining = False
             runner._restart_task_started = runner._restart_requested = False
             # Drop the failed restart's plan too: a later plain stop would otherwise exit 75 and be relaunched.

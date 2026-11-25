@@ -42,6 +42,7 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
         "from agent.delegation_context import is_dispatcher_owned_worker_context\n"
         f"own, foreign = {own!r}, {foreign!r}\n"
         "out = {'owner': is_dispatcher_owned_worker_context(), 'default': kt._default_task_id(None),"
+        " 'task': os.getenv('HERMES_KANBAN_TASK'),"
         " 'db': os.getenv('HERMES_KANBAN_DB'), 'board': os.getenv('HERMES_KANBAN_BOARD')}\n"
         "out['show'] = json.loads(kt._handle_show({'task_id':own}))\n"
         "out['tools'] = [json.loads(kt._handle_complete({'task_id': t, 'summary':'must refuse'})) for t in (own,foreign)]\n"
@@ -76,6 +77,9 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
         row = json.loads(next(line.split("SCOPE_RESULT=", 1)[1] for line in output.splitlines() if "SCOPE_RESULT=" in line))
         assert row["show"]["task"]["id"] == own, row
         assert not row["owner"] and row["default"] is None, row
+        # The scrub is the point of #160138: the descendant shell keeps board/location
+        # pins but never the worker's task id, on every spawn surface above.
+        assert row["task"] is None, row
         assert row["db"] == str(tmp_path / "assigned.db") and row["board"] == "default"
         assert all("error" in value for value in row["tools"]), row
         assert row["later_cli"]["rc"] != 0, row

@@ -346,6 +346,8 @@ class ToolCallGuardrailController:
         self._identical_streak_first_call_id = ""
         self._call_history.clear()
 
+    forget_results_after_compaction = reset_after_context_boundary
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision

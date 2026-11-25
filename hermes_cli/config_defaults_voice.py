@@ -9,6 +9,7 @@ VOICE_DEFAULTS = {
     "voice_chat_mode": "chained",
     "gpt_live": {
         "auth": "api",
+        "legacy_client_auth": "reject",  # subscription profiles: API billing requires explicit opt-in
         "subscription_model": "gpt-live-1-codex",
         "subscription_voice": "cove",
         "model": "gpt-live-1",

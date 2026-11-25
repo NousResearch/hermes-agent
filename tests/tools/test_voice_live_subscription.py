@@ -48,7 +48,7 @@ def test_subscription_request_uses_hermes_oauth_and_its_own_wire(monkeypatch, tm
         transport=httpx.MockTransport(transport), **kwargs))
     monkeypatch.setattr(voice_live, "_resolve_credentials", lambda *_: pytest.fail("paid API resolver"))
     status = voice_live.resolve_gpt_live_status()
-    result = voice_live.create_webrtc_session("v=0 offer", history)
+    result = voice_live.create_webrtc_session("v=0 offer", history, expected_auth="subscription")
 
     assert status["auth"] == result["auth"] == "subscription"
     assert status["available"] and refresh == [False, True]
@@ -96,7 +96,7 @@ def test_subscription_failure_cannot_select_paid_api(monkeypatch, tmp_path, fail
     monkeypatch.setattr(voice_live, "_resolve_credentials", lambda *_: pytest.fail("paid API resolver"))
     monkeypatch.setattr(voice_live.urllib.request, "urlopen", lambda *a, **kw: pytest.fail("paid API request"))
     with pytest.raises((ValueError, RuntimeError)) as error:
-        voice_live.create_webrtc_session("v=0 offer")
+        voice_live.create_webrtc_session("v=0 offer", expected_auth="subscription")
     assert private not in str(error.value)
     assert len(attempted) == (0 if failure in {"missing", "account", "invalid-auth"} else 1)
     if not attempted:
@@ -124,3 +124,29 @@ def test_status_is_read_only_and_session_auth_is_pinned(monkeypatch, tmp_path):
 
     monkeypatch.setattr(voice_live, "_resolve_credentials", lambda *_: pytest.fail("paid API resolver"))
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("legacy", [None, "api"])
+def test_unpinned_client_never_receives_subscription_wire(monkeypatch, tmp_path, legacy):
+    from io import BytesIO
+
+    _configure(monkeypatch, tmp_path, auth="subscription", api_key="fixture",
+               **({"legacy_client_auth": legacy} if legacy else {}))
+    monkeypatch.setattr(voice_live, "_subscription_credentials", lambda: pytest.fail("subscription wire"))
+    history = [{"type": "message", "content": []}]
+    requests = []
+
+    def respond(req, **kwargs):
+        requests.append(json.loads(req.data))
+        return BytesIO(b'{}')
+
+    monkeypatch.setattr(voice_live.urllib.request, "urlopen", respond)
+    if legacy:
+        assert voice_live.create_webrtc_session("offer", history)["auth"] == "api"
+        session = requests[0]["session"]
+        assert session["input"] == history and session["model"] == "gpt-live-1"
+        assert session["audio"]["output"]["voice"] == "marin"
+    else:
+        with pytest.raises(ValueError, match="upgrade"):
+            voice_live.create_webrtc_session("offer", history)
+        assert not requests

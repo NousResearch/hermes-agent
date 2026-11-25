@@ -697,12 +697,22 @@ export class VoiceLiveSession {
     const provided = event.delegationContext ?? []
     const providedText = provided.at(-1)?.text.trim()
 
-    const lastUserText = [...context]
-      .reverse()
-      .find(fragment => fragment.speaker === 'user')
-      ?.text.trim()
+    // Replace only the trailing user fragments covered by the v3 handoff copy.
+    let start = context.length
+    let suffix = ''
 
-    const delegationContext = providedText && providedText !== lastUserText ? [...context, ...provided] : context
+    while (providedText && start > 0 && context[start - 1].speaker === 'user') {
+      const candidate = context[start - 1].text + suffix
+
+      if (!providedText.endsWith(candidate.trim())) {
+        break
+      }
+
+      suffix = candidate
+      start--
+    }
+
+    const delegationContext = providedText ? [...context.slice(0, start), ...provided] : context
 
     this.handlers.onDelegation(id, delegationContext)
   }

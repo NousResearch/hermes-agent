@@ -262,6 +262,13 @@ def create_webrtc_session(
             raise ValueError("Invalid expected GPT-Live auth mode")
         if auth != expected_auth:
             raise RuntimeError("GPT-Live auth mode changed after preflight; no session was started")
+    elif auth == "subscription":
+        # Pre-protocol clients send API events, including session.input_audio.mute.
+        if live.get("legacy_client_auth") != "api":
+            raise ValueError("GPT-Live subscription needs a protocol-aware client; upgrade the client. "
+                             "No API fallback was used.")
+        auth = "api"
+        live = {**live, "auth": auth}
     config = build_session_config(history, live=live)
     if auth == "subscription":
         return _create_subscription_session(sdp_offer, config)

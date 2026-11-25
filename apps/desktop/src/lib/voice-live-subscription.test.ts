@@ -113,7 +113,7 @@ describe('native Live explicit billing', () => {
 
       wire.receive(
         auth === 'subscription'
-          ? { type: 'input_transcript.added', item: { text: 'Read the project status.' } }
+          ? { type: 'input_transcript.added', item: { text: 'project status.' } }
           : { type: 'session.input_transcript.delta', delta: 'Read the project status.', start_ms: 1, end_ms: 5 }
       )
       wire.receive(delegation)

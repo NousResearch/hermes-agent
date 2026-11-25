@@ -141,6 +141,22 @@ def test_cgroup_counter_wins_over_another_process_raising_the_host_counter(tmp_p
     assert evidence is not None and "oom_kill_seen" not in evidence
 
 
+def test_a_claim_without_start_time_makes_no_oom_claim(tmp_path: Path, kernel: _Kernel) -> None:
+    """Same pid alone does not tie a heartbeat to the dead life: without the claim's start time an
+    older life's heartbeat could be read as this one's."""
+    kernel.set(host=7, cgroup=2)
+    _died_with_heartbeat(tmp_path, sample_oom_kills())
+    sentinel = get_lifecycle_sentinel_path(tmp_path)
+    claim = json.loads(sentinel.read_text(encoding="utf-8"))
+    del claim["start_time"]
+    sentinel.write_text(json.dumps(claim), encoding="utf-8")
+    kernel.set(host=8, cgroup=3)
+
+    evidence = detect_unclean_exit(tmp_path)
+
+    assert evidence is not None and "oom_kill_seen" not in evidence
+
+
 def test_host_counter_is_the_fallback_without_a_cgroup_counter(tmp_path: Path, kernel: _Kernel) -> None:
     kernel.set(host=7, cgroup=None, cgroup_line=_CGROUP_V1)
     _died_with_heartbeat(tmp_path, sample_oom_kills())

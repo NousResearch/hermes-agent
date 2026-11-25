@@ -9,7 +9,7 @@ import { $selectedStoredSessionId } from './session'
 // A chat surface: the primary's workspace or a session tile. Everything else a
 // zone can show — the sessions list, Files, Terminal, a preview tab — is chrome.
 export const TILE_PANE_PREFIX = 'session-tile:'
-export const PLUGIN_PANE_PREFIX = 'plugin-workspace:'
+const PLUGIN_PANE_PREFIX = 'plugin-workspace:'
 
 const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith(TILE_PANE_PREFIX))
 
@@ -53,7 +53,7 @@ const rememberContentPane = () => {
   const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
   remember($lastContentPane, isChatPane, tree, groupId, active)
-  // Approval scope also needs plugin workspaces, which are never the focused chat.
+  // `$lastContentPane` keeps chats only; approval scope also remembers plugin workspaces.
   remember($lastApprovalContentPane, isApprovalContentPane, tree, groupId, active)
 }
 

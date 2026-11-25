@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 import { $approvalModes } from '@/store/approval-mode'
 import { $focusedTreePaneId } from '@/store/session-focus'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
@@ -40,42 +41,78 @@ function Harness({
 }
 
 describe('approval mode statusbar item', () => {
-  it('keeps plugin scope across side focus and responds to visibility changes', () => {
+  it('scopes the hint to workspaces that declare per-profile approvals and resyncs on return', async () => {
     const previousTree = $layoutTree.get()
     const previousGroup = $activeTreeGroup.get()
     const previousHidden = $hiddenTreePanes.get()
-    const plugin = 'plugin-workspace:generic'
-    const requestGateway = vi.fn(async () => ({ value: 'off' }))
+    const room = 'plugin-workspace:room'
+    const generic = 'plugin-workspace:generic'
+    const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({ value: 'off' }))
+    const configReads = () => requestGateway.mock.calls.filter(([method]) => method === 'config.get').length
+
+    const disposers = [
+      registry.register({ area: 'panes', data: { approvalScope: 'per-profile' }, id: room }),
+      registry.register({ area: 'panes', data: {}, id: generic })
+    ]
+
+    const layout = (roomActive: string, genericGroup = false) =>
+      split('row', [
+        group(['workspace'], { id: 'chat' }),
+        group(genericGroup ? [generic] : [room, 'preview'], {
+          active: genericGroup ? generic : roomActive,
+          id: 'plugin'
+        }),
+        group(['files'], { id: 'side' })
+      ])
 
     try {
       act(() => {
-        $layoutTree.set(
-          split('row', [
-            group(['workspace'], { id: 'chat' }),
-            group([plugin], { id: 'plugin' }),
-            group(['files'], { id: 'side' })
-          ])
-        )
+        $layoutTree.set(layout(room))
         $activeTreeGroup.set('chat')
         $activeTreeGroup.set('plugin')
       })
-      render(<Harness gatewayState="connecting" requestGateway={requestGateway} />)
+      render(<Harness requestGateway={requestGateway} />)
       expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
+      expect(configReads()).toBe(0)
 
       act(() => $activeTreeGroup.set('side'))
       expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
       expect($focusedTreePaneId.get()).toBe('workspace')
 
-      act(() => $hiddenTreePanes.set(new Set([plugin])))
-      expect(screen.getByRole('button', { name: /smart/i })).toBeTruthy()
-      act(() => $hiddenTreePanes.set(new Set()))
+      // A preview fronting the room's group covers the room without leaving it.
+      act(() => {
+        $layoutTree.set(layout('preview'))
+        $activeTreeGroup.set('plugin')
+      })
       expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
+      act(() => $hiddenTreePanes.set(new Set([room])))
+      await waitFor(() => expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy())
+      act(() => $hiddenTreePanes.set(new Set()))
+      expect(configReads()).toBe(1)
 
-      act(() => $activeTreeGroup.set('plugin'))
-      act(() => $hiddenTreePanes.set(new Set([plugin])))
-      expect(screen.getByRole('button', { name: /smart/i })).toBeTruthy()
+      act(() => $activeTreeGroup.set('chat'))
+      await waitFor(() => expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy())
+      await waitFor(() => expect(configReads()).toBe(2))
+
+      act(() => {
+        $layoutTree.set(layout(room))
+        $activeTreeGroup.set('plugin')
+      })
+      expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
+      act(() => $hiddenTreePanes.set(new Set([room])))
+      expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy()
+      act(() => $hiddenTreePanes.set(new Set()))
+
+      // A workspace that declares no approval scope keeps the profile's menu.
+      act(() => {
+        $layoutTree.set(layout(room, true))
+        $activeTreeGroup.set('plugin')
+      })
+      expect(screen.getByRole('button', { name: /^off$/i })).toBeTruthy()
+      await waitFor(() => expect(configReads()).toBe(4))
     } finally {
       cleanup()
+      disposers.forEach(dispose => dispose())
       $hiddenTreePanes.set(previousHidden)
       $layoutTree.set(previousTree)
       $activeTreeGroup.set(previousGroup)

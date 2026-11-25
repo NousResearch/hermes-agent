@@ -18,6 +18,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu'
+import { $registryVersion, registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { Zap, ZapFilled } from '@/lib/icons'
 import {
@@ -27,22 +28,46 @@ import {
   setApprovalModeForProfile,
   syncApprovalModeForProfile
 } from '@/store/approval-mode'
-import { $lastApprovalContentPane, isApprovalContentPane, PLUGIN_PANE_PREFIX } from '@/store/session-focus'
+import { $lastApprovalContentPane, isApprovalContentPane } from '@/store/session-focus'
 
-// Plugin workspaces are not sessions and declare no single profile owner. A room can contain
-// independently gated profiles; the ambient gateway's mode cannot describe or control it.
-const $showsPluginWorkspace = computed(
-  [$activeTreeGroup, $layoutTree, $lastApprovalContentPane, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides],
+const declaresPerProfileApprovals = (paneId: string): boolean =>
+  (registry.getArea('panes').find(c => c.id === paneId)?.data as { approvalScope?: string } | undefined)
+    ?.approvalScope === 'per-profile'
+
+// A workspace that declares `approvalScope: 'per-profile'` (a group room) runs several
+// independently gated profiles, so the ambient profile's mode neither describes nor controls it.
+const $showsPerProfileWorkspace = computed(
+  [
+    $activeTreeGroup,
+    $layoutTree,
+    $lastApprovalContentPane,
+    $dismissedPanes,
+    $hiddenTreePanes,
+    $collapsedTreeSides,
+    $registryVersion
+  ],
   (groupId, tree, remembered) => {
     const active = tree && groupId ? findGroup(tree, groupId)?.active : undefined
     const visible = (paneId?: null | string) => (paneId && isPaneVisible(paneId) ? paneId : undefined)
 
+    // A preview fronting the remembered pane's group covers it without leaving it.
+    const covered = (paneId: null | string) => {
+      if (!paneId || !tree || $hiddenTreePanes.get().has(paneId) || $dismissedPanes.get().has(paneId)) {
+        return undefined
+      }
+
+      const front = findGroupOfPane(tree, paneId)?.active
+
+      return front && !isApprovalContentPane(front) && visible(front) ? paneId : undefined
+    }
+
     const content =
       (isApprovalContentPane(active) && visible(active)) ||
       visible(remembered) ||
+      covered(remembered) ||
       visible(tree ? findGroupOfPane(tree, 'workspace')?.active : undefined)
 
-    return Boolean(content?.startsWith(PLUGIN_PANE_PREFIX))
+    return Boolean(content && declaresPerProfileApprovals(content))
   }
 )
 
@@ -58,7 +83,7 @@ export function useApprovalModeStatusbarItem(
   const copy = t.shell.approvalMode
   const modes = useStore($approvalModes)
   const mode = modes[profile.trim() || 'default'] ?? 'smart'
-  const hasProfileTarget = !useStore($showsPluginWorkspace)
+  const hasProfileTarget = !useStore($showsPerProfileWorkspace)
 
   const labels = useMemo<Record<ApprovalMode, string>>(
     () => ({ manual: copy.manual, smart: copy.smart, off: copy.off }),

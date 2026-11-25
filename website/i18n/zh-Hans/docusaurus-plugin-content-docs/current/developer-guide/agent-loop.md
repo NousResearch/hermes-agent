@@ -194,7 +194,7 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 3. 成功后，使用新 provider 继续对话
 4. 遇到 401/403 时，在故障转移前尝试刷新凭据
 
-回退系统也独立覆盖辅助任务——视觉、压缩和网页提取各自拥有独立的回退链，可通过 `auxiliary.*` 配置节进行配置。
+回退系统也独立覆盖辅助任务——视觉、压缩和标题生成各自拥有独立的回退链，可通过 `auxiliary.*` 配置节进行配置。
 
 ## 压缩与持久化
 
@@ -214,7 +214,7 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 ### Session 持久化
 
 每轮结束后：
-- 消息保存到 session 存储（通过 `hermes_state.py` 使用 SQLite）
+- 消息保存到 session 存储（通过 `persistence/` 存储接口使用 SQLite）
 - 内存变更刷写到 `MEMORY.md` / `USER.md`
 - 可通过 `/resume` 或 `hermes chat --resume` 恢复 session
 

@@ -210,7 +210,7 @@ def _cwd_prefix(proc) -> str:
 
 _HOLDER_VALUE_FLAGS_FALLBACK = frozenset({
     "--profile", "-p", "--config", "--model", "-m", "--provider", "--reasoning", "--toolsets", "-t",
-    "--skills", "-s", "--continue", "-c", "--resume", "-r", "--oneshot", "-z", "--in", "--usage-file",
+    "--skills", "-s", "--continue", "-c", "--resume", "-r", "--oneshot", "-z", "--in", "--usage-file", "--cpu-profile",
 })
 _holder_value_flags_cache: frozenset | None = None
 
@@ -282,6 +282,9 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
         elif token.startswith("-"):
             i += 1
         else:
+            # ``dashboard password`` sets the sign-in and exits: never a dashboard server to scan, stop or reap.
+            if token.lower() == "dashboard" and tokens[i + 1:i + 2] and tokens[i + 1].lower() == "password":
+                return "dashboard-password"
             return token.lower()
     return None
 

@@ -112,6 +112,9 @@ which data root a process uses.
 | Resumable downloads | `cache/partials/` under that root, not inside a signed payload. |
 | Per-install selection and journal | `installs/INSTALL_KEY/` under the dependency-state root. |
 | Python generations | `installs/INSTALL_KEY/environments/`. |
+| PM runtime generations | `installs/INSTALL_KEY/pm-runtime/generations/`. |
+| Generation leases | `installs/INSTALL_KEY/leases/environments/GENERATION/` and `leases/pm-runtime/GENERATION/`. |
+| Install and runtime-preparation locks | `installs/INSTALL_KEY/locks/`. |
 | Sync and update receipts | `logs/update_receipts/` under the active home. |
 
 The install key derives from the canonical source or payload-repository path.
@@ -123,6 +126,19 @@ Do not edit facts or generation paths manually. Launchers resolve the selected
 environment before third-party imports. Processes retain their existing imports
 until they restart. Garbage collection preserves selected generations and
 lease-managed generations with live readers.
+
+A launch writes its leases and locks beside the generations, never inside
+them. A sandbox (Landlock, a rootless container mount, systemd
+`ReadOnlyPaths=`) can therefore keep `environments/` and
+`pm-runtime/generations/` read-only and grant write access to
+`installs/INSTALL_KEY/leases/` and `installs/INSTALL_KEY/locks/` alone. Those
+two paths do not change between builds, so the policy needs no new exception
+after an update. Both directories exist after the first launch on a writable
+install. Processes started on an earlier release keep leasing inside each
+generation (`.leases/`) and locking `installs/INSTALL_KEY/.install.lock` and
+`pm-runtime/.prepare.lock` until they exit. Garbage collection honours a lease
+in either place, and installers also lock the old files whenever they can open
+them.
 
 Downloads share a lock per partial URL. A failed or paused transfer cannot
 publish a partial destination, and garbage collection cannot delete a live
@@ -144,6 +160,14 @@ membership, and currency checks use the same declaration reader.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
+Core's lock still takes precedence over that seed: when core's `uv.lock` moves a
+package past both the previous environment's pin and the core lock that
+environment was built from (a security release of a transitive, say), the
+package moves to core's version for the installing interpreter's fork
+(`uv lock -P name==version`), and a plugin that cannot accept it is disabled by
+an update like any other plugin that no longer builds. Pins core did not move,
+packages core's lock does not pin, and conflicts between plugins keep the
+incumbent environment's versions.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. Plugin snapshots keep a plugin's runtime dependencies
 and the optional extras this install selects (or the plugin's own requirements name);
@@ -153,7 +177,21 @@ them, because PM never installs them yet uv would still
 resolve them against core's pins. The original plugin metadata and core development
 pins are unchanged; genuine runtime conflicts still refuse admission. A plugin with no
 build backend gets a unique `hermes-plugin-…` name in its snapshot, and its references to
-its own extras (`myplugin[runtime]`) are renamed with it. The generated workspace and extended lock remain
+its own extras (`myplugin[runtime]`) are renamed with it. Hermes itself always comes from
+the checkout: a plugin requirement naming `hermes-agent` (a runtime dependency in
+`pyproject.toml` or `plugin.yaml`, or an extra this install selects, such as
+`hermes-agent[web]>=0.20`) is satisfied by it, whatever its version specifier says. PM
+therefore checks that specifier itself against the running Hermes version (the one
+`requires_hermes` reads), with standard PEP 440 comparison and the requirement's environment
+marker; a requirement in an unselected extra or one whose marker is false on this machine is
+not checked, and with no known version (`unknown`) nothing is. A plugin that excludes the
+running version is treated like one whose `requires_hermes` does: enabling or installing it is
+refused, and one already enabled is left out of the environment and skipped at load, with its
+config untouched, until Hermes reaches a version it accepts. The two checks compare differently:
+`requires_hermes` compares only `major.minor.patch` (pre/post-release suffixes are dropped, and a
+clause it cannot parse passes), while a `hermes-agent` requirement is compared as any Python
+requirement would be (`>=0.27.0.post1` excludes 0.27.0). Either one can keep a plugin out.
+The generated workspace and extended lock remain
 outside shipped source. The workspace is solved only for the platform and
 architecture of the interpreter it installs into, so a plugin dependency with no
 wheels for another platform (onnxruntime or torch on Android) does not block it;
@@ -190,6 +228,12 @@ once the build is fixed. A carried extra that fails only for the moment (a
 download or a missing tool) is never dropped: the update fails before it
 publishes anything, so the next update scans the old venv again and retries
 it. An extra you request yourself still fails the install when it cannot build.
+Only a venv that holds Hermes and that PM did not build counts as the old
+install. Every environment PM builds carries `hermes-pm-built = true` in its
+`pyvenv.cfg`, on any interpreter (`pm.build_env --python` included); one built
+before that key existed runs PM's own Python (its `pyvenv.cfg` `home` is in
+PM's tool store). Neither is ever carried, and neither is an empty `uv venv`. Any other in-tree `venv/` or `.venv/` with Hermes
+installed is read, a developer venv built by hand with `uv` included.
 
 ### Lazy-install policy
 
@@ -390,7 +434,7 @@ Verify the interpreter and source before doing work:
 python -c "import sys, pm; print(sys.executable); print(pm.__file__)"
 python -c "import httpx; print(httpx.__file__)"
 node --version
-npm --version
+pnpm --version
 hermes --version
 ```
 
@@ -416,16 +460,49 @@ These commands use the selected development home. A source-file edit is visible
 to the next process. Restart the affected CLI, gateway, or backend after edits.
 Reinstalling every dependency is unnecessary for a Python-only source change.
 
-For the JavaScript workspaces, run `npm ci` once at the repository root, then
-run the relevant workspace command. For example:
+For the JavaScript workspaces, run `pnpm install --frozen-lockfile` once at the
+repository root, then run the relevant workspace command. For example:
 
 ```bash
-npm run build --workspace ui-tui
-npm run dev --workspace apps/desktop
+pnpm --dir ui-tui run build
+pnpm --dir apps/desktop run dev
 ```
 
-The website is separate: `npm ci --prefix website`, then
-`npm run build:fast --prefix website`. PM activation supplies tools, not these
+`just` lists these developer commands as recipes (`just js-install`, `just desktop`,
+`just tui`, `just check`, `just test <paths>`); each recipe calls the command shown
+here. See [Developer commands](../developer-guide/contributing.md#developer-commands).
+
+Activation provides the pnpm version `pm/lock.json` pins. An install that runs
+lifecycle scripts refuses any other pnpm, a direct or filtered `pnpm install`
+included: the root `preinstall` script requires the `pm/lock.json` pnpm and refuses
+`npm install`, and pnpm 10 and 11 also refuse the root `engines.pnpm` range (`^12`;
+pnpm 12 does not compare `engines.pnpm` with itself). pnpm 12 runs no root
+`preinstall` under `--ignore-scripts`, `--lockfile-only` (install, add, remove and
+update) or `pnpm fetch`, so another pnpm 12 passes those. The backstop for a
+lockfile written that way is CI: every change to `pnpm-lock.yaml` runs the JS checks,
+which install it with the pinned pnpm under `--frozen-lockfile` (with
+`--lockfile-only` when the installed tree is cached). That proves the lockfile matches
+the manifests and the release-age policy, not which pnpm wrote it. The preinstall
+reads the user agent pnpm reports, so a `pnpm_config_user_agent` override is
+refused unless it names the pinned version.
+
+In the repository root and the JS workspace folders, npm refuses every command that
+installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,
+`--package-lock-only` or `--force`, `npm ci`, `update`, `dedupe`, `uninstall`,
+`link`): each of these folders has an `.npmrc` with `engine-strict=true`, and its
+`package.json` declares an `engines.npm` that no npm satisfies. `npm rebuild` and
+`npm pkg set` are not refused. An explicit `--engine-strict=false` overrides the
+refusal.
+
+`npx`, `npm exec` and `npm run` keep working, so MCP servers and tools still start.
+But `engine-strict` applies anywhere in the checkout: in these folders, and through
+the root `.npmrc` in every folder without a `package.json` of its own (`agent/`,
+`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses to install a package
+when it or any non-optional dependency it pulls in declares `engines` the current Node
+or npm does not satisfy, where it would only warn outside the checkout.
+
+The website is a separate npm project: `npm ci --prefix website`, then
+`npm run build:fast --prefix website` (`just docs-install`, `just docs-build`). PM activation supplies tools, not these
 `node_modules` directories or built assets. Native desktop builds have additional
 requirements in the [desktop build guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
 
@@ -591,10 +668,16 @@ not substitutes for an installed application's update mechanism.
 | `pm update --check` | Query without writing. Exit 1 can mean updates exist; inspect output to distinguish an error. |
 | `pm update --target TARGET` | Resolve versions for the specified target. |
 | `pm update --skip-target TARGET` | Leave TARGET's pins unchanged (repeatable), for example `linux-arm64-bionic` while the termux pool lags upstream. Later runs still report the package as current. `pm lock --bump NAME VERSION` re-pins every target at a version, and `pm update --termux` repins a retired `linux-arm64-bionic` row. |
-| `pm update --uv` / `--npm` | Also refresh the Python or npm dependency resolution. |
+| `pm update --uv` / `--pnpm` | Also refresh the Python dependency resolution (`uv.lock`) or the JavaScript one (`pnpm-lock.yaml`). |
 | `pm update --termux [--check]` | Repin the termux pool archives the rolling pool has retired (the runtime-lib pin table and the bionic lock rows). `--check` reports without writing and exits 1 when a pin is retired. |
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. The win32 `git` target pins a self-extracting PortableGit archive: staging it runs the vendor extractor and therefore requires a Windows host. |
 | `pm bundle --out DIR [--ref REF]` | Stage a source snapshot, native tools, facts, and Python dependencies. It does not produce a signed desktop installer. |
+
+The Nix flake pins the pnpm store that `pnpm-lock.yaml` resolves to with one
+fixed-output hash, `nix/pnpm-deps-hash`. `pm update --pnpm` does not refresh it:
+after any change to `pnpm-lock.yaml`, run `nix run .#update-pnpm-lockfile`
+([Nix setup](../getting-started/nix-setup.md#updating-the-pnpm-lockfile)) or
+copy the hash the `nix` workflow's `pnpm-deps-hash` job reports.
 
 The complete desktop builder also builds the JavaScript surfaces, generates
 launchers, and invokes native packaging. Maintainers can read
@@ -621,8 +704,8 @@ and preserves the partial download.
 PM does not retry bad hashes, certificate failures, local filesystem errors or
 other permanent failures. A successful probe followed by a range GET 403 or 404
 retains the CDN fallback: one serial attempt at the missing ranges. Extraction,
-verification and publication are not repeated. Python and npm package requests
-remain under uv and npm's own retry policies.
+verification and publication are not repeated. Python and JavaScript package
+requests remain under uv and pnpm's own retry policies.
 
 ## Release age and package mirrors
 
@@ -635,9 +718,44 @@ is CA trust stores (`certifi`): a release that distrusts a compromised CA is
 locked the day it ships, since waiting keeps the bad root trusted. Set a mirror with `index-url` in `pip.conf`,
 which Hermes passes to uv, or with `UV_INDEX_URL`.
 
+Ambient `UV_*` settings cannot redirect the project, interpreter or cache Hermes
+installs into. Regular builds keep uv's index settings (including
+`UV_EXTRA_INDEX_URL` and named-index credentials) and these transport settings:
+`UV_NATIVE_TLS`, `UV_INSECURE_HOST`, `UV_HTTP_TIMEOUT`, `UV_HTTP_RETRIES` and
+`UV_CONCURRENT_DOWNLOADS`. The pinned runtime build keeps only the transport
+settings. On a slow link where `hermes update` times out downloading several
+large wheels at once, set `UV_CONCURRENT_DOWNLOADS=1` before raising
+`UV_HTTP_TIMEOUT`. An update started from an older Hermes may drop both while
+it hands off; if that update times out, run `hermes update` again.
+
 `hermes pm lock` is the one step that applies the check. Run against a mirror
 without upload times, it stops with `has no publish time`; use
 `https://pypi.org/simple` for that step.
+
+JavaScript workspace dependencies follow the same rule through
+`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days).
+When a range's only matches are younger than that, `hermes pm update --pnpm`
+stops and prints the entries that would let it through, for example
+`- pele@1.13.0  # <why it cannot wait>` (it lists them by repeating the update
+on a scratch copy of the manifests and lock). To exempt one, add it to
+`minimumReleaseAgeExclude` as that exact `name@version` (never a bare name or a
+glob, which would exempt every future release), with the reason as an inline
+comment on the same line, then run the update again. The update drops an entry
+once the lockfile no longer holds that version, in the same change as the lock.
+pnpm's own `minimumReleaseAgeExcludePrune` stays off, because it would rewrite
+`pnpm-workspace.yaml` on every install, users' builds included. CI enforces the
+policy when it installs `pnpm-lock.yaml`; source, bundle and Docker installs
+trust the committed lock.
+
+PM's own npm-hosted tools (pnpm and npm) are pinned to `registry.npmjs.org`
+URLs in `pm/lock.json`, but PM downloads them from your npm registry:
+`npm_config_registry`, else `registry=` in the npmrc that `npm_config_userconfig`
+names, else `$HERMES_HOME/npmrc` when it exists, else `~/.npmrc`. That registry may be plain `http://` (a LAN Verdaccio or
+Nexus). The bytes must match the lock's SHA256 before PM uses them, a plain-http
+download over 256 MiB is abandoned, and a plain-http redirect must stay on the
+registry's host. When the registry is unreachable, lacks the file, sends too much
+or redirects elsewhere, PM falls back to its own pinned HTTPS archive. Every other
+download stays HTTPS-only.
 
 ## Diagnostics
 

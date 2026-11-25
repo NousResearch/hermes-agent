@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -29,8 +30,9 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
 def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
+    from pm.packages import pnpm_env
+    from pm.index_config import hermes_npmrc, user_npmrc
     from pm.paths import repo_root
-    from hermes_constants import get_hermes_home
 
     # The historical update runs on store Python with the selected environment
     # activated in-process. Icon generation starts an isolated child, which needs
@@ -46,14 +48,46 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     if vc_runtime.is_file():
         env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
-    npmrc = get_hermes_home() / "npmrc"
-    if npmrc.is_file():
-        env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
-    return ensure("npm", base_env=env, explicit=explicit, verify=verify).env
+    npmrc = user_npmrc(env)
+    twins = [name for name in env if name.upper() == "NPM_CONFIG_USERCONFIG"]
+    if npmrc == hermes_npmrc() or twins:
+        # npm reads the last non-empty twin in environ order; pnpm reads the lowercase name when
+        # set, even empty (as unset: ~/.npmrc), else the uppercase one, and never a mixed-case one.
+        # So twins split the installers and an empty one hides the Hermes file. One variable naming
+        # the file user_npmrc picked (a non-empty lowercase one first) replaces them.
+        env = {name: value for name, value in env.items() if name.upper() != "NPM_CONFIG_USERCONFIG"}
+        env["NPM_CONFIG_USERCONFIG"] = str(npmrc)
+    # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else
+    # ~/.npmrc) only for its registry and auth. npm also handed every other key to the processes it
+    # spawned as npm_config_<key>; keep doing that, since it is how node-pre-gyp (run by
+    # stage-native-deps.mjs) finds a binary mirror (node_get_windows_binary_host_mirror).
+    inherited = {name.upper() for name in env}
+    for key, value in _npmrc_script_settings(npmrc, env):
+        name = f"npm_config_{key.replace('-', '_').lower()}"
+        if name.upper() not in inherited:  # an explicit setting wins, in any case
+            env[name] = value
+    return ensure("pnpm", base_env=pnpm_env(env), explicit=explicit, verify=verify).env
+
+
+_NPMRC_SETTING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+# A one-time password and the deprecated inline client TLS key and certificate are credentials,
+# whatever npm itself exported.
+_NPMRC_SECRETS = frozenset({"otp", "key", "cert"})
+
+
+def _npmrc_script_settings(npmrc: Path, env: dict) -> list[tuple[str, str]]:
+    """The npmrc's plain settings (``pm.index_config.read_npmrc``) that may reach install
+    scripts. Skipped: credentials (``//host/:_authToken``, ``_auth``, ``otp``, ``key``,
+    ``cert``) and scoped registries (``@scope:registry``)."""
+    from pm.index_config import read_npmrc
+
+    settings = read_npmrc(npmrc, env)
+    return [(key, value) for key, value in settings.items()
+            if _NPMRC_SETTING.fullmatch(key) and key.lower() not in _NPMRC_SECRETS]
 
 
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
-    """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
+    """``pm.progress.run_contained`` for a build command that writes the checkout (node, pnpm):
     it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
     caller's process group, and every descendant killed when it exits; Windows: the owner's
     kill-on-close job), so the checkout is never handed to a contender while one of them still
@@ -67,10 +101,7 @@ def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
     command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
-    # npm's deprecation warnings are the loudest lines and never actionable
-    # here; they still land in the failure tail.
-    run_in_custody(project_root, command, label, hide=lambda line: line.lower().startswith("npm warn"),
-                   indent="  ", cwd=project_root, env=env)
+    run_in_custody(project_root, command, label, indent="  ", cwd=project_root, env=env)
 
 
 def _install_args(explicit: bool) -> tuple[str, ...]:
@@ -96,7 +127,35 @@ def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
     desktop_dir = project_root / "apps/desktop"
     desktop = _desktop_dist_exists(desktop_dir) or _desktop_packaged_executable(desktop_dir) is not None
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
+    # Someone is waiting for this launch, which falls back to the previous build when it fails:
+    # offline, pnpm's default retries spend ~70 s before failing, one retry ~10 s.
+    if not _fetch_retries_configured(project_root, env):
+        env = {**env, "pnpm_config_fetch_retries": "1"}
     prepare_source_dependencies(project_root, workspaces, env=env)
+
+
+def _fetch_retries_configured(project_root: Path, env: dict) -> bool:
+    """Whether the user chose a download retry count where pnpm 12 reads one:
+    ``pnpm_config_fetch_retries``, pnpm's global config.yaml or pnpm-workspace.yaml. pnpm 12 reads
+    no ``fetch-retries`` from an npmrc nor ``npm_config_fetch_retries``, so neither counts. A pnpm
+    that cannot answer counts as configured: the default stays."""
+    if any(key.lower() == "pnpm_config_fetch_retries" for key in env):
+        return True
+    from hermes_platform.resolver import LookupContext, locate_command
+
+    # The PATH of the env PM's ensure("pnpm") composed, never this process's.
+    found = locate_command("pnpm", LookupContext(path=env["PATH"])).command
+    if not found:
+        return True
+    pnpm = found[0]
+    try:
+        answer = subprocess.run(
+            [pnpm, "config", "get", "fetchRetries", "--json"], cwd=project_root, env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return answer.stdout.strip() != "null"
 
 
 def build_source_tui(project_root: Path, *, env: dict) -> None:
@@ -147,11 +206,13 @@ def _headless_linux() -> bool:
     return sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def build_update_products(project_root: Path, *, desktop: bool) -> None:
+def build_update_products(project_root: Path, *, desktop: bool, after_dependencies=None) -> None:
     """Prepare the selected union once, attempting every independent product.
 
     A failed product never skips the next one (a broken web build must not leave the TUI or the
     desktop app stale); the failures are raised together at the end as ``ProductBuildError``.
+    ``after_dependencies`` (it must not raise) runs once the Python and Node dependencies are
+    prepared, whether or not they succeeded, and before the first product build.
     """
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
@@ -172,6 +233,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
 
     attempt("feature dependencies", lambda: _install_configured_features_missing_deps(project_root))
     frontends = source_frontends(project_root)
+    if not frontends and after_dependencies is not None:
+        after_dependencies()
     if frontends:
         desktop_built = False
         env: dict = {}
@@ -179,8 +242,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         publish_stage("Updating Node dependencies")
 
         def node_dependencies(selected: tuple[str, ...]) -> None:
-            # Acquiring npm is part of this step: its failure must be reported like the install's.
-            # A recorded install is trusted as at startup (re-hashing node+npm costs ~2 s per
+            # Acquiring pnpm is part of this step: its failure must be reported like the install's.
+            # A recorded install is trusted as at startup (re-hashing the toolchain costs seconds per
             # tail); a missing one is still installed explicitly.
             env.update(source_build_env(explicit=True, verify=False))
             prepare_source_dependencies(project_root, selected, env=env, explicit=True)
@@ -196,6 +259,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
             prepared = desktop_skipped = attempt("Node dependencies", lambda: node_dependencies(frontends))
             if desktop_skipped:
                 failures.append(("desktop dependencies", failed[1]))
+        if after_dependencies is not None:
+            after_dependencies()
         desktop_reason = failures[-1][0] if failures else ""
         if desktop and (desktop_skipped or _headless_linux()):
             print("  ⓘ If this host never runs the desktop app, `hermes uninstall --gui` removes it "
@@ -297,7 +362,7 @@ def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None
         try:
             build_prepared_desktop(
                 desktop_dir, source_mode=False,
-                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+                pnpm=shutil.which("pnpm", path=env["PATH"]), env=env, icons=project_root,
             )
         finally:
             build_lock.release()

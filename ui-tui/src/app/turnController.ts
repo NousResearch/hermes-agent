@@ -1,4 +1,5 @@
 import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
+import type { SessionInterruptResponse } from '@hermes/shared/gateway-types'
 
 import {
   REASONING_PULSE_MS,
@@ -7,9 +8,9 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
+import { $turnOutcome, completionOutcome, errorOutcome } from '../lib/programStatus.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import {
@@ -350,6 +351,7 @@ class TurnController {
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
+
     // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
     // and finished tool rows wait for `recordMessageComplete` to archive them.
     if (!opts.keepTurnArchive) {
@@ -625,6 +627,21 @@ class TurnController {
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
+  // A tool's image lands right under the trail line of the call that made it,
+  // ahead of whatever the agent streams next (same anchoring as diffs).
+  pushImageSegment(path?: null | string, toolId?: string) {
+    if (!path || this.interrupted) {
+      return
+    }
+
+    this.flushStreamingSegment()
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { images: [path], kind: 'image', role: 'system', text: '', ...(toolId && { imageRevision: toolId }) }
+    ]
+    patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {
     patchTurnState(state => {
       const base = replaceLabel
@@ -659,10 +676,11 @@ class TurnController {
     })
   }
 
-  recordError() {
+  recordError(reason?: string) {
     // A failed turn discards the whole unsealed turn (flushed segments AND the
     // streaming tail) — unlike recordMessageComplete, which must keep the tail
     // (#61520), and interruptTurn, which preserves it as `partial`.
+    $turnOutcome.set(errorOutcome(reason))
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -777,6 +795,8 @@ class TurnController {
       void this.persistSpawnTree?.(finishedSubagents, sessionId)
     }
 
+    // Before idle() drops busy, so the terminal reads done/error, never a passing idle.
+    $turnOutcome.set(completionOutcome(wasInterrupted, payload))
     this.idle()
     this.clearReasoning()
     this.turnTools = []
@@ -1027,6 +1047,7 @@ class TurnController {
     // Session boundary: drop notice state so session A's sticky can't bleed
     // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
     this.clearNoticeState()
+    $turnOutcome.set(null)
     patchTurnState({ activity: [], outcome: '' })
   }
 
@@ -1071,6 +1092,7 @@ class TurnController {
   }
 
   startMessage() {
+    $turnOutcome.set(null)
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []

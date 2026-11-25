@@ -1,0 +1,27 @@
+name: waiting-on-you-desktop
+repo: https://github.com/clientamp/waiting-on-you-desktop
+sha: 19526a69ca2fec816c0e663f71d5e83eea008245
+description: "Desktop panel listing every question your agents are waiting on you to answer, across all chats and profiles, sorted by urgency and importance. Yes, No and Reply can be answered in place, with five seconds to undo, but only for a chat whose composer is visible in this Desktop window; other chats get Open instead. Later snoozes an ask from any chat. Disclosure: sends chat excerpts, task context, your priority note and recent priority corrections (as examples) to your configured Hermes model, and to an optional decision provider you choose; see the README for full details. Reads every local profile's state.db and projects.db read-only, plus Hermes config.yaml; saves its plugin settings through Hermes; runs a background scan in the gateway. Optional SSH reads, chat archiving and local action-handler commands are all off by default. Handlers run with a minimal environment plus only the variable names you list, and can do whatever their command does. No telemetry."
+maintainer: clientamp
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/clientamp/waiting-on-you-desktop#readme
+version: "1.0.2"
+title: "Waiting On You"
+platforms: [macos, linux]
+screenshots:
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/19526a69ca2fec816c0e663f71d5e83eea008245/assets/readme/panel.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/19526a69ca2fec816c0e663f71d5e83eea008245/assets/readme/nested.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/19526a69ca2fec816c0e663f71d5e83eea008245/assets/readme/next-up.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/19526a69ca2fec816c0e663f71d5e83eea008245/assets/readme/settings.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/19526a69ca2fec816c0e663f71d5e83eea008245/assets/readme/teach-priorities.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/19526a69ca2fec816c0e663f71d5e83eea008245/assets/readme/first-run.png
+known_issues:
+  - "Inline answers work only for chats open in this Desktop window; chats on another machine or profile get Open instead."
+  - "Satellites are not included in this catalog build and will return only once Hermes ships public token routes (upstream PR #151760, issue #143507)."
+capabilities:
+  provides_tools: [wou_list]
+  provides_hooks: [post_llm_call]
+  provides_middleware: []
+  requires_env: []

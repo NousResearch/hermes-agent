@@ -163,9 +163,9 @@ def _install_connection_hook() -> None:
 
 def _move_workspace(task_id, path):
     """``desktop_project``'s move for a turn of ours: None when *task_id* is not one (another host's
-    session), False when its chat is gone, else ``"pending"``: the folder is committed at the end of
-    the turn, as the user's Move to project, so the running turn keeps its own. A folder that does
-    not exist raises, so the tool reports why."""
+    session), False when its chat is gone, True when the chat is already there, else ``"pending"``:
+    the folder is committed at the end of the turn, as the user's Move to project, so the running
+    turn keeps its own. A folder that does not exist raises, so the tool reports why."""
     import os
     from tools.terminal_tool import _resolve_container_alias
     key = str(task_id or "")
@@ -181,6 +181,11 @@ def _move_workspace(task_id, path):
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if not os.path.isdir(resolved):
         raise FileNotFoundError(f"folder does not exist: {resolved}")
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, live.source)
+    if policy is not None and os.path.abspath(policy.cwd) == resolved:
+        live.pending_workspace = None  # already there: an earlier call's pending move is taken back
+        return True
     live.pending_workspace = resolved
     return "pending"
 

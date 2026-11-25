@@ -15,21 +15,70 @@ from cryptography.fernet import Fernet
 
 from agent import vault_keychain as kc
 from agent.vault_store import VaultStore
+from hermes_platform.host.facts import os_family
 
 _LOGIN = {"identifier_type": "email", "identifier": "ci@example.com", "password": "dummy-pw-not-real-42"}
+_NO_SUCH_LOGON_SESSION = 1312
+
+
+def _skip_without_logon_session(backend) -> None:
+    """Skip when Credential Manager refuses a bare write with ERROR_NO_SUCH_LOGON_SESSION; any other write
+    error fails setup, and read-back is left to the tests' own checks. A probe that was written is removed
+    again, and one that cannot be removed fails setup."""
+    account = f"hermes-ci-probe-{uuid.uuid4().hex}"
+    try:
+        backend.set_password(kc.SERVICE, account, "probe")
+    except Exception as exc:  # health: allow BLE001 -- keyring backends raise their own types
+        if getattr(exc, "winerror", None) == _NO_SUCH_LOGON_SESSION:
+            pytest.skip(f"this runner's session has no logon session for Credential Manager: {exc}")
+        raise
+    assert kc.delete_key({"storage": "keychain", "service": kc.SERVICE, "account": account}), \
+        f"the keychain probe entry {account} could not be removed"
 
 
 @pytest.fixture
 def os_keychain():
-    """The real backend keyring resolves to; skip where the host has none (not a failure)."""
+    """The real backend keyring resolves to; skip where the host has none (not a failure).
+
+    A Windows runner whose job session has no logon session (``ERROR_NO_SUCH_LOGON_SESSION``, 1312) has a
+    Credential Manager backend that refuses every write: a property of that runner's session, not of
+    Hermes, so it skips too. Any other refusal still fails."""
     try:
-        kc.os_keyring()
+        backend = kc.os_keyring()
     except kc.KeychainUnavailable as exc:
         pytest.skip(f"no OS keychain on this host: {exc}")
+    if os_family() == "win32":
+        _skip_without_logon_session(backend)
     made: list[dict] = []
     yield made
     for ref in made:
         kc.delete_key(ref)
+
+
+class _RefusingBackend:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    def set_password(self, service: str, account: str, password: str) -> None:
+        raise self.error
+
+
+class _CredWriteError(OSError):
+    def __init__(self, winerror: int):
+        super().__init__("CredWrite failed")
+        self.winerror = winerror
+
+
+@pytest.mark.parametrize("error", [_CredWriteError(5), OSError("CredWrite failed")],
+                         ids=["access-denied", "plain-os-error"])
+def test_only_no_logon_session_skips_a_refused_probe_write(error):
+    """The skip is for WinError 1312 alone: any other write refusal still fails the native tests."""
+    with pytest.raises(pytest.skip.Exception):
+        _skip_without_logon_session(_RefusingBackend(_CredWriteError(1312)))  # the literal, not the constant
+    # Catch the skip outcome too, so a widened skip fails here instead of skipping this test.
+    with pytest.raises((OSError, pytest.skip.Exception)) as raised:
+        _skip_without_logon_session(_RefusingBackend(error))
+    assert raised.value is error
 
 
 @pytest.mark.platforms("macos", "windows")

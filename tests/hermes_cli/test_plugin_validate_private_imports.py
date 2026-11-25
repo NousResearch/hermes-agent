@@ -188,6 +188,57 @@ def test_plugin_guide_file_safety_and_yaml_example_validates_clean(tmp_path):
     assert _private_warnings(validate_plugin_dir(whole)), "a whole-module import of file_safety must still warn"
 
 
+def test_retry_after_parser_is_public_but_the_rest_of_retry_utils_is_not(tmp_path):
+    """A plugin that honours a rate limit's Retry-After header with Hermes's parser gets no
+    private-import warning; another name from the same module still warns."""
+    clean = _plugin(tmp_path / "graph", {"client.py": (
+        "from agent.retry_utils import parse_retry_after_seconds\n"
+        "def wait_for(response):\n"
+        "    return parse_retry_after_seconds(response.headers)\n"
+    )})
+    assert _private_warnings(validate_plugin_dir(clean)) == []
+
+    sibling = _plugin(tmp_path / "backoff", {"client.py": "from agent.retry_utils import jittered_backoff\n"})
+    [warning] = _private_warnings(validate_plugin_dir(sibling))
+    assert "agent.retry_utils.jittered_backoff" in warning
+
+
+def test_silence_helpers_are_public_text_checks_and_the_rest_of_response_filters_is_not(tmp_path):
+    """A plugin that imports Hermes's silence-marker text helpers gets no private-import warning;
+    delivery-policy helpers from the same module (such as ``silence_allowed``) still warn. The
+    helpers answer what the docs row says."""
+    clean = _plugin(tmp_path / "notifier", {"markers.py": (
+        "from gateway.response_filters import (\n"
+        "    is_autonomous_silence_response,\n"
+        "    is_intentional_silence_response,\n"
+        "    strip_trailing_silence_marker,\n"
+        ")\n"
+        "def check_markers(reply, *, autonomous=False):\n"
+        "    silent = is_autonomous_silence_response if autonomous else is_intentional_silence_response\n"
+        "    return silent(reply), strip_trailing_silence_marker(reply)\n"
+    )})
+    assert _private_warnings(validate_plugin_dir(clean)) == []
+
+    sibling = _plugin(tmp_path / "gate", {"deliver.py": "from gateway.response_filters import silence_allowed\n"})
+    [warning] = _private_warnings(validate_plugin_dir(sibling))
+    assert "gateway.response_filters.silence_allowed" in warning
+
+    from gateway.response_filters import (
+        is_autonomous_silence_response,
+        is_intentional_silence_response,
+        strip_trailing_silence_marker,
+    )
+
+    assert is_intentional_silence_response("NO_REPLY")
+    assert strip_trailing_silence_marker("NO_REPLY") == "NO_REPLY"
+    assert strip_trailing_silence_marker("Here is the answer.\n\nNO_REPLY") == "Here is the answer."
+    prose = "I will answer with NO_REPLY when there is nothing to add."
+    assert not is_intentional_silence_response(prose)
+    assert strip_trailing_silence_marker(prose) == prose
+    assert is_autonomous_silence_response("[SILENT] nothing new since the last run")
+    assert not is_intentional_silence_response("[SILENT] nothing new since the last run")
+
+
 def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_path):
     """opencode-sync calls SessionDB / GatewayRunner private methods on the objects it is handed;
     no import names them, so only the attribute pass can see it. The plugin's own ``_helper`` and

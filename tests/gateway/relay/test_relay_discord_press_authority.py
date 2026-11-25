@@ -73,6 +73,7 @@ async def _raise_as_alice(adapter, stub, kind):
         if kind == "exec_approval":
             entry = _ApprovalEntry({"command": "rm -rf build"})
             approval._gateway_queues[SESSION] = [entry]
+            approval.restrict_gateway_approval_card_to_deny(SESSION, entry.data["request_id"], restricted=False)
             prompt_id = adapter._mint_prompt("exec_approval", {
                 "session_key": SESSION, "request_id": entry.data["request_id"], "chat_id": "c1"})
             return prompt_id, "once", lambda: entry.result == "once"
@@ -172,6 +173,7 @@ def test_unadmitted_card_answer_settles_nothing_for_another_member(relay):
         clear_session_vars(tokens)
     approval._gateway_queues[SESSION] = [entry]
     request_id = entry.data["request_id"]
+    approval.restrict_gateway_approval_card_to_deny(SESSION, request_id, restricted=False)
 
     assert approval.resolve_gateway_approval_card(SESSION, "once", request_id, actor_id="mallory",
                                                   admitted=False) == 0

@@ -8,7 +8,7 @@ shape (single UPDATE with a state predicate, rowcount-checked), which the
 tracking-issue probe confirmed. This cell pins it permanently.
 
 8 independent OS processes are released from a file barrier simultaneously;
-each calls ``SessionDB.claim_handoff()`` on the same pending session.
+each calls ``coordination.claim_handoff()`` on the same pending session.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from tests.conformance.persistence._harness import (
 CLAIMANT = r"""
 import sys, time
 from pathlib import Path
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 
 db_path = Path({db_path!r})
 barrier = Path({barrier!r})
@@ -36,8 +36,8 @@ while not barrier.exists():
         sys.exit(3)
     time.sleep(0.005)
 
-db = SessionDB(db_path=db_path)
-won = db.claim_handoff("cell2")
+db = open_persistence(profile_scope(home=db_path.parent))
+won = db.coordination.claim_handoff(session_id="cell2")
 # Disjoint codes: 0=won, 10=lost. An unhandled exception exits 1, which must
 # NEVER be confusable with a clean "lost the claim" — a run where one
 # claimant wins and seven CRASH is not a consume-once proof.
@@ -48,14 +48,15 @@ N_CLAIMANTS = 8
 
 
 def test_exactly_one_claimant_wins(tmp_path):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     db_path = tmp_path / "state.db"
     barrier = tmp_path / "go"
 
-    db = SessionDB(db_path=db_path)
-    db.create_session("cell2", source="conformance")
-    assert db.request_handoff("cell2", "telegram") is not False
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "cell2", "conformance")
+    assert db.coordination.request_handoff(session_id="cell2", platform="telegram") is not False
 
     children = []
     ready_files = []
@@ -78,6 +79,7 @@ def test_exactly_one_claimant_wins(tmp_path):
     barrier.touch()
 
     results = [reap(c) for c in children]
+    db.close()
     mode = on_disk_journal_mode(db_path)
 
     codes = [rc for rc, _, _ in results]

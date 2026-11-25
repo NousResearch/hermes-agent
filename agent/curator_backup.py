@@ -9,6 +9,7 @@ fields (only) — the rest is live state."""
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -150,6 +151,35 @@ def _mkdir(path: Path, what: str, *, exist_ok: bool) -> bool:
         return False
 
 
+_DIR_FSYNC_UNSUPPORTED = frozenset({errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
+
+
+def _sync_snapshot(dest: Path) -> None:
+    """Flush the snapshot's files, then its directory entries up to ``skills/``, before older snapshots are pruned.
+
+    Without it a crash after the prune can leave the only surviving snapshot with a zeroed archive tail. Raises
+    ``OSError`` on a real I/O error so the caller drops the snapshot and prunes nothing; a filesystem with no
+    directory fsync (EINVAL/ENOTSUP) is not an error, and Windows cannot open directories at all.
+    """
+    for path in dest.iterdir():
+        fd = os.open(path, os.O_RDWR)  # Windows _commit rejects a read-only fd
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    if os.name == "nt":
+        return
+    for directory in (dest, dest.parent, dest.parent.parent):  # snapshot, .curator_backups/ (may be new), skills/
+        fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        except OSError as e:
+            if e.errno not in _DIR_FSYNC_UNSUPPORTED:
+                raise
+        finally:
+            os.close(fd)
+
+
 def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[set[str]] = None) -> Optional[Path]:
     """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones. Returns the snapshot dir, or None when
     skipped (disabled, skills dir missing, IO error) — logged at debug so the curator never aborts a pass over a
@@ -180,6 +210,7 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[set[str]] =
                            filter=lambda ti: None if _excluded_member(ti) else ti)
         # Cron capture is additive and never fails the snapshot; the manifest records whether it happened so rollback can say "no cron data".
         _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest))
+        _sync_snapshot(dest)
     except (OSError, tarfile.TarError) as e:
         logger.debug("Curator snapshot failed: %s", e, exc_info=True)
         shutil.rmtree(dest, ignore_errors=True)  # clean up partial snapshot

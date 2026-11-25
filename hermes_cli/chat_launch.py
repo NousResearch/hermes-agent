@@ -3,9 +3,7 @@ install, and the lines printed after the client exits. Public for plugins (plugi
 Ink launcher (``main_tui_launch.py``) uses the same functions.
 """
 
-import json
 import os
-import sqlite3
 from pathlib import Path
 
 from agent.i18n import t
@@ -33,30 +31,27 @@ def hermes_command(args=()) -> list[str]:
 _SHORT_RESUME_LEN = 22
 
 
-def _short_resume_id(db, session_id: str) -> str:
+def _short_resume_id(persistence, session_id: str) -> str:
     """The 22-char prefix of a canonical ``local-…`` id when it names only that session (``--resume``
     resolves a unique prefix back); every other id, or an ambiguous prefix, prints whole."""
     if not session_id.startswith("local-") or len(session_id) <= _SHORT_RESUME_LEN:
         return session_id
     short = session_id[:_SHORT_RESUME_LEN]
+    from persistence.core.errors import STORE_FAILURES
     try:
-        return short if db.resolve_session_id(short) == session_id else session_id
-    except sqlite3.Error:  # an unreadable store prints the whole id
+        return short if persistence.sessions.resolve_id(short) == session_id else session_id
+    except STORE_FAILURES:  # an unreadable store prints the whole id
         return session_id
 
 
-def _branch_lineage(db, session: dict) -> list:
+def _branch_lineage(persistence, session) -> list:
     """*session* plus each ``/branch`` ancestor it was cut from. Main's epilogue after ``/branch`` still
     named the parent and so reported the conversation's tokens; a canonical branch child is named
     itself, and its copied history was billed on the ancestors."""
-    rows, seen = [session], {session.get("id")}
+    rows, seen = [session], {session.session_id}
     while True:
-        try:
-            config = json.loads(rows[-1].get("model_config") or "{}")
-        except (TypeError, ValueError):
-            break
-        parent_id = config.get("_branched_from") if isinstance(config, dict) else None
-        parent = db.get_session(parent_id) if parent_id and parent_id not in seen else None
+        parent_id = rows[-1].model_config.get("_branched_from")
+        parent = persistence.sessions.get(parent_id) if parent_id and parent_id not in seen else None
         if not parent:
             break
         seen.add(parent_id)
@@ -68,29 +63,25 @@ def print_exit_summary(session_id: str, *, command: str) -> None:
     """Print the lines a chat launcher shows after its client exits: how to resume the session
     with *command* (for example ``hermes --tui``), its id, title, message count and tokens. Prints
     nothing when the profile's store has no such session or the session has no messages."""
-    db = None
     try:
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence_reader
         from hermes_cli.config import get_hermes_home
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-        session = db.get_session(session_id)
-        if not session:
-            return
+        with open_persistence_reader(get_hermes_home()) as persistence:
+            session = persistence.sessions.get(session_id)
+            if not session:
+                return
 
-        title = db.get_session_title(session_id)
-        resume_id = _short_resume_id(db, session_id)
-        message_count = int(session.get("message_count") or 0)
-        if message_count == 0:
-            return  # No real conversation — don't show resume info
-        tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
-        for row in _branch_lineage(db, session):
-            for k in tokens:
-                tokens[k] += int(row.get(f"{k}_tokens") or 0)
+            title = persistence.sessions.get_title(session_id)
+            resume_id = _short_resume_id(persistence, session_id)
+            message_count = int(session.message_count or 0)
+            if message_count == 0:
+                return  # No real conversation — don't show resume info
+            tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
+            for row in _branch_lineage(persistence, session):
+                for k in tokens:
+                    tokens[k] += int(getattr(row, f"{k}_tokens") or 0)
     except Exception:  # health: allow BLE001 -- the epilogue never fails the launcher
         return
-    finally:
-        if db is not None:
-            db.close()
 
     # Sessions live under the profile's HERMES_HOME — mirror cli_session_mixin::_print_exit_summary.
     from hermes_cli.profiles import get_active_profile_name

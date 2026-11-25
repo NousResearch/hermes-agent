@@ -26,6 +26,25 @@ from tools.approval import detect_dangerous_command
         'git -C "/tmp/g space" branch -D feature',
         "git --work-tree '/tmp/g space' --git-dir '/tmp/g space/.git' reset --hard",
         'git --git-dir="/tmp/g space/.git" reset --hard',
+        # A backslash-escaped space or quote stays inside its word (what tab completion inserts).
+        "git -C my\\ repo push --force",
+        "git -C /a\\ b\\ c reset --hard",
+        "git -c user.name=a\\ b clean -fd",
+        "git -C /tmp/my\\\tdir branch -D old",
+        'git -c user.name="John \\"Big John\\" Doe" reset --hard',
+        "git -c user.name=O\\'Brien push --force",
+        # A backslash is literal inside single quotes, and a single quote is literal inside double quotes.
+        "git -C 'a\\' -c user.name=O\\'Brien push --force",
+        'git -c user.name="O\'Brien \\"Big Jr\\" O\'Neil" reset --hard',
+        # A command substitution is one word even unquoted.
+        "git -C $(git rev-parse --show-toplevel) push --force",
+        "git -C $(realpath $(pwd)) push --force origin main",
+        "git -C $(dirname $(realpath $(pwd))) push --force origin main",
+        "git -C $(a $(b $(c $(d)))) reset --hard",
+        "git -C `git rev-parse --show-toplevel` reset --hard",
+        # An option git doesn't list never takes the verb as its value.
+        "git --new-flag push --force",
+        "git -q push -f",
     ],
 )
 def test_flagged(cmd):
@@ -42,6 +61,14 @@ def test_flagged(cmd):
         "git --no-pager log push --force",
         "git status && echo push --force",
         'git -C "/tmp/g space" status',
+        "git -C my\\ repo push origin main",
+        "git -C $(git rev-parse --show-toplevel) push origin main",
+        "git -C $(realpath $(pwd)) push origin main",
+        "git --no-pager log --oneline push --force",
+        # A value-less option, or an unknown one with no option after its word, takes no value.
+        "git -P log --oneline push --force",
+        "git -q log push --force",
+        "git -C $(dirname $(realpath $(pwd))) push origin main",
     ],
 )
 def test_not_flagged(cmd):
@@ -52,6 +79,7 @@ def test_not_flagged(cmd):
     "description, legacy_key",
     [
         ("git reset --hard (destroys uncommitted changes)", r"git\s+reset\s+--h(?:a(?:r(?:d)?)?)?"),
+        ("git reset --hard (destroys uncommitted changes)", r"git\s+reset\s+--hard"),
         ("git force push (rewrites remote history)", r"git\s+push"),
         ("git force push short flag (rewrites remote history)", r"git\s+push"),
         ("git clean with force (deletes untracked files)", r"git\s+clean\s+-[^\s]*f"),
@@ -76,6 +104,39 @@ def test_a_run_of_global_options_is_scanned_linearly(option):
     start = time.monotonic()
     assert not detect_dangerous_command("git " + (option + " ") * 60 + "x")[0]
     assert detect_dangerous_command("git " + (option + " ") * 60 + "reset --hard")[0]
+    assert time.monotonic() - start < 2
+
+
+def test_options_outside_the_value_list_still_reach_the_subcommand():
+    """An option git adds later takes its value as a separate word; a long run of them must still
+    expose the verb, and stay linear when no verb follows."""
+    import time
+
+    start = time.monotonic()
+    run = "--opt val --flag=x -q - " * 58
+    assert detect_dangerous_command(f"git {run}-C /tmp/r push --force origin x")[0]
+    for prefix in ("git", "git -C /tmp/r", "git --git-dir=/tmp/r/.git"):
+        for bulk in ("--exclude " * 58, "--opt val " * 58, "--opt=val " * 58,
+                     "-C'/tmp/a b' -c 'k=v' " * 58, "-C /a\\ b\\ c -c k=v\\ w " * 58, "-C " + "$(pwd)" * 58 + " "):
+            assert not detect_dangerous_command(f"{prefix} {bulk}log --oneline")[0], prefix
+    assert time.monotonic() - start < 2
+
+
+@pytest.mark.parametrize("value", ["$(" * 30000, "$(a " * 25000, "$(" + "(a)" * 30000, "$(" + "((a)" * 25000])
+def test_an_unclosed_nested_substitution_is_scanned_linearly(value):
+    """Each `$(` nesting level is atomic: an unclosed run must fail in one pass, not re-split per level.
+    The detector's parser budget refuses such a command before the rules run, so time the git rules."""
+    import re
+    import time
+
+    from tools.approval_detection import DANGEROUS_PATTERNS
+    from tools.approval_git_options import _GIT
+
+    rules = [re.compile(p, re.IGNORECASE) for p, _ in DANGEROUS_PATTERNS if isinstance(p, str) and _GIT in p]
+    assert rules
+    start = time.monotonic()
+    for rule in rules:
+        assert not rule.search(f"git -C {value} log --oneline")
     assert time.monotonic() - start < 2
 
 

@@ -2,7 +2,6 @@
 
 import json
 import logging
-import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -10,7 +9,6 @@ from urllib.parse import quote
 
 import httpx
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_guard import TRUSTED_REPOS
 from tools.skills_hub_models import (
@@ -247,7 +245,6 @@ class GitHubSource(SkillSource):
     ]
 
     SOURCE_ID = "github"
-    _parse_frontmatter_quick = staticmethod(_parse_frontmatter)
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[list[dict]] = None):
         self.auth = auth

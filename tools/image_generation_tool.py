@@ -385,20 +385,29 @@ def _format_images(images: list, should_upscale: bool, prompt: str) -> list:
 _FAL_INLINE_BUDGET = 3_500_000
 
 
-def _inline_fal_sources(sources: list) -> list:
-    """FAL only fetches URLs, so local paths become ``data:`` URLs through the guarded resolver
-    (credential-read guard, image sniff) on every terminal backend; then fit the gateway budget."""
+def _inline_local_sources(sources: list) -> list:
+    """Local paths become ``data:`` URLs through the guarded resolver (credential-read guard,
+    image sniff) on every terminal backend; URLs and ``data:`` URLs pass through untouched."""
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
     try:
-        urls = [_run_async(resolve_local_source_to_data_url(s, None)) for s in sources]
+        return [_run_async(resolve_local_source_to_data_url(s, None)) for s in sources]
     except ImageResolutionError as exc:
         raise ValueError(f"Could not read source image: {exc}") from exc
+
+
+def _fit_inline_budget(urls: list, budget: int) -> list:
+    """Downscale the ``data:`` URLs in ``urls`` until together they fit ``budget`` characters."""
     inline = [u for u in urls if u.startswith("data:")]
-    if sum(map(len, inline)) <= _FAL_INLINE_BUDGET:
+    if sum(map(len, inline)) <= budget:
         return urls
-    share = _FAL_INLINE_BUDGET // len(inline)
+    share = budget // len(inline)
     return [_shrink_data_url(u, share) if u.startswith("data:") and len(u) > share else u for u in urls]
+
+
+def _inline_fal_sources(sources: list) -> list:
+    """FAL only fetches URLs: inline local paths, then fit the managed gateway's body budget."""
+    return _fit_inline_budget(_inline_local_sources(sources), _FAL_INLINE_BUDGET)
 
 
 def _shrink_data_url(url: str, budget: int) -> str:

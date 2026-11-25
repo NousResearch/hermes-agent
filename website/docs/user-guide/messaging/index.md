@@ -141,8 +141,11 @@ Supported tokens:
 - `NO_REPLY`
 - `NO REPLY`
 - `[静默]` / `静默` and `[沉默]` / `沉默` — the Chinese renderings a model produces when it translates the sentinel instead of emitting it literally
+- `[审核]` / `审核` — the label a lane drifts to when it answers "reviewed, nothing new" instead of emitting the sentinel
 
-Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+Whitespace and case are normalized, and whitespace *inside* the brackets is ignored too, so `[ SILENT ]`, `[SILENT ]` and `[ SILENT]` all silence. The whole final response still has to be the token — a sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+
+Invisible *format* characters (zero-width space, zero-width joiner, BOM, bidi marks — Unicode category `Cf`) are ignored wherever they appear, so a token a model wrote as `[<U+200B>SILENT]` still silences instead of reaching the chat.
 
 Silence is a delivery decision only. Hermes keeps the assistant silence turn in the session transcript, so the conversation still alternates normally:
 
@@ -195,7 +198,12 @@ probes (default 3), housekeeping, the cron scheduler and the embedded kanban
 dispatcher have all frozen with it, so the watchdog dumps every thread's stack
 to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
 `exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
-supervisor restarts the process. `hermes gateway status` renders that record as
+supervisor restarts the process. The dump and the stamp are best effort: if
+writing them stalls in Python (a full stderr pipe, a wedged log handler, a held
+status lock), the watchdog still exits within about 5 seconds, and the stamp
+may be missing or partial. The dump file itself is written by `faulthandler`,
+which holds the interpreter lock while it writes, so a disk that stops
+answering mid-dump can still hold the process until the write returns. `hermes gateway status` renders that record as
 `⚠ Gateway exited degraded: event loop stopped dispatching …` until a new
 gateway process overwrites it, and the dashboard's gateway badge shows
 **Degraded** with the same reason. Set `gateway.loop_watchdog: false` in

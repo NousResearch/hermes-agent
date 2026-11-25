@@ -164,8 +164,25 @@ export const $petUnread = atom(false)
 export const markPetUnread = () => $petUnread.set(true)
 export const clearPetUnread = () => $petUnread.set(false)
 
-/** Steady activity flags (toolRunning / reasoning) set + cleared by the stream. */
-export const setPetActivity = (next: Partial<PetActivity>) => $petActivity.set({ ...$petActivity.get(), ...next })
+/** Steady activity flags (toolRunning / reasoning) set + cleared by the stream.
+ *
+ * The reasoning/tool flags are re-asserted on EVERY delta of those streams
+ * (dozens per second). Spreading into a fresh object each time notified every
+ * pet subscriber — and made `useStore($petActivity)` re-render the overlay —
+ * even though the flag it reads was already set. Only publish a genuinely
+ * changed value.
+ */
+export const setPetActivity = (next: Partial<PetActivity>) => {
+  const current = $petActivity.get()
+
+  for (const key in next) {
+    if (current[key as keyof PetActivity] !== next[key as keyof PetActivity]) {
+      $petActivity.set({ ...current, ...next })
+
+      return
+    }
+  }
+}
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 

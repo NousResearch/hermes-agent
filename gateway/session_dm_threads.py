@@ -37,14 +37,13 @@ def _declared_topic_thread(extra: Mapping[str, Any], chat_id: str, thread_id: st
     return False
 
 
-def _topic_mode_enabled(db: Any, source: Any) -> bool:
+def _topic_mode_enabled(store: Any, source: Any) -> bool:
     try:
-        db = db() if callable(db) else db
+        store = store() if callable(store) else store
     except Exception:
-        logger.debug("dm_threads: no session DB; keeping thread isolation", exc_info=True)
+        logger.debug("dm_threads: no session store; keeping thread isolation", exc_info=True)
         return True
-    db = getattr(db, "_db", db)  # AsyncSessionDB facade -> the sync store
-    check = getattr(db, "is_telegram_topic_mode_enabled", None)
+    check = getattr(getattr(store, "routing", None), "is_topic_mode_enabled", None)
     if not callable(check):
         return False
     try:
@@ -59,8 +58,8 @@ def _topic_mode_enabled(db: Any, source: Any) -> bool:
 def dm_thread_key_source(source: Any, extra: Optional[Mapping[str, Any]], db: Any = None) -> Any:
     """*source* with its DM ``thread_id`` dropped when ``extra.dm_threads`` is ``shared`` and the
     thread is not a ``/topic`` lane or a declared ``dm_topics`` topic; else *source* itself. *db* is
-    the SessionDB holding topic-mode state, or a zero-arg callable returning it (read only when a
-    shared-mode DM thread needs the check)."""
+    the storage interface handle holding topic-mode state, or a zero-arg callable returning it (read
+    only when a shared-mode DM thread needs the check)."""
     if (getattr(source, "platform", None) != Platform.TELEGRAM or getattr(source, "chat_type", None) != "dm"
             or not getattr(source, "thread_id", None) or getattr(source, "detached_route", None)):
         return source
@@ -89,20 +88,20 @@ def dm_thread_batch_suffix(source: Any, extra: Optional[Mapping[str, Any]]) -> s
 
 
 def session_db_for_source(store: Any, source: Any) -> Any:
-    """The SessionDB holding *source*'s topic-mode rows: its pinned identity's runtime profile store
-    (a primary bot routing to another profile derives its adapter key BEFORE the runner enters that
-    profile's scope, so the active scope would read the launch profile's rows), else the store's
-    scope-resolved one. A pinned test store wins."""
+    """The storage interface handle holding *source*'s topic-mode rows: its pinned identity's runtime
+    profile store (a primary bot routing to another profile derives its adapter key BEFORE the runner
+    enters that profile's scope, so the active scope would read the launch profile's rows), else the
+    store's scope-resolved one. A pinned test store wins."""
     from gateway.session_identity import identity_of
     from gateway.session_persistence import _DB_UNPINNED
     pinned = getattr(store, "_pinned_db", None)
-    if callable(pinned) and pinned() is not _DB_UNPINNED:
-        return pinned()
     identity = identity_of(source)
-    opener = getattr(store, "_open_session_db_for_active_scope", None)
-    if identity is not None and identity.multiplexed and callable(opener):
-        return opener(identity.store_path)
-    return getattr(store, "_db", None)
+    opener = getattr(store, "_open_persistence_for_active_scope", None)
+    if ((not callable(pinned) or pinned() is _DB_UNPINNED)
+            and identity is not None and identity.multiplexed and callable(opener)):
+        return opener(home=identity.runtime_home)
+    scoped = getattr(store, "_scoped_persistence", None)
+    return scoped() if callable(scoped) else None
 
 
 def telegram_extra_for(source: Any, config: Any) -> Mapping[str, Any]:

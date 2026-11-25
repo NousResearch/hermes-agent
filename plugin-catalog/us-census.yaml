@@ -1,6 +1,6 @@
 name: us-census
 repo: https://github.com/TakeshiTGAL/hermes-plugin-us-census
-sha: b4117141db87cf320824959741d94059fde6d151
+sha: 472faa6b6464fd6055dbc9aac99616949bba86fa
 title: US Census
 description: "ACS population, income, age, and housing for a US place, with vintage year, variable id, and margin of error. This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau. Disclosure — HTTPS only to api.census.gov, geocoding.geo.census.gov, and tigerweb.geo.census.gov (all US Census Bureau); your free CENSUS_API_KEY goes only as the data-call key; metadata, the geocoder, and TIGERweb are keyless; redirects are refused; on every surface, including gateways, no user list, so an admitted guest can estimate with this profile's key; schedule writes scripts/us-census-vintage.py and one local no-model morning job; the job, script, and vintage file remain after disable or removal."
 maintainer: TakeshiTGAL
@@ -8,7 +8,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-us-census#readme
-version: "0.1.0"
+version: "0.1.1"
 image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-us-census/b4117141db87cf320824959741d94059fde6d151/assets/catalog-banner.png
 platforms: []
 capabilities:

@@ -19,7 +19,7 @@ BOM = b"\xef\xbb\xbf"
 @pytest.fixture
 def skills(tmp_path):
     """Search only the temp skills root — never the real ~/.hermes/skills/."""
-    with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield tmp_path
 

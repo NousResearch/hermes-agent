@@ -13,7 +13,6 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session_results import execution_result
-from hermes_state_runtime import list_session_admissions
 from tests.gateway.test_shared_busy_receive_loop import Adapter
 from tests.waiting import async_wait_until
 
@@ -43,8 +42,8 @@ async def test_moa_prompt_is_admitted_and_its_preset_runs_on_that_turn_only(monk
     monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
 
     def rows():
-        return [(row['payload']['text'], row['status']) for sid in authority.sessions
-                for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+        return [(row.payload['text'], row.status) for sid in authority.sessions
+                for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
     sent = [('/moa compare the options', 'm1'), ('and now?', 'm2')]
     expected = [('compare the options', 'moa'), ('and now?', None)]
     running = None
@@ -70,4 +69,4 @@ async def test_moa_prompt_is_admitted_and_its_preset_runs_on_that_turn_only(monk
         assert ran == expected
     finally:
         release.set()
-        authority.db.close()
+        authority.persistence.close()

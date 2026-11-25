@@ -172,6 +172,25 @@ def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke") -> s
         "exp": int(time.time() + seconds),
     })
 
+def test_fresh_invoke_jwt_is_usable_when_the_local_clock_runs_ahead():
+    """Regression for #157720 / #148580: a 15-minute token received just now stays usable on a PC
+    whose clock is 20 minutes fast (its ``exp`` is already in that clock's past), and still expires
+    after its issued lifetime, measured from when it arrived."""
+    from hermes_cli.auth import _nous_invoke_jwt_status
+
+    issuer_now = time.time() - 20 * 60  # the issuer's clock; ours runs 20 minutes ahead
+    token = _jwt_with_claims({"sub": "u", "scope": "inference:invoke",
+                              "iat": int(issuer_now), "exp": int(issuer_now) + 900})
+    received = datetime.fromtimestamp(time.time() - 5, tz=UTC).isoformat()
+    assert _nous_invoke_jwt_status(token, obtained_at=received) is None
+    long_ago = datetime.fromtimestamp(time.time() - 900, tz=UTC).isoformat()
+    assert _nous_invoke_jwt_status(token, obtained_at=long_ago) == "invoke_jwt_expiring"
+    # An old agent key is judged by its own arrival, never the newer access token's.
+    from hermes_cli.auth import _agent_key_is_usable
+    assert not _agent_key_is_usable(
+        {"agent_key": token, "agent_key_obtained_at": long_ago, "obtained_at": received}, 120)
+
+
 def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     tmp_path,
     monkeypatch,

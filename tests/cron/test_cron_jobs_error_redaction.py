@@ -37,6 +37,66 @@ def test_failed_run_error_is_redacted_in_jobs_json(tmp_cron_dir):
     assert _KEY not in _jobs_json(tmp_cron_dir)
 
 
+def test_success_scrubs_preupgrade_sticky_failure(tmp_cron_dir):
+    """A successful run rewrites jobs.json but retains the previous failure (#118354)."""
+    from cron.jobs import save_jobs
+
+    job = create_job(prompt="watch prices", schedule="every 1h")
+    job["last_failure"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    save_jobs([job])  # Simulate a jobs.json record written before #155355.
+    assert _KEY in _jobs_json(tmp_cron_dir)
+
+    assert mark_job_run(job["id"], success=True) is True
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "ok"
+    assert "Key limit exceeded" in stored["last_failure"]["detail"]
+    assert _KEY not in stored["last_failure"]["detail"]
+    assert _KEY not in _jobs_json(tmp_cron_dir)
+
+
+@pytest.mark.parametrize("outcome", [
+    {"success": False, "status": "cancelled"},
+    {"success": False, "error": "boom"},
+], ids=["cancelled", "failed"])
+def test_any_outcome_scrubs_preupgrade_sticky_stamps(tmp_cron_dir, outcome):
+    """Cancelled and failed runs also rewrite jobs.json and keep a stamp they don't replace."""
+    from cron.jobs import save_jobs
+
+    job = create_job(prompt="watch prices", schedule="every 1h")
+    job["last_failure"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    job["last_fire_error"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    save_jobs([job])  # Simulate a jobs.json record written before #155355.
+
+    assert mark_job_run(job["id"], **outcome) is True
+    assert _KEY not in _jobs_json(tmp_cron_dir)
+    stored = get_job(job["id"])
+    if outcome.get("status") == "cancelled":
+        assert "Key limit exceeded" in stored["last_failure"]["detail"]
+    assert "Key limit exceeded" in stored["last_fire_error"]["detail"]
+
+
+def test_run_scrubs_preupgrade_stamps_on_other_job(tmp_cron_dir):
+    """A run of job A also rewrites job B, even when B is paused and never runs."""
+    from cron.jobs import save_jobs
+
+    active = create_job(prompt="active", schedule="every 1h")
+    paused = create_job(prompt="paused", schedule="every 1h")
+    paused["state"] = "paused"
+    paused["enabled"] = False
+    paused["last_failure"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    paused["last_fire_error"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    save_jobs([active, paused])  # Pre-upgrade persisted data, not a fresh provider failure.
+    assert _KEY in _jobs_json(tmp_cron_dir)
+
+    assert mark_job_run(active["id"], success=True) is True
+    stored = get_job(paused["id"])
+    assert stored["state"] == "paused"
+    assert stored["enabled"] is False
+    assert "Key limit exceeded" in stored["last_failure"]["detail"]
+    assert "Key limit exceeded" in stored["last_fire_error"]["detail"]
+    assert _KEY not in _jobs_json(tmp_cron_dir)
+
+
 def test_delivery_error_is_redacted_in_jobs_json(tmp_cron_dir):
     job = create_job(prompt="watch prices", schedule="every 1h")
     mark_job_run(job["id"], success=True, delivery_error=_PROVIDER_ERROR)

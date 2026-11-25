@@ -31,7 +31,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 
 from agent.conversation_compression_checkpoint import checkpoint_required_from_config
 from agent.trajectory import redact_trajectory_value
-from model_tools import TOOL_TO_TOOLSET_MAP
+from model_tools import get_all_tool_names
 from run_agent import AIAgent
 from toolset_distributions import (
     list_distributions,
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Auto-derived from model_tools so it stays in sync as tools are added. Gives every
 # trajectory a consistent tool_stats schema (Arrow/Parquet for HF datasets) and filters
 # corrupted entries (hallucinated tool names) when combining trajectories.
-ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
+ALL_POSSIBLE_TOOLS = set(get_all_tool_names())
 
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
 _REASONING_KEYS = ("total_assistant_turns", "turns_with_reasoning", "turns_without_reasoning")

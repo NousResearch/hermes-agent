@@ -331,9 +331,36 @@ export function createLinuxNotifications() {
     return Object.assign(notification, { show, close })
   }
 
+  // Whether a notification service could show one: running now, or startable on demand.
+  // Asked, never polled, and never starts the service. A service that appears later is
+  // seen only by the next ask (a new window), so that gap errs toward notifying the phone.
+  async function available(): Promise<boolean> {
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), DELIVERY_TIMEOUT_MS)
+    const options = { signal: abort.signal, timeout: DELIVERY_TIMEOUT_MS }
+
+    try {
+      const state = connect()
+      await state.ready
+      const { bus } = state
+
+      if (await bus.invokeDbus<boolean>({ member: 'NameHasOwner', signature: 's', body: [SERVICE] }, options)) {
+        return true
+      }
+
+      const names = await bus.invokeDbus<string[]>({ member: 'ListActivatableNames' }, options)
+
+      return Array.isArray(names) && names.includes(SERVICE)
+    } catch {
+      return false
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   // Quit teardown: the close event fails every live notification and drops the
   // connection, the same path a daemon crash takes.
   const dispose = () => connection?.bus.connection.stream.destroy()
 
-  return { create, dispose }
+  return { create, available, dispose }
 }

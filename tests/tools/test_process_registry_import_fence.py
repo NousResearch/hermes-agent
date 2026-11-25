@@ -13,6 +13,7 @@ import sys
 import time
 
 import pytest
+from persistence_assembly import profile_scope
 
 _IMPORT_PROBE = r'''
 import json, os, sys
@@ -44,7 +45,7 @@ async def test_gateway_startup_restores_pending_delegation_completions(tmp_path,
     import tools.async_delegation as ad
     from tools.process_registry import process_registry
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr("agent.shell_hooks.register_from_config", lambda *a, **k: None)

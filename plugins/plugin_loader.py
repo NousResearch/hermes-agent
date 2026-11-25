@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -134,6 +135,88 @@ def read_plugin_description(plugin_dir: Path) -> str:
         return ""
 
 
+@dataclass(frozen=True)
+class PluginChoice:
+    """What config.yaml says about one category's user plugins, read once per listing: the provider
+    the category key selects and the ``plugins.enabled`` / ``plugins.disabled`` lists."""
+
+    selected: str = ""
+    enabled: frozenset = frozenset()
+    disabled: frozenset = frozenset()
+
+    def is_disabled(self, plugin_dir: Path, name: str) -> bool:
+        """Whether ``plugins.disabled`` lists the plugin under any spelling the plugin commands write:
+        the provider name, its directory name or its manifest ``name:`` (read without importing)."""
+        from pm.plugins_state import plugin_spellings
+
+        return bool(self.disabled and plugin_spellings(plugin_dir, name) & self.disabled)
+
+    def allows_import(self, plugin_dir: Path, name: str) -> bool:
+        """A user plugin's code may run for a listing only when it is turned on: selected for this
+        category or in ``plugins.enabled``, and not in ``plugins.disabled``."""
+        from pm.plugins_state import plugin_spellings
+
+        spellings = plugin_spellings(plugin_dir, name)
+        if spellings & self.disabled:
+            return False
+        return name == self.selected or bool(spellings & self.enabled)
+
+
+def read_plugin_choice(*selection_key: str, builtin: frozenset = frozenset()) -> PluginChoice:
+    """One config read for a listing, through the uncopied cached view (the result is never changed);
+    *selection_key* is the category's config path (``"memory", "provider"``), none when only the
+    plugin lists matter. A selection in *builtin* picks the category's built-in, which loads no
+    plugin, so it selects nothing here. A config.yaml that does not parse reads as its last good copy
+    when one was kept, else as the defaults; only a read that raises means nothing is selected,
+    enabled or disabled."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        config = load_config_readonly()
+        selected = cfg_get(config, *selection_key) if selection_key else ""
+        lists = [cfg_get(config, "plugins", key) for key in ("enabled", "disabled")]
+    except Exception:  # health: allow BLE001 -- same boundary as the memory check it replaces: a config read that raises turns nothing on or off
+        return PluginChoice()
+    enabled, disabled = (frozenset(v for v in value if isinstance(v, str)) if isinstance(value, list)
+                         else frozenset() for value in lists)
+    selected = selected.strip() if isinstance(selected, str) else ""
+    return PluginChoice("" if selected in builtin else selected, enabled, disabled)
+
+
+def list_category(dirs, choice: PluginChoice, is_bundled: Callable, load: Callable) -> list[tuple[str, str, bool]]:
+    """Listing rows: a bundled or turned-on plugin is loaded and probed, any other described from its manifest."""
+    return [(name, read_plugin_description(child), probe_availability(lambda c=child: load(c)))
+            if is_bundled(child) or choice.allows_import(child, name) else describe_without_import(name, child)
+            for name, child in dirs]
+
+
+def describe_without_import(name: str, plugin_dir: Path) -> tuple[str, str, bool]:
+    """A listing row for a user plugin that is not turned on: manifest description, not available."""
+    return name, read_plugin_description(plugin_dir), False
+
+
+def enable_command(name: str) -> str:
+    """``plugins enable`` for the active home from any shell, so HERMES_HOME names that home. A
+    profile-shaped HERMES_HOME already beats the sticky profile; any other home needs ``-p default``,
+    which resolves to HERMES_HOME itself (:func:`hermes_cli.profiles.profile_root_for_env_home`)."""
+    from hermes_cli.profiles import profile_root_for_env_home
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    selector = "" if profile_root_for_env_home(str(home), home) != home else "-p default "
+    return f"`hermes {selector}plugins enable {name}` with HERMES_HOME set to {home}"
+
+
+def refused_as_disabled(name: str, plugin_dir: Path, *, bundled: bool, kind: str,
+                        logger: logging.Logger) -> bool:
+    """True (after a warning naming the way back) when a selected NON-bundled provider is parked in
+    ``plugins.disabled``: a turned-off plugin stays off even when a category key still names it."""
+    if bundled or not read_plugin_choice().is_disabled(plugin_dir, name):
+        return False
+    logger.warning("⚠ %s '%s' is turned off: plugins.disabled lists it. Turn it back on with %s.",
+                   kind, name, enable_command(name))
+    return True
+
+
 def _new_module(name: str, file: Path, search_locations: Optional[list[str]] = None) -> Optional[Any]:
     """spec -> module -> sys.modules[name] (NOT executed); None if no spec."""
     spec = importlib.util.spec_from_file_location(
@@ -170,7 +253,8 @@ def _exec_parent_shell(parent: str) -> None:
 
 def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: tuple[str, ...],
                        logger: logging.Logger, synthetic_namespace: Optional[str] = None) -> Optional[Any]:
-    """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
+    """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded); None when
+    there is no ``__init__.py`` or the load is refused, and the package's own exception when it fails to import.
     Order matters: parents first (relative imports need them), then siblings as ``module_name.<stem>``
     (so ``from ._x import Y`` resolves), then the module. Finally child is bound onto parent and
     siblings onto module — the shape normal imports produce, which monkeypatch relies on."""
@@ -241,9 +325,7 @@ def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Pa
             loaded_submodules.append((sub_file.stem, sub_mod))
         else:
             sys.modules.pop(full_sub_name, None)
-    if not _exec(mod, logger):
-        sys.modules.pop(module_name, None)
-        return None
+    _exec_package(mod, module_name)
     parent_name, child_name = module_name.rsplit(".", 1)
     parent_mod = sys.modules.get(parent_name)
     if parent_mod is not None:
@@ -251,6 +333,16 @@ def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Pa
     for sub_name, sub_mod in loaded_submodules:
         setattr(mod, sub_name, sub_mod)
     return mod
+
+
+def _exec_package(mod: Any, module_name: str) -> None:
+    """Exec the plugin's own ``__init__.py``; on failure drop it from sys.modules and re-raise, so the
+    caller's log line names the real error (a missing core module, a bad dependency) instead of none."""
+    try:
+        mod.__spec__.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
 
 
 class NoopPluginContext:

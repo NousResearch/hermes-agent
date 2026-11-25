@@ -179,6 +179,33 @@ export async function browserFetch(
   }
 }
 
+/** A gateway route's body as a Blob, for a download a ticketed link cannot reach. */
+export async function browserFetchBlob(
+  bootstrap: BrowserBootstrap,
+  request: { path: string; profile?: null | string }
+): Promise<Blob> {
+  if (!bootstrap.authRequired && !bootstrap.token) {
+    throw webappSignInRequired()
+  }
+
+  const headers = new Headers()
+
+  if (bootstrap.token) {
+    headers.set(SESSION_HEADER, bootstrap.token)
+  }
+
+  const response = await fetch(endpointUrl(request.path, bootstrap.basePath, request.profile), {
+    credentials: 'same-origin',
+    headers
+  })
+
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${(await response.text()) || response.statusText}`)
+  }
+
+  return response.blob()
+}
+
 export async function browserApi<T>(bootstrap: BrowserBootstrap, request: HermesApiRequest): Promise<T> {
   const headers = new Headers()
   let body: BodyInit | undefined

@@ -32,7 +32,6 @@ def _clear():
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
-        cm._notify_cbs.clear()
 
 
 def _prompt(adapter, clarify_id, session_key="sk-multi", message_id=555):

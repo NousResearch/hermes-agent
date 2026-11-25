@@ -435,6 +435,20 @@ gateway:
       provider_usage_plus_estimate: "提供方用量 + 新消息估算"
     source_line: "来源：{source}；各类别计数为本地估算。"
     hint_all: "使用 /context all 查看每个技能和工具集的开销。"
+    cache_warm: "提示词缓存：有效至 {until}（剩余 {remaining}；{ttl}，{confidence}）。"
+    cache_expired: "提示词缓存：已于 {ago} 前过期（{ttl}，{confidence}）；下一条消息将重新处理完整提示词。"
+    cache_maybe_warm: "提示词缓存：可能仍有效至 {until}（最多再 {remaining}；{ttl}，{confidence}）。"
+    cache_unknown_moved: "提示词缓存：未知（自上次缓存请求以来，路由、会话或上下文已变更）。"
+    cache_unknown_route: "提示词缓存：未知（此提供商未公布其缓存保留时间）。"
+    cache_unknown_runtime: "提示词缓存：未知（此运行时自行设置缓存选项，Hermes 无法观察）。"
+    cache_unknown_storage: "提示词缓存：未知（无法读取会话存储）。"
+    cache_warming_off: "保活：已关闭（两次未命中）。"
+    cache_tier_pending: "层级：首次停顿超过 5 分钟前为 5m，之后为 1h。"
+    cache_learned: "已学习：{rule}。"
+    cache_confidence:
+      proven: "已证实"
+      declared: "已声明"
+      assumed: "推定"
   status:
     header: "📊 **Hermes 网关状态**"
     matrix_scope_header: "**Matrix 范围：**"
@@ -4010,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "大型模型：已达{name}上限（{resets}），在此之前无法运行。"
   large_notice_percent: "大型模型：每条消息消耗更多套餐用量。每月大型模型上限：已用 {percent}。"
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ 已撤销回合中更改的文件：{files}。运行 /rollback 列出检查点并恢复其中一个。"
     more: "另外 {count} 个"

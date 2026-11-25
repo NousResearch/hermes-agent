@@ -7,6 +7,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens, imageAttachments } from '../domain/attachments.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { freshCompletionRow } from '../hooks/useCompletion.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -537,7 +538,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   const submit = useCallback(
     (value: string) => {
       if (composerState.completions.length) {
-        const row = composerState.completions[composerState.compIdx]
+        const row = freshCompletionRow(composerState, value)
 
         const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace, name =>
           Boolean(findSlashCommand(name))

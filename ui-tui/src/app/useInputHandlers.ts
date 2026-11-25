@@ -7,6 +7,7 @@ import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE, NATIVE_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
+import { freshCompletionRow } from '../hooks/useCompletion.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
@@ -1030,7 +1031,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.tab && cState.completions.length) {
-      const row = cState.completions[cState.compIdx]
+      const row = freshCompletionRow(cState, cState.input)
 
       if (row?.text) {
         cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))

@@ -260,6 +260,19 @@ _cap_exempt: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_
 _cap_held: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_held", default=False)
 
 
+def _count_agent_created() -> int:
+    """One rule: a live curator-managed record takes a slot iff ``_find_skill`` (the resolver every
+    skill_manage call uses, in catalog precedence, refusing ambiguous names) resolves its key to a skill,
+    and each resolved directory counts once. So create_dir, external_dirs and frontmatter-keyed adopts
+    all count exactly as the agent can address them. Strict read: raises on a damaged sidecar."""
+    from tools import skill_manager_tool as _smt
+    from tools import skill_usage
+    bundled = skill_usage._read_bundled_names()
+    return len({found["path"].resolve() for name, rec in skill_usage._load_usage_strict().items()
+                if skill_usage._is_curator_managed_record(rec) and rec.get("state") != skill_usage.STATE_ARCHIVED
+                and name not in bundled and (found := _smt._find_skill(name))})
+
+
 @contextmanager
 def agent_created_cap(creates: int) -> Iterator[Optional[dict[str, Any]]]:
     """``curator.max_agent_created`` for a background-review write adding *creates* skills: yields a refusal,
@@ -278,7 +291,6 @@ def agent_created_cap(creates: int) -> Iterator[Optional[dict[str, Any]]]:
     if cap <= 0:
         yield None
         return
-    from agent.skill_utils import get_skill_create_dir
     from tools import skill_manager_tool as _smt
     from tools import skill_usage
     with skill_usage.skill_file_lock(_smt._skills_dir() / ".locks" / "agent-created-cap.lock"):
@@ -286,7 +298,7 @@ def agent_created_cap(creates: int) -> Iterator[Optional[dict[str, Any]]]:
             yield None  # an outer call (the batch) already checked the total under this lock
             return
         try:
-            have = skill_usage.count_agent_created_skills(get_skill_create_dir())
+            have = _count_agent_created()
         except Exception:
             logger.warning("agent-created skill count unreadable; refusing the background create", exc_info=True)
             yield _refusal("Refusing background create: skills/.usage.json is unreadable, so "
@@ -294,12 +306,13 @@ def agent_created_cap(creates: int) -> Iterator[Optional[dict[str, Any]]]:
                            _cap_reached=True)
             return
         if have + creates > cap:
+            # Never steer the review toward deleting: retirement belongs to the curator, which also
+            # rewrites cron references to an archived skill.
             yield _refusal(
                 f"Refusing background create: {have} agent-created skills already exist and "
-                f"curator.max_agent_created is {cap}. Put the lesson into an existing skill (skill_view, then "
-                f"patch), or retire a less useful agent-created skill first (fold its content into another, "
-                f"then delete it with absorbed_into=<that skill>) and say in your summary why the new skill "
-                f"is worth more.", _cap_reached=True)
+                f"curator.max_agent_created is {cap}. Put the lesson into the closest existing skill "
+                f"(skill_view, then patch). If no skill fits, do not delete anything: say in your summary "
+                f"that this lesson needs a new skill and the cap is full.", _cap_reached=True)
             return
         token = _cap_held.set(True)
         try:

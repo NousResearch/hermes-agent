@@ -1597,6 +1597,14 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
         second = json.loads(skill_manage(action="create", name="two", content=skill("two")))
         batch = json.loads(skill_manage(action="", name="", operations=[
             {"action": "create", "name": "three", "content": skill("three")}]))
+        # One free slot, two creates in one batch: refused whole, before either is written.
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 2\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        batch_two = json.loads(skill_manage(action="", name="", operations=[
+            {"action": "create", "name": "b-one", "content": skill("b-one")},
+            {"action": "create", "name": "b-two", "content": skill("b-two")}]))
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 1\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
         mark_background_review_skill_read(tmp_path / "team-skills" / "one" / "SKILL.md")
         patched = json.loads(skill_manage(action="patch", name="one", old_string="Step one.",
                                           new_string="Step one, then two."))
@@ -1636,6 +1644,8 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
     assert first["success"] is True, first
     assert second["success"] is False and second.get("_cap_reached") is True, second
     assert batch["success"] is False and batch.get("_cap_reached") is True, batch
+    assert batch_two.get("_cap_reached") is True and not any(
+        (tmp_path / "team-skills" / n).exists() for n in ("b-one", "b-two")), batch_two
     assert not (tmp_path / "team-skills" / "two").exists() and not (tmp_path / "team-skills" / "three").exists()
     assert patched["success"] is True, patched
     assert counted_once["success"] is True, counted_once

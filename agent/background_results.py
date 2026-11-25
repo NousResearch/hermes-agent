@@ -127,6 +127,22 @@ def confirm_attached(agent: Any, attached: list[_Offer], persisted: bool) -> Non
             state.delivered.extend(item.key for item in attached)
 
 
+def flush_with_attached_offers(agent: Any, messages: list) -> bool:
+    """Flush tool progress with the pending offers attached; True when the flush persisted.
+
+    Attaching before the flush is what puts the carried text in the persisted tool row, and
+    staging is released only for a flush that persisted, so a settlement tick cannot complete a
+    delivery that never reached the session DB.
+    """
+    attached = attach_to_tool_tail(agent, messages)
+    persisted = False
+    try:
+        persisted = agent._flush_messages_to_session_db(messages) is not False
+    finally:
+        confirm_attached(agent, attached, persisted)
+    return persisted
+
+
 def take_delivered(agent: Any) -> list[Any]:
     """Return and clear the keys attached since the last call, leaving pending offers in place."""
     state = vars(agent).get(_STATE_ATTR)

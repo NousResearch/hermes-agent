@@ -117,6 +117,12 @@ export default [
       'src/app/chat/sidebar/portal/**/*.tsx',
       'src/app/agent-settings/**/*.tsx',
       'src/components/portal/**/*.tsx',
+      'src/app/routines/**/*.tsx',
+      'src/app/library/**/*.tsx',
+      'src/app/discovery/**/*.tsx',
+      'src/app/chat/items/**/*.tsx',
+      'src/app/chat/sidebar/simplified-*.tsx',
+      'src/**/portal-*.tsx',
       'src/app/settings/settings-card.tsx',
       'src/app/settings/appearance-overview.tsx'
     ],

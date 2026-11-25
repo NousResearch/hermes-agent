@@ -1074,7 +1074,8 @@ because the message can only reach the conversation that already invoked the plu
 :::caution Experimental
 `ctx.post_card` is experimental, like [`ctx.fork_session`](../../developer-guide/plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session):
 the card shape and the result codes may change in a later release. Keep the call inside one small
-function of your plugin that returns plain data, and treat a refusal as "no card" rather than an error.
+function of your plugin that returns plain data. Treat a definite refusal as "no card", but never
+fall back on an uncertain result as described below.
 Under `plugins.isolation: host` a third-party plugin's `ctx.post_card` and `ctx.apost_card` exist but
 raise `PluginHostUnsupported` (a `RuntimeError`), as `post_message` and `fork_session` do: the card is
 admitted on the gateway's event loop into a session the Hermes process owns.
@@ -1131,11 +1132,15 @@ does not stop the session's background review or plugin forks, because no turn s
 | Messaging platforms | nothing from core: the card is recorded in the session's history and the plugin sends its own native card through its adapter |
 
 Result: `{"ok": True, "card_id", "status": "queued" | "duplicate"}`, or `{"ok": False, "error"}`.
+`cancelled`, `post_failed` and `timeout` are **UNCERTAIN** and include `"certain": false`: the card
+**may have landed**, even though no receipt reached the caller. Do not inject a fallback turn for
+these results. Retry the same `id` and unchanged card to recover the durable duplicate receipt
+without posting twice.
 Expected refusals are `consent_required`, `invalid_target`, `no_conversation`, `group_not_allowed`,
 `invalid_card`, `card_conflict`, `rate_limited` (more than 6 cards in 60 seconds for one session),
-`gateway_unavailable` (no live gateway, or its loop closed while the card was on its way), `on_event_loop`,
-`cancelled` (the gateway stopped before answering) and `timeout`. An internal admission failure is reported as
-`refused` or `post_failed`, not raised into the plugin. Like `inject_message`, the card is admitted from
+`gateway_unavailable` (no live gateway, or its loop closed while the card was on its way) and `on_event_loop`.
+`cancelled` (the gateway stopped before answering), `post_failed` and `timeout` are uncertain as described
+above. An internal admission refusal is reported as `refused`, not raised into the plugin. Like `inject_message`, the card is admitted from
 the gateway's own context, never the caller's: a card posted from a session fork's tool handler or from a
 hook inside a turn hands none of that turn's scopes to the session queue.
 

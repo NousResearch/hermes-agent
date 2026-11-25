@@ -195,3 +195,12 @@ def test_backend_address_ignores_path_decoys_and_invalid_ports():
     # Non-numeric or negative ports are rejected rather than defaulting silently.
     assert _parse_dashboard_runtime("/usr/bin/hermes dashboard --port notaport") is None
     assert _parse_dashboard_runtime("/usr/bin/hermes dashboard --port=-1") is None
+
+
+def test_parse_dashboard_runtime_keeps_valid_port_before_flattened_path_fragment():
+    from hermes_cli.main_dashboard import _parse_dashboard_runtime
+
+    # Flattened ps output strips quotes from paths containing "--port ..."; once a valid --port
+    # has been parsed, a later malformed fragment must not drop the process from status discovery.
+    cmd = "hermes serve --host 0.0.0.0 --port 9120 --ssh-session-token-file /home/user/keys --port 8111/token"
+    assert _parse_dashboard_runtime(cmd) == ("serve", "0.0.0.0", 9120)

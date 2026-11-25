@@ -26,6 +26,7 @@ import time
 import pytest
 
 import session_retention
+from agent.session_source import ONESHOT_SOURCE
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import (
     create_session, end_session, get_session, set_session_pinned,
@@ -655,6 +656,29 @@ class TestSweepOrphanedSessions:
         assert second["pruned"] == 1
         assert get_session(db, "lost-old") is None
         assert get_session(db, "lost-fresh")["source"] == "recovered"
+
+    def test_auto_prune_closes_and_later_deletes_stale_one_shot_runs(self, store, db, maintain):
+        """#141205: a one-shot run killed mid-run never stamps ``ended_at``; without its source in
+        ``AUTO_PRUNE_STALE_OPEN_SOURCES`` the row is never closed, so the prune never deletes it.
+        A run still inside the retention window stays open."""
+        stale = time.time() - 200 * 86400
+        recent = time.time() - 86400
+        _make_session(db, "stale-oneshot", source=ONESHOT_SOURCE, started_at=stale, message_at=stale)
+        _set_last_activity(db, "stale-oneshot", stale)
+        _make_session(db, "recent-oneshot", source=ONESHOT_SOURCE, started_at=recent, message_at=recent)
+        _set_last_activity(db, "recent-oneshot", recent)
+
+        first = maintain(store, retention_days=90, min_interval_hours=0, vacuum=False)
+        assert first["closed"] == 1
+        assert get_session(db, "stale-oneshot")["end_reason"] == "startup_orphan_reap"
+        assert get_session(db, "recent-oneshot")["ended_at"] is None
+
+        db._write_sql("UPDATE sessions SET ended_at = ended_at - 91 * 86400 WHERE id = 'stale-oneshot'")
+        second = maintain(store, retention_days=90, min_interval_hours=0, vacuum=False)
+        assert second["closed"] == 0
+        assert second["pruned"] == 1
+        assert get_session(db, "stale-oneshot") is None
+        assert get_session(db, "recent-oneshot")["ended_at"] is None
 
     def test_zero_ttl_is_noop(self, store, db):
         stale = time.time() - 8 * 3600

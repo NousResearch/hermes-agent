@@ -124,6 +124,37 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+# Most page targets one browser may keep open. Each stateless ``browser_cdp`` call that creates a tab
+# (Target.createTarget) closes the oldest other pages above this, so a long-running browser cannot
+# accumulate tabs (and their renderer processes) without bound. The newly created tab is never closed.
+MAX_OPEN_PAGES = 10
+
+
+def _enforce_page_cap(endpoint: str, keep_target_id: Optional[str], timeout: float) -> int:
+    """Close the oldest page targets above ``MAX_OPEN_PAGES`` except ``keep_target_id``; returns the count closed.
+    Best effort: a failure is logged and never fails the call that created the tab."""
+    try:
+        infos = (_run_async(_cdp_call(endpoint, "Target.getTargets", {}, None, timeout)) or {}).get("targetInfos", [])
+        pages = [t.get("targetId") for t in infos if t.get("type") == "page" and t.get("targetId")]
+        excess = len(pages) - MAX_OPEN_PAGES
+        if excess <= 0:
+            return 0
+        victims = [tid for tid in pages if tid != keep_target_id][:excess]
+        closed = 0
+        for tid in victims:
+            try:
+                _run_async(_cdp_call(endpoint, "Target.closeTarget", {"targetId": tid}, None, timeout))
+                closed += 1
+            except Exception as exc:  # one tab that won't close must not block the others
+                logger.debug("browser_cdp: could not close tab %s: %s", tid, exc)
+        if closed:
+            logger.info("browser_cdp: closed %d tab(s) above the cap of %d", closed, MAX_OPEN_PAGES)
+        return closed
+    except Exception as exc:
+        logger.debug("browser_cdp: tab cap check skipped: %s", exc)
+        return 0
+
+
 def _resolve_cdp_endpoint() -> str:
     """Normalized CDP WebSocket URL via ``browser_session_cdp.get_cdp_override``, or ""."""
     from tools.browser_session_cdp import get_cdp_override
@@ -425,6 +456,9 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     except Exception as exc:  # pragma: no cover — unexpected
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
+
+    if method == "Target.createTarget":
+        _enforce_page_cap(endpoint, (result or {}).get("targetId"), safe_timeout)
 
     payload: dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_method_result(method, result)}
     if target_id:

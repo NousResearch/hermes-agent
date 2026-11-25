@@ -499,12 +499,26 @@ function InstalledListLibraryLink({ shown, to, label }: { shown: boolean; to: st
 
 /** Nothing to list: an installed-only page with nothing installed says so under its section's head
  *  (the link out follows the list); anything else is a search or filter that matched nothing. */
-function AgentCatalogEmpty({ installed, loading, onClear }: { installed: boolean; loading: boolean; onClear: () => void }) {
+function AgentCatalogEmpty({
+  installedOnly,
+  pending,
+  failed,
+  searching,
+  onClear
+}: {
+  installedOnly: boolean
+  pending: boolean
+  /** The installed list failed and says so in its notice: that is not loading. */
+  failed: boolean
+  searching: boolean
+  onClear: () => void
+}) {
   const { t } = useI18n()
   const copy = useAgentCapabilityCopy()
+  const installed = installedOnly && !searching
 
   // The installed list has not answered yet: its place, not "no results".
-  if (loading) {
+  if (installedOnly && pending && !failed) {
     return <AgentCapabilitySkeleton />
   }
 
@@ -659,9 +673,11 @@ function AgentCatalog({
       })}
       {entries.length === 0 && !pending && !error && (
         <AgentCatalogEmpty
-          installed={Boolean(installedOnly) && !query}
-          loading={Boolean(installedOnly) && installedPending}
+          failed={Boolean(notice)}
+          installedOnly={Boolean(installedOnly)}
           onClear={onClear}
+          pending={installedPending}
+          searching={Boolean(query)}
         />
       )}
       <InstalledListLibraryLink label={banner.browse} shown={Boolean(installedOnly)} to={browse} />

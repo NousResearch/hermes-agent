@@ -1,6 +1,7 @@
-// @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+// @vitest-environment jsdom
+import type { ComponentProps } from 'react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -257,6 +258,74 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
     fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings }))
 
     expect(navigateSpy).toHaveBeenCalledWith(expect.stringContaining('agentProfile=ops&panel=capabilities&tab=skills'))
+  })
+
+  describe('Plugins for one agent', () => {
+    const library = { name: 'weather-plugin', description: 'Forecasts', source: 'official', category: 'weather' }
+    const git = TRANSLATIONS.en.settings.plugins.installModal.installFromGit
+
+    const pinned = async (props: ComponentProps<typeof CapabilitiesView>) => {
+      queryClient.setQueryData(['public-catalog', 'plugins'], parseCatalog('plugins', [library]))
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/settings?tab=plugins']}>
+              <CapabilitiesView embedded fixedProfile="ops" {...props} />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+    }
+
+    it('the agent\'s settings page lists only what is installed: no library, no way to install', async () => {
+      await pinned({ fixedMode: 'plugins', installedPluginsOnly: true })
+
+      await screen.findByRole('link', { name: 'Browse the plugin catalog' })
+      expect(screen.queryByText('weather-plugin')).toBeNull()
+      expect(screen.queryByRole('button', { name: git })).toBeNull()
+    })
+
+    it('a dialog that pins an agent keeps the library and Install from Git', async () => {
+      await pinned({})
+      // The dialog has the view's own tabs; the settings page pins one.
+      fireEvent.click(document.querySelector<HTMLElement>('[data-tour="tab-plugins"]')!)
+
+      expect(await screen.findByText('weather-plugin')).toBeTruthy()
+      expect(screen.getByRole('button', { name: git })).toBeTruthy()
+    })
+  })
+
+  it('holds the Connectors controls until another machine\'s roster says which profile serves the agent', async () => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      connections: {
+        list: vi.fn().mockResolvedValue({
+          version: 2,
+          primary: 'local',
+          secureTokenStorage: true,
+          connections: [
+            { id: 'local', kind: 'local', label: 'This device', tokenSet: false, tokenPreview: null },
+            { id: 'homelab', kind: 'remote', label: 'Homelab', tokenSet: true, tokenPreview: '…' }
+          ]
+        })
+      },
+      getAgentRoster: vi.fn(() => new Promise(() => {}))
+    }
+
+    try {
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/capabilities?tab=connectors&agentProfile=inbox-bot&connection=homelab']}>
+              <CapabilitiesView />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      expect((await screen.findByTestId('connectors-tab')).dataset.controls).toBe('false')
+    } finally {
+      delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
   })
 
   it('keeps classic order and its Skills default', async () => {

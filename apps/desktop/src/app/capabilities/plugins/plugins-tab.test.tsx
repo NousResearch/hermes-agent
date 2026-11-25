@@ -990,6 +990,21 @@ describe('PluginsTab catalog UX', () => {
       expect(screen.queryByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeNull()
     })
 
+    it('a list that failed to load shows its error, not a skeleton that never ends', async () => {
+      $agentPlugins.set([])
+      $agentPluginsStatus.set('loading')
+      requestGateway.mockImplementation(() => new Promise(() => {}))
+
+      await act(async () => {
+        agentPage()
+      })
+      expect(document.querySelector('[data-capability-skeleton]')).not.toBeNull()
+
+      act(() => $agentPluginsStatus.set('error'))
+
+      expect(document.querySelector('[data-capability-skeleton]')).toBeNull()
+    })
+
     it('a dialog that embeds the agent layout keeps the library and Install from Git', async () => {
       seedCatalog()
       $agentPlugins.set([])

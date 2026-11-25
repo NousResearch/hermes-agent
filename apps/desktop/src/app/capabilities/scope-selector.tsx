@@ -37,6 +37,9 @@ export interface CapabilityScope {
   /** Display name of the selected profile (the Plugins tab's Agent column). */
   label?: string
   options: ScopeOption[]
+  /** The redesign: the selected agent's machine has not said yet which profile serves it, so
+   *  nothing should be written for it. */
+  resolving?: boolean
   value: string
   onChange: (value: string) => void
 }
@@ -199,6 +202,9 @@ export function useCapabilityScope({
     onChange,
     options,
     profile: scopeProfile,
+    // An agent picked on another machine is addressed through that machine's roster (an alias
+    // serves from another profile's home). Until the roster answers, the name is only a guess.
+    resolving: redesign && !fixedProfile && selection !== null && typeof selection === 'object' && !rosterData,
     value
   }
 }

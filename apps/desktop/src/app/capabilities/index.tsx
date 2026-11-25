@@ -70,6 +70,9 @@ interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   embedded?: boolean
   /** Agent settings owns the navigation when a single capability is embedded. */
   fixedMode?: CapabilityMode
+  /** The agent's own settings page: its Plugins list is what the agent has installed, with no
+   *  library and no way to install. Dialogs that pin an agent do not ask for this. */
+  installedPluginsOnly?: boolean
   /** Pin the WHOLE view to one profile: the scope selector is hidden and
    *  every tab reads/writes THAT profile. This is the plugin door — Bot Mode
    *  renders the real Capabilities surface pinned to a bot. */
@@ -89,6 +92,7 @@ interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
  *  is NOT on. */
 export function CapabilitiesView({
   embedded = false,
+  installedPluginsOnly = false,
   fixedConnection,
   fixedProfile,
   fixedMode,
@@ -97,7 +101,7 @@ export function CapabilitiesView({
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
   const redesign = usePortalShell()
-  const presentation = capabilitiesPresentation(redesign, embedded, Boolean(fixedProfile))
+  const presentation = capabilitiesPresentation(redesign, embedded, Boolean(fixedProfile), installedPluginsOnly)
   const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
   const modes = capabilityModes(redesign, Boolean(fixedProfile))
   const [selectedMode, setMode] = useSelectedMode(modes, embedded)
@@ -157,6 +161,7 @@ export function CapabilitiesView({
       // Connectors are switched here in both shells: in the redesign this page is the only place
       // they are managed (an agent's settings have no Connectors page), for the agent in its header.
       <ConnectorsTab
+        agentControls={!scope.resolving}
         agentLayout={presentation.agentLayout}
         gateway={scope.crossBackend || !reloadsOwnerChat ? null : gateway}
         key={`connectors-${scope.key}`}
@@ -324,20 +329,26 @@ interface CapabilitiesPresentation {
   pageTitle: boolean
   /** One agent's enablement editor (agent settings, Bot Mode) rather than the inventory. */
   agentLayout: boolean
-  /** The agent's own settings page lists only the plugins it has installed. A dialog that embeds
-   *  the agent layout (creating or editing a bot) keeps the library and its ways in. */
+  /** The agent's own settings page lists only the plugins it has installed, and says so itself
+   *  (`installedPluginsOnly`). A dialog that pins the same layout (creating or editing a bot) does
+   *  not, and keeps the library and its ways in. */
   installedPlugins: boolean
   /** Classic keeps the scope selector beside the header search. */
   headerScope: boolean
 }
 
 /** One place derives how this view presents itself from the shell, embedding and pinning. */
-function capabilitiesPresentation(redesign: boolean, embedded: boolean, pinned: boolean): CapabilitiesPresentation {
+function capabilitiesPresentation(
+  redesign: boolean,
+  embedded: boolean,
+  pinned: boolean,
+  installedPluginsOnly: boolean
+): CapabilitiesPresentation {
   return {
     pageFrame: redesign && !embedded,
     pageTitle: !embedded && !(redesign && pinned),
     agentLayout: redesign && pinned,
-    installedPlugins: redesign && pinned && !embedded,
+    installedPlugins: redesign && pinned && installedPluginsOnly,
     headerScope: !redesign
   }
 }

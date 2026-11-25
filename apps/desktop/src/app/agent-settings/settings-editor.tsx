@@ -298,6 +298,7 @@ function AgentCapabilitiesSettings({
         fixedConnection={owner.connectionId}
         fixedMode={capability}
         fixedProfile={owner.profile}
+        installedPluginsOnly
       />
       {tools && (
         // The route owns the expanded state (tab=agent:tools-advanced): opening follows a deep link,

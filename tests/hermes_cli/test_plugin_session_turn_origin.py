@@ -343,7 +343,9 @@ async def test_a_pre_upgrade_local_watch_match_retry_is_acknowledged_and_runs_on
         assert len(rows) == 1 and 'turn_origin' not in rows[0].payload['local_automation_v1']
         authority._schedule(ref)
         await async_wait_until(lambda: seen, timeout=10, what='the watch match')
-        await asyncio.sleep(0.2)
+        # The drain has run the FIFO dry: a second execution of the retry would have happened by now.
+        await async_wait_until(lambda: live.task is not None and live.task.done(), timeout=10, what='the drain')
+        assert authority.persistence.admissions.list(session_id=ref.session_id, pending_only=True) == []
     finally:
         runner.session_store.close_all_db_handles()
     assert seen == [('[watch matched]', 'process_notification')]

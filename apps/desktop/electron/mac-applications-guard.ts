@@ -21,6 +21,7 @@ export type MacApplicationsGuardResult =
   | {
       action: 'continue'
       reason:
+        | 'admin-required'
         | 'already-in-applications'
         | 'api-unavailable'
         | 'automated-environment'
@@ -54,6 +55,7 @@ export interface MacApplicationsGuardDeps {
   homeDir?: string
   access?: (file: string, mode: number) => void
   exists?: (file: string) => boolean
+  writable?: (file: string) => boolean
   readBundleVersion?: (bundlePath: string) => string | null
   log: (message: string) => void
 }
@@ -339,15 +341,44 @@ interface InstalledCopyBlock {
 }
 
 // Electron's bundle mover only ever writes /Applications/<bundle name> (NSLocalDomainMask); a copy in
-// ~/Applications is never touched. That copy may be replaced only when its version reads as no newer than
-// this one; a version that can't be read or compared refuses the move.
+// ~/Applications is never touched.
+function applicationsDestination(bundlePath: string): string {
+  return path.posix.join('/Applications', path.posix.basename(path.posix.resolve(bundlePath)))
+}
+
+function isWritable(file: string): boolean {
+  try {
+    fs.accessSync(file, fs.constants.W_OK)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Electron takes its admin-password path when /Applications, or the copy it would replace, isn't writable
+// (NSFileManager isWritableFileAtPath, an access(2) W_OK check like isWritable). That path deletes the copy
+// after the prompt without calling conflictHandler, so a copy installed while the prompt is open goes
+// unchecked; such moves go to Finder instead, which asks before replacing.
+function moveNeedsAdmin(
+  bundlePath: string,
+  exists: (file: string) => boolean,
+  writable: (file: string) => boolean
+): boolean {
+  const destination = applicationsDestination(bundlePath)
+
+  return !writable('/Applications') || (exists(destination) && !writable(destination))
+}
+
+// The installed copy may be replaced only when its version reads as no newer than this one; a version that
+// can't be read or compared refuses the move.
 function installedCopyBlockingMove(
   bundlePath: string,
   runningVersion: string,
   readBundleVersion: (targetBundle: string) => string | null,
   exists: (file: string) => boolean
 ): InstalledCopyBlock | null {
-  const destination = path.posix.join('/Applications', path.posix.basename(path.posix.resolve(bundlePath)))
+  const destination = applicationsDestination(bundlePath)
 
   if (!exists(destination)) {
     return null
@@ -423,8 +454,32 @@ async function reportInstalledCopyConflict(
   return { action: 'continue', reason: notice.reason, location }
 }
 
+async function sendMoveToFinder(
+  deps: Pick<MacApplicationsGuardDeps, 'appName' | 'dialog' | 'log'>,
+  location: MacUnsafeBundleLocation
+): Promise<MacApplicationsGuardResult> {
+  deps.log('[install] move to /Applications needs an administrator password; sent to Finder')
+  await deps.dialog.showMessageBox({
+    type: 'info',
+    title: `Move ${deps.appName} to Applications in Finder`,
+    message: `Moving ${deps.appName} to Applications needs an administrator password`,
+    detail:
+      `Quit ${deps.appName}, drag it into the Applications folder in Finder, then open it from there. ` +
+      'Finder asks for the password, and asks before replacing a copy that is already there.',
+    buttons: ['Continue'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  })
+
+  return { action: 'continue', reason: 'admin-required', location }
+}
+
 async function attemptMoveToApplications(
-  deps: Pick<MacApplicationsGuardDeps, 'app' | 'appName' | 'dialog' | 'exists' | 'log' | 'readBundleVersion'>,
+  deps: Pick<
+    MacApplicationsGuardDeps,
+    'app' | 'appName' | 'dialog' | 'exists' | 'log' | 'readBundleVersion' | 'writable'
+  >,
   bundlePath: string,
   location: MacUnsafeBundleLocation
 ): Promise<MacApplicationsGuardResult> {
@@ -438,12 +493,15 @@ async function attemptMoveToApplications(
 
     const checkInstalled = () => installedCopyBlockingMove(bundlePath, runningVersion, readBundleVersion, exists)
 
-    // Electron calls conflictHandler only when it can trash the installed copy itself. When /Applications or
-    // that copy needs admin rights, it deletes and copies through an admin prompt without asking, so check first.
+    // The version answer comes first, so a newer copy gets "open that one" even when moving needs admin rights.
     const preflight = checkInstalled()
 
     if (preflight) {
       return await reportInstalledCopyConflict(deps, location, runningVersion, preflight)
+    }
+
+    if (moveNeedsAdmin(bundlePath, exists, deps.writable ?? isWritable)) {
+      return await sendMoveToFinder(deps, location)
     }
 
     const moved = deps.app.moveToApplicationsFolder({

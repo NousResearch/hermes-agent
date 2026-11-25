@@ -69,6 +69,7 @@ function makeDeps(overrides: Partial<MacApplicationsGuardDeps> = {}) {
     homeDir: '/Users/alice',
     access,
     exists: () => false,
+    writable: () => true,
     readBundleVersion: () => null,
     log: message => {
       logs.push(message)
@@ -562,18 +563,15 @@ describe('guardMacApplicationsLaunch', () => {
     ['a newer', '0.30.0', 'conflict-newer-installed'],
     ['an unreadable', null, 'conflict-unverified-installed']
   ] as const)(
-    'checks %s installed copy before moving, since Electron skips conflictHandler when it needs admin rights',
+    'answers %s installed copy it cannot write with the version, before the admin-password rule',
     async (_label, installedVersion, reason) => {
-      const { deps, app, dialog } = makeDeps(
-        installedCopies({
+      const { deps, app, dialog } = makeDeps({
+        ...installedCopies({
           '/Volumes/Hermes Agent/Hermes Agent.app': '0.24.0',
           '/Applications/Hermes Agent.app': installedVersion
-        })
-      )
-
-      // Electron's admin-prompt install (/Applications or the installed copy not writable) runs rm -rf and
-      // cp -pR without calling conflictHandler, so a move here replaces the installed copy unchecked.
-      app.moveToApplicationsFolder.mockReturnValue(true)
+        }),
+        writable: target => target !== '/Applications/Hermes Agent.app'
+      })
 
       await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
         action: 'continue',
@@ -584,6 +582,50 @@ describe('guardMacApplicationsLaunch', () => {
       expect(dialog.showMessageBox).toHaveBeenCalledTimes(2)
     }
   )
+
+  it.each([
+    ['/Applications is not writable (a standard account)', {}, (target: string) => target !== '/Applications'],
+    [
+      'the installed copy is not writable (another account owns it)',
+      { '/Applications/Hermes Agent.app': '0.20.0' },
+      (target: string) => target !== '/Applications/Hermes Agent.app'
+    ]
+  ] as const)('sends the move to Finder when %s', async (_label, installed, writable) => {
+    const { deps, app, dialog, userDataDir } = makeDeps({
+      ...installedCopies({ '/Volumes/Hermes Agent/Hermes Agent.app': '0.24.0', ...installed }),
+      writable
+    })
+
+    // Electron's admin-password path deletes the copy after the prompt without calling conflictHandler, so a
+    // copy installed while the prompt is open would go unchecked; the guard never takes that path.
+    app.moveToApplicationsFolder.mockReturnValue(true)
+
+    await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
+      action: 'continue',
+      reason: 'admin-required',
+      location: 'read-only-volume'
+    })
+    expect(app.moveToApplicationsFolder).not.toHaveBeenCalled()
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(2)
+    expect(dialog.showMessageBox).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'Moving Hermes Agent to Applications needs an administrator password',
+        detail: expect.stringContaining('Finder')
+      })
+    )
+    expect(readMacApplicationsGuardPreference(userDataDir)).toBeNull()
+  })
+
+  it('moves when only a copy that is not there reads as unwritable', async () => {
+    const { deps, app } = makeDeps({ writable: target => target !== '/Applications/Hermes Agent.app' })
+
+    app.moveToApplicationsFolder.mockReturnValue(true)
+
+    await expect(guardMacApplicationsLaunch(deps)).resolves.toEqual({
+      action: 'relaunching',
+      location: 'read-only-volume'
+    })
+  })
 
   it.each([
     ['a newer copy only in ~/Applications', { '/Users/alice/Applications/Hermes Agent.app': '0.30.0' }],

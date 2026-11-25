@@ -998,8 +998,8 @@ class CLIStatusBarMixin:
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
-        prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        prompt_elapsed, idle_since, focus, yolo, plugins (plugin terminal chrome), stash, battery,
+        title, total_tokens (opt-in only). Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1015,6 +1015,30 @@ class CLIStatusBarMixin:
             result = None
         self._status_bar_field_set_cache = result
         return result
+
+    def _terminal_chrome(self):
+        """This CLI's plugin terminal chrome (tab title + status segments, ``gateway_chat_chrome``)."""
+        chrome = self.__dict__.get("_terminal_chrome_state")
+        if chrome is None:
+            from hermes_cli.gateway_chat_chrome import TerminalChrome
+            chrome = self.__dict__.setdefault("_terminal_chrome_state", TerminalChrome())
+        return chrome
+
+    def _on_terminal_chrome(self, plugin_id, payload):
+        """``GatewayAgent.terminal_chrome_callback`` (agent thread): ``(None, None)`` = the session changed."""
+        chrome = self._terminal_chrome()
+        if plugin_id is None:
+            chrome.reset()
+        else:
+            chrome.update(plugin_id, payload)
+
+    def _plugin_status_segments(self, field_set, *, styled: bool) -> list:
+        """The ``plugins`` field: each plugin's chrome segment, styled by its tone with the skin's
+        ``status-bar-<tone>`` class."""
+        if field_set is not None and "plugins" not in field_set:
+            return []
+        return [[((f"class:status-bar-{tone}" if tone else _SB) if styled else "", text)]
+                for tone, text in self._terminal_chrome().segments()]
 
     def _status_bar_segments(
         self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
@@ -1101,6 +1125,7 @@ class CLIStatusBarMixin:
             add("focus", _STRONG, focus_label)
         if yolo_active:
             add("yolo", "class:status-bar-yolo", t("cli.status_bar.yolo_badge"))
+        segs.extend(self._plugin_status_segments(field_set, styled=styled))
         if wide:
             # Session token total (Σ) — opt-in only via an explicit fields list.
             total_tokens = snapshot.get("session_total_tokens", 0)

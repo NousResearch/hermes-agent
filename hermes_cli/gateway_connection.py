@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 
+from hermes_cli.gateway_chat_chrome import plugin_of
 from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, NOT_SENT, RESUME_KEY_MISMATCH,
                                        GatewayClientError, GatewayRPCError)
 
@@ -77,6 +78,9 @@ class SessionState:
         # Called (loop thread) with each ``request.cancel`` payload: the agent thread may be parked in a
         # modal answering that very request (another viewer settled it), so it cannot read the queue.
         self.request_listeners: list = []
+        # Called (loop thread) with ``(plugin_id, payload)`` for each ``plugin.<id>.terminal`` frame (tab
+        # title / status chrome, ``gateway_chat_chrome``): state like usage, so idle frames count too.
+        self.chrome_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
         # The owner's pending admissions as last published (snapshot or ``session.info``), and the
@@ -143,6 +147,9 @@ class SessionState:
                 listener(payload)
         elif kind == "session.replay_gap":
             self.gaps += 1
+        elif self.chrome_listeners and (plugin_id := plugin_of(kind)) is not None:
+            for listener in list(self.chrome_listeners):
+                listener(plugin_id, payload)
 
     def apply_usage(self, usage):
         """One session-cumulative usage dict (``session.usage`` payload or ``session.stats`` result)."""

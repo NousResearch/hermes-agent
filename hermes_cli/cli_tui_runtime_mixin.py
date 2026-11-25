@@ -452,7 +452,7 @@ class CLITuiRuntimeMixin:
             # Vi editing mode when display.vim_mode is on.
             # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
             extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
-        return Application(
+        app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
@@ -470,6 +470,9 @@ class CLITuiRuntimeMixin:
             erase_when_done=True,
             **extra_kw,
         )
+        # Plugin tab title / status segment (``gateway_chat_chrome``): animated on the app's own loop.
+        app.pre_run_callables.append(lambda: self._terminal_chrome().start(app.output, app))
+        return app
 
     def _tui_install_signal_handlers(self):
         """SIGTERM/SIGHUP -> graceful shutdown; Windows absorbs SIGINT (see body)."""
@@ -529,6 +532,8 @@ class CLITuiRuntimeMixin:
         # shell must not keep listing Hermes as an agent (OSC 7501 idle/done outlive the process).
         self._clear_program_status()
         self._pet_stop_anim()
+        with suppress(Exception):  # the terminal's own title back before anything else prints
+            self._terminal_chrome().restore()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
             print(f"{_DIM}{t('cli.tui.shutting_down')}{_RST}", flush=True)

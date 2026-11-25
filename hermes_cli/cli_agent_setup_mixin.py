@@ -742,6 +742,8 @@ class CLIAgentSetupMixin:
             import cli as _cli
             _cli._active_agent_ref = self.agent
             self.agent.control_update_callback = self._mark_automation_stale
+            # Plugin tab title / status chrome; -q renders none (hosts without the status-bar mixin neither).
+            self.agent.terminal_chrome_callback = None if single_query_mode else getattr(self, "_on_terminal_chrome", None)
             # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
             # thread rendered, so the shared prompt path never re-reads config or skill files.
             _auto_result = getattr(self, "_auto_load_skills_result", None)

@@ -141,6 +141,8 @@ class GatewayAgent:
         # Set by the CLI after construction: a ``session.control.update`` mid-turn (a tool moved the goal
         # or loop) marks its mirrored managers stale; the dock re-reads them off this thread.
         self.control_update_callback = None
+        # ``callback(plugin_id, payload)`` for ``plugin.<id>.terminal`` chrome; ``(None, None)`` = session left.
+        self.terminal_chrome_callback = None
         self.suppress_status_output = False
         self._print_fn = None
         # Inert private attributes main's CLI writes (CALLMAP §3.2).
@@ -213,6 +215,7 @@ class GatewayAgent:
         state = self._state()
         state.usage_listeners.append(self.apply_session_usage)
         state.request_listeners.append(self._on_request_withdrawn)
+        state.chrome_listeners.append(self._terminal_chrome)
         if state.usage:
             self.apply_session_usage(state.usage)
 
@@ -382,12 +385,15 @@ class GatewayAgent:
         self._session_id = value
         if previous is None or value == previous or not value:
             return
+        self._terminal_chrome(None, None)  # the old session's chrome (and its later clear) stays behind
         # The session left behind keeps its own figures: a later frame of its must not repaint this one.
         left = self.connection.state(previous)
         with suppress(ValueError):
             left.usage_listeners.remove(self.apply_session_usage)
         with suppress(ValueError):
             left.request_listeners.remove(self._on_request_withdrawn)
+        with suppress(ValueError):
+            left.chrome_listeners.remove(self._terminal_chrome)
         store = self._session_db
         if store is not None and hasattr(store, "attach"):
             try:
@@ -404,6 +410,8 @@ class GatewayAgent:
             state.usage_listeners.append(self.apply_session_usage)
         if self._on_request_withdrawn not in state.request_listeners:
             state.request_listeners.append(self._on_request_withdrawn)
+        if self._terminal_chrome not in state.chrome_listeners:
+            state.chrome_listeners.append(self._terminal_chrome)
         self._apply_info(state.info)
         if state.usage:
             self.apply_session_usage(state.usage)
@@ -953,6 +961,16 @@ class GatewayAgent:
         handler = _HANDLERS.get(kind)
         if handler is not None:
             handler(self, payload, stream_callback, starts)
+
+    def _terminal_chrome(self, plugin_id, payload):
+        """``SessionState.chrome_listeners`` (loop thread): hand a plugin's terminal chrome
+        (``gateway_chat_chrome``) to the CLI. Never raises into the connection's reader."""
+        callback = getattr(self, "terminal_chrome_callback", None)
+        if callback is not None:
+            try:
+                callback(plugin_id, payload)
+            except Exception:  # health: allow BLE001 -- decoration must never fail the turn it decorates
+                logger.debug("terminal chrome callback failed", exc_info=True)
 
     # event handlers (agent thread) ------------------------------------------------------------
     def _on_delta(self, payload, stream_callback, starts):

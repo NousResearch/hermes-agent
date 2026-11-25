@@ -549,7 +549,28 @@ def snapshot_automation(authority, adapter, event, identity):
     identities = event.metadata.get('automation_identities')
     if identities:
         envelope['automation']['identities'] = sorted(set(identities))
+    envelope['automation'].update(_origin_descriptor(event))  # no ``turn_author`` is stored here
     return {'text': event.text, 'native_text_v1': envelope}, entry
+
+
+def _origin_descriptor(event, authored=False):
+    """The ``started_by_hermes`` an automation row records for ``turn_internal()``: only when its
+    producer marked the input as not Hermes' own (``MessageEvent.mark_origin``: a Bot Chat delivery
+    someone sent, or one whose origin is unknown), so every other producer's row, and its retry
+    fingerprint, is unchanged. A row with a ``turn_author`` reads ``False`` from that alone."""
+    origin = event.started_by_hermes()
+    return {} if origin is True or authored else {'started_by_hermes': origin}
+
+
+def restore_origin(event, descriptor):
+    """Re-mark a restored automation event with the origin its row recorded (``_origin_descriptor``):
+    a ``turn_author`` (only a Bot Chat delivery carries one) is someone else's message. ``internal``,
+    execution trust, stays as it is."""
+    if descriptor.get('turn_author') is not None:
+        event.mark_origin(False)
+    elif 'started_by_hermes' in descriptor and descriptor['started_by_hermes'] is not True:
+        event.mark_origin(False if descriptor['started_by_hermes'] is False else None)
+    return event
 
 
 def check_automation_route(runner, payload, session_id, available_source, adapter):
@@ -617,6 +638,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         descriptor['identities'] = sorted(set(event.metadata['automation_identities']))
     if getattr(event, '_heartbeat_session_id', None):
         descriptor['heartbeat'] = event._heartbeat_session_id
+    descriptor.update(_origin_descriptor(event, authored='turn_author' in descriptor))
     return {'text': event.text, 'local_automation_v1': descriptor}, entry
 
 
@@ -654,7 +676,7 @@ def restore_local_automation(authority, ref, row):
         event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
     if descriptor.get('heartbeat'):
         event._heartbeat_session_id = descriptor['heartbeat']
-    return event
+    return restore_origin(event, descriptor)
 
 
 async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):

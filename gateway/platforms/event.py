@@ -147,7 +147,14 @@ class MessageEvent:
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
     # ``internal`` as admission found it, recorded before an API turn is marked internal for trust.
+    # Also set by a producer whose ``internal`` event relays someone's message (a Bot Chat delivery).
     _started_by_hermes: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # The producer could not tell (a Bot Chat retry of a receipt that recorded no origin).
+    _origin_unknown: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def mark_origin(self, started_by_hermes: Optional[bool]) -> None:
+        """Record who produced this event's input, independent of ``internal`` (execution trust)."""
+        self._started_by_hermes, self._origin_unknown = started_by_hermes, started_by_hermes is None
 
     def started_by_hermes(self) -> Optional[bool]:
         """Whether Hermes produced this turn's input itself rather than relaying someone's message.
@@ -156,6 +163,8 @@ class MessageEvent:
         turn it executes internal for trust, so there ``internal`` alone says nothing."""
         event: Optional[MessageEvent] = self
         while event is not None:
+            if getattr(event, "_origin_unknown", False):
+                return None
             if event._started_by_hermes is not None:
                 return event._started_by_hermes
             event = getattr(event, "_rewritten_from", None)

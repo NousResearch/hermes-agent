@@ -12,17 +12,31 @@ from typing import Any, List, Optional
 
 logger = logging.getLogger("tools.terminal_tool")
 
-# A silent background process (no notify_on_complete / watch_patterns) is right
-# only for servers/watchers; for bounded tasks the agent almost always wanted a
+# A silent background process (no notify / watch_patterns) is right only for
+# servers/watchers; for bounded tasks the agent almost always wanted a
 # notification and forgot the flag, so nudge it (cheap false positive).
+#
+# THE NUDGE MUST NOT CONTRADICT THE ONE-READER RULE. The old text told the
+# agent to "re-launch with notify_on_complete=true, OR call poll/wait
+# yourself" -- and an agent that did BOTH armed the notification AND read
+# the job, so the result arrived twice: once by the agent, once as a fresh
+# turn. The notification is not a free message; it is a NEW TURN, and it
+# cannot be un-armed once launched. So the hint states the choice instead
+# of offering both:
+#
+#   you will read it yourself -> leave notify unset, then poll/wait
+#   the notification delivers it -> set notify, then STOP
 _SILENT_BACKGROUND_HINT = (
-    'background=true without notify_on_complete=true means this process runs SILENTLY — you '
+    'background=true without notify=true means this process runs SILENTLY — you '
     'will not be told when it exits. If this is a bounded task (test suite, build, CI poller, '
-    'deploy, anything with a defined end), you almost certainly wanted notify_on_complete=true '
-    'so the system pings you on exit. Re-launch with notify_on_complete=true, or call '
-    "process_manage(action='poll') / process_manage(action='wait') yourself to learn the outcome. Only "
-    'ignore this hint for genuine long-lived processes that never exit (servers, watchers, '
-    'daemons).'
+    'deploy, anything with a defined end), you almost certainly wanted notify=true '
+    'so the system pings you on exit. A background job has exactly ONE reader, and the choice '
+    'must be made BEFORE you launch: either you read the result yourself (leave notify unset, '
+    "then call process_manage(action='poll') / process_manage(action='wait') yourself to learn "
+    'the outcome), or the notification delivers it (set notify=true and then STOP — do not also '
+    'poll it). Arming the notification as well delivers the same result twice, because the '
+    'notification starts a NEW TURN rather than passing a message. Only ignore this hint for '
+    'genuine long-lived processes that never exit (servers, watchers, daemons).'
 )
 
 # Homebrewed CI pollers built on `gh pr view --json statusCheckRollup` or

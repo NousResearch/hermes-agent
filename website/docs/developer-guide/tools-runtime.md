@@ -238,6 +238,57 @@ CLI and non-notifying processes, and preserves the producer's profile context in
 reader threads. Receipt redaction is forced independently of live-output opt-out;
 retention is bounded by age and count.
 
+## One reader per background job
+
+A background job has exactly one reader, and the reader is chosen **before** the
+job is launched. This is a launch decision, not a polling discipline.
+
+The completion notification is **not a passive message**. The watcher
+(`gateway/run.py`) injects a synthetic message into the session, so the agent
+wakes up and re-reads its whole context — a new turn, with its cost. The two
+valid shapes:
+
+- **The agent reads the result.** Launch with `background=true` and leave
+  `notify` unset, then `process_manage(action='wait')`.
+- **The notification delivers it.** Launch with `background=true, notify=true`,
+  then stop — and do not also poll.
+
+Doing both delivers the same result twice: once by the agent, once as a fresh
+turn. Seven long jobs armed at once became seven turns, the context filled,
+the session compacted, and the compaction summary carried stale paths forward as
+if they were current.
+
+**Suppression is best-effort and racy, so the launch decision is the only
+reliable fix.** `gateway/run.py` skips the injection only when
+`process_registry.is_completion_consumed(session_id)` is true, and that flag is
+set by `poll`/`log`/`wait` only if the session had *already exited* when the
+call was made. Polling a *running* process consumes nothing, and the watcher
+ticks every 5 seconds, so consuming after exit can lose the race. An agent
+cannot un-arm a notification after launching.
+
+### The always-loaded surfaces
+
+The rule has to reach the agent without loading an opt-in skill, because these
+descriptions are in the tool schema of every session. Four surfaces carry it,
+and a fifth fires at runtime:
+
+| Surface | File |
+| --- | --- |
+| terminal tool description | `tools/terminal_tool.py` (`TERMINAL_TOOL_DESCRIPTION`) |
+| `background` parameter | `tools/terminal_tool.py` (`TERMINAL_SCHEMA`) |
+| `notify` parameter | `tools/terminal_tool.py` (`TERMINAL_SCHEMA`) |
+| `process_manage` description | `tools/process_registry.py` (`PROCESS_SCHEMA`) |
+| silent-background hint | `tools/terminal_tool_background.py` (`_SILENT_BACKGROUND_HINT`) |
+
+The hint is the one that used to teach both: it told the agent to "re-launch
+with `notify=true`, **or** call `poll`/`wait` yourself", and an agent that did
+both armed the notification and read the job. It now states the choice instead
+of offering both options at once.
+
+`tests/tools/test_background_one_reader.py` guards the four descriptions. The
+guard is deliberately about the *text*, because the text is the delivery
+mechanism: reverting any one description fails it.
+
 ## Concurrency
 
 Tool calls may execute sequentially or concurrently depending on the tool mix and interaction requirements.

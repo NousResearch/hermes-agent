@@ -489,7 +489,13 @@ stops and says to restart that backend with the updated hermes, then run the dry
 The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
 take: the same bind and port (loopback stays loopback, a wildcard stays a wildcard, one IP address
 stays that address). It says whether sign-in is required, which `HERMES_DASHBOARD_*` settings would be
-copied into `.env` (names only; values are never printed), the public URL it would copy into
+copied into `.env` (names only; values are never printed; one `.env` already sets is not copied, and a
+`.env` line that sets a sign-in setting as a `${VAR}` template reading a VAR from outside the `.env` blocks
+the move when the gateway's service would not start with the value VAR has for the old backend (a gateway
+service not installed yet is judged as `hermes gateway install` would write it: the user manager's
+environment plus the unit's `Environment=` lines, or the LaunchAgent's variables), or when
+the old unit's `env` launcher sets VAR: put the literal value in `.env`, or set VAR where the gateway
+runs), the public URL it would copy into
 `webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
 state of the gateway service and the
 Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
@@ -522,7 +528,15 @@ the gateway cannot be a service, the last step is `hermes gateway run`, for the 
 stopped system unit counts for this home only when it runs as you (`User=`) and pins no other
 `HERMES_HOME`, judged by the environment systemd gives it (`Environment=`, then each `EnvironmentFile=`
 in order, the later value winning); when a file it needs cannot be read, the dry run is blocked instead
-of guessing. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
+of guessing. An `env` launcher in its ExecStart (`/usr/bin/env HERMES_HOME=/srv/other hermes dashboard`)
+runs after that environment, and `systemctl show` joins its arguments with spaces, so the planner does
+not read values on that line: one that sets or unsets a home variable (`HERMES_HOME`, `HOME`), uses an
+option that changes the environment as a whole (`-i`, `-S`) or one it does not know, or has a `$` anywhere
+but inside another variable's value (`-u ${DROP}`), blocks the dry run for that unit. Put `HERMES_HOME` in the unit's `Environment=` instead, or stop and disable that unit by
+hand. A line that sets or unsets only other variables leaves the home to the unit's environment. A `.env`
+sign-in template that reads a variable from outside the `.env` blocks the move when that line sets that
+variable, or has a `-u`, `-C` or `-S` option at all, because the joined line does not show what those
+leave set: put the literal value in `.env`. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
 Startup-folder entry whose target and arguments are exactly the backend's command (when more than one
 matches, or a matching entry may not be what started it, the steps say so and ask you to pick). The
 steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set the entry

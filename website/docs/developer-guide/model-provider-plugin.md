@@ -350,6 +350,18 @@ A provider's own `hermes model` step calls these instead of re-implementing core
 | `hermes_cli.model_setup.note_setup_failure(failure_class)` | Records why the flow ended without a pick (`"auth"`, `"no_models"`, ...) for the opt-in provider-setup metric; a no-op outside a tracked flow. |
 | `agent.secret_scope.secret_source_label(name)` | `" (from Bitwarden)"`-style suffix naming the secret-source plugin that supplied env var `name`; `""` for `.env` / shell values. |
 
+### Public helpers for native Gemini reasoning
+
+A provider on the native Gemini wire (`generateContent`) maps the reasoning config with these, so its efforts follow
+the same per-model rules as the built-in `gemini` provider. The profile still chooses the request field and its own
+output budget.
+
+| Helper | What it does |
+|---|---|
+| `agent.reasoning_effort.gemini_thinking_config(model, reasoning_config)` | Native camelCase `thinkingConfig` for a Hermes reasoning config (`{"enabled": False}` gives the lowest level the model allows, with thoughts hidden; `xhigh` and above reach `xhigh` on the models that take it), or `None` for a non-Gemini model or no reasoning config. |
+| `agent.reasoning_effort.clamp_effort(effort, supported, overrides=None)` | Clamps an effort onto a declared level tuple: unchanged when supported, else the nearest weaker level (the weakest one when nothing is weaker). |
+| `agent.reasoning_effort.bare_gemini_model_id(model)` | The model id the native Gemini client sends (`gemini/` and `google/` prefixes stripped). `gemini_thinking_config` already applies it; it imports no HTTP stack. |
+
 ## Account usage
 
 Model-provider plugins can provide account or plan usage to `/usage` by

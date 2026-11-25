@@ -4,7 +4,12 @@ brokered OAuth row with an opaque bearer rotates on its stored expiry."""
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
+from pathlib import Path
+
+import pytest
 
 import hermes_cli.auth
 import providers
@@ -113,3 +118,50 @@ def test_signed_in_solstice_picker_row_is_the_plugin_list_in_order(monkeypatch, 
     assert profile is not None
     row = next(r for r in list_authenticated_providers() if r["slug"] == "solstice")
     assert row["models"] == list(profile.fallback_models)
+
+
+def test_solstice_targets_v1beta_and_lists_exactly_the_served_models():
+    """The Interactions endpoint lives on v1beta; the list is the served IDs, Hydrogen (the
+    default) first, Flash-Lite (aux model and quota reserve) last."""
+    profile = providers.get_provider_profile("solstice")
+
+    assert profile.base_url == "https://generativelanguage.googleapis.com/v1beta"
+    assert profile.fallback_models == (
+        "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon", "gemini-3.5-flash-lite", "gemini-flash-lite-latest",
+    )
+    assert profile.default_aux_model == "gemini-flash-lite-latest"
+
+
+@pytest.mark.parametrize(
+    ("model", "efforts"),
+    [("gemini-4-hydrogen", ["low", "medium", "high", "xhigh"]), ("gemini-4-neon", ["low", "medium", "high", "xhigh"]),
+     ("gemini-4-carbon", ["low", "medium", "high"]), ("gemini-3.5-flash-lite", ["minimal", "low", "medium", "high"]),
+     ("gemini-flash-lite-latest", ["minimal", "low", "medium", "high"])],
+)
+def test_setup_effort_picker_offers_exactly_each_models_levels(model, efforts):
+    from hermes_cli.main_provider_setup import _main_model_reasoning_efforts
+
+    assert _main_model_reasoning_efforts(model, "solstice") == efforts
+
+
+def test_setup_effort_picker_keeps_the_generic_ladder_for_an_unlisted_model(monkeypatch):
+    from hermes_cli.main_provider_setup import _main_model_reasoning_efforts
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    monkeypatch.setattr("agent.models_dev.get_model_capabilities", lambda *a, **k: None)
+    assert _main_model_reasoning_efforts("gemini-4-xenon", "solstice") == list(VALID_REASONING_EFFORTS)
+
+
+def test_profile_loads_and_shapes_thinking_without_httpx():
+    """Discovery imports the profile from interpreters without the app's HTTP stack."""
+    code = (
+        "import sys; sys.modules['httpx'] = None\n"
+        "import providers\n"
+        "p = providers.get_provider_profile('solstice')\n"
+        "assert p.build_extra_body(model='gemini-4-carbon', reasoning_config=None) == "
+        "{'thinking_config': {'includeThoughts': True, 'thinkingLevel': 'medium'}}\n"
+        "assert 'httpx' not in {m for m in sys.modules if sys.modules[m] is not None}\n"
+    )
+    root = Path(__file__).resolve().parents[3]
+    done = subprocess.run([sys.executable, "-c", code], check=False, cwd=root, capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr[-2000:]

@@ -71,12 +71,46 @@ def session_modes(info: dict | None = None) -> SessionModeState:
 REASONING_CONFIG_ID = "reasoning_effort"
 SERVICE_TIER_CONFIG_ID = "service_tier"
 SERVICE_TIER_LABELS = {"normal": "Normal", "fast": "Fast", "auto": "Auto", "cold": "Cold", "ultrafast": "Ultrafast"}
+REASONING_LABELS = {"none": "None", "minimal": "Minimal", "low": "Low", "medium": "Medium",
+                   "high": "High", "xhigh": "Extra High", "max": "Max", "ultra": "Ultra"}
 
 
 def reasoning_choices() -> tuple[str, ...]:
     """The owner's ``reasoning`` levels; ``default`` hands the level back to the profile."""
     from hermes_constants import VALID_REASONING_EFFORTS
     return ("default", "none", *VALID_REASONING_EFFORTS)
+
+
+def _reasoning_meta(info: dict) -> dict:
+    """A model row's ``_meta``: the levels the owner accepts, plus the one in force."""
+    levels = reasoning_choices()[1:]
+    meta: dict = {
+        "supportsReasoningEffort": True,
+        "reasoningEfforts": [{"value": level, "label": REASONING_LABELS.get(level, level)} for level in levels],
+    }
+    effort = info.get("reasoning_effort")
+    if effort in levels:
+        meta["reasoningEffort"] = effort
+    return meta
+
+
+def with_reasoning_meta(state: SessionModelState | None, info: dict) -> SessionModelState | None:
+    """Publish the effort menu on every model row's ``_meta``.
+
+    ``config_options`` describes the session's current model alone, so a client that shows a picker per
+    model has to read the levels from the rows themselves. ACP leaves this to ``_meta`` and defines no key
+    for it, so this publishes the bare shape agents already put on the wire
+    (``supportsReasoningEffort``, ``reasoningEffort``, ``reasoningEfforts`` as ``{value, label}``): a client
+    that reads it renders the menu for a model before a session has run on that model, and a client that
+    ignores ``_meta`` sees the session it sees today. Every row reports the level in force, because the
+    owner keeps one effort setting per session and that is what running on any of these models uses; a row
+    reports none only while no level is set, so a picker starts unselected instead of inventing a level."""
+    if state is None:
+        return None
+    meta = _reasoning_meta(info)
+    rows = [row.model_copy(update={"field_meta": {**(row.field_meta or {}), **meta}})
+            for row in state.available_models]
+    return state.model_copy(update={"available_models": rows})
 
 
 def config_options(models: SessionModelState | None, info: dict, mode_id: str) -> list:
@@ -133,11 +167,11 @@ def model_state(info: dict) -> SessionModelState | None:
     try:
         picker = build_model_state(model, provider, "")
         if picker is not None:
-            return picker
+            return with_reasoning_meta(picker, info)
     except Exception:
         # Boundary: a broken inventory must not fail session/new; the current model still shows.
         logger.debug("Could not build ACP model state", exc_info=True)
-    return fallback_model_state(model, provider)
+    return with_reasoning_meta(fallback_model_state(model, provider), info)
 
 
 def provenance_meta(home: Path, acp_session_id: str, session_id: str) -> dict | None:

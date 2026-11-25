@@ -261,16 +261,22 @@ _cap_held: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_he
 
 
 def _count_agent_created() -> int:
-    """One rule: a live curator-managed record takes a slot iff ``_find_skill`` (the resolver every
-    skill_manage call uses, in catalog precedence, refusing ambiguous names) resolves its key to a skill,
-    and each resolved directory counts once. So create_dir, external_dirs and frontmatter-keyed adopts
-    all count exactly as the agent can address them. Strict read: raises on a damaged sidecar."""
+    """One rule: a curator-managed record takes a slot iff ``_find_skill`` (the resolver every skill_manage
+    call uses, in catalog precedence, refusing ambiguous names) resolves its key to a skill on disk, and
+    each resolved directory counts once, unless that directory's OWN record (keyed by its directory name,
+    what ``record_created`` writes) says it is not curator-managed: a user skill never borrows a slot from
+    another record that resolves to it by display name. Strict read: raises on a damaged sidecar."""
     from tools import skill_manager_tool as _smt
     from tools import skill_usage
-    bundled = skill_usage._read_bundled_names()
-    return len({found["path"].resolve() for name, rec in skill_usage._load_usage_strict().items()
-                if skill_usage._is_curator_managed_record(rec)
-                and name not in bundled and (found := _smt._find_skill(name))})
+    usage, bundled = skill_usage._load_usage_strict(), skill_usage._read_bundled_names()
+    owned = set()
+    for name, rec in usage.items():
+        if not skill_usage._is_curator_managed_record(rec) or name in bundled or not (found := _smt._find_skill(name)):
+            continue
+        own = usage.get(found["path"].name)
+        if own is None or skill_usage._is_curator_managed_record(own):
+            owned.add(found["path"].resolve())
+    return len(owned)
 
 
 @contextmanager

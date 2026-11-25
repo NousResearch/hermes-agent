@@ -1635,6 +1635,17 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
         (tmp_path / "config.yaml").write_text(
             "curator:\n  max_agent_created: 3\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
         borrowed = json.loads(skill_manage(action="create", name="seven", content=skill("seven")))
+        # ...nor from an ARCHIVED managed record ("ghost") that resolves to it by display name.
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        usage["ghost"] = {"created_by": "agent", "state": "archived"}
+        usage_path.write_text(json.dumps(usage), encoding="utf-8")
+        reset_current_write_origin(token)
+        ghost_twin = skill("x").replace("x-display", "ghost")
+        assert json.loads(skill_manage(action="create", name="mine-too", content=ghost_twin))["success"]
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 4\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        not_ghosted = json.loads(skill_manage(action="create", name="eight", content=skill("eight")))
         usage_path.write_text("{not json", encoding="utf-8")
         damaged = json.loads(skill_manage(action="create", name="four", content=skill("four")))
     finally:
@@ -1653,6 +1664,7 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
     assert unrecorded["success"] is False and not (six / "SKILL.md").exists(), unrecorded
     assert (six / "notes.md").read_text(encoding="utf-8") == "theirs"  # undo removes only what create wrote
     assert borrowed["success"] is True, borrowed  # one, five, seven = 3; "weekly" (learn) takes no slot
+    assert not_ghosted["success"] is True, not_ghosted  # one, five, seven, eight = 4; "mine-too" takes none
     assert damaged["success"] is False and not (tmp_path / "team-skills" / "four").exists(), damaged  # fail closed
     assert user["success"] is True, user
 

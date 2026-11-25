@@ -31,7 +31,7 @@ const newestAnswerBySession = new Map<string, number>()
 /** A primary pick the gateway queues for its session's next turn is saved as the launch pick at once. Record which
  *  session queued which route, next to that pick in its owner's storage (across reloads), so only that session's
  *  refusal or decline can release it; any later pick on the session retires the record, an older one's late reply
- *  never does. */
+ *  never does. Return whether this is still the newest accepted answer for its owner's session. */
 export const noteQueuedLaunchPick = (
   sessionId: string,
   route: { model: string; provider: string } | null,
@@ -39,14 +39,14 @@ export const noteQueuedLaunchPick = (
   pickOrder?: number
 ) => {
   if (scope === null) {
-    return
+    return false
   }
 
   if (pickOrder !== undefined) {
     const answered = `${scope}\n${sessionId}`
 
     if (pickOrder < (newestAnswerBySession.get(answered) ?? 0)) {
-      return
+      return false
     }
 
     newestAnswerBySession.set(answered, pickOrder)
@@ -58,13 +58,20 @@ export const noteQueuedLaunchPick = (
       route ? JSON.stringify({ model: route.model, provider: route.provider, sessionId }) : null
     )
   }
+
+  return true
 }
 
 /** The session's queued pick of `model` was refused or declined: release the route it saved for owner `scope`. */
-export const releaseQueuedLaunchPick = (sessionId: string, model: unknown, scope: null | string): void => {
+export const releaseQueuedLaunchPick = (
+  sessionId: string,
+  model: unknown,
+  scope: null | string,
+  provider?: string
+): void => {
   const queued = scope === null ? null : storedQueuedLaunchPick(scope)
 
-  if (queued?.sessionId === sessionId && queued.model === model) {
+  if (queued?.sessionId === sessionId && queued.model === model && (!provider || queued.provider === provider)) {
     noteQueuedLaunchPick(sessionId, null, scope)
     releaseComposerModelSelection(queued, scope)
   }

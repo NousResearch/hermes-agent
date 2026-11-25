@@ -29,7 +29,8 @@ import type { ChatBarState } from './types'
 // No `max-w-*` cap: the pill sizes to its label, so a long model name only
 // truncates when the row is genuinely out of room (#49340) — not at an
 // arbitrary 160px.
-const UNKNOWN_TIER = atom('')
+const EMPTY = atom('')
+const NO_QUEUE = atom(undefined)
 
 const PILL = cn(
   'h-(--composer-control-size) min-w-0 shrink gap-1 rounded-md px-2 text-xs font-normal',
@@ -53,7 +54,8 @@ export function ModelPill({
   disabled: boolean
   model: ChatBarState['model']
 }) {
-  const copy = useI18n().t.shell.statusbar
+  const { shell } = useI18n().t
+  const copy = shell.statusbar
   // Two return branches below, one handle: only ever one of them mounts.
   const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
@@ -64,7 +66,9 @@ export function ModelPill({
   const currentModel = model.model || viewModel
   const currentProvider = model.provider || viewProvider
   const fastMode = useStore(view.$fast)
-  const serviceTier = useStore(view.$serviceTier ?? UNKNOWN_TIER)
+  const serviceTier = useStore(view.$serviceTier ?? EMPTY)
+  const queuedModel = useStore(view.$queuedModel ?? NO_QUEUE)
+  const queuedLabel = queuedModel ? shell.modelMenu.pickDeferred(formatModelPillLabel(queuedModel.model)) : ''
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
@@ -143,16 +147,17 @@ export function ModelPill({
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
-      {currentModel.trim() ? (
+      {queuedLabel || currentModel.trim() ? (
         <span className="truncate">
-          {pillLabel ??
-            formatModelPillLabel(currentModel, {
-              fastMode,
-              requireCapabilities: !runtimeId,
-              serviceTier,
-              supportsFast: model.supportsFast,
-              supportsUltrafast: model.supportsUltrafast
-            })}
+          {queuedLabel ||
+            (pillLabel ??
+              formatModelPillLabel(currentModel, {
+                fastMode,
+                requireCapabilities: !runtimeId,
+                serviceTier,
+                supportsFast: model.supportsFast,
+                supportsUltrafast: model.supportsUltrafast
+              }))}
         </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
@@ -182,13 +187,16 @@ export function ModelPill({
     ? copy.modelTitle(providerDisplayName(currentProvider), currentModel || copy.modelNone)
     : copy.switchModel
 
-  const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
+  const title = [baseTitle, queuedLabel || (pinnedOverride ? copy.modelPinned : '')].filter(Boolean).join(' — ')
 
   if (!model.modelMenuContent) {
     return (
-      <Tip label={pinnedOverride ? `${copy.openModelPicker} — ${copy.modelPinned}` : copy.openModelPicker} side="top">
+      <Tip
+        label={queuedLabel || (pinnedOverride ? `${copy.openModelPicker} — ${copy.modelPinned}` : copy.openModelPicker)}
+        side="top"
+      >
         <Button
-          aria-label={copy.openModelPicker}
+          aria-label={queuedLabel ? `${copy.openModelPicker} — ${queuedLabel}` : copy.openModelPicker}
           className={pillClass}
           data-tour={tourMarker}
           disabled={disabled}

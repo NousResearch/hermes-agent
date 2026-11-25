@@ -41,6 +41,7 @@ import {
   sessionInfoStatePatch
 } from '../utils'
 
+import { matchesReceiptOwner } from './session-receipt-owner'
 import { payTurnEndReport, runningEdge } from './turn-end-report'
 import type { GatewayEventContext } from './types'
 
@@ -201,12 +202,20 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'session.info') {
+    // Secondary sockets use this handler too. Imported conversations can share
+    // an id across owners; those owners' revision numbers are not comparable.
+    const foreignSource = Boolean(event.connectionId || event.profile) && !fromActiveSource()
+
+    if ((foreignSource && isActiveEvent) || matchesReceiptOwner(ctx) === false) {
+      return true
+    }
+
     // A rebuilt runtime (mid-conversation model/provider switch) speaks under
     // a NEW session_id. Before scoping anything by isActiveEvent, check
     // whether this event is the rebuilt runtime announcing itself for the
     // conversation already on screen — if so, re-bind the pane so every
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
-    const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
+    const rebound = !foreignSource && maybeRebindPaneToRebuiltRuntime(ctx)
 
     reconcileSessionInfoPendingSubmissions(ctx)
 

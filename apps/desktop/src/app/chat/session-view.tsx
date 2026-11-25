@@ -57,6 +57,7 @@ export interface SessionView {
   $turnStartedAt: ReadableAtom<number | null>
   $cwd: ReadableAtom<string>
   $model: ReadableAtom<string>
+  $queuedModel?: ReadableAtom<ClientSessionState['queuedModel']>
   $provider: ReadableAtom<string>
   $fast: ReadableAtom<boolean>
   $serviceTier?: ReadableAtom<string>
@@ -127,6 +128,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $messages: $primaryMessages,
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),
   $model: primaryField<string>(state => state.model, $currentModel),
+  $queuedModel: computed($primaryState, state => state?.queuedModel),
   $provider: primaryField<string>(state => state.provider, $currentProvider),
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
   $reasoningEffortPending: $primaryReasoningEffortPending,

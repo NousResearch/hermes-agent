@@ -1,0 +1,21 @@
+name: hermes-roi
+title: "ROI — Return on Intelligence"
+version: "0.3.0"
+repo: https://github.com/JZarkcn/hermes-roi
+sha: "56a27c4c193244cdcc2276582fe05197c04ef0e6"
+description: "ROI measures your local-inference hardware payback on Hermes: recovery %, break-even date and a 4-tier verdict, live from your own sessions. Disclosure — reads state.db read-only (sessions/tokens/billing metadata across your local profiles; no raw messages); computes locally; no third-party network calls, no telemetry, no credentials read or stored; benchmark API prices, FX and electricity cost are whatever you type in."
+maintainer: JZarkcn
+tier: community
+category: desktop
+requires_hermes: ">=0.21.7"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+image: "https://raw.githubusercontent.com/JZarkcn/hermes-roi/56a27c4c193244cdcc2276582fe05197c04ef0e6/dev/harness/catalog-shots/roi-sample-lv4.png"
+screenshots:
+  - "https://raw.githubusercontent.com/JZarkcn/hermes-roi/56a27c4c193244cdcc2276582fe05197c04ef0e6/dev/harness/catalog-shots/roi-sample-lv1.png"
+  - "https://raw.githubusercontent.com/JZarkcn/hermes-roi/56a27c4c193244cdcc2276582fe05197c04ef0e6/dev/harness/catalog-shots/roi-sample-lv2.png"
+  - "https://raw.githubusercontent.com/JZarkcn/hermes-roi/56a27c4c193244cdcc2276582fe05197c04ef0e6/dev/harness/catalog-shots/roi-sample-lv3.png"
+  - "https://raw.githubusercontent.com/JZarkcn/hermes-roi/56a27c4c193244cdcc2276582fe05197c04ef0e6/dev/harness/catalog-shots/roi-sample-lv4.png"

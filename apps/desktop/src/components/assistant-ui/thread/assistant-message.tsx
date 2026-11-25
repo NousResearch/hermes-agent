@@ -88,8 +88,9 @@ import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
+import { useReplyAwaitingContinuation } from '@/store/paused-replies'
 import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
-import { sessionApprovalRequest } from '@/store/prompts'
+import { sessionCommandApprovalPending } from '@/store/prompts'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
@@ -246,7 +247,8 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // preview block, or this root.
   const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
   const sessionId = useStore(useSessionView().$runtimeId)
-  const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
+  // A folder or site card never collapses the turn's terminal rows.
+  const approval = useStore(useMemo(() => sessionCommandApprovalPending(sessionId), [sessionId]))
 
   const activityOnly = useAuiState(
     state =>
@@ -363,22 +365,37 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
 
 const StoppedNotice: FC = () => {
   const { t } = useI18n()
+  const view = useSessionView()
+  // The chat's newest reply was stopped only to be continued (store/paused-replies.ts): it goes on by itself.
+  const paused = useReplyAwaitingContinuation(useStore(view.$storedId), useStore(view.$runtimeId))
 
-  const stopped = useAuiState(
-    s => s.message.status?.type !== 'running' && s.message.metadata?.custom?.interrupted === true
-  )
+  const mark = useAuiState(s => {
+    if (s.message.status?.type === 'running') {
+      return null
+    }
 
-  if (!stopped) {
+    if (paused && s.thread.messages.findLast(message => message.role === 'assistant')?.id === s.message.id) {
+      return 'continuing'
+    }
+
+    return s.message.metadata?.custom?.interrupted === true ? 'stopped' : null
+  })
+
+  if (!mark) {
     return null
   }
 
   return (
     <div
       className="flex items-center gap-1 px-(--message-text-indent) pt-1 text-[0.72rem] text-(--ui-text-tertiary)"
-      data-slot="aui_assistant-message-stopped"
+      data-slot={mark === 'stopped' ? 'aui_assistant-message-stopped' : 'aui_assistant-message-continuing'}
     >
-      <Codicon className="size-3" name="debug-stop" />
-      {t.assistant.thread.responseStopped}
+      {mark === 'stopped' ? (
+        <Codicon className="size-3" name="debug-stop" />
+      ) : (
+        <Loader2Icon aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />
+      )}
+      {mark === 'stopped' ? t.assistant.thread.responseStopped : t.assistant.thread.responseContinuing}
     </div>
   )
 }

@@ -75,6 +75,48 @@ def _is_mountable_service_token(resolved: Path, hermes_home: Path) -> bool:
     return resolved.parent == hermes_home.resolve() and resolved.name in _MOUNTABLE_SERVICE_TOKENS
 
 
+# What each source of a mount entry logs when the read guard refuses it: guard unavailable, guard raised,
+# protected store.
+_SKILL_REFUSALS = (
+    "credential_files: refusing %r — agent.file_safety could not be "
+    "imported, so the master-store deny-list cannot be consulted",
+    "credential_files: refusing %r — read guard raised",
+    "credential_files: refused %r — it is a credential store the agent "
+    "is denied from reading; a skill may mount its own service token, "
+    "not the master key files",
+)
+_CONFIG_REFUSALS = (
+    "credential_files: refusing configured %r — read guard unavailable",
+    "credential_files: refusing configured %r — read guard raised",
+    "credential_files: refused configured %r — protected credential store",
+)
+
+
+def _read_guard_allows_mount(rel: str, resolved: Path, hermes_home: Path, refusals: tuple[str, str, str]) -> bool:
+    """Whether *resolved* (inside HERMES_HOME, symlinks followed) may be mounted: the one decision for a
+    skill's registration and a ``terminal.credential_files`` entry, logged with the caller's *refusals*.
+
+    Master credential stores are never mountable, even though they sit inside HERMES_HOME and therefore
+    pass the containment check. Fails CLOSED: if the canonical guard can't be consulted we refuse the
+    mount rather than risk bind-mounting auth.json into a sandbox. The import lives at module top (no
+    circular-import concern — file_safety is stdlib-only); the sentinel + logger.exception keep guard
+    failures debuggable instead of silently swallowed (#67665).
+    """
+    unavailable, raised, protected = refusals
+    if get_read_block_error is None:
+        logger.error(unavailable, rel)
+        return False
+    try:
+        denied = get_read_block_error(str(resolved))
+    except Exception:
+        logger.exception(raised, rel)
+        return False
+    if denied and not _is_mountable_service_token(resolved, hermes_home):
+        logger.warning(protected, rel)
+        return False
+    return True
+
+
 def register_credential_file(relative_path: str, container_base: str = "/root/.hermes") -> bool:
     """Register a HERMES_HOME-relative credential file for mounting; True if it exists and was registered.
 
@@ -92,24 +134,7 @@ def register_credential_file(relative_path: str, container_base: str = "/root/.h
     if not resolved.is_file():
         logger.debug("credential_files: skipping %s (not found)", resolved)
         return False
-    # Master credential stores are never mountable, even though they sit inside HERMES_HOME and therefore
-    # pass the containment check above. Fails CLOSED: if the canonical guard can't be consulted we refuse
-    # the mount rather than risk bind-mounting auth.json into a sandbox. The import lives at module top (no
-    # circular-import concern — file_safety is stdlib-only); the sentinel + logger.exception keep guard
-    # failures debuggable instead of silently swallowed (#67665).
-    if get_read_block_error is None:
-        logger.error("credential_files: refusing %r — agent.file_safety could not be "
-                     "imported, so the master-store deny-list cannot be consulted", relative_path)
-        return False
-    try:
-        denied = get_read_block_error(str(resolved))
-    except Exception:
-        logger.exception("credential_files: refusing %r — read guard raised", relative_path)
-        return False
-    if denied and not _is_mountable_service_token(resolved, get_hermes_home()):
-        logger.warning("credential_files: refused %r — it is a credential store the agent "
-                       "is denied from reading; a skill may mount its own service token, "
-                       "not the master key files", relative_path)
+    if not _read_guard_allows_mount(relative_path, resolved, get_hermes_home(), _SKILL_REFUSALS):
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
@@ -144,9 +169,11 @@ def _load_config_files() -> list[dict[str, str]]:
 
     result: list[dict[str, str]] = []
     try:
-        from hermes_cli.config import read_raw_config
+        # Effective user config: an administrator may pin the mount list in the managed
+        # scope (/etc/hermes/config.yaml), which read_raw_config() does not see.
+        from hermes_cli.config_effective import load_user_config_effective
         hermes_home = get_hermes_home()
-        cred_files = cfg_get(read_raw_config(), "terminal", "credential_files")
+        cred_files = cfg_get(load_user_config_effective(), "terminal", "credential_files")
         for item in cred_files if isinstance(cred_files, list) else []:
             rel = item.strip() if isinstance(item, str) else ""
             if not rel:
@@ -155,7 +182,10 @@ def _load_config_files() -> list[dict[str, str]]:
                 rel, hermes_home,
                 "credential_files: rejected absolute config path %r",
                 "credential_files: rejected config path traversal %r (%s)")
-            if resolved_path is not None and resolved_path.is_file():
+            # Config/managed mounts must honor the same master-store read guard as
+            # skill registrations: containment alone does not protect auth.json.
+            if (resolved_path is not None and resolved_path.is_file()
+                    and _read_guard_allows_mount(rel, resolved_path, hermes_home, _CONFIG_REFUSALS)):
                 result.append(_mount(resolved_path, f"/root/.hermes/{rel}"))
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)

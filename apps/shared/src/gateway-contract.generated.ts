@@ -812,6 +812,18 @@ export interface SharedMetricsDesktopActionDay {
 export interface SharedMetricsDesktopDailyResult {
   recorded: boolean
 }
+/** One finished UTC day's long-frame histogram and visible window time, aggregated on the client. ``day`` (YYYY-MM-DD) only latches a resend and is never recorded. */
+export interface SharedMetricsDesktopLongFramesParams {
+  profile?: string | null
+  day: string
+  frames?: SharedMetricsDesktopLongFrameCount[]
+  visible_ms?: number
+}
+/** Long animation frames counted in one duration bucket while the window was visible. */
+export interface SharedMetricsDesktopLongFrameCount {
+  bucket: '50ms_to_100ms' | '100ms_to_250ms' | '250ms_to_1s' | '1s_to_5s' | 'gte_5s'
+  count: number
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -1955,14 +1967,27 @@ export interface RelayEnvelope {
 }
 /** ``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds). */
 export interface BotRelayDeliverParams {
+  id: string
   profile: string
   message: string
   from_profile?: string | null
   from_handle?: string | null
   from_connection?: string | null
 }
+/** A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same on the canonical door and across this relay bridge. It names its admission, unless ``refused``: a terminal ``failed`` receipt for a delivery that was never admitted (refused by the FIFO, or settled as not sent), which the relay settles as the sender's answer. */
 export interface BotRelayDeliverResult {
-  reply: string
+  status: string
+  delivery_id: string
+  profile_home: string
+  session_id: string
+  admission_id?: string | null
+  refused?: true | null
+  message: string
+  reply?: string | null
+  retry_admission_id?: string | null
+  error?: string | null
+  reason?: string | null
+  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
 }
 export interface BotRelayReplyParams {
   profile?: string | null
@@ -2025,12 +2050,28 @@ export interface GatewayCapabilitiesResult {
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
   desktop_local?: boolean
+  client?: CanonicalClientIdentity | null
+}
+/** A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64 printable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and ``mobile`` are known; another is kept off the label, not refused). Attribution only: on ``session.create`` (owners advertising ``session-client-v1``) and in the per-connection hello (``client.capabilities`` ``client``). */
+export interface CanonicalClientIdentity {
+  name: string
+  version?: string | null
+  kind?: string | null
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
   declines_not_shown?: boolean
   canonical_clarify_batch?: boolean
+  client_activity?: boolean
 }
+export interface ClientActivityParams {
+  sessions: string[]
+  idle_seconds: number
+  basis: 'system' | 'page'
+  can_alert?: boolean
+  away?: boolean
+}
+export type EmptyResult = Record<string, never>
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
 /** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is ``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``locale`` is the OS account's first UI language, null when the OS has none. */
@@ -3082,13 +3123,14 @@ export interface ApprovalReceivedParams {
 export interface ApprovalReceivedResult {
   acknowledged: boolean
 }
-/** ``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all`` resolves every pending approval, ``request_id`` a specific one, neither the oldest. */
+/** ``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all`` resolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason`` is why the user denied an ``access`` or ``network`` card; command approvals ignore it. */
 export interface ApprovalRespondParams {
   session_id: string
   profile?: string | null
   choice?: string | null
   all?: boolean | null
   request_id?: string | null
+  reason?: string | null
 }
 export interface ApprovalRespondResult {
   resolved: number
@@ -3738,6 +3780,7 @@ export interface SessionInterruptParams {
   session_id: string
   profile?: string | null
   expected_hosted_task_id?: string | null
+  resume?: boolean | null
 }
 export interface SessionInterruptResult {
   status: InterruptStatus
@@ -4924,10 +4967,11 @@ export interface CanonicalSessionInfo {
   config_warning?: string | null
   [key: string]: unknown
 }
-/** The client a session's creator declared itself as (``session.create`` ``client``). */
+/** The client a session's creator declared itself as (``session.create`` ``client``); ``kind`` only when it named one this owner knows. */
 export interface CanonicalClientLabel {
   name: string
   version?: string | null
+  kind?: string | null
 }
 export interface SessionStatsParams {
   session_id: string
@@ -5230,11 +5274,6 @@ export interface CanonicalCreateParams {
   verbose?: boolean
   client_env?: Record<string, string> | null
   client?: CanonicalClientIdentity | null
-}
-/** A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64 printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``). */
-export interface CanonicalClientIdentity {
-  name: string
-  version?: string | null
 }
 export interface CanonicalSnapshot {
   session_id: string
@@ -5591,21 +5630,6 @@ export interface CanonicalBotDeliverParams {
   author?: Record<string, unknown> | null
   notification_category?: string | null
 }
-/** A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
-export interface CanonicalBotDeliverResult {
-  status: string
-  delivery_id: string
-  profile_home: string
-  session_id: string
-  admission_id?: string | null
-  refused?: true | null
-  message: string
-  reply?: string | null
-  retry_admission_id?: string | null
-  error?: string | null
-  reason?: string | null
-  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
-}
 export interface CanonicalBotCancelParams {
   profile?: string | null
   id: string
@@ -5738,7 +5762,7 @@ export interface SetupBuildAnswer {
   build: string
   label?: string | null
 }
-/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
+/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network`` (``host``, and an optional display ``label``). ``risk`` is one short line shown under the folder or site. On those two kinds ``once`` allows until the sandbox is switched off and ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. An ``access`` request without a ``path`` and a ``network`` request without a ``host`` are refused: the desktop answers with an error and shows no card. A card that outlives its turn stays on screen only while its sender lists it in ``approval.pending``: the desktop removes a card that list does not name. */
 export interface ApprovalRequestParams {
   session_id: string
   request_id: string
@@ -5750,11 +5774,21 @@ export interface ApprovalRequestParams {
   smart_denied?: boolean | null
   tool_name?: string | null
   gateway_session_id?: string | null
+  kind?: ApprovalKind | null
+  path?: string | null
+  access?: ApprovalAccessLevel | null
+  host?: string | null
+  label?: string | null
+  risk?: string | null
   [key: string]: unknown
 }
+export type ApprovalKind = 'command' | 'access' | 'network'
+export type ApprovalAccessLevel = 'read' | 'read_write'
+/** ``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it. */
 export interface ApprovalResult {
   choice: ApprovalChoice
   all?: boolean | null
+  reason?: string | null
 }
 /** Original command, redacted server-side before any password-injection rewrite. */
 export interface SudoRequestParams {
@@ -6009,6 +6043,7 @@ export interface MessageCompletePayload {
   error_surface?: ErrorSurface | null
   partial?: boolean | null
   persisted_turn?: PersistedTurn | null
+  paused?: boolean | null
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'
@@ -6395,7 +6430,7 @@ export interface RpcMethods {
   'billing.step_up': { params: BillingStepUpParams; result: BillingStepUpResult }
   /** Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first. */
   'bot_delivery.list': { params: BotDeliveryListParams; result: BotDeliveryListResult }
-  /** Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking). */
+  /** Forward an identified DM to the target profile's authority and return its delivery receipt. */
   'bot_relay.deliver': { params: BotRelayDeliverParams; result: BotRelayDeliverResult }
   /** Atomically claim every pending cross-connection envelope queued on this gateway. */
   'bot_relay.outbox.drain': { params: BotRelayOutboxDrainParams; result: BotRelayOutboxDrainResult }
@@ -6409,6 +6444,8 @@ export interface RpcMethods {
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
   'cli.exec': { params: CliExecParams; result: CliExecResult }
+  /** Whether the user is at this client, sent only when ``client.capabilities`` answered ``client_activity: true``; each report replaces the connection's last one, is kept in memory per connection and session, and grants nothing. */
+  'client.activity': { params: ClientActivityParams; result: EmptyResult }
   /** What the calling client handles, sent once per connection (after gateway.ready); returns the server→client request methods this backend may send. */
   'client.capabilities': { params: ClientCapabilitiesParams; result: ClientCapabilitiesResult }
   /** Save the host clipboard image into the session and queue it for the next turn. */
@@ -6803,6 +6840,8 @@ export interface RpcMethods {
   'shared_metrics.desktop_feature_use': { params: SharedMetricsDesktopFeatureUseParams; result: OkResult }
   /** Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on). */
   'shared_metrics.desktop_friction': { params: SharedMetricsDesktopFrictionParams; result: OkResult }
+  /** Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry. */
+  'shared_metrics.desktop_long_frames': { params: SharedMetricsDesktopLongFramesParams; result: SharedMetricsDesktopDailyResult }
   /** Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on). */
   'shared_metrics.desktop_onboarding': { params: SharedMetricsDesktopOnboardingParams; result: OkResult }
   /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
@@ -6920,6 +6959,7 @@ export const RPC_METHODS = [
   'browser.manage',
   'clarify.lock',
   'cli.exec',
+  'client.activity',
   'client.capabilities',
   'clipboard.paste',
   'command.dispatch',
@@ -7117,6 +7157,7 @@ export const RPC_METHODS = [
   'shared_metrics.desktop_dislike',
   'shared_metrics.desktop_feature_use',
   'shared_metrics.desktop_friction',
+  'shared_metrics.desktop_long_frames',
   'shared_metrics.desktop_onboarding',
   'shared_metrics.set',
   'shared_metrics.slash_command',
@@ -7173,8 +7214,8 @@ export interface CanonicalRpcMethods {
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
   'bot_relay.cancel': { params: CanonicalBotCancelParams; result: CanonicalBotCancelResult }
-  'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
-  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
+  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
   /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
@@ -7326,7 +7367,7 @@ export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces
 
 // ── Server→client requests ──
 export interface ServerRequestMap {
-  /** A dangerous command awaits the user's decision. */
+  /** A dangerous command, or a sandbox's folder or site request, awaits the user's decision. */
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user 1-5 questions. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }

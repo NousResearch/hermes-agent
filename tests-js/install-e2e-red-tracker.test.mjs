@@ -40,3 +40,41 @@ test('the tracker names the commit under test, never the workflow_run head', () 
     expect(plan.body).not.toContain(MAIN_TIP.slice(0, 10))
   }
 })
+
+test('non-gating diagnostic Linux failures never block closing or pollute the red list', () => {
+  const diag = leg('Build diagnostic Linux bundle (linux-x64) / bundled linux-x64 (linux-x64)', 'failure', 'Audit bundle architecture')
+  const passed = leg('Full CI pipeline / Python tests / unit', 'success')
+  expect(planTracker(run('success'), [passed, diag], { number: 7 }).action).toBe('close')
+  expect(planTracker(run('success'), [passed, diag], null).action).toBe('none')
+
+  const realFail = leg('Build signed release candidates (win32-bundle) / Assemble and stage', 'failure', 'Assemble')
+  const opened = planTracker(run('failure'), [diag, realFail], null)
+  expect(opened.action).toBe('open')
+  expect(opened.title).toContain('(1 job)')
+  expect(opened.body).toContain('win32-bundle')
+  expect(opened.body).not.toContain('Build diagnostic Linux bundle')
+})
+
+test('manual replay of a failed run with only diagnostic Linux failures closes the tracker', () => {
+  const diag = leg('Build diagnostic Linux bundle (linux-x64) / bundled linux-x64 (linux-x64)', 'failure', 'Audit bundle architecture')
+  const passed = leg('Stable release is green', 'success')
+  expect(planTracker(run('failure'), [passed, diag], { number: 7 }).action).toBe('close')
+  expect(planTracker(run('failure'), [passed, diag], null).action).toBe('none')
+  // A failure with no red jobs at all (no diagnostic explanation) still opens/updates fail-closed.
+  expect(planTracker(run('failure'), [passed], null).action).toBe('open')
+  // A cancelled run is never reclassified as green.
+  const diagCancelled = leg('Build diagnostic Linux bundle (linux-x64) / bundled linux-x64 (linux-x64)', 'cancelled', 'Audit')
+  expect(planTracker(run('cancelled'), [passed, diagCancelled], { number: 7 }).action).toBe('update')
+})
+
+test('a replay never counts the run\'s own tracker job as a release failure', () => {
+  // continue-on-error keeps the release going, but the jobs API still reports the failed tracker job.
+  const tracker = leg('Update the install-e2e-red tracker', 'failure', 'Open, update or close the tracker')
+  const passed = leg('Stable release is green', 'success')
+  expect(planTracker(run('success'), [passed, tracker], { number: 7 }).action).toBe('close')
+  expect(planTracker(run('failure'), [passed, tracker], { number: 7 }).action).toBe('close')
+  const realFail = leg('Build signed release candidates (win32-bundle) / Assemble and stage', 'failure', 'Assemble')
+  const opened = planTracker(run('failure'), [tracker, realFail], null)
+  expect(opened.title).toContain('(1 job)')
+  expect(opened.body).not.toContain('Update the install-e2e-red tracker')
+})

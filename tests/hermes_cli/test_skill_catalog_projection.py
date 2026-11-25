@@ -290,10 +290,10 @@ def test_presence_permission_failure_never_proves_absence(tmp_path, monkeypatch)
     from hermes_cli.skill_catalog import locks
     original = locks._open_file
 
-    def denied(path):
+    def denied(path, root=None):
         if path.name == "presence.lock":
             raise PermissionError("private")
-        return original(path)
+        return original(path, root)
 
     monkeypatch.setattr(locks, "_open_file", denied)
     with pytest.raises(CatalogError) as caught:

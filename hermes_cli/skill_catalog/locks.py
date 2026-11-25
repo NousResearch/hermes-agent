@@ -64,9 +64,9 @@ def _redirect(path):
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
 
 
-def _windows_open(path):
-    current = Path(path.anchor)
-    for part in path.parts[1:-1]:
+def _windows_open(path, root=None):
+    current = Path(path.anchor) if root is None else root
+    for part in path.relative_to(current).parts[:-1]:
         current /= part
         current.mkdir(exist_ok=True)
         if _redirect(current):
@@ -84,10 +84,11 @@ def _windows_open(path):
     return fd
 
 
-def _posix_open(path):
-    directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+def _posix_open(path, root=None):
+    root = Path(path.anchor) if root is None else root
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        for part in path.parts[1:-1]:
+        for part in path.relative_to(root).parts[:-1]:
             try:
                 os.mkdir(part, mode=0o700, dir_fd=directory)
             except FileExistsError:
@@ -102,9 +103,9 @@ def _posix_open(path):
         os.close(directory)
 
 
-def _open_file(path):
+def _open_file(path, root=None):
     path = path.absolute()
-    fd = _windows_open(path) if os.name == "nt" else _posix_open(path)
+    fd = _windows_open(path, root) if os.name == "nt" else _posix_open(path, root)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
@@ -119,8 +120,9 @@ def _open_file(path):
 class FileLease:
     """Keep the writer's own descriptor locked until close, including on parent death."""
 
-    def __init__(self, path: Path, *, shared: bool = False, deadline: float | None = None):
+    def __init__(self, path: Path, *, shared: bool = False, deadline: float | None = None, root=None):
         self.path = Path(path)
+        self.root = root
         self.shared = shared
         self.deadline = time.monotonic() + 3 if deadline is None else deadline
         self._fd = None
@@ -129,7 +131,7 @@ class FileLease:
         if self._fd is not None:
             return self
         try:
-            self._fd = _open_file(self.path)
+            self._fd = _open_file(self.path) if self.root is None else _open_file(self.path, self.root)
             self._poll()
         except OSError:
             self.close()
@@ -194,15 +196,15 @@ def _target_modes(home, targets):
 @contextmanager
 def writer_hold(home: Path, targets: Iterable[str] = (), *, deadline=None, root_exclusive=False):
     """Acquire root, then coalesced ancestors/endpoints in depth/exact-UTF8 order."""
-    home = Path(home)
+    home = Path(home).resolve()
     modes = _target_modes(home, targets)
     deadline = time.monotonic() + 3 if deadline is None else deadline
     directory = home / "cache/skill-catalog/live-v1"
     with ExitStack() as stack:
         stack.enter_context(FileLease(directory / "writer-barrier.lock", shared=not root_exclusive,
-                                      deadline=deadline))
+                                      deadline=deadline, root=home))
         for target, exclusive in modes:
             name = hashlib.sha256(target.encode("utf-8")).hexdigest()
             stack.enter_context(FileLease(directory / "writers" / name, shared=not exclusive,
-                                          deadline=deadline))
+                                          deadline=deadline, root=home))
         yield

@@ -162,6 +162,26 @@ def _probe_gate(home):
             pytest.fail("writer chain absent")
 
 
+@pytest.mark.platforms('posix')
+@pytest.mark.parametrize('shape', ['home-link', 'var-prefix'])
+def test_generic_write_allows_symlinked_home_prefix(tmp_path, monkeypatch, shape):
+    from hermes_cli.skill_catalog import admission
+    real = tmp_path / 'private/var/home'
+    real.mkdir(parents=True)
+    if shape == 'home-link':
+        home = tmp_path / 'home'
+        home.symlink_to(real, target_is_directory=True)
+    else:
+        (tmp_path / 'var').symlink_to(tmp_path / 'private/var', target_is_directory=True)
+        home = tmp_path / 'var/home'
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    target = home / 'skills/x'
+    target.mkdir(parents=True)
+    with admission.generic(target, target / 'SKILL.md'):
+        (target / 'SKILL.md').write_text('approved')
+    assert (real / 'skills/x/SKILL.md').read_text() == 'approved'
+
+
 def test_stock_no_provider_mutators_succeed_inside_gate(home, monkeypatch):
     import shutil
     import tools.skill_manager_tool as manager

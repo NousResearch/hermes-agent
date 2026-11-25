@@ -181,13 +181,13 @@ class _Handle:
 
 class Projection:
     def __init__(self, home: Path):
-        self.home = Path(home)
+        self.home = Path(home).resolve()
         self.directory = self.home / "cache/skill-catalog/live-v1"
         self._handles = {}
 
     def _absent(self):
         try:
-            with FileLease(self.directory / "presence.lock", deadline=time.monotonic()):
+            with FileLease(self.directory / "presence.lock", deadline=time.monotonic(), root=self.home):
                 return True
         except CatalogError as exc:
             if exc.code != "busy":
@@ -218,7 +218,7 @@ class Projection:
         for registration_id in names | set(doc["registrations"]):
             try:
                 v._token(registration_id)
-                with FileLease(self.directory / "registrations" / registration_id, deadline=time.monotonic()):
+                with FileLease(self.directory / "registrations" / registration_id, deadline=time.monotonic(), root=self.home):
                     _drop(doc, registration_id)
             except CatalogError as exc:
                 if exc.code != "busy":
@@ -233,7 +233,7 @@ class Projection:
 
     @contextmanager
     def transaction(self, *, deadline=None):
-        with FileLease(self.directory / "mutation.lock", deadline=deadline):
+        with FileLease(self.directory / "mutation.lock", deadline=deadline, root=self.home):
             doc = self._load()
             before = copy.deepcopy(doc)
             if doc["registrations"] or not self._absent():
@@ -291,8 +291,8 @@ class Projection:
                     raise _conflict()
                 leases = ExitStack()
                 handle = _Handle(self, entry, leases)
-                leases.enter_context(FileLease(self.directory / "presence.lock", shared=True))
-                leases.enter_context(FileLease(self.directory / "registrations" / entry.registration_id))
+                leases.enter_context(FileLease(self.directory / "presence.lock", shared=True, root=self.home))
+                leases.enter_context(FileLease(self.directory / "registrations" / entry.registration_id, root=self.home))
                 doc["registrations"][entry.registration_id] = dict(source_id=entry.source_id,
                     plugin_key=entry.plugin_key, generation=entry.generation,
                     implementation_revision=entry.descriptor.implementation_revision,
@@ -353,7 +353,7 @@ class Projection:
 
     def stop(self, entry, *, deadline=None):
         deadline = time.monotonic() + 3 if deadline is None else deadline
-        with FileLease(self.directory / "mutation.lock", deadline=deadline):
+        with FileLease(self.directory / "mutation.lock", deadline=deadline, root=self.home):
             doc = self._load()
             self._prune(doc)
             row = doc["registrations"].get(entry.registration_id)
@@ -482,7 +482,7 @@ class Projection:
             if not doc["registrations"]:
                 # Stock mutators own path policy. The root-exclusive hold still
                 # fences orphan writers without rejecting stock-supported redirects.
-                with FileLease(self.directory / "writer-barrier.lock", deadline=deadline):
+                with FileLease(self.directory / "writer-barrier.lock", deadline=deadline, root=self.home):
                     yield
                 return
             if any(row["state"] != "ready" for row in doc["registrations"].values()):

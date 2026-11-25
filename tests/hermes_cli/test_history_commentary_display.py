@@ -146,7 +146,8 @@ class _FakeStore:
 
         page = PromptPage(messages=(_WireRow(row),), row_id=1, limit=120, returned=1, offset=0, total=1,
                           has_older=False, has_newer=False)
-        self.sessions = SimpleNamespace(resolve_id=lambda sid: sid)
+        self.sessions = SimpleNamespace(resolve_id=lambda sid: sid, get=lambda sid: SimpleNamespace(
+            profile_name=None, chat_id=None, parent_session_id=None))
         self.lineage = SimpleNamespace(resolve_resume_target=lambda sid: sid)
         self.messages = SimpleNamespace(read_transcript=lambda *args, **kwargs: (_WireRow(row),),
                                         read_prompt_page=lambda *args, **kwargs: page)
@@ -177,8 +178,6 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
     monkeypatch.setattr(
         sessions, "_with_db", lambda profile, fn, read_only: fn(_FakeStore(row))
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: sid)
-
     async def exercise():
         for profile, expected in (
             ("visible", ["I will inspect the files."]),
@@ -225,8 +224,6 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     monkeypatch.setattr(
         sessions, "_with_db", lambda profile, fn, read_only: fn(_FakeStore(row))
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda store, sid, owner: sid)
-
     async def exercise():
         page = await sessions.get_session_messages(
             "sid",

@@ -495,6 +495,10 @@ class SQLiteMessageRepository:
     def read_transcript(self, session_id: SessionId, request: TranscriptRead = TranscriptRead()) -> tuple[TranscriptRow, ...]:
         holder = self._store.holder()
         with _refusals(holder, session_id):
+            if request.display_segments:
+                rows = timeline.read_display_segments(holder, request.display_segments, limit=request.limit,
+                                                      offset=request.offset, latest=request.latest)
+                return tuple(_transcript_row(row) for row in rows)
             rows = get_messages(holder,
                 session_id, include_inactive=request.view is TranscriptView.ALL,
                 include_compacted=request.view is TranscriptView.DISPLAY, limit=request.limit, offset=request.offset,
@@ -580,10 +584,11 @@ class SQLiteMessageRepository:
             return get_latest_todo_result(holder, session_id, max_chars=max_chars)
 
     def read_session_timeline(self, session_id: SessionId, *, limit: int = 500,
-                              after_row_id: int = 0) -> SessionTimeline:
+                              after_row_id: int = 0, display_segments: tuple[SessionId, ...] = ()) -> SessionTimeline:
         holder = self._store.holder()
         with _refusals(holder, session_id):
-            result = timeline.get_session_timeline(holder, session_id, limit=limit, after_row_id=after_row_id)
+            result = timeline.get_session_timeline(holder, session_id, limit=limit, after_row_id=after_row_id,
+                                                   segments=display_segments)
         page = result["pagination"]
         return SessionTimeline(
             entries=tuple(TimelineEntry(row_id=MessageId(e["row_id"]), preview=e["preview"], timestamp=e["timestamp"])
@@ -591,10 +596,12 @@ class SQLiteMessageRepository:
             limit=page["limit"], after_row_id=page["after_row_id"], returned=page["returned"], total=page["total"],
             has_more=page["has_more"], next_cursor=page["next_cursor"])
 
-    def read_prompt_page(self, session_id: SessionId, row_id: MessageId, *, limit: int = 120) -> Optional[PromptPage]:
+    def read_prompt_page(self, session_id: SessionId, row_id: MessageId, *, limit: int = 120,
+                         display_segments: tuple[SessionId, ...] = ()) -> Optional[PromptPage]:
         holder = self._store.holder()
         with _refusals(holder, session_id):
-            result = timeline.get_session_messages_around(holder, session_id, row_id, limit=limit)
+            result = timeline.get_session_messages_around(holder, session_id, row_id, limit=limit,
+                                                          segments=display_segments)
         if result is None:
             return None
         page = result["pagination"]

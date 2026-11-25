@@ -190,6 +190,37 @@ and **Set as default** are offered for that gateway's own profiles. Open another
 switcher. A chat on another gateway stays in the tab: popping it out says so instead of opening a
 window.
 
+### A Webapp host that runs no agent (hosted dashboard)
+
+Hermes Cloud's dashboard serves this same Webapp from a host that runs no agent of its own: it signs
+you in with Nous Portal, lists your organisation's agents as the saved connections, and relays each
+request and socket to the agent it names under `/api/relay/<agent id>/`. The host says so by putting
+`window.__HERMES_HOST_AGENT__ = false` in the page, beside the other `__HERMES_*` values. Any other
+value, or none, keeps the usual behaviour, so a gateway's own Webapp is unchanged.
+
+With the flag set, the Webapp:
+
+- opens the window on the list's primary agent (its first one when the primary is missing) and lists
+  no **This device** entry. A request that names no gateway, or names `local`, goes to the window's
+  agent through the relay, including those sent while the page is still starting up;
+- sends the host itself only these requests: `GET /api/auth/me`, `GET /api/auth/providers`,
+  `GET /api/gateway-connections`, `POST /api/gateway-connections/last-used`, `/launch-mode` and
+  `/<id>/primary`, `GET`/`PATCH /api/ui-preferences`, and `POST /api/webapp/socket-ticket?socket=relay`.
+  Its version, Portal status and connection tests come from the agent; it has no desktop-plugins
+  folder and does not offer per-gateway sign-in, since the host signs in to every agent itself;
+- treats a `401` whose body is `{"error": "session_expired" | "unauthenticated", "login_url": ...}`
+  from the host or from a relayed request as a signed-out session and loads `login_url`;
+- redials a relayed socket the host closes (the host closes them when your dashboard sign-in needs
+  renewing, with code `4401`) with a fresh relay ticket, and a running turn carries on.
+
+On the agent, the Webapp's listener behind the sign-in gate normally accepts a Portal token on its
+own (as a bearer or a socket's `?token=`) only if it gave that token to a native app's sign-in. It
+also accepts one that Nous Portal minted by token exchange (RFC 8693), which the hosted dashboard
+sends: such a token carries an `act` claim naming the client it was exchanged for. The claim is read
+only to let the token past that rule. The Nous provider then verifies it like any other bearer
+(signature, issuer, audience, agent instance and scope), so a token with `act` that Portal did not
+sign for this agent gets nothing. The refresh route still accepts only tokens given to a native app.
+
 ### Terminal in the Webapp
 
 The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home

@@ -32,6 +32,7 @@ from hermes_constants import (
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
+from hermes_cli.config_env_routing import note_loaded_plugin_env
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
@@ -620,6 +621,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         skipped (introspection-only placeholder). Returns True only for plugins that go through the
         dependency-ordered load pass."""
         verdict = gate_manifest(manifest, disabled, enabled)
+        if manifest.kind == "platform" and verdict.action in {"load", "load_now", "defer"}:
+            note_loaded_plugin_env(manifest)  # reload_env's known set, also after an in-process install
         if verdict.action == "load":
             return True
         if verdict.action == "load_now":

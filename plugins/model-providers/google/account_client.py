@@ -1,34 +1,28 @@
-"""Solstice inference transport: the gemini plugin's Interactions wire on the per-user-quota method
+"""Solstice inference transport: the shared Interactions wire on the per-user-quota method
 (``POST <host>/v1beta/interactions:createPerUserQuota``), with the user's OAuth access token as a Bearer.
 
 That method takes only stateless requests (``store: false``; a stored interaction is a 400), so every turn
 is one request: the output budget is capped at one request's, the request is never stored, and a stream
 that ends before ``interaction.completed`` is an error rather than a finished turn. There is no
 continuation, checkpoint or resume handling here; that belongs to the gemini provider's long decode.
-Request building, thought signature replay, stream translation and error mapping are the shared wire's,
-so a fix there reaches this provider too. That wire is the gemini provider plugin's ``interactions`` module,
-found through provider discovery (``interactions_wire``), not a relative import: a copy of this plugin in a
-profile's own ``plugins/model-providers/`` loads under a top-level module name, with no sibling package.
-The stream helpers (SSE event iterator, bounded error-body read) come from that plugin's ``client`` module,
-found the same way, so this plugin imports only published core names besides its base client and error type.
+Request building, thought signature replay, stream translation and error mapping come from the sibling
+``interactions`` and ``native_adapter`` modules in this package.
 """
 
 from __future__ import annotations
 
-import importlib
-import inspect
 import re
-import sys
-from types import ModuleType
 from typing import Any, Iterator, Optional
 
 import httpx
 
-from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient
+from agent.bounded_response import read_streaming_error_body
 from agent.reasoning_effort import bare_gemini_model_id
 from hermes_cli.version_info import hermes_user_agent
 
-from . import INFERENCE_BASE_URL, current_model_id
+from . import interactions as wire
+from .account import INFERENCE_BASE_URL, current_model_id
+from .native_adapter import GeminiAPIError, GeminiNativeClient, _iter_sse_events
 
 INTERACTIONS_METHOD = "interactions:createPerUserQuota"
 # The method exists only on v1beta. Credential rows minted before the move store the old
@@ -44,55 +38,6 @@ _DROPPED_DEFAULT_HEADERS = {"x-goog-api-key", "x-goog-user-project", "dpop", "au
 def interactions_url(base_url: Any) -> str:
     root = _VERSION_SEGMENT.sub("", str(base_url or INFERENCE_BASE_URL).strip().rstrip("/"))
     return f"{root}/{_API_VERSION}/{INTERACTIONS_METHOD}"
-
-
-_WIRE_MISSING = ("Solstice sends its requests through the gemini provider plugin's Interactions wire, but {why}. "
-                 "Reinstall Hermes, or remove a gemini provider plugin that replaces the bundled one.")
-
-
-# What this transport calls on the discovered wire. A gemini plugin copy from before these existed (an older
-# profile-local copy) is refused here, before any request, instead of failing mid-call.
-_WIRE_NAMES = ("build_interactions_request", "finish_ceiling", "iter_events", "SINGLE_REQUEST_OUTPUT_CAP",
-               "StreamState", "translate_interaction", "translate_stream_event", "http_error")
-
-
-def interactions_wire() -> ModuleType:
-    """The gemini provider plugin's ``interactions`` module: the ``interactions`` submodule of the package the
-    registered ``gemini`` profile was loaded from. Raises ``GeminiAPIError`` when there is none, or when it
-    lacks what this transport calls (including ``http_error``'s ``key_guidance``)."""
-    wire = gemini_plugin_module("interactions")
-    missing = [name for name in _WIRE_NAMES if not hasattr(wire, name)]
-    if not missing:
-        try:
-            inspect.signature(wire.http_error).bind_partial(key_guidance=False)
-        except (TypeError, ValueError):
-            missing.append("http_error(key_guidance=...)")
-    if missing:
-        raise GeminiAPIError(_WIRE_MISSING.format(why=f"the loaded gemini provider plugin ({wire.__name__}) is too "
-                                                      f"old for it (missing {', '.join(missing)})"),
-                             code="gemini_wire_unavailable")
-    return wire
-
-
-def gemini_plugin_module(name: str) -> ModuleType:
-    """Submodule *name* of the package the registered ``gemini`` profile was loaded from. Raises
-    ``GeminiAPIError`` when there is none."""
-    from providers import get_provider_profile
-
-    profile = get_provider_profile("gemini")
-    if profile is None:
-        raise GeminiAPIError(_WIRE_MISSING.format(why="no gemini provider plugin is loaded"),
-                             code="gemini_wire_unavailable")
-    module = type(profile).__module__
-    package = getattr(sys.modules.get(module), "__package__", None)
-    try:
-        if not package:
-            raise ImportError(f"{module} is not part of a package")
-        return importlib.import_module(f"{package}.{name}")
-    except ImportError as exc:
-        raise GeminiAPIError(_WIRE_MISSING.format(why=f"the loaded gemini provider plugin ({package or module}) "
-                                                      f"has no {name} module: {exc}"),
-                             code="gemini_wire_unavailable") from exc
 
 
 def single_request(request: dict[str, Any], cap: int) -> dict[str, Any]:
@@ -113,12 +58,6 @@ class SolsticeClient(GeminiNativeClient):
         super().__init__(base_url=base_url or INFERENCE_BASE_URL, timeout=timeout, **kwargs)
         # Per request, not only on the httpx client: an injected keepalive client brings its own default.
         self._request_timeout = timeout or DEFAULT_TIMEOUT
-        # Found once, here. When it is missing, each call looks again and raises the reason: a create_client
-        # error would instead send this provider down the generic OpenAI client path.
-        try:
-            self._wire: Optional[ModuleType] = interactions_wire()
-        except GeminiAPIError:
-            self._wire = None
 
     def _create_chat_completion(
         self, *, model: str = "gemini-3.8-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
@@ -128,7 +67,6 @@ class SolsticeClient(GeminiNativeClient):
     ) -> Any:
         # ``temperature``/``top_p`` are never sent: Gemini 4 / 3.5 reject them. A long-decode budget in
         # ``extra_body`` is ignored: this method cannot continue a turn past one request.
-        wire = self._wire = self._wire or interactions_wire()
         extra = extra_body if isinstance(extra_body, dict) else {}
         # A retired id goes out as the default model (also mapped in build_extra_body and normalize_model_id).
         model = current_model_id(model) or bare_gemini_model_id(model)
@@ -147,16 +85,13 @@ class SolsticeClient(GeminiNativeClient):
         return wire.translate_interaction([self._generate(url, {**request, "stream": False}, timeout)], model)
 
     def _stream(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[Any]:
-        wire = self._wire
-        # The gemini client's own stream helpers, from the package the wire came from (already found above).
-        helpers = gemini_plugin_module("client")
         state = wire.StreamState()
         headers = {**self._headers(), "Accept": "text/event-stream"}
         try:
             with self._http.stream("POST", url, json={**request, "stream": True}, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
-                    raise self._http_error(response, helpers.read_streaming_error_body(response))
-                for event in wire.iter_events(helpers._iter_sse_events(response)):
+                    raise self._http_error(response, read_streaming_error_body(response))
+                for event in wire.iter_events(_iter_sse_events(response)):
                     yield from wire.translate_stream_event(event, model, state)
         except httpx.HTTPError as exc:  # nothing is stored to resume from: the turn is retried from the start
             raise GeminiAPIError(f"Gemini streaming request failed: {exc}", code="gemini_stream_error") from exc
@@ -178,5 +113,5 @@ class SolsticeClient(GeminiNativeClient):
     def _http_error(self, response: Any, body_text: Any = None) -> GeminiAPIError:
         # The Interactions mapper (snake_case error codes), without the API-key remedies (free tier,
         # Standard key, wrong key surface): they do not apply to a bearer.
-        return (self._wire or interactions_wire()).http_error(
+        return wire.http_error(
             response, body_text=body_text, api_key=self.api_key, base_url=self.base_url, key_guidance=False)

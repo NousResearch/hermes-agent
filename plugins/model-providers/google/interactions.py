@@ -22,7 +22,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Iterator, Optional
 
-from agent.gemini_native_adapter import (
+from .native_adapter import (
     _FREE_TIER_GUIDANCE,
     _SKIP_SIGNATURE,
     GeminiAPIError,
@@ -41,7 +41,7 @@ from agent.gemini_native_adapter import (
     _tool_call_id,
     _tool_call_ns,
 )
-from agent.gemini_schema import prepare_gemini_tool_parameters
+from .schema import prepare_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 

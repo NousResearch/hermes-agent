@@ -13,7 +13,7 @@ import logging
 import math
 from typing import Any, Dict, List, Optional
 
-from tools.schema_sanitizer import _normalize_type_array
+from tools.schema_sanitizer import normalize_type_array as _normalize_type_array
 
 logger = logging.getLogger(__name__)
 

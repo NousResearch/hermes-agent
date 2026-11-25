@@ -24,13 +24,13 @@ def _err(message: str, code: str, *, relogin: bool = False):
 
 def _nas_base_url() -> str:
     """The Nous portal the user is signed into (``HERMES_PORTAL_BASE_URL`` override first)."""
-    from hermes_cli.auth import _nous_portal_base_url, get_provider_auth_state
-    return _nous_portal_base_url(get_provider_auth_state("nous") or {})
+    from hermes_cli.auth import get_provider_auth_state, nous_portal_base_url
+    return nous_portal_base_url(get_provider_auth_state("nous") or {})
 
 
 def _nas_request(method: str, path: str, *, json: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    from hermes_cli.auth import _default_verify, resolve_nous_access_token
-    from hermes_cli.auth_constants import httpx
+    import httpx
+    from hermes_cli.auth import default_httpx_verify, resolve_nous_access_token
 
     try:
         token = resolve_nous_access_token()
@@ -40,7 +40,7 @@ def _nas_request(method: str, path: str, *, json: Mapping[str, Any] | None = Non
     try:
         response = httpx.request(method, _nas_base_url() + path, json=json, timeout=_TIMEOUT_SECONDS,
                                  headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
-                                 verify=_default_verify())
+                                 verify=default_httpx_verify())
     except Exception as exc:
         raise _err(f"Nous portal request failed: {type(exc).__name__}", "solstice_broker_unreachable") from exc
     if response.status_code == 404:

@@ -1,5 +1,6 @@
 """Physical worker liveness and cooperative Stop across every served authority."""
 import asyncio
+import logging
 
 from gateway.session_authorities import all_authorities
 
@@ -116,7 +117,7 @@ def track_mutation(authority, operation):
     return task
 
 
-async def tracked_write(authority, write, then=None, *, ordered=False, after=None):
+async def tracked_write(authority, write, then=None, *, ordered=False, after=None, on_failure=None):
     """Run a synchronous ledger write (``write()``) in a worker thread, off the owner loop.
 
     A held SQLite writer (``_WRITE_PATIENCE_S``) must not freeze every session, timer, socket,
@@ -130,17 +131,26 @@ async def tracked_write(authority, write, then=None, *, ordered=False, after=Non
     write returns, as it did when admission was synchronous: the caller registers its delivery
     waiter before any drain it scheduled can claim, settle or pause that admission. A caller
     cancelled while the commit is in flight hands ``after`` to the commit's completion instead,
-    so a committed row is never stranded without a drain."""
+    so a committed row is never stranded without a drain. ``on_failure()`` runs inside the tracked
+    task if the write raises, even when its original caller was cancelled."""
     order = getattr(authority, '_ordered_writes', None)
     if ordered and order is None:
         order = authority._ordered_writes = asyncio.Lock()
 
     async def run():
-        if ordered:
-            async with order:
+        try:
+            if ordered:
+                async with order:
+                    result = await asyncio.to_thread(write)
+            else:
                 result = await asyncio.to_thread(write)
-        else:
-            result = await asyncio.to_thread(write)
+        except Exception:
+            if on_failure is not None:
+                try:
+                    await on_failure()
+                except Exception:
+                    logging.getLogger(__name__).exception("Admission write failure cleanup failed")
+            raise
         if then is None:
             return result
         followed = then(result)

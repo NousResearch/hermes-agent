@@ -841,10 +841,10 @@ class GatewayInboundMixin(
                 or (event.message_type == MessageType.TEXT and mode != "steer" and not superseded
                     and self._effective_busy_text_mode(source) == "queue")):
             return False
-        if mode in {"interrupt", "steer"} and getattr(event, "_ingress_claims", None):
-            event._retain_ingress_claims()  # a live-turn operation may take effect before admission
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
         note_busy_outcome(event, outcome)
+        if outcome.effective_mode == "interrupt" and getattr(event, "_ingress_claims", None):
+            event._retain_ingress_claims()  # interrupt may take effect before admission
         await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
         return bool(outcome.steered or outcome.redirected)
 

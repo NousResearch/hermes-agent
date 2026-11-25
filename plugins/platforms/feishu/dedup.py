@@ -22,9 +22,36 @@ class _Claim:
 
 
 class FeishuDedupMixin:
-    async def handle_message(self, event):
+    def _start_session_processing(self, event, session_key, *, interrupt_event=None):
+        started = super()._start_session_processing(event, session_key, interrupt_event=interrupt_event)
+        if started and event._ingress_claims:
+            event._mark_ingress_dispatched()
+            task = self._session_tasks.get(session_key)
+            if task is not None and hasattr(task, "add_done_callback"):
+                task.add_done_callback(lambda done: self._settle_unstarted_ingress(done, event))
+        return started
+
+    def _settle_unstarted_ingress(self, task, event):
+        if event._ingress_handler_entered or getattr(task, "_feishu_control_cancel", False):
+            return
+        cleanups = self.__dict__.setdefault("_feishu_ingress_cleanups", set())
+        cleanup = asyncio.create_task(event._release_unadmitted_claims())
+        cleanups.add(cleanup)
+        cleanup.add_done_callback(cleanups.discard)
+
+    async def _handle_message_while_active(self, event, session_key):
         event._mark_ingress_dispatched()
-        await super().handle_message(event)
+        await super()._handle_message_while_active(event, session_key)
+
+    async def cancel_session_processing(self, session_key, *, release_guard=True, discard_pending=True):
+        if (task := self._session_tasks.get(session_key)) is not None:
+            task._feishu_control_cancel = True
+        await super().cancel_session_processing(session_key, release_guard=release_guard, discard_pending=discard_pending)
+
+    async def cancel_background_tasks(self):
+        await super().cancel_background_tasks()
+        while pending := tuple(self.__dict__.get("_feishu_ingress_cleanups", ())):
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def adopt_inbound_dedup(self, previous):
         """Share claims with a reconnecting instance while the old instance still has work."""
@@ -95,6 +122,9 @@ class FeishuDedupMixin:
             async def release_after_write():
                 try:
                     await writing
+                except asyncio.CancelledError:
+                    # The executor can cancel a queued write during adapter shutdown.
+                    pass
                 except Exception:
                     logger.exception("[Feishu] Persisting the inbound claim failed")
                 await claim.release()

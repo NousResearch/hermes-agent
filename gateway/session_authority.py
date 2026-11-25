@@ -638,11 +638,17 @@ class SessionAuthority:
         if (scope := _lease_scope.get()) is not None:
             scope.write_started = True
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
+
+        async def release_refused():
+            if scope is not None and getattr(scope, 'write_refused', False) and getattr(event, '_ingress_claims', None):
+                await event._release_unadmitted_claims()
+
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
             request_id=request_id, payload=payload, fence=fence, rewrite=rewrite,
             raw=getattr(event, 'raw_message', None)),
-            then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
+            then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]),
+            on_failure=release_refused)
 
     def _admit_native_write(self, *, principal_id, session_id, request_id, payload, fence=None, rewrite=None,
                             raw=None):
@@ -663,9 +669,9 @@ class SessionAuthority:
                 rewrite.applied = created
             return admission_row(row)
         except Exception as exc:
-            # queue_full is decided before insertion; unlike an I/O error, it proves no row landed.
+            # These admission gates reject before insertion, unlike an uncertain I/O error.
             from gateway.session_ingress_media import _lease_scope
-            if isinstance(exc, AuthorityRefusal) and exc.reason == 'queue_full' and (scope := _lease_scope.get()) is not None:
+            if isinstance(exc, AuthorityRefusal) and exc.reason in {'queue_full', 'runtime_draining'} and (scope := _lease_scope.get()) is not None:
                 scope.write_refused = True
             # A refused admission owns nothing it captured (unless another admission holds the same bytes).
             drop_capture_lease()

@@ -207,7 +207,9 @@ export async function showBrowserNotification(payload: BrowserNotifyPayload): Pr
     tag: `hermes:${payload.kind ?? ''}:${focusSessionId ?? payload.tag ?? ''}`
   }
 
-  const registration = await notificationWorker()
+  // With no worker to wait for, show it in this turn: the notification is up when the dispatch
+  // returns, as it was before the worker.
+  const registration = 'serviceWorker' in navigator ? await notificationWorker() : null
 
   try {
     if (registration) {

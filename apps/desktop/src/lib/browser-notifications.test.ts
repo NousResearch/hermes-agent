@@ -213,6 +213,15 @@ describe('showBrowserNotification', () => {
     expect(opened).toEqual(['stored-1'])
     off()
   })
+
+  it('has the notification up when the call returns, in a browser that runs no service worker', () => {
+    // A caller that predicted the notification can check it against what was shown right away.
+    FakeNotification.permission = 'granted'
+
+    void notifications.showBrowserNotification({ kind: 'turnDone', sessionId: 's1', title: 'Done' })
+
+    expect(created.map(entry => entry.title)).toEqual(['Done'])
+  })
 })
 
 describe('installBrowserNotifications', () => {

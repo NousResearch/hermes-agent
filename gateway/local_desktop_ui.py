@@ -166,8 +166,11 @@ def _move_workspace(task_id, path):
     session), False when it cannot move, else ``"pending"``: the folder is committed at the end of
     the turn, as the user's Move to project, so the running turn keeps its own."""
     import os
+    from tools.terminal_tool import _resolve_container_alias
+    key = str(task_id or "")
     with _lock:
-        route = _workspace_routes.get(str(task_id or ""))
+        # A delegated child runs under its own task id, aliased at spawn to the turn that started it.
+        route = _workspace_routes.get(key) or _workspace_routes.get(_resolve_container_alias(key))
     if route is None:
         return None
     authority, session_id, _session_key, _publish = route

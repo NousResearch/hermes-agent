@@ -113,3 +113,39 @@ def test_a_marked_profiles_container_mode_file_is_not_opened(home, monkeypatch, 
     _mark(home)
     assert _hermes(monkeypatch, "config", "path") == 0
     assert str(ops / "config.yaml") in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize(("argv", "ends_with"), [(("config", "path"), 0), (("serve",), 78)], ids=["config path", "serve"])
+def test_a_marked_profiles_container_mode_fifo_is_not_opened(home, monkeypatch, argv, ends_with):
+    """A FIFO under ``<home>/.container-mode`` holds whoever opens it until a writer comes. In a marked home no
+    host step opens it, the fast chat and serve start-up paths included, so the command runs to its normal end:
+    ``config path`` prints the path, ``serve`` refuses the marked profile."""
+    import threading
+
+    import hermes_constants
+
+    fifo = home / "profiles" / "ops" / ".container-mode"
+    os.mkfifo(fifo)
+    for name in ("HERMES_DEV", "HERMES_DISABLE_FAST_CHAT_LAUNCH", "HERMES_DISABLE_FAST_SERVE_LAUNCH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    _mark(home)
+    finished, released = threading.Event(), []
+
+    def release_blocked_readers() -> None:  # a regression fails the test instead of hanging it
+        while not finished.wait(5):
+            try:
+                writer = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:  # ENXIO: nothing has it open for reading
+                continue
+            released.append(True)  # before the close lets the blocked reader go on
+            os.close(writer)
+
+    threading.Thread(target=release_blocked_readers, daemon=True).start()
+    try:
+        code = _hermes(monkeypatch, *argv)
+    finally:
+        finished.set()
+    assert not released, "a host step opened the FIFO"
+    assert code == ends_with

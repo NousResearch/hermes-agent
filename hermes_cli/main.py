@@ -2838,9 +2838,9 @@ def _try_fast_serve_launch() -> bool:
 
     # Container routing is top-level policy and must run before host dispatch.
     try:
-        from hermes_cli.config import get_container_exec_info
+        from hermes_cli.main_container import container_exec_info
 
-        if get_container_exec_info():
+        if container_exec_info():
             return False
     except Exception:
         return False
@@ -2877,8 +2877,8 @@ def _try_fast_chat_launch() -> bool:
         return False
     # Container routing must win: NixOS container mode forwards EVERY invocation.
     try:
-        from hermes_cli.config import get_container_exec_info
-        if get_container_exec_info():
+        from hermes_cli.main_container import container_exec_info
+        if container_exec_info():
             return False
     except Exception:
         return False

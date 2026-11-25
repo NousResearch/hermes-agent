@@ -1,4 +1,5 @@
 import type { CronJobSchedule } from '@/hermes'
+import { formatClock as formatClockOf, formatDate, formatDayTime, formatDayTimeWithYear } from '@/lib/time'
 
 import type { RoutinesCopy } from './routines-copy'
 
@@ -172,17 +173,13 @@ export interface ScheduleWords {
 export function formatClock(time: string, locale: string): string {
   const [hour, minute] = splitTime(time)
 
-  return new Date(2000, 0, 1, hour, minute).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })
+  return formatClockOf(new Date(2000, 0, 1, hour, minute), locale)
 }
 
 function formatDay(date: string, locale: string): string {
   const [year, month, day] = date.split('-').map(Number)
 
-  return new Date(year, (month || 1) - 1, day || 1).toLocaleDateString(locale, {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric'
-  })
+  return formatDate(new Date(year, (month || 1) - 1, day || 1), locale)
 }
 
 function describeInterval(minutes: number, copy: RoutinesCopy): string {
@@ -222,7 +219,8 @@ const DESCRIBE: Record<Exclude<Frequency, 'custom'>, (pick: SchedulePick, words:
   monthly: (pick, { copy, locale }) => copy.schedule.monthly(pick.monthday, formatClock(pick.time, locale)),
   once: (pick, { copy, locale }) => copy.schedule.once(formatDay(pick.date, locale), formatClock(pick.time, locale)),
   weekdays: (pick, { copy, locale }) => copy.schedule.weekdays(formatClock(pick.time, locale)),
-  weekly: (pick, { copy, dayName, locale }) => copy.schedule.weekly(dayName(pick.weekday), formatClock(pick.time, locale))
+  weekly: (pick, { copy, dayName, locale }) =>
+    copy.schedule.weekly(dayName(pick.weekday), formatClock(pick.time, locale))
 }
 
 /** A picker state in plain words; null for Custom text the page cannot read (shown as typed), and
@@ -304,7 +302,8 @@ function startOfDay(ms: number): number {
   return date.getTime()
 }
 
-/** "today, 7:00 AM" / "tomorrow, 9:00 AM" / "Nov 6, 4:00 PM" for a run or the next run. */
+/** "today, 7:00 AM" / "tomorrow, 9:00 AM" / "Nov 6, 4:00 PM" for a run or the next run. A moment in
+ *  another calendar year keeps its year ("Dec 30, 2025, 7:00 AM"), never reading as this year's. */
 export function formatMoment(at: Date | number | string, locale: string, nowMs = Date.now()): string {
   const date = at instanceof Date ? at : new Date(at)
 
@@ -312,25 +311,20 @@ export function formatMoment(at: Date | number | string, locale: string, nowMs =
     return ''
   }
 
-  const time = date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })
   const days = Math.round((startOfDay(date.getTime()) - startOfDay(nowMs)) / DAY_MS)
 
   if (Math.abs(days) <= 1) {
     const relative = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(days, 'day')
 
-    return `${relative}, ${time}`
+    return `${relative}, ${formatClockOf(date, locale)}`
   }
 
-  const day = date.toLocaleDateString(locale, {
-    day: 'numeric',
-    month: 'short',
-    ...(new Date(nowMs).getFullYear() === date.getFullYear() ? {} : { year: 'numeric' })
-  })
-
-  return `${day}, ${time}`
+  return date.getFullYear() === new Date(nowMs).getFullYear()
+    ? formatDayTime(date, locale)
+    : formatDayTimeWithYear(date, locale)
 }
 
-/** The day a run happened, for a sentence about it: today, yesterday, or its date ("Nov 12"). */
+/** The day a run happened, for a sentence about it: today, yesterday, or its date ("Nov 12, 2026"). */
 export function runDay(
   at: number | string,
   locale: string,
@@ -343,12 +337,7 @@ export function runDay(
   }
 
   const days = Math.round((startOfDay(date.getTime()) - startOfDay(nowMs)) / DAY_MS)
-
-  const day = date.toLocaleDateString(locale, {
-    day: 'numeric',
-    month: 'short',
-    ...(new Date(nowMs).getFullYear() === date.getFullYear() ? {} : { year: 'numeric' })
-  })
+  const day = formatDate(date, locale)
 
   return { date: day, kind: days >= 0 ? 'today' : days === -1 ? 'yesterday' : 'date' }
 }

@@ -23,6 +23,7 @@ import { chatMessageText } from '@/lib/chat-messages/parts'
 import { pathLabel, sessionTitle } from '@/lib/chat-runtime'
 import { AlertTriangle, X } from '@/lib/icons'
 import { sessionSourceLabel } from '@/lib/session-source'
+import { formatFullDateTime } from '@/lib/time'
 import type { SessionInfo } from '@/types/hermes'
 
 import { agentSettingsKey, type AgentSettingsOwner } from './data'
@@ -224,7 +225,7 @@ export function HistoryPreview({
             <article
               className={`agent-history-message agent-history-message-${message.role}`}
               key={message.id}
-              title={message.timestamp ? new Date(message.timestamp * 1000).toLocaleString(locale) : undefined}
+              title={message.timestamp ? formatFullDateTime(new Date(message.timestamp * 1000), locale) : undefined}
             >
               <small>{message.role === 'user' ? c.you : owner.profile}</small>
               <p>{chatMessageText(message)}</p>

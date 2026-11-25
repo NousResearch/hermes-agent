@@ -7,6 +7,7 @@ import {
   defaultPick,
   describePick,
   describeSchedule,
+  formatMoment,
   machineZoneNote,
   pickForSchedule,
   runDay,
@@ -110,11 +111,30 @@ describe('the plain-words read-back', () => {
 })
 
 describe('the day a run happened', () => {
-  it('is today, yesterday, or its date (with the year once it is not this year)', () => {
-    expect(runDay(new Date(2026, 10, 12, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 12', kind: 'today' })
-    expect(runDay(new Date(2026, 10, 11, 23).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 11', kind: 'yesterday' })
-    expect(runDay(new Date(2026, 10, 3, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 3', kind: 'date' })
+  it('is today, yesterday, or its date, with the year', () => {
+    expect(runDay(new Date(2026, 10, 12, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 12, 2026', kind: 'today' })
+    expect(runDay(new Date(2026, 10, 11, 23).getTime(), 'en-US', NOW)).toEqual({
+      date: 'Nov 11, 2026',
+      kind: 'yesterday'
+    })
+    expect(runDay(new Date(2026, 10, 3, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 3, 2026', kind: 'date' })
     expect(runDay(new Date(2025, 11, 30, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Dec 30, 2025', kind: 'date' })
+    expect(runDay('not a date', 'en-US', NOW)).toBeNull()
+  })
+})
+
+describe('a moment named in the reader’s locale', () => {
+  it('reads today and tomorrow relatively, in the app locale, and keeps an off-year’s year', () => {
+    expect(formatMoment(new Date(2026, 10, 12, 7).getTime(), 'en-US', NOW)).toBe('today, 7:00 AM')
+    expect(formatMoment(new Date(2026, 10, 13, 9).getTime(), 'en-US', NOW)).toBe('tomorrow, 9:00 AM')
+    // A moment in another calendar year names it, so "Nov 6" never reads as this year's.
+    expect(formatMoment(new Date(2026, 10, 3, 7).getTime(), 'en-US', NOW)).toBe('Nov 3, 7:00 AM')
+    expect(formatMoment(new Date(2025, 11, 30, 7).getTime(), 'en-US', NOW)).toBe('Dec 30, 2025, 7:00 AM')
+  })
+
+  it('never throws on a malformed date, in the moment or the day', () => {
+    expect(formatMoment('not a date', 'en-US', NOW)).toBe('')
+    expect(formatMoment(Number.NaN, 'en-US', NOW)).toBe('')
     expect(runDay('not a date', 'en-US', NOW)).toBeNull()
   })
 })

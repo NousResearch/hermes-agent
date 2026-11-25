@@ -1,6 +1,7 @@
 import { hermesApi } from '@/api/client'
 import { getSession, mutateSessionHttp } from '@/api/sessions'
 import { LOCAL_SESSION_SOURCE_IDS, normalizeSessionSource } from '@/lib/session-source'
+import { DAY, formatDate, formatDateTime, relativeTime } from '@/lib/time'
 import { $disbandedGatewayRooms, canonicalGroupKey } from '@/plugins/hermes-bots/canonical-group-registry'
 import { type CanonicalRoom, listCanonicalRooms } from '@/plugins/hermes-bots/canonical-groups'
 import { $groupChats } from '@/plugins/hermes-bots/group-chat'
@@ -263,41 +264,36 @@ const HOUR_S = 3_600
 const DAY_S = 86_400
 
 /** The table's "Last active": recent activity reads relative ("4 min. ago", "3 hr. ago",
- *  "Yesterday"), older activity a short date ("Oct 30"); the caller shows `absolute` on hover. */
+ *  "Yesterday"), older activity a date ("Oct 30, 2026"); the caller shows `absolute` on hover. */
 export function historyLastActive(
   seconds: number,
   locale: string,
   nowMs = Date.now()
 ): { label: string; absolute: string } {
   const date = new Date(seconds * 1000)
-  const absolute = date.toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
+  const absolute = formatDateTime(date, locale)
   const age = Math.max(0, nowMs / 1000 - seconds)
-  const relative = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' })
   const today = new Date(nowMs)
   today.setHours(0, 0, 0, 0)
   const days = Math.ceil((today.getTime() / 1000 - seconds) / DAY_S)
 
+  // The previous calendar day takes the shared formatter's own day word ("yesterday"); anything
+  // older takes the shared date. Both come from lib/time, so every redesign surface reads alike.
   const label =
-    age < HOUR_S
-      ? relative.format(-Math.max(1, Math.round(age / 60)), 'minute')
-      : days <= 0
-        ? relative.format(-Math.round(age / HOUR_S), 'hour')
-        : days === 1
-          ? relative.format(-1, 'day')
-          : date.toLocaleDateString(locale, {
-              month: 'short',
-              day: 'numeric',
-              ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' })
-            })
+    age < HOUR_S || days <= 0
+      ? relativeTime(seconds * 1000, nowMs, locale)
+      : days === 1
+        ? relativeTime(nowMs - DAY, nowMs, locale)
+        : formatDate(date)
 
   return { label: label.charAt(0).toLocaleUpperCase(locale) + label.slice(1), absolute }
 }
 
-/** A row's line under its title in confirmations: "Chat · Nov 1 · 0 messages". */
+/** A row's line under its title in confirmations: "Chat · Nov 1, 2026 · 0 messages". */
 export function historyRowDate(row: SessionInfo, locale: string): string {
   const seconds = row.last_active || row.started_at
 
-  return seconds ? new Date(seconds * 1000).toLocaleDateString(locale, { month: 'short', day: 'numeric' }) : ''
+  return seconds ? formatDate(new Date(seconds * 1000), locale) : ''
 }
 
 export function historyRunning(row: SessionInfo, running: Set<string>): boolean {

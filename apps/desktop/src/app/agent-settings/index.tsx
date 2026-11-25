@@ -22,6 +22,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { platformStatusTone } from '@/lib/platform-status'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { asText } from '@/lib/text'
+import { formatDateTime } from '@/lib/time'
 import { withTimeout } from '@/lib/with-timeout'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
@@ -450,7 +451,7 @@ function AgentSettingsContent({
   owner,
   ...props
 }: AgentSettingsViewProps & { onProfileRenamed: (name: string) => Promise<void> }) {
-  const { t, locale } = useI18n()
+  const { locale, t } = useI18n()
   const c = useAgentSettingsCopy()
   const navigate = useNavigate()
   const { search } = useLocation()
@@ -532,11 +533,7 @@ function AgentSettingsContent({
           ownerRoute: { connectionId, profile: owner.profile }
         })
       }}
-      subtitle={
-        session.last_active
-          ? new Date(session.last_active * 1000).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
-          : undefined
-      }
+      subtitle={session.last_active ? formatDateTime(new Date(session.last_active * 1000), locale) : undefined}
       title={sessionTitle(session)}
     />
   ))

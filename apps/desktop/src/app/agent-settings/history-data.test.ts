@@ -276,11 +276,19 @@ it('reads recent activity relative and older activity as a date, with the exact 
   expect(at(new Date(2026, 10, 11, 14, 56))).toBe('4 min. ago')
   expect(at(new Date(2026, 10, 11, 9, 15))).toBe('6 hr. ago')
   expect(at(new Date(2026, 10, 10, 0, 5))).toBe('Yesterday')
-  expect(at(new Date(2026, 9, 30, 12, 0))).toBe('Oct 30')
+  expect(at(new Date(2026, 9, 30, 12, 0))).toBe('Oct 30, 2026')
   expect(at(new Date(2025, 9, 30, 12, 0))).toBe('Oct 30, 2025')
   expect(historyLastActive(new Date(2026, 9, 30, 12, 0).getTime() / 1000, 'en-US', nowMs).absolute).toMatch(
     /Oct 30, 2026.*12:00/
   )
+})
+
+it('renders a malformed timestamp as empty, never a RangeError', () => {
+  const nowMs = new Date(2026, 10, 11, 15, 0).getTime()
+  const gone = historyLastActive(Number.NaN, 'en-US', nowMs)
+
+  expect(gone.absolute).toBe('')
+  expect(gone.label).toBe('')
 })
 
 it("lists the agent's group chats in History, never another agent's room or a disbanded one", () => {

@@ -1,0 +1,24 @@
+name: sous-chef
+title: Sous Chef
+repo: https://github.com/tonbistudio/sous-chef
+sha: "c90f67affda6444ae6991f01de4222173e91569a"
+subdir: "hermes-plugin"
+version: "1.0.0"
+description: "Edit your screen-recorded YouTube videos with Hermes in Sous Chef, a local video editor: cut by the words in the transcript, rough cuts you approve (flubbed lines, fillers, silences) that learn from how you finish them, voiceovers, zooms, motion graphics, B-roll, captions, thumbnail, title and description, and export with ffmpeg. Adds the sous_chef MCP tools, a video-editing skill and a Sous Chef page in the desktop app. Needs the Sous Chef editor installed from its repository (Node.js 22+, ffmpeg). Disclosure: the tools and page talk only to the local Sous Chef edit server on 127.0.0.1, authenticated with the token the editor writes to its own data folder; if that server is not running, the plugin starts it as a background process from the location the Sous Chef app recorded, and it exits after 10 idle minutes. Source videos are never modified. The plugin makes no other network calls, stores no credentials and has no telemetry; features chosen inside the editor can call Hermes, a local Imagination Studio, or your Hermes image and video providers."
+maintainer: tonbistudio
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/tonbistudio/sous-chef/tree/c90f67affda6444ae6991f01de4222173e91569a#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/tonbistudio/sous-chef/c90f67affda6444ae6991f01de4222173e91569a/docs/screenshot.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Needs the Sous Chef editor set up from https://github.com/tonbistudio/sous-chef (npm install, npm run build, npm run desktop) and opened once; the plugin does nothing without it."
+  - "Developed and tested on Windows."

@@ -318,7 +318,7 @@ jobs:
                   core.warning(`artifact listing answered HTTP ${res.status}; deploying without waiting`);
                   return;
                 }
-                if (res.ok && ((await res.json()).artifacts || []).some(a => a.name === 'github-pages')) {
+                if (res.ok && ((await res.json()).artifacts || []).filter(a => a.name === 'github-pages').length === 1) {
                   core.info('github-pages artifact is listed');
                   return;
                 }
@@ -326,8 +326,10 @@ jobs:
               } catch (err) {
                 note = `listing failed: ${err.message}`;
               }
-              core.info(`${note}; checking again in 3 s`);
-              await new Promise(r => setTimeout(r, 3000));
+              const delay = Math.min(3000, deadline - Date.now());
+              if (delay <= 0) break;
+              core.info(`${note}; checking again in ${delay} ms`);
+              await new Promise(r => setTimeout(r, delay));
             }
             core.warning('github-pages artifact still not listed after 120 s; deploying anyway');
 

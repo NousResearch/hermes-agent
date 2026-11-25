@@ -5,6 +5,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
+import { useBotModeLoaded } from '@/app/chat/sidebar/simplified-bot-chat-row'
 import { ActionsMenu, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -16,6 +17,9 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { pathLabel, sessionTitle } from '@/lib/chat-runtime'
 import { Pin } from '@/lib/icons'
+import { registerCanonicalGroup } from '@/plugins/hermes-bots/canonical-group-registry'
+import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
+import { useBots } from '@/plugins/hermes-bots/i18n'
 import { $activeConnectionId } from '@/store/connections'
 import type { PaginatedSessions, SessionInfo } from '@/types/hermes'
 
@@ -24,8 +28,10 @@ import { openSession } from '../open-session'
 import { agentSettingsKey, type AgentSettingsOwner } from './data'
 import { useHistoryCopy } from './history-copy'
 import {
+  type AgentGroupChat,
   type CleanupCriteria,
   DEFAULT_HISTORY_FILTERS,
+  getAgentGroupChats,
   getHistoryPage,
   getHistoryRunning,
   type HistoryDeleteOutcome,
@@ -145,6 +151,26 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
     })
   }
 
+  /** A group chat opens as its own room, on the owner's route: a Desktop room by name, a gateway
+   *  room by the key its binding mints — never as the hidden session the room drives. */
+  function openGroup(chat: AgentGroupChat) {
+    if (!current()) {
+      return
+    }
+
+    onClose()
+
+    if (chat.kind === 'gateway') {
+      const route = { connectionId: owner.connectionId!, profile: owner.profile }
+
+      openGroupChat(registerCanonicalGroup(route, chat.room), 'key')
+
+      return
+    }
+
+    openGroupChat(chat.name, 'name')
+  }
+
   async function mutate(selection: SessionInfo | SessionInfo[], patch: Partial<SessionInfo>) {
     if (busy || !current()) {
       return
@@ -251,6 +277,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           }}
         />
       )}
+      <HistoryGroupChats onOpen={openGroup} owner={owner} />
       <div className="agent-history-body">
         {/* The table card (18563:12889): search and Filter, then the rows. */}
         <div className="agent-history-list">
@@ -397,6 +424,50 @@ function HistoryScope({ hasNextPage, isPending, isError, search }: HistoryScopeP
         c.complete
       )}
     </div>
+  )
+}
+
+/** The agent's group chats. A room is not a session — the sessions it drives are hidden plumbing —
+ *  so the rooms are listed beside the conversations and each opens its own room. */
+function HistoryGroupChats({
+  owner,
+  onOpen
+}: {
+  owner: AgentHistoryProps['owner']
+  onOpen: (chat: AgentGroupChat) => void
+}) {
+  const b = useBots()
+  const botMode = useBotModeLoaded()
+  // The agent's group chats live in the group store, not in its profile sessions (their member
+  // sessions are hidden plumbing), so they are a read of their own beside the conversations — and
+  // outside the history key, so a chat rename or delete does not refetch the rooms. With Bot Mode
+  // off there is nowhere to open a room, so nothing is queried.
+  const groupChats = useQuery({
+    queryKey: [...agentSettingsKey(owner), 'group-chats'],
+    queryFn: () => getAgentGroupChats(owner),
+    enabled: botMode
+  })
+  const chats = botMode ? (groupChats.data ?? []) : []
+
+  if (!chats.length) {
+    return null
+  }
+  return (
+    <section aria-label={b.roster.groupChats} className="agent-history-groups">
+      <h3 className="agent-history-groups-title">{b.roster.groupChats}</h3>
+      <ul className="agent-history-groups-list">
+        {chats.map(chat => (
+          <li key={`${chat.kind}:${chat.kind === 'gateway' ? chat.room.room_id : chat.name}`}>
+            <button className="agent-history-groups-row" onClick={() => onOpen(chat)} type="button">
+              <Codicon aria-hidden name="organization" />
+              <span className="agent-history-groups-name">{chat.name}</span>
+              <small>{b.group.memberCount(chat.seats)}</small>
+              {chat.lastActive > 0 && <HistoryLastActive seconds={chat.lastActive} />}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 

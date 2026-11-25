@@ -1,10 +1,15 @@
 import { hermesApi } from '@/api/client'
 import { getSession, mutateSessionHttp } from '@/api/sessions'
 import { LOCAL_SESSION_SOURCE_IDS, normalizeSessionSource } from '@/lib/session-source'
+import { $disbandedGatewayRooms, canonicalGroupKey } from '@/plugins/hermes-bots/canonical-group-registry'
+import { type CanonicalRoom, listCanonicalRooms } from '@/plugins/hermes-bots/canonical-groups'
+import { $groupChats } from '@/plugins/hermes-bots/group-chat'
+import { gatewayGroupEngine } from '@/plugins/hermes-bots/group-engine'
+import type { GroupChat, GroupMember } from '@/plugins/hermes-bots/types'
 import { requestGatewayForAgent } from '@/store/gateway'
 import type { PaginatedSessions, SessionInfo } from '@/types/hermes'
 
-import type { AgentSettingsOwner } from './data'
+import type { AgentRouteOwner, AgentSettingsOwner } from './data'
 
 export const HISTORY_PAGE_SIZE = 25
 export type HistorySource = 'all' | 'chat' | 'schedule' | 'telegram' | 'discord'
@@ -77,6 +82,111 @@ function requireOwner(owner: AgentSettingsOwner): asserts owner is AgentSettings
   if (!owner.connectionId || !owner.profile) {
     throw new Error('History requires an explicit connection and agent')
   }
+}
+
+/** The facts every listed room carries: its name, its seats and its last change. */
+interface AgentGroupChatFacts {
+  name: string
+  /** The room's seats, counted from the membership its own surfaces read. */
+  seats: number
+  /** Seconds the room last changed; 0 when its store keeps no clock. */
+  lastActive: number
+}
+
+/** One group chat the agent is seated in, as History lists it. Rooms are not sessions — the
+ *  sessions a room drives are hidden `bot_room` plumbing — so History lists the rooms themselves:
+ *  a canonical gateway room (bound, then opened by its key) or a Desktop room record (by name). */
+export type AgentGroupChat =
+  | (AgentGroupChatFacts & { kind: 'gateway'; room: CanonicalRoom })
+  | (AgentGroupChatFacts & { kind: 'local' })
+
+/** Whether a stored member descriptor is this owner: members are keyed `connectionId::profile`
+ *  (`botRosterKey`), and the unsourced descriptors legacy rooms hold are this machine's own
+ *  (`groupMemberKey`), so a bare name can never seat another machine's agent. */
+function memberSeatsOwner(member: GroupMember | null | undefined, owner: AgentRouteOwner): boolean {
+  if (member?.name !== owner.profile) {
+    return false
+  }
+
+  const connection = member.route?.connectionId ?? member.connectionId
+
+  return connection ? connection === owner.connectionId : !member.remoteSource && owner.connectionId === 'local'
+}
+
+/** The Desktop rooms that seat this owner, minus the ones the gateway already listed (one row a
+ *  room). A room the local store records as this agent's gateway room counts even while its members
+ *  are unread; a disband tombstone and every other agent's room do not. */
+function localGroupChats(
+  rooms: Record<string, GroupChat>,
+  owner: AgentRouteOwner,
+  listed: Set<string>
+): AgentGroupChat[] {
+  return Object.entries(rooms).flatMap(([name, room]) => {
+    if (!room || room.tombstone) {
+      return []
+    }
+
+    const engine = gatewayGroupEngine(room).engine
+    const owned = Boolean(engine && engine.connectionId === owner.connectionId && engine.profile === owner.profile)
+    const members = room.members ?? []
+    const listedRoom = listed.has(room.roomId ?? engine?.roomId ?? '')
+
+    if (listedRoom || (!owned && !members.some(member => memberSeatsOwner(member, owner)))) {
+      return []
+    }
+
+    return [
+      {
+        kind: 'local' as const,
+        name,
+        seats: members.length,
+        lastActive: room.log.reduce((newest, entry) => Math.max(newest, entry.at || 0), 0) / 1000
+      }
+    ]
+  })
+}
+
+/** The agent's group chats, newest first: the rooms its own route holds, plus the Desktop rooms the
+ *  local store records for it. Other agents' rooms, disbanded rooms and empty name placeholders are
+ *  never among them. */
+export function agentGroupChats(
+  owner: AgentRouteOwner,
+  rooms: Record<string, GroupChat>,
+  gatewayRooms: readonly CanonicalRoom[]
+): AgentGroupChat[] {
+  // A disbanded room can still arrive in a `groups.list` that started before the disband: the room's
+  // own tombstone and this window's disband set both retire it, as the Bots roster does.
+  const disbanded = $disbandedGatewayRooms.get()
+  const gateway: AgentGroupChat[] = gatewayRooms
+    .filter(room => !room.disbanded_at && !disbanded.has(canonicalGroupKey(owner, room.room_id)))
+    .map(room => ({
+      kind: 'gateway',
+      name: room.name,
+      seats: room.members?.length ?? 0,
+      lastActive: room.updated_at ?? 0,
+      room
+    }))
+
+  return [...gateway, ...localGroupChats(rooms, owner, new Set(gatewayRooms.map(room => room.room_id)))].sort(
+    (a, b) => b.lastActive - a.lastActive || a.name.localeCompare(b.name)
+  )
+}
+
+/** A gateway that predates group chats has none, and a room list that fails must not take the
+ *  agent's conversations down with it: the rooms that answered are listed, the local store's always. */
+async function routeGroupChats(owner: AgentRouteOwner): Promise<CanonicalRoom[]> {
+  try {
+    return await listCanonicalRooms(owner)
+  } catch {
+    return []
+  }
+}
+
+/** The agent's group chats for the History tab. Read-only: History opens a room, never mutates one. */
+export async function getAgentGroupChats(owner: AgentSettingsOwner): Promise<AgentGroupChat[]> {
+  requireOwner(owner)
+
+  return agentGroupChats(owner, $groupChats.get(), await routeGroupChats(owner))
 }
 
 export async function getHistoryPage(

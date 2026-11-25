@@ -39,7 +39,9 @@ export function forgetCanonicalGroup({ connectionId, profile, roomId }: Canonica
   refreshGatewayGroupRooms()
 }
 
-function canonicalGroupKey(route: CanonicalGroupRoute, roomId: string): string {
+/** The key of a room on a route: `canonical:<connection>:<profile>:<room_id>`. Exported so callers
+ *  outside the registry (History) can test a room against `$disbandedGatewayRooms` the same way. */
+export function canonicalGroupKey(route: CanonicalGroupRoute, roomId: string): string {
   return `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${roomId}`
 }
 

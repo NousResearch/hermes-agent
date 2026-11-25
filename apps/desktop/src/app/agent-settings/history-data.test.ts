@@ -2,30 +2,81 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type * as ClientApi from '@/api/client'
 
+/** The group store and the gateway's room list, as `history-data` reads them: rooms live outside
+ *  sessions, so History reads the store — never a room's hidden plumbing sessions. */
+const plugin = vi.hoisted(() => ({
+  rooms: {} as Record<string, unknown>,
+  gateway: [] as unknown[],
+  routes: [] as unknown[],
+  disbanded: new Set<string>(),
+  fail: false
+}))
+
 vi.mock('@/lib/legacy-session-owner-backfill', () => ({ maybeBackfillLegacySessionOwners: vi.fn() }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('@/api/client', async importOriginal => ({ ...(await importOriginal<typeof ClientApi>()), hermesApi: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent: vi.fn() }))
+vi.mock('@/plugins/hermes-bots/group-chat', () => ({ $groupChats: { get: () => plugin.rooms } }))
+vi.mock('@/plugins/hermes-bots/canonical-group-registry', () => ({
+  // The key format is the registry's own (`canonical:<connection>:<profile>:<room_id>`), which the
+  // Bots roster's disband set is keyed by.
+  canonicalGroupKey: (route: { connectionId: string; profile: string }, roomId: string) =>
+    `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${roomId}`,
+  $disbandedGatewayRooms: { get: () => plugin.disbanded }
+}))
+vi.mock('@/plugins/hermes-bots/canonical-groups', () => ({
+  listCanonicalRooms: vi.fn(async (route: unknown) => {
+    plugin.routes.push(route)
+
+    if (plugin.fail) {
+      throw new Error('groups.list is unavailable')
+    }
+
+    return plugin.gateway
+  })
+}))
 
 import { hermesApi, setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import type { CanonicalRoom } from '@/plugins/hermes-bots/canonical-groups'
+import type { GroupChat, GroupMember } from '@/plugins/hermes-bots/types'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { makeSessionInfo } from '@/test/session-info'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  agentGroupChats,
   cleanupMatches,
   DEFAULT_HISTORY_FILTERS,
   deleteHistorySelection,
+  getAgentGroupChats,
   getHistoryPage,
   historyLastActive,
+  historyRows,
   matchesHistory,
   mutateHistorySession,
-  previewHistoryCleanup
+  previewHistoryCleanup,
+  visibleHistory
 } from './history-data'
 
 const owner = { connectionId: 'alpha', profile: 'research' }
 const now = 2_000_000_000
+
+/** A room record with everything a stored one always carries, plus the test's own fields. */
+const room = (overrides: Partial<GroupChat> = {}): GroupChat => ({ log: [], watermarks: {}, ...overrides })
+const seat = (overrides: Partial<GroupMember> = {}): GroupMember => ({ name: 'research', ...overrides })
+const canonical = (overrides: Partial<CanonicalRoom> = {}): CanonicalRoom => ({
+  room_id: 'r1',
+  name: 'Team',
+  members: [{ member_id: 'm1', profile: 'research', handle: 'research' }],
+  ...overrides
+})
+
 beforeEach(() => {
+  plugin.rooms = {}
+  plugin.gateway = []
+  plugin.routes = []
+  plugin.disbanded = new Set()
+  plugin.fail = false
   vi.mocked(hermesApi).mockReset()
   vi.mocked(requestGatewayForAgent).mockReset().mockResolvedValue({ sessions: [] })
   setApiRequestConnection('unrelated-gateway')
@@ -230,4 +281,108 @@ it('reads recent activity relative and older activity as a date, with the exact 
   expect(historyLastActive(new Date(2026, 9, 30, 12, 0).getTime() / 1000, 'en-US', nowMs).absolute).toMatch(
     /Oct 30, 2026.*12:00/
   )
+})
+
+it("lists the agent's group chats in History, never another agent's room or a disbanded one", () => {
+  const rooms = {
+    Team: room({ members: [seat({ connectionId: 'alpha' }), seat({ connectionId: 'alpha', name: 'ops' })] }),
+    // A room that seats only another profile of this connection, and one of another machine's
+    // identically named profile: neither involves this agent.
+    Ops: room({ members: [seat({ connectionId: 'alpha', name: 'ops' })] }),
+    Shared: room({ members: [seat({ connectionId: 'beta' })] }),
+    Gone: room({ members: [seat({ connectionId: 'alpha' })], tombstone: true }),
+    Placeholder: room()
+  }
+
+  expect(agentGroupChats(owner, rooms, []).map(chat => [chat.kind, chat.name, chat.seats])).toEqual([
+    ['local', 'Team', 2]
+  ])
+})
+
+it('hides a gateway room this window saw disband, even from a list read before the disband', async () => {
+  const gateway = [
+    canonical({ room_id: 'r1', name: 'Live', updated_at: 900 }),
+    // The room's own tombstone, and the disband set the Bots roster keeps for a `groups.list` that
+    // started before the disband (or a failed re-read): neither gets a row in History.
+    canonical({ room_id: 'r2', name: 'Tombstoned', updated_at: 800, disbanded_at: 1 }),
+    canonical({ room_id: 'r3', name: 'Hidden', updated_at: 700 })
+  ]
+  // A stale Desktop record of a disbanded room must not stand in for it either.
+  const rooms = { Stale: room({ roomId: 'r2', members: [seat({ connectionId: 'alpha' })] }) }
+  plugin.gateway = gateway
+  plugin.rooms = rooms
+  plugin.disbanded = new Set(['canonical:alpha:research:r3'])
+
+  expect((await getAgentGroupChats(owner)).map(chat => chat.name)).toEqual(['Live'])
+  expect(agentGroupChats(owner, rooms, gateway).map(chat => chat.name)).toEqual(['Live'])
+})
+
+it('seats the local owner through the unsourced descriptors legacy rooms hold, and nobody else', () => {
+  const rooms = { Legacy: room({ members: [{ name: 'research' }] }) }
+
+  expect(agentGroupChats({ connectionId: 'local', profile: 'research' }, rooms, []).map(chat => chat.name)).toEqual([
+    'Legacy'
+  ])
+  // A bare name is this machine's member only: it never seats a remote connection's profile.
+  expect(agentGroupChats(owner, rooms, [])).toEqual([])
+  expect(agentGroupChats(owner, { Remote: room({ members: [{ name: 'research', remoteSource: true }] }) }, [])).toEqual(
+    []
+  )
+})
+
+it('names a room once, keeps the gateway facts, and lists Desktop-only rooms beside it', () => {
+  const message = (at: number) => ({ at, from: { kind: 'user' as const, name: 'You' }, text: 'hi' })
+  const rooms = {
+    // The local record of a room the gateway lists: one row, from the gateway.
+    Team: room({ members: [seat({ connectionId: 'alpha' })], roomId: 'r1', log: [message(60_000)] }),
+    // Recorded as this agent's gateway room before its members are read back.
+    Desk: room({ engine: { kind: 'gateway', connectionId: 'alpha', profile: 'research', roomId: 'r2' } }),
+    Mixed: room({ engine: 'desktop', members: [seat({ connectionId: 'alpha' })], log: [message(30_000)] })
+  }
+
+  expect(agentGroupChats(owner, rooms, [canonical({ updated_at: 900 })])).toEqual([
+    { kind: 'gateway', name: 'Team', seats: 1, lastActive: 900, room: canonical({ updated_at: 900 }) },
+    { kind: 'local', name: 'Mixed', seats: 1, lastActive: 30 },
+    { kind: 'local', name: 'Desk', seats: 0, lastActive: 0 }
+  ])
+})
+
+it("reads the agent's rooms from its route and the store, and survives a gateway that cannot answer", async () => {
+  plugin.rooms = {
+    Mine: room({ members: [seat({ connectionId: 'alpha' })] }),
+    Theirs: room({ members: [seat({ connectionId: 'alpha', name: 'ops' })] })
+  }
+  plugin.gateway = [canonical({ room_id: 'r9', name: 'Remote', updated_at: 500 })]
+
+  expect((await getAgentGroupChats(owner)).map(chat => chat.name)).toEqual(['Remote', 'Mine'])
+
+  // An older gateway has no group chats at all, and an unreachable one must not take the agent's
+  // own rooms (or its conversations) down with it.
+  plugin.fail = true
+  plugin.gateway = []
+  expect((await getAgentGroupChats(owner)).map(chat => chat.name)).toEqual(['Mine'])
+  // A room lives in one profile's store: only this agent's route is ever asked, so another agent's
+  // rooms cannot arrive through the gateway either.
+  expect(plugin.routes).toEqual([owner, owner])
+})
+
+it("keeps a room's hidden plumbing sessions out of History", () => {
+  const pages = [
+    {
+      sessions: [
+        makeSessionInfo({ id: 'chat' }),
+        // The canonical hidden "Bot Chat" and every other internal child are not conversations.
+        makeSessionInfo({ id: 'canonical', title: 'Bot Chat', hidden: true }),
+        makeSessionInfo({ id: 'room-session', source: 'bot_room', hidden: true }),
+        makeSessionInfo({ id: 'member-session', source: 'bot_room', is_internal_child: true })
+      ],
+      limit: 25,
+      offset: 0,
+      total: 4
+    }
+  ]
+
+  expect(historyRows(pages).map(row => row.id)).toEqual(['chat'])
+  expect(visibleHistory(makeSessionInfo({ id: 'hidden', hidden: true }))).toBe(false)
+  expect(visibleHistory(makeSessionInfo({ id: 'child', is_internal_child: true }))).toBe(false)
 })

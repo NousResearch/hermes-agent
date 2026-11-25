@@ -60,6 +60,68 @@
   outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
   outline-offset: var(--portal-focus-ring-offset);
 }
+/* The agent's group chats: its rooms beside its conversations, one quiet row each with the same
+   facts its roster row carries (rooms are not sessions — see HistoryGroupChats). */
+.agent-history-groups {
+  margin-bottom: 24px;
+  padding: 20px 32px;
+  border-radius: var(--portal-radius-panel);
+  background: var(--portal-settings-card);
+}
+.agent-history-groups-title {
+  margin-bottom: 8px;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+.agent-history-groups-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.agent-history-groups-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--portal-settings-divider);
+  text-align: start;
+  cursor: pointer;
+}
+.agent-history-groups-list > li:last-child .agent-history-groups-row {
+  border-bottom: 0;
+}
+.agent-history-groups-row:hover {
+  background: var(--portal-surface-row-hover);
+}
+.agent-history-groups-row:focus-visible {
+  border-radius: var(--portal-radius-control);
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+.agent-history-groups-row > .codicon {
+  flex-shrink: 0;
+  color: var(--ui-text-quaternary);
+}
+.agent-history-groups-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-groups-row > small,
+.agent-history-groups-row > time {
+  flex-shrink: 0;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
 .agent-history-toolbar,
 .agent-history-selection,
 .agent-history-filter-popover > footer {

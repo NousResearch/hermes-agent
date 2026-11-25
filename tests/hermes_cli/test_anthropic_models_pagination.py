@@ -27,10 +27,10 @@ class _PagedHandler(BaseHTTPRequestHandler):
     page_cap = 20  # server-side max page size (forces pagination even at limit=1000)
     repeat_cursor = False  # simulate a buggy server that never advances
 
-    def log_message(self, *args):  # noqa: D102
+    def log_message(self, *args):
         pass
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         u = urlparse(self.path)
         if not u.path.endswith("/models"):
             self.send_response(404)

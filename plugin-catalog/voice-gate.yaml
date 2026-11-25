@@ -1,0 +1,19 @@
+name: voice-gate
+title: "Voice Gate"
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: f13ead2f01eb90fa97f99f78cc11aff397f40cf4
+subdir: public/voice-gate
+description: "Reviews changed prose with 75 mechanical rule families and optional contextual review against the complete humanizer skill and its references. Settings keep everyday controls visible and collapse Vale, bots, and individual rules. Slow inventory requests allow up to two minutes and offer retry; the page includes five-row exceptions and Vale installation guidance. Revision requests allow at most two opportunities and compare protected spans and quantities. Prose em dashes are flagged while bullet label separators and empty table values remain allowed. Reads the changed prose paths reported by Hermes; manual tools can check supplied text. Model review is off by default and sends reviewed documents to the configured Hermes provider when enabled. It provides editorial judgments, not authorship proof. Vale is optional; status, check, and install request approval before starting a program, turn-time findings use only a binary approved that way, and Vale runs with a short environment rather than the host's. No project-file writes or core overrides. Simple PDF text extraction has no OCR. Disclosure — reads the changed prose files Hermes reports after each turn and any text or paths given to its tools; optional model review (off by default) sends reviewed documents to the configured Hermes provider; optional Vale support downloads a sha256-pinned Vale release from GitHub into <HERMES_HOME>/plugin-data/voice-gate/ only after approval, and runs Vale (status, check, install, and turn-time advisory checks on changed files) only for a binary approved through Hermes' approval prompt and recorded by digest, with a minimal environment."
+maintainer: apoapostolov
+tier: community
+category: tools
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/voice-gate
+version: "1.4.4"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/f13ead2f01eb90fa97f99f78cc11aff397f40cf4/public/voice-gate/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: [voice_gate_check, voice_gate_vale, voice_gate_review]
+  provides_hooks: [pre_verify, pre_tool_call]
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.0"

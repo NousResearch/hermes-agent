@@ -340,22 +340,38 @@ def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_p
     """The wrap-up notice must be injected BEFORE the tool row is flushed, or it
     never reaches SQLite: prepare_iteration's own call always runs on an
     already-persisted row (the previous iteration's flush already ran)."""
-    from hermes_state import SessionDB
     from agent.tool_executor import _flush_session_db_after_tool_progress
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import transcript_rows
     from agent.conversation_loop import RUN_BUDGET_WRAPUP_NOTICE
 
-    session_db = SessionDB(db_path=tmp_path / "proof.db")
+    session_db = open_persistence(profile_scope(home=tmp_path))
     try:
-        agent = _make_agent(tmp_path, monkeypatch, session_db=session_db, run_budget_seconds=900)
+        agent = _make_agent(tmp_path, monkeypatch, persistence=session_db, run_budget_seconds=900)
         agent._run_budget_started_at = time.time() - 800  # 89% elapsed
         messages = _tool_messages()
 
         assert _flush_session_db_after_tool_progress(agent, messages, stage="checkpoint")
 
-        persisted = session_db.get_messages(agent.session_id)
+        persisted = transcript_rows(session_db, agent.session_id)
         assert any(RUN_BUDGET_WRAPUP_NOTICE in str(row["content"]) for row in persisted)
         assert agent._run_budget_wrapup_injected is True
     finally:
         session_db.close()
 
 # ── turn clock stamping ────────────────────────────────────────────────────
+
+def test_gemini_long_decode_scales_implicit_stale_timeout_by_hops(monkeypatch, tmp_path):
+    """One non-streaming stale timer spans every unary long-decode hop: an xhigh budget (262,144 tokens,
+    8 hops of 32,768) gets 8x the 600s gemini-4 floor, not 600s for the whole answer. Explicit config
+    still wins untouched, and a request without a long-decode budget is unchanged."""
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(tmp_path, monkeypatch, model="gemini-4-argon", provider="gemini", api_key="AQ.dummy",
+                        base_url="https://generativelanguage.googleapis.com/v1beta")
+    payload = {"messages": [{"role": "user", "content": "hi"}], "model": "gemini-4-argon"}
+    assert agent._compute_non_stream_stale_timeout(payload) == 600.0
+    long_decode = {**payload, "extra_body": {"max_output_tokens": 262_144}}
+    assert agent._compute_non_stream_stale_timeout(long_decode) == 600.0 * 8
+    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "120")
+    assert agent._compute_non_stream_stale_timeout(long_decode) == 120.0

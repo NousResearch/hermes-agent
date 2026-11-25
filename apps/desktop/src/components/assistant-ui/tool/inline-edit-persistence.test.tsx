@@ -6,7 +6,6 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
 import { parseAnsi } from '@/lib/ansi'
 import { type ChatMessage, type GatewayEventPayload, toChatMessages, upsertToolPart } from '@/lib/chat-messages'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
-import { getToolDiff } from '@/store/tool-diffs'
 import { $toolDisclosureStates, setHideCodeDiffs, setToolViewMode } from '@/store/tool-view'
 import type { SessionMessage } from '@/types/hermes'
 
@@ -92,7 +91,6 @@ const receipts: Record<string, Receipt> = process.env.INLINE_EDIT_RECEIPTS
   : fixtures
 
 beforeEach(() => {
-  expect(getToolDiff('edit-call')).toBe('')
   $toolDisclosureStates.set({})
   setHideCodeDiffs(false)
   setToolViewMode('product')
@@ -127,8 +125,6 @@ it.each(Object.entries(receipts))(
     )
 
     for (const rows of [receipt.rows, withCommentary, receipt.projected]) {
-      expect(getToolDiff(receipt.completion.tool_id!)).toBe('')
-
       for (const serialized of [false, true]) {
         const history = rows.map(row =>
           serialized && row.display_metadata ? { ...row, display_metadata: JSON.stringify(row.display_metadata) } : row

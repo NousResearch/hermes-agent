@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cron.lifecycle_guard as lifecycle_guard
+from cron import lifecycle_guard
 from hermes_cli.sqlite_safe_read import connect_tracked
 
 

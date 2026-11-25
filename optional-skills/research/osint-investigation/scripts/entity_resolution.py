@@ -25,7 +25,7 @@ from pathlib import Path
 
 # Allow running directly or as a module.
 sys.path.insert(0, str(Path(__file__).parent))
-from _normalize import (  # noqa: E402
+from _normalize import (
     normalize_name,
     normalize_aggressive,
     token_overlap_ratio,

@@ -1,0 +1,15 @@
+name: better-peek
+repo: https://github.com/riverosmejia/better-peek
+sha: 7d0b6f753f6af99f1515016ef1e861766d09e94c
+description: "The paths an answer names stop being text: /peek lists them and shows a file's lines with the one the path named marked (a plain command, so it works in the CLI, the TUI, over ssh and in the gateway), and a TUI widget browses the list with the keyboard. The repository also carries an optional patch of the TUI transcript, applied by hand with patches/apply.sh: with it, hovering a path shows a card next to the pointer with the file's lines coloured, and clicking it opens the file in the desktop's file manager (Alt-click opens the file itself). Python standard library only; no tools, no hooks, no network, no API keys. The plugin registers one command and one widget and never patches Hermes at runtime. Disclosure — the repository also ships an optional patch to Hermes' TUI source that you apply by hand with patches/apply.sh (it rebuilds the TUI and must be re-applied after Hermes updates); with it, clicking a path in the transcript opens it in your file manager, Alt-click opens the file with xdg-open, and a PEEK_OPEN command you set runs through the shell with the path."
+maintainer: riverosmejia
+tier: community
+category: general
+docs_url: https://github.com/riverosmejia/better-peek#readme
+version: "0.3.2"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

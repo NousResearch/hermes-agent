@@ -43,12 +43,17 @@ class StreamJsonEmitter:
         self._tool_started: dict[str, float] = {}
         self._emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id})
 
-    def attach(self, agent) -> "StreamJsonEmitter":
+    def attach(self, agent) -> StreamJsonEmitter:
         """Route the agent's streaming/tool callbacks into this emitter (``init`` was already written at
         construction, before credentials/agent init, so a failed start still yields init + result)."""
         agent.stream_delta_callback = self.on_text_delta
         agent.tool_progress_callback = self.on_tool_progress
         return self
+
+    def bind_session(self, session_id: str) -> None:
+        """Record the id the gateway assigned after ``init`` was written, so an interrupted or failed
+        run still reports which session holds the accepted work."""
+        self._session_id = session_id or self._session_id
 
     def on_text_delta(self, text: str | None) -> None:
         # Only None/"" (the turn-end sentinel) is dropped: whitespace deltas are part of the text, and
@@ -91,6 +96,9 @@ class StreamJsonEmitter:
                    "duration_ms": int((time.time() - self._start) * 1000)}
         if data.get("error"):
             payload["error"] = str(data["error"])
+        if data.get("replay_gap"):
+            # The viewer fell behind and re-attached: ``text`` events stopped there; ``text`` is the whole reply.
+            payload["replay_gap"] = True
         self._emit(payload)
         print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr)  # same stderr contract as -Q
         return exit_code

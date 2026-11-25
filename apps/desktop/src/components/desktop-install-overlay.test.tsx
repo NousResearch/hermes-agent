@@ -567,9 +567,12 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     expect(await screen.findByText('Installation failed')).toBeTruthy()
 
-    fireEvent.keyDown(window, { key: 'Escape' })
-
-    await waitFor(() => expect(screen.queryByText('Installation failed')).toBeNull())
+    // The Escape listener is bound in a passive effect that can flush after the failed state is
+    // already painted; a key landing in that gap is (correctly) ignored, so press until it is heard.
+    await waitFor(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(screen.queryByText('Installation failed')).toBeNull()
+    })
   })
 })
 

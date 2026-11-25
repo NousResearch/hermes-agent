@@ -19,6 +19,32 @@ export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 180_000
 // caller forever. Every caller of these bounds them with this shared budget.
 export const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
 
+/** Budget for each bounded step of a source switch (store/connections
+ * selectConnection): the phase-1 open of the target, the OAuth REST probe and
+ * the activation (ensureGatewayAgent) each get this whole budget, as does a
+ * registry secondary's getConnectionFor in store/gateway. It is sized for the
+ * worst of them, the cold dial of an SSH source. Local owner-route lookups also
+ * take it: main may be bringing up a pooled conn:local backend. Plain profile
+ * lookups retain the reconnect-class budget above.
+ * Unlike the two above, the cold dial is not one IPC: it is the main process's
+ * whole remote bring-up chain — one ssh connect (DEFAULT_CONNECT_TIMEOUT_MS
+ * 15 s in electron/ssh-connection.ts), the sequential ssh execs that probe
+ * platform, locate the runtime and read its version (DEFAULT_EXEC_TIMEOUT_MS
+ * 20 s each), the spawned backend's ready sentinel and the port forward
+ * (DEFAULT_FORWARD_TIMEOUT_MS 15 s). The budget was sized when the ready wait
+ * was 45 s (sum ~135 s); electron/remote-lifecycle.ts DEFAULT_READY_TIMEOUT_MS
+ * is now 120 s for busy hosts (#94642), so a worst-case busy-host boot can
+ * outlast this step. A *healthy* SSH cold dial lands far inside it — measured
+ * 37-64 s against a 2 GB VPS over Windows ssh (no mux: every stage is a fresh
+ * ssh process plus a cold `serve` boot).
+ *
+ * Bounding that chain with RECONNECT_ATTEMPT_TIMEOUT_MS reported
+ * "Could not connect to <source>" for switches that were still dialing, and
+ * then connected anyway (withTimeout does not cancel the dial), which read as a
+ * failure the user had to retry. The per-IPC budget still catches the #93454
+ * class from inside the dial; this one only has to outlast a legitimate dial. */
+export const SOURCE_SWITCH_DIAL_TIMEOUT_MS = 135_000
+
 /** Rejection raised by withTimeout. The bounded work is NOT cancelled — the
  * caller decides what a straggler that settles later means. */
 export class TimeoutError extends Error {

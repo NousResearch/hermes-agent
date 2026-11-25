@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from email.utils import parsedate_to_datetime
 
 USER_AGENT = "hermes-agent/1.0 (rss-feeds skill; +https://github.com/NousResearch/hermes-agent)"
@@ -58,12 +58,12 @@ def parse_date(value: str | None) -> str | None:
         dt = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(value)
         except ValueError:
             return value
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
 
 
 def _text(el, *paths) -> str | None:
@@ -145,11 +145,11 @@ def discover(page_url: str, page_html: bytes | None = None) -> list[str]:
         page_html, _ = fetch(page_url)
     text = page_html.decode("utf-8", "replace")
     found: list[str] = []
-    for m in re.finditer(r"<link\b[^>]*>", text, re.I):
+    for m in re.finditer(r"<link\b[^>]*>", text, re.IGNORECASE):
         tag = m.group(0)
-        type_m = re.search(r"""type\s*=\s*["']([^"']+)""", tag, re.I)
-        href_m = re.search(r"""href\s*=\s*["']([^"']+)""", tag, re.I)
-        rel_m = re.search(r"""rel\s*=\s*["']([^"']+)""", tag, re.I)
+        type_m = re.search(r"""type\s*=\s*["']([^"']+)""", tag, re.IGNORECASE)
+        href_m = re.search(r"""href\s*=\s*["']([^"']+)""", tag, re.IGNORECASE)
+        rel_m = re.search(r"""rel\s*=\s*["']([^"']+)""", tag, re.IGNORECASE)
         if not href_m or not type_m or type_m.group(1).lower() not in FEED_TYPES:
             continue
         if rel_m and "alternate" not in rel_m.group(1).lower():
@@ -193,9 +193,9 @@ def read(url: str) -> dict:
 
 def filter_entries(entries: list[dict], limit: int, since: str | None) -> list[dict]:
     if since:
-        cutoff = datetime.fromisoformat(since).replace(tzinfo=timezone.utc) if "T" not in since else datetime.fromisoformat(since.replace("Z", "+00:00"))
+        cutoff = datetime.fromisoformat(since).replace(tzinfo=UTC) if "T" not in since else datetime.fromisoformat(since)
         if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=timezone.utc)
+            cutoff = cutoff.replace(tzinfo=UTC)
         entries = [e for e in entries if e["published"] and datetime.fromisoformat(e["published"]) >= cutoff]
     entries.sort(key=lambda e: e["published"] or "", reverse=True)
     return entries[:limit]

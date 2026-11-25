@@ -91,14 +91,7 @@ async def test_followup_started_as_fresh_turn_when_session_released_mid_route(bu
     # Post-fix: the guard was gone when admission resumed, so the event became
     # a fresh turn instead of queueing behind a task that no longer exists.
     assert await _wait_until(lambda: bool(turn.dispatched)), (
-        "follow-up was stranded: dispatched=%r pending=%r debounce=%r active=%r tasks=%r"
-        % (
-            turn.dispatched,
-            dict(adapter._pending_messages),
-            dict(adapter._text_debounce),
-            dict(adapter._active_sessions),
-            {k: t.done() for k, t in adapter._session_tasks.items()},
-        )
+        f"follow-up was stranded: dispatched={turn.dispatched!r} pending={dict(adapter._pending_messages)!r} debounce={dict(adapter._text_debounce)!r} active={dict(adapter._active_sessions)!r} tasks={({k: t.done() for k, t in adapter._session_tasks.items()})!r}"
     )
     assert turn.dispatched[0] == "did you get that?"
     assert followup._gateway_accepted is True

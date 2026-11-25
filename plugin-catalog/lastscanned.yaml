@@ -1,0 +1,24 @@
+name: lastscanned
+repo: https://github.com/dragonhuntr/lastscanned-plugin
+sha: 7d51abaf682fd21c2efa611ef4d51f415e282548
+description: >-
+  Track parcels and ocean containers across 549 carriers and compare USPS, UPS and FedEx
+  rate quotes between US ZIP codes, through the hosted lastscanned Streamable HTTP MCP
+  server plus one workflow skill. Portable Agent Plugins v1 package (mcp.json + skills/),
+  no plugin code. Works without sign-in within a small free daily allowance; for more, add
+  the server with auth: oauth or an API key in your own Hermes profile. No credentials are
+  stored in the plugin. Disclosure — hosted-only connector; tracking numbers, container
+  numbers, carrier ids and quote fields go to mcp.lastscanned.com; tracked numbers and
+  quotes count toward your lastscanned plan or credits; all four tools set readOnlyHint,
+  so Hermes does not prompt for them, and the plugin sets no spend limit.
+maintainer: dragonhuntr
+tier: community
+category: tools
+docs_url: https://docs.lastscanned.com/mcp
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

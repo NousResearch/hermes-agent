@@ -1,0 +1,17 @@
+name: iris-chat
+title: Iris Chat
+repo: https://github.com/irislib/iris-chat-rs
+sha: 43a1066894f1948adb3febc1e3a91a31ccccef14
+subdir: plugins/iris-chat
+description: "Private messaging through the separately installed Iris CLI. Instruction-only skill; uses a selected local identity and message history, connects to Nostr relays, and may run a persistent sync service. Disclosure — instruction-only skill: the agent runs the separately installed iris CLI in the terminal, which creates a local messaging identity (secret keys and message history stored on disk), connects to Nostr relays and peers, can run a persistent sync service until stopped, and sends messages on the user's behalf; messages received from other people are read into the agent's context."
+maintainer: Sirius Business Ltd
+tier: community
+category: tools
+version: "0.1.1"
+docs_url: https://github.com/irislib/iris-chat-rs/blob/43a1066894f1948adb3febc1e3a91a31ccccef14/plugins/iris-chat/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -11,7 +11,7 @@ import pm
 from pm import paths, registry
 from pm.lock import Lockfile
 from pm.packages import BinaryPackage
-from tests.pm._fixtures import make_tar, served as served
+from tests.pm._fixtures import make_tar, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.fixture
@@ -63,6 +63,19 @@ def test_activate_moves_store_dirs_ahead_of_user_dirs(checked_store, monkeypatch
     assert pm.activate() == []
     assert checks == [[]]
     assert os.environ["PATH"].split(os.pathsep) == [*store, user_dir]
+
+
+def test_activate_keeps_the_path_this_process_inherited(checked_store, monkeypatch):
+    environments = importlib.import_module("pm.environments")
+    # As in a process whose activate_dependencies() returned before putting anything first.
+    monkeypatch.setattr(environments, "_inherited_path", None)
+    inherited = os.path.join(os.sep, "user", "bin")
+    monkeypatch.setenv("PATH", inherited)
+
+    assert pm.activate() == []
+
+    assert os.environ["PATH"] != inherited
+    assert environments.inherited_path() == inherited
 
 
 def test_drift_activates_intact_chains_and_reports_the_live_verdict(checked_store, monkeypatch):

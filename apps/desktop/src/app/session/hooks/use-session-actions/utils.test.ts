@@ -8,8 +8,14 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
+  $currentUsage,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentUsage,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -144,6 +150,31 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
   })
 
+  it('returns authoritative usage for a background runtime snapshot', () => {
+    const patch = applyRuntimeInfo(
+      { usage: { calls: 3, compressions: 4, input: 100, output: 20, total: 120 } },
+      { foreground: false }
+    )
+
+    expect(patch?.usage).toEqual({ calls: 3, compressions: 4, input: 100, output: 20, total: 120 })
+  })
+
+  it('clears a previous session compression count when the focused snapshot omits it', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } })
+
+    expect($currentUsage.get().compressions).toBeUndefined()
+  })
+
+  it('does not let a background runtime clear the focused compression count', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } }, { foreground: false })
+
+    expect($currentUsage.get().compressions).toBe(4)
+  })
+
   // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session
   // never released the previous project and the Files pane stayed on it forever.
   it('treats an empty runtime cwd as authoritative and releases ownership', () => {
@@ -190,6 +221,14 @@ describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
 
     expect($currentCwd.get()).toBe('/next-project')
     expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('clears live-only compression usage as soon as a cold session switch starts', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+
+    expect($currentUsage.get().compressions).toBeUndefined()
   })
 
   it('releases ownership when the selected session row reports no workspace', () => {
@@ -1249,6 +1288,35 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
   })
 
+  // #121613: a completed reply that settled onto a non-stream id (an interim
+  // id the completion settled onto, or an appended `assistant-<ts>` bubble)
+  // is invisible to the stream-id rule, but when the refreshed page has not
+  // committed it the local row is the only copy and must survive.
+  it('keeps a settled non-stream reply the authoritative history has not committed', () => {
+    const reply = msg('assistant-99', 'assistant', 'the completed reply', { pending: false, interim: false })
+    const previous = [msg('1-user', 'user', 'question'), reply]
+    const next = [msg('1-user', 'user', 'question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-99'
+    ])
+  })
+
+  it('does not re-append a settled non-stream reply the authoritative history already carries', () => {
+    const next = [msg('1-user-stored', 'user', 'question'), msg('2-assistant-stored', 'assistant', 'answer')]
+    const settledLocal = msg('assistant-99', 'assistant', 'answer', { pending: false, interim: false })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, settledLocal])).toBe(next)
+  })
+
+  it('does not resurrect a superseded interim bubble the refresh rewrote', () => {
+    const next = [msg('1-user', 'user', 'question'), msg('2-assistant', 'assistant', 'rewritten final')]
+    const interim = msg('assistant-interim-1', 'assistant', 'old interim', { pending: false, interim: true })
+
+    expect(preserveLocalPendingTurnMessages(next, [msg('1-user', 'user', 'question'), interim])).toBe(next)
+  })
+
   it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
     const toolRound = {
       id: 'row-1-assistant',
@@ -2084,6 +2152,127 @@ describe('overlayConcurrentMessageChanges', () => {
     ])
   })
 
+  // The same race on a tool turn: history folds the narration, the tool and
+  // the reply into one bubble under the narration's row, so its text never
+  // equals the settled live reply. The reply's stored row still matches.
+  it('keeps one reply for a tool turn that completes while the switch-back hydrate is in flight', () => {
+    const baseline = [
+      msg('user-optimistic', 'user', 'prompt b'),
+      msg('assistant-stream-1-3', 'assistant', 'A2 ', { pending: true })
+    ]
+
+    const settled = msg('assistant-stream-1-3', 'assistant', 'A2 finished while away', {
+      pending: false,
+      rowId: 6,
+      parts: [{ type: 'text', text: 'A2 finished while away', sourceRowId: 6 }]
+    })
+
+    const folded = msg('4-assistant', 'assistant', '', {
+      rowId: 4,
+      parts: [
+        { type: 'text', text: 'A2i checking', sourceRowId: 4 },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 finished while away', sourceRowId: 6 }
+      ]
+    } as Partial<ChatMessage>)
+
+    const overlaid = overlayConcurrentMessageChanges(
+      [msg('3-user', 'user', 'prompt b', { rowId: 3 }), folded],
+      baseline,
+      [baseline[0], settled]
+    )
+
+    expect(overlaid.map(message => message.id)).toEqual(['3-user', '4-assistant'])
+
+    // A completion without a row receipt still matches the folded bubble's answer.
+    const unbound = { ...settled, rowId: undefined, parts: [{ type: 'text' as const, text: 'A2 finished while away' }] }
+
+    expect(
+      overlayConcurrentMessageChanges([msg('3-user', 'user', 'prompt b', { rowId: 3 }), folded], baseline, [
+        baseline[0],
+        unbound
+      ]).map(message => message.id)
+    ).toEqual(['3-user', '4-assistant'])
+  })
+
+  // Same race, the order the e2e hit: the store already swapped its live rows
+  // for the committed bubble, but the page was composed from the older
+  // baseline and still carries the pending live row, frozen on its first chunk.
+  it('keeps a live row retired while the switch-back hydrate was in flight retired', () => {
+    const live = msg('assistant-stream-1-3', 'assistant', 'A2 ', {
+      pending: true,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 ' }
+      ]
+    } as Partial<ChatMessage>)
+
+    const baseline = [
+      msg('user-optimistic', 'user', 'prompt b'),
+      msg('assistant-stream-1-2', 'assistant', 'A2i checking', { interim: true }),
+      live
+    ]
+
+    const committed = [msg('3-user', 'user', 'prompt b', { rowId: 3 }), msg('4-assistant', 'assistant', 'A2 finished')]
+
+    expect(overlayConcurrentMessageChanges([...committed, live], baseline, committed).map(m => m.id)).toEqual([
+      '3-user',
+      '4-assistant'
+    ])
+
+    // Or the store still holds that row, now settled onto the reply's stored
+    // row, while the page carries its older streaming copy under the same id.
+    const settled = msg('assistant-stream-1-3', 'assistant', 'A2 finished', {
+      pending: false,
+      rowId: 6,
+      parts: [{ type: 'text', text: 'A2 finished', sourceRowId: 6 }]
+    })
+
+    const folded = msg('4-assistant', 'assistant', '', {
+      rowId: 4,
+      parts: [
+        { type: 'text', text: 'A2i checking', sourceRowId: 4 },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 finished', sourceRowId: 6 }
+      ]
+    } as Partial<ChatMessage>)
+
+    expect(
+      overlayConcurrentMessageChanges([committed[0], folded, live], baseline, [baseline[0], baseline[1], settled]).map(
+        m => m.id
+      )
+    ).toEqual(['3-user', '4-assistant'])
+  })
+
+  it('does not project a stale snapshot over a committed tool turn', () => {
+    const snapshot = {
+      session_id: 'runtime-b',
+      turn_started_at: 100,
+      inflight: { user: 'prompt b', assistant: 'A2i checking\n\nA2 ', streaming: true }
+    }
+
+    const folded = msg('4-assistant', 'assistant', '', {
+      rowId: 4,
+      timestamp: 105,
+      parts: [
+        { type: 'text', text: 'A2i checking' },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 finished while away' }
+      ]
+    } as Partial<ChatMessage>)
+
+    const persisted = [msg('3-user', 'user', 'prompt b', { rowId: 3 }), folded]
+
+    expect(appendLiveSessionProjection(persisted, snapshot).map(m => m.id)).toEqual(['3-user', '4-assistant'])
+
+    // A mid-turn commit ends on its tool: the turn is still running and projects.
+    const partial = { ...folded, parts: folded.parts.slice(0, 2) }
+
+    expect(appendLiveSessionProjection([persisted[0], partial], snapshot).map(m => m.id)).toContain(
+      'assistant-stream-runtime-b'
+    )
+  })
+
   // The same prompt sent again (from another client, so the cache lacks its
   // row) streams the same opening as the previous answer. The cached-transcript
   // path must keep that NEXT turn's stream, and an errored settled row keeps
@@ -2271,5 +2460,34 @@ describe('preserveLocalPendingTurnMessages attachment rewrites (#120978)', () =>
       '3-user-stored',
       'user-1790168309-ab12cd'
     ])
+  })
+})
+
+describe('applyStoredSessionPreviewRuntimeInfo does not persist the preview', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setCurrentModel('user-pick')
+    setCurrentProvider('anthropic')
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  // The preview is provisional: it paints while session.resume is still in
+  // flight. An abandoned resume never repairs the selection afterwards, so a
+  // persisting paint strands a manual model with an EMPTY provider in
+  // localStorage — every later session.create pairs that model with the
+  // profile provider and fails the coherence gate.
+  it('moves the visible model/provider without persisting them', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '', model: 'claude-opus-5-5' }, 'session-next')
+
+    // Visible paint happened…
+    expect($currentModel.get()).toBe('claude-opus-5-5')
+    expect($currentProvider.get()).toBe('')
+
+    // …but nothing was persisted: the composer's sticky selection survives.
+    expect(localStorage.getItem('hermes.desktop.composer.model')).toBe('user-pick')
+    expect(localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
   })
 })

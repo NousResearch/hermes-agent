@@ -1,0 +1,21 @@
+name: privacy-gateway
+repo: https://github.com/saiteja-madha/hermes-privacy-gateway
+sha: 032bda954ad89599c16b655c9b3d11c91083f3e3
+description: "Local Presidio-based PII pseudonymization for Hermes model requests and tool results with an encrypted profile-scoped alias vault. Disclosure — PII detection runs locally with Presidio and the spaCy en_core_web_lg model, which you install manually; alias mappings are stored encrypted in the Hermes plugin DB under HERMES_PRIVACY_GATEWAY_KEY; requests are blocked when the engine cannot load; tools outside rehydrate_tool_allowlist receive alias tokens, not plaintext."
+maintainer: saiteja-madha
+tier: community
+category: general
+docs_url: https://github.com/saiteja-madha/hermes-privacy-gateway#readme
+version: "0.1.1"
+requires_hermes: ">=0.20.4"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_tool_result
+    - transform_llm_output
+  provides_middleware:
+    - llm_request
+    - tool_request
+  requires_env:
+    - HERMES_PRIVACY_GATEWAY_KEY

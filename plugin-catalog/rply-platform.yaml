@@ -1,0 +1,18 @@
+name: rply-platform
+repo: https://github.com/joshuaKnauber/rply
+sha: 932926e7f209e2d41b985b51a73867e7b050ab57
+subdir: integrations/hermes
+title: rply
+description: "rply gateway platform: talk to Hermes from the rply inbox on your phone and laptop, with web push. Messages and files both ways, seen/working/done with a live activity note, clarify questions and command approvals as tappable questions, cron delivery, a pinned table of scheduled jobs, a dashboard app with run/pause/resume, and an rply_request_secret tool that saves API keys to the profile's .env without the value passing through the chat. Each profile joins the channel as its own agent. Disclosure — keeps a long-polling connection to the configured rply server only (RPLY_SERVER, default https://app.rply.sh; self-hostable, AGPL server); messages the channel's members send reach Hermes as user instructions and members answer its approval and clarify prompts; the dashboard sends the server Hermes' cron job list, the titles and previews of the 10 most recent sessions from every platform, token and cost totals and the default model, and runs, pauses or resumes jobs when its buttons are pressed; stores the agent token in the profile's .env, an X25519 keypair in <profile>/rply/secret-key.json (0600) and secrets the human provides in the profile's .env under a variable name the agent picks (core's env denylist applies; the .env path is sent to the server with the request); the secret tool waits up to 15 minutes for the human and refuses under cron; adds a `hermes rply` setup command; credentials read through Hermes' profile-scoped route; no shell commands, no telemetry, no self-update."
+maintainer: joshuaKnauber
+tier: community
+category: platform
+requires_hermes: ">=0.22.2"
+docs_url: https://rply.sh/docs/integrations/hermes/
+version: "0.7.0"
+capabilities:
+  provides_tools:
+    - rply_request_secret
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

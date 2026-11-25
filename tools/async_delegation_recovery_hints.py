@@ -15,6 +15,8 @@ import os
 import subprocess
 from typing import Dict, Optional
 
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_repo_git_env
+
 TAIL_LINES = 20
 TAIL_CHARS = 2_000
 _GIT_TIMEOUT_S = 5
@@ -36,7 +38,7 @@ def transcript_tail(path: str, *, lines: int = TAIL_LINES, chars: int = TAIL_CHA
     return tail or None
 
 
-def transcript_tails(paths: Dict[str, str]) -> Dict[str, str]:
+def transcript_tails(paths: dict[str, str]) -> dict[str, str]:
     return {index: tail for index, path in (paths or {}).items() if (tail := transcript_tail(path))}
 
 
@@ -45,11 +47,17 @@ def git_state_hint(cwd: Optional[str]) -> Optional[str]:
     if not cwd or not os.path.isdir(cwd):
         return None
 
+    # noninteractive_repo_git_env (GHSA-7x36-8jrh-v4pw): runs unattended in the owner's repo and
+    # ``status`` refreshes the index, which executes a repo-configured ``core.fsmonitor`` and clean filters.
+    env = noninteractive_repo_git_env(cwd)
+    if env is None:
+        return None
+
     def run(*args: str) -> Optional[str]:
         try:
-            out = subprocess.run(["git", "-C", cwd, *args], capture_output=True,
+            out = subprocess.run(["git", "-C", cwd, *harden_git_argv(args)], capture_output=True,
                                  text=True, encoding="utf-8", errors="replace",
-                                 stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S)
+                                 stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S, env=env, check=False)
         except (OSError, subprocess.SubprocessError):
             return None
         return out.stdout if out.returncode == 0 else None

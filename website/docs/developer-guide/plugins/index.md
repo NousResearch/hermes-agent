@@ -1434,6 +1434,40 @@ validate` accepts those spellings and reports a bare `import agent.file_safety` 
 To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
 parsing `config.yaml` yourself.
 
+### Use Hermes's own helpers for the work a plugin shares with the agent
+
+A plugin that does the same work as a Hermes tool — the interrupt flag the agent's tools honour,
+the V4A patch format, the computer-use backend, the place a vault key lives — reads Hermes's own
+helper instead of copying it or importing a private name. These names are public and covered by the
+compatibility contract:
+
+| Import | What it gives you |
+|---|---|
+| `tools.interrupt.set_interrupt(active, thread_id=None, *, reason=None)` | Set or clear the interrupt flag Hermes's tools check, so a plugin stops a turn the way the user's `/stop` does. `reason` is a user-safe cause, never the user's message text. |
+| `tools.interrupt.is_interrupted()` | Whether the interrupt flag is set for the calling thread. |
+| `plugins.computer_use.configured_backend_name()` | The computer-use backend the active profile's config selects (`cua` when unset). |
+| `plugins.computer_use.get_active_provider()` | That backend's provider (`create_backend()`, `is_available()`); it raises `LookupError` naming the available ones when it cannot be loaded. |
+| `agent.redact_vault_values.register_vault_redaction_value(value)` | Register an exact secret value, so Hermes scrubs it from everything it hands to the model (the vault fill path does this for the values it injects). |
+| `agent.vault_keychain.os_keyring()` | The OS credential store keyring Hermes's vault key lives in; it raises `KeychainUnavailable` when this machine has none. |
+| `agent.vault_store.configured_key_storage()` | Where a new vault's key goes: `vault.key_storage` (`file` by default, or `keychain`). |
+| `tools.patch_parser.parse_v4a_patch(text)` | The V4A patch parser: `(operations, error)`. |
+| `tools.patch_parser.patch_file_paths(patch_text)` | The files a V4A patch names, in header order. `None` when the patch names none, and `None` when a header path escapes the workspace (`..`), because Hermes refuses that patch. |
+| `tools.skill_provenance.is_background_review()` | Whether the running turn is Hermes's own background review (the self-improvement pass), so a plugin can stay quiet during it. |
+| `tools.image_source.MAX_INGEST_BYTES` | The byte budget Hermes's media resolver ingests (50 MiB): the cap your own media reads should honour. |
+| `gateway.media_fetch.remote_path_is_denied(path, remote_home)` | Whether Hermes refuses to fetch that path on a remote host (its credential-path denylist). |
+| `tools.terminal_tool_lifecycle.cleanup_vm(task_id, *, force_remove=False)` | Release the terminal environment Hermes keeps alive for `task_id` — the call the terminal tools make when they are done with it. |
+| `hermes_cli.__version__` | The version of the Hermes the plugin runs in (the build stamp's version; a source checkout reports `0.0.0`). |
+
+```python
+from tools.patch_parser import parse_v4a_patch, patch_file_paths
+
+def files_a_patch_touches(patch_text):
+    operations, error = parse_v4a_patch(patch_text)
+    if error:
+        return error
+    return patch_file_paths(patch_text) or []
+```
+
 ### Send a credentialed HTTP request without leaking it on redirect
 
 Plain `urllib.request.urlopen` follows a redirect to another host with your `Authorization` header

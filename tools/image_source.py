@@ -21,7 +21,7 @@ from typing import Optional
 # the file as base64 on stdout, so captured text + decoded bytes + copies peak near 4x the file
 # in this process; it stays at the 50MB download cap. HTTP downloads keep their own stream cap
 # (vision_tools._VISION_MAX_DOWNLOAD_BYTES).
-_MAX_INGEST_BYTES = 50 * 1024 * 1024
+MAX_INGEST_BYTES = 50 * 1024 * 1024
 # Host-file reads (250 MiB): bounded during the read, big enough for full-res camera/scan
 # images, which call sites downscale before the 20MB provider payload cap.
 _MAX_HOST_READ_BYTES = 250 * 1024 * 1024
@@ -91,7 +91,7 @@ async def resolve_image_source(
         _guard_credential_read(host_target, s)
         # Videos are never downscaled and video_analyze refuses over 50 MB of base64, so the
         # larger host budget only helps images; videos keep the ingest cap and fail at the stat.
-        cap = _MAX_HOST_READ_BYTES if "image" in permitted else _MAX_INGEST_BYTES
+        cap = _MAX_HOST_READ_BYTES if "image" in permitted else MAX_INGEST_BYTES
         data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s, cap)
         return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
@@ -145,7 +145,7 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
         raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
     declared = header[len("data:"):].split(";", 1)[0].strip() or "application/octet-stream"
     # Cheap pre-decode size gate on the encoded length (~4/3 expansion).
-    if (len(payload) * 3) // 4 > _MAX_INGEST_BYTES:
+    if (len(payload) * 3) // 4 > MAX_INGEST_BYTES:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
     try:
         data = base64.b64decode(payload, validate=True)
@@ -323,7 +323,7 @@ async def _resolve_container_fallback(
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+    cmd = f"head -c {MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
         last_res = await asyncio.to_thread(env.execute, cmd)
@@ -340,7 +340,7 @@ async def _resolve_container_fallback(
         data = base64.b64decode(last_res.get("output", ""), validate=True)
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
-    if len(data) > _MAX_INGEST_BYTES:
+    if len(data) > MAX_INGEST_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
     return _finalize(data, "", "container", src, permitted)
 

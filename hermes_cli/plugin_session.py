@@ -1,8 +1,8 @@
 """The session a plugin hook or tool is running for, read from the turn's task-local context.
 
 Plugin hooks and tools run in the gateway process, whose own cwd is the install root and is shared
-by every session (it is never ``os.chdir``-ed). These read the calling session's key, client surface
-and recorded working directory instead.
+by every session (it is never ``os.chdir``-ed). These read the calling session's key, client surface,
+recorded working directory and launch policy instead, plus the message event of the running turn.
 """
 from __future__ import annotations
 
@@ -12,6 +12,31 @@ import os
 def _active_policy():
     from gateway.session_policy import active_policy
     return active_policy()
+
+
+def session_policy():
+    """The launch policy of the session whose turn is running in this context, ``None`` outside one.
+
+    The policy is the session's frozen launch facts: its ``source`` (``cli``/``tui``/``gui``/``acp``),
+    ``platform``, the recorded ``cwd``, the resolved ``model`` and the session's ``toolsets``.
+    ``session_source()``, ``session_surface()`` and ``session_cwd()`` answer the single fields; read
+    the policy for the rest. ``None`` outside a session (the classic CLI, a messaging chat turn, a
+    cron run) — the same answer ``session_source()`` gives as an empty string.
+    """
+    return _active_policy()
+
+
+def turn_event():
+    """The gateway turn's message event for the turn running in this context, ``None`` outside one.
+
+    The event is the platform adapter's own object (a Telegram update, a Discord message): read
+    ``user_id`` / ``source`` / ``message_id`` off it and treat every field as untrusted input.
+    ``None`` outside a gateway turn (the classic CLI, the TUI) and wherever the platform binds no
+    event. Under ``plugins.isolation: host`` the plugin's own process has no turn: it is ``None``
+    there.
+    """
+    from gateway.session_context import current_turn_event
+    return current_turn_event()
 
 
 def session_key() -> str:

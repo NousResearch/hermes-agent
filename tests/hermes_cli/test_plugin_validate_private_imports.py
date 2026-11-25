@@ -285,6 +285,40 @@ def test_every_published_plugin_api_entry_passes_validate(tmp_path):
     assert sites == [f"uses_api.py:{len(imports)} hermes_cli.plugins.get_plugin_manager"], sites
 
 
+_PLUGIN_SUPPORT_SEAMS = (
+    ("agent.redact_vault_values", "register_vault_redaction_value"),
+    ("agent.vault_keychain", "os_keyring"),
+    ("agent.vault_store", "configured_key_storage"),
+    ("gateway.media_fetch", "remote_path_is_denied"),
+    ("hermes_cli", "__version__"),
+    ("hermes_cli.plugin_session", "session_policy"),
+    ("hermes_cli.plugin_session", "turn_event"),
+    ("plugins.computer_use", "configured_backend_name"),
+    ("plugins.computer_use", "get_active_provider"),
+    ("tools.image_source", "MAX_INGEST_BYTES"),
+    ("tools.interrupt", "is_interrupted"),
+    ("tools.interrupt", "set_interrupt"),
+    ("tools.patch_parser", "parse_v4a_patch"),
+    ("tools.patch_parser", "patch_file_paths"),
+    ("tools.skill_provenance", "is_background_review"),
+    ("tools.terminal_tool_lifecycle", "cleanup_vm"),
+)
+
+
+def test_plugin_support_seams_are_public_and_exist(tmp_path):
+    """The plugin-support helpers import cleanly AND raise no private-import finding: a plugin that
+    shares work with Hermes (the interrupt flag, the vault key, the V4A patch format) reads the same
+    code instead of copying it."""
+    import importlib
+
+    for module, name in _PLUGIN_SUPPORT_SEAMS:
+        assert hasattr(importlib.import_module(module), name), f"{module}.{name}"
+    imports = "".join(f"from {module} import {name}\n" for module, name in _PLUGIN_SUPPORT_SEAMS)
+    plugin = _plugin(tmp_path / "support", {"seams.py": imports})
+
+    assert _private_warnings(validate_plugin_dir(plugin)) == []
+
+
 def test_public_api_docs_page_is_generated_from_the_data_file():
     import importlib.util
 

@@ -116,7 +116,9 @@ test.skipIf(process.platform === 'win32')('channel admission validates each dist
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-admit-'))
   try {
     const log = path.join(temp, 'calls'), python = path.join(temp, 'python')
-    fs.writeFileSync(python, `#!/bin/sh\necho x >> '${log}'\nexec python "$@"\n`, { mode: 0o755 })
+    const quote = value => `'${value.replaceAll("'", "'\\''")}'`
+    fs.writeFileSync(python, `#!/bin/sh\necho x >> ${quote(log)}\nexec ${quote(process.env.HERMES_PYTHON || 'python')} "$@"\n`,
+      { mode: 0o755 })
     const calls = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0
     const token = randomBytes(8).toString('hex')
     const request = { schema: 1, buildId: randomBytes(16).toString('hex'), channel: `smoke-${token}`,

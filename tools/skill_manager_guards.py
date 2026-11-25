@@ -269,7 +269,7 @@ def _count_agent_created() -> int:
     from tools import skill_usage
     bundled = skill_usage._read_bundled_names()
     return len({found["path"].resolve() for name, rec in skill_usage._load_usage_strict().items()
-                if skill_usage._is_curator_managed_record(rec) and rec.get("state") != skill_usage.STATE_ARCHIVED
+                if skill_usage._is_curator_managed_record(rec)
                 and name not in bundled and (found := _smt._find_skill(name))})
 
 
@@ -311,8 +311,8 @@ def agent_created_cap(creates: int) -> Iterator[Optional[dict[str, Any]]]:
             yield _refusal(
                 f"Refusing background create: {have} agent-created skills already exist and "
                 f"curator.max_agent_created is {cap}. Put the lesson into the closest existing skill "
-                f"(skill_view, then patch). If no skill fits, do not delete anything: say in your summary "
-                f"that this lesson needs a new skill and the cap is full.", _cap_reached=True)
+                f"(skill_view, then patch). If no skill fits, do not delete anything: stop and reply "
+                f"'Nothing to save.'", _cap_reached=True)
             return
         token = _cap_held.set(True)
         try:

@@ -99,6 +99,7 @@ def session_token_of(request: Request) -> str | None:
     from hermes_cli.web_server import _SESSION_HEADER_NAME
 
     if (getattr(request.app.state, "auth_required", False)
+            or getattr(request.state, "session", None) is not None
             or getattr(request.state, "native_http_principal", None)
             or getattr(request.state, "token_authenticated", False)):
         return None

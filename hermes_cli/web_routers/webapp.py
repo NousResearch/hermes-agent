@@ -154,10 +154,14 @@ def _peer_is_server_user(request: Request, platform: str = sys.platform) -> bool
 
 @router.post("/api/webapp/window-ticket")
 async def issue_window_ticket(request: Request):
-    from hermes_cli.web_server import _require_token
+    from hermes_cli.web_server import _has_valid_session_token, _require_token
 
     _require_private_webapp(request)
     _require_token(request)
+    # Window handoff exchanges for the loopback browser session token; a cookie-signed-in tab uses
+    # its browser cookies directly and must never extract _SESSION_TOKEN through this route.
+    if getattr(request.state, "session", None) is not None and not _has_valid_session_token(request):
+        raise HTTPException(403, "Cookie-authenticated Webapp sessions do not use window handoff tickets")
     ticket = _mint_handoff_ticket(request.app.state, WINDOW_TICKET_TTL_SECONDS, launch=False)
     return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
 

@@ -77,7 +77,12 @@ def platform_build_print(platform: Any, platform_config: Any, home: Optional[Pat
     """The :class:`BuildPrint` of building ``platform`` from ``platform_config`` with ``home``'s ``.env``
     (None: config only). Blocking (reads ``.env``, may resolve a deferred plugin entry): run off-loop."""
     from gateway.platform_registry import platform_registry
-    registered = platform.value in platform_registry.registered_names()  # no load, no probe side effects
+    from hermes_cli.plugins import settled_plugin_registrations
+    # Read between sweeps: mid force-reload (another plugin installed or enabled) every plugin platform is
+    # briefly unregistered, which read as "changed" and restarted live adapters nothing touched.
+    with settled_plugin_registrations():
+        registered = platform.value in platform_registry.registered_names()  # no load, no probe side effects
+        entry = platform_registry.get(platform.value) if registered and home is not None else None
     settings = {f.name: getattr(platform_config, f.name) for f in fields(platform_config)
                 if f.compare and f.name not in _RUNNER_OWNED_FIELDS}
     settings["extra"] = {k: v for k, v in (settings.get("extra") or {}).items() if k not in _RUNNER_STAMPED_EXTRA}
@@ -86,7 +91,6 @@ def platform_build_print(platform: Any, platform_config: Any, home: Optional[Pat
         return BuildPrint(config)
     from agent.secret_scope import load_env_file
     from hermes_cli.profile_channels import platform_env_prefixes
-    entry = platform_registry.get(platform.value) if registered else None
     skip = _runner_read_env(entry)
     prefixes = platform_env_prefixes(platform.value)
     owned = {k: v for k, v in load_env_file(Path(home) / ".env").items()

@@ -41,13 +41,18 @@ def config_set_live_note(key: str) -> Optional[str]:
     answer = reconcile_running_gateway_platforms(_current_profile_name() or "default", get_hermes_home())
     if not answer or not answer.get("changed"):
         return None
-    states = answer.get("platforms") or {}
-    parts = [f"{verb} {', '.join(names)}" for verb, names in (
-        ("started", answer.get("started")), ("restarted", answer.get("restarted")),
-        ("stopped", answer.get("stopped"))) if names]
+    return _live_note(answer)
+
+
+def _live_note(answer: dict) -> str:
+    """One truthful line per outcome from the gateway's own verdict: what it now serves, then (separately)
+    what it tried and could not bring up, with its reason when it gave one."""
+    states, reasons = answer.get("platforms") or {}, answer.get("reasons") or {}
     down = [p for p in (*(answer.get("started") or ()), *(answer.get("restarted") or ()))
             if states.get(p) == "unavailable"]
-    note = f"  Running gateway applied it now: {'; '.join(parts)}"
-    if down:
-        note += f"\n  ⚠ {', '.join(down)} could not start; see `hermes logs`"
-    return note
+    parts = [f"{verb} {', '.join(applied)}" for verb, names in (
+        ("started", answer.get("started")), ("restarted", answer.get("restarted")),
+        ("stopped", answer.get("stopped"))) if (applied := [p for p in names or () if p not in down])]
+    lines = [f"  Running gateway applied it now: {'; '.join(parts)}"] if parts else []
+    lines += [f"  ⚠ Running gateway could not start {p}: {reasons.get(p) or 'see `hermes logs`'}" for p in down]
+    return "\n".join(lines)

@@ -38,7 +38,7 @@ import os
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -191,7 +191,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     """Every platform name core knows, minus *platform*: the ``hermes_cli.platforms`` table, the shipped
     ``plugins/platforms/<name>`` dirs (the dir is the registered name), the gateway-only ``Platform``
     members, the ``acp`` surface and *others*
-    (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
+    (platforms rows moved out, :func:`_derive_off_platforms`). Covers a platform added later too."""
     from hermes_cli.platforms import PLATFORMS
     try:
         bundled = {p.name for p in (Path(project_root_str()) / "plugins" / "platforms").iterdir()
@@ -200,10 +200,6 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
         bundled = set()
     return tuple(sorted({*PLATFORMS, *bundled, *_GATEWAY_ONLY_PLATFORMS, "acp", *others} - {platform}))
 
-
-# Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
-# platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
-_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant", "feishu")
 
 _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
                    "maintained going forward. Fixes from the community are welcome.")
@@ -227,8 +223,6 @@ feishu_in_use = platform_in_use(
     cred_sets=((("", "FEISHU_APP_ID"), ("", "FEISHU_APP_SECRET")), (("app_id",),)),
     toolsets=("feishu_doc", "feishu_drive", "hermes-feishu"))
 
-# Core put the feishu_* tools in ``hermes-feishu`` only (and ``hermes-gateway``, which included it).
-_FEISHU_OFF_PLATFORMS = _core_platforms_except("feishu", "homeassistant", "yuanbao")
 
 def _feishu_notice(home: Path, *, process_env: bool = False) -> str:
     """An official plugin like the other official rows: no placement sentence, only what changed for *home*."""
@@ -599,6 +593,10 @@ class LeftCoreFeature:
     toolsets: tuple[str, ...] = ()
     # Platforms whose core default composite (``hermes-<platform>``) never carried those toolsets.
     off_platforms: tuple[str, ...] = ()
+    # Core carried the toolsets in *platform*'s own ``hermes-<platform>`` bundle only (and ``hermes-gateway``):
+    # *off_platforms* is derived, every other platform core knows plus every platform a LEFT_CORE row moved
+    # out (:func:`_derive_off_platforms`), so the order two platform moves land in cannot leave one stale.
+    own_platform_only: bool = False
     # Core-era toolsets the plugin's toolsets replace while core keeps the name for something else
     # (core's ``browser`` is browser_exec now; Camofox's tools live in the plugin's ``camofox``). The
     # one-time scope conversion treats them as the plugin's toolsets for "did core carry it" and turns
@@ -744,7 +742,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                      "YUANBAO_DM_POLICY", "YUANBAO_DM_ALLOW_FROM", "YUANBAO_GROUP_POLICY", "YUANBAO_GROUP_ALLOW_FROM",
                      "YUANBAO_ALLOWED_USERS", "YUANBAO_ALLOW_ALL_USERS", "YUANBAO_HOME_CHANNEL",
                      "YUANBAO_HOME_CHANNEL_NAME"),
-        toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
+        toolsets=("yuanbao",), own_platform_only=True,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
     ),
@@ -756,11 +754,23 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                    "feishu_drive_* tool names are unchanged"),
         secret_env=("FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN"),
         private_env=FEISHU_PRIVATE_ENV,
-        toolsets=("feishu_doc", "feishu_drive"), off_platforms=_FEISHU_OFF_PLATFORMS,
+        toolsets=("feishu_doc", "feishu_drive"), own_platform_only=True,
         legacy_toolsets=("hermes-feishu", "hermes-gateway"), native_on_own_platform=True,
         platform="feishu", enable_env=("FEISHU_APP_ID", "FEISHU_APP_SECRET"), notice=_feishu_notice,
     ),
 )
+
+
+def _derive_off_platforms(rows: tuple[LeftCoreFeature, ...]) -> tuple[LeftCoreFeature, ...]:
+    """*rows* with each ``own_platform_only`` row's ``off_platforms`` filled in: every platform core knows and
+    every platform a row in *rows* moved out of core, minus the row's own. A third-party plugin platform core
+    never knew stays uncovered."""
+    moved = tuple(row.platform for row in rows if row.platform)
+    return tuple(replace(row, off_platforms=_core_platforms_except(row.platform, *moved))
+                 if row.own_platform_only else row for row in rows)
+
+
+LEFT_CORE = _derive_off_platforms(LEFT_CORE)
 
 
 def legacy_bundle_toolsets(name: str) -> tuple[str, ...]:

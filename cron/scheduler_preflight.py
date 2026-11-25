@@ -349,11 +349,11 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     connected: Optional[set] = None
     for platform_name in platform_parts:
         if not _delivery._is_known_delivery_platform(platform_name):
-            return (
-                f"delivery platform '{platform_name}' is not a known cron "
-                "delivery target. Fix the job's `deliver` value or configure "
-                "the platform's gateway credentials."
-            )
+            unknown = f"delivery platform '{platform_name}' is not a known cron delivery target"
+            if hint := _delivery.moved_platform_hint(platform_name):
+                return unknown + hint
+            return (f"{unknown}. Fix the job's `deliver` value or configure "
+                    "the platform's gateway credentials.")
         if connected is None:
             try:
                 from gateway.config import load_gateway_config

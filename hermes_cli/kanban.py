@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from gateway.config import Platform
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -33,6 +34,7 @@ from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser
+from hermes_cli.plugins import discover_plugins
 
 
 # --- Flag parsing helpers ---
@@ -1169,7 +1171,29 @@ def _caller_identity_for_target(platform: str, chat_id: str, thread_id, user_id,
             get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None)
 
 
+def _notify_platform_supported(platform: str) -> bool:
+    """Accept the TUI route or a gateway name the notifier can dispatch."""
+    if platform == "tui":
+        return True
+    try:
+        return Platform(platform).value == platform.lower()
+    except ValueError:
+        # The standalone CLI may not have discovered installed platform plugins yet.
+        discover_plugins()
+        try:
+            return Platform(platform).value == platform.lower()
+        except ValueError:
+            return False
+
+
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    if not _notify_platform_supported(args.platform):
+        return _err(
+            f"unknown notification platform {args.platform!r}. Use "
+            "--platform tui --chat-id <session_key> for an active Desktop/TUI session, "
+            "or a configured gateway platform such as telegram or discord for background delivery.",
+            2,
+        )
     delivery_metadata = {
         key: value
         for key, value in (
@@ -1205,6 +1229,8 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     if not subs:
         print("(no subscriptions)")
         return 0
+    unsupported = {platform for platform in {s["platform"] for s in subs}
+                   if not _notify_platform_supported(platform)}
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         dmode, ctype = s.get("delivery_mode") or "notify", s.get("chat_type") or "dm"
@@ -1213,6 +1239,7 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
             "" if ctype == "dm" else f"  chat_type={ctype}",
             f"  user_id_alt={s['user_id_alt']}" if s.get("user_id_alt") else "",
             "" if dmode == "notify" else f"  mode={dmode}",
+            "  [unsupported platform; unsubscribe and re-subscribe]" if s["platform"] in unsupported else "",
         ))
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}  (since event {s['last_event_id']}){extras}")
     return 0

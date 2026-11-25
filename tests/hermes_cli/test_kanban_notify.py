@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import pytest
 
@@ -99,6 +100,68 @@ def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
     assert sub["delivery_metadata"] == {
         "chat_type": "thread", "existing": "keep", "parent_chat_id": "parent", "guild_id": "guild",
     }
+
+@pytest.mark.parametrize("platform", ["desktop", "made-up-platform"])
+def test_notify_subscribe_cli_rejects_unknown_platform_without_writing(kanban_home, capsys, platform):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="platform validation", assignee="worker")
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", platform, "--chat-id", "session-key",
+    ])
+
+    result = kc.kanban_command(args)
+    output = capsys.readouterr()
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, tid) == []
+    assert result == 2
+    assert "unknown notification platform" in output.err
+    assert "--platform tui --chat-id <session_key>" in output.err
+    assert "Subscribed" not in output.out
+
+
+@pytest.mark.parametrize("platform", ["telegram", "tui", "irc"])
+def test_notify_subscribe_cli_accepts_supported_platforms(kanban_home, platform):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="platform validation", assignee="worker")
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", platform, "--chat-id", "session-key",
+    ])
+
+    assert kc.kanban_command(args) == 0
+    with kbc.connect() as conn:
+        assert [sub["platform"] for sub in kbn.list_notify_subs(conn, tid)] == [platform]
+
+
+def test_notify_list_cli_flags_legacy_platform_without_changing_json_or_cleanup(kanban_home, capsys):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="legacy subscription", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="desktop", chat_id="old-session")
+        kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="active-session")
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    assert kc.kanban_command(parser.parse_args(["kanban", "notify-list", tid])) == 0
+    output = capsys.readouterr().out
+    desktop = next(line for line in output.splitlines() if "desktop:" in line)
+    tui = next(line for line in output.splitlines() if "tui:" in line)
+    assert "unsupported platform" in desktop
+    assert "unsupported platform" not in tui
+
+    assert kc.kanban_command(parser.parse_args(["kanban", "notify-list", tid, "--json"])) == 0
+    json_output = capsys.readouterr().out
+    assert "desktop" in json_output
+    assert "unsupported platform" not in json_output
+
+    args = parser.parse_args([
+        "kanban", "notify-unsubscribe", tid, "--platform", "desktop", "--chat-id", "old-session",
+    ])
+    assert kc.kanban_command(args) == 0
+    with kbc.connect() as conn:
+        assert [sub["platform"] for sub in kbn.list_notify_subs(conn, tid)] == ["tui"]
+
 
 def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
     """chat_type persists, defaults to 'dm', an explicit re-subscribe is

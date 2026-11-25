@@ -1261,6 +1261,14 @@ hermes kanban notify-unsubscribe t_abcd \
     --platform telegram --chat-id 12345678 --thread-id 7
 ```
 
+For manual Desktop/TUI subscriptions, use `--platform tui --chat-id <session_key>`, not
+`--platform desktop`. The TUI poller only delivers while the session holds an active-session
+lease; use a configured gateway platform for delivery when the session is inactive or the app is
+closed. The CLI rejects unknown platform names before saving. In the text output of
+`notify-list`, older entries with unsupported names are marked so you can remove them with
+`notify-unsubscribe` and subscribe with a valid platform. While polling boards, the gateway
+also logs a rate-limited warning for unsupported routes, not for temporarily disconnected adapters.
+
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
 When an agent runs `notify-subscribe` from inside a gateway chat (through its terminal tool) and the

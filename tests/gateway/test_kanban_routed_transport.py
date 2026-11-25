@@ -1,7 +1,9 @@
 """Persisted notification routes authorize exactly one transport, including route-only profiles."""
 import asyncio
+import logging
 from pathlib import Path
 
+from gateway import kanban_watchers_notifier as notifier
 from gateway.config import GatewayConfig, Platform
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.profile_routing import parse_profile_routes
@@ -212,6 +214,41 @@ def test_removed_profile_never_wakes_under_the_primary_runtime(tmp_path, monkeyp
     asyncio.run(deliver(runner, rows))
     assert secondary.handled == []
     assert unseen(task)
+
+
+def test_notifier_warns_for_legacy_platform_but_not_offline_gateway_or_tui(tmp_path, monkeypatch, caplog):
+    runner = setup_runner(tmp_path, monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(notifier, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(notifier, "_next_unsupported_platform_warning", float("-inf"))
+    with kbc.connect() as conn:
+        task = kb.create_task(conn, title="legacy notification routes", assignee="worker")
+        for platform in ("desktop", "telegram", "tui"):
+            kbn.add_notify_sub(conn, task_id=task, platform=platform, chat_id="fixture-chat",
+                               notifier_profile="default")
+        kb.complete_task(conn, task, result="finished")
+        before = kbn.list_notify_subs(conn, task)
+
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        assert not collect(runner)
+        assert not collect(runner)
+        assert len(caplog.records) == 1
+        clock[0] += 61
+        assert not collect(runner)
+
+    assert len(caplog.records) == 2
+    for record in caplog.records:
+        assert record.levelno == logging.WARNING
+        assert "unsupported notification platform" in record.getMessage()
+        assert task in record.getMessage()
+        assert "notify-list" in record.getMessage()
+        assert "fixture-chat" not in record.getMessage()
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, task) == before
+
+    runner.adapters[Platform.TELEGRAM] = RecordingAdapter()
+    rows = collect(runner)
+    assert [row["sub"]["platform"] for row in rows] == ["telegram"]
 
 
 def test_anchorless_thread_subscription_warns_once_instead_of_silent_skip(tmp_path, monkeypatch, caplog):

@@ -252,6 +252,55 @@ async def test_a_recovered_message_passes_the_same_gate_as_a_live_one(adapter, m
     assert (event.source.profile, event.text) == ("agent-two", "rerun the audit")
 
 
+@pytest.mark.asyncio
+async def test_two_bots_in_one_channel_dispatch_a_mention_once(adapter, served):
+    """A gateway running one bot per profile token: both bots in the channel receive the same
+    message and know the same handles, yet the named profile gets ONE turn. The first bot to
+    dispatch claims it, the other hands that profile nothing, whichever bot sees it first."""
+    # agent-two's own bot reads agent-two's opt-in from its own config, as the live refresh loads it.
+    other = DiscordAdapter(PlatformConfig(enabled=True, token="agent-two-token", extra={"mentionable": True}))
+    other._client = SimpleNamespace(user=SimpleNamespace(id=998))
+    other._text_batch_delay_seconds = 0
+    other.handle_message = AsyncMock()
+    other.gateway_runner = served
+    served._profile_adapters["agent-two"] = {Platform.DISCORD: other}
+    bots = (adapter, other)
+
+    def _turns():
+        return [(bot, call.args[0]) for bot in bots for call in bot.handle_message.await_args_list]
+
+    for bot in bots:  # each bot gets its own copy of the gateway event, as Discord delivers it
+        assert await bot._handle_message(_message("$agent-one status?")) is True
+    assert [(bot, e.source.profile, e.text) for bot, e in _turns()] == [(adapter, "agent-one", "status?")]
+
+    for bot in bots:
+        bot.handle_message.reset_mock()
+    for bot in reversed(bots):  # a new message, the other bot first: it is a new, separate claim
+        later = _message("$agent-one $agent-two again")
+        later.id = 124
+        await bot._handle_message(later)
+    assert sorted((bot is other, e.source.profile) for bot, e in _turns()) == [
+        (True, "agent-one"), (True, "agent-two")]
+
+
+def test_a_dispatch_claim_outlives_the_bot_that_made_it(served):
+    """A bot that replans its own message keeps its claim (its own dedup governs repeats); a bot
+    removed after dispatching still holds it, so a later bot never re-sends the message."""
+    import gc
+
+    class _Bot:
+        platform, gateway_runner = Platform.DISCORD, served
+
+    event = SimpleNamespace(message_id="9")
+    first, late = _Bot(), _Bot()
+    assert profile_mentions._claim(first, event, "agent-one") is True
+    assert profile_mentions._claim(first, event, "agent-one") is True
+    del first
+    gc.collect()
+    assert profile_mentions._claim(late, event, "agent-one") is False
+    assert profile_mentions._claim(late, event, "agent-two") is True
+
+
 # --- the opt-in: each profile's own config, served profiles only ------------------------------
 
 

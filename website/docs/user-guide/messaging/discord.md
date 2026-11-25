@@ -1030,6 +1030,7 @@ The bot answers to the handles of the profiles this gateway serves whose own con
 - The handles are removed from the prompt the profile sees. Each reply ends with a `— <profile>` line naming the profile that wrote it. A configured runtime footer follows on the same line.
 - A handle counts as addressing the bot, so it works in channels where `require_mention` is on. `allowed_channels`, `ignored_channels` and the user/role allowlists still apply: the bot that received the message decides who may use it. Opting a profile in therefore makes it reachable by everyone that bot already accepts messages from.
 - A profile this gateway does not serve is never reachable, even if its config opts in (for example, a profile that still runs its own gateway). The message is never run under another profile.
+- When the gateway runs several Discord bots (profiles with their own bot token) and more than one of them is in the channel, the message still runs once per named profile. The first bot to handle it dispatches it and answers; the other bots do not dispatch it again.
 - Handles use `$`, not `@`, on purpose: `@name` would ping real users or roles.
 - Each turn is an ordinary turn in that profile's session for the channel. A later message without a handle goes back to the channel's normal profile. A turn started this way is not remembered across restarts as belonging to that profile, so a background notification that arrives after a restart may not be delivered back to the channel.
 

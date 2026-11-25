@@ -27,13 +27,20 @@ so the reply is labelled with the profile's name (``gateway/run_turn_persistence
 
 A message with no mentionable handle passes through untouched. Unknown ``$handles`` are logged and
 left in the text; a handle with no prompt after it is a no-op, like a bare bot @mention.
+
+A gateway can run several Discord bots (one per profile token), and every bot in the channel
+receives the same message and computes the same handles. Exactly one of them dispatches it to a
+given profile: the first bot to reach dispatch claims ``(message id, profile)`` for the whole
+gateway (``_claim``), and the others hand that profile nothing.
 """
 from __future__ import annotations
 
 import dataclasses
 import logging
 import re
+import threading
 import weakref
+from collections import OrderedDict
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -48,6 +55,12 @@ HANDLE_KEY = "mention_handle"
 
 _HANDLE = re.compile(r"(?<![\w$])\$([A-Za-z0-9][A-Za-z0-9_-]{0,63})(?![\w-])")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.;:!?])")
+
+#: Per gateway runner: ``(platform, message id, profile)`` -> a weak ref to the bot that dispatched
+#: it, oldest first, capped at ``_CLAIMS_MAX`` (Discord message ids never repeat).
+_CLAIMS: weakref.WeakKeyDictionary[Any, OrderedDict] = weakref.WeakKeyDictionary()
+_CLAIMS_LOCK = threading.Lock()
+_CLAIMS_MAX = 4096
 
 
 @dataclasses.dataclass(frozen=True)
@@ -172,9 +185,29 @@ def _profile_event(adapter: Any, event: Any, profile: str, prompt: str) -> Any:
         metadata=dict(event.metadata or {}))
 
 
+def _claim(adapter: Any, event: Any, profile: str) -> bool:
+    """True when *adapter* is the bot that dispatches *event* to *profile*: no OTHER bot in this
+    gateway did so first. The same bot may plan its own message again (its own dedup governs
+    that); a claim whose bot is gone still holds, so a later bot never re-sends the message."""
+    runner = getattr(adapter, "gateway_runner", None)
+    if runner is None or not event.message_id:
+        return True
+    key = (str(getattr(adapter.platform, "value", adapter.platform)), str(event.message_id), profile)
+    with _CLAIMS_LOCK:
+        claims = _CLAIMS.setdefault(runner, OrderedDict())
+        owner = claims.get(key)
+        if owner is not None:
+            return owner() is adapter
+        claims[key] = weakref.ref(adapter)
+        while len(claims) > _CLAIMS_MAX:
+            claims.popitem(last=False)
+        return True
+
+
 def mention_events(adapter: Any, event: Any) -> list:
     """The events to dispatch for *event*: itself when it names no mentionable profile, one copy
-    per named profile otherwise, or none when nothing but the handles was sent."""
+    per named profile otherwise (unless another bot already dispatched it), or none when nothing
+    but the handles was sent."""
     text = event.text or ""
     plan = plan_mentions(text, _active_handles(adapter, text))
     if plan is None:
@@ -183,9 +216,14 @@ def mention_events(adapter: Any, event: Any) -> list:
         logger.info("[%s] Ignoring profile-mention-only message (no prompt) for %d profile(s)",
                     adapter.name, len(plan.profiles))
         return []
-    logger.info("[%s] Dispatching message %s to %d mentioned profile(s)", adapter.name,
-                event.message_id, len(plan.profiles))
-    return [_profile_event(adapter, event, profile, plan.prompt) for profile in plan.profiles]
+    profiles = [profile for profile in plan.profiles if _claim(adapter, event, profile)]
+    if len(profiles) < len(plan.profiles):
+        logger.info("[%s] Message %s: %d mentioned profile(s) already dispatched by another bot", adapter.name,
+                    event.message_id, len(plan.profiles) - len(profiles))
+    if profiles:
+        logger.info("[%s] Dispatching message %s to %d mentioned profile(s)", adapter.name,
+                    event.message_id, len(profiles))
+    return [_profile_event(adapter, event, profile, plan.prompt) for profile in profiles]
 
 
 async def dispatch_event(adapter: Any, event: Any, *, batch: bool) -> None:

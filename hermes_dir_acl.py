@@ -36,6 +36,8 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
+from hermes_platform.resolver import windows_system_executable
+
 log = logging.getLogger(__name__)
 
 _TOKEN_QUERY = 0x0008
@@ -189,7 +191,8 @@ def _grant_with_pywin32(path: Path, is_dir: bool, expected: str | None = None) -
 
 @functools.lru_cache(maxsize=1)
 def _whoami_sid() -> str:
-    whoami = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True,
+    whoami = subprocess.run([windows_system_executable("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+                            capture_output=True, text=True,
                             check=True, encoding="utf-8", errors="replace", timeout=30)
     sid = whoami.stdout.strip().rsplit(",", 1)[-1].strip().strip('"')
     if not sid.upper().startswith("S-1-"):

@@ -1,7 +1,9 @@
 """Process startup phases; diagnostics remain in the gateway facade."""
 from __future__ import annotations
 
+import importlib
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -26,6 +28,41 @@ def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# A running gateway outlives an in-place upgrade (a package manager or a checkout move replaces the files
+# under it). A function-level import that first runs during the stop would load the newer file against
+# the older modules already in memory, and the stop could fail on a name this process lacks (#159067).
+# Repo modules the stop and restart paths import inside functions. Boot imports them, so a stop reads
+# them from memory: after an in-place upgrade the files on disk may import names this process lacks.
+# tests/gateway/test_stop_path_preload.py fails when a stop-path import is missing here. The last row
+# is one hop further: modules those helpers import lazily themselves on a stop (delegation interrupt,
+# storage health, browser cleanup, the tail's MCP close, the SIGTERM planned-stop check, the detached
+# restart helper's environment).
+STOP_PATH_MODULES = (
+    "cron.jobs", "cron.scheduler",
+    "gateway.config_loader", "gateway.drain_control", "gateway.host_rendezvous", "gateway.lifecycle_ledger",
+    "gateway.restart_loop_guard", "gateway.restart_notice", "gateway.restart_watcher_env",
+    "gateway.restart_when_idle", "gateway.run_api", "gateway.session_acp_lifecycle",
+    "gateway.session_hosted_service", "gateway.session_llm_oneshot", "gateway.shutdown_flush", "gateway.status",
+    "gateway.stuck_loop_counts",
+    "hermes_cli._launchers", "hermes_cli.nous_auth_keepalive", "hermes_cli.observability.shared_metrics_process",
+    "persistence_assembly",
+    "tools.async_delegation", "tools.browser_session_lifecycle", "tools.environments.base",
+    "tools.environments.local", "tools.process_registry", "tools.terminal_tool_lifecycle",
+    "tools.delegate_tool_resumable", "persistence.sqlite.services", "tools.browser_session",
+    "tools.browser_session_cloud", "tools.browser_launcher", "tui_gateway.launch_profile_policy",
+    "hermes_cli.update_pause_record", "hermes_cli.plugins_session_env", "agent.terminal_env_registry",
+)
+
+
+def preload_stop_path_modules() -> None:
+    """Import every stop-path module while the files on disk still match the running code."""
+    for name in STOP_PATH_MODULES:
+        try:
+            importlib.import_module(name)
+        except Exception:  # health: allow BLE001 -- boot goes on; the stop imports it again then
+            logger.warning("Stop-path module %s did not import at boot; a stop after an in-place upgrade may "
+                           "read it from disk", name, exc_info=True)
 
 async def _start_gateway_replace_existing_instance(existing_pid: int, replace: bool) -> bool:
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
@@ -941,6 +978,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
         _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
         _ensure_windows_gateway_venv_imports()
+        preload_stop_path_modules()
 
         _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
         if _early_verdict is not None:
@@ -979,6 +1017,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         return verdict
 
     finally:
+        exiting = sys.exc_info()[1]  # a verdict the shutdown tail already raised (SystemExit 75), if any
         try:
             if runner is not None:
                 from gateway.run_runtime import drain_gateway_runtime
@@ -988,7 +1027,15 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
                 # yet this is cleanup, not a shutdown: keep startup_failed and the crash markers.
                 if getattr(runner, "_stop_task", None) is None and not getattr(runner, "_running", False):
                     runner._startup_cleanup_only = True
-                await runner.stop()
+                try:
+                    await runner.stop()
+                except Exception as exc:
+                    # _stop_impl's guard logged it. Exit through the entry point's hard exit like every
+                    # other verdict: re-raised, it reaches interpreter finalization, which joins live
+                    # non-daemon workers (an in-flight cron job) for as long as they run.
+                    if isinstance(exiting, SystemExit):
+                        raise exiting from exc
+                    raise SystemExit(1) from exc
         finally:
             if _planned_stop_watcher_stop is not None:
                 _planned_stop_watcher_stop.set()

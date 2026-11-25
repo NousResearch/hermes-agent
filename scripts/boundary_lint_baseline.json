@@ -291,7 +291,6 @@
     "plugins/model-providers/solstice/auth.py hermes_cli.auth_constants.httpx": 1,
     "plugins/model-providers/solstice/transport.py agent.gemini_native_adapter.GeminiAPIError": 1,
     "plugins/model-providers/solstice/transport.py agent.gemini_native_adapter.GeminiNativeClient": 1,
-    "plugins/model-providers/solstice/transport.py agent.gemini_native_adapter.gemini_http_error": 1,
     "plugins/model-providers/tencent-tokenhub/__init__.py agent.reasoning_effort.requested_effort": 1,
     "plugins/model-providers/tencent-tokenhub/__init__.py agent.reasoning_effort.tokenhub_effort": 1,
     "plugins/model-providers/upstage/__init__.py agent.reasoning_effort.EFFORT_LADDER": 1,

@@ -81,6 +81,27 @@ export function verifyMacMetadata(plist, stamp, { commit, tag, channelRequest })
   return version
 }
 
+export function shouldVerifyMacDmg({ tag = '', channelRequest = null, stamp = null } = {}) {
+  const isCommitBuild = channelRequest === null && (!tag || COMMIT_TAG_RE.test(tag))
+  return isCommitBuild ? stamp?.signedDmg === true : true
+}
+
+export function verifyMacDmg(dmg, { exec = execFileSync, spawn = spawnSync } = {}) {
+  if (!dmg || !dmg.endsWith('.dmg') || !fs.existsSync(dmg)) {
+    throw new Error(`Expected an existing .dmg artifact: ${dmg || '(none)'}`)
+  }
+  exec('/usr/bin/codesign', ['--verify', '--verbose=2', dmg], { stdio: 'inherit' })
+  const display = spawn('/usr/bin/codesign', ['-dv', '--verbose=4', dmg], { encoding: 'utf8' })
+  if (display.error || display.status !== 0) {
+    throw new Error(`codesign display failed: ${display.error || display.stderr}`)
+  }
+  const signedTeam = codesignTeam(display.stderr)
+  if (!/^[A-Z0-9]{10}$/.test(signedTeam || '')) throw new Error('DMG has no valid signing team')
+  exec('/usr/bin/xcrun', ['stapler', 'validate', dmg], { stdio: 'inherit' })
+  exec('/usr/sbin/spctl', ['-a', '-vv', '-t', 'open', '--context', 'context:primary-signature', dmg], { stdio: 'inherit' })
+  return { dmg, teamIdentifier: signedTeam }
+}
+
 function verifyMac(app, commit, tag, arch, channelRequest) {
   const expected = bundleIdentity(commit, tag, channelRequest)
 
@@ -134,7 +155,7 @@ function prepareDirectories(work, out) {
 function main() {
   const [command, ...args] = process.argv.slice(2)
   const { values } = parseArgs({ args, options: Object.fromEntries(
-    ['commit', 'tag', 'platform', 'stamp', 'app', 'arch', 'out', 'work', 'channel-request'].map(key => [key, { type: 'string' }])) })
+    ['commit', 'tag', 'platform', 'stamp', 'app', 'dmg', 'identity', 'arch', 'out', 'work', 'channel-request'].map(key => [key, { type: 'string' }])) })
   if (values['channel-request'] !== undefined) {
     // Preserve the raw JSON for the protocol decoder's duplicate-key checks.
     const raw = fs.readFileSync(values['channel-request'], 'utf8')
@@ -146,6 +167,11 @@ function main() {
     identity: () => bundleIdentity(values.commit, values.tag, values.channelRequest),
     stamp: () => verifyBundleStamp(JSON.parse(fs.readFileSync(values.stamp, 'utf8')), values),
     'verify-mac': () => verifyMac(values.app, values.commit, values.tag, values.arch, values.channelRequest),
+    'verify-mac-dmg': () => verifyMacDmg(values.dmg),
+    'should-verify-mac-dmg': () => {
+      const installed = values.identity ? JSON.parse(fs.readFileSync(values.identity, 'utf8')) : null
+      return { verifyMacDmg: shouldVerifyMacDmg({ tag: values.tag, channelRequest: values.channelRequest ?? null, stamp: installed?.stamp ?? null }) }
+    },
     prepare: () => prepareDirectories(values.work, values.out),
   }
   if (!commands[command]) throw new Error(`Unknown command: ${command}`)

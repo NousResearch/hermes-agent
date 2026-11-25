@@ -145,7 +145,7 @@ jobs:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
     if: inputs.e2e
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -275,7 +275,7 @@ jobs:
     # carries the whole tree's wall time against the 60-minute timeout.
     # Skipping this job skips every e2e-upgrade shard with it.
     if: inputs.e2e_upgrade
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
@@ -319,7 +319,9 @@ jobs:
     # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
     name: e2e-upgrade (${{ matrix.shard }})
     needs: e2e-upgrade-plan
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    # 8 vCPU ran each moved shard within 13% of 16; git was already 11% slower on 16
+    # than on 32 vCPU, so it was not halved again.
+    runs-on: ${{ matrix.shard == 'git' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false

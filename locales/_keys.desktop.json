@@ -4626,6 +4626,8 @@
     "shell.approvalMode.manualDescription",
     "shell.approvalMode.off",
     "shell.approvalMode.offDescription",
+    "shell.approvalMode.perProfile",
+    "shell.approvalMode.perProfileDescription",
     "shell.approvalMode.smart",
     "shell.approvalMode.smartDescription",
     "shell.approvalMode.title",

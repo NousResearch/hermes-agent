@@ -1,0 +1,33 @@
+name: sol-pi
+title: SoL-Pi for Hermes
+repo: https://github.com/kvnloo/sol-pi-hermes
+sha: "a2a3328cda3704a74846f2f646b70c50bad79b21"
+subdir: ""
+readme: true
+description: >-
+  Two mechanisms ported from NVIDIA's SoL-Pi (NVlabs/SoL-Pi, MIT). ObservationPack: a tool result
+  over 10 KiB goes to the model in full twice, and after that the outgoing request carries a stable
+  placeholder (id, size, 1 KiB head/tail excerpt) that the model pages back with obs_recall. The
+  stored transcript keeps every byte, and the placeholder is byte-identical on every later request,
+  including after a restart. Action Fusion: sol_pi_write / sol_pi_patch run Hermes' own write_file /
+  patch, and with then_run also one follow-up command through Hermes' terminal tool, so an edit and
+  its check take one model turn. Both are off until enabled in sol-pi.json in the Hermes home.
+  Disclosure — rewrites only the per-call provider request copy through llm_request middleware (no
+  context engine, no core patching). Writes archived tool results and an append-only ledger.jsonl
+  under <hermes home>/sol-pi/<session>/ (0700/0600). Reads sol-pi.json in the Hermes home.
+  sol_pi_write / sol_pi_patch are registered only when actionFusion is on. Fused edits and then_run
+  run through Hermes' write_file / patch / terminal in the calling task/session; dangerous-command
+  approval and the write denylist apply, but nested dispatch currently skips ACP/Zed edit approval,
+  /rollback checkpoints and other plugins' pre_tool_call guards. No host-side reads of edited files.
+  No network calls, telemetry or credentials.
+maintainer: kvnloo
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/kvnloo/sol-pi-hermes/blob/a2a3328cda3704a74846f2f646b70c50bad79b21/README.md
+version: "0.2.0"
+capabilities:
+  provides_tools: [obs_recall, sol_pi_write, sol_pi_patch]
+  provides_hooks: []
+  provides_middleware: [llm_request]
+  requires_env: []

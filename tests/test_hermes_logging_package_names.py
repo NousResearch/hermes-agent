@@ -51,3 +51,16 @@ def test_gateway_diagnostics_keep_their_subsystem_under_the_package_name(package
         ("platform.relay", "gateway.relay.egress"),
         ("gateway", "gateway.run"),
     ]
+
+
+@pytest.mark.parametrize("package", ["", "hermes_agent."])
+def test_formatted_lines_print_the_canonical_logger_name(package):
+    from agent.redact import RedactingFormatter
+    from hermes_logging import _LOG_FORMAT, DisplayNameFormatter
+
+    record = logging.makeLogRecord({"name": f"{package}gateway.run", "levelname": "INFO", "msg": "started"})
+    assert RedactingFormatter(_LOG_FORMAT).format(record).endswith(" INFO gateway.run: started")
+    assert DisplayNameFormatter("%(name)s: %(message)s").format(record) == "gateway.run: started"
+    assert record.name == f"{package}gateway.run"
+    root = logging.makeLogRecord({"name": "hermes_agent", "msg": "x"})
+    assert DisplayNameFormatter("%(name)s").format(root) == "hermes_agent"

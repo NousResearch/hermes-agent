@@ -384,10 +384,7 @@ class TestSourceRootResolution:
         root = tmp_path / "wt"
         root.mkdir()
         (root / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")
-        (root / "tools").mkdir()
-        fake_file = root / "tools" / "self_repo_guard.py"
-        fake_file.write_text("")
-        monkeypatch.setattr(mod, "__file__", str(fake_file))
+        monkeypatch.setattr(mod, "project_root_str", lambda: str(root))
         assert mod.get_running_source_root() == root.resolve()
 
 

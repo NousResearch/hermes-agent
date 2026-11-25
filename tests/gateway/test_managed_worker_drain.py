@@ -6,42 +6,44 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence_assembly import profile_scope
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 @pytest.mark.asyncio
 async def test_reserved_worker_persists_while_runtime_drains(tmp_path):
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
+    from tests.fixtures.storage_seed import seed_session
     from tests.gateway.test_worker_admission_reservation import hello
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, RuntimeStoreError
-    db = SessionDB(tmp_path / 'state.db')
+    from persistence.core.errors import AuthorityRefusal
+    store = storage_handle(tmp_path)
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        db.create_session('owned', 'cli')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path),
+        seed_session(store, 'owned', 'cli')
+        epoch = store.runtime.begin_epoch(instance_id='owner')
+        authority = SimpleNamespace(epoch=epoch, profile_id=str(tmp_path), persistence=store,
             _require_admission_open=lambda: None, logical_owner=lambda sid: sid, sessions={})
-        row = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
-        claim_session_input(db, epoch=epoch, session_id='owned')
-        scope = reserve_admission_worker(authority, admission_id=row['admission_id'], process=process,
+        row, _ = store.admissions.admit(epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        store.admissions.claim(epoch=epoch, session_id='owned')
+        scope = reserve_admission_worker(authority, admission_id=row.admission_id, process=process,
                                          principal_id='human', hello=hello(process))
         actor = SimpleNamespace(subject='human', profile_id=str(tmp_path), capabilities={'worker:adopt'})
         connection = SimpleNamespace(authority=authority, actor=actor)
         identity = {k: v for k, v in scope.items() if k != 'epoch'}
         await worker_request(connection, None, identity, operation='adopt')
         def draining():
-            raise RuntimeStoreError('runtime_draining')
+            raise AuthorityRefusal('runtime_draining')
         authority._require_admission_open = draining
         await worker_request(connection, None, scope | {
             'sequence': 1, 'operation': 'session.prompt', 'payload': {'system_prompt': 'settled while draining'}}, operation='persist')
-        assert db.get_session('owned')['system_prompt'] == 'settled while draining'
-        with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+        assert store.sessions.get('owned').system_prompt == 'settled while draining'
+        with pytest.raises(AuthorityRefusal, match='runtime_draining'):
             await worker_request(connection, None, identity | {'kind': 'compute'}, operation='register')
     finally:
         process.stdin.close()
         process.wait(timeout=5)
-        db.close()
 
 
 @pytest.mark.asyncio
@@ -54,7 +56,7 @@ async def test_draining_ws_redeems_only_worker_ticket(tmp_path, monkeypatch, pur
     from hermes_cli import web_server_chat
     tickets = TicketStore('owner', [str(tmp_path)])
     ticket = tickets.mint(profile_id=str(tmp_path), subject='human', purpose=purpose)
-    authority = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / 'state.db'), profile_id=str(tmp_path), runner=None)
+    authority = SimpleNamespace(persistence=SimpleNamespace(scope=profile_scope(home=tmp_path)), profile_id=str(tmp_path), runner=None)
     runner = SimpleNamespace(_draining=True, session_runtime_descriptor={'state': state},
                              session_authority=authority, session_ticket_store=tickets)
     seen, sent = [], []

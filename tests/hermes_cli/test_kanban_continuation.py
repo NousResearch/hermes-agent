@@ -31,6 +31,21 @@ def prior_attempt(conn):
     return tid, first.current_run_id, comment
 
 
+def test_continuation_retains_gated_assignee_compare_and_swap(board):
+    from hermes_cli.kanban_continuation import resolve_respawn_admission
+
+    tid, source_run, authority = prior_attempt(board)
+    grant = authorize(board, tid, source_run, authority)
+    assert kb.claim_task(board, tid, continuation_id=grant, expect_assignee="other") is None
+    assert kb.get_task(board, tid).current_run_id is None
+    assert resolve_respawn_admission(board, tid, "ready", "active_pr") == (None, grant)
+    claimed = kb.claim_task(board, tid, continuation_id=grant, expect_assignee="builder")
+    assert claimed is not None
+    assert claimed.assignee == "builder"
+    assert claimed.current_run_id != source_run
+    assert kb.claim_task(board, tid, continuation_id=grant, expect_assignee="builder") is None
+
+
 def test_explicit_same_owner_continuation_enters_normal_dispatch(board):
     tid, source_run, authority = prior_attempt(board)
     started = []

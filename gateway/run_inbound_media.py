@@ -46,6 +46,13 @@ def rehome_inbound_media(event: MessageEvent) -> None:
             logger.warning("Could not move inbound attachment %s into the routed profile's cache", raw, exc_info=True)
             continue
         rewritten[i] = str(dest)
+        agent_path = to_agent_visible_cache_path(str(dest))
         if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
-            event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
+            event.text = event.text.replace(raw, agent_path)
+        # A queued voice note's transcript (``_gateway_pending_stt_text``) was built before this move
+        # and carries the audio marker's old path; it replaces ``event.text`` for the turn.
+        pending = getattr(event, "_gateway_pending_stt_text", None)
+        old_agent_path = to_agent_visible_cache_path(raw)
+        if pending and old_agent_path in pending:
+            event._gateway_pending_stt_text = pending.replace(old_agent_path, agent_path)
     event.media_urls = rewritten

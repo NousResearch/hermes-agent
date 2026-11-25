@@ -35,6 +35,8 @@ def _handle_admitted_request(req: dict) -> dict | None:
         response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
+    except SessionNotOwned as exc:  # an off-turn transcript writer lost its idle-released chat: nothing written
+        return _session_not_owned_err(rid, exc)
     except ConfigBackendUnavailable as exc:
         # A SystemExit on purpose (readers must not fall back to defaults), so no ``except
         # Exception`` below catches it: this request still owes its caller one answer.

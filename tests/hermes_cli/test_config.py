@@ -593,7 +593,7 @@ class TestSaveConfigAtomicity:
 
             # Simulate a crash mid-dump: the round-trip writer raises after the temp file is
             # created but before replace.
-            with patch("utils._roundtrip_dump", side_effect=OSError("disk full")):
+            with patch("utils.files._roundtrip_dump", side_effect=OSError("disk full")):
                 try:
                     config["model"] = "should-not-persist"
                     save_config(config)

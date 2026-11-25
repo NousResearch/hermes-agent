@@ -91,9 +91,7 @@ def _make_runner(*, compression_in_flight: bool):
     runner.session_store = session_store
 
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -128,7 +126,7 @@ def _make_runner(*, compression_in_flight: bool):
     # GRACE_SECONDS, default 3.0s) so the message reaches the PRIORITY
     # interrupt/steer/subagent-demotion block instead of the earlier
     # "just started, queue without interrupt" grace-period branch.
-    runner._running_agents_ts[sk] = time.time() - 120
+    runner._session_state(sk).turn.started_ts = time.time() - 120
     return runner, agent_mock, sk
 
 

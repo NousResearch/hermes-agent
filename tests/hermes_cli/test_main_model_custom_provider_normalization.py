@@ -2,12 +2,12 @@
 
 from unittest.mock import patch
 
-from hermes_cli.web_server_config import _normalize_main_model_assignment
+from hermes_cli.model_assignment import normalize_main_model_assignment
 
 
 def _normalize(config, provider, model="vendor/model-a"):
     with patch("hermes_cli.config.load_config", return_value=config):
-        return _normalize_main_model_assignment(provider, model)
+        return normalize_main_model_assignment(provider, model)
 
 
 def test_providers_block_keeps_declared_bare_slug():

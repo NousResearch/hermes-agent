@@ -181,6 +181,31 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
             ("sunburst", "Slower", "Precision editing, subject and composition consistency"),
         )
     },
+    # Images 2.6 (Nov 4): same token pricing and size/quality keys as 2.5, plus GIF/SVG output and reasoning_effort
+    # knobs the tool surface doesn't expose (formats stay raster). Its edit schema declares no input_fidelity.
+    **{
+        f"openai/gpt-image-2.6/{variant}/text-to-image": _model(
+            f"GPT Image 2.6 {variant.title()}", speed, strengths, "Token-based pricing",
+            sizes={
+                "landscape": "landscape_4_3", "square": "square_hd", "portrait": "portrait_4_3",
+            },
+            defaults={"quality": "medium", "num_images": 1, "output_format": "png"},
+            supports={
+                "prompt", "image_size", "quality", "num_images", "output_format", "background",
+                "output_compression", "sync_mode",
+            },
+            edit_endpoint=f"openai/gpt-image-2.6/{variant}/edit",
+            edit_supports={
+                "prompt", "image_urls", "image_size", "quality", "num_images", "output_format",
+                "background", "output_compression", "sync_mode", "mask_url",
+            },
+            max_reference_images=16,
+        )
+        for variant, speed, strengths in (
+            ("flare", "Fast", "Latest OpenAI image model, everyday creation and editing"),
+            ("sunburst", "Slower", "Latest OpenAI image model, precision editing and consistency"),
+        )
+    },
     "fal-ai/ideogram/v3": _model(
         "Ideogram V3", "~5s", "Best typography", "$0.03-0.09/image",
         defaults={"rendering_speed": "BALANCED", "expand_prompt": True, "style": "AUTO"},

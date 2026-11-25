@@ -36,13 +36,14 @@ from agent.conversation_compression import (
     compression_blocked_transiently,
     run_compress_context_with_progress_timeout,
 )
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent(tmp_path: Path, session_id: str, db: SessionDB | None = None):
+def _build_agent(tmp_path: Path, session_id: str, db=None):
     if db is None:
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id, source="cli")
+        db = storage_handle(tmp_path)
+        seed_session(db, session_id, "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -51,7 +52,7 @@ def _build_agent(tmp_path: Path, session_id: str, db: SessionDB | None = None):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -207,10 +208,10 @@ class TestDurableAttemptBackoff:
             "stall before restart", failure_kind="stall_interrupted"
         )
         # Precondition: row is durable in this DB file.
-        assert db.get_compression_failure_cooldown("BACKOFF_RESTART")
-        # Simulated restart: brand-new SessionDB handle + brand-new agent
+        assert db.messages.read_compression_cooldown("BACKOFF_RESTART", time.time())
+        # Simulated restart: brand-new storage handle + brand-new agent
         # objects rebuilt from the same state.db file.
-        db2 = SessionDB(db_path=tmp_path / "state.db")
+        db2 = storage_handle(tmp_path)
         _db2, agent2 = _build_agent(tmp_path, "BACKOFF_RESTART", db=db2)
         cooldown = agent2.context_compressor.get_active_compression_failure_cooldown(
             refresh=True
@@ -226,10 +227,10 @@ class TestDurableAttemptBackoff:
         db, agent = _build_agent(tmp_path, "BACKOFF_CLEAR")
         compressor = agent.context_compressor
         compressor.record_timeout_failure("stall", failure_kind="stalled")
-        assert db.get_compression_failure_cooldown("BACKOFF_CLEAR")
+        assert db.messages.read_compression_cooldown("BACKOFF_CLEAR", time.time())
         # What a successful compression does on commit:
         compressor._clear_compression_failure_cooldown()
-        assert db.get_compression_failure_cooldown("BACKOFF_CLEAR") is None
+        assert db.messages.read_compression_cooldown("BACKOFF_CLEAR", time.time()) is None
         assert compressor.should_compress_info(500_000)[0] is True
 
 
@@ -244,8 +245,9 @@ class TestDurableAttemptBackoff:
         monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (120.0, 600.0))
         compressor.record_timeout_failure("stall", failure_kind="stalled")
         assert compressor._summary_failure_cooldown_until - time.monotonic() >= 119.0
-        durable = db.get_compression_failure_cooldown("BACKOFF_FLOOR")
-        assert durable is not None and durable["remaining_seconds"] >= 119.0
+        now = time.time()
+        durable = db.messages.read_compression_cooldown("BACKOFF_FLOOR", now)
+        assert durable is not None and durable.until - now >= 119.0
 
         compressor._clear_compression_failure_cooldown()
         monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.05, 1.0))
@@ -278,8 +280,8 @@ class TestSupersessionDiscardsLateResults:
         )
         assert live == original
         # Session stayed writable and unrotated.
-        assert db.get_compression_lock_holder("SUPERSEDE") is None
-        db.append_message("SUPERSEDE", "assistant", "still writable")
+        assert db.coordination.get_compression_lock_holder(session_id="SUPERSEDE") is None
+        seed_messages(db, "SUPERSEDE", {"role": "assistant", "content": "still writable"})
 
 
 class TestTransientBlockIsNotExhaustion:

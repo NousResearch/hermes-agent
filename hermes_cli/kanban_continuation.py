@@ -102,7 +102,8 @@ def resolve_respawn_admission(conn, task_id, lane, guard_reason):
     return guard_reason, None
 
 
-def claim_ready_task(conn, task_id, *, ttl_seconds=None, claimer=None, continuation_id=None):
+def claim_ready_task(conn, task_id, *, ttl_seconds=None, claimer=None, expect_assignee=None,
+                     continuation_id=None):
     """Native claim transaction, with optional exact-grant CAS and atomic consumption."""
     from hermes_cli import kanban_db as kb
     now = int(time.time())
@@ -119,7 +120,8 @@ def claim_ready_task(conn, task_id, *, ttl_seconds=None, claimer=None, continuat
             kb._append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
             return None
         kb._reclaim_dangling_run(conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim")
-        run_id = kb._claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = kb._claim_and_open_run(conn, task_id, "ready", lock, expires, now,
+                                        expect_assignee=expect_assignee)
         if run_id is None:
             return None
         if continuation_id is not None:

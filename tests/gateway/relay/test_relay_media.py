@@ -73,8 +73,12 @@ class FakeMediaClient:
         self.downloads.append(url)
         return self.download_result
 
+    async def download_with_name(self, url, *, suggested_name=None):
+        path = await self.download(url, suggested_name=suggested_name)
+        return (path, suggested_name or "") if path else None
+
     def is_relay_media_url(self, url: str) -> bool:
-        return "/relay/media/" in (url or "")
+        return RelayMediaClient("https://conn.example", "gw1", "sec").is_relay_media_url(url)
 
 
 def _adapter(**desc_kw) -> tuple[RelayAdapter, StubConnector, FakeMediaClient]:
@@ -280,7 +284,7 @@ def test_is_relay_media_url_distinguishes_rehost_from_public():
     public URLs (CDN pass-throughs) do not. None/empty never raise."""
     c = RelayMediaClient("https://conn.example", "gw1", "sec")
     assert c.is_relay_media_url("https://conn.example/relay/media/aa11") is True
-    assert c.is_relay_media_url("http://other.host:8080/relay/media/x") is True
+    assert c.is_relay_media_url("http://other.host:8080/relay/media/x") is False
     assert c.is_relay_media_url("https://cdn.discordapp.com/attachments/1/2/v.ogg") is False
     assert c.is_relay_media_url("https://conn.example/relay/mediafile") is False
     assert c.is_relay_media_url("") is False
@@ -330,3 +334,133 @@ async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypa
     assert await c.download("https://cdn.discordapp.com/attachments/1/2/i.png")
     assert asked[-1] == "https://cdn.discordapp.com/attachments/1/2/i.png"
     assert len(seen) == 1 and "Authorization" not in seen[0]
+
+
+@pytest.mark.parametrize(
+    ("base", "url", "expected"),
+    [
+        ("https://conn.example", "https://conn.example/relay/media/abc", True),
+        ("https://conn.example", "https://conn.example:443/relay/media/abc", True),
+        ("https://conn.example:443", "https://CONN.example/relay/media/abc", True),
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/abc", True),
+        # The issue's examples: same path segment on a foreign origin.
+        ("https://conn.example", "https://evil.example/relay/media/abc", False),
+        ("https://conn.example", "https://cdn.example/files/relay/media/photo.png", False),
+        ("https://conn.example", "https://conn.example.evil.example/relay/media/abc", False),
+        ("https://conn.example", "http://conn.example/relay/media/abc", False),
+        ("https://conn.example", "https://conn.example:8443/relay/media/abc", False),
+        ("https://conn.example", "https://conn.example/files/relay/media/abc", False),
+        ("https://conn.example/team-a", "https://conn.example/relay/media/abc", False),
+        ("https://conn.example", "https://evil.example@conn.example/relay/media/abc", False),
+        ("https://conn.example", "https://conn.example:bad/relay/media/abc", False),
+        ("", "https://conn.example/relay/media/abc", False),
+        # Dot segments a normalizing proxy would resolve outside the base path.
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/../../team-b/x", False),
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/%2e%2e/%2E%2E/team-b/x", False),
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/..%5c..%5cteam-b/x", False),
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/a..b", True),
+    ],
+)
+def test_is_relay_media_url_requires_connector_origin_and_base_path(base, url, expected):
+    assert RelayMediaClient(base, "gw1", "sec").is_relay_media_url(url) is expected
+
+
+@pytest.mark.asyncio
+async def test_download_never_sends_bearer_to_foreign_origin_with_relay_path(monkeypatch):
+    """A platform-supplied URL on another host that merely contains /relay/media/
+    is fetched as public media: no connector bearer leaves the gateway (#71559)."""
+    seen: list[tuple[str, dict]] = []
+
+    class _Resp:
+        headers = {"Content-Type": "image/png", "Content-Length": "4"}
+
+        def read(self, *_a):
+            return b"\x89PNG"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        seen.append((req.full_url, dict(req.headers)))
+        return _Resp()
+
+    import urllib.request as _ur
+
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
+    c = RelayMediaClient("https://conn.example", "gw1", "sec")
+    hostile = "https://evil.example/relay/media/abc.png"
+    path = await c.download(hostile)
+    assert path
+    Path(path).unlink(missing_ok=True)
+    assert [u for u, _h in seen] == [hostile]
+    assert "Authorization" not in seen[0][1]
+
+
+@pytest.mark.asyncio
+async def test_inbound_failed_foreign_url_with_relay_path_is_kept_as_public():
+    """Only the connector's own dead re-hosts are dropped; a foreign URL that fails
+    to download keeps its value as a URL like any other public attachment."""
+    adapter, _stub, fake = _adapter()
+    fake.download_result = None
+    foreign = "https://cdn.example/files/relay/media/photo.png"
+    event = _make_event(["https://conn.example/relay/media/dead", foreign])
+    await adapter._localize_inbound_media(event)
+    assert event.media_urls == [foreign]
+
+
+@pytest.mark.asyncio
+async def test_rehost_on_another_origin_names_both_origins_once(monkeypatch, caplog):
+    """A connector whose PUBLIC_BASE_URL differs from GATEWAY_RELAY_URL mints re-hosts the
+    bearer no longer reaches: the lost attachment is logged with both origins, once."""
+    import urllib.error
+    import urllib.request as _ur
+
+    def _unauthorized(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(_ur, "urlopen", _unauthorized)
+    c = RelayMediaClient("https://relay.example/team-a", "gw1", "sec")
+    with caplog.at_level("WARNING", logger="gateway.relay.media"):
+        assert await c.download("https://pilot.example/relay/media/a") is None
+        assert await c.download("https://pilot.example/relay/media/b") is None
+        assert await c.download("https://cdn.example/attachments/1/v.ogg") is None
+        # Same origin, outside the base path: refused, but not an origin mismatch.
+        assert await c.download("https://relay.example/relay/media/c") is None
+        assert await c.download("http://pilot.example/relay/media/d") is None
+        c._warn_foreign_rehost("https://[::1/relay/media/x")  # urlsplit refuses it; no raise
+    hints = [r.getMessage() for r in caplog.records if "PUBLIC_BASE_URL" in r.getMessage()]
+    assert len(hints) == 2
+    assert "https://pilot.example" in hints[0] and "https://relay.example/team-a" in hints[0]
+    assert "http://pilot.example" in hints[1]
+
+
+@pytest.mark.asyncio
+async def test_malformed_url_does_not_abort_later_attachments(monkeypatch):
+    """One unparseable media URL skips only its own entry: the re-host after it is
+    still localized instead of being left as a remote URL."""
+    class _Resp:
+        headers = {"Content-Type": "image/png", "Content-Length": "4"}
+
+        def read(self, *_a):
+            return b"\x89PNG"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    import urllib.request as _ur
+
+    monkeypatch.setattr(_ur, "urlopen", lambda req, timeout=None: _Resp())
+    adapter, _stub, _fake = _adapter()
+    adapter._media_client = RelayMediaClient("https://conn.example", "gw1", "sec")
+    event = _make_event(["https://[::1/relay/media/x", "https://conn.example/relay/media/good"])
+    await adapter._localize_inbound_media(event)
+    bad, local = event.media_urls[0], Path(event.media_urls[1])
+    assert bad == "https://[::1/relay/media/x"  # not a re-host of ours: kept like any public URL
+    assert local.is_file()
+    local.unlink()

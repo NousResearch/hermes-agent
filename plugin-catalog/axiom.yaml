@@ -1,0 +1,11 @@
+name: axiom
+repo: https://github.com/arjunbagga-xyz/hermes-axiom
+sha: 2e53a66d67ea90d70c5307859be006702a85abdc
+title: Axiom
+description: Neuro-symbolic SymPy conservation-law compiler that verifies mathematical,
+  financial, and physical invariants before user output.
+maintainer: arjunbagga-xyz
+tier: community
+category: tools
+version: 0.1.0
+docs_url: https://github.com/arjunbagga-xyz/hermes-axiom#readme

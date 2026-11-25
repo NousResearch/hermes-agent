@@ -8,6 +8,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from persistence_assembly import store_location
+
 KEY = 'off-loop-admission-key-long-enough'
 HOLD_S = 1.5
 AUTH = {'Authorization': 'Bearer ' + KEY}
@@ -40,7 +42,7 @@ async def test_admission_waits_for_the_writer_off_the_owner_loop(api, owner, mon
                                             'runs': '_handle_runs'}[name]))
     async with TestClient(TestServer(app)) as client:
         # Another process holds the profile's state.db writer for HOLD_S (a long transaction).
-        holder = sqlite3.connect(owner.db.db_path, timeout=0, isolation_level=None, check_same_thread=False)
+        holder = sqlite3.connect(store_location(owner.persistence.scope), timeout=0, isolation_level=None, check_same_thread=False)
         holder.execute('BEGIN IMMEDIATE')
         threading.Timer(HOLD_S, lambda: holder.execute('COMMIT')).start()
         request = asyncio.create_task(client.post(path, json=body, headers={**AUTH, **headers}))

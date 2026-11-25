@@ -5,6 +5,16 @@ import { getAppSigningResult } from './mac-sign.mjs'
 import { remainingNotaryBudgetMs, resolveNotaryAuth, runCommand, submitAndStaple, validateStapled } from './notarize.mjs'
 
 export async function resolveDmgSigningIdentity(packager, { env = process.env } = {}) {
+  // Only the certificate electron-builder signed the app with may sign its DMG; never pick another one.
+  const recorded = getAppSigningResult(packager)
+  if (recorded) {
+    return {
+      identity: recorded.identity === '-' ? null : recorded.identity,
+      keychain: recorded.keychain
+    }
+  }
+
+  // The app is unsigned: the signing settings only decide whether that was intended.
   const signConfig = packager?.platformOptions?.sign
   if (signConfig === null || (typeof signConfig === 'object' && signConfig?.identity === null)) {
     return { identity: null, keychain: null }
@@ -14,15 +24,6 @@ export async function resolveDmgSigningIdentity(packager, { env = process.env } 
   const qualifier = typeof rawQualifier === 'string' && rawQualifier.trim() ? rawQualifier.trim() : null
   if (qualifier === '-' || (!qualifier && env.CSC_IDENTITY_AUTO_DISCOVERY === 'false')) {
     return { identity: null, keychain: null }
-  }
-
-  // Only the certificate electron-builder signed the app with may sign its DMG; never pick another one.
-  const recorded = getAppSigningResult(packager)
-  if (recorded) {
-    return {
-      identity: recorded.identity === '-' ? null : recorded.identity,
-      keychain: recorded.keychain
-    }
   }
 
   const info = await packager?.codeSigningInfo?.value

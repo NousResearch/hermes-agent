@@ -400,6 +400,30 @@ test('a build electron-builder left unsigned never signs its DMG with another ke
   }
 })
 
+test('a recorded app signature signs the DMG even when the signing settings would skip an unsigned build', async () => {
+  for (const env of [{ CSC_IDENTITY_AUTO_DISCOVERY: 'false' }, { CSC_NAME: '-' }]) {
+    const name = JSON.stringify(env)
+    const f = await createBuilderFixture()
+    await signAppWith(f)
+    const calls = []
+    const run = vi.fn(async (command, args) => {
+      calls.push([command, ...args])
+      if (command === 'xcrun' && args[0] === 'notarytool') {
+        return { stdout: JSON.stringify({ id: SUBMISSION_ID, status: 'Accepted' }), stderr: '' }
+      }
+      return { stdout: '', stderr: '' }
+    })
+    await notarizeDmg(
+      { file: f.dmgPath, target: f.dmgTarget, packager: f.packager },
+      { run, env: { ...f.signedEnv, ...env }, sleep: vi.fn(), log: vi.fn() }
+    )
+    expect(calls, name).toContainEqual([
+      'codesign', '--force', '--sign', IDENTITY_HASH, '--timestamp', '--verbose', '--keychain', f.keychainFile, f.dmgPath
+    ])
+    expect(calls.some(c => c[0] === 'xcrun' && c[1] === 'notarytool' && c[2] === 'submit'), name).toBe(true)
+  }
+})
+
 test('non-DMG artifacts and non-darwin packagers are ignored', async () => {
   const f = await createBuilderFixture()
   const run = vi.fn()

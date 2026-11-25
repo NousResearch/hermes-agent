@@ -1466,6 +1466,35 @@ line height, a duration or a z-index fails once a file's count rises above its
 ratchet (`scripts/desktop_design_tokens_baseline.json`, which may only go down),
 and a `var(--portal-…)` naming an undefined token always fails.
 
+### Adding a surface without drift
+
+What is true today; extend this as the guards grow.
+
+1. **Start from what exists.** A page is `PageHeader` / `PageTabs` on the page stage
+   (`portal-pages.css`); a settings-like list is `SettingsCard` and its rows; controls, menus,
+   dialogs and popovers are `components/ui/*`, which take the redesign's look through their
+   `data-slot` (`portal-controls.css`, `portal-floating.css`). The in-app gallery
+   (`app/redesign/design-system/`) shows every primitive; look there before writing a new row, chip,
+   table or empty state.
+2. **Put the stylesheet under the guard.** A stylesheet only the redesign renders goes on
+   `_REDESIGN_ONLY` in `scripts/check_desktop_design_tokens.py` (every rule judged). In a stylesheet
+   classic also renders, gate each rule on `:root[data-shell='portal']` (only gated rules are
+   judged, and classic is untouched). A stylesheet on neither path is not checked at all.
+3. **Write values as tokens.** Colour, ink mix, radius, font size, tracking, px line height,
+   duration and z-index come from `src/app/redesign/tokens/`; in TSX use the `ds-` utilities. The
+   guard rejects a new literal of those kinds in a judged rule, a `--portal-*` property given a
+   literal outside `tokens/`, and a `var(--portal-…)` that nothing defines. A file's baseline count
+   may only go down, so a new file starts at zero.
+4. **A value with no token.** If it is a role the language lacks, add the token in `tokens/` (one
+   role, named for what it is for, not its value), regenerate the tables (`--write-docs`) and use
+   it. If it is a one-off the design asks for (an optical offset), keep the literal with
+   `/* token-exempt: why */`.
+5. **Not yet guarded, so on you:** spacing (padding, margin, gap), font weight, disabled opacity,
+   and older `--ui-*` names in redesign-only CSS. Use the page and row tokens in `space.css` where
+   one fits.
+6. **Lint.** `hermes-desktop/no-portal-arbitrary` warns on arbitrary visual Tailwind values in
+   redesign-only TSX; a new redesign-only folder joins its `files` list in `eslint.config.mjs`.
+
 ## Surfaces & elevation
 
 Floating panels (base `Dialog`, route overlays, boot/install/update surfaces,

@@ -80,7 +80,8 @@ _REDESIGN_ONLY = (
     re.compile(r"^app/routines/[^/]+\.css$"),
     re.compile(r"^app/overlays/panel\.css$"),
     re.compile(r"^app/(library/library|messaging/messaging|session-import/session-import|page-search-shell)\.css$"),
-    re.compile(r"^app/capabilities/ui/capability-search\.css$"),
+    re.compile(r"^app/capabilities/ui/(capability-search|page)\.css$"),
+    re.compile(r"^app/discovery/discovery\.css$"),
     re.compile(r"^app/chat/(stage|items/chat-items)\.css$"),
     re.compile(r"^components/(onboarding/surface|ui/pixel-icon)\.css$"),
 )

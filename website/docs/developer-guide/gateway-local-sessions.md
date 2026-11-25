@@ -77,8 +77,9 @@ nothing.
 
 Each turn a connection submits is stamped with its label (`surface_v1.client` on the admission,
 never a `prompt.submit` field; a retry from another or no label is the same request). Plugins read
-the turn's label with `hermes_cli.plugin_session.turn_client()` and the attached connections with
-their idle data with `session_viewers()`.
+the turn's label with `hermes_cli.plugin_session.turn_client()`, whether Hermes itself started the
+turn (a wake, not a submit) with `turn_internal()`, and the attached connections with their idle data
+with `session_viewers()`.
 
 Attach another authenticated viewer with `session.resume({session_id})`, and submit
 through `prompt.submit({session_id, submission_id, text})`. The accepted receipt is durable

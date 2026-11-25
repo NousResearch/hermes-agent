@@ -146,6 +146,22 @@ class MessageEvent:
     _admitted_before_drain: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # ``internal`` as admission found it, recorded before an API turn is marked internal for trust.
+    _started_by_hermes: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+
+    def started_by_hermes(self) -> Optional[bool]:
+        """Whether Hermes produced this turn's input itself rather than relaying someone's message.
+        ``None`` for a synthetic turn that is not internal (a goal continuation may follow a
+        person's ``/goal``) and for an API event admission did not record: the API marks every
+        turn it executes internal for trust, so there ``internal`` alone says nothing."""
+        event: Optional[MessageEvent] = self
+        while event is not None:
+            if event._started_by_hermes is not None:
+                return event._started_by_hermes
+            event = getattr(event, "_rewritten_from", None)
+        if self.internal:
+            return None if getattr(getattr(self.source, "platform", None), "value", None) == "api_server" else True
+        return None if self.inherit_channel_pin else False
 
     def accept_interrupt(self) -> None:
         """The runner's stop/reset handler ran (past admission and slash access): the receiving adapter

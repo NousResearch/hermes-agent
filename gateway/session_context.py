@@ -227,6 +227,13 @@ def _bound_session_value(name: str) -> Any:
     return _UNSET if var is None else var.get()
 
 
+def turn_started_by_hermes() -> bool | None:
+    """``MessageEvent.started_by_hermes`` of the turn this context runs, ``None`` with no turn bound
+    (a managed worker, cron, the CLI or a plugin's slash command bind no event)."""
+    event = _SESSION_TURN_EVENT.get()
+    return event.started_by_hermes() if event is not None else None
+
+
 def bound_session_env(name: str) -> str:
     """``get_session_env`` without the ``os.environ`` fallback: ``""`` when THIS context never bound
     *name*, so a caller outside a turn never reads the process's (or another session's) values."""

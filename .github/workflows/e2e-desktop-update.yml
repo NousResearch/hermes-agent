@@ -32,7 +32,7 @@ concurrency:
 jobs:
   update:
     name: Desktop install/update E2E (Linux, ${{ matrix.cell }})
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 30
     # Required whenever the e2e_desktop_update lane fires (see ci.yaml): it was
     # advisory until it proved stable, and every main push shard since has passed.

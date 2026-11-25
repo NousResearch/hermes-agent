@@ -6,18 +6,19 @@ import sys
 import pytest
 
 from tools.computer_use import tool
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 
 @pytest.fixture
 def backend(monkeypatch):
-    tool.reset_backend_for_tests()
-    monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
+    reset_backend()
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: NoopBackend())
     # Input actions are approval-gated; a CI runner has no approver, so the gate would block
     # before the dispatch this test is about. Same seam the capture-fence tests use.
     monkeypatch.setattr(tool, "_request_approval", lambda *a, **k: None)
     value = tool._get_backend()
     yield value
-    tool.reset_backend_for_tests()
+    reset_backend()
 
 
 @pytest.mark.parametrize("host_platform", [

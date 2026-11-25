@@ -31,7 +31,6 @@ pytest.importorskip(
 )
 
 from tools.mcp_oauth import (
-    build_oauth_auth,
     token_request_user_agent,
 )
 from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
@@ -117,13 +116,12 @@ def _manager_builder(server_name, server_url, cfg):
 
 
 @pytest.mark.parametrize("builder", [
-    pytest.param(build_oauth_auth, id="build_oauth_auth"),
     pytest.param(_manager_builder, id="oauth_manager"),
 ])
 def test_token_requests_carry_the_configured_user_agent(
     builder, tmp_path, monkeypatch
 ):
-    """Both token-endpoint requests, on both provider construction paths."""
+    """Both token-endpoint requests."""
     provider = _build_provider_via(
         builder, monkeypatch, tmp_path, {"user_agent": "My-MCP-Client/1.0"}
     )
@@ -139,7 +137,6 @@ def test_token_requests_carry_the_configured_user_agent(
 
 
 @pytest.mark.parametrize("builder", [
-    pytest.param(build_oauth_auth, id="build_oauth_auth"),
     pytest.param(_manager_builder, id="oauth_manager"),
 ])
 def test_unconfigured_user_agent_falls_back_to_the_hermes_default(
@@ -167,7 +164,7 @@ def test_user_agent_does_not_disturb_token_auth_preparation(tmp_path, monkeypatc
     """The stamp runs after prepare_token_auth — a confidential client's
     Authorization header must survive alongside the custom User-Agent."""
     provider = _build_provider_via(
-        build_oauth_auth, monkeypatch, tmp_path,
+        _manager_builder, monkeypatch, tmp_path,
         {"user_agent": "UA/1", "client_id": "pre", "client_secret": "shh",
          "token_endpoint_auth_method": "client_secret_basic"},
     )

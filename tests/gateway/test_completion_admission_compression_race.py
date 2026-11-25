@@ -1,7 +1,6 @@
 """Regression for the compression-after-admission result-loss window in #136225."""
 
 import asyncio
-from typing import Any, cast
 
 import pytest
 
@@ -10,6 +9,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionSource
 from tools import async_delegation as ad
+from tests.fixtures.storage_seed import seed_session
 
 
 class _QueuedTransport(BasePlatformAdapter):
@@ -57,8 +57,8 @@ async def test_queued_completion_after_admission_preserves_result_or_user_bounda
                 platform=Platform.TELEGRAM, chat_id="post-admission", chat_type="dm",
             ))
             owner = entry.session_id
-            db = cast(Any, store._db)
-            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
+            db = store.persistence
+            seed_session(db, "worker", "subagent", model_config={"_delegate_from": owner})
 
             async def unused_handler(event):
                 raise AssertionError("the busy guard must keep the completion queued")
@@ -82,25 +82,26 @@ async def test_queued_completion_after_admission_preserves_result_or_user_bounda
             assert queued.metadata["gateway_proven_session_id"] == owner
 
             if route_change == "compression":
-                db.create_session("tip", source="telegram", parent_session_id=owner)
-                db.end_session(owner, end_reason="compression")
+                seed_session(db, "tip", "telegram", parent_session_id=owner)
+                db.sessions.end(owner, "compression")
                 assert store.advance_compression_session(entry.session_key, owner, "tip") is not None
             elif route_change == "new":
                 assert store.reset_session(entry.session_key) is not None
             elif route_change == "resume":
-                db.create_session("other", source="telegram")
+                seed_session(db, "other", "telegram")
                 assert store.switch_session(entry.session_key, "other", expected_session_id=owner) is not None
 
-            original_get = runner._session_db.get_session
+            sessions = runner.persistence.sessions
+            original_get = sessions.get
             fault_reads = []
 
-            async def transient_owner_read(sid):
+            def transient_owner_read(sid):
                 if transient_read and sid == owner:
                     fault_reads.append(sid)
                     raise RuntimeError("transient SQLite session-row read failure")
-                return await original_get(sid)
+                return original_get(sid)
 
-            monkeypatch.setattr(runner._session_db, "get_session", transient_owner_read)
+            monkeypatch.setattr(sessions, "get", transient_owner_read)
             resolved = await runner._hmwa_resolve_session(queued, queued.source)
             delivered = ad.get_durable_delegation(event["delegation_id"])
             assert delivered is not None

@@ -324,6 +324,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     from pm import receipt
     from pm.client import ensure_tools_for_sync
     from pm.environments import activation_environment, project_python
+    from pm.extras import first_generation_selection
 
     root = Path(request["source"])
     update_id = request["receipt"]["update_id"]
@@ -351,8 +352,10 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # This file runs from the new tree, so its lockfile carries the new
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
             ensure_tools_for_sync()
-            # An update never fails because of a plugin: misfits are disabled and reported.
-            pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            # An update never fails because of a plugin: misfits are disabled and reported. A
+            # pre-PM tree that reached this code with no recorded selection carries its old venv.
+            pm.sync_venv(first_generation_selection(root), explicit=True, project_root=root,
+                         evict_incompatible_plugins=True)
             collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
@@ -457,6 +460,10 @@ def _complete_selected(request: dict) -> bool:
         record_stage("restart", "skipped")
         print(f"  ✓ Gateway restart skipped: {skip}.")
         return complete
+    # This is a fresh interpreter: the gateways the pause left running with their restart pending ride
+    # the request's token, so the fleet restart does not wait the full drain on them a second time.
+    from hermes_cli.update_cmd_posix_pause import adopt_left_pending
+    adopt_left_pending(request["windows_resume"])
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
@@ -569,6 +576,9 @@ def main() -> int:
         raise ValueError("completion checkout does not match request")
     # -I deliberately ignores inherited PYTHONPATH during PM preparation.
     sys.path.insert(0, str(root))
+    from hermes_agent.compat import install
+
+    install()
     sys.stdout = _ForwardedOutput(sys.stdout, request.get("stdout_isatty", False))
     if "--prepared" in sys.argv[3:]:
         # Claim the selected generation's lease and process its .pth files only

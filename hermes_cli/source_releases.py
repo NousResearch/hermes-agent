@@ -358,15 +358,15 @@ def _resolve_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
     if not isinstance(sha, str) or not _SHA.fullmatch(sha):
         raise ValueError(f"No published commit for release {tag}")
     if git_cmd is not None:
-        from hermes_cli.source_check import source_git_env
+        from hermes_cli.source_check import remote_git_run
 
         ref = f"refs/tags/{tag}"
-        result = subprocess.run(
-            [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
-            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=True, timeout=60, stdin=subprocess.DEVNULL,
-            env=source_git_env(),
-        )
+        argv = [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"]
+        result = remote_git_run(argv, cwd=cwd, timeout=60)
+        if result is None:
+            raise subprocess.TimeoutExpired(argv, 60)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode, argv, result.stdout, result.stderr)
         refs = dict((parts[1], parts[0]) for line in result.stdout.splitlines()
                     if len(parts := line.split()) == 2)
         if refs.get(ref + "^{}", refs.get(ref)) != sha:

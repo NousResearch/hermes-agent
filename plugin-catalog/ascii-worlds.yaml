@@ -1,34 +1,39 @@
 name: ascii-worlds
 repo: https://github.com/dudicslevente/hermes-ascii-worlds
-sha: ba8faabd33426a1a56353d19f16fd89aef025d60
+sha: 0b18510f7d34ac9ae09ddd60af7da5a341defe40
 title: ASCII Worlds
 description: >-
-  Twenty quiet habitats drawn live in text glyphs for Hermes Desktop: koi, jellyfish,
-  mantas, sea turtles, seahorses, a fish school, a whale, an octopus, butterflies, luna
-  moths, dragonflies, swallows, a sleeping cat, an owl, falling leaves and petals,
-  fireflies, bubbles, dandelion seeds and a night sky. Choose a habitat and its controls
-  in Settings -> Plugins -> ASCII Worlds, and optionally let it animate across the whole
-  window. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools,
-  hooks, middleware, env vars or network access.
+  Thirty-seven quiet habitats drawn live in text glyphs for Hermes Desktop: koi, jellyfish,
+  mantas, sea turtles, seahorses, a fish school, a whale, an octopus, hammerheads circling a
+  bait ball, an anglerfish, butterflies, luna moths, dragonflies, swallows, a sleeping cat,
+  axolotls, an owl, falling leaves and petals, fireflies, bubbles, dandelion seeds and a night
+  sky with the real moon phase, plus pipes and thirteen character scenes: a platypus,
+  capybara, penguins, rubber ducks, a pastry cat, a dinosaur runner, a dragon, bees, a wizard,
+  arcade cabinets, a self-playing snake, a pirate ship and a rooftop ninja. Choose a habitat
+  and its controls in Settings -> Plugins -> ASCII Worlds, and optionally let it animate across
+  the whole window. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent
+  tools, hooks, middleware, env vars or network access.
 maintainer: dudicslevente
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/dudicslevente/hermes-ascii-worlds#readme
-version: "1.2.0"
-image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/banner.png
+version: "1.4.0"
+image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/0b18510f7d34ac9ae09ddd60af7da5a341defe40/docs/images/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/overview.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/octopus-dark.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/sea-turtles-dark.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/sleeping-cat-dark.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/settings.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/butterflies-light.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/0b18510f7d34ac9ae09ddd60af7da5a341defe40/docs/images/overview.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/0b18510f7d34ac9ae09ddd60af7da5a341defe40/docs/images/new-in-1.4.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/0b18510f7d34ac9ae09ddd60af7da5a341defe40/docs/images/habitats/platypus-creek-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/0b18510f7d34ac9ae09ddd60af7da5a341defe40/docs/images/habitats/dragon-hoard-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/0b18510f7d34ac9ae09ddd60af7da5a341defe40/docs/images/habitats/pirate-ship-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/0b18510f7d34ac9ae09ddd60af7da5a341defe40/docs/images/settings.png
 platforms: []
 known_issues:
-  - The author hand-tested the plugin on macOS with Hermes Desktop. The screenshots are browser captures of the plugin's own preview and settings page.
-  - Fine glyph density at full speed, high counts and the optional whole-window layer use noticeable CPU. Battery saver and a bolder density turn the cost down.
+  - The author reviewed the 1.4.0 release candidates on macOS with Hermes Desktop (a general test; Desktop version and per-scene results were not recorded). The screenshots are browser captures of the plugin's own preview and settings page.
+  - Fine glyph density at full speed, high counts, Depth and the optional whole-window layer use noticeable CPU. Battery saver and a bolder density turn the cost down.
+  - 1.4.0 replaces the separate Background strength and Scene strength sliders with one Background opacity slider. The previous scene's old strength is folded in once, so some custom looks may change slightly.
   - Light-theme Cat and Owl faces, pale seeds, fish and swallows, and quiet halos or stars are lower-contrast. The whale deliberately leaves the frame for a while.
+  - The pastry cat is unofficial fan art of Nyan Cat (created by Chris Torres) and is not covered by the plugin's MIT licence; see THIRD_PARTY_NOTICES.md.
 capabilities:
   provides_tools: []
   provides_hooks: []

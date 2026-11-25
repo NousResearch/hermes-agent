@@ -193,11 +193,16 @@ async function revealScreenHero(page: Page): Promise<void> {
     }
   }
 
-  await page
-    .getByText(/Waking up/i)
-    .first()
-    .waitFor({ state: 'hidden', timeout: 90_000 })
-    .catch(() => undefined)
+  // The bot wake swaps the gateway; wait until no switch indicator is still in
+  // flight (pending/slow/stalled) before inspecting the screen.
+  await page.waitForFunction(
+    () =>
+      ![...document.querySelectorAll('[data-slot="chat-switch-indicator"]')].some(el =>
+        ['pending', 'slow', 'stalled'].includes(el.getAttribute('data-switch-state') ?? '')
+      ),
+    undefined,
+    { timeout: 90_000 }
+  )
 
   if ((await hero(page).count()) === 0) {
     await page.getByRole('tab', { name: 'Scheduled jobs' }).first().click()

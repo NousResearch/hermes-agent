@@ -93,7 +93,9 @@ def test_an_owner_that_recovered_no_admission_flags_the_bounded_re_run(monkeypat
     from gateway import session_cron
 
     async def probe():
-        authority = SimpleNamespace(db=SimpleNamespace(db_path=str(get_hermes_home() / 'state.db')))
+        authority = SimpleNamespace(
+            persistence=SimpleNamespace(scope=SimpleNamespace(profile_dir=get_hermes_home().resolve()))
+        )
         session_cron.bind_owner(authority)
         try:
             async def request(owner, operation, params, actor=None):

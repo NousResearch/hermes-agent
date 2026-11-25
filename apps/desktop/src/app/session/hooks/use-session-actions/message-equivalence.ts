@@ -14,6 +14,7 @@ import { persistedTurnsEquivalent } from './pending-turn-identity'
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
 //                   accounting reads it, the transcript never paints it
+//   submissionId — a stored prompt's send id; hydration sets it with the compared rowId
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -43,6 +44,8 @@ const COMPARED_FIELDS = [
   'branchGroupId',
   'interim',
   'interrupted',
+  // Hides the stopped mark of a reply the next turn went on with.
+  'continued',
   // Not painted, but the view's copy can seed session state again (resume
   // reads $messages), so a started queued turn must reach it.
   'queuedTurnStarted',
@@ -54,7 +57,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'submissionId'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -161,8 +164,9 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 // Optional flags, unset meaning false. `interim` gates the action footer, so
 // flipping it must repaint (e.g. a previewed final settling onto a sealed
 // interim bubble restores the bar); `queuedTurnStarted` must reach the view's
-// copy because resume seeds session state from it.
-const FLAG_FIELDS = ['interim', 'queuedTurnStarted'] as const
+// copy because resume seeds session state from it; `continued` is set once, at
+// the continuation's start, so a resume waiting meanwhile must keep it.
+const FLAG_FIELDS = ['interim', 'queuedTurnStarted', 'continued'] as const
 
 const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
   FLAG_FIELDS.some(field => (a[field] ?? false) !== (b[field] ?? false))

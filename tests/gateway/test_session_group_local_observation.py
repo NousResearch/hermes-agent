@@ -6,13 +6,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver, hosted_rooms, run
+from gateway import hosted_room_driver as driver, run
+from gateway.session_authority import admission_row
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from gateway.session_hosted_transport import HostedRoomOwnerRPC, install_hosted_transport
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
+from gateway.session_persistence import authority_persistence
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from persistence_assembly import open_persistence, profile_scope
 from tests.gateway.test_session_hosted_transport import _server
 from tests.tui_gateway.test_hosted_room_driver_runtime import FakeSessionRPC
+
+
+def list_session_admissions(authority, *, session_id, pending_only=True):
+    """The session's admission rows, as the owner's store lists them."""
+    return [admission_row(row) for row in authority_persistence(authority).admissions.list(
+        session_id=session_id, pending_only=pending_only)]
 
 
 @pytest.mark.parametrize('retry_during_wait', [False, True])
@@ -28,34 +36,33 @@ def test_renewed_local_member_turn_defers_when_its_owner_socket_disappears(
     config = run._load_gateway_config()
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {
         **config, 'hosted_rooms': {'profiles': {'other': str(target)}}})
-    with SessionDB(source / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(source), db=db,
-                                    epoch=begin_runtime_epoch(db, instance_id='source'))
+    with open_persistence(profile_scope(home=source)) as db:
+        authority = SimpleNamespace(profile_id=str(source), db=db, persistence=db,
+                                    epoch=db.runtime.begin_epoch(instance_id='source'))
         service = CanonicalHostedRoomService(authority, loop)
-        service.authorize_room('alice', 'local', create=True)
-        hosted_rooms.create_room(db.db_path, room_id='local', name='Local group chat',
-            authority_gateway_id=hosted_rooms.local_authority_gateway_id(), members=[
-                {'member_id': 'host', 'profile': 'default', 'handle': 'host'},
-                {'member_id': 'helper', 'profile': 'other', 'handle': 'helper'}])
+        service.insert_room(room_id='local', name='Local group chat', owner='alice', members=[
+            {'member_id': 'host', 'profile': 'default', 'handle': 'host'},
+            {'member_id': 'helper', 'profile': 'other', 'handle': 'helper'}])
         runtime, binding = service.runtime, service.bindings()[0]
         runtime.prepare_room = runtime.publish_terminal = None
         now = [time.time()]
         start = now[0]
         runtime.clock = lambda: now[0]
-        older = driver.TaskIdentity('local', 'older', 'thread', 'older-turn')
-        driver.admit_task(db.db_path, older, payload={'target_profile': 'default',
+        tasks = dict(placement='profile')
+        older = HostedTaskIdentity('local', 'older', 'thread', 'older-turn')
+        driver.admit_task(db, older, **tasks, payload={'target_profile': 'default',
             'target_member_id': 'host', 'source_event_seq': 1, 'prompt': 'Earlier input'}, clock=runtime.clock)
-        old_lease = driver.acquire_lease(db.db_path, room_id='local', gateway_id=binding.gateway_id,
+        old_lease = driver.acquire_lease(db, **tasks, room_id='local', gateway_id=binding.gateway_id,
             authority_epoch=1, process_generation='previous', ttl_seconds=1, clock=lambda: start - 2)
-        driver.start_task(db.db_path, older, old_lease, expected_cancel_generation=0, clock=lambda: start - 2)
+        driver.start_task(db, older, old_lease, **tasks, expected_cancel_generation=0, clock=lambda: start - 2)
         lease = runtime._ensure_lease(binding)
-        driver.recover_room(db.db_path, lease, clock=runtime.clock)
-        driver.defer_indeterminate_task(db.db_path, older, lease, expected_execution_generation=1,
+        driver.recover_room(db, lease, **tasks, clock=runtime.clock)
+        driver.defer_indeterminate_task(db, older, lease, **tasks, expected_execution_generation=1,
             expected_cancel_generation=0, reason='member_unavailable', clock=runtime.clock)
-        identity = driver.TaskIdentity('local', 'task', 'thread', 'turn')
-        driver.admit_task(db.db_path, identity, payload={'target_profile': 'other',
+        identity = HostedTaskIdentity('local', 'task', 'thread', 'turn')
+        driver.admit_task(db, identity, **tasks, payload={'target_profile': 'other',
             'target_member_id': 'helper', 'source_event_seq': 2, 'prompt': 'input'}, clock=runtime.clock)
-        rpc = service._resolve_member_transport(binding, driver.get_task(db.db_path, identity))
+        rpc = service._resolve_member_transport(binding, driver.get_task(db, identity, **tasks))
         assert isinstance(rpc, HostedRoomOwnerRPC)
         healthy = FakeSessionRPC()
         healthy.ref = SimpleNamespace(session_id=healthy.add_session(profile='default', title='Group: local'))
@@ -95,22 +102,22 @@ def test_renewed_local_member_turn_defers_when_its_owner_socket_disappears(
             runtime._process_room(binding)
             assert reads[:2] == [start, start + 16], runtime._last_error
             assert 'observation failed after submit' in runtime._last_error
-            assert len(list_session_admissions(target_authority.db,
+            assert len(list_session_admissions(target_authority,
                        session_id=rpc.ref.session_id, pending_only=False)) == 1
             assert bool(retries) == retry_during_wait
             assert now[0] == start + 62
-            assert driver.get_task(db.db_path, identity)['status'] == 'indeterminate'
-            assert driver.get_task(db.db_path, identity)['indeterminate_at'] == now[0]
-            later = driver.TaskIdentity('local', 'later', 'thread', 'later-turn')
-            driver.admit_task(db.db_path, later, payload={'target_profile': 'default',
+            assert driver.get_task(db, identity, **tasks)['status'] == 'indeterminate'
+            assert driver.get_task(db, identity, **tasks)['indeterminate_at'] == now[0]
+            later = HostedTaskIdentity('local', 'later', 'thread', 'later-turn')
+            driver.admit_task(db, later, **tasks, payload={'target_profile': 'default',
                 'target_member_id': 'host', 'source_event_seq': 3, 'prompt': 'Continue'}, clock=runtime.clock)
             now[0] += runtime.indeterminate_defer_seconds
             runtime._process_room(binding)
-            assert driver.get_task(db.db_path, identity)['status'] == 'deferred'
-            assert driver.get_task(db.db_path, later)['status'] == 'settled'
+            assert driver.get_task(db, identity, **tasks)['status'] == 'deferred'
+            assert driver.get_task(db, later, **tasks)['status'] == 'settled'
             if retry_during_wait:
-                assert driver.get_task(db.db_path, older)['execution_generation'] == 2
-                assert driver.get_task(db.db_path, older)['status'] == 'settled'
+                assert driver.get_task(db, older, **tasks)['execution_generation'] == 2
+                assert driver.get_task(db, older, **tasks)['status'] == 'settled'
         finally:
             for server in servers:
                 asyncio.run_coroutine_threadsafe(server.stop(), loop).result(10)

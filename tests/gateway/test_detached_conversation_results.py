@@ -2,7 +2,7 @@
 
 Teknium's ruling: nothing a conversation the chat moved past (A) produces reaches the chat, and A stays
 fully usable from the apps, its reminders and background results included. Real GatewayRunner,
-DiscordAdapter (``send`` recorded), SessionAuthority, drain and SessionStore over a real SessionDB; the
+DiscordAdapter (``send`` recorded), SessionAuthority, drain and SessionStore over a real store; the
 agent run is the stand-in of ``test_authority_lane_moves_on``.
 """
 import asyncio
@@ -11,13 +11,16 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_authority_lane_moves_on import _app_turn, _chat
 from tests.gateway.test_detached_conversation_lifecycle import _moved_on
 from tests.waiting import async_wait_until
 
 
 def _noted(authority, session_id, text):
-    return any(text in str(message.get('content')) for message in authority.db.get_messages(session_id))
+    return any(text in str(message.get('content')) for message in transcript_rows(authority.persistence, session_id))
 
 
 @pytest.mark.asyncio
@@ -28,7 +31,7 @@ async def test_a_reminder_the_app_set_on_the_old_conversation_fires_after_a_resu
     from gateway.session_cron import deliver_to_local_chat
     from gateway.session_mutations import retire_live_sessions
     _runner, adapter, authority, source, sent, ran, _gates, lane, ref_a = await _moved_on(monkeypatch)
-    a, home = ref_a.session_id, Path(authority.db.db_path).parent
+    a, home = ref_a.session_id, authority.persistence.scope.profile_dir
 
     await _chat(adapter, source, sent, '/resume First chat')
     assert await asyncio.to_thread(deliver_to_local_chat, home, a, 'fire after resume') is None
@@ -51,11 +54,11 @@ async def test_a_note_into_the_old_conversation_leaves_the_row_the_chats_new_end
     _runner, _adapter, authority, _source, _sent, ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
     a = ref_a.session_id
     ran_before = len(ran)
-    assert await asyncio.to_thread(deliver_to_local_chat, Path(authority.db.db_path).parent, a, 'a reminder') is None
+    assert await asyncio.to_thread(deliver_to_local_chat, authority.persistence.scope.profile_dir, a, 'a reminder') is None
     await async_wait_until(lambda: _noted(authority, a, 'a reminder'), timeout=10, what='the note in A')
     await asyncio.wait_for(authority.sessions[a].task, 10)
     assert ran[ran_before:] == []
-    assert authority.db.get_session(a)['end_reason'] == 'session_reset'
+    assert session_row(authority.persistence, a)['end_reason'] == 'session_reset'
 
 
 def _chat_started(kind, lane, a):
@@ -119,7 +122,6 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     started finishes after the runner's bounded source cache dropped A. Its key names the profile, so
     the event resolves A's live source and binds ``fitness``'s scope, unscoped as the drain starts,
     and the result is written into A in ``fitness``'s store."""
-    import hermes_state
     from gateway.config import GatewayConfig, Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
@@ -127,18 +129,16 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     from gateway.session_authority import LiveSession, initialize_session_authority
     from gateway.session_detached import detach
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
     root = tmp_path / 'hermes'
     profile = root / 'profiles' / 'fitness'
     profile.mkdir(parents=True)
     (profile / 'config.yaml').write_text('{}\n', encoding='utf-8')
     monkeypatch.setenv('HERMES_HOME', str(root))
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
     launch = await initialize_session_authority(runner, profile_id=str(root), instance_id='owner',
-                                                db=SessionDB(root / 'state.db'))
+                                                persistence=storage_handle(root))
     fitness = await initialize_session_authority(runner, profile_id=str(profile), instance_id='owner',
-                                                 db=SessionDB(profile / 'state.db'), register=False)
+                                                 persistence=storage_handle(profile), register=False)
     runner.session_authorities = SessionAuthorities(root, multiplexed=True)
     runner.session_authorities.add(root, launch)
     runner.session_authorities.add(profile, fitness, name='fitness')
@@ -147,7 +147,7 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     route = runner.session_store._generate_session_key(source)
     assert route.startswith('agent:fitness:')
     a = 'conversation-a'
-    fitness.db.create_session(a, source='telegram', session_key=route)
+    seed_session(fitness.persistence, a, 'telegram', session_key=route)
     live = fitness.sessions[a] = LiveSession(source, route)
     detach(fitness, live, a)  # the chat moved on; the app keeps A
     evt = {'type': 'completion', 'event_id': 'c-1', 'session_id': 'proc_1', 'started_at': 1000.0,

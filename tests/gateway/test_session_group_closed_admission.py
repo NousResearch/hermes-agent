@@ -24,7 +24,7 @@ async def test_closed_key_blocks_delayed_admission_under_older_longer_grant(
     service, db, identity = await _never_admitted_deferred_turn(gateway, monkeypatch, linked_peer)
     route = service.peer_routes[('linked', 'reviewer')]
     client = service.peer_clients[('linked', 'reviewer')]
-    task = driver.get_task(db, identity)
+    task = driver.get_task(db, identity, placement='profile')
     delayed = build_member_dispatch(
         binding=service.bindings()[0], route=route, room_id='linked', task_id=identity.task_id,
         target_profile='default', execution_generation=1, source_event_seq=task['payload']['source_event_seq'],
@@ -34,7 +34,7 @@ async def test_closed_key_blocks_delayed_admission_under_older_longer_grant(
     assert registered['registered']
     assert (await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
                        task_id=identity.task_id, execution_generation=1))['discarded']
-    assert driver.get_task(db, identity)['status'] == 'cancelled'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'cancelled'
     # Restart the member's store; the original admission has still not arrived.
     gateway.adapter._run_idempotency_store.close()
     gateway.adapter._run_idempotency_store = RunIdempotencyStore(str(tmp_path / 'runs.db'))

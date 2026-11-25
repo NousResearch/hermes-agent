@@ -25,6 +25,7 @@ Exit 0 = every entry passed, 1 = at least one failed (one ``::error file=<entry>
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -36,10 +37,44 @@ from pathlib import Path
 
 _FIELDS_SCRIPT = Path(__file__).resolve().with_name("catalog_entry_fields.py")
 _MANIFESTS = ("plugin.yaml", "plugin.yml", "plugin.json")
+# A GitHub fetch. The pattern itself is plain (grep -E): the ajv exemption is applied in Python
+# afterward, in _file_fetches_github, so it cannot be gamed by quoting/spacing of the ajv
+# declaration (grep lookbehinds were brittle across minifiers) and cannot hide a real fetch that
+# merely shares a line with the inert ajv id.
 _SELF_UPDATE_FETCH = r"releases/latest|releases/download|raw\.githubusercontent\.com|codeload\.github\.com"
+# ajv's bundled meta-schema declares its own identifier as `$id`/`$ref` = this URL. The string is
+# matched by value against a schema ajv already holds in memory; it never drives a request. It is
+# inert ONLY as a JSON-schema declaration -- `[$ or "]id/ref : "<url>"` -- so the same literal
+# reused as an executable fetch base (new URL('/evil', ajvUrl)) is not exempt. The match is
+# lexical: a declared id read back as a fetch base (new URL(p, s.$id)) is not caught, and
+# escaped-JSON or backtick spellings stay flagged. "#" is the only terminator, so a traversal like
+# .../data.json#/../../evil (or out of lib/refs) is a different, non-exempt URL and still counts.
+_AJV_ID = "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"
+_AJV_DECLARATION = re.compile(
+    r"""["$](?:id|ref)["']?\s*:\s*["']""" + re.escape(_AJV_ID) + r"""["']""")
+_GITHUB_FETCH = re.compile(_SELF_UPDATE_FETCH)
+
+
+def _file_fetches_github(path: str) -> bool:
+    # True when the file fetches from GitHub for real. ajv's inert meta-schema DECLARATION is
+    # removed first (any quoting/spacing); whatever raw.githubusercontent / release URL remains is
+    # a real fetch. Reading the file as text mirrors what grep -l would have matched.
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return True  # unreadable here means the grep already flagged it; keep it flagged
+    return bool(_GITHUB_FETCH.search(_AJV_DECLARATION.sub("", text)))
+
+
 _SELF_UPDATE_WRITE = (r"writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync"
                       r"|cpSync|createWriteStream")
 _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*.cts")
+# Maintainer-reviewed exceptions to the self-updater gate: a file that downloads a THIRD-PARTY tool
+# pinned by checksum (not the plugin's own code) and unpacks it into its cache, or a file the grep
+# misreads because it fetches nothing (a URL it only records, a test with a fake fetch). Keyed by
+# repo + pinned sha + path + the file's sha256, so a re-pin or any edit to the file is gated
+# again. It lives under scripts/ci/, which an entry PR may not touch (catalog_changed_entries.py).
+_SELF_UPDATER_ALLOWLIST = Path(__file__).resolve().with_name("catalog_self_updater_allowlist.json")
 # 600s: listed repos reach >1 GB (hermes-jackal-verified 1.43 GB, hindsight 741 MB); 120s would
 # false-fail a re-pin on a slow runner.
 _CLONE_SECONDS = 600
@@ -171,19 +206,39 @@ def _check_payloads(plugin_dir: str) -> None:
         raise EntryRejected(f"unscannable executable payload (README rule 17): {found}")
 
 
-def _check_self_updater(plugin_dir: str) -> None:
+def _allowlisted(path: str, plugin_dir: str, repo: str, sha: str) -> bool:
+    rel = os.path.relpath(path, plugin_dir)
+    try:
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return any(row.get("repo") == repo and row.get("sha") == sha and row.get("path") == rel
+               and row.get("sha256") == digest
+               for row in json.loads(_SELF_UPDATER_ALLOWLIST.read_text(encoding="utf-8-sig")))
+
+
+def _check_self_updater(plugin_dir: str, repo: str = "", sha: str = "") -> None:
     # SELF-UPDATER GATE (README rule 3): the pin is the only update path. A desktop bundle that
     # both fetches from GitHub AND writes/renames plugin files is a self-updater; either half
     # alone is fine (a plugin may read the API, or manage its own data files). NUL-delimited
     # both ways: committed filenames with spaces or newlines must not split into grep options
     # or forged log lines.
     includes = [f"--include={glob}" for glob in _SCRIPT_GLOBS]
-    fetchers = _run(["grep", "-rlZE", _SELF_UPDATE_FETCH, *includes, plugin_dir],
-                    stdout=subprocess.PIPE).stdout
+    # grep -E gives a cheap first cut of files mentioning any GitHub-fetch URL; _file_fetches_github
+    # then drops those whose only match is ajv's inert meta-schema DECLARATION. NUL-delimited so
+    # committed filenames with spaces or newlines cannot split into grep options or forge log lines.
+    candidates = _run(["grep", "-rlZE", _SELF_UPDATE_FETCH, *includes, plugin_dir],
+                      stdout=subprocess.PIPE).stdout
+    real = b"\0".join(p for p in candidates.split(b"\0")
+                      if p and _file_fetches_github(os.fsdecode(p)))
+    if not real:
+        return
     writers = subprocess.run(["xargs", "-r0", "grep", "-lZE", _SELF_UPDATE_WRITE],
-                             input=fetchers, stdout=subprocess.PIPE, check=False,
+                             input=real, stdout=subprocess.PIPE, check=False,
                              timeout=_VALIDATE_SECONDS).stdout
-    found = _substituted(writers).replace("\n", " ")
+    flagged = [p for p in writers.split(b"\0")
+               if p and not _allowlisted(os.fsdecode(p), plugin_dir, repo, sha)]
+    found = _substituted(b"\0".join(flagged)).replace("\n", " ")
     if found:
         raise EntryRejected("self-updating code in catalog build (fetches GitHub AND writes "
                             f"plugin files): {found}")
@@ -214,7 +269,7 @@ def validate_entry(entry: str, workroot: str) -> None:
     validate = ["hermes", "plugins", "validate", "--install-deps", plugin_dir]
     if _run(validate, timeout=_VALIDATE_SECONDS).returncode != 0:
         raise EntryRejected("hermes plugins validate failed")
-    _check_self_updater(plugin_dir)
+    _check_self_updater(plugin_dir, repo, sha)
     _check_attested(fields["ATTESTED"], plugin_dir, repo, sha)
     _check_payloads(plugin_dir)
 

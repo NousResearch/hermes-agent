@@ -1,0 +1,16 @@
+{
+ "anthropic/claude-fable-5.2": {
+  "prompt": "0.0000080000",
+  "completion": "0.0000400000",
+  "web_search": "0.0100000000",
+  "input_cache_read": "0.0000002000",
+  "input_cache_write": "0.0000100000",
+  "input_cache_write_1h": "0.000016"
+ },
+ "openai/gpt-6-luna": {
+  "prompt": "0.0000001000",
+  "completion": "0.0000005000",
+  "input_cache_read": "0.0000000100",
+  "input_cache_write": "0.0000001250"
+ }
+}

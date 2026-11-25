@@ -1,9 +1,10 @@
 """Auto-compaction status re-tagging for TUI/desktop summarizing indicators.
 
-Auto-compaction reaches the gateway as a generic ``lifecycle`` status. The
-gateway re-tags in-progress lines as ``kind="compacting"`` so drivers can
-show an explicit summarizing indicator instead of the turn looking hung
-(#97239). The marker-only match missed idle/preflight/retry wording.
+Auto-compaction reaches the gateway as a generic ``lifecycle`` status. The agent's
+status callback re-tags the lines their producer marked as compaction progress as
+``kind="compacting"`` so drivers show a summarizing indicator instead of the turn
+looking hung (#97239). Warnings that only mention compression keep the kind they
+were sent with: a client shown one as ``compacting`` draws a compaction that never ran.
 """
 
 from __future__ import annotations
@@ -39,69 +40,81 @@ def _capture(server, monkeypatch):
     monkeypatch.setattr(
         server, "_emit", lambda event, sid, payload=None: events.append(payload or {})
     )
+    # The agent callbacks run against server's globals (tui_gateway/method_ctx.py).
+    monkeypatch.setattr(server, "_agent_presentation_enabled", lambda sid, diagnostic=False: True)
     return events
 
 
-def test_compaction_lifecycle_is_retagged(server, monkeypatch):
-    from agent.conversation_compression import COMPACTION_STATUS
-
-    events = _capture(server, monkeypatch)
-    server._status_update("sid", "lifecycle", COMPACTION_STATUS)
-
-    assert events == [{"kind": "compacting", "text": COMPACTION_STATUS}]
+class _RewordingEngine:
+    def get_automatic_compaction_status_message(self, *, phase, default_message, **context):
+        return f"LCM is folding older turns ({phase})"
 
 
-def test_idle_compaction_lifecycle_is_retagged(server, monkeypatch):
-    from agent.conversation_compression import IDLE_COMPACTION_STATUS_TEMPLATE
-
-    events = _capture(server, monkeypatch)
-    text = IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=747, tokens=44_579)
-    server._status_update("sid", "lifecycle", text)
-
-    assert events == [{"kind": "compacting", "text": text}]
-
-
-def test_preflight_compaction_lifecycle_is_retagged(server, monkeypatch):
-    from agent.conversation_compression import PREFLIGHT_COMPRESSION_STATUS_TEMPLATE
-
-    events = _capture(server, monkeypatch)
-    text = PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
-        tokens=120_000, threshold=100_000
+def _progress_lines():
+    from agent.context_engine import automatic_compaction_status_message
+    from agent.conversation_compression import (
+        COMPACTION_HEARTBEAT_STATUS,
+        COMPACTION_STATUS,
+        IDLE_COMPACTION_STATUS_TEMPLATE,
+        PRE_API_COMPRESSION_STATUS_TEMPLATE,
+        PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     )
-    server._status_update("sid", "lifecycle", text)
 
-    assert events == [{"kind": "compacting", "text": text}]
+    defaults = {
+        "pre_api": PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123_456),
+        "preflight": PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120_000, threshold=100_000),
+        "idle": IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=747, tokens=44_579),
+        "compress": COMPACTION_STATUS,
+    }
+    lines = [COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS]
+    for engine in (object(), _RewordingEngine()):
+        lines += [automatic_compaction_status_message(engine, phase=phase, default_message=text)
+                  for phase, text in defaults.items()]
+    return lines
 
 
-def test_compaction_done_is_not_retagged_as_compacting(server, monkeypatch):
+def test_every_compaction_progress_line_is_retagged(server, monkeypatch):
+    events = _capture(server, monkeypatch)
+    lines = _progress_lines()
+    for line in lines:
+        server._agent_status_update("sid", "lifecycle", line)
+
+    assert events == [{"kind": "compacting", "text": str(line)} for line in lines]
+
+
+def test_warnings_that_mention_compression_are_not_compaction(server, monkeypatch):
+    from agent.conversation_compression import (
+        COMPRESSION_REFUSED_WOULD_GROW_WARNING,
+        COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+        COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
+        CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+    )
+    from gateway.warning_notifications import DiagnosticText
+
+    events = _capture(server, monkeypatch)
+    lines = [
+        "⚠ Configured auxiliary compression provider 'nous' is unavailable, so older messages in long "
+        "chats will be cut without a summary. Sign in to that provider again, or change "
+        "auxiliary.compression in your config.",
+        "⚠️  Session compressed 3 times — accuracy may degrade. Consider /new to start fresh.",
+        COMPRESSION_REFUSED_WOULD_GROW_WARNING,
+        CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(tokens=85_000, threshold=72_000, reason="cooldown:30"),
+        # Retry lines reach a client only when the buffer flushes after the turn failed.
+        DiagnosticText(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=30, after=12)),
+        DiagnosticText(COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(new_ctx=1, old_ctx=2)),
+    ]
+    for line in lines:
+        server._agent_status_update("sid", "lifecycle", line)
+
+    assert [e["kind"] for e in events] == ["lifecycle"] * len(lines)
+
+
+def test_compaction_done_edge_keeps_its_kind(server, monkeypatch):
     from agent.conversation_compression import COMPACTION_DONE_STATUS
 
     events = _capture(server, monkeypatch)
-    server._status_update("sid", "lifecycle", COMPACTION_DONE_STATUS)
-    assert events[0]["kind"] == "lifecycle"
-
-    events.clear()
-    server._status_update("sid", "compacted", COMPACTION_DONE_STATUS)
-    assert events[0]["kind"] == "compacted"
-
-
-def test_other_lifecycle_status_stays_lifecycle(server, monkeypatch):
-    events = _capture(server, monkeypatch)
-    server._status_update("sid", "lifecycle", "❌ Rate limited after 5 retries")
-
-    assert events[0]["kind"] == "lifecycle"
-
-
-def test_overflow_blocked_warning_stays_lifecycle(server, monkeypatch):
-    from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
-
-    events = _capture(server, monkeypatch)
-    text = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason="cooldown:30"
-    )
-    server._status_update("sid", "lifecycle", text)
-
-    assert events[0]["kind"] == "lifecycle"
+    server._agent_status_update("sid", "compacted", COMPACTION_DONE_STATUS)
+    assert events == [{"kind": "compacted", "text": COMPACTION_DONE_STATUS}]
 
 
 def test_manual_compressing_kind_is_preserved(server, monkeypatch):
@@ -109,26 +122,3 @@ def test_manual_compressing_kind_is_preserved(server, monkeypatch):
     server._status_update("sid", "compressing", "⠋ compressing 40 messages…")
 
     assert events[0]["kind"] == "compressing"
-
-
-def test_is_compaction_progress_status_covers_routine_in_progress_lines():
-    from agent.conversation_compression import (
-        COMPACTION_DONE_STATUS,
-        CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
-        ROUTINE_COMPRESSION_STATUS_SAMPLES,
-        is_compaction_progress_status,
-    )
-
-    for message in ROUTINE_COMPRESSION_STATUS_SAMPLES:
-        if message == COMPACTION_DONE_STATUS:
-            assert is_compaction_progress_status(message) is False
-        else:
-            assert is_compaction_progress_status(message) is True, message
-
-    assert is_compaction_progress_status(None) is False
-    assert is_compaction_progress_status("") is False
-    assert is_compaction_progress_status("❌ Rate limited after 5 retries") is False
-    overflow = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason="ineffective"
-    )
-    assert is_compaction_progress_status(overflow) is False

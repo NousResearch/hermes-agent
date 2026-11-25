@@ -121,7 +121,7 @@ def test_session_header_follows_the_webapps_bearer_rule(gated, token, other_toke
 
 def test_wrong_session_header_leaves_a_cookie_session_working(gated, other_token):
     client = gated()
-    client.cookies.set("hermes_session_at", other_token)
+    client.cookies.set("__Host-hermes_session_at", other_token)
     r = client.get("/api/auth/me", headers={_HEADER: secrets.token_urlsafe(32)})
     assert r.status_code == 200, (r.status_code, r.text)
     assert r.json().get("provider") == "other-login"
@@ -131,7 +131,7 @@ def test_valid_session_header_leaves_a_cookie_session_to_its_provider(gated, tok
     """A cookie session is served by the cookie's provider, as on main, even when the
     deployment token is also in the header."""
     client = gated()
-    client.cookies.set("hermes_session_at", other_token)
+    client.cookies.set("__Host-hermes_session_at", other_token)
     r = client.get("/api/auth/me", headers={_HEADER: token})
     assert r.status_code == 200, (r.status_code, r.text)
     assert r.json().get("provider") == "other-login"

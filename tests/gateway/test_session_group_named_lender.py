@@ -18,7 +18,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.session_group_peers import dispatch_target, room_link
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from tests.waiting import async_wait_until
 
 ROOM = dict(room_id='lent', home_install_id='install:home', authority_gateway_id='install:home',
@@ -29,11 +29,11 @@ class _Authorities:
     """The served-profile registry the shared listener reads: one store per served home."""
 
     def __init__(self, homes):
-        self.dbs = {str(home.resolve()): SessionDB(home / 'state.db') for home in homes}
+        self.dbs = {str(home.resolve()): open_persistence(profile_scope(home=home), eager=True) for home in homes}
 
     def for_home(self, home):
         db = self.dbs.get(str(home.resolve()))
-        return None if db is None else SimpleNamespace(db=db)
+        return None if db is None else SimpleNamespace(persistence=db)
 
     def active(self):
         return None

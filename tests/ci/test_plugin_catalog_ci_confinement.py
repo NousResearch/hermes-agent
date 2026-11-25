@@ -264,6 +264,61 @@ def test_an_attested_self_updater_still_fails_the_self_updater_gate(tmp_path, or
     assert "PASS" not in res.stdout
 
 
+@pytest.mark.parametrize("declaration", [
+    '{$id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"}',
+    '{"$id": "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"}',
+    '{$id:"https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"}',
+    "{$ref: 'https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#'}",
+], ids=["spaced", "quoted-key", "minified", "ref-single-quote"])
+def test_ajv_bundled_meta_schema_url_is_not_a_self_updater(tmp_path, origin, declaration):
+    # ajv ships its draft-06 meta-schema with $id/$ref pointing at a raw.githubusercontent.com
+    # URL, in whatever quoting/spacing the bundler emitted. The string is an inert JSON-schema
+    # identifier ajv matches by value against its own in-memory schema -- it never drives a
+    # request -- so a plugin that bundles ajv AND writes its own data files (both halves in one
+    # bundled file) must still pass.
+    (origin / "plugin" / "bundle.js").write_text(
+        f"{declaration}\nfs.writeFileSync(target, body)\n", encoding="utf-8")
+    sha = _commit(origin)
+    entry = _entry(tmp_path, "ok.yaml", sha)
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"PASS: {entry}" in res.stdout
+
+
+_AJV_ID = "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"
+
+
+@pytest.mark.parametrize("source", [
+    # a traversal out of lib/refs
+    "fetch('https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/../../payload.js')",
+    # a traversal out of data.json itself: only the "#" ends the exempt id
+    "fetch('https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json"
+    "/../../../../../../evil/repo/main/plugin.js')",
+    # the exempt id must not hide a real fetch after it on the same minified line
+    f"{{$id:'{_AJV_ID}'}};fetch('https://raw.githubusercontent.com/o/r/main/plugin.js')",
+    # the exempt literal reused as an executable fetch base, not a schema declaration
+    f"const u = new URL('/evil/repo/main/plugin.js', '{_AJV_ID}'); fetch(u)",
+    # ... or returned by an arrow function whose parameter happens to be named $id: `=>` is not a
+    # declaration separator, so the id is not stripped and the real fetch still shows
+    f"const f = $id => '{_AJV_ID}'; fetch(new URL('/evil/repo/main/plugin.js', f()))",
+    # only ajv's own id is inert: any other raw.githubusercontent URL in a $id still counts
+    "const s = {$id: 'https://raw.githubusercontent.com/o/r/main/plugin.js'}; fetch(s.$id)",
+], ids=["refs_traversal", "data_json_traversal", "beside_ajv_id", "fetch_base", "arrow_fn_base",
+        "other_url_declared"])
+def test_a_real_fetch_near_or_disguised_as_the_ajv_id_still_fails(tmp_path, origin, source):
+    # The exemption removes ONLY the inert ajv $id/$ref declaration; any real GitHub fetch that
+    # remains -- a sibling/traversal path, a fetch beside the id, or the id reused as a fetch
+    # base -- still trips the gate.
+    (origin / "plugin" / "sneaky.js").write_text(
+        f"{source}\nfs.writeFileSync(target, body)\n", encoding="utf-8")
+    sha = _commit(origin)
+    entry = _entry(tmp_path, "evil.yaml", sha)
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode != 0
+    assert "self-updating code" in res.stdout
+    assert "PASS" not in res.stdout
+
+
 def test_an_attested_binaries_path_that_climbs_out_fails_the_gate(tmp_path, origin):
     log = _gh_stub(tmp_path, 0)
     entry = _entry(tmp_path, "evil.yaml", _git(origin, "rev-parse", "HEAD"),
@@ -394,3 +449,38 @@ def test_changed_entries_step(tmp_path, change, rc, listed, text):
     assert [f for f in lines if f and "__EOF__" not in f and f != "files<<__EOF__"] == listed
     if text:
         assert text in res.stdout
+
+
+def test_self_updater_allowlist_matches_only_the_reviewed_file(tmp_path, monkeypatch):
+    # A maintainer-reviewed third-party download passes only at its exact repo, pin and file
+    # hash: a re-pin, an edited byte or a second fetching file is gated again. Linux-only like the
+    # rest of this file: the gate shells out to GNU grep (-Z means decompress on BSD grep).
+    import hashlib
+    import json
+
+    sys.path.insert(0, str(ROOT / "scripts" / "ci"))
+    import catalog_validate_pinned_entries as gate
+
+    SHA = "a" * 40
+    plugin = tmp_path / "plugin"
+    (plugin / "kit").mkdir(parents=True)
+    tool = plugin / "kit" / "kit.ts"
+    tool.write_text("fetch('releases/download/1.0/tool.zip'); renameSync(a, b)\n", encoding="utf-8")
+    other = plugin / "update.ts"
+    other.write_text("fetch('releases/latest'); writeFileSync(self, body)\n", encoding="utf-8")
+    allow = tmp_path / "allow.json"
+    allow.write_text(json.dumps([{"repo": "https://x/y", "sha": SHA, "path": "kit/kit.ts",
+                                  "sha256": hashlib.sha256(tool.read_bytes()).hexdigest()}]))
+    monkeypatch.setattr(gate, "_SELF_UPDATER_ALLOWLIST", allow)
+
+    with pytest.raises(gate.EntryRejected) as hit:
+        gate._check_self_updater(str(plugin), "https://x/y", SHA)
+    assert "update.ts" in str(hit.value) and "kit.ts" not in str(hit.value)
+
+    other.unlink()
+    gate._check_self_updater(str(plugin), "https://x/y", SHA)
+    with pytest.raises(gate.EntryRejected, match="kit/kit.ts"):
+        gate._check_self_updater(str(plugin), "https://x/y", "b" * 40)
+    tool.write_text(tool.read_text() + "//\n", encoding="utf-8")
+    with pytest.raises(gate.EntryRejected, match="kit/kit.ts"):
+        gate._check_self_updater(str(plugin), "https://x/y", SHA)

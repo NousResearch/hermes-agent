@@ -22,7 +22,7 @@ Forward polling (``order: 'oldest'``): the cursor also holds the segment it read
 read continues after the cursor; otherwise (an in-place compaction, a rotation, a rewind, a rewrite or
 deletion of a covered row or of any earlier segment's row) the reply is ``reset`` and starts again from
 the first page. The page and the state its cursor stores are read in one read transaction
-(``SessionDB.transcript_read_snapshot``), so a cursor vouches for exactly the rows its page holds. Without
+(``messages.read_snapshot``), so a cursor vouches for exactly the rows its page holds. Without
 a pooled reader there is no such transaction: a read counts only when no write landed meanwhile, and
 one that never settles answers ``reset`` (``_unproven``). An oldest-order cursor is never null, so a caught-up reader keeps it and polls; an empty page means caught up.
 """
@@ -32,11 +32,13 @@ import binascii
 import json
 from functools import partial
 
+from persistence.core.errors import AuthorityRefusal
+
 from gateway.session_busy_controls import authorize
+from gateway.session_persistence import authority_persistence
 from gateway.session_transcript_rows import (
-    ROW_KIND_COMPACTION, ROW_KIND_MESSAGE, page_handoffs, project_entries, shown_occurrences,
+    ROW_KIND_COMPACTION, ROW_KIND_MESSAGE, handoff_rows, page_handoffs, project_entries, shown_occurrences,
 )
-from hermes_state_runtime import RuntimeStoreError
 
 MAX_PAGE_ROWS = 500
 # Projected JSON per page: well under the gateway clients' 8 MiB frame (hermes_cli/gateway_client.py),
@@ -73,11 +75,11 @@ def _readable_target(connection, ref, params):
     authority = connection.authority
     try:
         authorize(connection, ref, params, 'session:read')
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         from gateway.session_listing import legacy_readable
         if exc.reason != 'not_found':
             raise
-        tip = authority.db.get_compression_tip(ref.session_id) or ref.session_id
+        tip = authority_persistence(authority).lineage.tip(ref.session_id)
         if not legacy_readable(authority, connection.actor, tip):
             raise
         return tip
@@ -112,7 +114,7 @@ def _decode_cursor(cursor, binding):
             payload = [_CURSOR_TAG, *payload[1:], None]
         tag, session_id, subagent_id, order, key, segment, through, state, whole = payload
     except (TypeError, ValueError, binascii.Error):
-        raise RuntimeStoreError('invalid_params', field='cursor') from None
+        raise AuthorityRefusal('invalid_params', field='cursor') from None
     oldest = binding[2] == 'oldest'
     if ((tag, session_id, subagent_id, order) != (_CURSOR_TAG, *binding) or not isinstance(key, list)
             or not (whole is None or type(whole) is bool)
@@ -122,7 +124,7 @@ def _decode_cursor(cursor, binding):
                                 and len(state) == 3 and all(_uint(part) for part in state)))
             or (not oldest and ((through, state) != (None, None)
                                 or not (segment is None or (whole is False and isinstance(segment, str) and segment))))):
-        raise RuntimeStoreError('invalid_params', field='cursor')
+        raise AuthorityRefusal('invalid_params', field='cursor')
     return {'key': tuple(key) or None, 'segment': segment, 'through': through,
             'state': tuple(state) if state is not None else None, 'whole': whole}
 
@@ -133,18 +135,13 @@ def _decode_cursor(cursor, binding):
 # cursor key with a third part (``sent``) reads from that row again, inclusive.
 
 
-def _lineage_window(db, target, latest, after, count, lineage):
-    """A rotated lineage: the one display dedupe over every segment (``get_messages_as_conversation
-    (include_ancestors=True, include_compacted=True)``), keyed by first durable id. The page starts
-    next to the row the cursor names, wherever a compaction since moved it. The last part is the rows
-    before the window."""
-    first_ids = {}
-    rows = db._dedupe_display_generations(db._fetch_conversation_rows(
-        lineage, '', with_session_id=False, with_compacted=True),
-        drop_removed=True, first_ids=first_ids)
-    rows = db._rows_to_conversation(rows, session_id=target, include_ancestors=True,
-                                    repair_alternation=False, include_row_ids=True)
-    keys = [(first_ids.get(row['_row_id'], row['_row_id']),) * 2 for row in rows]
+def _lineage_window(store, target, latest, after, count, lineage):
+    """A rotated lineage: the one display dedupe over every segment (``messages.display_generations``, as a
+    resume shows it), keyed by first durable id. The page starts next to the row the cursor names,
+    wherever a compaction since moved it. The last part is the rows before the window."""
+    generations = store.messages.display_generations(target, lineage)
+    rows = [paged.message.as_openai_message() for paged in generations]
+    keys = [(int(paged.durable_id),) * 2 for paged in generations]
     durable = [key[1] for key in keys]
     exact = None if after is None else next((index for index, key in enumerate(durable) if key == after[1]), None)
     inclusive = int(after is not None and len(after) > 2)
@@ -162,59 +159,54 @@ def _lineage_window(db, target, latest, after, count, lineage):
     return rows[start:start + count], window, start + count < len(rows), window[-1] if window else None, rows[:start]
 
 
-def _segment_window(db, segment, latest, after, count):
+def _segment_window(store, segment, latest, after, count):
     """One segment, keyset-paged on its display index (position = ``display_order``): only the page's rows
     are read, in one read transaction (the cursor's slot, the page and its durable ids see one
     generation). The keyset starts at the cursor message's current slot; read oldest first, a re-written
     copy of a message an earlier page showed is skipped. The rows get the conversation normalization a
-    resume applies (``_rows_to_conversation``: harness turns and their curator replies, stale tool-call
-    markers), with the display row before the page as context so a prompt/reply pair split by the page
-    edge is still one pair. Returns ``(rows, keys, more beyond, edge key, first slot read)``; the edge key is the last row
-    read in reading order, so rows the normalization drops there are not read again."""
-    raw, firsts, before = db.transcript_segment_page(
+    resume applies (harness turns and their curator replies, stale tool-call markers), with the display
+    row before the page as context so a prompt/reply pair split by the page edge is still one pair.
+    Returns ``(rows, keys, more beyond, edge key, first slot read)``; the edge key is the last row read in
+    reading order, so rows the normalization drops there are not read again. Oldest order continues only
+    from a cursor whose rows did not change shape (``_poll``), so the page is every slot past it: a durable
+    id is not monotonic in display order (a handoff's new row sits before the carried copies of older
+    messages)."""
+    page = store.messages.transcript_segment_page(
         segment, latest=latest, after=None if after is None else tuple(after[:2]), count=count,
         inclusive=after is not None and len(after) > 2)
-    keys = {row['id']: (row['display_order'], firsts[row['id']]) for row in raw}
-    # Oldest order continues only from a cursor whose rows did not change shape (``_poll``), so the page
-    # is every slot past it: a durable id is not monotonic in display order (a handoff's new row sits
-    # before the carried copies of older messages).
-    kept = raw
-    context = {row['id'] for row in before}
-    rows = [message for message in db._rows_to_conversation(
-        [*before, *kept], session_id=segment, include_ancestors=False, repair_alternation=False, include_row_ids=True)
-        if message['_row_id'] not in context]
-    edge = None if not raw else keys[raw[0]['id'] if latest else raw[-1]['id']]
-    start = min((row['display_order'] for row in raw), default=None)
-    return rows, [keys[message['_row_id']] for message in rows], len(raw) == count, edge, start
+    rows = [paged.message.as_openai_message() for paged in page.messages]
+    keys = [(paged.position, int(paged.durable_id)) for paged in page.messages]
+    return rows, keys, page.full, page.edge, page.start
 
 
-def _scope(db, target, lineage):
+def _scope(store, target, lineage):
     """What a read of *lineage* shows, judged on the caller's reads (inside ``_poll``'s snapshot, the
     page's generation): True, the whole lineage (``_lineage_window``: rotated, and under the resume's
     guard); False, only *target*, paged on its display index; None, only *target*, whose display index
     lacks a slot (a legacy segment, or a rewrite since the last backfill cleared one), so a page would skip
     that row: ``_whole_lineage`` backfills it, a write, outside any snapshot."""
-    from hermes_state import SessionResumeTooLargeError
+    from persistence.conversation.messages import ResumeTooLarge
+    from storage_limits import resolved_max_resume_messages
     if len(lineage) > 1:
         try:
-            db.assert_resume_safe(target)
-        except SessionResumeTooLargeError:
+            store.messages.assert_resume_safe(target, max_messages=resolved_max_resume_messages())
+        except ResumeTooLarge:
             pass  # past the resume's guard: the current segment only
         else:
             return True
-    return False if db.transcript_display_index_complete(target) else None
+    return False if store.messages.display_index_complete(target) else None
 
 
-def _whole_lineage(db, target, lineage):
+def _whole_lineage(store, target, lineage):
     """Whether *lineage* is read whole (``_scope``), with *target*'s display index backfilled when it lacks
     a slot."""
-    whole = _scope(db, target, lineage)
-    if whole is None and not db._ensure_display_order(target):
-        raise RuntimeStoreError('storage_unavailable', detail='the transcript has no display index')
+    whole = _scope(store, target, lineage)
+    if whole is None and not store.messages.ensure_display_index(target):
+        raise AuthorityRefusal('storage_unavailable', detail='the transcript has no display index')
     return bool(whole)
 
 
-def _window(db, target, latest, after, count, lineage, whole=None):
+def _window(store, target, latest, after, count, lineage, whole=None):
     """``(rows, keys, more beyond, edge key, segments read, earlier)``: up to *count* display rows past *after* (from
     it when the key has a third part) in reading order, in display order (see ``_segment_window`` for the
     edge key). *lineage*: the segments the transcript displays (a conversation's resume lineage, a
@@ -222,16 +214,16 @@ def _window(db, target, latest, after, count, lineage, whole=None):
     handoff occurrences among *candidates* that a row before the window holds (``page_handoffs``): the
     rows before it of the whole lineage, or the segment's display rows before its first slot."""
     if whole is None:
-        whole = _whole_lineage(db, target, lineage)
+        whole = _whole_lineage(store, target, lineage)
     if whole:
-        *window, prior = _lineage_window(db, target, latest, after, count, lineage)
+        *window, prior = _lineage_window(store, target, latest, after, count, lineage)
         ids = [row['_row_id'] for row in prior if type(row.get('_row_id')) is int]
         return (*window, lineage, lambda candidates: shown_occurrences(
-            message for messages in db.transcript_handoff_rows(ids, lineage).values() for message in messages))
-    *window, start = _segment_window(db, target, latest, after, count)
+            message for messages in handoff_rows(store, ids, lineage).values() for message in messages))
+    *window, start = _segment_window(store, target, latest, after, count)
     return (*window, [target], lambda candidates: set() if start is None else shown_occurrences(
-        db.transcript_handoffs_shown_before(target, start, [(message.get('message_uid'), message.get('content'))
-                                                           for message in candidates])))
+        row.as_wire_row() for row in store.messages.transcript_handoffs_shown_before(
+            target, start, [(message.get('message_uid'), message.get('content')) for message in candidates])))
 
 
 def _items(rows, keys, handoffs, latest, after):
@@ -318,7 +310,7 @@ def _call_uids(calls, uids):
 def _paired_call(calls, uids, result_id, result_uid):
     """The call of *calls* (one stored row) that a result with *result_id* / *result_uid* answers: the one
     whose own uid it carries, else (a result without a uid) the row's last call naming its id."""
-    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+    from session_rules.turns import tool_call_id_variants, tool_result_id_variants
     variants = set(tool_result_id_variants(result_id))
     matches = [(call, uid) for call, uid in zip(calls, _call_uids(calls, uids))
                if variants & set(tool_call_id_variants(call))]
@@ -327,10 +319,10 @@ def _paired_call(calls, uids, result_id, result_uid):
     return matches[-1][0] if matches else None
 
 
-def _call_context(db, page, segments):
+def _call_context(store, page, segments):
     """The calls of the tool results on *page* whose call is not before them on it (it sits on an earlier
     page), as one empty assistant row: projected first, it labels those results and shows nothing itself.
-    Each result is paired with its own call occurrence, as ``_rows_to_conversation`` pairs them: the one
+    Each result is paired with its own call occurrence, as a conversation read pairs them: the one
     whose durable tool-call uid it carries, else the nearest earlier call with its id (provider ids repeat)."""
     seen, wanted = set(), {}
     for row in page:
@@ -340,7 +332,7 @@ def _call_context(db, page, segments):
             wanted.setdefault(row['tool_call_id'], (row['_row_id'], row.get('_tool_call_uid')))
     if not wanted:
         return []
-    found = db.transcript_tool_calls_before(segments, max(first for first, _ in wanted.values()))
+    found = store.messages.transcript_tool_calls_before(segments, max(first for first, _ in wanted.values()))
     calls = {}
     for raw_calls, raw_uids in found:  # nearest first
         try:
@@ -374,7 +366,7 @@ def _entries(rows, handoffs, chosen):
             for index, slot in sorted(chosen)]
 
 
-def read_page(db, target, order, after, limit, *, profile_home, inline_images=False, lineage=None, whole=None):
+def read_page(store, target, order, after, limit, *, profile_home, inline_images=False, lineage=None, whole=None):
     """``(projected rows, next key, through)`` of one page, the rows in display order either way;
     *through* is the highest stored row id the page read. At most *limit* rows, handoff rows included,
     plus the tool results that stay with their call. A window whose rows all project to nothing (hidden
@@ -383,11 +375,11 @@ def read_page(db, target, order, after, limit, *, profile_home, inline_images=Fa
     from gateway.session_controls import display_projection
     latest = order == 'latest'
     count = limit + _TOOL_RUN
-    lineage = lineage or db._resume_lineage_ids(target)
+    lineage = lineage or store.lineage.resume_lineage_ids(target)
     through = 0
     while True:
-        rows, keys, beyond, edge, segments, earlier = _window(db, target, latest, after, count, lineage, whole)
-        handoffs = page_handoffs(db, rows, segments, earlier)
+        rows, keys, beyond, edge, segments, earlier = _window(store, target, latest, after, count, lineage, whole)
+        handoffs = page_handoffs(store, rows, segments, earlier)
         items = _items(rows, keys, handoffs, latest, after)
         roles = [rows[index].get('role') if slot == len(handoffs[index]) else ROW_KIND_COMPACTION
                  for index, slot in items]
@@ -396,7 +388,7 @@ def read_page(db, target, order, after, limit, *, profile_home, inline_images=Fa
             entries = _entries(rows, handoffs, items[:taken])
             shown = [row for kind, row in entries if kind == ROW_KIND_MESSAGE]
             return project_entries(entries, lambda marked: display_projection(
-                _call_context(db, shown, segments) + marked, profile_home, image_urls=inline_images))
+                _call_context(store, shown, segments) + marked, profile_home, image_urls=inline_images))
         projected, taken = _fit(project, roles, latest, _take(roles, latest, limit))
         through = max([through, *(rows[index]['_row_id'] for index, _ in items[:taken]
                                   if isinstance(rows[index].get('_row_id'), int))])
@@ -414,7 +406,7 @@ def read_page(db, target, order, after, limit, *, profile_home, inline_images=Fa
         after = next_key
 
 
-def _read(db, target, lineage, order, held, limit, whole, page):
+def _read(store, target, lineage, order, held, limit, whole, page):
     """One page in scope *whole* (``_scope``): ``(rows, next key, poll state, reset, whole)``. A cursor
     issued in another scope (the lineage crossed the resume's guard since, or an unscoped cursor) holds
     nothing: its key names a slot of the other read, and its rows are not what this read shows."""
@@ -423,19 +415,19 @@ def _read(db, target, lineage, order, held, limit, whole, page):
     if order == 'latest':
         if held is not None and not whole and held['segment'] != target:
             held = None  # a tip-only key names a slot of its segment: a rotation since starts again
-        rows, key, _ = read_page(db, target, order, held and held['key'], limit, lineage=lineage,
+        rows, key, _ = read_page(store, target, order, held and held['key'], limit, lineage=lineage,
                                  whole=whole, **page)
         return rows, key, None if whole else (target, None, None), held is None, whole
     holds = (held is not None and held['segment'] == target
-             and db.transcript_cursor_state(target, held['through'], lineage) == held['state'])
+             and store.messages.transcript_cursor_state(target, held['through'], lineage) == held['state'])
     after = held['key'] if holds else None
-    rows, key, through = read_page(db, target, order, after, limit, lineage=lineage, whole=whole, **page)
+    rows, key, through = read_page(store, target, order, after, limit, lineage=lineage, whole=whole, **page)
     through = max(through, held['through'] if holds else 0)
-    state = db.transcript_cursor_state(target, through, lineage)
+    state = store.messages.transcript_cursor_state(target, through, lineage)
     return rows, key if key is not None else after, (target, through, state), not holds, whole
 
 
-def _poll(db, target, lineage, order, held, limit, **page):
+def _poll(store, target, lineage, order, held, limit, **page):
     """``(rows, next key, poll state, reset, whole)``. Latest order pages back from the cursor's message
     wherever a compaction moved it (in the lineage read whole; a current segment's cursor resets once a
     rotation replaces that segment). Oldest order continues after the cursor only while its segment and
@@ -446,44 +438,44 @@ def _poll(db, target, lineage, order, held, limit, **page):
     there (a rewrite since the backfill) is backfilled outside it and read again. Without a pooled reader
     the reads are kept only when no write landed between them; after one retry, ``_unproven``, as when
     the index never stays whole."""
-    _whole_lineage(db, target, lineage)  # may backfill a legacy display index: before the snapshot
+    _whole_lineage(store, target, lineage)  # may backfill a legacy display index: before the snapshot
     missing = False
     for attempt in range(_STABLE_READS):
-        with db.transcript_read_snapshot() as consistent:
-            whole = _scope(db, target, lineage)
+        with store.messages.read_snapshot() as consistent:
+            whole = _scope(store, target, lineage)
             missing = whole is None
             if not missing:
-                result = _read(db, target, lineage, order, held, limit, whole, page)
+                result = _read(store, target, lineage, order, held, limit, whole, page)
                 if consistent():
                     return result
                 if not consistent.pinned and attempt:
-                    return _unproven(db, target, lineage, order, limit, result, whole, page)
+                    return _unproven(store, target, lineage, order, limit, result, whole, page)
         if missing:
-            whole = _whole_lineage(db, target, lineage)  # outside the snapshot; then read again
+            whole = _whole_lineage(store, target, lineage)  # outside the snapshot; then read again
     if missing:  # the last attempt still found a slot missing: the backfilled index, unproven
-        result = _read(db, target, lineage, order, held, limit, whole, page) if order == 'latest' else None
-        return _unproven(db, target, lineage, order, limit, result, whole, page)
-    raise RuntimeStoreError('storage_unavailable', detail='the transcript read kept ending early')
+        result = _read(store, target, lineage, order, held, limit, whole, page) if order == 'latest' else None
+        return _unproven(store, target, lineage, order, limit, result, whole, page)
+    raise AuthorityRefusal('storage_unavailable', detail='the transcript read kept ending early')
 
 
 # A cursor state no transcript has: the next poll from it resets.
 _UNPROVEN_STATE = (_INT_MAX - 1,) * 3
 
 
-def _unproven(db, target, lineage, order, limit, result, whole, page):
+def _unproven(store, target, lineage, order, limit, result, whole, page):
     """A store without a pooled reader saw a write during the read and again on the retry, so no page of
     it is proven to match a cursor state. Latest order stores no state: its last read stands. Oldest
     order answers ``reset`` with the first page and a state no transcript has, so the next poll resets
     again rather than trust it: a change is never silently missed or doubled."""
     if order == 'latest':
         return result
-    rows, key, through = read_page(db, target, order, None, limit, lineage=lineage, whole=whole, **page)
+    rows, key, through = read_page(store, target, order, None, limit, lineage=lineage, whole=whole, **page)
     return rows, key, (target, through, _UNPROVEN_STATE), True, whole
 
 
-def read_transcript(db, target, lineage, binding, held, limit, *, profile_home, inline_images):
+def read_transcript(store, target, lineage, binding, held, limit, *, profile_home, inline_images):
     """The reply fields ``rows``, ``next_cursor`` and ``reset`` of one page of physical *target*."""
-    rows, key, poll, reset, whole = _poll(db, target, lineage, binding[2], held, limit,
+    rows, key, poll, reset, whole = _poll(store, target, lineage, binding[2], held, limit,
                                           profile_home=profile_home, inline_images=inline_images)
     next_cursor = _encode_cursor(binding, key, poll, whole) if key is not None or binding[2] == 'oldest' else None
     return {'rows': rows, 'next_cursor': next_cursor, 'reset': reset}
@@ -492,13 +484,13 @@ def read_transcript(db, target, lineage, binding, held, limit, *, profile_home, 
 def _transcript_params(params):
     """``(limit, order, inline_images, subagent_id, cursor)`` of a valid request."""
     if set(params) - TRANSCRIPT_FIELDS or not isinstance(params.get('session_id'), str) or not params['session_id']:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     limit, cursor, subagent_id = params.get('limit', 100), params.get('cursor'), params.get('subagent_id')
     order, inline_images = params.get('order', 'oldest'), params.get('inline_images', False)
     if (type(limit) is not int or not 1 <= limit <= MAX_PAGE_ROWS or not isinstance(cursor, (str, type(None)))
             or order not in ('oldest', 'latest') or type(inline_images) is not bool
             or not (subagent_id is None or (isinstance(subagent_id, str) and subagent_id))):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return limit, order, inline_images, subagent_id, cursor
 
 
@@ -513,8 +505,8 @@ async def transcript(connection, ref, params):
     authority = connection.authority
 
     def read():
-        db = authority.db
+        store = authority_persistence(authority)
         return {'session_id': ref.session_id, **read_transcript(
-            db, target, db._resume_lineage_ids(target), binding, held, limit,
+            store, target, store.lineage.resume_lineage_ids(target), binding, held, limit,
             profile_home=authority.profile_id, inline_images=inline_images)}
     return await asyncio.to_thread(read)

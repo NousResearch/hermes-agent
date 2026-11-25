@@ -70,6 +70,11 @@ def _fire_post_api_request_hook(
 ) -> None:
     from agent.conversation_loop import _moa_reference_metrics_for_hook
 
+    if getattr(agent, "_loop_aux_task", None):  # a plugin session fork (begin_loop_aux_attempt)
+        from agent.auxiliary_hooks import end_loop_aux_attempt
+        end_loop_aux_attempt(agent, response, normalized=(
+            assistant_message, finish_reason, agent._usage_summary_for_api_request_hook(response)))
+        return
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):
@@ -170,6 +175,9 @@ def normalize_model_response(
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
     assistant_message = normalize_response_for_agent(agent, response)
+    # A request-local recovery hint has now been consumed. Clear it before any
+    # response guard can continue; another empty response may queue a fresh hint.
+    agent._empty_response_retry_hint = None
     finish_reason = assistant_message.finish_reason
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ResponseIntakeVerdict:

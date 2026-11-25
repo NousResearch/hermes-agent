@@ -78,7 +78,8 @@ def _install_fake_tools_package(*, credential_mounts=None):
         def _prepare_command(self, command: str):
             return command, None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyBaseEnvironment)
+    sys.modules["tools.environments.base"] = types.SimpleNamespace(
+        BaseEnvironment=_DummyBaseEnvironment, touch_activity_if_due=lambda _state, _label: None)
     sys.modules["tools.managed_tool_gateway"] = types.SimpleNamespace(
         resolve_managed_tool_gateway=lambda vendor: types.SimpleNamespace(
             vendor=vendor,

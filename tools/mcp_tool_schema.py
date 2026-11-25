@@ -14,10 +14,14 @@ logger = logging.getLogger("tools.mcp_tool")
 
 # Prompt-injection indicators in MCP tool descriptions. WARNING-level only: log but never
 # block, since false positives would break legitimate servers.
+# Descriptions are scanned raw, with no whitespace collapse, so the filler keeps unbounded
+# runs (threat_patterns' _FILLER is width-bounded for its chunked scan).
+_FILLER = r"(?:\w+\s+){0,8}"
 _MCP_INJECTION_PATTERNS = [
     (re.compile(pattern, re.IGNORECASE), reason)
     for pattern, reason in (
-        (r"ignore\s+(all\s+)?previous\s+instructions", "prompt override attempt ('ignore previous instructions')"),
+        (rf"ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions",
+         "prompt override attempt ('ignore previous instructions')"),
         (r"you\s+are\s+now\s+a", "identity override attempt ('you are now a...')"),
         (r"your\s+new\s+(task|role|instructions?)\s+(is|are)", "task override attempt"),
         (r"system\s*:\s*", "system prompt injection attempt"),

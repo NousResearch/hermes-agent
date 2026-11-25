@@ -597,10 +597,10 @@ class TestMatrixRenderingPayloads:
         assert result.success is True
         contents = self._sent_contents()
         assert len(contents) > 1
-        for content in contents:
+        for index, content in enumerate(contents):  # later chunks chain to the preceding one
             assert content["m.relates_to"]["rel_type"] == "m.thread"
             assert content["m.relates_to"]["event_id"] == "$root"
-            assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+            assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$evt" if index else "$root"}
             assert content["body"].count("```") % 2 == 0
 
 

@@ -81,6 +81,7 @@ from gateway.platforms.helpers import ThreadParticipationTracker, hash_for_log
 from plugins.platforms.matrix.media_download import MatrixMediaTooLarge, download_mxc_capped, read_body_capped
 from plugins.platforms.matrix.adapter_html import _latex_to_tokens, _pre_sanitize_matrix_markdown, _sanitize_matrix_html
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
+from plugins.platforms.matrix.thread_replies import _thread_root, thread_fallback_target
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -482,11 +483,6 @@ def _csv_set(raw: Any) -> set[str]:
     if isinstance(raw, list):
         return {str(r).strip() for r in raw if str(r).strip()}
     return {r.strip() for r in str(raw).split(",") if r.strip()}
-
-
-def _thread_root(relates_to: dict) -> Optional[str]:
-    """The m.thread root event_id an event belongs to, else None."""
-    return relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread" else None
 
 
 def _extra_csv_set(config, key: str, env_name: str) -> set[str]:
@@ -1252,10 +1248,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
+        fallback_to = await thread_fallback_target(self._client, chat_id, reply_to, metadata)
         for chunk in self.truncate_message(
                 self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
             msg_content = self._build_text_message_content(chunk)
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata, fallback_to=fallback_to)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -1270,6 +1267,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
+            if (metadata or {}).get("thread_id"):  # later chunks continue from the preceding one
+                reply_to, fallback_to = None, last_event_id
         return SendResult(success=True, message_id=last_event_id)
 
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
@@ -1660,7 +1659,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 msg_content["info"]["duration"] = audio_metadata["duration"]
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
-        self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+        fallback_to = await thread_fallback_target(self._client, room_id, reply_to, metadata)
+        self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata, fallback_to=fallback_to)
         return await self._send_content_event(room_id, msg_content)
 
     async def _room_needs_encrypted_upload(self, room_id: str) -> bool:
@@ -2761,8 +2761,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _apply_relation_metadata(
         self, msg_content: dict[str, Any], *, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None) -> None:
-        """Apply Matrix reply/thread relation metadata to an outbound payload."""
+        metadata: Optional[dict[str, Any]] = None, fallback_to: Optional[str] = None) -> None:
+        """Apply reply/thread relations; *fallback_to* anchors a thread fallback with no *reply_to*."""
         thread_id = str((metadata or {}).get("thread_id") or "")
         if reply_to:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
@@ -2771,8 +2771,8 @@ class MatrixAdapter(BasePlatformAdapter):
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
             relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root.
-            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
+            # Non-thread clients render the reply fallback: the latest thread event, else the root.
+            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or fallback_to or thread_id})
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

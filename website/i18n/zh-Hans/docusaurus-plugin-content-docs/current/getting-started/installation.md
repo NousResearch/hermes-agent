@@ -10,6 +10,8 @@ description: "在 Linux、macOS、WSL2 或原生 Windows 上安装 Hermes Agent"
 
 ## 快速安装
 
+<a id="一行安装命令linux--macos--wsl2"></a>
+
 ### 一行安装命令（Linux / macOS / WSL2） {#linux--macos--wsl2}
 
 基于 git 的安装方式，跟踪 `main` 分支，可立即获取最新变更：
@@ -17,6 +19,8 @@ description: "在 Linux、macOS、WSL2 或原生 Windows 上安装 Hermes Agent"
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
+
+<a id="windows原生powershell"></a>
 
 ### Windows（原生，PowerShell） {#windows-native}
 

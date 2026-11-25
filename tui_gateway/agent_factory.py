@@ -178,6 +178,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["reasoning_config_override"] = reasoning_config
     if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
         overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
+    # Chat-vs-Work mode: restore the session's explicit toolset set so a reopened Chat stays stripped.
+    if isinstance(model_config.get("enabled_toolsets"), list):
+        overrides["enabled_toolsets_override"] = list(model_config["enabled_toolsets"])
     return overrides
 
 
@@ -638,7 +641,8 @@ def _make_agent(
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    cwd_override: str | None = None, auth_user_id: str | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None,
+    enabled_toolsets_override: list[str] | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -674,13 +678,14 @@ def _make_agent(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=(
-            # A Chat-mode session carries an explicit toolset set at create (e.g. [] for zero tools).
-            # None inherits the platform's configured toolsets (Work). Bypass onboarding for an explicit
-            # set so a deliberately-stripped Chat never regains tools via first-run hints.
-            (session or {}).get("enabled_toolsets")
-            if (session or {}).get("enabled_toolsets") is not None
-            else onboarding_toolsets(_load_enabled_toolsets(platform),
-                                     session_db if session_db is not None else _get_db(), session_id or key)
+            enabled_toolsets_override
+            if enabled_toolsets_override is not None
+            else (
+                (session or {}).get("enabled_toolsets")
+                if (session or {}).get("enabled_toolsets") is not None
+                else onboarding_toolsets(_load_enabled_toolsets(platform),
+                                         session_db if session_db is not None else _get_db(), session_id or key)
+            )
         ),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).

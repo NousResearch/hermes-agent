@@ -581,6 +581,9 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
+    # Chat-vs-Work mode: persist the explicit toolset set so resume rebuilds the same strip.
+    if isinstance(ets := session.get("enabled_toolsets"), list):
+        model_config["enabled_toolsets"] = list(ets)
     from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
     return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 

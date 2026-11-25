@@ -17,7 +17,6 @@ it.each([false, true])('keeps search, clear, and catalog actions independent (V2
 
   function Search() {
     const [value, setValue] = useState('')
-
     return (
       <CapabilitySearch
         actions={<button onClick={install}>Install from Git</button>}

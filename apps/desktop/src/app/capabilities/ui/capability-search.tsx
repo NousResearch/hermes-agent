@@ -25,7 +25,6 @@ export function CapabilitySearch({
   value: string
 }) {
   const redesigned = usePortalShell()
-
   const toolbarActions = actions ? (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end" data-catalog-actions>
       {actions}

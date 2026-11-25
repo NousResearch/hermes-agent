@@ -258,6 +258,19 @@ class GatewayBusySessionMixin:
                 )
         return pending_event, pending
 
+    def _follow_up_turn_scope(
+        self, session_key: Optional[str], pending_event: Optional[MessageEvent], result: Any, pending: Optional[str],
+    ) -> Any:
+        """The binding a drained follow-up turn runs under (``_run_agent_queued_followup``): its own
+        event's sender and origin, or, with no event of its own, the turn it follows minus that turn's
+        origin: ``turn_internal()`` is ``False`` for a late /steer (``_merge_leftover_steer``: text a
+        person sent) and ``None`` for interrupt text, whose sender the drain no longer knows."""
+        from gateway.session_context import scoped_turn_actor, scoped_turn_origin
+        if pending_event is not None:
+            return scoped_turn_actor(pending_event, self._session_state(session_key).turn)
+        steer = (result.get("pending_steer") or "").strip() if isinstance(result, dict) else ""
+        return scoped_turn_origin(False if steer and pending == steer else None)
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())

@@ -60,12 +60,16 @@ def turn_internal() -> bool | None:
     """Whether Hermes itself started the turn running in this context, the pair of ``turn_client()``.
     ``True`` for a turn whose input Hermes produced: a background-process notification, a delegation
     result, an automation or heartbeat wake, a message a plugin injected, or an event a platform
-    adapter marks as a system trigger (a webhook notification). ``False`` for a turn carrying a
-    message someone sent: typed in a client (announced or not), on a messaging chat, or an API
-    request. ``None`` outside a turn, in a delegated child (it runs in its parent turn's context),
-    in a managed worker and a plugin's own slash command (no turn event is bound there), and for a
-    synthetic turn Hermes does not mark internal (a goal continuation). A steer into the running turn
-    does not change the answer. Answers only inside the gateway process: under
+    adapter marks as a system trigger (a webhook notification), and an unauthored report delivered
+    into the Bot Chat (cron job output). A plugin's injected message is the plugin's own output, so
+    it reads ``True`` whatever its text relays. ``False`` for a turn carrying a message someone sent:
+    typed in a client (announced or not), on a messaging chat, an API request, a ``hermes peer dm``
+    or an authored (a person's or another bot's) Bot Chat delivery, and a late steer run as the next
+    turn. ``None`` outside a turn, in a delegated child (it runs in its parent turn's context),
+    in a managed worker and a plugin's own slash command (no turn event is bound there), for a
+    synthetic turn Hermes does not mark internal (a goal continuation), and for a turn whose sender
+    is no longer known (interrupt text run as the next turn, the retry of a Bot Chat delivery whose
+    receipt recorded no origin). A steer into the running turn does not change the answer. Answers only inside the gateway process: under
     ``plugins.isolation: host`` it is always ``None`` in the plugin's own process, where
     ``ctx.turn_internal()`` asks the gateway instead."""
     if _in_delegated_child():

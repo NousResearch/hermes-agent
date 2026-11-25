@@ -34,6 +34,26 @@ def _insert_by_arrival(held: list, event: MessageEvent) -> None:
 class TelegramHeldInboundMixin:
     """Hold / redispatch / hand-over of inbound events for ``TelegramAdapter``."""
 
+    async def stop_inbound(self) -> None:
+        """Gateway drain: stop getUpdates while the message handler is still installed (#143122).
+
+        A long-poll that outlives the handler withdrawal acks updates nobody admits; stopping it
+        first leaves unfetched updates on Telegram for the next boot. Fences the polling lifecycle
+        like ``disconnect()`` so the verifier/reconnect paths read this as teardown; egress stays up.
+        The fence is set even when the updater is not running: a conflict/network recovery sleeping
+        between its stop and its restart would otherwise restart polling after the handler is gone.
+        """
+        from plugins.platforms.telegram.adapter import _UPDATER_STOP_TIMEOUT, _await_with_thread_deadline
+        if self._teardown_started or self._webhook_mode:
+            return
+        self._polling_teardown_started = True
+        self._polling_progress_accepting = False
+        self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+        self._polling_progress_event = asyncio.Event()
+        updater = getattr(self._app, "updater", None) if self._app else None
+        if getattr(updater, "running", False):
+            await _await_with_thread_deadline(updater.stop(), timeout=_UPDATER_STOP_TIMEOUT, label="stop_inbound")
+
     def _schedule_held_inbound_redispatch(self) -> None:
         """Ensure a tracked drain runs when held events exist and delivery is live (no-op while
         down or after permanent fatal; an in-flight drain schedules its own follow-up)."""

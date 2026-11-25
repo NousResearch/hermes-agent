@@ -1,6 +1,6 @@
 name: hermes-detox
 repo: https://github.com/kellycryptos/hermes-detox
-sha: 6efe12bea00546d0e200c67c7afec5e1ac056ce7
+sha: 3d29317aadf27e0eee6def4df1ac655549c04510
 version: "0.1.0"
 title: "Hermes Detox"
 description: "Tool output firewall. Saves redacted tool output locally (unencrypted; redaction is pattern-based and can miss secrets; no network), gives the model a compact report, and retrieves exact lines on demand."
@@ -10,7 +10,8 @@ category: tools
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/kellycryptos/hermes-detox#readme
 readme: true
-platforms: []
+platforms:
+  - macos
 capabilities:
   provides_tools:
     - detox_inspect

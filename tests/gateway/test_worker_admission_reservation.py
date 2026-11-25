@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
-                                  register_worker_execution, settle_session_input)
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def hello(process):
@@ -22,31 +22,32 @@ def hello(process):
 
 def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path):
     from gateway.session_worker_reservation import reserve_admission_worker
-    db = SessionDB(tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        db.create_session('owned', 'cli')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
-        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
-        kwargs = dict(admission_id=admitted['admission_id'], process=process, principal_id='human', hello=hello(process))
+        seed_session(db, 'owned', 'cli')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        authority = SimpleNamespace(epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
+                                    persistence=db)
+        admitted, _created = db.admissions.admit(epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        kwargs = dict(admission_id=admitted.admission_id, process=process, principal_id='human', hello=hello(process))
         with pytest.raises(Exception, match='producer_not_started'):
             reserve_admission_worker(authority, **kwargs)
-        claim = claim_session_input(db, epoch=epoch, session_id='owned')
+        claim = db.admissions.claim(epoch=epoch, session_id='owned')
         with pytest.raises(Exception, match='permission_denied'):
             reserve_admission_worker(authority, **dict(kwargs, principal_id='other'))
         with pytest.raises(Exception, match='stale_generation'):
-            register_worker_execution(db, epoch=epoch, execution_id='public', session_id='owned',
-                generation=claim['generation'], kind='compute', adoption_secret='public', require_idle=True)
+            db.worker_executions.register(epoch=epoch, execution_id='public', session_id='owned',
+                generation=claim.generation, kind='compute', adoption_secret='public', require_idle=True)
         scope = reserve_admission_worker(authority, **kwargs)
-        assert scope['session_id'] == 'owned' and scope['generation'] == claim['generation']
+        assert scope['session_id'] == 'owned' and scope['generation'] == claim.generation
         assert scope['pid'] == process.pid and scope['profile_id'] == str(tmp_path)
-        assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 1
+        assert raw_holder(db)._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 1
         # The reservation is single-use; another bootstrap cannot replace its secret.
         with pytest.raises(Exception, match='admission_conflict'):
             reserve_admission_worker(authority, **kwargs)
-        settle_session_input(db, epoch=epoch, admission_id=admitted['admission_id'], generation=claim['generation'], outcome='completed')
+        db.admissions.settle(epoch=epoch, admission_id=admitted.admission_id, generation=claim.generation, outcome='completed')
         with pytest.raises(Exception, match='producer_not_started'):
             reserve_admission_worker(authority, **kwargs)
     finally:
@@ -59,17 +60,17 @@ def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path
 async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path):
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
-    db = SessionDB(tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        db.create_session('owned', 'cli')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
-                                    wake_after_worker=lambda session_id: None)
-        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
-        claim_session_input(db, epoch=epoch, session_id='owned')
-        scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process, principal_id='human', hello=hello(process))
+        seed_session(db, 'owned', 'cli')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        authority = SimpleNamespace(epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
+                                    wake_after_worker=lambda session_id: None, persistence=db)
+        admitted, _created = db.admissions.admit(epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        db.admissions.claim(epoch=epoch, session_id='owned')
+        scope = reserve_admission_worker(authority, admission_id=admitted.admission_id, process=process, principal_id='human', hello=hello(process))
         actor = SimpleNamespace(subject='human', profile_id=str(tmp_path), capabilities={'worker:adopt'})
         connection = SimpleNamespace(authority=authority, actor=actor)
         identity = {k: v for k, v in scope.items() if k != 'epoch'}
@@ -100,15 +101,14 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     from gateway.session_ingress import admit_message
     from gateway.session_worker import worker_request
     from gateway import session_finite
-    from hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session('owned', 'telegram')
+    db = storage_handle(tmp_path)
+    seed_session(db, 'owned', 'telegram')
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='p', instance_id='owner',
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'), persistence=db)
     authority.sessions['owned'] = LiveSession(SimpleNamespace(platform=Platform.TELEGRAM, user_id='human'), 'route')
     ran = []
 
@@ -137,7 +137,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
                                                        'operation': 'execution.finish', 'payload': {}}, operation='persist')
         await asyncio.wait_for(authority.sessions['owned'].task, 5)
         assert len(ran) == 1
-        assert get_session_admission(db, admission_id=ran[0])['outcome'] == 'completed'
+        assert db.admissions.get(admission_id=ran[0]).outcome == 'completed'
     finally:
         process.stdin.close()
         process.wait(timeout=5)
@@ -163,19 +163,20 @@ def test_reservation_survives_a_clock_step_on_macos(tmp_path, stale_psutil_boot_
     managed worker. ``process_birth`` (the kernel start) is what both processes see."""
     from gateway.session_worker_reservation import reserve_admission_worker
     from hermes_cli.process_identity import process_birth
-    db = SessionDB(tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         frame = hello(process) | {'birth': process_birth(psutil.Process(process.pid))}  # the worker's own read
         stale_psutil_boot_reference(drift)
         assert psutil.Process(process.pid).create_time() != frame['birth']  # the step is real
-        db.create_session('owned', 'cli')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
-        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
-        claim_session_input(db, epoch=epoch, session_id='owned')
-        kwargs = dict(admission_id=admitted['admission_id'], process=process, principal_id='human')
+        seed_session(db, 'owned', 'cli')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        authority = SimpleNamespace(epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
+                                    persistence=db)
+        admitted, _created = db.admissions.admit(epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        db.admissions.claim(epoch=epoch, session_id='owned')
+        kwargs = dict(admission_id=admitted.admission_id, process=process, principal_id='human')
         with pytest.raises(Exception, match='permission_denied'):  # a forged birth still fails
             reserve_admission_worker(authority, hello=frame | {'birth': frame['birth'] + 1}, **kwargs)
         scope = reserve_admission_worker(authority, hello=frame, **kwargs)
@@ -222,19 +223,20 @@ def test_reservation_survives_a_boot_time_reanchor_on_linux(tmp_path, monkeypatc
     code = 'import json, sys; from agent.managed_worker import hello; print(json.dumps(hello()), flush=True); sys.stdin.read()'
     process = subprocess.Popen([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[2],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    db = SessionDB(tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     try:
         frame = {'type': 'hello', **json.loads(process.stdout.readline())}  # the real worker's hello
         reported = psutil.Process(process.pid).create_time()
         boot = psutil.boot_time()
         monkeypatch.setattr(psutil._pslinux, 'boot_time', lambda: boot + 3600)
         assert psutil.Process(process.pid).create_time() != reported  # the re-anchor is real
-        db.create_session('owned', 'cli')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
-        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
-        claim_session_input(db, epoch=epoch, session_id='owned')
-        kwargs = dict(admission_id=admitted['admission_id'], process=process, principal_id='human')
+        seed_session(db, 'owned', 'cli')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        authority = SimpleNamespace(epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
+                                    persistence=db)
+        admitted, _created = db.admissions.admit(epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        db.admissions.claim(epoch=epoch, session_id='owned')
+        kwargs = dict(admission_id=admitted.admission_id, process=process, principal_id='human')
         with pytest.raises(Exception, match='permission_denied'):  # a forged birth still fails
             reserve_admission_worker(authority, hello=frame | {'birth': frame['birth'] + 1}, **kwargs)
         scope = reserve_admission_worker(authority, hello=frame, **kwargs)

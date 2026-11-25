@@ -73,7 +73,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 3
     outputs:
       python: ${{ steps.gate-lanes.outputs.python }}
@@ -102,6 +102,8 @@ jobs:
           sparse-checkout: |
             .github/actions/detect-changes
             scripts/ci/classify_changes.py
+            hermes_agent/__init__.py
+            hermes_agent/compat/
           sparse-checkout-cone-mode: false
       - name: Detect affected areas
         id: classify
@@ -369,7 +371,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}

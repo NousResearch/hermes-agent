@@ -45,6 +45,15 @@ async def _stop_exec_tree(proc) -> None:
         await asyncio.wait_for(proc.wait(), timeout=5)
 
 
+def _carry_replied_voice_answer(event, rewritten, new_text: str) -> None:
+    """``dataclasses.replace`` drops the adapter's private typed-answer attribute, and without it a
+    clarify reads the replied-to voice note's speech as the answer. Carry it: the plugin's rewritten
+    text is the answer, or the typed text when the plugin returned the text unchanged."""
+    attr = "_telegram_replied_voice_typed_text"  # read by _prepare_clarify_reply_text
+    if (typed := getattr(event, attr, None)) is not None:
+        setattr(rewritten, attr, typed if new_text == event.text else new_text.strip())
+
+
 class GatewayInboundHooksMixin:
     """Hook, quick-command and plugin-command dispatch for ``GatewayInboundMixin``."""
 
@@ -103,9 +112,17 @@ class GatewayInboundHooksMixin:
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
                     from gateway.session_ingress_context import carry_callback
-                    rewritten = dataclasses.replace(event, text=_new_text)
-                    carry_callback(event, rewritten)
-                    event = rewritten
+                    if getattr(event, '_busy_observed', False):
+                        # Its observer closes the hooks using this exact event. Replacing it loses
+                        # the process-local admission handle assigned after this hook returns.
+                        _carry_replied_voice_answer(event, event, _new_text)
+                        event.text = _new_text
+                    else:
+                        rewritten = dataclasses.replace(event, text=_new_text)
+                        carry_callback(event, rewritten)
+                        rewritten._rewritten_from = event  # accept_interrupt reaches the adapter's event
+                        _carry_replied_voice_answer(event, rewritten, _new_text)
+                        event = rewritten
                 break
             if _action == "allow":
                 break
@@ -175,11 +192,26 @@ class GatewayInboundHooksMixin:
                     return False, None, event.get_command()
         return False, None, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str, cwd: Optional[str] = None) -> str:
+    def _hm_quick_commands_home(self) -> Optional[str]:
+        """The home whose ``config.yaml`` names :meth:`_hm_quick_commands`: the default profile's for a
+        multiplexing gateway, whichever profile's process started it
+        (``load_gateway_config_for_runner``); None for this process's own."""
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return None
+        from hermes_constants import get_default_hermes_root
+        return str(get_default_hermes_root())
+
+    async def _hm_run_exec_quick_command(
+        self, command: str, exec_cmd: str, cwd: Optional[str] = None, *, home: Optional[str] = None,
+    ) -> str:
         """Run a ``type: exec`` quick command as a host shell of the gateway process: sanitized env
         (the gateway process has every API key in os.environ), redacted output, its process tree
         killed after 30 s or when the awaiting task is cancelled (gateway shutdown).
-        ``cwd`` is a local session's folder; None keeps the gateway's own (messaging)."""
+        ``cwd`` is a local session's folder; None keeps the gateway's own (messaging).
+        ``home`` is the home whose config names the command; None is the one bound for the caller."""
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if refused := run_elsewhere_refusal(home):  # asked per command: this gateway may predate the marker
+            return refused
         proc = None
         try:
             from tools.environments.local import build_subprocess_env
@@ -230,7 +262,8 @@ class GatewayInboundHooksMixin:
                 exec_cmd = qcmd.get("command", "")
                 if not exec_cmd:
                     return True, t("gateway.quick_command.no_command", command=command), command
-                return True, await self._hm_run_exec_quick_command(command, exec_cmd), command
+                reply = await self._hm_run_exec_quick_command(command, exec_cmd, home=self._hm_quick_commands_home())
+                return True, reply, command
             if qtype != "alias":
                 return True, t("gateway.quick_command.unsupported_type", command=command), command
             new_command = self._hm_expand_alias_quick_command(event, qcmd)

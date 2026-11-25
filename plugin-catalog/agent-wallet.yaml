@@ -1,0 +1,63 @@
+# Catalog entry for NousResearch/hermes-agent :: plugin-catalog/agent-wallet.yaml
+#
+# Pinned to b777a2d4a913f48150e014a179f7d792a91551cc — the commit `hermes plugins validate` passed at, cloned anonymously from
+# the public repo. `repo` resolves without credentials; the pin is that repo's HEAD.
+#
+# Disclosure (rule 13) — the README's block is the source of truth; this is the same content:
+#   network:  public Monero nodes from a built-in registry (health-probed) for height and broadcast;
+#             public Esplora endpoints (blockstream.info) for Bitcoin balances, UTXOs, broadcast;
+#             public EVM JSON-RPC endpoints (Base, Base Sepolia, Polygon, Polygon Amoy) with failover;
+#             any URL the user asks the agent to price or pay (HTTP GET, read-only; the wallet parses
+#             the 402 terms and sends nothing that URL did not ask for).
+#   downloads: the official monero-wallet-rpc release tarball, only on an explicit `signer install`,
+#             verified against a SHA256 pinned in code; an unpinned version is refused. Nothing is
+#             bundled, and nothing else is ever fetched.
+#   local:    one daemon (walletd) on a 0600 unix socket in the wallet home, plus the Monero signer
+#             child on 127.0.0.1 with HTTP Digest auth; a systemd --user unit on request.
+#   stores:   keystore.json (scrypt + XChaCha20-Poly1305: master keys, receipt signing seed, BTC/EVM
+#             keys); signer.conf (0600: signer RPC login + node/bind options, passed as
+#             --config-file so it is not in argv); wallet.env (0600: Monero wallet file name);
+#             ledger.jsonl + ledger.anchor, requests.json, mandates.json, contacts.json,
+#             sandboxes.json, idempotency.json — all 0600, none leave the machine.
+#   shell:    no shell commands; the signer and the daemons are spawned as argv lists.
+#   telemetry: none.
+name: agent-wallet
+repo: https://github.com/BlackHelio/agent-wallet
+sha: "b777a2d4a913f48150e014a179f7d792a91551cc"
+version: 0.9.3
+description: "Approval-gated multi-chain wallet for agents. Default coins are XMR, BTC and XRP (XRP is receive-only in this release); ETH, POL and USDC on Base and Polygon are one toggle away. The agent can ask to pay, propose an auto-pay mandate, ask for a capped sandbox budget (created unfunded) or close an incoming order. A human types a six-digit PIN on a card that shows the exact destination, amount, fee and fiat value for each manual payment; a budget or autopay that human armed spends unattended — capped, receipted, no per-payment PIN. No key material ever enters the Hermes process: a daemon (walletd) holds an encrypted keystore, signs Bitcoin and EVM locally, supervises the Monero signer, enforces spend policy, and writes Ed25519-signed, hash-chained receipts (denials included, anchored so truncation is detected). Purchases can be priced from an HTTP 402 (x402) response and settled with an EIP-3009 authorisation. 23 agent tools, one per distinct act. Monero's signer runs as the same OS user, so while the wallet is unlocked a process running as that user — including the agent's terminal — can reach it directly (docs/THREAT-MODEL.md states this). Ships a native Desktop page (balances, approvals, mandates, sandboxes, receipts, per-coin switches) and full CLI parity. Disclosure — crypto wallet that moves real funds: runs a local daemon (walletd, a 0600 unix socket) and, after an explicit `signer install`, downloads the official monero-wallet-rpc release (SHA256-pinned) and runs it on 127.0.0.1; it sends balance, height and broadcast requests to public third-party nodes (Monero community nodes, blockstream.info/mempool.space, XRPL public servers, Base/Polygon public RPCs) and fiat price lookups to CoinGecko/Kraken; it fetches any checkout URL the agent is asked to pay (public addresses only); payments need a PIN typed in the Wallet pane, except budgets and autopays the user arms as unattended, which spend within their caps without asking; while the wallet is unlocked, any process running as your user, including the agent's terminal, can reach the Monero signer directly and bypass the PIN; `hermes wallet service install` adds a systemd --user unit."
+maintainer: BlackHelio
+tier: community
+category: tools
+docs_url: https://github.com/BlackHelio/agent-wallet#readme
+requires_hermes: ">=0.21.0"
+capabilities:
+  provides_tools:
+    - wallet_merchants
+    - wallet_contacts
+    - wallet_contact_save
+    - wallet_deposits
+    - wallet_sandboxes
+    - wallet_request_sandbox
+    - wallet_orders
+    - wallet_close_order
+    - wallet_readiness
+    - wallet_nodes
+    - wallet_status
+    - wallet_balances
+    - wallet_pay_url
+    - wallet_receive_address
+    - wallet_cancel
+    - wallet_spend
+    - wallet_ledger
+    - wallet_verify_payment
+    - wallet_request_approval
+    - wallet_request_payment
+    - wallet_mandate_propose
+    - wallet_mandate_list
+    - wallet_mandate_revoke
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

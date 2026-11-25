@@ -280,7 +280,7 @@ class PersistedTurn(Payload):
 
 class MessageCompletePayload(Payload):
     """``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /
-    ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /
+    ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) /
     ``compute_host_bridge`` (``text`` + ``status``)."""
 
     text: str | JsonValue = ""
@@ -300,6 +300,8 @@ class MessageCompletePayload(Payload):
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
+    #: An interrupted turn its interrupter will continue (``session.interrupt`` ``resume``): not stopped for good.
+    paused: bool | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
@@ -719,7 +721,7 @@ class PreviewOpenPayload(Payload):
 
 
 class PreviewClosePayload(Payload):
-    """``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab."""
+    """``tools/preview_tool.py``; ``url`` '' closes every tab."""
 
     url: str = ""
 
@@ -868,9 +870,25 @@ event("skills.changed", ChangeSignalPayload,
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
 
 
+# ── groups.changed (names the rooms that moved) ──────────────────────────────────────────────
+
+
+class GroupsChangedPayload(OpenPayload):
+    """``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent
+    when something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the
+    same frame reaches a window once per open socket, and a copy needs no second read."""
+
+    room_ids: list[str] | None = None
+    broadcast_id: str | None = None
+
+
+event("groups.changed", GroupsChangedPayload,
+      doc="A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state.")
+
+
 __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
+    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload", "GroupsChangedPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",

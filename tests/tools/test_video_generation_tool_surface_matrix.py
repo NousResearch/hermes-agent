@@ -62,7 +62,7 @@ def matrix_env(tmp_path, monkeypatch):
     def _submit(endpoint, arguments=None, headers=None):
         fal_calls.append({"endpoint": endpoint, "arguments": arguments})
         return _FalHandle({"video": {"url": f"https://fake-fal/{endpoint.replace('/','_')}.mp4"}})
-    fake_fal.submit = _submit  # type: ignore
+    fake_fal.SyncClient = lambda key=None: types.SimpleNamespace(submit=_submit)  # type: ignore
 
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
 

@@ -1,0 +1,37 @@
+name: htmi
+repo: https://github.com/Thamirawaran/htmi
+sha: cbc2c6e72145ccaa0b2be944982815be71d2dd4b
+subdir: hermes
+description: "Review the HTML pages your agent writes, on the page itself: comment on the exact element, chart, table row or passage; Hermes is told about new comments, reads each one with its context, makes checked edits and replies. Pages can also be published as a GitHub issue or pull request description, and comments posted there are pulled back. Adds 11 tools, a pre_llm_call notice, a pre_tool_call approval gate, a skill, the /htmi command and a Review tab in the dashboard. Disclosure — runs its bundled engine (bundle/htmi.mjs, built from the repo's src/) with Node and runs git and gh with a minimal environment that carries no provider keys; reads and edits documents only inside the current repository (comments go to .htmi/); opening a review page starts a local review server on 127.0.0.1 (token-protected writes) that keeps running in the background until /htmi stop or a restart; GitHub work uses your own gh CLI login and only this repository's origin plus repositories you list in github_repos: creating an issue or replacing or editing a description waits for your approval, and replies to comments that came from GitHub are posted there; no telemetry, no stored credentials, no other third-party services."
+maintainer: Thamirawaran
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Thamirawaran/htmi/tree/cbc2c6e72145ccaa0b2be944982815be71d2dd4b/hermes
+version: "0.1.1"
+image: https://raw.githubusercontent.com/Thamirawaran/htmi/cbc2c6e72145ccaa0b2be944982815be71d2dd4b/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Thamirawaran/htmi/cbc2c6e72145ccaa0b2be944982815be71d2dd4b/hermes/assets/review-tab.png
+readme: true
+platforms: [linux, macos]
+title: HTMi
+known_issues:
+  - Needs Node.js 20.11 or newer (Hermes installs one).
+capabilities:
+  provides_tools:
+    - htmi_list_documents
+    - htmi_read_document
+    - htmi_list_targets
+    - htmi_list_comments
+    - htmi_comment_context
+    - htmi_apply_edit
+    - htmi_reply
+    - htmi_validate
+    - htmi_pull_comments
+    - htmi_publish_description
+    - htmi_open_review
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

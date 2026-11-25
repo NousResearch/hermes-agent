@@ -1,14 +1,14 @@
 name: "second-key"
 repo: "https://github.com/kamalbuilds/second-key"
-sha: "74085d2a2e1a2cab7c13abc9eac41bf83eea0f61"
+sha: "6e6ef92a2fcf0ac2c6f0726719fac0d0425f1b23"
 subdir: "second-key"
-description: "A two-person rule for shared Hermes bots. Dangerous commands go to named approvers by Telegram DM, the person who asked can never approve their own request, and critical commands need two approvals. No answer, an error or too few approvers always means deny. Disclosure: Network: `api.telegram.org` only, with the bot token from `SECONDKEY_TELEGRAM_BOT_TOKEN`. Redirects are refused; What approvers see: the command after Hermes' own redaction, Hermes' reason for asking, and the requester's display name, platform and platform user id; Background thread: one long-poll thread reads the bot's updates while a request is waiting for votes, and for five minutes after `/secondkey enroll`. It stops on its own once neither holds, and when the plugin unloads; Files: writes its ledger and the armed settings (`armed.json`) under `plugin-data/second-key/`. Reads Hermes' `config.yaml` (read-only) before tool calls, re-parsing it only when the file changed; Credentials: reads the bot token through `agent.secret_scope.get_secret`. It never reads `.env`, `auth.json` or any other credential store; No telemetry, no self-updater, no shell commands, no dependencies beyond the standard library."
+description: "Team approvals for shared Hermes bots. Dangerous commands need N votes from your roster by Telegram DM, sized to the risk. The requester never counts, and an agent that edits its own approval settings is stopped on its next tool call. No answer, an error or too few approvers always means deny. Disclosure — Disclosure: Network: `api.telegram.org` only, with the bot token from `SECONDKEY_TELEGRAM_BOT_TOKEN`. Redirects are refused; What approvers see: the command after Hermes' own redaction, Hermes' reason for asking, and the requester's display name, platform and platform user id. While a ballot is open the DMs are edited in place about every 15 seconds with the current votes and time left. The same ballot text, plus a note that their own vote does not count, is also posted to the Telegram chat the request came from (which may be a group) or to the requester's DM; Re-arming after a change that weakens the settings opens its own critical ballot to the previously armed roster; Background thread: one long-poll thread reads the bot's updates while a request is waiting for votes, and for five minutes after `/secondkey enroll`. It stops on its own once neither holds, and when the plugin unloads; Files: writes its ledger, the armed settings (`armed.json`) and a pane state file (`state.json`: open and last eight closed ballots with the redacted command, requester name and approver names) under `plugin-data/second-key/`. Reads Hermes' `config.yaml` (read-only) before tool calls and in its Desktop Approvals pane, whose dashboard route is read-only; Credentials: reads the bot token through `agent.secret_scope.get_secret`. It never reads `.env`, `auth.json` or any other credential store; No telemetry, no self-updater, no shell commands, no dependencies beyond the standard library."
 maintainer: "kamalbuilds"
 tier: "community"
 category: "tools"
 requires_hermes: ">=0.23.0"
 docs_url: "https://github.com/kamalbuilds/second-key"
-version: "0.1.0"
+version: "0.2.0"
 title: "second-key"
 readme: true
 capabilities:

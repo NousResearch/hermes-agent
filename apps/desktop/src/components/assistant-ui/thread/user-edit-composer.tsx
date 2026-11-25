@@ -253,8 +253,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }, [focusEditor, focusRequestId])
 
   useEffect(() => {
-    const offFocus = onComposerFocusRequest(({ target }) => {
-      if (target === 'edit') {
+    const offFocus = onComposerFocusRequest(detail => {
+      if (detail.target === 'edit') {
+        detail.claimed = true
         setFocusRequestId(id => id + 1)
       }
     })

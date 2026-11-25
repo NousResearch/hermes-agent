@@ -5,8 +5,8 @@ import { resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
 
 import { handleInputRequestEvent } from './input-requests'
+import type { ServerRequestContext } from './server-request-context'
 import { handleServerRequest } from './server-requests'
-import type { ServerRequestContext } from './server-requests'
 import type { GatewayEventContext } from './types'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchNativeNotification: vi.fn() }))

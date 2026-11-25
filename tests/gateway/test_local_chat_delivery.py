@@ -10,13 +10,13 @@ import time
 
 import pytest
 
+from tests.fixtures.storage_read import transcript_rows
 from tests.gateway.test_session_end_delegations import _local
 
 
 def _admissions(authority, ref, needle):
-    from hermes_state_runtime import list_session_admissions
-    rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
-    return [row for row in rows if needle in str(row['payload'])]
+    rows = authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)
+    return [row for row in rows if needle in str(row.payload)]
 
 
 @pytest.mark.asyncio
@@ -29,6 +29,66 @@ async def test_kanban_wake_is_admitted_into_a_local_chat(tmp_path, monkeypatch):
     assert len(_admissions(authority, ref, 'card t1 done')) == 1
 
 
+async def _kanban_wakes_into_a_local_chat(tmp_path, monkeypatch, *extra_events):
+    import queue
+    from types import SimpleNamespace
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.gateway_connection import SessionState
+    from hermes_cli.gateway_tools_notify import queue_admitted_turn
+    from tests.gateway.test_kanban_wake_scope import _completed_subscription, _one_notifier_tick
+    from tests.gateway.test_session_end_delegations import _record_turns
+    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
+    live = authority.sessions[ref.session_id]
+    live.subscribers['cli'] = actor
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    runner._kanban_dispatcher_lock_handle = object()
+    runner._kanban_sub_fail_counts = {}
+    runner._running = True
+    monkeypatch.setenv('HERMES_KANBAN_DB', str(tmp_path / 'local-wake.db'))
+    kb.init_db()
+    task_id = _completed_subscription(platform='local', chat_id=live.source.chat_id, chat_type=live.source.chat_type,
+                                      user_id=live.source.user_id, delivery_mode='wake')
+    conn = kbc.connect()
+    try:
+        for kind in extra_events:
+            kb._append_event(conn, task_id, kind=kind)
+    finally:
+        conn.close()
+    with pytest.MonkeyPatch.context() as tick:
+        await _one_notifier_tick(tick, runner)
+    _record_turns(runner)
+    await authority._drain(ref)
+    queued = []
+    for start in [frame for frame in frames if frame['params']['type'] == 'message.start']:
+        state = SessionState(ref.session_id)
+        connection = SimpleNamespace(events=queue.Queue(), state=lambda _sid, state=state: state)
+        connection.events.put(start)
+        cli = SimpleNamespace(session_id=ref.session_id, _pending_input=queue.Queue())
+        queue_admitted_turn(cli, SimpleNamespace(connection=connection))
+        queued.append(cli._pending_input.get_nowait())
+    return task_id, queued
+
+
+@pytest.mark.asyncio
+async def test_kanban_wake_into_a_local_chat_opens_an_idle_classic_cli_turn(tmp_path, monkeypatch):
+    task_id, [notification] = await _kanban_wakes_into_a_local_chat(tmp_path, monkeypatch)
+    assert notification.display_text == f'[kanban] Task {task_id} completed.'
+    assert str(notification).startswith(notification.display_text + '\n')
+
+
+@pytest.mark.asyncio
+async def test_each_kanban_wake_of_a_split_batch_names_its_own_receipt(tmp_path, monkeypatch):
+    from gateway import warning_notifications
+    monkeypatch.setattr(warning_notifications, 'warning_notifications_enabled', lambda *_a, **_k: False)
+    task_id, queued = await _kanban_wakes_into_a_local_chat(tmp_path, monkeypatch, 'crashed')
+    assert [(n.notification_category, n.display_text) for n in queued] == [
+        ('diagnostic', f'[kanban] Task {task_id} crashed (worker exited); dispatcher will retry.'),
+        ('result', f'[kanban] Task {task_id} completed.')]
+    assert all(str(n).startswith(n.display_text + '\n') for n in queued)
+
+
 def _overdue_heartbeat(session_id):
     from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
     state = HeartbeatManager(session_id).set('status tick', 60)
@@ -37,9 +97,8 @@ def _overdue_heartbeat(session_id):
 
 
 def _heartbeat_admissions(authority, ref):
-    from hermes_state_runtime import list_session_admissions
-    rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
-    return [row for row in rows if row['payload'].get('local_automation_v1', {}).get('heartbeat')]
+    rows = authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)
+    return [row for row in rows if row.payload.get('local_automation_v1', {}).get('heartbeat')]
 
 
 @pytest.mark.asyncio
@@ -75,14 +134,17 @@ async def test_overdue_heartbeat_fires_once_with_a_classic_cli_also_polling(tmp_
     assert len(_heartbeat_admissions(authority, ref)) + bool(cli['value']) == 1
 
 
-async def _attached_cli(tmp_path, monkeypatch):
+async def _attached_cli(tmp_path, monkeypatch, request):
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import goals
+    from persistence_assembly import open_persistence
     runner, authority, _, _ = await _local(tmp_path, monkeypatch)
     # The RPC runs under the owner's profile scope, ``Path('default')`` here: keep it in tmp_path, on its db.
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(goals, '_get_session_db', lambda: authority.db)
+    store = open_persistence(authority.persistence.scope)
+    request.addfinalizer(store.close)
+    monkeypatch.setattr(goals, '_get_session_db', lambda: store)
     cli = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'default'})
     ref = create_local_session(authority, cli.actor, dict(request_id='cli', source='cli', model='fixture', toolsets=[]))
     cli.subscriptions[ref.session_id] = 'sub-1'
@@ -95,10 +157,10 @@ async def _attached_cli(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monkeypatch):
+async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monkeypatch, request):
     """The classic CLI paints only the ticks its own watchdog fires, so the poller leaves them to it."""
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
-    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
+    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch, request)
     await automation('heartbeat', 'set', 'status tick', 60)  # /heartbeat set starts the CLI's watchdog
     _overdue_heartbeat(ref.session_id)
     await restore_heartbeat_watches(runner)
@@ -108,10 +170,10 @@ async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_a_classic_cli_without_a_heartbeat_watchdog_leaves_the_tick_to_the_poller(tmp_path, monkeypatch):
+async def test_a_classic_cli_without_a_heartbeat_watchdog_leaves_the_tick_to_the_poller(tmp_path, monkeypatch, request):
     """A CLI reopening a chat runs goal/loop reads but starts its watchdog only on /heartbeat set or resume."""
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
-    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
+    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch, request)
     _overdue_heartbeat(ref.session_id)
     await restore_heartbeat_watches(runner)
     await automation('goal', 'state')
@@ -121,10 +183,10 @@ async def test_a_classic_cli_without_a_heartbeat_watchdog_leaves_the_tick_to_the
 
 
 @pytest.mark.asyncio
-async def test_a_classic_cli_resume_with_no_heartbeat_leaves_the_tick_to_the_poller(tmp_path, monkeypatch):
+async def test_a_classic_cli_resume_with_no_heartbeat_leaves_the_tick_to_the_poller(tmp_path, monkeypatch, request):
     """/heartbeat resume with nothing to resume starts no watchdog, so a heartbeat set later elsewhere still fires."""
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
-    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
+    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch, request)
     assert (await automation('heartbeat', 'resume'))['value'] is None
     _overdue_heartbeat(ref.session_id)  # Desktop sets it
     await restore_heartbeat_watches(runner)
@@ -153,10 +215,10 @@ async def test_cron_result_for_a_local_origin_is_a_note_not_a_turn(tmp_path, mon
     await authority._drain(ref)
     assert turns == [], 'the finished result must not cost a model turn'
     [row] = _admissions(authority, ref, 'CRON_RESULT_j1')
-    assert row['outcome'] == 'completed'
-    [note] = [m for m in authority.db.get_messages(_target(runner, authority, ref))
+    assert row.outcome == 'completed'
+    [note] = [m for m in transcript_rows(authority.persistence, _target(runner, authority, ref))
               if 'CRON_RESULT_j1' in str(m.get('content'))]
-    assert note['role'] == 'user' and note['display_metadata']['completion_admission'] == row['admission_id']
+    assert note['role'] == 'user' and note['display_metadata']['completion_admission'] == row.admission_id
     assert 'summarize for the chat' not in note['content'], 'no model framing on a note'
 
 

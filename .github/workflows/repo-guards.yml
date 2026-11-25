@@ -112,6 +112,32 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_dockerfile_downloads.py
 
+      # The next three scan files of every lane (catalog YAML, docs, TypeScript, frontend AGENTS.md),
+      # so they run on every PR here, not in lint.yml's python lane, which a catalog-only or
+      # TypeScript-only diff never sets.
+
+      # /tmp is not portable (Termux has none, native Windows has none, macOS aliases it to
+      # /private/tmp, Linux mounts it as a small tmpfs). Production code resolves scratch space
+      # through the scratch-dir helper; skills, docs and prompts must not teach the model a
+      # literal /tmp either. `no-tmp: ok — <why>` marks a deliberate line; _BASELINE in the
+      # script is the burn-down list of pre-existing hits. Local: `python scripts/check --only no-tmp`.
+      - name: Forbid literal /tmp paths outside the baseline
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_no_tmp_literals.py
+
+      # Nix and other non-FHS hosts need not provide Bash at a fixed bin path.
+      # Local: `python scripts/check --only shebangs`.
+      - name: Require portable Bash shebangs
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_bash_shebangs.py
+
+      # Every AGENTS.md from the git root down to the working directory loads as one
+      # project-context block (30,720 chars on a 128k window); chains are capped at 30k.
+      # Local: `python scripts/check --only agents-md`.
+      - name: Keep every AGENTS.md under its truncation cap
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_agents_md_size.py
+
       # Any binary over 500 KiB added or modified, or any new file over 500 KiB: every blob a
       # merge adds stays in every clone forever. Exact-path exceptions live in
       # .github/blob-size-allowlist.txt (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.
@@ -127,13 +153,24 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_lazy_deps_imports.py
 
+      # Every retired updater shim must be listed in tests/fixtures/retired_updater_shims.json,
+      # the data tests/hermes_cli/test_retired_shims_runtime.py calls for real (tests never read
+      # source). AST-based; an empty scan fails.
+      - name: Check the retired updater shim manifest
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_retired_shims_manifest.py
+
       # ── Pull requests: unrelated histories ────────────────────────────────────────────────
 
       # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI
       # accepted it and ~1500 files' `git blame` collapsed onto its parent-less root commit.
+      # Judges the PR head, not HEAD: HEAD is the synthetic merge commit, whose first parent is
+      # main's tip, so it always shares an ancestor with main (#128930).
       - id: merge-base-check
         name: Reject PRs with no common ancestor on main
         if: ${{ !cancelled() && inputs.event_name == 'pull_request' }}
+        env:
+          _HERMES_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/check_common_ancestor.py
 
       - name: Upload review status artifact (history check)
@@ -341,6 +378,33 @@ jobs:
           extras: '[]'
           cache-python: true
           prune-python-cache: true
+
+      # ── Pull requests, python lane: pinned catalog plugins this change breaks (warning) ──
+
+      # Catalog plugins live in their own repos, so no test here sees a core PR remove a module or
+      # name one of them imports. scripts/ci/catalog_core_imports/ records each pinned entry's
+      # Hermes imports (refreshed by catalog-core-imports.yml); this resolves them against the base
+      # and the merge commit from git objects alone (no network, no plugin code, a few seconds).
+      # Never blocking: it warns (annotation, job summary, CI review comment) with each core name
+      # lost, whether it is private, and each plugin's catalog entry, repo, pin and file:line, so the
+      # author knows which public interface to add. After setup-pm: the catalog loader needs
+      # ruamel.yaml. Local:
+      # `python3 scripts/ci/catalog_core_imports.py check --base "$(git merge-base origin/main HEAD)"`.
+      - name: Name the pinned catalog plugins this change breaks
+        id: catalog-core-imports
+        if: ${{ !cancelled() && steps.setup-pm.outcome == 'success' && inputs.event_name == 'pull_request' && inputs.python }}
+        run: python3 scripts/ci/catalog_core_imports.py check --base HEAD^1 --head HEAD
+
+      - name: Upload review status artifact (catalog core imports)
+        if: always() && steps.catalog-core-imports.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-catalog-core-imports
+          path: ${{ runner.temp }}/review-status/catalog-core-imports/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
 
       # ── uv_lock lane: uv.lock in sync with pyproject.toml ─────────────────────────────────
 

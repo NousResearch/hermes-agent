@@ -9,6 +9,9 @@ import time
 import pytest
 
 from tests.gateway import test_session_bot_target_lifecycle as lifecycle
+from persistence_assembly import store_location
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
 
 bot = lifecycle.bot  # the shared Bot Chat owner fixture
 
@@ -20,7 +23,7 @@ async def _resolve(bot):
 
 @pytest.mark.asyncio
 async def test_bot_chat_creation_commits_off_the_owner_loop(bot):
-    db = bot.authority.db
+    db = bot.authority.persistence
     # A serving owner discovered plugins at startup (_start_register_plugins_relay_hooks); this
     # bare fixture has not, so the first policy build would load every plugin ON the loop and
     # the ticker would time plugin import instead of the held writer.
@@ -29,7 +32,7 @@ async def test_bot_chat_creation_commits_off_the_owner_loop(bot):
     held, release = threading.Event(), threading.Event()
 
     def hold_writer():  # another process's writer
-        other = sqlite3.connect(db.db_path, timeout=10)
+        other = sqlite3.connect(store_location(db.scope), timeout=10)
         other.execute('BEGIN IMMEDIATE')
         held.set()
         release.wait(5)
@@ -58,6 +61,6 @@ async def test_bot_chat_creation_commits_off_the_owner_loop(bot):
         release.set()
         tick.cancel()
     assert max(gaps) < 0.5, f'the owner loop stalled {max(gaps):.2f}s behind a held writer'
-    assert ids[0] == ids[1] and db.get_session(ids[0])['title'] == 'Bot Chat'
-    with db._read_ctx() as c:
+    assert ids[0] == ids[1] and session_row(db, ids[0])['title'] == 'Bot Chat'
+    with raw_holder(db)._read_ctx() as c:
         assert c.execute("SELECT COUNT(*) FROM sessions WHERE title='Bot Chat'").fetchone()[0] == 1

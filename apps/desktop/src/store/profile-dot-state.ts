@@ -46,6 +46,7 @@ import { $activeConnectionId } from './connections'
 import { $fleetRoster } from './fleet-roster'
 import { $profiles, normalizeProfileKey } from './profile'
 import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from './session'
+import { $sessionsWaitingOnCard, sessionNeedsInput } from './session-card-wait'
 import { $sessionDotStateById } from './session-dot-state'
 import { $sessionStates, runtimeSessionOwner } from './session-states'
 import { $unreadFinishedMarkers } from './session-unread'
@@ -118,7 +119,8 @@ export const $profileDotStateByScope = computed(
     $unreadFinishedMarkers,
     $profiles,
     $fleetRoster,
-    $activeConnectionId
+    $activeConnectionId,
+    $sessionsWaitingOnCard
   ],
   (dots, states, sessions, messaging, cron, markers, profiles, roster, activeConnectionId) => {
     const tallies = new Map<string, Tally>()
@@ -185,7 +187,9 @@ export const $profileDotStateByScope = computed(
     }
 
     for (const [runtimeId, state] of Object.entries(states)) {
-      if (!state || (!state.busy && !state.needsInput)) {
+      const needsInput = sessionNeedsInput(state, runtimeId)
+
+      if (!state || (!state.busy && !needsInput)) {
         continue
       }
 
@@ -206,7 +210,7 @@ export const $profileDotStateByScope = computed(
           ? profileDotScopeKey(null, owner)
           : profileDotScopeKey(owner.connectionId, owner.profile)
 
-      claimRow(scope, state.needsInput ? 'needs-input' : 'working')
+      claimRow(scope, needsInput ? 'needs-input' : 'working')
     }
 
     // Pass 3: persisted unread markers with no loaded row — the sessions of a

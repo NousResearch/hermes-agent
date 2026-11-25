@@ -2,7 +2,7 @@
 outlives the run that took it, boot recovery holds no write lock through its git probes, a continue picks up the
 child's newest conversation segment, and each profile's pins obey that profile's own cap.
 
-Only the model is scripted; the child build, registry, SessionDB, async dispatch and boot recovery are real, against
+Only the model is scripted; the child build, registry, store, async dispatch and boot recovery are real, against
 a temp HERMES_HOME.
 """
 
@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
 from tests.tools.test_delegate_continue import _completion, _parent, _ScriptedModel, _spawn
 from tests.tools.test_delegate_resumable import _db_rows, _FailingModel, _forget_process_state, _git
 
@@ -22,11 +23,9 @@ _DEAD_PID = 2 ** 22 + 7
 
 
 def _set_row(parent, sid, **cols):
-    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test edits a temp-home store
-    with conn:
-        conn.execute(f"UPDATE resumable_subagents SET {', '.join(f'{k}=?' for k in cols)} WHERE subagent_id=?",
-                     (*cols.values(), sid))
-    conn.close()
+    raw_holder(parent.persistence)._execute_write(lambda conn: conn.execute(
+        f"UPDATE resumable_subagents SET {', '.join(f'{k}=?' for k in cols)} WHERE subagent_id=?",
+        (*cols.values(), sid)))
 
 
 def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_path, monkeypatch):
@@ -243,17 +242,15 @@ def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
 def test_boot_recovery_holds_no_write_lock_while_it_probes_git(monkeypatch):
     import tools.delegate_tool_resumable as resumable
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from tools.async_delegation import recover_abandoned_delegations
 
     db = get_hermes_home() / "state.db"
-    SessionDB(db_path=db).close()
-    conn = sqlite3.connect(db)  # health: allow HX015 -- test seeds a temp-home store
-    with conn:
-        for sid in ("sa-dead-1", "sa-dead-2"):
-            resumable._upsert(conn, sid, {"session_id": "s", "cwd": None, "owner_pid": _DEAD_PID, "owners": ["p"]},
-                              state="running", pinned=True, expires_at=time.time() + 3600)
-    conn.close()
+    open_persistence(profile_scope(home=db.parent), eager=True).close()
+    for sid in ("sa-dead-1", "sa-dead-2"):
+        assert resumable._write(db, lambda ledger, sid=sid: resumable._upsert(
+            ledger, sid, {"session_id": "s", "cwd": None, "owner_pid": _DEAD_PID, "owners": ["p"]},
+            state="running", pinned=True, expires_at=time.time() + 3600, expected=None))
 
     real, blocked = resumable._pin_paths, []
 
@@ -293,12 +290,13 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
         def run_conversation(user_message, **rest):
             result = ok(user_message, **rest)
             if not rotated:  # the compression rotation, as the loop publishes it
+                from tests.fixtures.storage_seed import seed_messages, seed_session
                 old, new = child.session_id, f"{child.session_id}-seg2"
-                db.end_session(old, "compression")
-                db.create_session(new, "subagent", parent_session_id=old,
-                                  model_config={"_delegate_from": "parent-sess", "_subagent_id": child._subagent_id})
-                db.append_message(new, "user", "[compressed] write the parser")
-                db.append_message(new, "assistant", "after rotation")
+                db.sessions.end(old, "compression")
+                seed_session(db, new, "subagent", parent_session_id=old,
+                             model_config={"_delegate_from": "parent-sess", "_subagent_id": child._subagent_id})
+                seed_messages(db, new, {"role": "user", "content": "[compressed] write the parser"},
+                              {"role": "assistant", "content": "after rotation"})
                 child.session_id = new
                 rotated.append((old, new))
             return result
@@ -310,11 +308,9 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
         sid, _ = _spawn(parent, "write the parser")
         old, new = rotated[0]
         if stopped == "crashed":  # the stop record never landed: the row still names the first segment
-            conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- temp-home store
-            with conn:
-                conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.session_id', ?) "
-                             "WHERE subagent_id=?", (old, sid))
-            conn.close()
+            raw_holder(parent.persistence)._execute_write(lambda conn: conn.execute(
+                "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.session_id', ?) "
+                "WHERE subagent_id=?", (old, sid)))
         else:
             assert _db_rows(parent)[sid][2]["session_id"] == new
         _forget_process_state()
@@ -329,7 +325,7 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
 def test_each_profiles_pins_obey_that_profiles_own_cap():
     import tools.delegate_tool_resumable as resumable
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     default = get_hermes_home()
     work = default / "profiles" / "work"
@@ -337,13 +333,11 @@ def test_each_profiles_pins_obey_that_profiles_own_cap():
     (default / "config.yaml").write_text(json.dumps({"delegation": {"max_resumable": 1}}))
     (work / "config.yaml").write_text(json.dumps({"delegation": {"max_resumable": 3}}))
     for home, n in ((default, 2), (work, 3)):
-        SessionDB(db_path=home / "state.db").close()
-        conn = sqlite3.connect(home / "state.db")  # health: allow HX015 -- test seeds a temp-home store
-        with conn:
-            for i in range(n):
-                resumable._upsert(conn, f"sa-{home.name}-{i}", {"pin_paths": [str(home / f"tree-{i}")]},
-                                  state="resumable", pinned=True, expires_at=time.time() + 3600)
-        conn.close()
+        open_persistence(profile_scope(home=home), eager=True).close()
+        for i in range(n):
+            assert resumable._write(home / "state.db", lambda ledger, home=home, i=i: resumable._upsert(
+                ledger, f"sa-{home.name}-{i}", {"pin_paths": [str(home / f"tree-{i}")]},
+                state="resumable", pinned=True, expires_at=time.time() + 3600, expected=None))
 
     pins = resumable.pinned_worktrees()  # the sweep, run under the default profile
     assert sum(1 for p in pins if p.startswith(os.path.realpath(work))) == 3, pins

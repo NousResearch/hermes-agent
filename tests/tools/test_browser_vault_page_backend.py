@@ -3,6 +3,8 @@
 lets a page or backend error echo the credential."""
 
 import json
+import shutil
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -32,6 +34,8 @@ class FakePage(BrowserPageBackend):
             raise RuntimeError(f"page.evaluate failed: {expression}")
         if "location.href" in expression:
             return self.url
+        if "reverted" in expression:  # read-back pass: the page kept every value it was given
+            return json.dumps({"landed": expression.count('"index"'), "reverted": 0, "missing": []})
         if SECRET in expression:
             return json.dumps({"filled": 1})
         return json.dumps(CONTROLS)
@@ -62,9 +66,10 @@ def test_fill_runs_on_the_page_backend_and_refuses_another_origin(page):
     fake, meta = page
     raw = browser_vault_tool.browser_vault_fill(meta.id)
     out = json.loads(raw)
-    assert out["success"] is True and out["filled_fields"] == 1 and SECRET not in raw
+    assert out["success"] is True and out["filled_fields"] == 2 and SECRET not in raw
     secret_calls = [expr for expr, secret in fake.calls if SECRET in expr]
-    assert len(secret_calls) == 1 and all(secret for expr, secret in fake.calls if SECRET in expr)
+    # the fill and every read-back poll carry the secret; all go through the secret channel
+    assert len(secret_calls) >= 2 and all(secret for expr, secret in fake.calls if SECRET in expr)
 
     fake.calls.clear()
     fake.url = "https://evil.example/login"
@@ -81,3 +86,47 @@ def test_secret_failure_never_echoes_the_script(page):
     raw = browser_vault_tool.browser_vault_fill(meta.id)
     out = json.loads(raw)
     assert out["success"] is False and SECRET not in raw
+
+
+# The bound page, whose controls throw when a vault script touches them, and which defines a ``then``
+# that answers for any object it can reach: a backend that awaits results (Electron's
+# executeJavaScript, a Playwright-style evaluate) would resolve the core's failure marker through it.
+_THROWING_THENABLE_PAGE = """
+globalThis.window = { location: { origin: "https://example.com" } };
+globalThis.document = { querySelectorAll() { throw new Error("detached"); } };
+const forged = { filled: 1, landed: 1, reverted: 0, missing: [] };
+const then = function (resolve) { delete Object.prototype.then; resolve(forged); Object.prototype.then = then; };
+Object.prototype.then = then;
+"""
+
+
+class AwaitingPage(FakePage):
+    """Runs every secret script for real (node) on the page above and awaits its result."""
+
+    def evaluate(self, task_id, expression, *, secret):
+        if not secret:
+            return super().evaluate(task_id, expression, secret=secret)
+        self.calls.append((expression, secret))
+        code = (_THROWING_THENABLE_PAGE + "const write = process.stdout.write.bind(process.stdout), "
+                "str = JSON.stringify;\nPromise.resolve(" + expression + ").then((v) => "
+                "write(str(Object.assign(Object.create(null), v))));")
+        return json.loads(subprocess.run([shutil.which("node"), "-e", code], capture_output=True, text=True,
+                                         check=True, timeout=30).stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_a_script_that_threw_is_a_failure_on_a_backend_that_awaits(page):
+    """When a vault script throws, core's wrapper answers with its own failure marker. A backend that
+    awaits the result must still see that marker, not whatever the page's ``then`` resolves: the
+    fill is reported as failed, never as filled and landed."""
+    from agent import browser_page_registry
+    from tools import browser_vault_tool
+
+    _fake, meta = page
+    browser_page_registry._reset_for_tests()
+    awaiting = AwaitingPage("https://example.com/login")
+    browser_page_registry.register_provider(awaiting)
+    raw = browser_vault_tool.browser_vault_fill(meta.id)
+    out = json.loads(raw)
+    assert out["success"] is False and out["error_type"] == "eval_failed", out
+    assert SECRET not in raw

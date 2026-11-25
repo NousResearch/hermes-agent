@@ -80,7 +80,7 @@ curl http://localhost:8644/health
 |----------|----------|-------------|
 | `events` | 否 | 要接受的事件类型列表（例如 `["pull_request"]`）。若为空，则接受所有事件。事件类型从 `X-GitHub-Event`、`X-GitLab-Event` 或 payload 中的 `event_type` 读取。 |
 | `secret` | **是** | 用于签名验证的 HMAC secret。若路由未设置，则回退到全局 `secret`。仅用于测试时可设为 `"INSECURE_NO_AUTH"`（跳过验证）。 |
-| `signature` | 否 | 将路由固定到一种签名方案：`generic`（`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`，或 Standard Webhooks / Svix 请求头）、`github`（`X-Hub-Signature-256`）、`gitlab`（`X-Gitlab-Token`，或以 Standard Webhooks 请求头发送的 GitLab 签名令牌）或 `linear`（`Linear-Signature`）。其他请求头一律返回 `401`。省略时接受所有支持的方案（引入此键之前的行为）。`hermes webhook subscribe` 为新路由写入 `signature: generic`。建议设置，参见[固定签名方案](#pin-the-signature-scheme)。 |
+| `signature` | 否 | 将路由固定到一种签名方案：`generic`（`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`，或 Standard Webhooks / Svix 请求头）、`github`（`X-Hub-Signature-256`）、`gitlab`（`X-Gitlab-Token`，或以 Standard Webhooks 请求头发送的 GitLab 签名令牌）或 `linear`（`Linear-Signature`）。其他请求头一律返回与未知路由相同的 `404`。省略时接受所有支持的方案（引入此键之前的行为）。`hermes webhook subscribe` 为新路由写入 `signature: generic`。建议设置，参见[固定签名方案](#pin-the-signature-scheme)。 |
 | `prompt` | 否 | 使用点号表示法访问 payload 字段的模板字符串（例如 `{pull_request.title}`）。若省略，则将完整 JSON payload 转储到 prompt 中。 |
 | `filters` | 否 | 声明式 payload 过滤器，在认证/请求体/事件过滤之后、agent 或直接投递之前求值。不匹配时返回 `{"status":"ignored","reason":"filter"}`（HTTP 200）。 |
 | `script` | 否 | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入。stdout 为 JSON 对象时会在模板渲染前替换 payload；文本 stdout 以 `script_output` 形式暴露；空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。 |
@@ -383,9 +383,8 @@ hermes webhook subscribe antenna-matches \
 |--------|---------|
 | `200 OK` | 投递成功。响应体：`{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK`（status=duplicate） | 在幂等性 TTL（1 小时）内重复的 `X-GitHub-Delivery` ID。不重复投递。 |
-| `401 Unauthorized` | HMAC 签名无效或缺失。 |
 | `400 Bad Request` | JSON 请求体格式错误。 |
-| `404 Not Found` | 未知路由名称。 |
+| `404 Not Found` | 未知路由名称，或 HMAC 签名无效或缺失（响应相同，防止探测路由名）。 |
 | `413 Payload Too Large` | 请求体超过 `max_body_bytes`。 |
 | `429 Too Many Requests` | 路由速率限制已超出。 |
 | `502 Bad Gateway` | 目标适配器拒绝消息或抛出异常。错误记录在服务端日志中；响应体为通用的 `Delivery failed`，避免泄露适配器内部信息。 |
@@ -517,7 +516,7 @@ webhook 适配器包含多层安全机制：
 - **GitHub**：`X-Hub-Signature-256` 请求头——以 `sha256=` 为前缀的 HMAC-SHA256 十六进制摘要
 - **GitLab**：`X-Gitlab-Token` 请求头——明文 secret 字符串匹配
 - **通用（V2）**：`X-Webhook-Signature-V2` + `X-Webhook-Timestamp` 请求头——`<timestamp>.<body>` 的 HMAC-SHA256 十六进制摘要，时间戳须在服务器时钟 ±300 秒内
-- **通用（V1，已拒绝）**：仅对请求体签名的 `X-Webhook-Signature` 可被重放，返回 `401 Unauthorized`；请改用 V2
+- **通用（V1，已拒绝）**：仅对请求体签名的 `X-Webhook-Signature` 可被重放，返回与未知路由相同的 `404`；请改用 V2
 
 若已配置 secret 但请求中不存在已识别的签名请求头，则请求被拒绝。
 

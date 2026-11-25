@@ -4,7 +4,8 @@ import logging
 from typing import Any
 
 from gateway.session_envelope import restore_native_source
-from hermes_state_runtime import RuntimeStoreError, latest_session_admission
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,9 @@ _RECOVERY_RETRY_DELAYS = (5, 30, 120, 300)
 
 def _latest_native(authority: Any, owner: str) -> Any:
     """The session's newest native admission payload, or None (one newest-first read, not its history)."""
-    row = latest_session_admission(authority.db, session_id=owner,
-                                   accept=lambda payload: 'native_text_v1' in payload)
-    return row['payload'] if row is not None else None
+    row = authority_persistence(authority).admissions.latest_admission(session_id=owner,
+                                                                       payload_marker='native_text_v1')
+    return row.payload if row is not None else None
 
 
 def recovered_native_source(runner: Any, authority: Any, entry: Any, owner: str) -> Any:
@@ -29,7 +30,7 @@ def recovered_native_source(runner: Any, authority: Any, entry: Any, owner: str)
     if payload is not None:
         try:
             return restore_native_source(payload, runner)
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             pass  # the authority reports the precise refusal without consuming the queue
     return runner._restored_source(entry)
 
@@ -47,7 +48,7 @@ def verified_restored_relay_source(runner: Any, entry: Any) -> Any:
             continue
         try:
             return restore_native_source(payload, runner)
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             continue  # no current verified connector: keep the ordinary fail-closed selector
     return None
 

@@ -45,6 +45,9 @@ def _backup_existing(paths: Iterable[Path]) -> dict:
             continue
         dest = _backup_path(path, stamp)
         shutil.copy2(path, dest)
+        from hermes_cli.config import _secure_file  # copy2 keeps the source's (possibly 0644) mode
+
+        _secure_file(dest)
         backups[path] = dest
     return backups
 

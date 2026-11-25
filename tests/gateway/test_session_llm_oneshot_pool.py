@@ -14,7 +14,7 @@ import weakref
 import pytest
 
 from gateway import session_llm_oneshot as oneshot
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.waiting import async_wait_until
 
 
@@ -58,7 +58,7 @@ def test_a_full_pool_refuses_by_name_and_never_runs_past_its_workers():
         connection = _connection(SimpleNamespace())
         for n in range(oneshot._ADMITTED):
             oneshot.DeferredReply(calls.work(f'call{n}')).start(connection, n)
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             oneshot.DeferredReply(calls.work('extra')).start(connection, 'extra')
         await async_wait_until(lambda: len(calls.ran) == oneshot._WORKERS)
         # Unrelated default-executor work is untouched by the parked calls.
@@ -151,13 +151,13 @@ def test_owner_shutdown_refuses_new_calls_and_cancels_the_queue():
         connection = _connection(authority)
         idle = SimpleNamespace()
         oneshot.stop(idle)  # an owner that never served a one-shot refuses from its stop on too
-        with pytest.raises(RuntimeStoreError):
+        with pytest.raises(AuthorityRefusal):
             oneshot.DeferredReply(calls.work('idle')).start(_connection(idle), 'idle')
         for n in range(oneshot._WORKERS + 2):
             oneshot.DeferredReply(calls.work(f'call{n}')).start(connection, n)
         await async_wait_until(lambda: len(calls.ran) == oneshot._WORKERS)
         oneshot.stop(authority)
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             oneshot.DeferredReply(calls.work('late')).start(connection, 'late')
         pool = authority._oneshot_pool
         calls.gate.set()

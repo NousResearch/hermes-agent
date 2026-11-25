@@ -26,7 +26,8 @@ def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Op
     return text or None
 
 
-def _cron_string_list(value: Any) -> Optional[list[str]]:
+def _cron_string_list(value: Any, *, keep_empty: bool = False) -> Optional[list[str]]:
+    """Trim a list-shaped form field. Empty collapses to None ("clear") unless ``keep_empty``."""
     if isinstance(value, str):
         raw_items = re.split(r"[\n,]", value)
     elif isinstance(value, (list, tuple)):
@@ -34,7 +35,21 @@ def _cron_string_list(value: Any) -> Optional[list[str]]:
     else:
         return None
     items = [str(item).strip() for item in raw_items if str(item).strip()]
-    return items or None
+    return items if items or keep_empty else None
+
+
+def _keep_zero_tool_allowlist(updates: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Drop an ``enabled_toolsets: None`` that would widen a stored zero-tool allowlist.
+
+    The dashboard's toolset picker cannot render an explicit empty allowlist: it shows the same
+    empty selection for "no restriction" and for "nothing allowed", and always saves the former
+    as None. Merging that onto a stored ``[]`` hands the job every tool — exactly what a
+    zero-tool allowlist exists to prevent (#148886). A non-empty stored allowlist stays
+    clearable from the same picker, because the user can see and uncheck it.
+    """
+    if "enabled_toolsets" in updates and updates["enabled_toolsets"] is None \
+            and existing.get("enabled_toolsets") == []:
+        updates.pop("enabled_toolsets")
 
 
 def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional[str]:
@@ -88,9 +103,9 @@ def _validate_dashboard_cron_security(
     must not vouch for an endpoint that would receive another profile's key.
     """
     from hermes_cli.web_server_profiles import _config_profile_scope
-    from tools.cronjob_job_args import (
+    from cron.job_args import (
         _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
-    from tools.cronjob_prompt_scan import _scan_cron_prompt
+    from cron.prompt_scan import _scan_cron_prompt
 
     def _touched(key: str) -> bool:
         return updates is None or key in updates
@@ -127,7 +142,7 @@ def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_nam
                 detail=f"context_from job '{ref}' not found in profile '{profile_name}'")
 
 
-def _cron_profile_dicts() -> list[dict[str, Any]]:
+def _cron_profile_dicts(*, include_run_elsewhere: bool = False) -> list[dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
     from hermes_cli.web_server_profiles import _fallback_profile_dicts
@@ -135,7 +150,8 @@ def _cron_profile_dicts() -> list[dict[str, Any]]:
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True,
+                                                             include_run_elsewhere=include_run_elsewhere)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -158,7 +174,10 @@ def _cron_default_profile() -> str:
 
 
 def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
-    """Resolve a profile query value to (profile_name, HERMES_HOME)."""
+    """Resolve a profile query value to (profile_name, HERMES_HOME). A profile a plugin runs
+    elsewhere answers 409 to every request that resolves its profile here: each cron request (an
+    omitted profile is the backend's own), and a session or file request that names the profile.
+    A session or file request with no profile uses the backend's own home and does not ask here."""
     from hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
     try:
@@ -168,7 +187,11 @@ def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
         raise HTTPException(status_code=400, detail=str(e))
     if not profiles_mod.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
-    return canon, profiles_mod.get_profile_dir(canon)
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    home = profiles_mod.get_profile_dir(canon)
+    if (elsewhere := run_elsewhere_for_home(home)) is not None:  # by home: the name may be a link to a marked one
+        raise HTTPException(status_code=409, detail=elsewhere.message())
+    return canon, home
 
 
 def _annotate_cron_job(
@@ -236,7 +259,8 @@ def _notify_cron_provider_for_profile(target_profile: Optional[str]) -> None:
         with _cron_store_scope(home):
             provider = resolve_cron_scheduler()
             external = not isinstance(provider, InProcessCronScheduler)
-            if external and sum(1 for p in _cron_profile_dicts() if p.get("name")) > 1:
+            # Every installed profile counts: a marked one's jobs can sit in the same remote registry.
+            if external and sum(1 for p in _cron_profile_dicts(include_run_elsewhere=True) if p.get("name")) > 1:
                 _log.warning(
                     "Skipping cron provider reconcile for profile %s: "
                     "external provider '%s' reconcile is not "
@@ -329,11 +353,13 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
             script=script,
             context_from=context_from,
-            enabled_toolsets=_cron_string_list(body.enabled_toolsets),
+            # [] is an explicit zero-tool allowlist, not "unrestricted" (#82010/#148886).
+            enabled_toolsets=_cron_string_list(body.enabled_toolsets, keep_empty=True),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
             timezone=_cron_optional_text(body.timezone),
             grace_minutes=body.grace_minutes,
+            wrap_response=body.wrap_response,
             **{key: getattr(body, key) for key in ("paused", "paused_reason", "catch_up")
                if key in body.model_fields_set})
     except HTTPException:

@@ -30,7 +30,7 @@ def _run_and_complete(deliver):
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("tools.send_message_tool._send_to_platform", _send), \
+         patch("gateway.outbound.send._send_to_platform", _send), \
          patch("cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "THE REPORT")
     refreshed = {**stored, "last_delivery_error": error}
@@ -77,7 +77,7 @@ def test_a_partial_standalone_split_send_counts_as_reached(monkeypatch):
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("tools.send_message_tool._send_to_platform", _send), \
+         patch("gateway.outbound.send._send_to_platform", _send), \
          patch("cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "status line ok\n" * 700)
     assert error and bot.send_message.await_count == 3
@@ -118,7 +118,7 @@ def test_a_report_whose_delivery_answer_was_lost_is_not_echoed(monkeypatch, lost
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("tools.send_message_tool._send_to_platform", _send), \
+         patch("gateway.outbound.send._send_to_platform", _send), \
          patch("cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "THE REPORT")
     assert error

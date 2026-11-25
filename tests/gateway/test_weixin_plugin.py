@@ -11,7 +11,7 @@ from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, Platform
 from plugins.platforms.weixin import adapter as weixin
 from plugins.platforms.weixin.adapter import ContextTokenStore, WeixinAdapter
-from tools.send_message_targets import _parse_target_ref
+from gateway.outbound.targets import _parse_target_ref
 
 
 def _make_adapter() -> WeixinAdapter:
@@ -134,7 +134,7 @@ class TestWeixinStatePersistence:
         def _boom(_src, _dst):
             raise OSError("disk full")
 
-        monkeypatch.setattr("utils.os.replace", _boom)
+        monkeypatch.setattr("utils.files.os.replace", _boom)
 
         try:
             weixin.save_weixin_account(
@@ -896,3 +896,13 @@ def test_is_connected_requires_account_and_token(monkeypatch):
     assert weixin._is_connected(PlatformConfig(enabled=True, token="t", extra={"account_id": "a"}))
     assert not weixin._is_connected(PlatformConfig(enabled=True, token="t"))
     assert not weixin._is_connected(PlatformConfig(enabled=True, extra={"account_id": "a"}))
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_account_dir_refuses_a_deleted_or_renamed_profile_home(tmp_path, move):
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        weixin._account_dir(str(home))
+    assert not home.exists()

@@ -6,6 +6,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
+from tests.fixtures.storage_holder import raw_holder, schema_sql
 from tests.gateway.relay.test_relay_native_recovery_and_passthrough import (
     _Connector, _rows, _stub_turns, _wired_relay, websockets,
 )
@@ -37,10 +38,10 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
                     await async_wait_until(lambda: any(f.get('type') == 'inbound_ack' for f in connector.outgoing),
                                            timeout=10, what='queued admission ACK')
                 if unknown:
-                    with authority.db._conn:
-                        authority.db._conn.execute("UPDATE session_admissions SET status='unknown'")
+                    raw_holder(authority.persistence)._execute_write(
+                        lambda conn: conn.execute("UPDATE session_admissions SET status='unknown'"))
             finally:
-                authority.db.close()
+                authority.persistence.close()
 
         runner = GatewayRunner(config)
         _stub_turns(runner, monkeypatch, turns)
@@ -48,7 +49,7 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
         async def no_hosted(_runner):
             return None
         monkeypatch.setattr('gateway.session_hosted_service.ensure_hosted_service', no_hosted)
-        monkeypatch.setattr(runner, '_schedule_planned_restart_replay', lambda: None)
+        monkeypatch.setattr(runner, '_schedule_restart_notice_replay', lambda: None)
         try:
             assert set((await recover_gateway_native_sessions(runner)).values()) == {'not_found'}
             runner._failed_platforms[Platform.RELAY] = {}
@@ -59,7 +60,7 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
                 await runner._install_reconnected_adapter(Platform.RELAY, adapter)
                 assert runner.adapters.get(Platform.RELAY) is adapter
                 if unknown:
-                    sid = authority.db._read_one('SELECT target_session_id FROM session_admissions')['target_session_id']
+                    sid = authority.persistence.admissions.list_unknown()[0].target_session_id
                     assert sid in authority.sessions, 'late connection did not bind the paused session'
                     assert [row['status'] for row in _rows(authority)] == ['unknown']
                     assert turns == []
@@ -71,7 +72,7 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
                                            timeout=10, what='the recovered admission settles')
                     assert connector.replies('late-chat')[-1]['metadata']['user_id'] == 'late-owner'
         finally:
-            authority.db.close()
+            authority.persistence.close()
 
 
 def _fail_first_recovery(monkeypatch, run_runtime):
@@ -93,11 +94,9 @@ def _admissions_db(statuses):
     import contextlib
     import sqlite3
 
-    from hermes_state_common import SCHEMA_SQL
-
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA_SQL)
+    conn.executescript(schema_sql())
     conn.executemany(
         "INSERT INTO session_admissions (seq, admission_id, request_id, principal_id, target_session_id, lineage_json,"
         " payload_json, payload_digest, intent, status, owner_epoch, generation)"
@@ -107,8 +106,8 @@ def _admissions_db(statuses):
     return conn, type('Db', (), {'_read_ctx': lambda self: contextlib.nullcontext(conn)})()
 
 
-def _vm_steps(conn, db, accept):
-    from hermes_state_runtime import latest_session_admission
+def _vm_steps(conn, db, marker):
+    from persistence.sqlite.authority._admission_store import latest_session_admission
 
     steps = [0]
 
@@ -116,7 +115,7 @@ def _vm_steps(conn, db, accept):
         steps[0] += 1
 
     conn.set_progress_handler(tick, 1)
-    row = latest_session_admission(db, session_id='s1', accept=accept)
+    row = latest_session_admission(db, session_id='s1', payload_marker=marker)
     conn.set_progress_handler(None, 1)
     return row, steps[0]
 
@@ -124,11 +123,9 @@ def _vm_steps(conn, db, accept):
 def test_latest_session_admission_reads_only_the_newest_rows():
     """A restored lane reads its newest native envelope with work that does not grow with the
     session's history, across every admission status, and closes its cursors."""
-    from hermes_state_runtime import latest_session_admission
+    from persistence.sqlite.authority._admission_store import latest_session_admission
 
-    def native(payload):
-        return 'native_text_v1' in payload
-
+    native = 'native_text_v1'
     work = []
     for size in (100, 5000):
         conn, db = _admissions_db(['terminal'] * size + ['queued', None])
@@ -137,5 +134,6 @@ def test_latest_session_admission_reads_only_the_newest_rows():
         work.append(steps)
     assert work[1] < work[0] * 2, f'lookup work grew with history: {work}'
     conn, db = _admissions_db(['queued', 'terminal', 'unknown', 'started'])
-    assert latest_session_admission(db, session_id='s1', accept=native)['payload'] == {'native_text_v1': {'n': 4}}
-    assert latest_session_admission(db, session_id='other', accept=native) is None
+    latest = latest_session_admission(db, session_id='s1', payload_marker=native)
+    assert latest['payload'] == {'native_text_v1': {'n': 4}}
+    assert latest_session_admission(db, session_id='other', payload_marker=native) is None

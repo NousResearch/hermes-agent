@@ -141,8 +141,11 @@ Supported tokens:
 - `NO_REPLY`
 - `NO REPLY`
 - `[静默]` / `静默` and `[沉默]` / `沉默` — the Chinese renderings a model produces when it translates the sentinel instead of emitting it literally
+- `[审核]` / `审核` — the label a lane drifts to when it answers "reviewed, nothing new" instead of emitting the sentinel
 
-Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+Whitespace and case are normalized, and whitespace *inside* the brackets is ignored too, so `[ SILENT ]`, `[SILENT ]` and `[ SILENT]` all silence. The whole final response still has to be the token — a sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+
+Invisible *format* characters (zero-width space, zero-width joiner, BOM, bidi marks — Unicode category `Cf`) are ignored wherever they appear, so a token a model wrote as `[<U+200B>SILENT]` still silences instead of reaching the chat.
 
 Silence is a delivery decision only. Hermes keeps the assistant silence turn in the session transcript, so the conversation still alternates normally:
 
@@ -195,7 +198,12 @@ probes (default 3), housekeeping, the cron scheduler and the embedded kanban
 dispatcher have all frozen with it, so the watchdog dumps every thread's stack
 to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
 `exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
-supervisor restarts the process. `hermes gateway status` renders that record as
+supervisor restarts the process. The dump and the stamp are best effort: if
+writing them stalls in Python (a full stderr pipe, a wedged log handler, a held
+status lock), the watchdog still exits within about 5 seconds, and the stamp
+may be missing or partial. The dump file itself is written by `faulthandler`,
+which holds the interpreter lock while it writes, so a disk that stops
+answering mid-dump can still hold the process until the write returns. `hermes gateway status` renders that record as
 `⚠ Gateway exited degraded: event loop stopped dispatching …` until a new
 gateway process overwrites it, and the dashboard's gateway badge shows
 **Degraded** with the same reason. Set `gateway.loop_watchdog: false` in
@@ -778,7 +786,7 @@ Without an installed service, the gateway Hermes starts for you (Hermes Desktop,
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`
 Agents run as threads inside the one gateway process; the only child processes are tool subprocesses (terminal commands, browsers), which never hold provider credentials. A running gateway also re-reads the `openai-codex` login it seeded from `auth.json` the next time its pool selects that entry after it had gone `exhausted` or `dead` (entries added with `hermes auth add openai-codex` are independent accounts and are not resynced). When you want every session on the fresh login at once, restart the gateway — but prefer the drain-aware path over a bare kill:
 
-- `hermes gateway restart` asks the gateway (SIGUSR1) to refuse new turns, waits up to `agent.restart_after_turn_timeout` (default 1800 s) for in-flight turns to finish, exits, and lets launchd's `KeepAlive` relaunch it; the new process reads `auth.json` from scratch.
+- `hermes gateway restart` asks the gateway (SIGUSR1) to restart when idle: it keeps serving, exits at the first moment no work is in flight (warning every `agent.restart_after_turn_timeout` seconds, default 1800, with what it is still waiting on), and lets launchd's `KeepAlive` relaunch it; the new process reads `auth.json` from scratch.
 - `launchctl kickstart -k gui/$UID/ai.hermes.gateway` sends SIGTERM instead: the gateway interrupts in-flight chat turns after `agent.restart_drain_timeout` (default `0` — immediately; the user is told and the turn resumes on their next message), gives cron runs and api_server (`/v1`) runs `agent.cron_drain_timeout` (default 30 s), kills tool subprocesses and exits, then launchd relaunches it. Nothing from the old process survives, so a session that still fails with `401` after the relaunch is talking to a different gateway process — check `hermes gateway status` (and `launchctl list | grep hermes`) for a second PID, such as a manually started `hermes gateway run`, and stop that one too.
 :::
 
@@ -948,6 +956,8 @@ gateway:
 ```
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
+
+A notice that cannot go out yet is kept, not dropped. This covers the home-channel notice and the "restarted successfully" reply to the chat that sent `/restart`. A platform can still be reconnecting, or Telegram can be waiting for its first successful poll. The gateway sends the notice once that platform reconnects or its send path is ready. A `/restart` reply still undelivered 30 minutes later is discarded.
 
 ### Typing indicators
 

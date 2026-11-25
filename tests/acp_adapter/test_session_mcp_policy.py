@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_policy import build_policy, bind_launch_key, policy_scope, restore_policy
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def owner():
@@ -59,12 +59,12 @@ def test_cold_editor_rebind_requires_exact_borrowed_config(server_spec, tmp_path
     original = policy(owner(), 'cold', server_spec, tmp_path)
     cold = restore_policy(json.loads(json.dumps(asdict(original))))
     authority = owner()
-    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+    with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable'):
         with policy_scope(cold, authority=authority):
             pass
     changed = json.loads(json.dumps(server_spec))
     changed['env'][0]['value'] = 'CHANGED_SECRET'
-    with pytest.raises(RuntimeStoreError, match='acp_mcp_policy_conflict'):
+    with pytest.raises(AuthorityRefusal, match='acp_mcp_policy_conflict'):
         attach_editor_mcp(authority, cold, [changed])
     attach_editor_mcp(authority, cold, [server_spec])
     with policy_scope(cold, authority=authority):

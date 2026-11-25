@@ -34,8 +34,43 @@ def installs_root() -> Path:
     return dependency_home_root() / "installs"
 
 
+def named_install_state_dir() -> Path | None:
+    """The state folder a launcher named for this process (``HERMES_INSTALL_STATE_DIR``), else ``None``.
+
+    A launcher names one when it starts Hermes on an interpreter it prepared, where the install's own
+    state cannot be used: a sandbox that may read the selected environment and nothing else of
+    ``installs/<key>`` still sees that folder, cannot read or lock it, and would end at start on it.
+    Such a process and its children keep their locks and markers in the named folder. Start-up reads
+    nothing from it: the process is not restarted (``prepare_launch``), repairs nothing
+    (``recover_if_needed``) and selects no recorded environment (``activate_dependencies``), and a
+    command that would build one is refused (``refuse_dependency_change``). A value that is not an
+    absolute path names nothing; no ``.env`` or secret source can set it (``LAUNCH_ONLY_ENV_KEYS``).
+    """
+    # health: allow HX002 -- a launcher's fact about one process tree, read at start before any config loads
+    value = os.environ.get("HERMES_INSTALL_STATE_DIR", "").strip()
+    return Path(value) if value and Path(value).is_absolute() else None
+
+
 def install_state_dir(project_root: Path) -> Path:
-    return installs_root() / install_key(project_root)
+    return named_install_state_dir() or installs_root() / install_key(project_root)
+
+
+def refuse_dependency_change() -> None:
+    """Refuse to build a dependency environment from a process whose launcher named its state folder.
+
+    The environment would be recorded in that folder, where no process ever selects one, and the
+    command would report it installed.
+    """
+    if named_install_state_dir() is None:
+        return
+    from pm.package import InstallError
+
+    raise InstallError(
+        "venv",
+        "this Hermes runs on the Python environment its launcher chose (HERMES_INSTALL_STATE_DIR is set), "
+        "and an environment built from here would never be used",
+        "run the command from Hermes started outside that launcher",
+    )
 
 
 def owning_home_root(project_root: Path) -> Path | None:
@@ -306,6 +341,10 @@ def committed_venv(project_root: Path) -> Path | None:
 
 
 def _recorded_venv(project_root: Path) -> Path | None:
+    if named_install_state_dir() is not None:
+        # A named state folder selects nothing: its process keeps the interpreter its launcher chose,
+        # whatever is written into the folder afterwards.
+        return None
     path = runtime_facts_path(project_root)
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -470,7 +509,8 @@ def activate_dependencies(project_root: Path) -> None:
     import sys
 
     state = install_state_dir(project_root)
-    if state.is_dir():
+    # A folder a launcher named holds no selection of this process: nothing in it is read or replayed.
+    if named_install_state_dir() is None and state.is_dir():
         from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
         # The lock's holder may be another profile's backend running a full dependency rebuild;
         # this process only reads the committed selection, so it proceeds without waiting rather
@@ -491,7 +531,8 @@ def activate_dependencies(project_root: Path) -> None:
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
     else:
-        # Sealed payloads still select once, before imports.
+        # Sealed payloads still select once, before imports: the environment one ships is part of
+        # its tree, not of install state.
         # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
         environment = payload_venv(project_root)
         if environment is None:
@@ -524,7 +565,27 @@ def activate_dependencies(project_root: Path) -> None:
         directories.append(venv_bin_dir(environment))
     prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
+        remember_inherited_path()
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
+
+
+# PATH as this process inherited it, kept before the first startup step that writes PATH: this
+# module's activate_dependencies() (Hermes's own command dirs), pm.install.activate() (tool dirs) or
+# a PATH line in a Hermes .env file (hermes_cli.env_loader).
+_inherited_path: str | None = None
+
+
+def remember_inherited_path() -> None:
+    """Keep PATH as it is now, unless an earlier startup step already kept it."""
+    global _inherited_path
+    if _inherited_path is None:
+        _inherited_path = os.environ.get("PATH", "")
+
+
+def inherited_path() -> str:
+    """PATH as this process inherited it, before startup put Hermes's own directories first: the
+    PATH a new terminal starts from. PATH itself when startup never changed it."""
+    return os.environ.get("PATH", "") if _inherited_path is None else _inherited_path
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

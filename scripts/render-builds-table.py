@@ -53,69 +53,26 @@ from urllib.parse import quote
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2, semver, stable, versioning
+from scripts.releases import handoff, job_groups, r2, stable
 from scripts.releases.desktop_targets import TARGETS as DESKTOP_TARGETS
+from scripts.releases.downloads_page import (
+    DEFAULT_REPO,
+    _bundle_env_html,
+    _link,
+    _page,
+    _table,
+    commit_claim_rows,
+    filter_names_for_version,
+    parse_assets,
+    render_page,
+    smoke_html,
+    smoke_markdown,
+    supersedes,
+    table_rows,
+)
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
-DEFAULT_REPO = "NousResearch/hermes-agent"
-
-# Asset name shapes (electron-builder artifactName in
-# apps/desktop/electron-builder.config.cjs):
-#   Hermes-0.28.0-mac-arm64.dmg        (bundled)
-#   HermesBundled-0.28.0-win-x64.msix  (bundled)
-_ASSET_RE = re.compile(
-    r"^(?P<app>HermesBundled|HermesLight)-(?P<version>[^-]+)"
-    r"-(?P<os>mac|win|linux)-(?P<arch>x64|arm64)\.(?P<ext>dmg|msix|AppImage)$"
-)
-
-_OS_LABEL = {"mac": "macOS", "win": "Windows", "linux": "Linux (AppImage)"}
-_ARCH_LABEL = {
-    ("mac", "arm64"): "Apple Silicon (M-series)",
-    ("win", "x64"): "x86 (64-bit)",
-    ("win", "arm64"): "ARM (arm64 / aarch64)",
-    ("linux", "x64"): "x86 (64-bit)",
-    ("linux", "arm64"): "arm64",
-}
-_KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage"}
-_ROW_ORDER = [("mac", "arm64"), ("win", "x64"), ("win", "arm64"),
-              ("linux", "x64"), ("linux", "arm64")]
-
-
-def parse_assets(names: list[str]) -> dict[str, dict[tuple[str, str], tuple[str, str]]]:
-    """{app: {(os, arch): (full_key, ext)}} for table-shaped assets only.
-
-    Object keys are releases/tag/<tag>/<filename>; the shape match runs on
-    the basename, but the stored name keeps the full key so the download
-    link points at the object's real location.
-    """
-    out: dict[str, dict[tuple[str, str], tuple[str, str]]] = {"HermesBundled": {}, "HermesLight": {}}
-    for name in names:
-        base = name.rsplit("/", 1)[-1]
-        m = _ASSET_RE.match(base)
-        if m:
-            out[m.group("app")][(m.group("os"), m.group("arch"))] = (name, m.group("ext"))
-    return out
-
-
-def table_rows(assets_by_app: dict) -> list[tuple[str, list[tuple[str, str, str, str]]]]:
-    """[(section title, [(os label, arch label, kind label, object key), ...]), ...].
-
-    The ONE row set every sink renders (release-body markdown, R2 page);
-    a row exists only for an object that is actually in the bucket.
-    """
-    sections: list[tuple[str, list[tuple[str, str, str, str]]]] = []
-    for app, title in (("HermesBundled", "Hermes Desktop"), ("HermesLight", "Hermes Light (remote-only client)")):
-        rows = []
-        for key in _ROW_ORDER:
-            entry = assets_by_app.get(app, {}).get(key)
-            if not entry:
-                continue
-            name, ext = entry
-            rows.append((_OS_LABEL[key[0]], _ARCH_LABEL[key], _KIND_LABEL[ext], name))
-        if rows:
-            sections.append((title, rows))
-    return sections
 
 
 def render_tables(assets_by_app: dict, base_url: str,
@@ -154,21 +111,6 @@ def render_pending(run_url: str) -> str:
     )
 
 
-def filter_names_for_version(names: list[str], version: str) -> list[str]:
-    """Table-shaped names whose embedded version equals `version` (exact, not prefix).
-
-    Matches on the basename (keys carry the releases/tag/<tag>/ prefix) and
-    returns the full keys.
-    """
-    out = []
-    for name in names:
-        base = name.rsplit("/", 1)[-1]
-        m = _ASSET_RE.match(base)
-        if m and m.group("version") == version:
-            out.append(name)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Commit-build summary: every expected binary of a commit run, built or not.
 # ---------------------------------------------------------------------------
@@ -188,7 +130,7 @@ _COMMIT_EXPECTED = [
     ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
 ]
 
-# Linux release legs are disabled; they still get a row so a reader can see
+# Commit builds skip the Linux legs; they still get a row so a reader can see
 # they were never expected to publish.
 _COMMIT_DISABLED = ["Linux x64 (AppImage)", "Linux ARM64 (AppImage)"]
 
@@ -198,31 +140,6 @@ _COMMIT_JOBS = {
     "darwin-arm64": "build-darwin-arm64",
     "windows-universal": "assemble-win32-bundle", "termux": "termux-deb",
 }
-
-
-_SMOKE_SCOPE = (
-    "Download availability is independent of smoke status. Each result covers all native legs "
-    "in that format group. Linux bundles are disabled; unsigned Store envelopes are not install-smoked. "
-    "No-upload dry tags have no download handoff and are not smoke-qualified."
-)
-
-
-def smoke_rows(results: dict | None) -> list[tuple[str, str]]:
-    statuses = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled", "skipped": "Not run"}
-    return [(label, statuses.get((results or {}).get(job, {}).get("result"), "Not run (no result)"))
-            for job, label in stable.SMOKE_JOBS.items()]
-
-
-def smoke_markdown(results: dict | None) -> str:
-    return ("### Native install/chat smoke\n\n" + _SMOKE_SCOPE
-            + "\n\n| Packages | Smoke status |\n|---|---|\n"
-            + "\n".join(f"| {label} | {status} |" for label, status in smoke_rows(results)))
-
-
-def smoke_html(results: dict | None) -> list[str]:
-    return ["<h2>Native install/chat smoke</h2>", f"<p>{html.escape(_SMOKE_SCOPE)}</p>",
-            *_table(("Packages", "Smoke status"),
-                    [[html.escape(label), html.escape(status)] for label, status in smoke_rows(results)])]
 
 
 def commit_expected_rows(names: list[str],
@@ -288,7 +205,7 @@ def commit_entries(commit: str, names: list[str], base_url: str,
             status = "❌ Not built (ambiguous: multiple objects match)"
         entries.append((label, status, run_url, "View build run" if run_url else None))
     for label in _COMMIT_DISABLED:
-        entries.append((label, "Disabled (release leg disabled)", None, None))
+        entries.append((label, "Skipped (tag builds only)", None, None))
     return entries
 
 
@@ -340,7 +257,8 @@ def incomplete_release_jobs(release_needs_json: str | None) -> list[str]:
     """Tag pages may describe failures; channel pointers require successful jobs.
 
     Unlike a commit summary, skipped release prerequisites are incomplete too.
-    Standalone invocations without workflow results retain their existing behavior.
+    Diagnostic builds never are. Standalone invocations without workflow
+    results retain their existing behavior.
     """
     if release_needs_json is None:
         return []
@@ -348,93 +266,25 @@ def incomplete_release_jobs(release_needs_json: str | None) -> list[str]:
         needs = json.loads(release_needs_json)
         if not isinstance(needs, dict) or not needs:
             raise ValueError("missing workflow results")
-        return [f"{name} ({info.get('result', 'unknown')})" for name, info in sorted(needs.items())
-                if info.get("result") != "success"]
+        return [f"{name} ({needs[name].get('result', 'unknown')})"
+                for name in sorted(job_groups.gating_jobs(needs)) if needs[name].get("result") != "success"]
     except (ValueError, TypeError, AttributeError):
         return ["workflow results unavailable"]
 
 
-# ---------------------------------------------------------------------------
-# Bucket pages: the same rows as the tables, served from the download origin
-# ---------------------------------------------------------------------------
-
-_PAGE_STYLE = (
-    "body{font:15px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;margin:2rem auto;"
-    "max-width:54rem;padding:0 1rem;color:#1a1a1a;background:#fff}"
-    "h1{font-size:1.4rem}h2{font-size:1.05rem;margin-top:1.75rem}"
-    "p{color:#444}table{border-collapse:collapse;width:100%}"
-    "th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid #dcdcdc}"
-    "th{font-weight:600}a{color:#0a58ca}code{font-size:.95em;white-space:pre-wrap;overflow-wrap:anywhere}"
-)
-
-# The record a channel page keeps of the release it describes; the write
-# guard reads it back so an older tag re-run never regresses the page.
-_BUILD_META_RE = re.compile(r'<meta name="hermes-build" content="([^"]*)"')
-
-
-def _page(title: str, build: str, body: list[str]) -> str:
-    return (
-        '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f'<meta name="hermes-build" content="{html.escape(build, quote=True)}">\n'
-        f"<title>{html.escape(title)}</title>\n<style>{_PAGE_STYLE}</style>\n</head>\n<body>\n"
-        + "\n".join(body)
-        + "\n</body>\n</html>\n"
-    )
-
-
-def _table(headers: tuple[str, ...], rows: list[list[str]]) -> list[str]:
-    head = "".join(f"<th>{html.escape(name)}</th>" for name in headers)
-    body = ["<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows]
-    return [f"<table>\n<thead><tr>{head}</tr></thead>\n<tbody>", *body, "</tbody>\n</table>"]
-
-
-def _link(url: str) -> str:
-    return f'<a href="{html.escape(url, quote=True)}">'
-
-
-def render_page(tag: str, assets_by_app: dict, base_url: str,
-                incomplete_jobs: list[str] | None = None,
-                run_url: str | None = None, *, repo: str = DEFAULT_REPO,
-                smoke_results: dict | None = None) -> str:
-    """The tag/channel page: the release-body download table as HTML."""
-    channel = r2.channel_for_tag(tag)
-    tag_url = f"https://github.com/{quote(repo, safe='/')}/releases/tag/{quote(tag, safe='')}"
-    body = [
-        f"<h1>Hermes Desktop {channel} builds</h1>",
-        f"<p>Release {_link(tag_url)}<code>{html.escape(tag)}</code></a>. Only objects this release "
-        "actually staged in the bucket are listed.</p>",
-    ]
-    attempt = versioning.parse_attempt_ref(tag)
-    if attempt is not None:
-        version = attempt[0]
-        body.append("<p><strong>"
-                    + html.escape(f"Attempt builds are not upgrade-safe: every attempt of {version} has the same "
-                                  f"package version, so an installed attempt is not replaced by the published {version}.")
-                    + "</strong></p>")
-    if incomplete_jobs:
-        body.append("<p><strong>Build incomplete.</strong> Jobs not successful: "
-                    + html.escape(", ".join(incomplete_jobs))
-                    + ". The channel page was not advanced.</p>")
-    sections = table_rows(assets_by_app)
-    if not sections:
-        body.append("<p>No downloadable artifacts were staged for this build.</p>")
-    for title, rows in sections:
-        body.append(f"<h2>{html.escape(title)}</h2>")
-        body.extend(_table(
-            ("OS", "Architecture", "Download"),
-            [[html.escape(os_name), html.escape(arch),
-              f"{_link(r2.public_url_for(base_url, name))}{html.escape(kind)}</a>"]
-             for os_name, arch, kind, name in rows],
-        ))
-    if incomplete_jobs and run_url:
-        body.append("<h2>Build diagnostics</h2>")
-        body.extend(_table(
-            ("Job", "Diagnostics"),
-            [[html.escape(job), f"{_link(run_url)}View build run</a>"] for job in incomplete_jobs],
-        ))
-    body.extend(smoke_html(smoke_results))
-    return _page(f"Hermes Desktop {channel} builds", tag, body)
+def render_commit_claim_tables(names: list[str], base_url: str, *,
+                               smoke_results: dict | None = None) -> str:
+    """Markdown download table for a commit claim's step summary (every staged downloadable asset)."""
+    rows = commit_claim_rows(names)
+    if rows:
+        lines = [
+            f"| {platform} | {arch} | [{kind} ({key.rsplit('/', 1)[-1]})]({r2.public_url_for(base_url, key)}) |"
+            for platform, arch, kind, key in rows
+        ]
+        table = "### Downloads\n\n| Platform | Architecture | Download |\n|---|---|---|\n" + "\n".join(lines)
+    else:
+        table = "No downloadable artifacts were staged for this build."
+    return MARKER + "\n" + "\n\n".join([table, smoke_markdown(smoke_results)]) + "\n" + END_MARKER
 
 
 def render_commit_page(commit: str, names: list[str], base_url: str,
@@ -455,53 +305,10 @@ def render_commit_page(commit: str, names: list[str], base_url: str,
         f"<p>Commit {_link(commit_url)}<code>{html.escape(commit)}</code></a>. Every expected binary is listed; "
         "built rows link to downloads; incomplete rows link to the build run when available.</p>",
         *_table(("Binary", "Status", "Download / diagnostics"), rows),
+        *_bundle_env_html(bundle_env),
     ]
-    if bundle_env:
-        from scripts.releases.bundle_env import validate
-
-        body.extend([
-            "<h2>Bundle environment</h2>",
-            "<p>Explicit non-secret desktop bundle overrides only. Runtime values override defaults; "
-            "Unset always removes the variable. String values use JSON notation.</p>",
-            *_table(("Variable", "Value / action"), [
-                [f"<code>{html.escape(key)}</code>", "Unset" if value is None else
-                 f"<code>{html.escape(json.dumps(value, ensure_ascii=False))}</code>"]
-                for key, value in sorted(validate(bundle_env).items())
-            ]),
-        ])
     body.extend(smoke_html(smoke_results))
     return _page(f"Hermes commit build {commit[:12]}", commit, body)
-
-
-def recorded_build(page: str | None) -> str | None:
-    """The release tag or commit a page in the bucket describes."""
-    match = _BUILD_META_RE.search(page or "")
-    return (match.group(1) or None) if match else None
-
-
-def supersedes(existing_page: str | None, tag: str) -> bool:
-    """Whether `tag` may replace the channel page.
-
-    Channel pages are mutable pointers: a re-run of an OLDER tag must not
-    regress the page a newer release already published (the release body
-    cannot regress — each tag owns its own release). Ordering uses the same
-    semver authority the feeds do; an absent or unreadable record is written,
-    because the new page is then the best available information.
-    """
-    recorded = recorded_build(existing_page)
-    if not recorded:
-        return True
-    from hermes_cli.update_channel import canary_timestamp, is_canary_tag
-    if is_canary_tag(recorded) != is_canary_tag(tag):
-        return False
-    if is_canary_tag(tag):
-        recorded_stamp = canary_timestamp(recorded)
-        tag_stamp = canary_timestamp(tag)
-        return recorded_stamp is not None and tag_stamp is not None and recorded_stamp <= tag_stamp
-    try:
-        return semver.compare(recorded.lstrip("v"), tag.lstrip("v")) <= 0
-    except ValueError:
-        return True
 
 
 def write_page(key: str, page: str, base_url: str) -> str:
@@ -556,7 +363,9 @@ def r2_object_names(tag: str) -> list[str]:
 
     keys = r2_object_names_under(f"releases/tag/{tag}/")
     parsed = parse_attempt_ref(tag)
-    return filter_names_for_version(keys, parsed[0] if parsed else tag.lstrip("v"))
+    from hermes_cli.update_channel import release_version
+
+    return filter_names_for_version(keys, parsed[0] if parsed else (release_version(tag) or tag.lstrip("v")))
 
 
 def splice(body: str, block: str) -> str:
@@ -583,6 +392,71 @@ def render_channel_summary(manifest: dict) -> str:
     return (f"## Channel `{request['channel']}` build `{request['buildId']}`\n\n"
             f"Source `{request['commit']}` ({request['sourceVersion']}); sequence {request['sequence']}.\n\n"
             "| Native package | Version | Download |\n|---|---|---|\n" + "\n".join(rows) + "\n")
+
+
+def _render_commit_summary(args, smoke_results: dict) -> int:
+    """--summary-commit: the legacy tagless commit build's summary and releases/commit/<sha>/ page."""
+    if not args.summary_out:
+        print("::error::--summary-out is required with --summary-commit")
+        return 1
+    if not args.r2_base_url:
+        print("::error::--r2-base-url (or CLOUDFLARE_R2_PUBLIC_URL) is required to render the summary")
+        return 1
+    commit = args.summary_commit
+    try:
+        from scripts.releases.bundle_env import decode
+
+        bundle_env = decode(args.bundle_env_json)
+        prefix = r2.commit_prefix_for(commit)
+    except ValueError as err:
+        print(f"::error::{err}")
+        return 1
+    names = r2_object_names_under(prefix)
+    receipts = read_commit_receipts(commit)
+    failed_legs = (failed_legs_from_release_needs(os.environ.get("RELEASE_NEEDS"))
+                   or [leg.strip() for leg in args.summary_failed_legs.split(",") if leg.strip()])
+    block = render_commit_summary(names, args.r2_base_url, commit, receipts, failed_legs, args.run_url,
+                                  smoke_results=smoke_results)
+    with open(args.summary_out, "a", encoding="utf-8") as out:
+        out.write(block)
+    write_page(r2.commit_page_key_for(commit),
+               render_commit_page(commit, names, args.r2_base_url, receipts, failed_legs, args.run_url,
+                                  repo=args.repo, bundle_env=bundle_env, smoke_results=smoke_results),
+               args.r2_base_url)
+    built = sum(1 for row in commit_expected_rows(names, receipts) if row["state"] == "built")
+    print(f"✓ Commit summary appended to {args.summary_out} ({built}/{len(_COMMIT_EXPECTED)} binaries built)")
+    return 0
+
+
+def _write_tag_page(args, archive: str, assets: dict, incomplete: list[str],
+                    smoke_results: dict, *, commit_files: list[str] | None = None) -> None:
+    """The archive's own page. A commit build's page links its commit, lists every staged
+    downloadable artifact and lists its bundle defaults."""
+    from hermes_cli.update_channel import is_commit_tag
+    from scripts.releases.bundle_env import decode
+
+    commit_page = is_commit_tag(archive)
+    write_page(r2.staging_key_for(archive, "index.html"),
+               render_page(archive, assets, args.r2_base_url, incomplete, args.run_url,
+                           repo=args.repo, smoke_results=smoke_results,
+                           commit=args.candidate_commit if commit_page else None,
+                           bundle_env=decode(args.bundle_env_json) if commit_page else None,
+                           commit_files=commit_files if commit_page else None),
+               args.r2_base_url)
+
+
+def _finish_commit_build(args, parser, archive: str, block: str, names: list[str]) -> int:
+    """A commit build owns no GitHub release and no channel page: its claim archive's page
+    (already written) and the run summary are its whole publication."""
+    if args.pending_run_url:
+        parser.error("A commit build has no release body to hold a builds-in-progress link")
+    if args.summary_out:
+        with open(args.summary_out, "a", encoding="utf-8") as out:
+            out.write(f"## Commit build {args.tag}\n\n"
+                      f"Builds page: {r2.public_url_for(args.r2_base_url, r2.staging_key_for(archive, 'index.html'))}\n\n"
+                      + block)
+    print(f"✓ Commit build page rendered for {args.tag} ({len(names)} assets scanned)")
+    return 0
 
 
 def main() -> int:
@@ -660,43 +534,17 @@ def main() -> int:
         smoke_results = candidate["smoke_results"]
 
     if args.summary_commit:
-
-        if not args.summary_out:
-            print("::error::--summary-out is required with --summary-commit")
-            return 1
-        if not args.r2_base_url:
-            print("::error::--r2-base-url (or CLOUDFLARE_R2_PUBLIC_URL) is required to render the summary")
-            return 1
-        commit = args.summary_commit
-        try:
-            from scripts.releases.bundle_env import decode
-
-            bundle_env = decode(args.bundle_env_json)
-            prefix = r2.commit_prefix_for(commit)
-        except ValueError as err:
-            print(f"::error::{err}")
-            return 1
-        names = r2_object_names_under(prefix)
-        receipts = read_commit_receipts(commit)
-        failed_legs = (failed_legs_from_release_needs(os.environ.get("RELEASE_NEEDS"))
-                       or [leg.strip() for leg in args.summary_failed_legs.split(",") if leg.strip()])
-        block = render_commit_summary(names, args.r2_base_url, commit, receipts, failed_legs, args.run_url,
-                                      smoke_results=smoke_results)
-        with open(args.summary_out, "a", encoding="utf-8") as out:
-            out.write(block)
-        write_page(r2.commit_page_key_for(commit),
-                   render_commit_page(commit, names, args.r2_base_url, receipts, failed_legs, args.run_url,
-                                      repo=args.repo, bundle_env=bundle_env, smoke_results=smoke_results),
-                   args.r2_base_url)
-        built = sum(1 for row in commit_expected_rows(names, receipts) if row["state"] == "built")
-        print(f"✓ Commit summary appended to {args.summary_out} ({built}/{len(_COMMIT_EXPECTED)} binaries built)")
-        return 0
+        return _render_commit_summary(args, smoke_results)
 
     if not args.tag:
         parser.error("--tag is required (or use --summary-commit for a commit build summary)")
 
+    from hermes_cli.update_channel import is_commit_tag
+
+    commit_claim = is_commit_tag(args.tag)
     incomplete: list[str] = []
     assets: dict = {}
+    commit_files: list[str] | None = None
     if args.pending_run_url:
         block = render_pending(args.pending_run_url)
         names: list[str] = []
@@ -704,19 +552,27 @@ def main() -> int:
         if not args.r2_base_url:
             print("::error::--r2-base-url (or CLOUDFLARE_R2_PUBLIC_URL) is required to render the tables")
             return 1
-        names = r2_object_names(archive)
-        if candidate is not None:
-            admitted = {r2.staging_key_for(archive, item["path"]) for item in candidate["files"]}
-            names = [name for name in names if name in admitted]
-        assets = parse_assets(names)
-        incomplete = [] if candidate is not None else incomplete_release_jobs(os.environ.get("RELEASE_NEEDS"))
-        block = render_tables(assets, args.r2_base_url, incomplete, args.run_url, smoke_results=smoke_results)
+        if commit_claim and candidate is not None:
+            # Render directly from the admitted candidate's receipt-bound files so universal
+            # .msixbundle, macOS .zip, Termux .deb and legacy pre-claim filenames all appear.
+            names = [r2.staging_key_for(archive, item["path"]) for item in candidate["files"]]
+            commit_files = names
+            block = render_commit_claim_tables(names, args.r2_base_url, smoke_results=smoke_results)
+        else:
+            names = r2_object_names(archive)
+            if candidate is not None:
+                admitted = {r2.staging_key_for(archive, item["path"]) for item in candidate["files"]}
+                names = [name for name in names if name in admitted]
+            assets = parse_assets(names)
+            incomplete = [] if candidate is not None else incomplete_release_jobs(os.environ.get("RELEASE_NEEDS"))
+            block = render_tables(assets, args.r2_base_url, incomplete, args.run_url, smoke_results=smoke_results)
         # A failed run still owns its tag page, never the channel pointer
         # consumed by source updates. Missing artifacts never become downloads.
         if not args.dry_run:
-            write_page(r2.staging_key_for(archive, "index.html"),
-                       render_page(archive, assets, args.r2_base_url, incomplete, args.run_url,
-                                   repo=args.repo, smoke_results=smoke_results), args.r2_base_url)
+            _write_tag_page(args, archive, assets, incomplete, smoke_results, commit_files=commit_files)
+
+    if commit_claim:
+        return _finish_commit_build(args, parser, archive, block, names)
 
     # Keep the per-tag diagnostic page even when GitHub cannot supply a draft.
     view = subprocess.run(

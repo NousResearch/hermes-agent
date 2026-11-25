@@ -24,7 +24,7 @@ TICK_SECONDS = 15
 def _session_route(unit: dict[str, Any]) -> dict[str, str]:
     """``set_session_vars`` kwargs that route a completion back to the parent conversation (its ledger row)."""
     from gateway.run import _parse_session_key
-    task = json.loads(unit.get("task_json") or "{}")
+    task = unit.get("task") or {}
     key = str(unit.get("origin_session") or "")
     parsed = _parse_session_key(key) or {}
     # An api_server parent is addressed by its raw session id (what ``_current_origin_session_id`` reads back).
@@ -104,17 +104,13 @@ def _start_continue(runner: Any, record: dict[str, Any], unit: dict[str, Any], m
     """Continue one claimed child; None once it is dispatched, else the refusal text. Runs on a worker thread in the
     profile's scope, inside a fresh context so the parent's routing binding never leaks into another task."""
     from gateway.session_context import reset_session_vars, set_session_vars
-    from hermes_constants import get_hermes_home
-    from hermes_state_registry import acquire, release_or_close
+    from persistence_assembly import open_persistence, profile_scope
     reset_session_vars()
     route = _session_route(unit)
     # An api_server parent has no push channel: its result is persisted for its next request, as at dispatch.
     set_session_vars(**route, async_delivery=not unit.get("origin_session_id"), cron_session="")
-    db = acquire(get_hermes_home() / "state.db")  # the bound profile's store, never the launch profile's
-    try:
+    with open_persistence(profile_scope()) as db:  # the bound profile's store, never the launch profile's
         out = _continue_as_parent(runner, db, record, unit, route, message)
-    finally:
-        release_or_close(db)
     if out.get("status") == "dispatched":
         return None
     return str(out.get("error") or out.get("note") or "the continue returned no dispatch")
@@ -139,10 +135,11 @@ def _capacity() -> int:
 def tick_profiles(runner: Any) -> list[str]:
     """One scheduler pass over every served profile, each under its own scope (blocking: run off the loop)."""
     from gateway.run import _profile_runtime_scope
+    from persistence_assembly import profile_scope, store_exists
     from tools.delegate_tool_auto_resume import tick
     resumed: list[str] = []
     for name, home in _profile_homes(runner):
-        if not (home / "state.db").is_file():
+        if not store_exists(profile_scope(home=home)):
             continue
         try:
             with _profile_runtime_scope(home, None):

@@ -9,6 +9,7 @@ all auto-transitions; the fork uses the auxiliary client and never touches the m
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import logging
 import os
@@ -24,6 +25,17 @@ from hermes_constants import get_hermes_home
 from agent.skill_utils import get_disabled_skill_names
 from tools import skill_usage
 from utils import atomic_json_write
+
+
+# v0.23.3 and earlier gateways cache agent.skill_utils at boot without get_skill_desc_limit.
+_skill_utils = importlib.import_module("agent.skill_utils")
+
+
+def _default_skill_desc_limit() -> int:
+    return getattr(_skill_utils, "SKILL_PROMPT_DESC_LIMIT", 60)
+
+
+get_skill_desc_limit = getattr(_skill_utils, "get_skill_desc_limit", _default_skill_desc_limit)
 
 logger = logging.getLogger(__name__)
 
@@ -287,8 +299,8 @@ CURATOR_REVIEW_PROMPT = (
     "narrow skills where each one captures one session's specific bug is "
     "a FAILURE of the library — not a feature. An agent searching skills "
     "matches on descriptions, not on exact names (note: the system prompt "
-    "skill index shows 60 chars of a description — keep the trigger class "
-    "in that window). One broad umbrella "
+    "skill index shows {desc_limit} chars of a description — keep the trigger "
+    "class in that window). One broad umbrella "
     "skill with labeled subsections beats five narrow siblings for "
     "discoverability, not the other way around.\n\n"
     "The right target shape is CLASS-LEVEL skills whose SKILL.md carries the "
@@ -896,7 +908,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
             # prune_builtins: archival is the deterministic pass's job, and
             # the bundled policy is archive-only. Hard rule #1 therefore
             # stands unqualified.
-            prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+            prompt = f"{CURATOR_REVIEW_PROMPT.replace('{desc_limit}', str(get_skill_desc_limit()))}\n\n{candidate_list}"
             if dry_run:
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)

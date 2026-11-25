@@ -190,7 +190,16 @@ def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
             # Keys are strings too — a credential-shaped key (a misbehaving
             # JSON emitter writing {"sk-...": value}) must not pass through
             # verbatim when the user asked for --redact (review on #90361).
-            return {_clean(k) if isinstance(k, str) else k: _clean(v) for k, v in value.items()}
+            out: dict[Any, Any] = {}
+            for key, item in value.items():
+                masked = _clean(key) if isinstance(key, str) else key
+                # Two keys can mask to the same text ("***"): number the later ones so no
+                # entry is silently dropped; the suffix carries no secret bytes.
+                unique, n = masked, 2
+                while unique in out:
+                    unique, n = f"{masked}#{n}", n + 1
+                out[unique] = _clean(item)
+            return out
         return value
 
     return _clean(session)

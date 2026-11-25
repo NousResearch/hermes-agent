@@ -26,7 +26,20 @@ export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
   __HERMES_DASHBOARD_PROFILE__?: string
+  /** `false`: the page's host runs no agent of its own (the hosted dashboard). Absent: it does. */
+  __HERMES_HOST_AGENT__?: boolean
   __HERMES_UI_SURFACE__?: string
+}
+
+/**
+ * The page's host runs no agent of its own: it serves the Webapp, signs the user in and relays to
+ * the agents in its saved-connections list, and that is all. The window's own connection is then
+ * the list's primary, and nothing but the host's sign-in, list, UI-preference and relay-ticket
+ * routes is asked of the host itself. Only an explicit `false` turns it on, so every host that
+ * predates the flag keeps its own agent.
+ */
+export function browserHostRunsNoAgent(): boolean {
+  return (window as Window & BrowserHostGlobals).__HERMES_HOST_AGENT__ === false
 }
 
 /**

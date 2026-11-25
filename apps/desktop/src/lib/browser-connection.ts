@@ -94,6 +94,9 @@ interface BrowserConnectionOptions {
   /** This machine's saved gateway connections, reached through the serving gateway
    *  (`browser-saved-connections.ts`). Absent: only the serving gateway. */
   relays?: BrowserSavedConnections | null
+  /** The host runs no agent (`browserHostRunsNoAgent`): `local` names the window's relayed
+   *  connection, and nothing but the host's sign-in and list routes is asked of the host. */
+  hostless?: boolean
 }
 
 const relayed = (relays: BrowserSavedConnections | null | undefined, connectionId?: null | string) =>
@@ -113,6 +116,7 @@ function sameGateway(a: string, b: string): boolean {
 export function createBrowserConnectionBridge({
   api,
   bootstrap,
+  hostless: hostlessOption = false,
   relays
 }: BrowserConnectionOptions): Pick<
   Window['hermesDesktop'],
@@ -131,6 +135,13 @@ export function createBrowserConnectionBridge({
   | 'testConnectionConfig'
 > {
   const served = createServedProfiles(api)
+  // Without a saved-connections list there is nothing to relay to, so the flag cannot apply.
+  const hostless = hostlessOption && relays ? relays : null
+
+  // On a host with no agent, a request that names no connection, or names `local`, is for the
+  // gateway the window opened on.
+  const routed = async (connectionId?: null | string) =>
+    hostless && !relayed(relays, connectionId) ? hostless.windowConnection() : connectionId
 
   // The gateway's own profile, or another one it serves: the only profiles this tab's socket reaches.
   const reachesSocket = (profile?: null | string) => !ridesWithProfile(profile) || served.serves(profile)
@@ -237,8 +248,30 @@ export function createBrowserConnectionBridge({
     }
   }
 
+  const relayedGatewayWsUrl = async (connectionId: string, profile?: null | string) => {
+    // As for this gateway's own: the dial would open, then close without a reason to show. A
+    // profile created there since the last roster read is not in the set yet, so the set is read
+    // again before the profile is refused. The store parks a refused dial, so only an explicit
+    // open asks again.
+    if (!relays!.serves(connectionId, profile)) {
+      await relays!.refreshServed(connectionId)
+    }
+
+    if (!relays!.serves(connectionId, profile)) {
+      throw new UnservedProfileError((profile ?? '').trim())
+    }
+
+    return getRelayedWsUrl(connectionId, profile)
+  }
+
   return {
     getAgentRoster: async () => {
+      if (hostless) {
+        const [remote, primaryConnectionId] = await Promise.all([relayedRoster(), hostless.windowConnection()])
+
+        return { agents: remote.agents, primaryConnectionId, sources: remote.sources }
+      }
+
       const [profiles, remote] = await Promise.all([installedProfiles(), relayedRoster()])
       const connectionLabel = relays?.localLabel() || window.location.host
 
@@ -275,8 +308,10 @@ export function createBrowserConnectionBridge({
       path: AudioSocketPath
       profile?: null | string
     }) => {
-      if (relayed(relays, payload.connectionId)) {
-        return relays!.socketUrl(payload.connectionId!, payload.path, payload.profile)
+      const connectionId = await routed(payload.connectionId)
+
+      if (relayed(relays, connectionId)) {
+        return relays!.socketUrl(connectionId!, payload.path, payload.profile)
       }
 
       requireBrowserConnection(payload.connectionId)
@@ -287,12 +322,17 @@ export function createBrowserConnectionBridge({
     // profile the tab is on. A named profile the gateway serves, other than its own, is a view of
     // that same socket (sharedPrimary), so its requests carry `profile`. Routing reads the cached
     // served set and never fetches it.
-    getConnection: async (profile?: null | string) => ({
-      ...connectionFor(bootstrap, profile, served.serves(profile)),
-      connectionId: LOCAL_CONNECTION_ID
-    }),
+    getConnection: async (profile?: null | string) =>
+      hostless
+        ? hostless.connection(await hostless.windowConnection(), profile)
+        : {
+            ...connectionFor(bootstrap, profile, served.serves(profile)),
+            connectionId: LOCAL_CONNECTION_ID
+          },
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
-    getConnectionFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
+    getConnectionFor: async (request: { connectionId?: null | string; profile?: null | string }) => {
+      const payload = { ...request, connectionId: await routed(request.connectionId) }
+
       if (relayed(relays, payload.connectionId)) {
         // A tab restored before this page read its saved connections; an unreadable list names no
         // connection, which the descriptor read below refuses by id.
@@ -313,24 +353,13 @@ export function createBrowserConnectionBridge({
         sharedRemote: Boolean(payload.profile) && reachesSocket(payload.profile)
       }
     },
-    getGatewayWsUrl,
-    getGatewayWsUrlFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
+    getGatewayWsUrl: async (profile?: null | string) =>
+      hostless ? relayedGatewayWsUrl(await hostless.windowConnection(), profile) : getGatewayWsUrl(profile),
+    getGatewayWsUrlFor: async (request: { connectionId?: null | string; profile?: null | string }) => {
+      const payload = { ...request, connectionId: await routed(request.connectionId) }
+
       if (relayed(relays, payload.connectionId)) {
-        const connectionId = payload.connectionId!
-
-        // As for this gateway's own: the dial would open, then close without a reason to show. A
-        // profile created there since the last roster read is not in the set yet, so the set is read
-        // again before the profile is refused. The store parks a refused dial, so only an explicit
-        // open asks again.
-        if (!relays!.serves(connectionId, payload.profile)) {
-          await relays!.refreshServed(connectionId)
-        }
-
-        if (!relays!.serves(connectionId, payload.profile)) {
-          throw new UnservedProfileError((payload.profile ?? '').trim())
-        }
-
-        return getRelayedWsUrl(connectionId, payload.profile)
+        return relayedGatewayWsUrl(payload.connectionId!, payload.profile)
       }
 
       requireBrowserConnection(payload.connectionId)
@@ -338,6 +367,17 @@ export function createBrowserConnectionBridge({
       return getGatewayWsUrl(payload.profile)
     },
     getProfileRoutes: async (profiles: string[]) => {
+      if (hostless) {
+        const connectionId = await hostless.windowConnection()
+
+        return [...new Set(profiles.map(profile => profile.trim() || 'default'))].map(profile => ({
+          connectionId,
+          mode: 'remote' as const,
+          profile,
+          targetProfile: profile
+        }))
+      }
+
       const available = new Set((await installedProfiles()).filter(reachesSocket))
 
       return [...new Set(profiles.map(profile => profile.trim() || 'default'))]
@@ -352,7 +392,8 @@ export function createBrowserConnectionBridge({
     oauthLoginConnectionConfig: async (remoteUrl: string, identity?: DesktopOauthLoginOptions) => {
       // Another gateway's sign-in runs on the serving gateway for its saved connection.
       if (!sameGateway(remoteUrl, `${window.location.origin}${bootstrap.basePath}`)) {
-        if (!relays) {
+        // The host signs in to its agents itself; it has no per-connection sign-in to run.
+        if (!relays || hostless) {
           return {
             baseUrl: remoteUrl,
             connected: false,
@@ -373,7 +414,7 @@ export function createBrowserConnectionBridge({
     oauthLogoutConnectionConfig: async (remoteUrl?: string) => {
       // Another gateway's sign-in is its saved connection's, kept on the serving gateway.
       if (remoteUrl && new URL(remoteUrl, window.location.origin).origin !== window.location.origin) {
-        return relays
+        return relays && !hostless
           ? signOutSavedConnection(api, relays, remoteUrl)
           : { connected: false, error: 'Only this gateway can be signed out here.', ok: false }
       }
@@ -397,6 +438,16 @@ export function createBrowserConnectionBridge({
     // it routes, so the profile rides the tab's socket; dials keep reading the cache alone. The read
     // is its own: one already in flight may have gone out before the create.
     refreshServedProfile: async (profile: string) => {
+      if (hostless) {
+        const connectionId = await hostless.windowConnection()
+
+        if (!hostless.serves(connectionId, profile)) {
+          await hostless.refreshServed(connectionId)
+        }
+
+        return
+      }
+
       if (reachesSocket(profile)) {
         return
       }

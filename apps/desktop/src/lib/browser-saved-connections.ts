@@ -109,7 +109,30 @@ export interface BrowserSavedConnections {
   refreshServed: (connectionId: string) => Promise<void>
   /** The label this machine's own entry (`local`) carries in the list, once read. */
   localLabel: () => string | undefined
+  /**
+   * A host that runs no agent (`browserHostRunsNoAgent`): the connection a window opens on, the
+   * list's primary or else its first gateway, read from the list once if this page has not read it
+   * yet. Rejects with `NoHostedAgentError` when the list holds none.
+   */
+  windowConnection: () => Promise<string>
+  /** `windowConnection` as last read, without a read; undefined before the first one. */
+  knownWindowConnection: () => string | undefined
   connections: Bridge
+}
+
+/** A host that runs no agent listed no agent for this window to open on. */
+export class NoHostedAgentError extends Error {
+  constructor() {
+    super('No Hermes agent is available to this account here.')
+    this.name = 'NoHostedAgentError'
+  }
+}
+
+/** The gateway a window on a host with no agent of its own opens on: the primary, else the first. */
+export function hostedWindowConnection(registry: DesktopConnectionsRegistry | null): string | undefined {
+  const rows = registry?.connections.filter(row => row.kind !== 'local') ?? []
+
+  return (rows.find(row => row.id === registry?.primary) ?? rows[0])?.id
 }
 
 /**
@@ -123,10 +146,13 @@ const REACHED_KINDS = new Set(['remote', 'cloud'])
 
 export function createBrowserSavedConnections({
   api,
-  bootstrap
+  bootstrap,
+  hostless = false
 }: {
   api: Api
   bootstrap: BrowserBootstrap
+  /** The host runs no agent: a connection test asks the gateway itself, through the relay. */
+  hostless?: boolean
 }): BrowserSavedConnections {
   let snapshot: DesktopConnectionsRegistry | null = null
   const listeners = new Set<ChangeListener>()
@@ -164,6 +190,29 @@ export function createBrowserSavedConnections({
   }
 
   const gateways = async () => (await list()).connections.filter(row => row.kind !== 'local')
+
+  // Every caller before the first answer shares one read; a failed read is not kept.
+  let firstRead: null | Promise<DesktopConnectionsRegistry> = null
+
+  const windowConnection = async () => {
+    const known = hostedWindowConnection(snapshot)
+
+    if (known) {
+      return known
+    }
+
+    const read = (firstRead ??= list().finally(() => {
+      firstRead = null
+    }))
+
+    const id = hostedWindowConnection(await read)
+
+    if (!id) {
+      throw new NoHostedAgentError()
+    }
+
+    return id
+  }
 
   const bootstrapFor = (connectionId: null | string | undefined) => {
     if (!connectionId || connectionId === LOCAL_CONNECTION_ID) {
@@ -312,6 +361,23 @@ export function createBrowserSavedConnections({
 
   const id = (connectionId: string) => encodeURIComponent(connectionId)
 
+  // A host with no agent has no test route of its own: the relay reaching the gateway's health
+  // route is the leg every request of that connection takes.
+  const testThroughRelay = async (connectionId: string) => {
+    const baseUrl = gateway(connectionId)?.url
+
+    try {
+      const health = await browserApi<null | { version?: string }>(bootstrapFor(connectionId), {
+        path: '/api/health',
+        timeoutMs: 20_000
+      })
+
+      return { baseUrl, ok: true, reachable: true, version: health?.version ?? null }
+    } catch (error) {
+      return { baseUrl, error: error instanceof Error ? error.message : String(error), ok: false, reachable: false }
+    }
+  }
+
   const connections: Bridge = {
     list,
     onChanged: callback => {
@@ -324,11 +390,14 @@ export function createBrowserSavedConnections({
     setLastUsed: connectionId => mutated({ body: { id: connectionId }, method: 'POST', path: `${ROUTE}/last-used` }),
     setLaunchMode: mode => mutated({ body: { mode }, method: 'POST', path: `${ROUTE}/launch-mode` }),
     setPrimary: connectionId => mutated({ method: 'POST', path: `${ROUTE}/${id(connectionId)}/primary` }),
-    test: connectionId => api({
-      method: 'POST',
-      path: `${ROUTE}/${id(connectionId)}/test`,
-      timeoutMs: gateway(connectionId)?.kind === 'ssh' ? BACKEND_BOOT_WAIT_TIMEOUT_MS : 20_000
-    })
+    test: connectionId =>
+      hostless
+        ? testThroughRelay(connectionId)
+        : api({
+            method: 'POST',
+            path: `${ROUTE}/${id(connectionId)}/test`,
+            timeoutMs: gateway(connectionId)?.kind === 'ssh' ? BACKEND_BOOT_WAIT_TIMEOUT_MS : 20_000
+          })
   }
 
   // Another window or native Desktop may have edited the list while this tab was in the background.
@@ -340,6 +409,8 @@ export function createBrowserSavedConnections({
     connections,
     gateway,
     gateways,
+    knownWindowConnection: () => hostedWindowConnection(snapshot),
+    windowConnection,
     localLabel: () => snapshot?.connections.find(row => row.id === LOCAL_CONNECTION_ID)?.label,
     refreshServed,
     rosterAgents,

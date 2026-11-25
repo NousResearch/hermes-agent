@@ -11,12 +11,15 @@ the call somewhere else runs it through ``hermes_cli.middleware.authorize_tool_c
 from __future__ import annotations
 
 import json
+import logging
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.inline_tool_executors import tool_hook_ids
 from agent.tool_dispatch_helpers import _context_pruned_argument_paths
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from agent.tool_executor import _ConcurrentToolAuthorizationGate, _ManagedToolResult, _ToolCallRef
@@ -169,7 +172,8 @@ def _authorize_edit(ref: _ToolCallRef) -> tuple[str, str] | None:
     try:
         from acp_adapter.edit_approval import maybe_require_edit_approval
         denied = maybe_require_edit_approval(ref.name, ref.args)
-    except Exception:
+    except Exception:   # fail closed: an approval guard that cannot run denies the edit
+        logger.exception("ACP edit approval guard failed for %s; the edit is denied", ref.name)
         return json.dumps({"error": "Edit approval denied: approval guard failed"}), "edit_approval_error"
     if denied is not None:
         return denied, "edit_approval_denied"
@@ -251,7 +255,8 @@ class CallAuthorizer:
         try:
             self.start(ref)                 # the local checkpoint waits for a local dispatch, if any
             body_refusal = authorize_tool_body(agent, ref)
-        except Exception as exc:            # recorded, so a fall-through never runs policy again
+        except Exception as exc:            # fail closed, and recorded so a fall-through never runs policy again
+            logger.exception("authorizing %s failed; the call is refused", ref.name)
             return ToolCallAuthorization(allowed=False, args=ref.args, result=refuse_call(
                 agent, state, ref, tool_call_refusal(
                     f"the tool call could not be authorized ({type(exc).__name__}); it was not run"),

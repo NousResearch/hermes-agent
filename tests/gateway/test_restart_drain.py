@@ -271,6 +271,26 @@ async def test_a_forced_restart_that_fails_before_the_stop_gives_the_drain_budge
 
 
 @pytest.mark.asyncio
+async def test_a_planned_stop_after_a_failed_service_restart_exits_cleanly(monkeypatch):
+    """The failed restart's plan is dropped with it: a later plain stop does not exit 75, which would
+    have the service manager relaunch a gateway the operator stopped."""
+    from gateway.run_shutdown import _resolve_gateway_exit_verdict
+
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+    runner._exit_with_failure, runner._exit_reason, runner._exit_code = False, None, None
+
+    def units(_runner):
+        raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+    monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    assert runner.request_restart(detached=True, via_service=True) is True
+    await asyncio.gather(runner._restart_task, return_exceptions=True)
+    assert (runner._restart_via_service, runner._restart_detached) == (False, False)
+    assert _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown=False) is True
+
+
+@pytest.mark.asyncio
 async def test_a_failed_restart_keeps_an_external_drain_in_the_status(monkeypatch):
     """While an operator's external drain refuses new turns, a restart that fails before its stop does
     not report the gateway as running."""

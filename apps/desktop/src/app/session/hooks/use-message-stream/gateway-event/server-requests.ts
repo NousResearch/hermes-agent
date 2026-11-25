@@ -33,7 +33,9 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $focusedSessionIsTile } from '@/store/session-focus'
 import {
+  $focusedRuntimeId,
   $sessionStates,
   $sessionTiles,
   previewScopeForRuntime,
@@ -463,7 +465,7 @@ const previewRead: Handler = ({ request, sessionId }) => {
   })()
 }
 
-const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
+const previewAct: Handler = ({ deps, request, sessionId }) => {
   // drive_preview tool: click/type/scroll/press inside the guest page. Active
   // session only: a background turn (including one in a tile this window hosts)
   // must never reach into the page the user is working in (desktop AGENTS.md:
@@ -471,23 +473,20 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // before this runs, so a refusal here reaches the tool instead of stalling it.
   const p = request.params
 
+  const isSessionActive = () =>
+    ($focusedSessionIsTile.get() && sessionId === $focusedRuntimeId.get()) ||
+    requestNamesActiveSession({
+      activeSessionId: deps.activeSessionIdRef.current,
+      sessionId,
+      storedIdForRuntimeId: id => deps.sessionStateByRuntimeIdRef.current.get(id)?.storedSessionId ?? undefined
+    })
+
   if (str(p.action) === 'vault') {
     const vault = p.vault && typeof p.vault === 'object' ? (p.vault as Record<string, unknown>) : {}
     const operation = str(vault.operation)
     const target = str(vault.target)
     const expression = str(vault.expression)
     const signal = trackPreviewTyping(request.id)
-
-    const isSessionActive = () => {
-      const storedIdForRuntimeId = (runtimeId: string) =>
-        deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
-
-      return requestNamesActiveSession({
-        activeSessionId: deps.activeSessionIdRef.current,
-        sessionId,
-        storedIdForRuntimeId
-      })
-    }
 
     const watch = sessionId
       ? setInterval(() => {
@@ -581,7 +580,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
     return
   }
 
-  if (!isActiveSession) {
+  if (!isSessionActive()) {
     answerValue(request, {
       error: 'The in-app browser only takes actions in the session the user is looking at.',
       success: false

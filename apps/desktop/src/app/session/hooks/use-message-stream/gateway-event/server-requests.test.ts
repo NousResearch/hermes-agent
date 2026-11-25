@@ -53,6 +53,8 @@ function deliver(method: string, params: Record<string, unknown>, activeSessionI
   const fail = vi.fn()
   const decline = vi.fn()
 
+  deps.activeSessionIdRef.current = activeSessionId
+
   const handled = handleServerRequest(
     { decline, fail, id: 'srq-1', method, params, profile: 'default', replayed, respond },
     deps,
@@ -319,6 +321,21 @@ describe('preview action request routing', () => {
       expect(handled).toBe(true)
       expect(decline).toHaveBeenCalledTimes(1)
       expect(respond).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses a replayed action when only a background tile binds during the retry', async () => {
+    const replay = deliver('preview.act', { action: 'back', session_id: 'rt-b' }, null, true)
+    $sessionTiles.set([{ runtimeId: 'rt-b', storedSessionId: 'stored-b' } as never])
+
+    try {
+      await vi.waitFor(() => expect(replay.respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(replay.respond.mock.calls[0][0].value)).toMatchObject({
+        error: expect.stringContaining('the session the user is looking at'),
+        success: false
+      })
+    } finally {
+      $sessionTiles.set([])
     }
   })
 
@@ -668,6 +685,26 @@ describe('preview requests act for the session that asked (#73890)', () => {
     $layoutTree.set(group(['session-tile:stored-b'], { active: 'session-tile:stored-b', id: 'grp-b' }))
     noteActiveTreeGroup('grp-b')
   }
+
+  it('lets a focused tile drive its own browser and refuses it after focus leaves', async () => {
+    openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
+    const back = vi.fn()
+    const unbind = registerPreviewNav($previewTabs.get()[0]!.id, { back, forward: () => {}, reload: () => {} })
+    const params = { action: 'back', session_id: 'rt-b' }
+
+    try {
+      focusTileB()
+      const focused = deliver('preview.act', params, 'rt-a')
+      await vi.waitFor(() => expect(focused.respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(focused.respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
+      noteActiveTreeGroup(null)
+      const background = deliver('preview.act', params, 'rt-a')
+      expect(JSON.parse(background.respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+      expect(back).toHaveBeenCalledTimes(1)
+    } finally {
+      unbind()
+    }
+  })
 
   it("drives the requesting session's page, not the focused tile's", async () => {
     openPreview({ kind: 'url', label: 'a', source: 'https://a.example', url: 'https://a.example' }, 'stored-a')

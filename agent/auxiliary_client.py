@@ -2473,6 +2473,33 @@ def _read_main_model_for_aux() -> str:
     return model
 
 
+def _scoped_main_model_for_aux(provider: Optional[str] = None) -> Optional[str]:
+    """Main model only when the aux provider matches the active main provider.
+
+    Unconditional inheritance leaks the main model (e.g. radiance-local/qwen35 or claude-3-opus)
+    to unrelated auxiliary providers or named custom endpoints that omit an explicit model.
+    """
+    if not provider:
+        return None
+    prov = _normalize_aux_provider(provider)
+    if prov in {"auto", ""}:
+        return None
+    main_p = (_read_main_provider() or "").strip().lower()
+    if main_p == "moa":
+        agg_p, _ = _resolve_moa_aggregator(_read_main_model())
+        main_p = (agg_p or "").strip().lower()
+    norm_main = _normalize_aux_provider(main_p) if main_p else ""
+    if norm_main:
+        if prov == norm_main and prov:
+            return _read_main_model_for_aux() or None
+        if prov == "custom" and norm_main == "custom":
+            return _read_main_model_for_aux() or None
+        return None
+    if prov in {"custom", "openai-codex", "xai-oauth"}:
+        return _read_main_model_for_aux() or None
+    return None
+
+
 def _read_main_api_key_if_same_origin(aux_base_url: str) -> str | Callable[[], str]:
     """Main api_key only when *aux_base_url* has the main base_url's exact origin.
 
@@ -2860,7 +2887,7 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         return None, None
     if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
         return None, None
-    model = _read_main_model_for_aux() or "gpt-4o-mini"
+    model = _scoped_main_model_for_aux("custom") or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
@@ -3711,46 +3738,16 @@ def _auth_refresh_provider_for_route(
     return host_provider or normalized
 
 
-def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[dict[str, Any]]:
-    """Resolve the ``fallback_chain`` entry a ``fallback_chain[<i>](<provider>)`` label points at,
-    or None when the label is not a configured-chain candidate or the index no longer resolves."""
-    if not task or not fb_label:
-        return None
-    m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
-    if not m:
-        return None
-    try:
-        chain = _get_auxiliary_task_config(task).get("fallback_chain")
-        entry = chain[int(m.group(1))] if isinstance(chain, list) else None
-    except Exception:
-        return None
-    return entry if isinstance(entry, dict) else None
-
-
-def _coerce_positive_timeout(raw: Any) -> Optional[float]:
-    """Coerce a config ``timeout`` to a positive float, or None (rejects bools, which are ints)."""
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
-        return float(raw)
-    return None
-
-
-def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
-    """Per-entry ``timeout`` for a configured fallback candidate, or None (keep the task-level
-    timeout). Inheriting the primary's deadline used to kill healthy-but-slower fallbacks.
-
-    A fallback candidate previously inherited the exact timeout the primary provider was called with. When
-    that deadline was tuned for the primary (or the primary simply consumed its whole budget before failing
-    over), the fallback aborted on the same clock even when independently healthy — a 163k-token compression
-    that needs ~90s on the fallback died at the primary's 30s deadline every turn (#62452).
-    """
-    entry = _fallback_chain_entry(task, fb_label)
-    return _coerce_positive_timeout(entry.get("timeout") if entry else None)
-
-
-def _fallback_provider_from_label(label: str) -> str:
-    """Recover the provider identifier from a fallback display label."""
-    match = re.match(r"(?:fallback_chain\[\d+\]|fallback_providers\[\d+\]|main-agent)\(([^)]+)\)$", label or "")
-    return match.group(1).strip() if match else str(label or "").strip()
+from agent.auxiliary_fallback_recovery import (
+    _candidate_context_window,
+    _coerce_positive_timeout,
+    _context_too_small,
+    _fallback_chain_entry,
+    _fallback_entry_api_key,
+    _fallback_entry_timeout,
+    _fallback_provider_from_label,
+    _task_minimum_context_length,
+)
 
 
 class _FallbackDestination(NamedTuple):
@@ -4101,6 +4098,18 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
+    if "/" in main_model:
+        from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS
+        if main_provider.lower() not in _AGGREGATOR_PROVIDERS:
+            cand_provider, _, rest_model = main_model.partition("/")
+            if cand_provider.lower() == main_provider.lower():
+                main_model = rest_model
+            elif main_provider.lower() in {"custom", ""}:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+                named_entry = _get_named_custom_provider(cand_provider)
+                if named_entry is not None:
+                    main_provider = cand_provider
+                    main_model = rest_model
     if task == "vision" and (
             main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
         # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
@@ -4143,43 +4152,6 @@ def _try_main_agent_model_fallback(
 # ``get_model_context_length`` are passed through (we cannot prove a model is too small, so we do not block
 # it). This preserves the existing fallback surface for unrecognised/custom models while closing the gap on
 # the well-known ones.
-def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
-    """Minimum context length for an auxiliary task; None = no floor (only ``compression`` has one)."""
-    return MINIMUM_CONTEXT_LENGTH if task == "compression" else None
-
-
-def _candidate_context_window(provider: str, model: str, base_url: str = "", api_key: str = "") -> Optional[int]:
-    """Best-effort context window for a fallback candidate; ``None`` = unknown (never raises; callers pass it through)."""
-    if not model:
-        return None
-    try:
-        ctx = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider)
-    except Exception as exc:
-        logger.debug("Auxiliary fallback: could not resolve context window for %s/%s: %s", provider, model, exc)
-        return None
-    return ctx if isinstance(ctx, int) and ctx > 0 else None
-
-
-def _context_too_small(
-    entry: dict[str, Any], provider: str, model: str, min_ctx: Optional[int], *,
-    task: Optional[str], label: str, name_model: bool = False,
-) -> Optional[str]:
-    """Screen one fallback candidate by context window; returns the ``tried`` note when it is too small."""
-    if min_ctx is None:
-        return None
-    fb_ctx = _candidate_context_window(
-        provider, model, base_url=str(entry.get("base_url") or ""), api_key=_fallback_entry_api_key(entry) or "")
-    if fb_ctx is None or fb_ctx >= min_ctx:
-        return None
-    if name_model:
-        logger.info("Auxiliary %s: skipping %s (%s context=%d < min=%d), continuing chain",
-                    task, label, model, fb_ctx, min_ctx)
-    else:
-        logger.info("Auxiliary %s: skipping %s (context=%d < min=%d), continuing chain",
-                    task or "call", label, fb_ctx, min_ctx)
-    return f"{label} (context too small: {fb_ctx}<{min_ctx})"
-
-
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
     failed_base_url: str = "", failure_scope: Any = None, skip_lanes=(),
@@ -4243,17 +4215,11 @@ def _try_configured_fallback_for_unavailable_client(
     return _try_configured_fallback_chain(task, explicit, reason="provider unavailable")
 
 
-def _fallback_entry_api_key(entry: dict[str, Any]) -> Optional[str]:
-    """Resolve inline or env-backed API key via the secret-scope-aware resolver (no raw os.getenv under multiplexing)."""
-    from hermes_cli.fallback_config import resolve_entry_api_key
-    return resolve_entry_api_key(entry)
-
-
 def _resolve_fallback_entry(entry: dict[str, Any]) -> tuple[Optional[Any], Optional[str]]:
     """Resolve one fallback entry through the central provider router."""
     provider = str(entry.get("provider") or "").strip()
     model = str(entry.get("model") or "").strip() or None
-    if not provider or not model:
+    if not provider:
         return None, None
     client, resolved_model = resolve_provider_client(
         provider, model=model, explicit_base_url=str(entry.get("base_url") or "").strip() or None,
@@ -4317,7 +4283,7 @@ def _try_main_fallback_chain(
                 continue
             logger.info("Auxiliary %s: %s on %s — main fallback chain to %s (%s)",
                         task or "call", reason, failed_provider or "auto", label, resolved_model or fb_model)
-            return fb_client, resolved_model or fb_model, fb_provider
+            return fb_client, resolved_model or fb_model, label
         tried.append(label)
     if tried:
         logger.debug("Auxiliary %s: main fallback chain exhausted (tried: %s)", task or "call", ", ".join(tried))
@@ -4513,18 +4479,24 @@ def _classification_provider(client: Any, fallback: str, main_runtime: Optional[
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` keeps the endpoint's vision headers)."""
     from openai import AsyncOpenAI
+    ret_client = None
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
-        return AsyncCodexAuxiliaryClient(sync_client), model
-    if isinstance(sync_client, AnthropicAuxiliaryClient):
-        return AsyncAnthropicAuxiliaryClient(sync_client), model
-    if isinstance(sync_client, BedrockAuxiliaryClient):
-        return AsyncBedrockAuxiliaryClient(sync_client), model
-    with contextlib.suppress(ImportError):
-        from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
-        if isinstance(sync_client, GeminiNativeClient):
-            return AsyncGeminiNativeClient(sync_client), model
+        ret_client = AsyncCodexAuxiliaryClient(sync_client)
+    elif isinstance(sync_client, AnthropicAuxiliaryClient):
+        ret_client = AsyncAnthropicAuxiliaryClient(sync_client)
+    elif isinstance(sync_client, BedrockAuxiliaryClient):
+        ret_client = AsyncBedrockAuxiliaryClient(sync_client)
+    else:
+        with contextlib.suppress(ImportError):
+            from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
+            if isinstance(sync_client, GeminiNativeClient):
+                ret_client = AsyncGeminiNativeClient(sync_client)
+    if ret_client is not None:
+        if hasattr(sync_client, "_hermes_fallback_destination"):
+            ret_client._hermes_fallback_destination = sync_client._hermes_fallback_destination
+        return ret_client, model
     # ACP shims (subprocess, not an HTTP pool) are already async-safe and opt out of the wrapper.
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
@@ -4555,7 +4527,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.
     async_kwargs.setdefault("max_retries", 0)
-    return AsyncOpenAI(**async_kwargs), model
+    async_client = AsyncOpenAI(**async_kwargs)
+    if hasattr(sync_client, "_hermes_fallback_destination"):
+        async_client._hermes_fallback_destination = sync_client._hermes_fallback_destination
+    return async_client, model
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
@@ -4995,7 +4970,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         req.model
         or custom_entry.get("model")
         or (req.main_runtime.get("model") if req.main_runtime else None)
-        or _read_main_model_for_aux()
+        or _scoped_main_model_for_aux(provider)
         or "gpt-4o-mini",
         provider,
     )
@@ -5135,7 +5110,7 @@ def _resolve_external_process_branch(req: _ResolveRequest, creds: dict[str, Any]
     """PROVIDER_REGISTRY ``external_process`` providers, served via their registered profile."""
     provider = req.provider
     final_model = _normalize_resolved_model(
-        req.model or (req.main_runtime.get("model") if req.main_runtime else None) or _read_main_model_for_aux(),
+        req.model or (req.main_runtime.get("model") if req.main_runtime else None) or _scoped_main_model_for_aux(provider),
         provider,
     )
     # Keyed on the registered profile, not a provider name, so an out-of-tree ACP provider reaches
@@ -5282,7 +5257,7 @@ def resolve_provider_client(
         # here wins over that. The main chat model is routinely text-only (e.g. a ``:free`` chat SKU), so
         # pre-filling it sends the image to a model that cannot accept one and the Portal 404s. Leave
         # ``model`` unset and let the Portal slot through; only an explicit caller model may override it.
-        model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
+        model = _get_aux_model_for_provider(provider) or _scoped_main_model_for_aux(provider) or model
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task, pool_choice,
@@ -7273,6 +7248,7 @@ class _PreparedAuxRequest(NamedTuple):
     effective_timeout: float
     effective_extra_body: dict[str, Any]
     base_info: str
+    fallback_policy_is_auto: bool = False
 
 
 def _prepare_aux_request(
@@ -7288,6 +7264,7 @@ def _prepare_aux_request(
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    fallback_policy_is_auto = _normalize_aux_provider(resolved_provider) == "auto"
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7340,7 +7317,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, fallback_policy_is_auto)
 
 
 def _outcome(call: Callable[..., Any], *args: Any, **kwargs: Any) -> tuple[Any, Optional[Exception]]:
@@ -7424,6 +7401,7 @@ class _LadderRoute(NamedTuple):
     main_runtime: Optional[dict[str, Any]]
     route_info: Optional[dict[str, str]]
     timeout: Optional[float]
+    fallback_policy_is_auto: bool = False
 
 
 def _without_temperature(kwargs: dict) -> Optional[dict]:
@@ -7680,7 +7658,7 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     this request regardless of user intent. An auth error from an explicit provider may only use the
     task's own configured fallback_chain; it never implies an unconfigured provider hop."""
     task, tag, resolved_provider, first_err = route.task, route.tag, route.resolved_provider, failure.error
-    is_auto = resolved_provider in {"auto", "", None}
+    is_auto = route.fallback_policy_is_auto
     reason = aux_errors.fallback_label(failure, rung_spent=rung_spent)
     is_capacity_error = reason not in (None, aux_errors.AUTH_ERROR)
     task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
@@ -7772,6 +7750,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[dict[str, Any]], route_info: Optional[dict[str, str]],
+    fallback_policy_is_auto: bool = False,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7781,7 +7760,7 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
-        kwargs.get("timeout"))
+        kwargs.get("timeout"), fallback_policy_is_auto)
     resp, first_err, kwargs, repairs = yield from _ladder_parameter_rungs(
         _failure(route, first_err), route, kwargs, max_tokens)
     if first_err is None:
@@ -7991,7 +7970,8 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info,
+        fallback_policy_is_auto=req.fallback_policy_is_auto)
 
 
 def _call_llm_impl(

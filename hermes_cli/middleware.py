@@ -7,9 +7,10 @@ wrapping the actual execution callback. Agent-loop call sites and plugins share 
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,46 @@ class RequestMiddlewareResult:
     original_payload: Any
     changed: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ToolCallAuthorization:
+    """Hermes's decision for the tool call a ``tool_execution`` middleware is handling (``authorize_tool_call``).
+
+    ``allowed``: the call may run. ``args``: the arguments it may run with (after any ``pre_tool_call`` ``modify``
+    hook). ``result``: when refused, the result the model must receive; its terminal ``post_tool_call`` was already
+    emitted, so the middleware returns it unchanged and does not run the call.
+    """
+
+    allowed: bool
+    args: dict[str, Any]
+    result: Any = None
+
+
+_TOOL_CALL_AUTHORIZER: ContextVar[Optional[Callable[[Optional[dict[str, Any]]], ToolCallAuthorization]]] = ContextVar(
+    "hermes_tool_call_authorizer", default=None)
+
+
+def authorize_tool_call(args: Optional[dict[str, Any]] = None) -> ToolCallAuthorization:
+    """Run Hermes's authorization of the current tool call without running the call.
+
+    For a ``tool_execution`` middleware that runs the call somewhere else (another machine, a sandbox) and so never
+    calls ``next_call``. In the agent loop (``authorization="pending"``) this runs Hermes's policy once: the hosted-scope
+    refusal, the tool-scope block, ``pre_tool_call`` hooks (block / approve / modify), the pruned-argument guard and the
+    loop guardrails. Where Hermes already authorized the call before the middleware (``authorization="done"``:
+    ``handle_function_call``) it returns that decision. Repeated calls return the first decision. ``args``: the arguments
+    the middleware intends to run (default: those the middleware chain started with).
+
+    A result the middleware returns without calling ``next_call`` gets the same terminal ``post_tool_call`` and
+    ``transform_tool_result`` as a local result. If the middleware calls ``next_call`` after authorizing, the decision
+    is reused (policy does not run twice) and only the authorized arguments may run.
+
+    Raises ``RuntimeError`` outside a ``tool_execution`` middleware call.
+    """
+    authorizer = _TOOL_CALL_AUTHORIZER.get()
+    if authorizer is None:
+        raise RuntimeError("authorize_tool_call() works only inside a tool_execution middleware call")
+    return authorizer(args)
 
 
 def observer_payload(**kwargs: Any) -> dict[str, Any]:
@@ -142,12 +183,36 @@ def run_llm_execution_middleware(
 
 
 def run_tool_execution_middleware(
-    tool_name: str, args: dict[str, Any], next_call: Callable[[dict[str, Any]], Any], **context: Any,
+    tool_name: str, args: dict[str, Any], next_call: Callable[[dict[str, Any]], Any], *,
+    authorize: Optional[Callable[[dict[str, Any]], ToolCallAuthorization]] = None, **context: Any,
 ) -> Any:
-    """Run tool execution through registered tool execution middleware."""
-    return _run_execution_chain(
-        TOOL_EXECUTION_MIDDLEWARE, next_call,
-        tool_name=tool_name, args=args, original_args=context.pop("original_args", args), **context)
+    """Run tool execution through registered tool execution middleware.
+
+    ``authorize``: the caller's authorization of this call when it has not run yet (the agent loop runs it inside
+    ``next_call``); middleware reach it through ``authorize_tool_call`` and see ``authorization="pending"``. Without
+    it, Hermes authorized the call before the middleware (``authorization="done"``).
+    """
+    def _already_authorized(requested: Optional[dict[str, Any]]) -> ToolCallAuthorization:
+        if requested is not None and requested != args:
+            raise RuntimeError("authorize_tool_call(): this tool call was authorized with the arguments it arrived "
+                               "with; other arguments cannot be authorized here")
+        return ToolCallAuthorization(allowed=True, args=dict(args))
+
+    if authorize is None:
+        authorization, authorizer = "done", _already_authorized
+    else:
+        authorization = "pending"
+
+        def authorizer(requested: Optional[dict[str, Any]]) -> ToolCallAuthorization:
+            return authorize(args if requested is None else requested)
+    token = _TOOL_CALL_AUTHORIZER.set(authorizer)
+    try:
+        return _run_execution_chain(
+            TOOL_EXECUTION_MIDDLEWARE, next_call,
+            tool_name=tool_name, args=args, original_args=context.pop("original_args", args),
+            authorization=authorization, **context)
+    finally:
+        _TOOL_CALL_AUTHORIZER.reset(token)
 
 
 class _DownstreamExecutionError(Exception):

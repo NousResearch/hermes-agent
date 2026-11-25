@@ -221,3 +221,5 @@ with a name allows that one name only.
 | `hermes_cli.auth` | `resolve_nous_access_token` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
 | `hermes_cli.config_providers` | `get_custom_provider_tls_settings` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
 | `tools.schema_sanitizer` | `normalize_type_array` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
+| `hermes_cli.middleware` | `authorize_tool_call` | developer-guide/middleware.md § Running a Tool Call Somewhere Else |
+| `hermes_cli.middleware` | `ToolCallAuthorization` | developer-guide/middleware.md § Running a Tool Call Somewhere Else |

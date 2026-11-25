@@ -435,6 +435,13 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_session import turn_origin
         return turn_origin()
 
+    def authorize_tool_call(self, args: dict | None = None):
+        """Hermes's authorization of the tool call the calling ``tool_execution`` middleware is handling, without
+        running it (``hermes_cli.middleware.authorize_tool_call``). Under ``plugins.isolation: host`` this runs in the
+        gateway, in the calling middleware's context."""
+        from hermes_cli.middleware import authorize_tool_call
+        return authorize_tool_call(args)
+
     def session_viewers(self) -> list[dict]:
         """The clients attached to the calling session (``plugin_session.session_viewers``).
         Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""

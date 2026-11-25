@@ -309,6 +309,13 @@
         "hermes_cli.config_providers:get_custom_provider_tls_settings",
         "tools.schema_sanitizer:normalize_type_array"
       ]
+    },
+    {
+      "source": "developer-guide/middleware.md § Running a Tool Call Somewhere Else",
+      "entries": [
+        "hermes_cli.middleware:authorize_tool_call",
+        "hermes_cli.middleware:ToolCallAuthorization"
+      ]
     }
   ]
 }

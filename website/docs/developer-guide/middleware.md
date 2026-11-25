@@ -52,7 +52,7 @@ Supported middleware kinds:
 | `llm_request` | `request`, `original_request` | `{"request": {...}}` | Replace effective provider kwargs before provider execution. |
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
-| `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
+| `tool_execution` | `tool_name`, `args`, `original_args`, `authorization`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
 
 Request middleware can return optional trace fields:
 
@@ -111,11 +111,17 @@ For each tool call, Hermes applies middleware in this order:
 
 1. Parse and coerce model-provided tool arguments.
 2. Apply `tool_request` middleware.
-3. Run the normal Hermes pre-execution path against the effective arguments:
+3. Run tool execution through `tool_execution` middleware.
+4. Run the normal Hermes pre-execution path against the effective arguments:
    tool availability checks, observer block directives, guardrails, and
-   approval checks.
-4. Run tool execution through `tool_execution` middleware.
-5. Emit `post_tool_call` observer hooks.
+   approval checks. In the agent loop this runs inside `next_call`
+   (`authorization="pending"`); for calls that come through
+   `handle_function_call` (`execute_code`, the code kernel, the MCP bridge,
+   connectors) it has already run before the middleware
+   (`authorization="done"`). A middleware that does not call `next_call` gets
+   it through `authorize_tool_call()` (below).
+5. Emit `post_tool_call` observer hooks (also for a result a middleware
+   returned without calling `next_call`).
 6. Apply `transform_tool_result` hooks before the result is appended back into
    conversation context.
 
@@ -250,6 +256,33 @@ def annotate_tool_execution(**kwargs):
 Execution middleware may call `next_call(modified_args)` to pass a changed
 payload to later middleware and the base tool dispatcher.
 
+### Running a Tool Call Somewhere Else
+
+A middleware that runs the call itself, for example on another machine or in a
+sandbox, never calls `next_call`, so Hermes's authorization (which runs inside
+`next_call` in the agent loop) would not run. Ask for it first:
+
+```python
+from hermes_cli.middleware import authorize_tool_call
+
+
+def run_elsewhere(**kwargs):
+    decision = authorize_tool_call(kwargs["args"])   # ctx.authorize_tool_call(...) under plugins.isolation: host
+    if not decision.allowed:
+        return decision.result                       # already reported; return it unchanged
+    return remote_run(kwargs["tool_name"], decision.args)
+```
+
+`authorize_tool_call` runs Hermes's policy for the call once (hosted-scope
+refusal, tool scope, `pre_tool_call` block/approve/modify hooks, the
+pruned-argument guard, loop guardrails) and returns a `ToolCallAuthorization`:
+`allowed`, the `args` to run (after any `modify` hook) and, when refused, the
+`result` the model must see. With `authorization="done"` it returns the
+decision Hermes already made. The returned result gets the usual terminal
+`post_tool_call` and `transform_tool_result`. If the middleware calls
+`next_call` after authorizing, the decision is reused and only the authorized
+arguments may run.
+
 Plugin-specific examples should live with the plugin that owns the behavior.
 NeMo Relay execution middleware is installed through Relay's discovered user
 and system configuration, or through an explicit `plugins.toml` selected with
@@ -263,7 +296,9 @@ and system configuration, or through an explicit `plugins.toml` selected with
 - Request middleware should return complete replacement payloads, not partial
   patches.
 - Execution middleware should call `next_call(...)` exactly once unless it is
-  intentionally short-circuiting execution.
+  intentionally short-circuiting execution. A middleware that short-circuits
+  to run the call itself must call `authorize_tool_call()` first; otherwise
+  the call runs without Hermes's checks.
 - If execution middleware raises before calling `next_call(...)`, Hermes treats
   that as middleware failure and continues with the remaining middleware chain
   and base execution.

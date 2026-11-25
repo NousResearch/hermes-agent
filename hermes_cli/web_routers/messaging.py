@@ -1135,6 +1135,9 @@ def _apply_platform_live(profile: Optional[str], platform_id: str) -> dict:
     if answer.get("pending"):
         return {"applied": True, "state": "connecting"}
     state = (answer.get("platforms") or {}).get(platform_id)
+    if state not in _LIVE_SETTLED_STATES and (missing := _missing_credentials(profile, platform_id)):
+        # Enabled before its credentials were saved: a restart would not start it either.
+        return {"applied": True, "state": "not_configured", "detail": f"needs {', '.join(missing)}"}
     live = {"applied": bool(answer.get("applied")) and state in _LIVE_SETTLED_STATES, "state": state}
     if answer.get("error"):
         live["detail"] = str(answer["error"])
@@ -1142,6 +1145,23 @@ def _apply_platform_live(profile: Optional[str], platform_id: str) -> dict:
         live["detail"] = ((answer.get("reasons") or {}).get(platform_id)
                           or "the running gateway could not build this platform's adapter")
     return live
+
+
+def _missing_credentials(profile: Optional[str], platform_id: str) -> list[str]:
+    """What ``profile`` still lacks for the gateway to call the platform configured (its own
+    ``get_connected_platforms`` verdict over the env-overlaid config): the registration's unset
+    ``required_env`` names, or ``["credentials"]`` when it names none. Empty when it is configured."""
+    from gateway.config import load_gateway_config
+    from gateway.platform_registry import platform_registry
+    with _profile_scope(profile):
+        config = load_gateway_config()
+        platform = next((p for p in config.platforms if p.value == platform_id), None)
+        if platform is None or platform in config.get_connected_platforms():
+            return []
+        entry = platform_registry.get(platform_id)
+        env = load_env()
+        names = list(entry.required_env) if entry is not None else []
+        return [n for n in names if not str(env.get(n) or "").strip()] or ["credentials"]
 
 
 def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:

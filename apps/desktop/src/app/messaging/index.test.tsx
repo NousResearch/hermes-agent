@@ -475,6 +475,50 @@ describe('MessagingView restart banner', () => {
     await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalled())
     await waitFor(() => expect(Boolean(screen.queryByRole('button', { name: 'Restart now' }))).toBe(wantsRestart))
   })
+
+  it('drops the restart banner once a later save of the same platform comes up live', async () => {
+    // Enabled before its credentials existed, the first save could not start it; the save that added
+    // them did. The page must not keep asking for a restart the gateway no longer needs.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    updateMessagingPlatform
+      .mockResolvedValueOnce({ live: { applied: false, detail: 'no adapter', state: 'unavailable' }, ok: true, platform: 'teams' })
+      .mockResolvedValueOnce({ live: { applied: true, state: 'connected' }, ok: true, platform: 'teams' })
+
+    await renderMessaging()
+
+    for (const value of ['secret-1', 'secret-2']) {
+      fireEvent.change(await screen.findByLabelText('Token'), { target: { value } })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+      })
+
+      if (value === 'secret-1') {
+        expect(await screen.findByRole('button', { name: 'Restart now' })).toBeTruthy()
+      }
+    }
+
+    await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
+  })
+
+  it('says an enabled platform without credentials needs setup, never a restart', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    updateMessagingPlatform.mockResolvedValue({
+      live: { applied: true, detail: 'needs TEAMS_TOKEN', state: 'not_configured' },
+      ok: true,
+      platform: 'teams'
+    })
+
+    await renderMessaging()
+
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'secret-1' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+
+    await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'Needs setup' })))
+    expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull()
+  })
 })
 
 describe('MessagingView allowlist editor', () => {

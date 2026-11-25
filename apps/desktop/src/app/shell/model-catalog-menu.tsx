@@ -1,12 +1,5 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import {
-  DEFAULT_REASONING_EFFORT,
-  planBlocks,
-  sectionAt,
-  splitRecommended,
-  usageLevel,
-  usageTag
-} from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, planBlocks, sectionAt, splitRecommended, usageLevel, usageTag } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -101,7 +94,7 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
   const cache = pricing.cache || null
 
   if (pricing.free) {
-    return <span className="shrink-0 pl-2 text-[0.625rem] text-(--ui-green)">{copy.free}</span>
+    return <span className="text-[0.625rem] text-(--ui-green)">{copy.free}</span>
   }
 
   if (!input && !output) {
@@ -113,7 +106,7 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
 
   return (
     <span
-      className="flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
+      className="flex flex-wrap items-center gap-x-0.5 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
       title={copy.priceTitle(input ?? '—', output ?? '—', cache ?? '')}
     >
       <span>
@@ -125,7 +118,7 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
         </span>
       ) : null}
       {discount ? (
-        <span className="rounded bg-(--ui-green)/10 px-1 py-px font-medium text-(--ui-green)">−{discount}%</span>
+        <span className="rounded bg-(--ui-green)/10 px-0.5 py-px font-medium text-(--ui-green)">−{discount}%</span>
       ) : null}
     </span>
   )
@@ -1190,38 +1183,47 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
-          {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
-          <span className="min-w-0 truncate">
-            <HighlightMatches foldSeparators query={search} text={name} />
-          </span>
-          {tag ? <ModelChip>{tag}</ModelChip> : null}
-          {decoration.badge ? (
-            <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
-              {decoration.badge}
-            </Badge>
-          ) : null}
-        </span>
-        <ModelResetBadge time={limit.reset} />
-        {loadProgress ? (
-          <span className="flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>
-            <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
-              <span
-                className="block h-full rounded-full bg-primary transition-[width] duration-500"
-                style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
-              />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="flex items-center gap-1.5">
+            <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
+              {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
+              <span className="min-w-0 truncate">
+                <HighlightMatches foldSeparators query={search} text={name} />
+              </span>
+              {tag ? <ModelChip>{tag}</ModelChip> : null}
+              {decoration.badge ? (
+                <Badge
+                  className="shrink-0 uppercase tracking-wide"
+                  data-model-menu-row-badge=""
+                  size="xs"
+                  variant="muted"
+                >
+                  {decoration.badge}
+                </Badge>
+              ) : null}
             </span>
-            <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">{loadProgress.percent}%</span>
+            <ModelResetBadge time={limit.reset} />
+            {loadProgress ? (
+              <span className="flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>
+                <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                  <span
+                    className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                    style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                  />
+                </span>
+                <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">{loadProgress.percent}%</span>
+              </span>
+            ) : null}
+            {rowLevel ? <UsageLevelTag level={usageTag(provider, family.id)} /> : null}
+            {settings.map(setting => (
+              <ModelChip key={setting} setting>
+                {setting}
+              </ModelChip>
+            ))}
+            {isCurrent ? <Codicon className="text-foreground" name="check" size="0.75rem" /> : null}
           </span>
-        ) : null}
-        {showPricing && pricing && !rowLevel ? <ModelPrice pricing={pricing} /> : null}
-        {rowLevel ? <UsageLevelTag level={usageTag(provider, family.id)} /> : null}
-        {settings.map(setting => (
-          <ModelChip key={setting} setting>
-            {setting}
-          </ModelChip>
-        ))}
-        {isCurrent ? <Codicon className="text-foreground" name="check" size="0.75rem" /> : null}
+          {showPricing && pricing && !rowLevel ? <ModelPrice pricing={pricing} /> : null}
+        </span>
       </DropdownMenuSubTrigger>
       <ModelEditSubmenu
         canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
@@ -1480,7 +1482,10 @@ function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number):
 // current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
 // first pick's "Recommended" heading.
 function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
-  const split = splitRecommended(provider, families.map(family => family.id))
+  const split = splitRecommended(
+    provider,
+    families.map(family => family.id)
+  )
 
   if (!split) {
     return families

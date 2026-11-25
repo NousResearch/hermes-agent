@@ -766,6 +766,38 @@ describe('the catalog renders per-model pricing', () => {
   beforeEach(() => setShowModelPricing(true))
   afterEach(() => setShowModelPricing(false))
 
+  it('keeps favorite names and effort above pricing and omits the detail line when unpriced', async () => {
+    const model = 'anthropic/claude-sonnet-5'
+
+    toggleFavoriteModel('nous', model)
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: [model, 'gemini-3.1-pro'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: { [model]: { input: '$0.03', output: '$0.12', cache: '$0.0006', discount_percent: 80 } }
+        }
+      ]
+    })
+    renderMenu({ effort: 'medium', model, provider: 'nous' })
+
+    const price = await screen.findByText('$0.03/$0.12')
+    const name = screen.getByText('Sonnet 5')
+    const effort = screen.getByText('Med')
+    const stack = name.closest('.flex-col')
+
+    expect(stack?.firstElementChild?.contains(name)).toBe(true)
+    expect(stack?.firstElementChild?.contains(effort)).toBe(true)
+    expect(stack?.children).toHaveLength(2)
+
+    for (const detail of [price, screen.getByText('·$0.0006'), screen.getByText('−80%')]) {
+      expect(stack?.lastElementChild?.contains(detail)).toBe(true)
+    }
+
+    expect(screen.getByText('Gemini 3.1 Pro').closest('.flex-col')?.children).toHaveLength(1)
+  })
+
   it('keeps prices out of the menu until the pricing setting is on', async () => {
     setShowModelPricing(false)
     getGlobalModelOptions.mockResolvedValue({

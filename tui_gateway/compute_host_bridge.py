@@ -55,6 +55,9 @@ def _compute_host_turn_frame(
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
         attached_images = list(image_paths if image_paths is not None else session.get("attached_images", []))
+        # Remember exactly which stash this turn carries: only that one may be cleared when it ends.
+        pending_switch = session.get("pending_model_switch")
+        session["_forwarded_model_switch"] = pending_switch
     return {
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
@@ -73,7 +76,7 @@ def _compute_host_turn_frame(
         # pop-and-drop it against agent=None. COPIED (not popped): the stash is
         # cleared only after a successful isolated turn (_on_compute_host_turn_done),
         # so the fail-open in-process path can still apply it if the host dispatch fails.
-        "pending_model_switch": session.get("pending_model_switch"),
+        "pending_model_switch": pending_switch,
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
@@ -301,8 +304,12 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session.pop("_compute_host_open_request", None)
     # The isolated turn carried the queued model switch to the compute host, whose
     # turn thread applied it. Clear the server-side stash so it isn't re-forwarded
-    # (kept on error so the fail-open in-process path can still apply it).
-    if frame.get("type") != "turn.error":
+    # (kept on error so the fail-open in-process path can still apply it). A pick made
+    # DURING this turn was never forwarded: it stays stashed for the next turn, or
+    # session.info falls back to the old model and the composer pill reverts.
+    forwarded = session.pop("_forwarded_model_switch", None)
+    if frame.get("type") != "turn.error" and forwarded is not None \
+            and session.get("pending_model_switch") is forwarded:
         session.pop("pending_model_switch", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")

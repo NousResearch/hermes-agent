@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import hermes_yaml as yaml
+from gateway.plugin_cards import model_line
 from persistence_assembly import close_stores_under
 from tests.gateway.fixtures.storage_handles import storage_handle
 from tests.gateway.test_plugin_cards import _CARD, _cards, _no_turns, _post, _serve
@@ -134,7 +135,7 @@ async def test_two_profiles_local_and_messaging_keys(tmp_path, monkeypatch):
             # The local card is in the plugin's own profile's live session and drains as a note there.
             await authority._drain(profile['ref'])
             rows = _cards(authority, _target(runner, authority, profile['ref']))
-            assert [row['content'] for row in rows] == [f'[cwplug posted a card {name}-local_key]'], (name, rows)
+            assert [row['content'] for row in rows] == [model_line('cwplug', f'{name}-local_key')], (name, rows)
             # The messaging card is one admission in that profile's own DM session, behind the human turn.
             assert _admitted_cards(authority, profile['dm_session']) == [('cwplug', f'{name}-dm_key')], name
         # Nothing of one profile's cards reached the other authority's store: each store holds its own two,
@@ -191,8 +192,8 @@ async def test_same_card_id_from_two_plugins_is_two_cards(tmp_path, monkeypatch)
         authority = profile['authority']
         await authority._drain(profile['ref'])
         rows = _cards(authority, _target(runner, authority, profile['ref']))
-        assert sorted(row['content'] for row in rows) == ['[cwplug posted a card share-1]',
-                                                           '[otherplug posted a card share-1]']
+        assert sorted(row['content'] for row in rows) == sorted([model_line('cwplug', 'share-1'),
+                                                                   model_line('otherplug', 'share-1')])
         assert sorted(_admitted_cards(authority, profile['ref'].session_id)) == [('cwplug', 'share-1'),
                                                                                   ('otherplug', 'share-1')]
         # Each plugin's replay is still its own duplicate.

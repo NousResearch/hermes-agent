@@ -5,7 +5,8 @@ as a producer wake (``session_automation.admit_route_wake``, the path a local cr
 and at the FIFO head it is always written as a note (``session_completion_notes``): no model call,
 no tools, and the session's background review and forks keep running. The row's ``content`` is one
 bounded core-authored line (``model_line``) that tells the next turn a card was posted, built from
-the validated plugin id and card id only: no plugin-authored text reaches the model. The card
+the registry plugin id and a core-derived opaque card reference. The plugin-chosen card id, text,
+directive and attrs never reach the model. The card
 itself (text, directive name and attrs) rides ``display_metadata`` and the live ``plugin.card``
 event, which only renderers read. Core sends nothing to a messaging platform: the plugin sends its
 own native card there, and the row records that it did.
@@ -13,6 +14,7 @@ own native card there, and the row records that it did.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -94,10 +96,14 @@ def validate(card: Any, plugin_id: str) -> tuple[Optional[dict], Optional[str]]:
 
 
 def model_line(plugin_id: str, card_id: str) -> str:
-    """What the model reads: that *plugin_id* posted card *card_id*. Both are validated identifiers
-    (``card_descriptor``), so the line is bounded and carries no plugin-authored text, let alone the
-    card's text, directive or attrs."""
-    return f"[{plugin_id} posted a card {card_id}]"
+    """The registry plugin id plus a core-derived opaque card reference, never the plugin's id text.
+
+    Hash the structured dedupe identity so retries and owner restarts keep the same reference. The
+    line itself is stored in the durable row, alongside the original renderer/dedupe descriptor.
+    """
+    identity = json.dumps([plugin_id, card_id], separators=(",", ":")).encode()
+    opaque_id = hashlib.sha256(identity).hexdigest()[:16]
+    return f"[{plugin_id} posted a card {opaque_id}]"
 
 
 def _rate_window(plugin_id: str, session_key: str) -> deque:

@@ -3,7 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
-import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
+import {
+  type LiveHistoryMessage,
+  type LiveTranscriptFragment,
+  type VoiceLiveAuth,
+  VoiceLiveSession
+} from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -27,6 +32,7 @@ interface PendingVoiceResponse {
 interface VoiceLiveConversationOptions {
   busy: boolean
   enabled: boolean
+  expectedAuth?: null | VoiceLiveAuth
   onFatalError?: () => void
   /** Interrupt the in-flight Hermes turn (Stop-button seam). Fired when a new
    *  delegation supersedes one still running. */
@@ -105,6 +111,7 @@ export function liveEndedMessage(
 export function useVoiceLiveConversation({
   busy,
   enabled,
+  expectedAuth,
   onFatalError,
   onInterrupt,
   onStopWord,
@@ -344,7 +351,8 @@ export function useVoiceLiveConversation({
           refreshStatus()
         }
       },
-      ownerRef.current
+      ownerRef.current,
+      expectedAuth ?? null
     )
 
     sessionRef.current = session
@@ -380,7 +388,7 @@ export function useVoiceLiveConversation({
       setStatus('idle')
       latest.current.onFatalError?.()
     }
-  }, [end, levelStore, refreshStatus, setDelegation, voiceCopy])
+  }, [end, expectedAuth, levelStore, refreshStatus, setDelegation, voiceCopy])
 
   // Drive the reply back into the voice: stream commentary as Hermes writes
   // it (sentence-chunked), quiet tool progress as thinking appends, and clear

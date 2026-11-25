@@ -203,8 +203,60 @@ class TestOpenCodeGoGLM52Reasoning:
         assert top_level == {"reasoning_effort": "max"}
 
 
+class TestOpenCodeGoGemini4Reasoning:
+    """Gemini 4 takes a top-level reasoning_effort clamped to low/medium/high."""
+
+    @pytest.mark.parametrize(
+        ("reasoning_config", "expected"),
+        [
+            (None, {}),
+            ({}, {}),
+            ({"enabled": True}, {}),
+            ({"enabled": True, "effort": "low"}, {"reasoning_effort": "low"}),
+            ({"enabled": True, "effort": "medium"}, {"reasoning_effort": "medium"}),
+            ({"enabled": True, "effort": "high"}, {"reasoning_effort": "high"}),
+            ({"enabled": True, "effort": "xhigh"}, {"reasoning_effort": "high"}),
+            ({"enabled": True, "effort": "max"}, {"reasoning_effort": "high"}),
+            ({"enabled": True, "effort": "ultra"}, {"reasoning_effort": "high"}),
+            ({"enabled": True, "effort": "minimal"}, {"reasoning_effort": "low"}),
+            ({"enabled": True, "effort": "none"}, {"reasoning_effort": "low"}),
+            ({"enabled": False}, {"reasoning_effort": "low"}),
+            ({"enabled": False, "effort": "high"}, {"reasoning_effort": "low"}),
+            ({"enabled": True, "effort": "turbo"}, {"reasoning_effort": "medium"}),
+        ],
+    )
+    def test_levels_clamp_onto_the_wire_vocabulary(self, opencode_go_profile, reasoning_config, expected):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model="gemini-4-argon",
+        )
+        assert extra_body == {}
+        assert top_level == expected
+
+    def test_aggregator_prefix_still_matches(self, opencode_go_profile):
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="opencode-go/gemini-4-argon",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_reasoning_effort_reaches_top_level_kwargs(self, opencode_go_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="gemini-4-argon",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert "extra_body" not in kwargs
+        assert kwargs["reasoning_effort"] == "high"
+
+
 class TestOpenCodeGoModelGating:
-    """Other OpenCode Go models must not receive Kimi/DeepSeek/GLM controls."""
+    """Other OpenCode Go models must not receive Kimi/DeepSeek/GLM/Gemini controls."""
 
     @pytest.mark.parametrize(
         "model",
@@ -215,6 +267,9 @@ class TestOpenCodeGoModelGating:
             "minimax-m2.7",
             "deepseek-v3.1",
             "deepseek-chat",
+            "gemini-40",
+            "gemini-4x",
+            "gemini-3.8-flash",
             "",
             None,
         ],

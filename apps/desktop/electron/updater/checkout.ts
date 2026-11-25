@@ -65,6 +65,8 @@ export interface CheckoutStrategyDeps {
   stopBackendsForUpdate: () => Promise<void>
   repairMacUpdaterHelper: (updater: string) => void | Promise<void>
   preflightStateDb: (hermesHome: string, rememberLog: (chunk: string) => void) => void | Promise<void>
+  /** Optional disk-space guard. Defaults to a no-op so existing tests stay valid. */
+  preflightDiskSpace?: (updateRoot: string, rememberLog: (chunk: string) => void) => void | Promise<void>
   runningAppBundle: () => string | null
   markQuittingForHandoff: () => void
   quit: () => void
@@ -542,6 +544,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
     // anything.  Runs while the backend is still alive.
     await deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
 
+    // ── Pre-flight disk-space guard (update hardening) ───────────────
+    // Fail closed while the backend is still alive: a full disk must not
+    // leave a half-migrated install. Mirrored in applyPosixHandoff below.
+    if (deps.preflightDiskSpace) {
+      await deps.preflightDiskSpace(updateRoot, deps.rememberLog)
+    }
+
     if (deps.isWindows && resolveUpdateScriptHandoff(updateRoot)) {
       const message = windowsUpdatePrerequisiteError(updateRoot, deps.hermesHome)
 
@@ -692,6 +701,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
 
     // ── Pre-flight state.db integrity guard (#68474) ──
     await deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
+
+    // ── Pre-flight disk-space guard (update hardening) ──
+    // Mirror of the Windows/staged path: same fail-closed rule before any
+    // marker or process mutation.
+    if (deps.preflightDiskSpace) {
+      await deps.preflightDiskSpace(updateRoot, deps.rememberLog)
+    }
 
     const args: string[] = [
       ...handoff.args,

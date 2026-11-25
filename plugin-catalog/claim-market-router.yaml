@@ -1,7 +1,7 @@
 name: claim-market-router
 title: Claim Market Router
 repo: https://github.com/misakamikotoghr-5205/hermes-hackathon-plugins
-sha: "d4a7f0938b975c36c0d7fc65c8d32313a52d6f1b"
+sha: "60c6281f2ee003bd64b77deffe2ea8b1bdce98b6"
 subdir: claim-market-router
 version: "1.0.0"
 description: >-

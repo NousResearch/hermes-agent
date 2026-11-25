@@ -261,7 +261,7 @@ class AcmeProfile(ProviderProfile):
 | 插件 | 参考原因 |
 |---|---|
 | `plugins/model-providers/openrouter/` | 带 provider preferences 的聚合器，公开模型目录 |
-| `plugins/model-providers/gemini/` | `thinking_config` 转换（原生 + OpenAI 兼容嵌套形式） |
+| `plugins/model-providers/google/` | `thinking_config` 转换（原生 + OpenAI 兼容嵌套形式） |
 | `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`、`extra_body.thinking`、顶层 `reasoning_effort` |
 | `plugins/model-providers/qwen-oauth/` | 消息规范化、`cache_control` 注入、VL 高分辨率 |
 | `plugins/model-providers/nous/` | 归因标签、"禁用时省略 reasoning" |

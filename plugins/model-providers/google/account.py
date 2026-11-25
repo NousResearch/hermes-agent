@@ -13,10 +13,9 @@ from dataclasses import replace
 from typing import Any
 
 from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, pkce_auth_handler, pkce_refresh_credential
-from providers import register_provider
 from providers.base import ProviderProfile
 
-from .auth import broker_token_request, discover_client
+from .account_auth import broker_token_request, discover_client
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +121,7 @@ def _auth_handler(action: str, args: Any) -> bool:
 
 class SolsticeProfile(ProviderProfile):
     def create_client(self, **client_kwargs: Any) -> Any:
-        from .transport import SolsticeClient
+        from .account_client import SolsticeClient
 
         allowed = {"api_key", "base_url", "default_headers", "timeout", "http_client"}
         return SolsticeClient(**{k: v for k, v in client_kwargs.items() if k in allowed})
@@ -149,7 +148,7 @@ class SolsticeProfile(ProviderProfile):
         return None  # output caps are the backend's; a Hermes default would truncate long answers
 
 
-register_provider(SolsticeProfile(
+solstice = SolsticeProfile(
     name="solstice", aliases=("solstice-oauth",), display_name="Solstice",
     description="Solstice (your own per-user quota, OAuth sign-in)",
     auth_type="oauth_external", base_url=INFERENCE_BASE_URL, hidden=True,
@@ -157,4 +156,5 @@ register_provider(SolsticeProfile(
     fallback_models=FALLBACK_MODELS, default_aux_model="gemini-flash-lite-latest",
     setup_reasoning_efforts=_setup_efforts,
     auth_handler=_auth_handler, refresh_credential=pkce_refresh_credential(_BASE_CFG),
-))
+    picker_after="router", registry_after="router.com",
+)

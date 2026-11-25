@@ -16,17 +16,17 @@ from typing import Any, Iterator, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
-from agent.gemini_long_decode import long_decode_hops
-from agent.gemini_native_adapter import (
+from agent.gemini_model_family import gemini_uses_thinking_level
+from agent.reasoning_effort import bare_gemini_model_id
+
+from . import interactions as wire
+from .long_decode import long_decode_hops
+from .native_adapter import (
     _MAX_TOKEN_SENDS,
     GeminiAPIError,
     GeminiNativeClient,
     _iter_sse_events,
-    bare_gemini_model_id,
-    gemini_uses_thinking_level,
 )
-
-from . import interactions as wire
 
 logger = logging.getLogger(__name__)
 

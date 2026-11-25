@@ -8,7 +8,6 @@ model. This profile also carries auth/endpoint metadata and the thinking_config 
 import logging
 from typing import Any
 
-from providers import register_provider
 from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ class GeminiProfile(ProviderProfile):
         if self.name == "gemini" and is_gemini_openai_compat_base_url(base_url):
             thinking_config = snake_case_gemini_thinking_config(raw)
             return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
-        from agent.gemini_long_decode import long_decode_max_output_tokens
+        from .long_decode import long_decode_max_output_tokens
 
         # Long decode exists only on native generateContent (not /openai, not proxies).
         budget = long_decode_max_output_tokens(context.get("model") or "", context.get("reasoning_config"))
@@ -60,7 +59,7 @@ class GeminiProfile(ProviderProfile):
         allowed = {"api_key", "base_url", "default_headers", "timeout", "http_client"}
         kwargs = {k: v for k, v in client_kwargs.items() if k in allowed}
         if client_kwargs.get("auxiliary_chain"):
-            from agent.gemini_native_adapter import GeminiNativeClient
+            from .native_adapter import GeminiNativeClient
 
             return GeminiNativeClient(**kwargs)
         from .client import GeminiClient
@@ -76,7 +75,7 @@ class GeminiProfile(ProviderProfile):
 
     def validate_setup_api_key(self, api_key: str, *, base_url: str = "") -> bool:
         """Gemini free-tier gate: refuse free-tier keys during setup; best-effort on errors."""
-        from agent.gemini_native_adapter import probe_gemini_tier
+        from .native_adapter import probe_gemini_tier
 
         print("  Checking Gemini API tier...")
         tier = probe_gemini_tier(api_key, base_url or self.base_url)
@@ -129,5 +128,3 @@ gemini = GeminiProfile(
     registry_after="lmstudio",
     strict_client=True,
 )
-
-register_provider(gemini)

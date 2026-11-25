@@ -270,6 +270,20 @@ def test_a_hung_up_connection_rereads_the_plugin_toolsets(monkeypatch):
     assert [m for m, _ in conn.calls].count("plugins.list") == 2
 
 
+def test_a_gateway_session_keeps_a_plugin_toolset_to_its_default_platforms(monkeypatch):
+    """A classic CLI on a gateway session resolves plugin toolsets from the gateway's ``plugins.list``,
+    including the platforms one defaults on for: off for the CLI, on for its own platform."""
+    from hermes_cli import gateway_plugin_commands, tools_config
+    conn = _Conn({}, reply={"toolsets": [{"key": "scoped-ts", "default_platforms": ["slack"]}, {"key": "any-ts"}]})
+    c = _cli(monkeypatch, conn)
+    monkeypatch.setattr(tools_config, "_gateway_plugin_toolsets", lambda: gateway_plugin_commands.toolsets(c))
+    monkeypatch.setattr(tools_config, "_gateway_plugin_toolset_platforms",
+                        lambda: gateway_plugin_commands.toolset_default_platforms(c))
+    cli_enabled = tools_config._get_platform_tools({}, "cli")
+    assert "any-ts" in cli_enabled and "scoped-ts" not in cli_enabled
+    assert "scoped-ts" in tools_config._get_platform_tools({}, "slack")
+
+
 def test_a_reply_that_is_no_plugin_run_is_reported(monkeypatch, capsys):
     """The gateway lost the plugin between lookup and ``slash.exec`` and answered for a same-named
     skill (``type: skill``): nothing ran, and the input must not vanish without a word."""

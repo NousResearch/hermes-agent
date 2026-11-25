@@ -388,6 +388,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     tools_config_mod = sys.modules.get("hermes_cli.tools_config")
     if tools_config_mod is not None and hasattr(tools_config_mod, "_gateway_plugin_toolsets"):
         monkeypatch.setattr(tools_config_mod, "_gateway_plugin_toolsets", None)
+        monkeypatch.setattr(tools_config_mod, "_gateway_plugin_toolset_platforms", None, raising=False)
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.

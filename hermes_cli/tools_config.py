@@ -144,6 +144,7 @@ def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
 # (installed by ``_ensure_gateway_session``): ``() -> ([(key, label, description)], {portable MCP})`` or
 # None (off the gateway: this process's own registry).
 _gateway_plugin_toolsets = None
+_gateway_plugin_toolset_platforms = None  # same, for ``{toolset: default platforms}``
 
 
 def _projected_plugin_toolsets():
@@ -180,6 +181,15 @@ def _get_plugin_toolset_keys() -> set:
         return get_plugin_toolset_keys_nowait()
     except Exception:
         return set()
+
+
+def _plugin_toolset_default_platforms() -> dict[str, frozenset[str]]:
+    """Plugin toolsets that default on only for some platforms (``register_tool(default_platforms=...)``)."""
+    if _projected_plugin_toolsets() is not None:
+        provider = _gateway_plugin_toolset_platforms
+        return provider() if provider is not None else {}
+    from hermes_cli.plugins import get_plugin_toolset_default_platforms_nowait
+    return get_plugin_toolset_default_platforms_nowait()
 
 
 def _checklist_toolset_keys(platform: str) -> set[str]:
@@ -519,12 +529,15 @@ def _composite_toolsets(toolset_names: list[str], platform: str, explicitly_conf
 
 
 def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: list[str], plugin_ts_keys: set[str]) -> set[str]:
-    """Plugin toolsets: on by default unless default-off (catalog spotify) or "known" for this platform
+    """Plugin toolsets: on by default unless default-off (catalog spotify), registered with
+    ``default_platforms`` that leave out this platform, or "known" for this platform
     (``known_plugin_toolsets``, written on every save) and absent from the saved list."""
     known_for_platform = set((config.get("known_plugin_toolsets", {}) or {}).get(platform, []) or [])
+    scoped = _plugin_toolset_default_platforms()
     return {
         pts for pts in plugin_ts_keys
-        if pts in toolset_names or (pts not in _DEFAULT_OFF_TOOLSETS and pts not in known_for_platform)
+        if pts in toolset_names or (
+            pts not in _DEFAULT_OFF_TOOLSETS and pts not in known_for_platform and platform in scoped.get(pts, {platform}))
     }
 
 

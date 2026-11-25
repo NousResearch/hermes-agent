@@ -305,6 +305,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._memory_hook_registrations: dict[tuple[str, str], list[PluginRegistration]] = {}
         self._middleware: dict[str, list[Callable]] = {}
         self._plugin_tool_names: set[str] = set()
+        # tool name -> platforms its toolset defaults on for (``register_tool(default_platforms=...)``).
+        self._tool_default_platforms: dict[str, frozenset[str]] = {}
         self._plugin_platform_names: set[str] = set()
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
@@ -1010,13 +1012,32 @@ def _persist_plugin_toolset_keys() -> None:
             portable = sorted(get_plugin_manager().get_portable_mcp_servers())
         except Exception:
             portable = []
-        atomic_json_write(_plugin_toolset_keys_cache_path(), {"toolset_keys": keys, "portable_mcp": portable}, indent=None, mode=0o600)
+        scoped = {ts: sorted(p) for ts, p in get_plugin_toolset_default_platforms().items()}
+        atomic_json_write(_plugin_toolset_keys_cache_path(),
+                          {"toolset_keys": keys, "portable_mcp": portable, "toolset_default_platforms": scoped},
+                          indent=None, mode=0o600)
     except Exception:
         logger.debug("plugin toolset key persist failed", exc_info=True)
 
 
-def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], set[str]]) -> set[str]:
-    """Shared body of the ``*_nowait`` probes: live registry, else last launch's cache, else block."""
+def _cached_str_set(values: Any) -> set[str] | None:
+    return set(values) if isinstance(values, list) and all(isinstance(v, str) for v in values) else None
+
+
+def _cached_platform_map(values: Any) -> dict[str, frozenset[str]] | None:
+    if not isinstance(values, dict):
+        return None
+    parsed: dict[str, frozenset[str]] = {}
+    for ts, platforms in values.items():
+        if not isinstance(ts, str) or (found := _cached_str_set(platforms)) is None:
+            return None
+        parsed[ts] = frozenset(found)
+    return parsed
+
+
+def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], Any], parse: Callable[[Any], Any] = _cached_str_set):
+    """Shared body of the ``*_nowait`` probes: live registry, else last launch's cache (``parse`` gives
+    None for a malformed field), else block."""
     manager = get_plugin_manager()
     t = _background_discovery_thread
     in_flight = t is not None and t.is_alive()
@@ -1025,9 +1046,9 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], set[str
     if in_flight:
         with suppress(Exception):
             blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8-sig"))
-            values = blob.get(cache_field) if isinstance(blob, dict) else None
-            if isinstance(values, list) and all(isinstance(v, str) for v in values):
-                return set(values)
+            values = parse(blob.get(cache_field)) if isinstance(blob, dict) else None
+            if values is not None:
+                return values
     discover_plugins()
     return live(manager)
 
@@ -1042,6 +1063,12 @@ def get_plugin_toolset_keys_nowait() -> set[str]:
 def get_portable_mcp_server_names_nowait() -> set[str]:
     """Portable MCP server names; same contract as :func:`get_plugin_toolset_keys_nowait`."""
     return _nowait_plugin_set("portable_mcp", lambda m: set(m.get_portable_mcp_servers()))
+
+
+def get_plugin_toolset_default_platforms_nowait() -> dict[str, frozenset[str]]:
+    """:func:`get_plugin_toolset_default_platforms`; same contract as :func:`get_plugin_toolset_keys_nowait`."""
+    return _nowait_plugin_set("toolset_default_platforms", lambda _m: get_plugin_toolset_default_platforms(),
+                              _cached_platform_map)
 
 
 _delivery_join_abandoned = False
@@ -1430,6 +1457,20 @@ def get_plugin_auxiliary_tasks() -> list[dict[str, Any]]:
     """Plugin auxiliary-task registration dicts sorted by ``key`` (after idempotent discovery)."""
     manager = _ensure_plugins_discovered()
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
+
+
+def get_plugin_toolset_default_platforms() -> dict[str, frozenset[str]]:
+    """Plugin toolsets that default on only for some platforms: toolset -> the union of the
+    ``default_platforms`` its tools were registered with. A toolset absent here defaults on everywhere."""
+    manager = get_plugin_manager()
+    from tools.registry import registry
+    scoped: dict[str, set[str]] = {}
+    for tool_name in manager._plugin_tool_names:
+        platforms = manager._tool_default_platforms.get(tool_name)
+        entry = registry.get_entry(tool_name) if platforms else None
+        if platforms and entry:
+            scoped.setdefault(entry.toolset, set()).update(platforms)
+    return {ts: frozenset(p) for ts, p in scoped.items()}
 
 
 def get_plugin_toolsets() -> list[tuple]:

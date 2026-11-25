@@ -471,6 +471,7 @@ class CLIInitMixin:
             self._gateway_session_open = True
             from hermes_cli import gateway_plugin_commands, tools_config
             tools_config._gateway_plugin_toolsets = lambda: gateway_plugin_commands.toolsets(self)
+            tools_config._gateway_plugin_toolset_platforms = lambda: gateway_plugin_commands.toolset_default_platforms(self)
             _adopt_gateway_toolsets(self, store)
             from hermes_cli.gateway_tools import bind_session
             bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy

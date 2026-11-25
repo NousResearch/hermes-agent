@@ -283,8 +283,12 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        default_platforms: tuple[str, ...] | list[str] = (),
     ) -> Optional[PluginRegistration]:
-        """Register a tool in the global registry and track it as plugin-provided. ``override=True``
+        """Register a tool in the global registry and track it as plugin-provided. ``default_platforms``
+        names the platforms the tool's toolset is on for until the user saves a choice in ``hermes tools``
+        (empty: every platform); a tool that only works on one platform should not ride along elsewhere.
+        ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
         any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
@@ -310,6 +314,10 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         handle = None
         if registered is not None and registered is not previous and registered.handler is handler:
             self._manager._plugin_tool_names.add(name)
+            if default_platforms:
+                self._manager._tool_default_platforms[name] = frozenset(map(str, default_platforms))
+            else:
+                self._manager._tool_default_platforms.pop(name, None)
             handle = self._manager._track_scoped_registration(
                 self.manifest, "tool", name, registry, registered, previous,
                 finalize=lambda: self._manager._remove_tool_name_if_unowned(name),

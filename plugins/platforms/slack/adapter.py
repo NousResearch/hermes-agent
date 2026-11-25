@@ -6632,7 +6632,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 # ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``) that replace the
 # per-platform core touchpoints (the ``Platform.SLACK`` elif in ``gateway/run.py``, the ``slack_cfg``
 # YAML→env block in ``gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
-# in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
+# in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``gateway/outbound/send.py``).
 # ──────────────────────────────────────────────────────────────────────────
 _slack_dm_cache: dict[str, str] = {}
 _SLACK_DM_CACHE_MAX = 5000

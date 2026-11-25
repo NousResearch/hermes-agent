@@ -42,7 +42,7 @@ const MAX_TEXT_PART_CHARS = 64 * 1024
 const MAX_METADATA_CHARS = 2 * 1024
 const MAX_USER_ATTACHMENT_REFS = 256
 const MAX_USER_ATTACHMENT_REF_CHARS = 64 * 1024
-/** Streaming commits arrive every ~33ms; localStorage writes are synchronous.
+/** Streaming commits arrive every ~40ms; localStorage writes are synchronous.
  *  Coalesce writes for 400ms, with incoming commits draining overdue timers.
  *  A native fallback keeps quiet tails independent of hidden paint/timer throttling;
  *  blocked event loops and OS sleep still prevent a hard crash-loss bound. */

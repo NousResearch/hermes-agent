@@ -1771,6 +1771,8 @@ def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bo
         return False
     agent._buffer_diagnostic_status(
         _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
+    from agent.fallback_notice import record_fallback_trigger
+    record_fallback_trigger(agent, classified.reason, str(error))
     if not agent._try_activate_fallback(reason=classified.reason):
         return False
     # The status above is dropped once the fallback answers: log the trigger (#152101).

@@ -13,6 +13,7 @@ import contextlib
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -650,7 +651,7 @@ def _resolve_single_delivery_target(
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
-        from tools.send_message_tool import prepare_send_message_platforms, resolve_send_target
+        from gateway.outbound.send import prepare_send_message_platforms, resolve_send_target
         prepare_send_message_platforms()
         # pass_unresolved_references: no model in the loop to react; an unknown-to-directory target
         # must reach the adapter as written or the job's output is silently lost.
@@ -888,6 +889,21 @@ def _delivery_lane_value(job: dict, *, for_failure: bool = False):
         if failure_deliver is not None and str(failure_deliver).strip():
             return failure_deliver
     return job.get("deliver", "local")
+
+
+def _snapshot_delivery_job(job: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture the fields used by normal target resolution so mid-run edits do not affect hooks."""
+    snapshot: dict[str, Any] = {
+        "id": str(job["id"]),
+        "name": str(job.get("name") or job["id"]),
+    }
+    if "deliver" in job:
+        deliver = job["deliver"]
+        snapshot["deliver"] = list(deliver) if isinstance(deliver, (list, tuple)) else deliver
+    if "origin" in job:
+        origin = job["origin"]
+        snapshot["origin"] = dict(origin) if isinstance(origin, Mapping) else origin
+    return snapshot
 
 
 def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> list[dict]:

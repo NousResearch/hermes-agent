@@ -52,7 +52,7 @@ async def owner(tmp_path, monkeypatch):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     monkeypatch.setattr(run, '_hermes_home', tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))  # a single-profile owner: this IS the launch home
@@ -67,9 +67,9 @@ async def owner(tmp_path, monkeypatch):
     _Agent.started.clear()
     monkeypatch.setattr(run_agent, 'AIAgent', _Agent)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
-    db = SessionDB(tmp_path / 'state.db')
-    runner.session_store._db = runner._session_db = db
-    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner', db=db)
+    db = open_persistence(profile_scope(home=tmp_path))
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner',
+                                                   persistence=db)
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     try:
         yield authority, connection, tmp_path
@@ -99,8 +99,8 @@ async def _submit(connection, sid, input_id, text, **extra):
 
 
 def _rows(authority, sid):
-    from hermes_state_runtime import list_session_admissions
-    return list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    from gateway.session_authority import admission_row
+    return [admission_row(row) for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 async def _settled(authority, sid, count):

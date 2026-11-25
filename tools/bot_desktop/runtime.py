@@ -44,24 +44,9 @@ _DISPLAY_MIN, _DISPLAY_MAX = 20, 89
 REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd", "dbus-run-session",
                      "xauth", "xdpyinfo", "setxkbmap", "xprop")
 
-# Which package in each distro list ships each required binary. Fedora retired the xorg-x11-utils /
-# xorg-x11-server-utils umbrellas (per-binary packages since F35) and dnf5 refuses the whole transaction on
-# one unknown name, so every binary must map to a package that still resolves; the test suite checks that
-# each mapped package is in PACKAGES for its manager.
-BINARY_PACKAGES = {
-    "apt": {"Xvnc": "tigervnc-standalone-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
-            "xfdesktop": "xfdesktop4", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
-            "xauth": "xauth", "xdpyinfo": "x11-utils", "setxkbmap": "x11-xkb-utils", "xprop": "x11-utils"},
-    # tigervnc-x11-server is the real package (tigervnc-server-minimal is only a Provides on it); dbus-run-session
-    # is in dbus-daemon (dbus-x11 ships dbus-launch only).
-    "dnf": {"Xvnc": "tigervnc-x11-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
-            "xfdesktop": "xfdesktop", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-daemon",
-            "xauth": "xorg-x11-xauth", "xdpyinfo": "xdpyinfo", "setxkbmap": "setxkbmap", "xprop": "xprop"},
-    "pacman": {"Xvnc": "tigervnc", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel", "xfdesktop": "xfdesktop",
-               "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus",
-               "xauth": "xorg-xauth", "xdpyinfo": "xorg-xdpyinfo", "setxkbmap": "xorg-setxkbmap", "xprop": "xorg-xprop"},
-}
-
+# Fedora retired the xorg-x11-utils / xorg-x11-server-utils umbrellas (per-binary packages since F35) and dnf5
+# refuses the whole transaction on one unknown name, so each REQUIRED_BINARIES entry must come from a package
+# listed here that still resolves; tests/tools/test_bot_desktop_runtime.py holds the binary-to-package map.
 PACKAGES = {
     "apt": ["tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
             "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
@@ -342,12 +327,6 @@ def _pick_display() -> int:
         if not _display_in_use(num):
             return num
     raise RuntimeError("no free X display number in the Bot Desktop band")
-
-
-def _allocate_display() -> int:
-    _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with _flocked(_ALLOC_LOCK):
-        return _pick_display()
 
 
 def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:

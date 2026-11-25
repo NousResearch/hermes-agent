@@ -435,6 +435,20 @@ gateway:
       provider_usage_plus_estimate: "제공자 사용량 + 새 메시지 추정치"
     source_line: "출처: {source}. 카테고리별 수치는 로컬 추정치예요."
     hint_all: "스킬별·도구 세트별 비용은 /context all로 볼 수 있어요."
+    cache_warm: "프롬프트 캐시: {until}까지 활성 ({remaining} 남음; {ttl}, {confidence})."
+    cache_expired: "프롬프트 캐시: {ago} 전에 만료됨 ({ttl}, {confidence}). 다음 메시지에서 전체 프롬프트를 다시 처리합니다."
+    cache_maybe_warm: "프롬프트 캐시: {until}까지 유효할 수 있음 (최대 {remaining} 남음; {ttl}, {confidence})."
+    cache_unknown_moved: "프롬프트 캐시: 알 수 없음 (마지막 캐시 요청 이후 경로, 세션 또는 컨텍스트가 변경됨)."
+    cache_unknown_route: "프롬프트 캐시: 알 수 없음 (이 공급자는 캐시 보존 기간을 공개하지 않음)."
+    cache_unknown_runtime: "프롬프트 캐시: 알 수 없음 (이 런타임은 자체 캐시 옵션을 사용하며 Hermes가 관찰할 수 없습니다)."
+    cache_unknown_storage: "프롬프트 캐시: 알 수 없음 (세션 저장소를 읽을 수 없습니다)."
+    cache_warming_off: "킵얼라이브: 꺼짐 (두 번 실패)."
+    cache_tier_pending: "단계: 5분이 넘는 첫 휴식까지 5m, 이후 1h."
+    cache_learned: "학습됨: {rule}."
+    cache_confidence:
+      proven: "입증됨"
+      declared: "요청됨"
+      assumed: "추정"
   status:
     header: "📊 **Hermes 게이트웨이 상태**"
     matrix_scope_header: "**Matrix 범위:**"
@@ -4010,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "대형 모델: {name} 한도에 도달했습니다({resets}). 그때까지 실행되지 않습니다."
   large_notice_percent: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다. 대형 모델 월간 한도: {percent} 사용."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ 취소한 턴에서 변경된 파일: {files}. /rollback 으로 체크포인트 목록을 보고 하나를 복원하세요."
     more: "외 {count}개"

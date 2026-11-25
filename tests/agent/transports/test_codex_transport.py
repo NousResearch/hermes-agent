@@ -1661,7 +1661,7 @@ class TestCodexNormalizeResponse:
         nr = transport.normalize_response(r)
         assert nr.codex_message_items == [
             {
-                "type": "message",
+                "type": "message", "_codex_output_index": 0,
                 "role": "assistant",
                 "status": "completed",
                 "content": [{"type": "output_text", "text": "Hello world"}],

@@ -1374,6 +1374,11 @@ class SearchMixin:
                   file_glob: Optional[str] = None) -> list[str]:
         """``head`` + context/include/mode flags + quoted pattern (argument order is fixed)."""
         parts = list(head)
+        # rg honours an inline ``(?i)``; POSIX ERE has no inline flags (grep warns and
+        # matches nothing), so the documented case-insensitive prefix becomes ``-i``.
+        if pattern.startswith("(?i)"):
+            pattern = pattern[len("(?i)"):]
+            parts.append("-i")
         if context > 0:
             parts.extend(["-C", str(context)])
         if file_glob:

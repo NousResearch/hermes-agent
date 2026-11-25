@@ -14,11 +14,15 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.memory_provider import spawn_context_thread
 from gateway import hosted_room_router as router
 from gateway import hosted_rooms
+from persistence.gateway.hosted_rooms import HostedPlacement
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +43,12 @@ def _member_roster(room: Mapping[str, Any], homes: Mapping[str, Path]) -> list[d
     return roster
 
 
-def _recent_messages(db_path: Path, room: Mapping[str, Any], before_seq: int) -> list[dict[str, str]]:
+def _recent_messages(
+    store: Persistence, placement: HostedPlacement, room: Mapping[str, Any], before_seq: int,
+) -> list[dict[str, str]]:
     """The last few user/member messages anywhere in the room before the routed one."""
-    page = hosted_rooms.read_events(db_path, room_id=room["room_id"], since_seq=max(0, before_seq - 64), limit=64)
+    page = hosted_rooms.read_events(
+        store, placement=placement, room_id=room["room_id"], since_seq=max(0, before_seq - 64), limit=64)
     names = {str(m["member_id"]): str(m.get("display_name") or m["handle"]) for m in room.get("members") or ()}
     rows = [event for event in page.get("events") or () if int(event["seq"]) < before_seq
             and event["kind"] in {"message.user", "message.member"}]
@@ -50,8 +57,9 @@ def _recent_messages(db_path: Path, room: Mapping[str, Any], before_seq: int) ->
              "text": str(event["payload"].get("text") or "")} for event in rows[-router.ROUTER_RECENT_MESSAGES:]]
 
 
-def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion: Mapping[str, Any],
-               context: Mapping[str, str], homes: Mapping[str, Path]) -> tuple[str, ...] | None:
+def ask_router(*, root: Path, store: Persistence, placement: HostedPlacement, room: Mapping[str, Any],
+               discussion: Mapping[str, Any], context: Mapping[str, str],
+               homes: Mapping[str, Path]) -> tuple[str, ...] | None:
     """Member ids the router picked (``()`` = everyone), or None when the call failed or answered invalidly.
     Runs under the room owner's profile scope: its ``auxiliary.group_router`` config and credentials."""
     from agent.auxiliary_client import call_llm, extract_content_or_reasoning
@@ -60,7 +68,7 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
     payload = discussion.get("payload") or {}
     prompt = router.router_prompt(
         room_name=str(room.get("name") or ""), purpose=context.get("purpose", ""), notes=context.get("notes", ""),
-        roster=_member_roster(room, homes), recent=_recent_messages(db_path, room, int(discussion["seq"])),
+        roster=_member_roster(room, homes), recent=_recent_messages(store, placement, room, int(discussion["seq"])),
         message=str(payload.get("text") or ""),
         attachments=[str(item.get("name") or "file") for item in payload.get("attachments") or ()])
     handles = {str(m["handle"]).casefold(): str(m["member_id"]) for m in room.get("members") or ()}
@@ -82,9 +90,6 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
     return picked
 
 
-_CLAIMS_DDL = """CREATE TABLE IF NOT EXISTS hosted_room_router_claims (
-    room_id TEXT NOT NULL, discussion_event_id TEXT NOT NULL, owner TEXT NOT NULL, expires_at REAL NOT NULL,
-    PRIMARY KEY(room_id, discussion_event_id))"""
 # A claim outlives any router call (``auxiliary.group_router.timeout``, 20 s by default); one left by a
 # crashed worker expires and the next preparation asks again.
 CLAIM_TTL_SECONDS = 120.0
@@ -95,35 +100,25 @@ class RouterCalls:
     store: the paid call starts only after this instance wins a claim row in that store, and
     ``record`` runs once it answers."""
 
-    def __init__(self, db_path: Path, *, clock: Callable[[], float] = time.time) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, store: Persistence, placement: HostedPlacement, *,
+                 clock: Callable[[], float] = time.time) -> None:
+        self._store = store
+        self._placement = placement
         self._clock = clock
         self._owner = uuid.uuid4().hex
         self._lock = threading.Lock()
         self._inflight: set[tuple[str, str]] = set()
 
-    def _transaction(self):
-        from hermes_cli.sqlite_util import open_db, transaction
-
-        conn = open_db(self._db_path, db_label="shared-state.db (room router claims)", busy_timeout_ms=10_000)
-        conn.execute(_CLAIMS_DDL)
-        return transaction(conn, immediate=True)
-
     def _claim(self, key: tuple[str, str]) -> bool:
         """Take the shared claim for ``key`` unless another worker holds an unexpired one."""
         now = self._clock()
-        with self._transaction() as conn:
-            row = conn.execute(
-                """INSERT INTO hosted_room_router_claims(room_id, discussion_event_id, owner, expires_at)
-                   VALUES (?, ?, ?, ?) ON CONFLICT(room_id, discussion_event_id) DO UPDATE SET
-                   owner=excluded.owner, expires_at=excluded.expires_at WHERE expires_at<=?
-                   RETURNING owner""", (*key, self._owner, now + CLAIM_TTL_SECONDS, now)).fetchone()
-        return row is not None and row[0] == self._owner
+        return self._store.hosted_rooms.claim_router_call(
+            placement=self._placement, room_id=key[0], discussion_event_id=key[1], owner=self._owner,
+            expires_at=now + CLAIM_TTL_SECONDS, now=now)
 
     def _release(self, key: tuple[str, str]) -> None:
-        with self._transaction() as conn:
-            conn.execute("DELETE FROM hosted_room_router_claims WHERE room_id=? AND discussion_event_id=? AND owner=?",
-                         (*key, self._owner))
+        self._store.hosted_rooms.release_router_call(
+            placement=self._placement, room_id=key[0], discussion_event_id=key[1], owner=self._owner)
 
     def start(self, key: tuple[str, str], call: Callable[[], tuple[str, ...] | None],
               record: Callable[[tuple[str, ...] | None], None]) -> bool:

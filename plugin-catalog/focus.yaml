@@ -1,0 +1,21 @@
+name: focus
+title: Focus
+repo: https://github.com/Kattegat-crew/hermes_focus_plugin
+sha: bd7849025f6ad17ff0aae94d4a630ba70c4d8d81
+version: "0.1.1"
+description: "Cognitive context engine for Hermes Agent. Intercepts turns before inference, extracts true intent and entities, prioritizes repository governance, selectively ingests memory, and injects winning skills in a single step with zero KV-cache mutation. Disclosure — on every turn it sends your message and up to six recent conversation turns to your configured Hermes model for an extra triage call, and injects matching skills, AGENTS.md/CLAUDE.md content and memory facts recalled from your memory files and local Hermes session databases (or a database URI you configure) into that turn; turn receipts are written under the plugin's data directory."
+maintainer: Kattegat-crew
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Kattegat-crew/hermes_focus_plugin#readme
+readme: true
+capabilities:
+  provides_tools:
+    - focus_status
+    - focus_route
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

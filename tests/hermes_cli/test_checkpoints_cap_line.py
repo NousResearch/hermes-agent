@@ -21,7 +21,7 @@ def _ns(**kwargs) -> argparse.Namespace:
 
 
 def _patch_prune(monkeypatch, result: dict) -> None:
-    import tools.checkpoint_maintenance as ckpt_mgr
+    import agent.checkpoints.maintenance as ckpt_mgr
 
     monkeypatch.setattr(ckpt_mgr, "store_status", lambda *a, **k: _EMPTY_STATUS)
     monkeypatch.setattr(ckpt_mgr, "prune_checkpoints", lambda **kwargs: dict(result))

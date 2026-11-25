@@ -94,6 +94,7 @@ class GatewayReplyMixin:
 
     def _close_segment(self, aid):
         streamed = self._streamed.pop(aid, "")
+        getattr(self, "_forwarded", {}).pop(aid, None)
         if streamed.strip():
             self._segments.setdefault(aid, []).append(streamed)
 
@@ -126,6 +127,12 @@ class GatewayReplyMixin:
             return "" if not streamed and text.strip() in {s.strip() for s in shown} else remainder
         if text.strip() == streamed.strip():
             return ""
+        from gateway.response_filters import is_intentional_silence_response
+        if is_intentional_silence_response(streamed):
+            # A held-back bare marker was never shown; the replaced final (e.g. the
+            # "needed a reply" warning) stands alone, without a separator that would
+            # imply the marker was shown first.
+            return text
         return "\n\n" + text
 
     async def _close_card(self, editor_id, tool_call, options, response):

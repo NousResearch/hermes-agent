@@ -285,8 +285,9 @@ def pause_notice(authority, ref, reason):
 
 
 def row_turn_author(policy, row):
-    """Who wrote the admitted input, for memory attribution only: the producer's stamp when it
-    left one, else the forwarded peer bound into the session policy; never grants anything."""
+    """Who wrote the admitted input: the producer's stamp when it
+    left one, else the forwarded peer bound into the session policy. Memory
+    attribution only, apart from ``apply_bot_author_reply_expected``."""
     payload = row['payload']
     for key in ('local_automation_v1', 'api_turn_v1', 'cli_turn_v1'):
         author = (payload.get(key) or {}).get('turn_author')
@@ -294,6 +295,18 @@ def row_turn_author(policy, row):
             return author
     from gateway.session_a2a import forward_author
     return forward_author(policy)
+
+def apply_bot_author_reply_expected(event, author):
+    """A bot author's turn expects no reply: mark ``reply_expected=False`` when unknown.
+
+    The bot flag arrives on ``turn_author`` (a Bot Chat delivery's stamp, an
+    authenticated a2a forward, or the ``HERMES_TURN_AUTHOR`` dispatcher) while
+    ``SessionSource.is_bot`` stays False on LOCAL/API surfaces, so the silence
+    verdict never saw it. Setting ``reply_expected`` here covers the live verdict,
+    ``_record_room_silence_decision``, the agent's ``_silence_marker_needs_reply``
+    and crash recovery, which all read this field."""
+    if event.reply_expected is None and isinstance(author, dict) and author.get("is_bot") is True:
+        event.reply_expected = False
 
 
 async def execute_admission(authority, ref, row):
@@ -352,7 +365,10 @@ async def execute_admission(authority, ref, row):
         # its session must not move it onto the fresh conversation (main's /new cancelled its task).
         event._claimed_owner = (ref.session_id, row['generation'])
     author = event.metadata.get('turn_author')
-    author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
+    if author is None:
+        author = row_turn_author(local_policy, row)
+    apply_bot_author_reply_expected(event, author)
+    author_token = admission_author.set(author)
     from gateway.session_operator import is_viewer_input
     viewer_token = viewer_turn.set(live if is_viewer_input(row) else None)
     api_token = api_execution.set(None)

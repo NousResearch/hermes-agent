@@ -20,7 +20,8 @@ def _write_config(home: Path, body: str) -> None:
 
 
 def _host_on(home: Path, *, bind: str = "0.0.0.0", port: int = 9119, supervisor: str = "systemd") -> FakeHost:
-    host = FakeHost(home, host=bind, supervisor=supervisor)
+    # FakeHost._reaches() does not alias "localhost" to probe_host("localhost") == "127.0.0.1".
+    host = FakeHost(home, host="127.0.0.1" if bind == "localhost" else bind, supervisor=supervisor)
     host.argv = [
         "/venv/bin/python", "-m", "hermes_cli.main", "dashboard", "--no-open",
         "--host", bind, "--port", str(port),
@@ -56,6 +57,8 @@ def test_secret_source_blocker_explains_why_and_local_lan_options(home):
     ("0.0.0.0", 9119, "http://127.0.0.1:9119", "http://127.0.0.1:9119"),
     ("127.0.0.1", 8443, "http://127.0.0.1:8443", "http://127.0.0.1:8443"),
     ("192.168.1.50", 9120, "http://127.0.0.1:9120", "http://127.0.0.1:9120"),
+    ("localhost", 9119, "http://localhost:9119", "http://localhost:9119"),
+    ("LOCALHOST", 8080, "http://localhost:8080", "http://localhost:8080"),
     ("::", 9119, "http://[::1]:9119", "'http://[::1]:9119'"),
     ("::1", 8080, "http://[::1]:8080", "'http://[::1]:8080'"),
 ])
@@ -70,6 +73,8 @@ def test_suggested_loopback_url_matches_backend_and_unblocks_migration(
     assert blocked.exit_code() == plan_mod.EXIT_BLOCKED
     assert expected_url in blocked.blockers[0]
     assert f"config set webapp.public_url {expected_arg}" in blocked.blockers[0]
+    if bind.lower() == "localhost":
+        assert "127.0.0.1" not in blocked.blockers[0]
     assert accepted_public_url(expected_url) == expected_url
     assert public_hosts_engage_gate(public_url_hosts(expected_url)) is False
 
@@ -92,6 +97,44 @@ def test_secret_source_blocker_does_not_suggest_config_set_on_nix(home):
     assert "Nix configuration" in blocker
     assert "http://127.0.0.1:9119" in blocker
     assert "config set" not in blocker
+
+
+@pytest.mark.parametrize("marker", ["nixos", "home-manager", ""])
+def test_secret_source_blocker_uses_nix_guidance_for_managed_home(home, monkeypatch, marker):
+    """A .managed home (even with a manual backend) refuses `hermes config set`, so point at Nix configuration."""
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    (home / ".managed").write_text(marker, encoding="utf-8")
+    _write_config(home, "secrets:\n  vault:\n    enabled: true\n")
+
+    plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119, supervisor="manual"))
+    assert plan.exit_code() == plan_mod.EXIT_BLOCKED
+    assert len(plan.blockers) == 1
+    blocker = plan.blockers[0]
+    assert "Nix configuration" in blocker
+    assert "http://127.0.0.1:9119" in blocker
+    assert "config set" not in blocker
+
+    direct = plan_mod.secret_source_blocker(FakeHost(home))
+    assert direct is not None
+    assert "Nix configuration" in direct
+    assert "config set" not in direct
+
+
+def test_secret_source_blocker_respects_other_managed_and_opt_out_markers(home, monkeypatch):
+    """Non-Nix managed markers also suppress `config set`; explicit opt-out (`false`) keeps `config set`."""
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    _write_config(home, "secrets:\n  vault:\n    enabled: true\n")
+
+    (home / ".managed").write_text("apt", encoding="utf-8")
+    managed_plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119, supervisor="manual"))
+    assert managed_plan.exit_code() == plan_mod.EXIT_BLOCKED
+    assert "apt configuration" in managed_plan.blockers[0]
+    assert "config set" not in managed_plan.blockers[0]
+
+    (home / ".managed").write_text("false", encoding="utf-8")
+    unmanaged_plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119, supervisor="manual"))
+    assert unmanaged_plan.exit_code() == plan_mod.EXIT_BLOCKED
+    assert "config set webapp.public_url http://127.0.0.1:9119" in unmanaged_plan.blockers[0]
 
 
 def test_secret_source_blocker_uses_kept_webapp_port_with_keep_webapp_address(home):

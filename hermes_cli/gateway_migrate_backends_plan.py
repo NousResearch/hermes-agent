@@ -814,11 +814,12 @@ def backend_url_env(host, launch_env: Optional[dict]) -> dict:
 
 
 def _loopback_public_url(address: Optional[tuple[str, int]]) -> str:
-    """A valid loopback ``webapp.public_url`` matching *address*'s IP family and port, or a placeholder."""
+    """A valid loopback ``webapp.public_url`` matching *address*'s host/IP family and port, or a placeholder."""
     if address is None:
         return "http://127.0.0.1:<port>"
     bind_host, port = address
-    host = "::1" if ":" in _canonical(bind_host) else "127.0.0.1"
+    canonical = _canonical(bind_host.strip())
+    host = "localhost" if canonical == "localhost" else ("::1" if ":" in canonical else "127.0.0.1")
     return f"http://{format_address(host, port)}"
 
 
@@ -841,12 +842,18 @@ def secret_source_blocker(host, *, address: Optional[tuple[str, int]] = None, ni
     if not (isinstance(secrets, dict) and any(isinstance(v, dict) and v.get("enabled") is True
                                                 for v in secrets.values())):
         return None
+    from hermes_constants import get_managed_system
+
     local_url = _loopback_public_url(address)
-    if nix:
+    home = getattr(host, "home", None)
+    managed = get_managed_system(home) if home is not None else None
+    if nix or managed in ("nix", "nixos", "home-manager"):
         where = (f"Set webapp.public_url in your Nix configuration to the URL you open in a browser, "
                  f"or {local_url} for local/Desktop-only use")
+    elif managed:
+        where = (f"Set webapp.public_url in your {managed} configuration to the URL you open in a browser, "
+                 f"or {local_url} for local/Desktop-only use")
     else:
-        home = getattr(host, "home", None)
         powershell = getattr(host, "os_family", lambda: "linux")() == "win32"
         hermes = hermes_command(str(home) if home is not None else None, powershell=powershell)
         where = (f"Set webapp.public_url to the URL you open in a browser, or {local_url} for local/Desktop-only "

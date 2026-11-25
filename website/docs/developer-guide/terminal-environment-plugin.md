@@ -160,6 +160,22 @@ It also applies to duck-typed environments that don't declare the attribute. So
 raise from `cleanup()` only while the sandbox may still be live; once it is
 destroyed, log any later failure (snapshot bookkeeping, client shutdown) instead.
 
+## execute_code's session kernel
+
+On a remote backend `execute_code` keeps one persistent kernel per owner: a
+detached runner it starts through `execute()`, then probes and stops later. A
+backend that cannot promise those later commands reach the same machine (one
+that routes each command to whichever machine is active) declares:
+
+```python
+class AcmeEnvironment(BaseEnvironment):
+    supports_session_kernel = False  # execute_code ships each script as one command
+```
+
+`execute_code` then never starts a kernel there and runs each script with the
+per-call path. The default is `True`, also for duck-typed environments that do
+not declare the attribute.
+
 ## File tools and the host filesystem
 
 `read_file`, `write_file`, `patch` and `search_files` go through your

@@ -20,18 +20,18 @@ async def door(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
+    from persistence_assembly import close_stores_under
+    from tests.fixtures.storage_seed import seed_session
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
-    from hermes_state import SessionDB
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    store._db = SessionDB(db_path=tmp_path / 'state.db')
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
-    authority.db.create_session('tg', 'telegram')
+    seed_session(authority.persistence, 'tg', 'telegram')
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     adapter.gateway_runner = runner
-    adapter._session_db = authority.db
+    adapter._session_db = authority.persistence
     app = web.Application()
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
@@ -41,7 +41,7 @@ async def door(tmp_path, monkeypatch):
     finally:
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
-        store._db.close()
+        close_stores_under(tmp_path)
 
 
 @pytest.mark.asyncio

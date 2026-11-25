@@ -1214,7 +1214,8 @@ class GatewayTurnProgressMixin:
 
         def present():
             if local_viewer_turn(self):
-                self._publish_execution("status.update", {"kind": _viewer_status_kind(event_type, prepared),
+                from agent.conversation_compression import compaction_status_kind
+                self._publish_execution("status.update", {"kind": compaction_status_kind(event_type, message),
                                                           "text": prepared})
                 return
             fut = self._schedule(
@@ -1234,9 +1235,3 @@ def local_viewer_turn(runner) -> bool:
     source = getattr(runner._ctx, "source", None) if getattr(runner, "_approval_owner", None) is not None else None
     from gateway.session_detached import detached_route_of
     return getattr(source, "platform", None) == Platform.LOCAL or detached_route_of(source) is not None
-
-
-def _viewer_status_kind(kind, text):
-    """The TUI's ``status.update`` kind: auto-compaction progress is re-tagged ``compacting``."""
-    from agent.conversation_compression import is_compaction_progress_status
-    return "compacting" if kind == "lifecycle" and is_compaction_progress_status(text) else str(kind)

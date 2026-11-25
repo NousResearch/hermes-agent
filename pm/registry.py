@@ -57,7 +57,7 @@ def source_install_packages(names: list[str]) -> list[str]:
     target = current_target()
     return [name for name in names
             if not get_package(name).internal
-            and (name == "python" or not get_package(name).optional)
+            and (name == "python" or not get_package(name).is_optional(target))
             and get_package(name).missing_reason(target) is None]
 
 

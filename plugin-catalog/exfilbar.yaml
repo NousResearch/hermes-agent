@@ -8,6 +8,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 version: "0.5.4"
+image: https://raw.githubusercontent.com/quotumorg/exfilbar/0c0e25da3bc9dc0576e2ac8c0dfc933cff839f6b/docs/catalog-1200x600.png
 docs_url: https://github.com/quotumorg/exfilbar/blob/76e924641a5e508fbcc3ee31cadacad7a14ee353/README.md
 readme: true
 platforms: [linux, macos]

@@ -477,8 +477,8 @@ importers:
         specifier: 10.1.0
         version: 10.1.0
       electron:
-        specifier: 44.9.3
-        version: 44.9.3(supports-color@10.2.2)
+        specifier: 44.10.2
+        version: 44.10.2(supports-color@10.2.2)
       electron-builder:
         specifier: 27.0.0-alpha.6
         version: 27.0.0-alpha.6(electron-builder-squirrel-windows@27.0.0-alpha.6)(supports-color@10.2.2)
@@ -3810,8 +3810,8 @@ packages:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
     engines: {node: '>=8.0.0'}
 
-  electron@44.9.3:
-    resolution: {integrity: sha512-Cv9/yMnZxNWsMlIe8T4v//NKHdUvbeyoTJoXE3BIcRxus2meeFaO9h/P3zB5d4cBXum51IgAYrT2QjpIDWKpJA==}
+  electron@44.10.2:
+    resolution: {integrity: sha512-Bz+GV+9Xj++3RW95NYfzp5Wgivf61BgWTPBxYTOUETytVB1uLUAOdSM39Dn/V3PGYeGTE6LYeCTR5SCiu3BR2A==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -4057,8 +4057,8 @@ packages:
     resolution: {integrity: sha512-kWyh8ADvHBFz6ua5xYOPnUroZTT/bwWfrCeL0Wj1dzG4/YOmOcfJ99W8dOVyyynJN35rZ9aCOtHChqQovV7yog==}
     engines: {node: '>=6'}
 
-  follow-redirects@1.16.1:
-    resolution: {integrity: sha512-FNvFGzoMLWmE6Yj9spb/zjd7yiNCHiAW9/Tg9CXrQ8wuu32HtlJOwWO11OJafl5FfY3DxTdQ0vj42zU1kvv5jg==}
+  follow-redirects@1.16.2:
+    resolution: {integrity: sha512-/kVP2U8z596Ia0gwFrwyIeo74ta5aVmSeU1FfAUMAmcEP5EP7zydmag3SLiN64NaRKef3lxsq7i/g7ltJQDGow==}
     engines: {node: '>=4.0'}
     peerDependencies:
       debug: '*'
@@ -4502,8 +4502,8 @@ packages:
     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
     hasBin: true
 
-  joi@18.2.9:
-    resolution: {integrity: sha512-2mD929bUVKUhOLQQEVhlf6EZ0Mlo0DeRb5MO7cViR9AXLtBauuccEtB1py9Ocxpo/P7ucnh442iY/iOwrh3IQw==}
+  joi@18.3.1:
+    resolution: {integrity: sha512-mV9M4Llh4va3NT90p7KBtQhoZqjs8xLX7EWYE4y/GG3yLF6REbIBEHSUb0UX1JXRht2w5tiLSsvmpYc5akiqIw==}
     engines: {node: '>= 20'}
 
   js-tokens@10.0.0:
@@ -9204,7 +9204,7 @@ snapshots:
 
   axios@1.20.0(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2):
     dependencies:
-      follow-redirects: 1.16.1(debug@4.4.3(supports-color@10.2.2))
+      follow-redirects: 1.16.2(debug@4.4.3(supports-color@10.2.2))
       form-data: 4.0.6
       https-proxy-agent: 5.0.1(supports-color@10.2.2)
       proxy-from-env: 2.1.0
@@ -9826,7 +9826,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  electron@44.9.3(supports-color@10.2.2):
+  electron@44.10.2(supports-color@10.2.2):
     dependencies:
       '@electron-internal/extract-zip': 1.0.5
       '@electron/get': 5.1.0(supports-color@10.2.2)
@@ -10092,7 +10092,7 @@ snapshots:
 
   flru@1.0.2: {}
 
-  follow-redirects@1.16.1(debug@4.4.3(supports-color@10.2.2)):
+  follow-redirects@1.16.2(debug@4.4.3(supports-color@10.2.2)):
     optionalDependencies:
       debug: 4.4.3(supports-color@10.2.2)
 
@@ -10627,7 +10627,7 @@ snapshots:
 
   jiti@2.7.0: {}
 
-  joi@18.2.9:
+  joi@18.3.1:
     dependencies:
       '@hapi/address': 5.1.1
       '@hapi/formula': 3.0.2
@@ -12687,7 +12687,7 @@ snapshots:
   wait-on@9.5.1(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2):
     dependencies:
       axios: 1.20.0(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2)
-      joi: 18.2.9
+      joi: 18.3.1
       lodash: 4.18.1
       rxjs: 7.8.2
     transitivePeerDependencies:

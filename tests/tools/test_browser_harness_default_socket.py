@@ -1,4 +1,4 @@
-"""browser_exec outside a served profile: the harness daemon socket must bind under a deep HOME.
+"""browser_exec outside a served profile: each profile's own harness daemon socket binds under a deep HOME.
 
 browser-harness binds ``<home>/.config/browser-harness/runtime/bu-<BU_NAME>.sock`` unless
 ``BH_RUNTIME_DIR`` says otherwise. A container's profile home (``$HERMES_HOME/home``) or a long
@@ -86,13 +86,27 @@ def test_a_deep_home_gets_a_daemon_socket_the_kernel_accepts(harness_env, tmp_pa
 
 
 @pytest.mark.platforms("linux")
-def test_a_socket_that_already_binds_keeps_its_path_and_a_long_name_is_judged_by_its_own_length(harness_env):
-    """The default name under an ordinary home binds today: its daemon (and live socket) stay put.
-    A 64-character session under the same home overflows, so that call moves."""
-    seen, claimed = harness_env("/home/alexander.smith")
-    assert seen["runtime"] == "" and claimed == []
-    seen, claimed = harness_env("/home/alexander.smith", session="n" * 64)
+def test_a_64_char_session_under_an_ordinary_home_gets_a_socket_the_kernel_accepts(harness_env):
+    seen, _claimed = harness_env("/home/alexander.smith", session="n" * 64)
     assert seen["runtime"] and _kernel_accepts(_bound_socket(seen)), _bound_socket(seen)
+
+
+def test_each_cli_profile_drives_its_own_harness_daemon(tmp_path, monkeypatch):
+    """#149829: outside a served turn two ``hermes -p`` profiles resolved the same
+    ``<harness home>/runtime/bu-default.pid``, so one profile's browser_exec drove the daemon the other
+    left attached to its (real-profile, logged-in) browser."""
+    monkeypatch.setattr(bs, "build_browser_env", lambda: {"HOME": str(tmp_path / "u")})
+    seen = {}
+    for name in ("work", "personal"):
+        home = tmp_path / "profiles" / name
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        env = bu_cli._base_subprocess_env()
+        seen[name] = (harness_dirs.daemon_identity(env), harness_dirs.harness_pid_file(env),
+                      env.get("BH_TMP_DIR"))
+    (work_id, work_pid, work_tmp), (personal_id, personal_pid, personal_tmp) = seen.values()
+    assert work_id != personal_id and work_pid != personal_pid
+    assert work_tmp and personal_tmp and work_tmp != personal_tmp  # screenshots and daemon logs too
 
 
 @pytest.mark.platforms("posix")

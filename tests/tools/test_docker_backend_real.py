@@ -106,6 +106,40 @@ def test_cwd_persists_and_workdir_does_not(docker_task):
     assert _run("pwd", docker_task)["output"].strip() == "/workspace/proj"
 
 
+def test_cwd_removed_inside_the_container_falls_back_with_a_notice(docker_task):
+    """#62169: once the session cwd was rm -rf'd every later command exited 126 at the wrapper's cd."""
+    _run("mkdir -p /tmp/gone/sub && cd /tmp/gone/sub", docker_task)
+    _run("rm -rf /tmp/gone", docker_task)
+    recovered = _run("pwd", docker_task)
+    assert recovered["exit_code"] == 0 and recovered["output"].strip() == "/tmp", recovered
+    assert "/tmp/gone/sub no longer exists" in recovered["cwd_fallback"]
+    refused = _run("echo ran", docker_task, workdir="/tmp/typo-dir")  # a named workdir never falls back
+    assert refused["exit_code"] == 126 and "ran" not in refused["output"], refused
+
+
+def test_deleted_container_workdir_does_not_block_exec():
+    """#62169: ``docker exec`` inherits the container's creation-time ``-w``; once that directory is
+    gone the OCI runtime refused every exec (exit 127, chdir error) before the shell's fallback ran."""
+    from tools.environments import streams
+    from tools.environments.docker import DockerEnvironment
+
+    env = DockerEnvironment(image=_IMAGE, cwd="/tmp/project", task_id=f"rb-w-{uuid.uuid4().hex[:8]}",
+                            persist_across_processes=False)
+    try:
+        assert env.execute("pwd")["output"].strip() == "/tmp/project"
+        env.execute("rm -rf /tmp/project", cwd="/")
+        recovered = env.execute("pwd", allow_cwd_fallback=True)
+        assert recovered["returncode"] == 0 and recovered["output"].strip() == "/tmp", recovered
+        assert recovered["cwd_fallback"]["requested"] == "/tmp/project", recovered
+        refused = env.execute("echo ran", cwd="/tmp/project")  # a named workdir never falls back
+        assert refused["returncode"] == 126 and "ran" not in refused["output"], refused
+        probe = streams.run_in(env, ["pwd"], timeout=30)  # the stream/long-lived launch path
+        assert probe.returncode == 0 and probe.stdout.strip() == b"/", probe
+    finally:
+        env.cleanup(force_remove=True)
+        assert DockerEnvironment.wait_for_all_teardowns(timeout=60)
+
+
 def test_exported_env_persists_between_commands(docker_task):
     _run("export HERMES_RB_EXPORTED='kept value'", docker_task)
     assert _run('echo "$HERMES_RB_EXPORTED"', docker_task)["output"].strip() == "kept value"

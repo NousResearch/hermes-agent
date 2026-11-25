@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_constants import hermes_home_key
 from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
@@ -52,8 +53,8 @@ def test_send_keeps_external_source_value_over_raw_dotenv(two_homes, monkeypatch
     _root, b = two_homes
     # B's secret manager already hydrated for this process (a hydrated home is not re-pulled).
     monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME",
-                        {str(b.resolve()): {"SHARED_TOKEN": "b-manager-fresh"}})
-    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", {str(b.resolve())})
+                        {hermes_home_key(b): {"SHARED_TOKEN": "b-manager-fresh"}})
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", {hermes_home_key(b)})
     with server._session_profile_runtime_scope({"profile_home": str(b)}):
         from agent.secret_scope import current_secret_scope, get_secret
         assert get_secret("SHARED_TOKEN") == "b-manager-fresh"

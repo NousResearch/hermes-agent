@@ -63,6 +63,32 @@ def test_subdirectory_named_auth_json_not_blocked(fake_home):
     assert get_read_block_error(str(nested)) is None
 
 
+@pytest.mark.parametrize("store_name", ["auth.json", "auth.json.corrupt"])
+def test_profile_mode_blocks_auth_store_and_quarantined_copy(
+    tmp_path, monkeypatch, store_name
+):
+    """Profile and root auth stores, including quarantine copies, stay private."""
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    from agent.file_safety import get_read_block_error
+
+    for store in (profile / store_name, root / store_name):
+        store.write_text("credential", encoding="utf-8")
+        assert "credential store" in (get_read_block_error(str(store)) or "")
+
+
+def test_non_store_corrupt_auth_filename_not_blocked(fake_home):
+    """Only the exact quarantined auth-store name is protected."""
+    from agent.file_safety import get_read_block_error
+
+    backup = _create(fake_home, "auth.json.corrupt.backup")
+    assert get_read_block_error(str(backup)) is None
 
 
 
@@ -73,14 +99,17 @@ def test_subdirectory_named_auth_json_not_blocked(fake_home):
 
 
 
-def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):
+
+
+@pytest.mark.parametrize("store_name", ["auth.json", "auth.json.corrupt"])
+def test_search_tool_blocks_direct_auth_store_path(fake_home, monkeypatch, store_name):
     """Searching a credential file directly must not invoke the search backend."""
     import json
 
     import tools.file_tools as ft
     from tools import terminal_tool
 
-    auth = _create(fake_home, "auth.json")
+    auth = _create(fake_home, store_name)
     auth.write_text("SEARCH_DIRECT_AUTH_SECRET", encoding="utf-8")
 
     def fail_if_called(task_id="default"):
@@ -99,6 +128,21 @@ def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):
     assert "error" in out
     assert "credential store" in out["error"]
     assert "SEARCH_DIRECT_AUTH_SECRET" not in raw
+
+
+def test_read_file_tool_blocks_quarantined_auth_store(fake_home):
+    """The read-file entry point refuses the quarantined credential copy."""
+    import json
+
+    import tools.file_tools as ft
+
+    corrupt = _create(fake_home, "auth.json.corrupt")
+    corrupt.write_text("READ_CORRUPT_AUTH_SECRET", encoding="utf-8")
+
+    out = json.loads(ft.read_file_tool(str(corrupt), task_id="read-corrupt-auth"))
+
+    assert "credential store" in out["error"]
+    assert "READ_CORRUPT_AUTH_SECRET" not in json.dumps(out)
 
 
 def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch):
@@ -191,6 +235,46 @@ def test_webhook_subscriptions_blocked(fake_home):
 
 
 
+@pytest.mark.parametrize("name", ["google_token.json", "google_client_secret.json", "google_oauth_pending.json"])
+def test_google_workspace_live_stores_blocked(fake_home, name):
+    """The LIVE Google Workspace stores at the HERMES_HOME root are blocked:
+    ``google_token.json`` (OAuth refresh/access token, consumed by the
+    skill's gws_bridge.py/google_api.py) and ``google_oauth_pending.json``
+    (in-flight PKCE exchange state, consumed by setup.py). #38953 closed the
+    write side; before this test the read guard blocked only the unused
+    ``auth/google_oauth.json`` path while the live token stayed readable."""
+    from agent.file_safety import get_read_block_error
+
+    p = _create(fake_home, name)
+    err = get_read_block_error(str(p))
+    assert err is not None
+    assert "credential store" in err
+
+
+@pytest.mark.parametrize("name", ["google_token.json", "google_client_secret.json", "google_oauth_pending.json"])
+def test_profile_mode_blocks_root_google_workspace_stores(tmp_path, monkeypatch, name):
+    """Root-level live Google Workspace stores stay blocked while a profile
+    is active (root credentials are inherited by every profile), and the
+    profile-local copies are blocked too."""
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    from agent.file_safety import get_read_block_error
+
+    root_store = root / name
+    root_store.write_text("x")
+    assert "credential store" in (get_read_block_error(str(root_store)) or "")
+
+    profile_store = profile / name
+    profile_store.write_text("x")
+    assert "credential store" in (get_read_block_error(str(profile_store)) or "")
+
+
 def test_identically_named_hermes_files_outside_home_not_blocked(
     fake_home, tmp_path
 ):
@@ -214,6 +298,10 @@ def test_identically_named_hermes_files_outside_home_not_blocked(
     google_oauth.parent.mkdir()
     google_oauth.write_text("not really a token", encoding="utf-8")
     assert get_read_block_error(str(google_oauth)) is None
+
+    google_token = project / "google_token.json"
+    google_token.write_text("not really a token", encoding="utf-8")
+    assert get_read_block_error(str(google_token)) is None
 
     tokens = project / "mcp-tokens"
     tokens.mkdir()

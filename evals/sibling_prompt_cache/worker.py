@@ -23,16 +23,16 @@ home, ws = os.path.join(root, ".hermes"), os.path.join(root, "ws")
 os.makedirs(home); os.makedirs(ws)
 isolate_host(root, home)
 NONCE = uuid.uuid4().hex[:10]
-with open(os.path.join(home, "config.yaml"), "w") as f:
+with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as f:
     f.write("delegation:\n  max_iterations: 14\n  max_concurrent_children: 10\n")
 # A per-run SOUL line keeps every other live session's cache entries out of this run.
-with open(os.path.join(home, "SOUL.md"), "w") as f:
+with open(os.path.join(home, "SOUL.md"), "w", encoding="utf-8") as f:
     f.write(f"You are Hermes. Probe run {NONCE}.\n")
 # A repo-shaped workspace: the child prompt carries its AGENTS.md, as in real in-repo delegation.
-with open(os.path.join(ws, "AGENTS.md"), "w") as f:
-    f.write(open(os.path.join(TREE, "AGENTS.md")).read())
+with open(os.path.join(ws, "AGENTS.md"), "w", encoding="utf-8") as f:
+    f.write(open(os.path.join(TREE, "AGENTS.md"), encoding="utf-8").read())
 for name, n in (("alpha", 4127), ("beta", 9310), ("gamma", 5586)):
-    with open(os.path.join(ws, f"{name}.txt"), "w") as f:
+    with open(os.path.join(ws, f"{name}.txt"), "w", encoding="utf-8") as f:
         f.write(f"The {name} number is {n}.\n")
 os.environ["HERMES_HOME"] = home
 os.environ["TERMINAL_CWD"] = ws
@@ -74,7 +74,7 @@ def _ends_with(final, marker):
 
 
 SHARED_BRIEF = ("The parent is auditing the numbers in this repo. End your final reply with the exact word AUDIT-OK.\n"
-                + open(os.path.join(TREE, "AGENTS.md")).read()[:13000])
+                + open(os.path.join(TREE, "AGENTS.md"), encoding="utf-8").read()[:13000])
 if os.environ.get("SC_SHARED") == "1":  # one long brief for every child, different goals
     CHILDREN = [(n, SHARED_BRIEF, f, w, "AUDIT-OK") for n, _, f, w, _ in CHILDREN]
 if os.environ.get("SC_WIDE"):  # N children in one batch, same brief shape, distinct files
@@ -97,7 +97,7 @@ if os.environ.get("SC_PARALLEL") == "1":  # one batch: do concurrent siblings un
            "context_followed": [_ends_with(r.get("summary"), c[4]) for c, r in zip(CHILDREN, results)],
            "n_results": len(results), "finals": [str(r.get("summary") or "")[-200:] for r in results],
            "calls": list(by_sid.values())}
-    with open(OUT, "a") as f:
+    with open(OUT, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
     print(json.dumps(rec))
     sys.exit(0)
@@ -113,7 +113,7 @@ for name, context, fname, want, marker in CHILDREN:
     rec = {"arm": ARM, "route": PROVIDER, "model": MODEL, "child": name, "task_ok": want in final, "context_followed": _ends_with(final, marker), "final": final[-200:],
            "status": entry.get("status"), "calls": [{"prompt": c["prompt"], "cache_read": c["cache_read"]} for c in calls], "nonce": NONCE, "wall": round(time.time() - t0, 1),
            "error": str(entry.get("error") or "")[:200]}
-    with open(OUT, "a") as f:
+    with open(OUT, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
     print(json.dumps(rec))
     time.sleep(3)

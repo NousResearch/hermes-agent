@@ -29,6 +29,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd, _remote_write
 from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning
 
 logger = logging.getLogger(__name__)
@@ -234,9 +235,8 @@ atexit.register(shutdown_all_remote_kernels)
 def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                          sandbox_tools: frozenset, *, idle_exit: int) -> Optional[RemoteKernel]:
     """Start a detached kernel runner on the remote. None on failure (dir removed)."""
-    from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
     from tools.code_execution_tool import (
-        MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir,
+        MAX_STDOUT_BYTES, _env_temp_dir,
         _ship_env_file_and_launch, generate_hermes_tools_module,
     )
     kernel_dir = f"{_env_temp_dir(env)}/hermes_rkernel_{uuid.uuid4().hex[:12]}"
@@ -251,10 +251,10 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                                                 f"{kernel_dir}/rpc"),
                          "remote kernel dir setup", timeout=15)
         rpc_token = secrets.token_urlsafe(32)
-        _ship_file_to_remote(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
-            cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit))
-        _ship_file_to_remote(env, f"{kernel_dir}/hermes_tools.py",
-                             generate_hermes_tools_module(list(sandbox_tools), transport="file"))
+        _remote_write(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
+            cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit), check=True)
+        _remote_write(env, f"{kernel_dir}/hermes_tools.py",
+                      generate_hermes_tools_module(list(sandbox_tools), transport="file"), check=True)
         # kernel.env is removed after sourcing: the runner's env keeps the
         # values, so the token file need not sit at rest for the kernel's
         # lifetime. runner.log is pre-created 600 so the launch redirect never
@@ -331,13 +331,12 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
 
 def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str, dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
-    from tools.code_execution_tool import _ship_file_to_remote
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
     # One round-trip: tmp write + rename publishes the request atomically.
-    _ship_file_to_remote(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
-                         json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True)
+    _remote_write(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
+                  json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True, check=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -366,6 +365,7 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str
 def execute_in_remote_kernel(
     code: str, *, env, env_type: str, task_env_id: str, sandbox_tools: frozenset,
     timeout: int, max_tool_calls: int, reset: bool, idle_exit: int = 1800,
+    session_id: str | None = None, turn_id: str | None = None, conversation_id: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
     post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
@@ -386,7 +386,8 @@ def execute_in_remote_kernel(
     try:
         return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                                  reused=reused, state_reset=state_reset, state_lost=state_lost)
+                                  reused=reused, state_reset=state_reset, state_lost=state_lost,
+                                  session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -395,7 +396,9 @@ def execute_in_remote_kernel(
 
 def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task_env_id: str,
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-                       reused: bool, state_reset: bool, state_lost: bool) -> dict[str, Any]:
+                       reused: bool, state_reset: bool, state_lost: bool,
+                       session_id: str | None = None, turn_id: str | None = None,
+                       conversation_id: str | None = None) -> dict[str, Any]:
     from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
@@ -412,7 +415,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     rpc_thread = threading.Thread(
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
         args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, tool_call_log, tool_call_counter,
-              max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token))
+              max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token, session_id, turn_id,
+              conversation_id))
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:

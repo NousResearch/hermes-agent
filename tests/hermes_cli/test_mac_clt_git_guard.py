@@ -310,6 +310,36 @@ def test_startup_dropped_directory_prune_without_git_still_retries(tmp_path, mon
 
 
 @pytest.mark.platforms("posix")
+def test_clt_stub_plugin_git_falls_back_to_no_git_not_to_the_stub(tmp_path, monkeypatch, clt_stub_env):
+    """Plugin update checks (gateway housekeeping) and doctor's provenance row resolve git through
+    plugins_cmd, whose install-dir fallback names /usr/bin/git: the stub on such a Mac."""
+    from hermes_cli import plugins_cmd, plugins_provenance, plugins_updates
+
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+    # Every candidate reads as the stub, as /usr/bin/git does on a Mac without the tools.
+    monkeypatch.setattr(git_resolver, "is_usable_git_executable", lambda _exe, _env=None, **_kw: False)
+    launched: list = []
+    monkeypatch.setattr(plugins_cmd, "_run_plugin_git", lambda *a, **kw: launched.append(a))
+    real_run = subprocess.run
+    monkeypatch.setattr(
+        plugins_provenance.subprocess, "run",
+        lambda cmd, *a, **kw: launched.append(cmd) or real_run(cmd, *a, **kw),
+    )
+    plugin = tmp_path / "plugin"
+    (plugin / ".git").mkdir(parents=True)
+    (plugin / ".git" / "config").write_text(
+        '[remote "origin"]\n\turl = https://example.invalid/p.git\n', encoding="utf-8",
+    )
+
+    assert plugins_cmd._resolve_git_executable() is None
+    with pytest.raises(RuntimeError):
+        plugins_updates.default_ls_remote("https://example.invalid/p.git")
+    assert plugins_provenance._git_origin_url(plugin) == "https://example.invalid/p.git"
+    assert not launched, f"plugin git launched: {launched}"
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

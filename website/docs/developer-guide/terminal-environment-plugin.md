@@ -173,7 +173,10 @@ ripgrep, stat paths on the host, write oversized tool output straight to
 A backend that subclasses `LocalEnvironment` to confine its commands (a
 bubblewrap or other host sandbox that hides paths, mounts them read-only or
 gives commands their own `$TMPDIR`) inherits `True` and must turn it off, or
-the file tools bypass the sandbox:
+the file tools bypass the sandbox. (A `LocalEnvironment` with `argv_prefix`, or one
+that overrides `wrap_argv`, turns it off automatically; see the
+[command-prefix hook](#command-prefix-hook-wrap_argv). A sandbox that does not use
+that hook sets it by hand.)
 
 ```python
 from tools.environments.local import LocalEnvironment
@@ -242,6 +245,12 @@ wrapper to every host process Hermes starts through that environment:
 from tools.environments.local import LocalEnvironment
 
 class SandboxEnvironment(LocalEnvironment):
+    def __init__(self, *args, profile, **kwargs):
+        # Set your own state BEFORE super().__init__(): the constructor runs
+        # init_session(), which already calls wrap_argv (purpose "login").
+        self._profile = profile
+        super().__init__(*args, **kwargs)
+
     def wrap_argv(self, argv, env, *, purpose):
         # purpose is "command", "login" or "long_lived"
         return ["sandbox-exec", "-p", self._profile, *argv]
@@ -249,12 +258,46 @@ class SandboxEnvironment(LocalEnvironment):
 
 The hook is called with the final `argv` list and the run environment dict
 before `subprocess.Popen` (or `spawn_owned` for long-lived processes). The
-default implementation is identity; a constructor kwarg `argv_prefix` is also
-available for a fixed prefix without subclassing.
+default implementation is identity. For a fixed prefix without subclassing, pass
+the constructor kwarg `argv_prefix`: a sequence of `str` (a bare `str` raises
+`TypeError`), for example `LocalEnvironment(argv_prefix=["sandbox-exec", "-p", profile])`.
 
-The prefix must **exec in place** (e.g. `sandbox-exec`, `bwrap --exec`):
-process-group kill, PID-reuse guards and `pass_fds` all depend on the PID
-staying the same. On Windows the hook is identity.
+**Construction order.** `LocalEnvironment.__init__` opens the session snapshot
+before it returns, so `wrap_argv` runs during `super().__init__()`. Assign any
+attribute `wrap_argv` reads before calling `super().__init__()`, or use
+`argv_prefix`, which is stored first.
+
+**File tools follow the prefix.** A `LocalEnvironment` that is confined (a
+non-empty `argv_prefix`, or a subclass that overrides `wrap_argv`) automatically
+reports `uses_host_filesystem = False` (see [File tools and the host
+filesystem](#file-tools-and-the-host-filesystem)). `read_file`, `write_file`,
+`patch` and `search_files` then run through `execute()`, so native ripgrep, the
+managed-Node linter and LSP servers never start on the host outside your prefix.
+The prefix covers only processes started through `execute()` and
+`start_process()`; direct host access that does not spawn through them is turned
+off, not wrapped.
+
+**The prefix must exec in place** (e.g. `sandbox-exec`, `bwrap --exec`, or a
+shell wrapper ending in `exec "$@"`). Hermes supervises the process it spawned,
+and everything depends on that PID being the command's PID. A prefix that forks
+the command and exits, or that detaches it into its own session, breaks all of
+these, silently:
+
+- the timeout kill (`killpg` and the descendant sweep) cannot reach the command;
+- `execute()` returns as soon as the wrapper exits and reports its exit status,
+  often success, while the command is still running;
+- owner-death supervision no longer covers the command;
+- PID-reuse guards track the wrapper, not the command;
+- `pass_fds` handoffs (secret exports) reach the command only if the wrapper
+  keeps the descriptors open and passes them on.
+
+Hermes does not detect a non-exec prefix: at spawn time the wrapper's PID looks
+exactly like the command's, so any check would be unreliable. Test your prefix
+with a command that outlives its timeout. A wrapper that forks but waits for its
+child stays supervised, though it is not recommended.
+
+On Windows the hook is identity: `wrap_argv` returns `argv` unchanged and
+`argv_prefix` is ignored with a one-time warning.
 
 ## Bot Desktop and `computer_use`
 

@@ -1144,6 +1144,24 @@ def _kill_process_windows(proc) -> None:
         proc.wait(timeout=2.0)
 
 
+_WARNED_WINDOWS_PREFIX = False
+
+
+def _validated_argv_prefix(argv_prefix: Sequence[str]) -> tuple[str, ...]:
+    """``argv_prefix`` must be a sequence of str (a bare str would explode into one-character
+    argv words).  Ignored, with a one-time warning, on Windows where the hook is identity."""
+    global _WARNED_WINDOWS_PREFIX
+    if isinstance(argv_prefix, (str, bytes)) or not all(isinstance(a, str) for a in argv_prefix):
+        raise TypeError("argv_prefix must be a sequence of str, e.g. ['sandbox-exec', '-p', profile]")
+    prefix = tuple(argv_prefix)
+    if prefix and _IS_WINDOWS:
+        if not _WARNED_WINDOWS_PREFIX:
+            _WARNED_WINDOWS_PREFIX = True
+            logger.warning("argv_prefix is ignored on Windows: wrap_argv is identity there")
+        return ()
+    return prefix
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host: every execute() spawns a fresh bash;
     the session snapshot preserves exported env vars across calls (unless
@@ -1176,8 +1194,12 @@ class LocalEnvironment(BaseEnvironment):
         return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True, argv_prefix: Sequence[str] = ()):
+        self._argv_prefix = _validated_argv_prefix(argv_prefix)
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
-        self._argv_prefix = tuple(argv_prefix)
+        if self._argv_prefix or type(self).wrap_argv is not LocalEnvironment.wrap_argv:
+            # Confined: every host process must go through wrap_argv, so the file tools'
+            # host fast paths (native ripgrep, managed-Node linter, LSP, direct reads) are off.
+            self.uses_host_filesystem = False
         self._secret_handoff = SecretHandoff()
         self.init_session()
 
@@ -1186,8 +1208,11 @@ class LocalEnvironment(BaseEnvironment):
         ``"login"`` or ``"long_lived"``.  The default implementation returns
         *argv* unchanged; a subclass may prepend a wrapper (e.g.
         ``sandbox-exec``) that execs in place so PID / process group and
-        ``pass_fds`` all survive.  On Windows the hook is identity.
+        ``pass_fds`` all survive.  On Windows the hook is identity and
+        ``argv_prefix`` is ignored (with a one-time warning).
         """
+        if _IS_WINDOWS:
+            return argv
         if self._argv_prefix:
             return [*self._argv_prefix, *argv]
         return argv

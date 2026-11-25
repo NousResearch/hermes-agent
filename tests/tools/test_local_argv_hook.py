@@ -197,3 +197,118 @@ class TestWrapArgvHook:
             assert "command" in purposes
         finally:
             env.cleanup()
+
+
+class TestConfinedLocalEnvironment:
+    """A LocalEnvironment with a command prefix must not keep the host fast path."""
+
+    def test_unconfined_local_environment_keeps_host_filesystem(self, tmp_path):
+        from tools.environments.base import env_uses_host_filesystem
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            assert env_uses_host_filesystem(env) is True
+        finally:
+            env.cleanup()
+
+    @pytest.mark.platforms("posix")
+    def test_argv_prefix_turns_host_filesystem_off(self, tmp_path):
+        from tools.environments.base import env_uses_host_filesystem
+
+        marker, _log = _make_marker_script(tmp_path)
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10, argv_prefix=[marker])
+        try:
+            assert env_uses_host_filesystem(env) is False
+        finally:
+            env.cleanup()
+
+    @pytest.mark.platforms("posix")
+    def test_wrap_argv_override_turns_host_filesystem_off(self, tmp_path):
+        from tools.environments.base import env_uses_host_filesystem
+
+        marker, _log = _make_marker_script(tmp_path)
+        env = _PrefixEnv(marker, cwd=str(tmp_path), timeout=10)
+        try:
+            assert env_uses_host_filesystem(env) is False
+        finally:
+            env.cleanup()
+
+    @pytest.mark.platforms("posix")
+    def test_search_files_runs_inside_the_prefix(self, tmp_path):
+        from tools.file_operations import ShellFileOperations
+
+        marker, _log = _make_marker_script(tmp_path)
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "a.txt").write_text("needle-in-haystack\n")
+        env = _PrefixEnv(marker, cwd=str(tmp_path), timeout=20)
+        spawned = []
+        real_popen = subprocess.Popen
+
+        def spy(args, *a, **kw):
+            spawned.append(list(args) if not isinstance(args, str) else [args])
+            return real_popen(args, *a, **kw)
+
+        try:
+            ops = ShellFileOperations(env, cwd=str(tmp_path))
+            with patch.object(subprocess, "Popen", spy):
+                result = ops.search("needle-in-haystack", path=str(tree))
+            assert result.total_count == 1
+            escaped = [a for a in spawned if a and a[0] != marker]
+            assert escaped == [], f"spawned outside the prefix: {escaped!r}"
+        finally:
+            env.cleanup()
+
+    @pytest.mark.platforms("posix")
+    def test_read_file_goes_through_execute(self, tmp_path):
+        from tools.file_operations import ShellFileOperations
+
+        marker, log = _make_marker_script(tmp_path)
+        target = tmp_path / "f.txt"
+        target.write_text("hello\n")
+        env = _PrefixEnv(marker, cwd=str(tmp_path), timeout=20)
+        try:
+            before = len(_read_log_lines(log))
+            result = ShellFileOperations(env, cwd=str(tmp_path)).read_file(str(target))
+            assert "hello" in result.content
+            assert len(_read_log_lines(log)) > before, "read did not use the prefix"
+        finally:
+            env.cleanup()
+
+
+class TestArgvPrefixValidation:
+    def test_str_prefix_is_rejected(self, tmp_path):
+        with pytest.raises(TypeError):
+            LocalEnvironment(cwd=str(tmp_path), timeout=10, argv_prefix="sandbox-exec")
+
+    def test_bytes_and_non_str_items_are_rejected(self, tmp_path):
+        with pytest.raises(TypeError):
+            LocalEnvironment(cwd=str(tmp_path), timeout=10, argv_prefix=b"x")
+        with pytest.raises(TypeError):
+            LocalEnvironment(cwd=str(tmp_path), timeout=10, argv_prefix=["ok", 3])
+
+    def test_list_prefix_is_accepted(self, tmp_path):
+        with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=10, argv_prefix=["env", "-i"])
+        try:
+            assert env._argv_prefix == ("env", "-i")
+        finally:
+            env.cleanup()
+
+
+class TestWindowsIdentity:
+    def test_wrap_argv_is_identity_on_windows_and_warns_once(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_WARNED_WINDOWS_PREFIX", False, raising=False)
+        with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
+            with caplog.at_level(logging.WARNING, logger=local_mod.logger.name):
+                env = LocalEnvironment(cwd=str(tmp_path), timeout=10, argv_prefix=["sandbox-exec"])
+                argv = ["bash", "-c", "x"]
+                assert env.wrap_argv(argv, {}, purpose="command") is argv
+                assert env.wrap_argv(argv, {}, purpose="login") is argv
+        warnings = [r for r in caplog.records if "argv_prefix" in r.getMessage()]
+        assert len(warnings) == 1

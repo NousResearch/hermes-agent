@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, useId } from 'react'
 
 import type { AgentSettingsOwner } from '@/app/agent-settings/data'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { ActiveMachineStatusPanel, MachineStatusPanel } from '../../redesign/portal-gateway-menu-panel'
 
 import { type MachineState, type NewAgentOffer, useMachineStatusText } from './portal/new-agent-offers'
+import { useRestingHover } from './use-resting-hover'
 
 /** Figma's three machine tones: green online, orange in transition, grey offline. */
 const TONE: Record<MachineState, 'online' | 'pending' | 'offline'> = {
@@ -104,11 +105,6 @@ export function SimplifiedGatewayHeader({ machine, open, onToggle, onNewAgent }:
   )
 }
 
-/** How long a resting pointer takes to open the status popover, and how long it may travel between
- *  the status and the popover before it closes. */
-const HOVER_OPEN_MS = 300
-const HOVER_CLOSE_MS = 200
-
 interface MachineStatusPopoverProps {
   children: ReactNode
   label: string
@@ -119,36 +115,7 @@ interface MachineStatusPopoverProps {
  *  machine's health popover with focus in it; a resting mouse opens it too, without taking focus,
  *  and it stays while the pointer is over the status or the popover. */
 function MachineStatusPopover({ children, label, panel }: MachineStatusPopoverProps) {
-  // 'hover' = opened by a resting pointer, which must not move focus or keep it open on leave.
-  const [open, setOpen] = useState<'click' | 'hover' | null>(null)
-  const timer = useRef<number | undefined>(undefined)
-
-  const schedule = (next: 'hover' | null, delay: number) => {
-    window.clearTimeout(timer.current)
-    timer.current = window.setTimeout(() => setOpen(current => (current === 'click' ? current : next)), delay)
-  }
-
-  const cancel = () => window.clearTimeout(timer.current)
-
-  useEffect(() => cancel, [])
-
-  const close = () => {
-    cancel()
-    setOpen(null)
-  }
-
-  const hoverHandlers = {
-    onPointerEnter: (event: PointerEvent<HTMLElement>) => {
-      if (event.pointerType === 'mouse') {
-        schedule('hover', open ? 0 : HOVER_OPEN_MS)
-      }
-    },
-    onPointerLeave: (event: PointerEvent<HTMLElement>) => {
-      if (event.pointerType === 'mouse') {
-        schedule(null, HOVER_CLOSE_MS)
-      }
-    }
-  }
+  const { cancel, close, hoverHandlers, open, setOpen } = useRestingHover()
 
   return (
     <Popover onOpenChange={next => (next ? setOpen('click') : close())} open={open !== null}>

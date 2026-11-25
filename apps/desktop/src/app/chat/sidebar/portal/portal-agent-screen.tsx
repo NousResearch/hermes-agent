@@ -1,7 +1,8 @@
 import { host } from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { RowButton } from '@/components/ui/row-button'
 import { $lastRoster } from '@/plugins/hermes-bots/data'
 import { botsText, useBots } from '@/plugins/hermes-bots/i18n'
@@ -16,6 +17,7 @@ import {
 import type { RosterRow } from '@/plugins/hermes-bots/types'
 import { notifyError } from '@/store/notifications'
 
+import { useRestingHover } from '../use-resting-hover'
 import type { SimplifiedAgent } from '../use-simplified-agents'
 
 interface AgentScreen {
@@ -86,7 +88,11 @@ const MARK: Partial<Record<PortalTone, 'needs-input' | 'working'>> = {
  *  installed. */
 export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
   const b = useBots()
-  const { tone, says, holder, open } = useAgentScreen(agent.connectionId, agent.profile)
+  const { bot, tone, says, holder, open } = useAgentScreen(agent.connectionId, agent.profile)
+  const preview = useRestingHover()
+  // Focus that a press left on the row is not a request to look: only focus that arrived by keyboard.
+  const pressed = useRef(false)
+  const row = useRef<HTMLDivElement>(null)
   const mark = MARK[tone]
 
   if (!mark) {
@@ -96,24 +102,56 @@ export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
   return (
     <div className="portal-agent-sessions portal-agent-screen">
       <div className="portal-session-item">
-        <div className="portal-session-row">
-          <span aria-hidden className="portal-row-mark" data-state={mark}>
-            <span>
-              <span />
-            </span>
-          </span>
-          {/* The mark says agent or person; the meta names which, in a word. The phrase is the name. */}
-          <RowButton
+        {/* The row opens the Screen; resting on it, or reaching it by keyboard, shows the screen
+            itself beside it. The picture is mounted, and asked for, only while that card is up. */}
+        <Popover onOpenChange={next => !next && preview.close()} open={preview.open !== null}>
+          <PopoverAnchor asChild>
+            <div className="portal-session-row" ref={row} {...preview.hoverHandlers}>
+              <span aria-hidden className="portal-row-mark" data-state={mark}>
+                <span>
+                  <span />
+                </span>
+              </span>
+              {/* The mark says agent or person; the meta names which, in a word. The phrase is the name. */}
+              <RowButton
+                aria-label={`${b.screen.portalTitle}: ${says}`}
+                className="portal-session-open"
+                onBlur={() => {
+                  pressed.current = false
+                  preview.close()
+                }}
+                onClick={() => {
+                  preview.close()
+                  void open()
+                }}
+                onFocus={() => !pressed.current && preview.setOpen('click')}
+                onKeyDown={event => event.key === 'Escape' && preview.close()}
+                onPointerDown={() => {
+                  pressed.current = true
+                }}
+              >
+                <span className="portal-session-title">{b.screen.portalTitle}</span>
+              </RowButton>
+              <span aria-hidden className="portal-session-meta">
+                {holder}
+              </span>
+            </div>
+          </PopoverAnchor>
+          <PopoverContent
+            align="start"
             aria-label={`${b.screen.portalTitle}: ${says}`}
-            className="portal-session-open"
-            onClick={() => void open()}
+            className="portal-screen-preview"
+            // Looking is not moving: focus stays on the row, opening and closing.
+            onCloseAutoFocus={event => event.preventDefault()}
+            // The row is the card's own anchor, not somewhere else: it decides when the card goes.
+            onInteractOutside={event => row.current?.contains(event.target as Node) && event.preventDefault()}
+            onOpenAutoFocus={event => event.preventDefault()}
+            side="right"
+            {...preview.hoverHandlers}
           >
-            <span className="portal-session-title">{b.screen.portalTitle}</span>
-          </RowButton>
-          <span aria-hidden className="portal-session-meta">
-            {holder}
-          </span>
-        </div>
+            <ScreenHero bot={bot} />
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
   )

@@ -1152,6 +1152,13 @@ button.portal-section-title:hover {
   display: block;
 }
 
+/* The screen itself beside its row: the plugin's own tile in a popover, a preview's width. */
+.portal-screen-preview {
+  width: 20rem;
+  max-width: calc(100vw - 1rem);
+  padding: 0;
+}
+
 .portal-agent-screen:has(+ .portal-agent-sessions [data-session-key]) {
   padding-block-end: 0;
 }

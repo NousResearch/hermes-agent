@@ -17,7 +17,11 @@ not restate values. This guard finds the declarations that still do:
 
 Scope: every rule gated on ``[data-shell='portal']`` in any ``apps/desktop/src`` CSS file, plus
 every rule of the redesign-only files (``_REDESIGN_ONLY``), never ``tokens/`` itself. Classic CSS
-is never judged.
+is never judged. One listed file is mixed: ``app/capabilities/ui/page.css`` opens with classic's
+page layout and the rest is the redesign's. It is judged whole, which is safe only because
+classic's rules there declare none of the judged properties; a classic rule that gains one would
+show up as a finding, and the answer then is to move the redesign's rules to their own file, not
+to restyle classic.
 
 Ratchet: ``scripts/desktop_design_tokens_baseline.json`` holds each file's finding count from the
 day the guard landed; a file may only go down. A higher count fails; a lower one is an advisory

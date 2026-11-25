@@ -97,9 +97,15 @@ export function ReorderableList({
       return
     }
 
-    // Where the item is drawn: moved on Y only (useSortableBindings), so x is where it started.
+    // Where the item is drawn: moved on Y only (useSortableBindings), but its x follows the pointer
+    // (dnd-kit's own transform tracks both axes). Hit-test the REAL horizontal position so carrying
+    // a chat sideways out of the sidebar — into a workspace pane to split it there — clears this
+    // list's outside target instead of still hovering Pinned, which would pin AND split one drop.
     // Hit-tested, so a target scrolled out of its clip is not under the item where its box would be.
-    const under = document.elementsFromPoint(initial.left + initial.width / 2, translated.top + translated.height / 2)
+    const under = document.elementsFromPoint(
+      translated.left + translated.width / 2,
+      translated.top + translated.height / 2
+    )
 
     mark(under.includes(target) ? target : null)
   }

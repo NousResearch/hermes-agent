@@ -29,7 +29,7 @@ import { canOpenSessionOwner } from '@/store/session-owner-open'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 import { $sessionTiles, runtimeSessionOwner } from '@/store/session-states'
 
-import { PIN_DROP_SELECTOR } from '../session-drag'
+import { PIN_DROP_SELECTOR, startSessionDrag, UNPIN_DROP_SELECTOR } from '../session-drag'
 import { SessionStatusDot } from '../session-status-dot'
 
 import { mergeVisibleReorder } from './order'
@@ -148,12 +148,57 @@ function SortableSessionRow(props: SessionRowProps) {
   return <SessionRow {...props} sortable={useSortableBindings(sessionRowKey(props.row))} />
 }
 
+/**
+ * Esc, for a row that is the handle of two drags at once (HADESK-167).
+ *
+ * The shared session drag takes Esc with a window CAPTURE listener registered on this same press:
+ * it runs first and stops the key, so dnd-kit — which cancels its drag from a listener on the
+ * document — never hears it. The row would stay lifted until release, and the release would still
+ * move it (HADESK-58). Registered ahead of the session, on the same capture phase so the session's
+ * own abort still runs after this one, and handed to the document alone: it does not bubble on to
+ * the window, where the app's own Escape layers listen.
+ */
+function handEscapeToListDrag() {
+  const forward = (event: globalThis.KeyboardEvent) => {
+    if (event.key !== 'Escape') {
+      return
+    }
+
+    // Drop every listener BEFORE forwarding: otherwise the synthetic Escape below would be caught
+    // by this very window-capture listener and recurse forever.
+    off()
+    // Deferred a microtask so the session drag's own window-capture abort (registered on this same
+    // press, ahead of this listener) finishes and removes itself first — a synchronous dispatch
+    // would still be swallowed by that capture listener and never reach dnd-kit on the document.
+    queueMicrotask(() => {
+      document.dispatchEvent(new globalThis.KeyboardEvent('keydown', { code: 'Escape', key: 'Escape' }))
+    })
+  }
+
+  const off = () => {
+    window.removeEventListener('keydown', forward, true)
+    window.removeEventListener('pointerup', off, true)
+    window.removeEventListener('pointercancel', off, true)
+    window.removeEventListener('blur', off)
+  }
+
+  window.addEventListener('keydown', forward, true)
+  window.addEventListener('pointerup', off, true)
+  window.addEventListener('pointercancel', off, true)
+  // The window losing focus (a dialog, another app) ends the press: without this the listeners
+  // outlive the gesture and a later Escape/pointerup would still fire them.
+  window.addEventListener('blur', off, { once: true })
+}
+
 function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }: SessionRowProps) {
   const { t } = useI18n()
   const navigate = useStableNavigate()
   const title = sessionTitle(row)
   const pinned = props.pinnedIds.has(sessionRowKey(row))
   const ambiguous = props.ambiguousIds.has(row.id)
+  // Carried into a pane a chat opens there (split · stack · link), as it does from classic. A row
+  // whose id is live in two profiles has no single owner to open: its menu stands down too.
+  const carryable = !ambiguous && Boolean(row.id)
 
   const actions = {
     onArchive: () => props.onArchiveSession(row.id, row),
@@ -210,16 +255,44 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }
           }
         })
       }
-      // The row is the drag handle; a press that started in its menu or a dialog is not a grab, and
-      // a finger scrolls the list.
-      onPointerDown={
-        sortable &&
-        (event => {
-          if (shellOwnsPress(event) && event.pointerType !== 'touch') {
-            sortable.dragHandleProps.onPointerDown?.(event)
+      // The row is the drag handle for both gestures at once, as the classic row is
+      // (session-row.tsx): the list's own reorder (dnd-kit), and the shared session drag that
+      // carries a chat into a pane — or, the other way, lands it back in a list as a pin · unpin.
+      // Each declines where the other commits, so no timing rule arbitrates them. A press that
+      // started in the row's menu or a dialog is not a grab, and a finger scrolls the list.
+      onPointerDown={event => {
+        // Primary button only: a right/middle click never arms either drag, so neither the shared
+        // session drag nor the Esc forwarder can be left listening.
+        if (event.button !== 0 || !shellOwnsPress(event) || event.pointerType === 'touch') {
+          return
+        }
+
+        // The ⋯ cluster keeps its own press, as the classic row's does (session-row.tsx).
+        if (carryable && !(event.target as HTMLElement).closest('.portal-row-action')) {
+          // Esc belongs to both drags: hand it to the list's before the session takes it.
+          if (sortable) {
+            handEscapeToListDrag()
           }
-        })
-      }
+
+          startSessionDrag(
+            {
+              id: row.id,
+              ownerRoute: sessionOwnerRouteFromRow(row),
+              profile: row.profile || 'default',
+              title
+            },
+            event,
+            {
+              // Pin · unpin belong to the list's own drag here: it commits them through the
+              // sidebar's owner-qualified write (the outside drops below), and a second resolver on
+              // this press would resolve one drop twice.
+              pins: false
+            }
+          )
+        }
+
+        sortable?.dragHandleProps.onPointerDown?.(event)
+      }}
     >
       <SessionRowMark row={row} />
       {/* Wrappers with no box: a row no plugin decorates (or one it declines) keeps its geometry. */}
@@ -392,25 +465,41 @@ export function SimplifiedSessionList({
     requestAnimationFrame(() => target.focus())
   }
 
+  // A row the list's own drag can carry out of its list: one with a menu to pin · unpin by hand —
+  // a row that is ambiguous, or mid-write, keeps its place.
+  const droppable = (key: string) => {
+    const row = byKey.get(key)
+
+    return Boolean(row && !props.ambiguousIds.has(row.id) && !props.pinPending?.(row))
+  }
+
   // Let go over Pinned, a chat is pinned: the row menu's Pin, by hand.
   // ponytail: the row is clipped by its list as it leaves it, so the ring on Pinned is the only
   // feedback up there; dnd-kit's DragOverlay if the row should be seen all the way.
   const pinDrop: OutsideDrop = {
-    accepts: key => {
-      const row = byKey.get(key)
-
-      return Boolean(row && !props.ambiguousIds.has(row.id) && !props.pinPending?.(row))
-    },
+    accepts: droppable,
     onDrop: key => props.onUpdate(byKey.get(key)!, 'pinned', true),
     target: () => queryVisible<HTMLElement>(PIN_DROP_SELECTOR)
   }
 
+  // And let go anywhere but Pinned, a pinned chat is unpinned — the row menu's Unpin, by hand.
+  // The pinned list is the only one that offers it: a chat dragged out of it has nothing to pin.
+  const unpinDrop: OutsideDrop = {
+    accepts: droppable,
+    onDrop: key => props.onUpdate(byKey.get(key)!, 'pinned', false),
+    target: () => queryVisible<HTMLElement>(UNPIN_DROP_SELECTOR)
+  }
+
   const lists = partition(shown).map((rows, part) => {
     const keys = rows.map(row => sessionRowKey(row))
-    // The unpinned chats of an agent's list can also be carried onto Pinned, even a lone one.
+    // The unpinned chats of an agent's list can also be carried onto Pinned, even a lone one; and
+    // a pinned chat can be carried back out of Pinned, so a lone pinned one is draggable too.
     const pinnable = reorder && !props.showAgent && part === 1
-    const sortable = reorder && (rows.length > 1 || pinnable)
+    const unpinnable = reorder && props.showAgent && rows.length > 0
+    const sortable = reorder && (rows.length > 1 || pinnable || unpinnable)
     const Row = sortable ? SortableSessionRow : SessionRow
+    // Which way this list carries a chat out of it — onto Pinned, or out of it: one or the other.
+    const outside = unpinnable ? unpinDrop : pinnable ? pinDrop : undefined
 
     const list = rows.map((row, index) => (
       <Row
@@ -428,7 +517,7 @@ export function SimplifiedSessionList({
     return (
       <Fragment key={part}>
         {sortable ? (
-          <ReorderableList ids={keys} onReorder={commit} outside={pinnable ? pinDrop : undefined} sensors={sensors}>
+          <ReorderableList ids={keys} onReorder={commit} outside={outside} sensors={sensors}>
             {list}
           </ReorderableList>
         ) : (

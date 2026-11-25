@@ -254,6 +254,10 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       aria-label={t.simplifiedAgents.agents}
       className="portal-section"
       data-open={open}
+      // Every non-pinned chat list of the redesigned sidebar lives here, so the section is the
+      // classic sections' own unpin target (sessions-section.tsx): a chat carried out of Pinned
+      // and let go on it is unpinned by the pinned list's own drag (HADESK-58, HADESK-167).
+      data-session-unpin-drop=""
       data-slot="agent-section"
     >
       <PortalSectionHeader

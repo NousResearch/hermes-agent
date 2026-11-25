@@ -2490,12 +2490,8 @@ def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
 
 def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
     """``[(unit_name, unit_path, is_system)]`` for legacy gateway units (e.g. ``hermes.service``), which
-    fight the current unit for the bot token (SIGTERM flap loop). Explicit name allowlist + ExecStart
-    marker check so profile/third-party units never match; no mutation.
-
-    Detects unit files installed by older Hermes versions that used a different service name (e.g. When both
-    a legacy unit and the current ``hermes-gateway.service`` are active, they fight over the same bot token
-    — the PR #5646 signal-recovery change turns this into a 30-second SIGTERM flap loop.
+    fight the current unit for the bot token (PR #5646 SIGTERM flap loop). Explicit name allowlist +
+    ExecStart marker check so profile/third-party units never match; no mutation.
     """
     results: list[tuple[str, Path, bool]] = []
     for is_system, base in _legacy_unit_search_paths():
@@ -2567,10 +2563,10 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
                 path.unlink(missing_ok=True)
                 print(f"  ✓ Removed {path}")
                 removed += 1
-            except (OSError, RuntimeError) as e:
+            except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                 print(f"  ⚠ Could not remove {path}: {e}")
                 remaining.append(path)
-        with contextlib.suppress(RuntimeError):
+        with contextlib.suppress(RuntimeError, subprocess.SubprocessError):
             _run_systemctl(["daemon-reload"], system=system, check=False, timeout=30)
 
     user_units = [(n, p) for n, p, is_sys in legacy if not is_sys]

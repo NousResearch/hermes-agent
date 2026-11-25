@@ -148,10 +148,16 @@ class CompactionWindowMixin:
         """``_assemble_compressed`` with every archive a replaced row named, that neither the kept head and tail
         nor the generated summary still name, listed in the summary row: the summarizer never saw the pointers
         (it read the originals), and the list keeps the model's path back and the reference the retention
-        sweep keeps the file for."""
+        sweep keeps the file for. An earlier handoff row counts only for its unwrapped prior-tail content: its
+        own archive list stays on that (archived) row, which the sweep still reads, so lists never re-stack."""
+        from agent.context_compressor import _fresh_compaction_message_copy
         from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
 
-        named = pruned_archive_refs(messages)
+        named = pruned_archive_refs(
+            row for idx, msg in enumerate(messages)
+            if (row := msg if idx not in scan.summary_indices
+                else self._strip_context_summary_handoff_message(_fresh_compaction_message_copy(msg))) is not None
+        )
         kept = [*messages[:start], *messages[max(end, scan.tail_start):], {"content": summary}]
         return self._assemble_compressed(messages, start, end, scan, summary + archive_list_for_summary(named, kept))
 

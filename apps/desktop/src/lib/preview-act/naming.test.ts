@@ -121,6 +121,18 @@ describe('valueOf', () => {
     expect(naming().valueOf(input)).toBe('shoes')
   })
 
+  // An unlabelled element is named after its value and its ref is coined from
+  // that name, so a password box must never answer with what it holds.
+  it('reports a password box as filled, never as its contents', () => {
+    const box = el('<input type="password" />') as HTMLInputElement
+
+    expect(naming().valueOf(box)).toBe('')
+
+    box.value = 'Made-Up-Secret-123'
+
+    expect(naming().valueOf(box)).toBe('filled')
+  })
+
   // The DOM hands back "on" for an unset checkbox value, so reading the value
   // first made both states identical to the agent.
   it('reports a checkbox as its state rather than the value the DOM invents', () => {

@@ -27,17 +27,20 @@ def _args(action, **kw):
 
 def test_delete_missing_returns_1(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
-    SessionDB(tmp_path / "state.db")  # initialize an empty store
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        store.ready()  # initialize an empty store
     rc = sc.cmd_sessions(_args("delete", session_id="nope_xyz"))
     assert rc == 1
-    assert "not found" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "No session 'nope_xyz'" in out and "hermes sessions list" in out
 
 
 def test_rename_missing_returns_1(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
-    SessionDB(tmp_path / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        store.ready()
     rc = sc.cmd_sessions(_args("rename", session_id="nope_xyz", title=["New"]))
     assert rc == 1
 

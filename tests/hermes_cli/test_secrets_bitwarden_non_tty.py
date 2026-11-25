@@ -47,7 +47,7 @@ class TestCmdSetupNonTtyGuard:
         assert "--access-token" in captured.out
         # The usage example contains --server-url and --project-id, so check
         # the missing line specifically: it should NOT list them as missing
-        missing_line = [l for l in captured.out.split("\n") if "Missing:" in l][0]
+        missing_line = next(l for l in captured.out.split("\n") if "Missing:" in l)
         assert "--access-token" in missing_line
         assert "--server-url" not in missing_line
         assert "--project-id" not in missing_line
@@ -62,7 +62,7 @@ class TestCmdSetupNonTtyGuard:
         monkeypatch.setattr(
             "hermes_cli.secrets_cli._bws_version", lambda _: "2.0.0"
         )
-        monkeypatch.setattr("hermes_cli.secrets_cli.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.secrets_cli.load_config", dict)
         monkeypatch.setattr("hermes_cli.secrets_cli.save_env_value", lambda *a: None)
         monkeypatch.setattr("hermes_cli.secrets_cli.get_env_path", lambda: "/tmp/.env")
         monkeypatch.setattr(

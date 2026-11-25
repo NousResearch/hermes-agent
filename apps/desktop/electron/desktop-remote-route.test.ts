@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { normalizeRegistry, REGISTRY_VERSION } from './connection-registry'
-import { resolveDesktopRemoteRoute } from './desktop-remote-route'
+import { backendScopeKey } from './connection-registry'
+import { registryPrimaryBootRoute, resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 
 const tokenA = { encoding: 'plain', value: 'token-a' }
 const tokenB = { encoding: 'plain', value: 'token-b' }
@@ -151,6 +152,46 @@ test('global SSH treats an omitted port as 22 and checks the primary route', () 
 
   assert.equal(route?.kind, 'ssh')
   assert.equal(route?.connectionId, 'ssh-primary')
+})
+
+test('v1 settings SSH pool key ignores registry identity tags', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'hermes' } },
+    profile: 'worker',
+    registry: registry('ssh-primary', [
+      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'hermes', port: 22 }
+    ])
+  })
+
+  assert.ok(route)
+  assert.equal(route.kind, 'ssh')
+  assert.equal(route.connectionId, 'ssh-primary')
+  assert.equal(v1SshTerminalPoolKey(route, 'worker'), '')
+  assert.notEqual(v1SshTerminalPoolKey(route, 'worker'), backendScopeKey(route.connectionId, 'worker'))
+})
+
+test('v1 profile SSH pool key is the profile, not conn:id::profile', () => {
+  const ssh = {
+    mode: 'ssh',
+    host: 'box.test',
+    user: 'hermes',
+    port: 2222,
+    keyPath: '/keys/a',
+    remoteHermesPath: '/srv/hermes',
+    remoteProfile: 'worker'
+  }
+
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local', profiles: { worker: ssh } },
+    profile: 'worker',
+    registry: registry('local', [{ id: 'worker-ssh', kind: 'ssh', label: 'Worker SSH', ...ssh }])
+  })
+
+  assert.ok(route)
+  assert.equal(route.kind, 'ssh')
+  assert.equal(route.connectionId, 'worker-ssh')
+  assert.equal(v1SshTerminalPoolKey(route, 'worker'), 'worker')
+  assert.notEqual(v1SshTerminalPoolKey(route, 'worker'), backendScopeKey(route.connectionId, 'worker'))
 })
 
 test('profile route omits identity when two registry entries match exactly', () => {
@@ -391,4 +432,32 @@ test('the v1 global remote still outranks the registry primary', () => {
 
   assert.equal(route?.source, 'settings')
   assert.equal((route as any)?.url, 'https://global.test')
+})
+
+test('launchMode=primary selects the registry SSH primary and ignores a local v1 mode', () => {
+  const route = registryPrimaryBootRoute(
+    registry('spark', [
+      { id: 'spark', kind: 'ssh', label: 'Spark', host: 'spark1', user: 'tek', port: 2222, token: tokenA }
+    ])
+  )
+
+  assert.equal(route?.kind, 'ssh')
+  assert.equal(route?.source, 'registry')
+  assert.equal(route?.connectionId, 'spark')
+})
+
+test('launchMode=last-used does not force the registry primary before a local spawn', () => {
+  const route = registryPrimaryBootRoute(
+    normalizeRegistry({
+      version: REGISTRY_VERSION,
+      primary: 'spark',
+      launchMode: 'last-used',
+      connections: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'spark', kind: 'ssh', label: 'Spark', host: 'spark1', user: 'tek', port: 2222, token: tokenA }
+      ]
+    })
+  )
+
+  assert.equal(route, null)
 })

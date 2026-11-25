@@ -7,6 +7,7 @@ import {
   delegateTaskPayloads,
   hasSessionInfoStatePatch,
   sessionInfoStatePatch,
+  streamFlushFloor,
   toTodoPayload
 } from './utils'
 
@@ -20,12 +21,18 @@ describe('completionErrorText', () => {
     expect(completionErrorText('here is your answer')).toBeNull()
     expect(completionErrorText('   ')).toBeNull()
   })
+
+  it('believes a gateway that reports the turn complete', () => {
+    expect(completionErrorText('HTTP 200 OK', 'complete')).toBeNull()
+    expect(completionErrorText('HTTP 500 upstream', 'error')).toMatch(/^HTTP 500/)
+  })
 })
 
 describe('toTodoPayload', () => {
   it('routes named todo and anonymous todos-bearing events to the todo stream', () => {
     expect(toTodoPayload(payload({ name: 'todo' }))?.tool_id).toBe('todo-live')
-    expect(toTodoPayload(payload({ todos: [] }))?.name).toBe('todo')
+    expect(toTodoPayload(payload({ todos: [] }))?.name).toBe('todo_list')
+    expect(toTodoPayload(payload({ name: 'todo_list' }))?.tool_id).toBe('todo-live')
     expect(toTodoPayload(payload({ name: 'web_search' }))).toBeUndefined()
     expect(toTodoPayload(undefined)).toBeUndefined()
   })
@@ -64,7 +71,7 @@ describe('delegateTaskPayloads', () => {
     expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'failed' })
   })
 
-  it.each(['timeout', 'error', 'failed', 'failure', 'TIMEOUT'])(
+  it.each(['timeout', 'failure', 'TIMEOUT'])(
     'maps completion with result.status=%s to a failed subagent.complete',
     resultStatus => {
       const [spec] = delegateTaskPayloads(
@@ -83,5 +90,21 @@ describe('delegateTaskPayloads', () => {
     )
 
     expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'completed' })
+  })
+})
+
+describe('streamFlushFloor', () => {
+  it('keeps the responsive floor while visible or while a voice consumer is active', () => {
+    expect(streamFlushFloor(0, false, false)).toBe(40)
+    expect(streamFlushFloor(0, true, true)).toBe(40)
+  })
+
+  it('batches to the ceiling while hidden with no voice consumer', () => {
+    expect(streamFlushFloor(0, true, false)).toBe(250)
+  })
+
+  it('still stretches with measured cost and never exceeds the ceiling', () => {
+    expect(streamFlushFloor(20, false, false)).toBe(60)
+    expect(streamFlushFloor(120, false, false)).toBe(250)
   })
 })

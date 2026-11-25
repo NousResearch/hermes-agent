@@ -1,0 +1,1045 @@
+"""Host-platform checks for hermes doctor: interpreter, SQLite, certificates, macOS TCC, gateway supervision, command install.
+Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import ssl
+import subprocess
+import sys
+from pathlib import Path
+from hermes_cli.colors import Colors, color
+from hermes_cli.config import is_nix_install_method, recommended_update_command_for_method
+from hermes_cli.doctor_report import (
+    Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
+    warn_on_error,
+)
+from hermes_constants import is_termux as _is_termux
+from hermes_cli._startup_fast import project_root_str
+from hermes_cli.steward import is_bundled_payload, read_install_stamp
+from hermes_platform.resolver import LookupContext, locate_command
+from pm.environments import cli_command_name, inherited_path, payload_command_dir
+
+
+def _python_repair_hint() -> str:
+    from hermes_cli.config import detect_install_method
+    from hermes_cli.doctor import PROJECT_ROOT
+
+    method = detect_install_method(PROJECT_ROOT)
+    if is_nix_install_method(method):
+        return recommended_update_command_for_method(method)
+    if method in ("docker", "apt"):
+        command = recommended_update_command_for_method(method)
+        return f"Run `{command}`" + (", then recreate the Hermes container" if method == "docker" else "")
+    return "Run `hermes pm repair`, then restart Hermes"
+
+
+def _system_package_install_cmd(pkg: str) -> str:
+    return f"{'pkg' if _is_termux() else 'brew' if sys.platform == 'darwin' else 'sudo apt'} install {pkg}"
+
+
+def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
+    """Return an actionable SQLite upgrade hint for this install layout."""
+    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_cli.config import detect_install_method
+    method = install_method or detect_install_method(PROJECT_ROOT)
+    cmd = recommended_update_command_for_method(method)
+    action = cmd if is_nix_install_method(method) else {  # nix: prose guidance, not a shell command
+        "docker": f"run `{cmd}`, then recreate all Hermes containers", "apt": f"run `{cmd}`"}.get(method, "run `hermes update`")
+    return f"({action}; fixed versions: 3.51.3+ / 3.50.7 / 3.44.6 — see https://sqlite.org/wal.html#walresetbug)"
+
+
+def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
+    """(display name, path) pairs for Hermes-managed SQLite databases: backup.py's per-profile store list + per-board kanban.db."""
+    from hermes_cli.backup import _QUICK_STATE_FILES
+    entries = [(name, hermes_home / name) for name in _QUICK_STATE_FILES if name.endswith(".db")]
+    for board_db in sorted((hermes_home / "kanban" / "boards").glob("*/kanban.db")):
+        entries.append((str(board_db.relative_to(hermes_home)), board_db))
+    return entries
+
+
+_SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
+
+
+def _unreadable_reason(db_path: Path) -> str:
+    """Explain why a database file could not be read, without opening it.
+
+    ``read_header_bytes_preopen`` collapses every ``OSError`` into ``None``, but doctor must say *which*
+    problem it hit. ``stat()``/``access()`` answer from directory metadata alone — no descriptor, no lock loss.
+    """
+    try:
+        db_path.stat()
+    except OSError as exc:
+        return str(exc)
+    return "file could not be read" if os.access(db_path, os.R_OK) else f"permission denied: {db_path}"
+
+
+def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
+    """Return (journal mode, error) from header byte 18 (2=WAL, 1=rollback) without opening the database.
+
+    Opening through SQLite — even read-only — creates -wal/-shm sidecars, which a diagnostic must not do.
+    ``read_header_bytes_preopen`` rather than a bare ``open()``: closing *any* descriptor cancels this
+    process's POSIX advisory locks (see ``hermes_cli.sqlite_safe_read``), and the dashboard console runs
+    ``run_doctor`` in-process with live ``SessionDB`` connections — the helper refuses then (unreadable).
+    """
+    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+    header = read_header_bytes_preopen(db_path, length=20)
+    if header is None:
+        return None, "database is open in this process" if has_live_connection(db_path) else _unreadable_reason(db_path)
+    if len(header) == 0:
+        return None, "file is empty"
+    if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):
+        return None, "file is not a database"
+    mode = {2: "wal", 1: "rollback"}.get(header[18])
+    return (mode, None) if mode else (None, f"unrecognized file-format version {header[18]}")
+
+
+def _format_db_size(db_path: Path) -> str:
+    from hermes_cli.sizefmt import format_bytes as _format_size
+    try:
+        return _format_size(db_path.stat().st_size)
+    except OSError:
+        return "size unknown"
+
+
+def _report_database_holders(name: str, db_path: Path) -> None:
+    """Name the processes holding ``db_path`` (or a WAL sidecar) so the operator knows what to stop before the
+    offline journal-mode conversion; a partial or unavailable scan is reported as "cannot prove quiet", never as
+    an all-clear (the scan is the same fail-closed authority repair/VACUUM/checkpoint admission uses)."""
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import open_store_admin
+    from sqlite_support import describe_holder_pid
+    admin = open_store_admin(db_path)
+    if isinstance(admin, AdminUnsupported):
+        return
+    unknown: list[str] = []
+    by_pid: dict[int, set[str]] = {}
+    for pid, target in admin.foreign_holders():
+        if pid <= 0 or target.startswith("uninspectable"):
+            unknown.append(target)
+        else:
+            by_pid.setdefault(pid, set()).add(Path(target.removesuffix(" (deleted)")).name)
+    for pid in sorted(by_pid):
+        check_info(f"{name} is held by {describe_holder_pid(pid)}: {', '.join(sorted(by_pid[pid]))}")
+    if unknown:
+        check_warn(f"{name}: cannot prove the database is quiet",
+                   f"(holder scan incomplete: {unknown[0][:120]}" + (f"; +{len(unknown) - 1} more" if len(unknown) > 1 else "") + ")")
+    elif not by_pid:
+        check_info(f"{name}: no other process holds it right now — the offline conversion can run")
+
+
+def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
+    """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a configured
+    ``database.journal_mode: delete`` that never took effect."""
+    from hermes_cli.doctor import HERMES_HOME
+    from sqlite_support import (
+        _path_on_network_fs, is_sqlite_wal_reset_vulnerable, path_on_cross_vm_fs, resolve_journal_mode,
+        wal_reset_repair_hint,
+    )
+    vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
+    configured = resolve_journal_mode()
+    try:
+        databases = _hermes_database_paths(hermes_home if hermes_home is not None else HERMES_HOME)
+    except Exception as exc:
+        check_warn(f"Could not list Hermes databases: {exc}")
+        return
+    exposed = []
+    for name, path in databases:
+        if not path.is_file():
+            continue
+        mode, error = _read_journal_mode(path)
+        size = _format_db_size(path)
+        if error is None and mode == "wal" and configured == "delete":
+            # The operator configured `delete` because WAL is unsafe on their filesystem, but the runtime never
+            # live-downgrades an existing WAL database (#68545: a downgrade under open connections corrupts it)
+            # and says so only once per process in the gateway log (#85608). Doctor is the surface they check;
+            # a plain "WAL journal mode" line here reads as protected. Outranks the sibling WAL messages: the
+            # cross-VM hint's remedy ("set journal_mode: delete") is already applied.
+            if vulnerable:
+                exposed.append(name)
+            check_warn(f"{name} is in WAL mode ({size}) despite database.journal_mode=delete",
+                       "(the setting never applied: an existing WAL database is never live-downgraded"
+                       + ("; also exposed to the WAL-reset bug" if vulnerable else "")
+                       + ". Stop every Hermes process for this profile, then run "
+                       f"`hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`)")
+            _report_database_holders(name, path)
+        elif error is not None:
+            if vulnerable:
+                check_warn(f"{name}: journal mode could not be read", f"({error}; cannot rule out WAL exposure)")
+            else:
+                check_info(f"{name}: journal mode could not be read ({error})")
+        elif mode == "wal" and path_on_cross_vm_fs(str(path)):
+            # #110848: WAL shared-memory is not coherent across a virtiofs/9p bind mount; startup only refuses WAL
+            # for FRESH databases, so an existing WAL file here keeps corrupting until the operator converts it.
+            # Checked before the WAL-reset exposure: active cross-VM corruption outranks a latent bug class.
+            if vulnerable:
+                exposed.append(name)
+            check_warn(f"{name} is in WAL mode on a cross-VM filesystem (virtiofs/9p, {size})",
+                       "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run "
+                       f"`hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`, then "
+                       "set `database.journal_mode: delete` — or move the database onto a native/named volume)")
+        elif mode == "wal" and _path_on_network_fs(str(path)):
+            # #110848 remainder: an existing WAL file on a network mount keeps WAL (never live-downgraded); its
+            # -shm locks are network round trips, and concurrent writers are one step from silent corruption.
+            check_warn(f"{name} is in WAL mode on a network filesystem (nfs/cifs/smb/sshfs, {size})",
+                       "(WAL shared-memory locking is slow and unsafe across network filesystems; stop every Hermes "
+                       f"process and run `hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`, "
+                       "then set `database.journal_mode: delete` — or move the database onto local disk)")
+        elif mode == "wal" and vulnerable:
+            exposed.append(name)
+            check_warn(f"{name} is in WAL mode ({size})", "(exposed to the WAL-reset bug until SQLite is upgraded)")
+        elif mode == "wal":
+            check_info(f"{name}: WAL journal mode ({size})")
+        else:
+            check_info(f"{name}: rollback journal mode ({size}{', not exposed' if vulnerable else ''})")
+    if exposed:
+        check_info(f"To clear the exposure: {wal_reset_repair_hint()}")
+
+
+def _check_s6_supervision(issues: list[str]) -> None:
+    """Under our s6 /init, report static services and the ONE host gateway slot; no-op elsewhere.
+    Counterpart to :func:`_check_gateway_service_linger` (systemd-on-host)."""
+    try:
+        from hermes_cli.service_manager import (
+            S6_STATIC_SCANDIR, S6ServiceManager, detect_service_manager, s6_service_up)
+    except Exception:
+        return
+    if detect_service_manager() != "s6":
+        return
+    _section("s6 Supervision")
+    mgr = S6ServiceManager()
+    for static in ("main-hermes", "dashboard"):  # s6-rc symlinks in the root scandir, not the gateway one
+        up = s6_service_up(S6_STATIC_SCANDIR / static)
+        (check_ok if up else check_info)(f"{static}: up" if up else f"{static}: down (expected if not enabled via env)")
+    _report_host_gateway_slot(mgr, issues)
+
+
+def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
+    """Multiplex-only: ONE gateway process serves N profiles, so report THAT process and its
+    roster. The old ``Per-profile gateways: up/total`` line described a topology we no longer
+    run — it counted supervision slots and never said which profiles were actually served."""
+    from gateway.host_topology import host_gateway_topology
+    slots = sorted(mgr.list_profile_gateways())
+    topology = host_gateway_topology()
+    if topology is None:
+        if not slots:
+            return check_info("No gateway registered yet — run `hermes gateway install`")
+        up = [p for p in slots if mgr.is_running(f"gateway-{p}")]
+        issues.append("No host gateway owns the gateway role — start the ONE host multiplexer: "
+                      "hermes --profile default gateway start")
+        return check_warn(f"No host gateway owns the gateway role ({len(up)}/{len(slots)} supervision "
+                          f"slots up: {', '.join(slots)})", "(nothing is serving these profiles)")
+    check_ok(f"Host gateway: {topology.describe()}")
+    legacy_up = sorted(p for p in slots if p != "default" and mgr.is_running(f"gateway-{p}"))
+    if legacy_up:
+        check_warn(f"LEGACY per-profile gateway slots still supervised: {', '.join(legacy_up)}",
+                   "(multiplex-only: the host gateway already serves every profile from one process)")
+        issues.append("Fold the legacy per-profile gateways into the host gateway: "
+                      "hermes --profile default gateway migrate --multiplex")
+
+
+def check_certificates(should_fix: bool = False, issues: list | None = None) -> None:
+    """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
+
+    The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
+    installed process-wide and every stack builds SSL contexts through it. There
+    is no certifi bundle to validate anymore; the check is that the platform
+    store is in force and a default context constructs.
+    """
+    try:
+        from agent.ssl_verify import install_truststore
+    except Exception as e:
+        return check_warn("TLS trust check skipped", str(e))
+    if issues is None:
+        issues = []
+    platform_store = install_truststore()
+    if not platform_store:
+        check_warn("TLS platform trust store unavailable",
+                   "OpenSSL default trust paths are in use; certificates trusted only by the OS store (a corporate root) will not verify")
+    try:
+        ssl.create_default_context()
+    except Exception as e:
+        _fail_and_issue("TLS default SSL context cannot be constructed", str(e),
+                        _python_repair_hint() + "; if TLS still fails, repair Python through the installation owner.", issues)
+        return
+    if platform_store:
+        check_ok("TLS platform trust store configured; default SSL context available")
+    else:
+        check_ok("TLS default SSL context available (OpenSSL trust paths)")
+
+
+def _check_gateway_service_linger(issues: list[str]) -> None:
+    """Warn when a systemd user gateway service will stop after logout (skipped under s6: no linger concept).
+
+    Multiplex-only: the HOST gateway runs under the default profile's unit, so a doctor run from a
+    SERVED profile must still check it — gating on the active profile's own unit silently skipped
+    the check for every profile that does not own a service of its own.
+    """
+    try:
+        from hermes_cli.gateway import (
+            _SERVICE_BASE, get_systemd_linger_status, get_systemd_unit_path, is_linux,
+            user_systemd_unit_dir)
+        from hermes_cli.service_manager import detect_service_manager
+    except Exception as e:
+        return check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
+    if not is_linux() or detect_service_manager() == "s6":
+        return
+    host_unit = user_systemd_unit_dir() / f"{_SERVICE_BASE}.service"
+    if not (get_systemd_unit_path().exists() or host_unit.exists()):
+        return
+    _section("Gateway Service")
+    linger_enabled, linger_detail = get_systemd_linger_status()
+    if linger_enabled is None:
+        return check_warn("Could not verify systemd linger", f"({linger_detail})")
+    if not check_bool(linger_enabled, ("Systemd linger enabled", "(gateway service survives logout)"),
+                      ("Systemd linger disabled", "(gateway may stop after logout)")):
+        check_info("Run: sudo loginctl enable-linger $USER")
+        issues.append("Enable linger for the gateway user service: sudo loginctl enable-linger $USER")
+
+
+_TCC_CDHASH_DETAIL = (
+    "the desktop bundle's designated requirement is cdhash-pinned (pre-#73681 build) — rebuilds invalidate "
+    "all permission grants. Run `hermes update` to get the stable identifier-pinned signing identity, "
+    "then re-grant permissions once.")
+_TCC_STABLE_DETAIL = {
+    True: "(certificate-anchored DR; grants survive rebuilds)",
+    False: "(identifier-pinned DR; grants survive rebuilds — for the strongest anchor, see `hermes desktop --setup-tcc-identity`)",
+}
+
+
+def check_macos_tcc_grants() -> None:
+    """Check macOS TCC grant persistence for a locally-built desktop bundle; silent on non-macOS / no bundle.
+
+    TCC keys grants to the app's designated requirement (DR). A cdhash-pinned ad-hoc DR changes on every
+    rebuild, so grants silently stop matching while the Settings toggle stays ON; identifier-pinned builds
+    survive rebuilds, but grants made to older binaries stay stale until re-granted once. TCC.db needs Full
+    Disk Access, so the DR string is the only readable signal (a proxy for the signing class, not DR wording).
+
+    See #86385.
+    """
+    app = _desktop_app_bundle() if sys.platform == "darwin" else None
+    if app is None:
+        return
+    dr = _macos_desktop_dr(app)
+    if not dr:
+        return check_warn("macOS TCC grant check", "(could not read code-signing requirement of the desktop bundle)")
+    if "cdhash" in dr.lower():
+        return check_warn("macOS TCC grants will reset after every update", _TCC_CDHASH_DETAIL)
+    # --setup-tcc-identity or notarized build (certificate-anchored) is the strongest anchor.
+    check_ok("macOS TCC signing identity is stable", _TCC_STABLE_DETAIL["certificate" in dr.lower()])
+    check_info("If macOS still re-prompts for permissions (toggle shows ON): the stored grant is stale — run "
+               "`tccutil reset ScreenCapture com.nousresearch.hermes` (repeat per affected service), toggle it ON in "
+               "System Settings, then fully quit & relaunch Hermes once.")
+
+
+def _desktop_app_bundle() -> Path | None:
+    """Locate the locally-built desktop bundle (``apps/desktop/release/mac-<arch>/Hermes.app``), newest first.
+
+    The only layout whose ad-hoc re-signed bundle can invalidate TCC grants. ``/Applications/Hermes.app`` is
+    deliberately not probed: it is the separately-signed, certificate-anchored Hermes-Setup launcher.
+    """
+    release_dir = Path(project_root_str()) / "apps" / "desktop" / "release"
+    candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
+    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+
+
+def _macos_desktop_dr(app: Path) -> str | None:
+    """Return the bundle's designated requirement string, or None on failure (a hanging codesign must never abort doctor)."""
+    codesign = shutil.which("codesign")
+    try:
+        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False) if codesign else None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return None if proc is None or proc.returncode != 0 else (proc.stdout or "") + (proc.stderr or "")
+
+
+def check_macos_tcc_anchor(should_fix: bool = False) -> None:
+    """Report (and with --fix install) the dylib-complete TCC anchor; silent on non-macOS / non-uv interpreters.
+    Never raises. Install is gated by the module's pre-install boot probe, so ``--fix`` cannot brick the CLI.
+
+    See #95596.
+    """
+    with warn_on_error("macOS TCC anchor check failed"):
+        from hermes_cli import macos_tcc_anchor as tcc
+        status, detail = tcc.tcc_anchor_state()
+        if status == "skip":
+            return
+        if status == "active":
+            return check_ok("macOS TCC anchor active", f"({detail})")
+        anchored = tcc.ensure_tcc_anchor() if should_fix else None
+        if anchored is not None:
+            return check_ok("macOS TCC anchor installed", f"({anchored})")
+        check_warn("macOS TCC anchor missing" if status == "missing" else "macOS TCC anchor stale", f"({detail})")
+
+
+def check_macos_full_disk_access() -> None:
+    """One-grant guidance: Full Disk Access silences every per-folder TCC prompt. Silent on non-macOS.
+
+    Probe: listdir of ``~/Library/Application Support/com.apple.TCC`` — FDA-gated, and probing it does NOT
+    trigger a prompt (the TCC dir just returns EPERM). A missing dir / other error is indeterminate: stay silent.
+
+    macOS TCC prompts per-category (Desktop, then Downloads, then Documents, ...), so first-run agents
+    drip-feed permission dialogs as they touch each folder. ONE Full Disk Access grant covers all of them,
+    permanently — and with the stable signing identities now in place (#73681/#95091/#95131), it survives
+    updates too. This check probes whether the terminal context already has FDA and, when it doesn't, prints
+    the exact one-switch setup with the System Settings deep link.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        os.listdir(Path.home() / "Library" / "Application Support" / "com.apple.TCC")
+    except PermissionError:
+        check_info("One switch silences all macOS folder prompts: grant your terminal app Full Disk Access and Hermes "
+                   "will never trip per-folder dialogs (Desktop/Downloads/Documents/...) again. Open: System Settings → "
+                   "Privacy & Security → Full Disk Access — or run:\n"
+                   "      open \"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles\"\n"
+                   "    then enable your terminal (and Hermes.app if you use Desktop), and restart them once. "
+                   "With Hermes' stable signing identities the grant survives every update.")
+    except OSError:
+        pass  # missing dir / other error: indeterminate, stay silent
+    else:
+        check_ok("macOS Full Disk Access granted", "(no per-folder permission prompts will occur)")
+
+
+@doctor_check("Security advisory check failed: {e}")
+def _check_security_advisories(should_fix: bool, f: Finding) -> None:
+    """Compromised-package advisories, funnelled into manual issues; a bug here must never block the rest of doctor."""
+    from hermes_cli.security_advisories import detect_compromised, filter_unacked, full_remediation_text, get_acked_ids
+    all_hits = detect_compromised()
+    fresh_hits = filter_unacked(all_hits)
+    if not fresh_hits:
+        return check_ok("No active security advisories")
+    for hit in fresh_hits:
+        # Fail row + remediation text indented under it as one section; also into the summary action list.
+        _fail_and_issue(f"{hit.advisory.title}", f"({hit.package}=={hit.installed_version})",
+                        f"Resolve security advisory {hit.advisory.id}: uninstall {hit.package}=={hit.installed_version} "
+                        f"and rotate credentials, then run `hermes doctor --ack {hit.advisory.id}`.", f.manual_issues)
+        for line in full_remediation_text(hit):
+            print(f"    {color(line, Colors.YELLOW)}" if line else "")
+    acked_ids = get_acked_ids()  # acked-but-still-installed stays visible
+    for h in all_hits:
+        if h.advisory.id in acked_ids:
+            check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
+
+
+def _staged_venv_dir() -> Path | None:
+    """pm's provisioned runtime venv, or None when nothing is staged.
+
+    ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
+    the runtime venv lives, including an external selected generation or
+    the original source/payload environment before first sync. A resolved
+    path without a venv marker is not a provisioned venv — pm also returns
+    the intended location before first sync, and
+    doctor must not read an empty directory as staged dependencies.
+    """
+    try:
+        import pm
+        from pm.packages import Venv
+
+        venv_dir = Venv().venv_dir()
+    except Exception:
+        return None
+    if venv_dir is not None and (Path(venv_dir) / "pyvenv.cfg").is_file():
+        return Path(venv_dir)
+    return None
+
+
+@doctor_check()
+def _check_python_environment(should_fix: bool, f: Finding) -> None:
+    """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
+    v, label = sys.version_info, f"Python {'.'.join(map(str, sys.version_info[:3]))}"
+    if v < (3, 8):
+        _fail_and_issue(label, "(3.10+ required)", "Upgrade Python to 3.10+", f.issues)
+    elif check_bool(v >= (3, 10), label, (label, "(3.10+ recommended)")) and v < (3, 11):
+        check_warn("Python 3.11+ recommended for RL Training tools (tinker requires >= 3.11)")
+    # Linked SQLite: version + source id matter independently of the Python minor (uv's
+    # python-build-standalone can keep a vulnerable SQLite across upgrades).
+    with warn_on_error("SQLite version probe failed: {e}", ""):
+        import sqlite3
+        from sqlite_support import is_sqlite_wal_reset_vulnerable, sqlite_source_id
+        src = sqlite_source_id()
+        # Warn-only: Hermes already refuses WAL on fresh DBs and runtime repair is best-effort.
+        check_bool(not is_sqlite_wal_reset_vulnerable(), f"SQLite {sqlite3.sqlite_version}",
+                   (f"SQLite {sqlite3.sqlite_version} (WAL-reset bug)", _sqlite_upgrade_hint()))
+        if src:
+            check_info(f"SQLite source id: {(src[:48] + '…') if len(src) > 48 else src}")
+        _report_database_journal_modes()
+    # PM launchers run base Python with the selected dependency tree on
+    # sys.path. Neither sys.prefix nor a stale PYTHONPATH proves activation.
+    staged = _staged_venv_dir()
+    if staged is not None:
+        from pm.environments import site_packages
+
+        selected_site = site_packages(staged).resolve()
+        running_here = selected_site.is_dir() and any(Path(entry).resolve() == selected_site for entry in sys.path)
+        check_ok(f"Runtime venv staged ({staged})",
+                 "(active in this process)" if running_here else "(this process runs outside it)")
+    else:
+        check_bool(sys.prefix != sys.base_prefix, "Virtual environment active",
+                   ("Not in virtual environment", "(recommended)"))
+    # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the mechanism reverted in #95563.
+    # Silent on non-macOS.
+    check_macos_tcc_anchor(should_fix=should_fix)
+    # macOS Full Disk Access (issue #52010 follow-up): one grant silences every per-folder prompt
+    # permanently. Silent on non-macOS.
+    check_macos_full_disk_access()
+
+    # macOS TCC grant persistence (issue #86385): a locally-built desktop bundle whose DR is cdhash-pinned
+    # loses every permission grant on each rebuild; a post-#73681 identifier-pinned DR survives, but grants
+    # made to older binaries stay stale (toggle shows ON while macOS re-prompts).
+    check_macos_tcc_grants()
+
+
+@doctor_check()
+def _check_certificates(should_fix: bool, f: Finding) -> None:
+    check_certificates(should_fix=should_fix, issues=f.manual_issues)
+
+
+# (import name, display name, optional)
+_PACKAGES = (
+    ("openai", "OpenAI SDK", False), ("rich", "Rich (terminal UI)", False), ("dotenv", "python-dotenv", False),
+    ("ruamel.yaml", "ruamel.yaml", False), ("httpx", "HTTPX", False),
+    ("croniter", "Croniter (cron expressions)", True), ("telegram", "python-telegram-bot", True), ("discord", "discord.py", True),
+)
+
+
+@doctor_check()
+def _check_required_packages(should_fix: bool, f: Finding) -> None:
+    for module, name, optional in _PACKAGES:
+        try:
+            __import__(module)
+            check_ok(name, "(optional)" if optional else "")
+        except ImportError:
+            if optional:
+                check_warn(name, "(optional, not installed)")
+            else:
+                _fail_and_issue(name, "(missing)", f"Repair {name}: {_python_repair_hint()}", f.issues)
+
+
+def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
+    """Windows: the gateway must start at logon from ONE mechanism — a Scheduled Task and a
+    Startup-folder entry side by side launch it twice (#80569)."""
+    if sys.platform != "win32":
+        return
+    from hermes_cli import gateway_windows
+    redundant = gateway_windows.redundant_autostart_entries()
+    if not redundant:
+        return
+    _section("Windows Gateway Autostart")
+    if not should_fix:
+        for path in redundant:
+            check_warn("Redundant gateway login item", f"({path})")
+        f.issues.append("Remove duplicate Windows gateway autostart entries: hermes doctor --fix")
+        return
+    done, warnings = gateway_windows.reconcile_autostart_launchers()
+    for message in done:
+        check_ok(message)
+    for message in warnings:
+        check_warn(message)
+    if done and not warnings:
+        f.fixed += 1
+    if warnings:
+        f.manual_issues.extend(warnings)
+
+
+@doctor_check()
+def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
+    """Import the dashboard web surface in a subprocess so an import-time crash lands in the report.
+
+    When starlette is updated past the fastapi pinned beside it (the CVE starlette pin ships in
+    several extras on its own), ``hermes dashboard`` dies constructing ``FastAPI(...)`` with a
+    TypeError — not an ImportError — so the module's own lazy-install fallback never fires and the
+    process exits before a single log line. Importing in a subprocess keeps a dead web surface
+    from taking the doctor down with it; lazy installs stay off so the probe never mutates the
+    environment it is diagnosing.
+    """
+    from hermes_cli.doctor import PROJECT_ROOT
+
+    env = dict(os.environ, HERMES_DISABLE_LAZY_INSTALLS="1")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import hermes_cli.web_server"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _fail_and_issue(
+            "Dashboard web surface",
+            "(import probe timed out)",
+            "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+            f.issues,
+        )
+        return
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode == 0:
+        return check_ok("Dashboard web surface", "(imports cleanly)")
+    if "Web UI requires fastapi and uvicorn" in stderr:
+        # The optional web extra is simply absent; anyone who never opens the dashboard
+        # should not be told their install is broken.
+        return check_warn("Dashboard web surface", "(optional web extra not installed)")
+    detail = (
+        stderr.splitlines()[-1] if stderr else f"(exited with code {proc.returncode})"
+    )
+    _fail_and_issue(
+        "Dashboard web surface",
+        detail,
+        "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+        f.issues,
+    )
+
+
+@doctor_check()
+def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
+    _check_gateway_service_linger(f.issues)
+    _check_s6_supervision(f.issues)
+    _check_windows_gateway_autostart(should_fix, f)
+
+
+# The commands that put entries on PATH, the unquoted characters that end each one's value, and whether
+# a ":" in a value separates entries: a PATH= value is one colon list; zsh's path array runs to ")" and
+# fish_add_path takes directories, one per word; fish's set splits PATH on colons. Outside zsh,
+# path=(...) is an ordinary array.
+_PATH_ASSIGNMENT = (re.compile(r"(?<![\w$])PATH(?P<append>\+?)="), " \t;&|", True)
+_PATH_SETTERS = {
+    "posix": (_PATH_ASSIGNMENT,),
+    "zsh": (_PATH_ASSIGNMENT, (re.compile(r"(?<![\w$])path\+?=\("), ";&|)", False)),
+    "fish": ((re.compile(r"(?<![\w$-])fish_add_path\b"), ";&|", False),
+             (re.compile(r"(?<![\w$-])set\s+(?:-[-\w]*\s+)*PATH\b"), ";&|", True)),
+}
+# Stands in for an expansion doctor can't know (another variable, PATH's old value): it names no directory.
+_UNKNOWN = "\0"
+# A setter changes PATH only as a command of its own: after other assignments, after a builtin whose
+# NAME=value arguments set shell variables, or after a reserved word that starts a command. As anything
+# else's argument (env PATH=..., echo export PATH=...) it changes nothing.
+_COMMAND_SEPARATOR = re.compile(r"[;&|(){}`]")
+# A command substitution, $(...) or `...`, is part of the word it sits in, not a command boundary.
+_SUBSTITUTION = re.compile(r"\$\([^()]*\)|`[^`]*`")
+# A comment starts at an unquoted # that begins a word, not at one inside a word (bin#backup, ${#x}).
+_COMMENT_START = re.compile(r"(?:^|(?<=[\s;&|()]))#")
+# Words that lead into a command without being it: reserved words and fish's and/or/not/begin.
+_COMMAND_LEADERS = frozenset({"!", "{", "if", "elif", "then", "else", "do", "while", "until", "time",
+                              "and", "or", "not", "begin"})
+_DECLARATIONS = frozenset({"export", "declare", "typeset", "readonly"})
+_ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+_DECLARATION_ARGUMENT = re.compile(r"-\S*|[A-Za-z_]\w*(?:\+?=.*)?")  # an option, a name, or NAME=value
+# A redirection (2>/dev/null, > file) is no command word; its target is attached or the next word.
+_REDIRECTION = re.compile(r"\d*[<>]+(.*)")
+# The & and | inside >&, <&, >| and &> belong to the redirection, not a command separator: split them off.
+_REDIRECTION_OPERATOR = re.compile(r"(?<=[<>])[&|]|&(?=>)")
+
+
+def _expand_user_path(raw: str, home: Path) -> Path:
+    if raw == "~":
+        return home
+    if raw.startswith(("~/", "~\\")):
+        return home / raw[2:]
+    return Path(raw)
+
+
+def _resolved_path_entry(entry: str) -> Path:
+    # Taken as written: a literal ~ left in PATH is no home directory to sh or exec.
+    try:
+        return Path(entry).resolve()
+    except (OSError, RuntimeError):  # Python < 3.13 raises RuntimeError on a symlink loop
+        return Path(os.path.normpath(entry))
+
+
+def _dir_on_path(directory: Path, path_env: str | None = None) -> bool:
+    raw_path = os.environ.get("PATH", "") if path_env is None else path_env
+    try:
+        target = directory.resolve()
+    except OSError:
+        target = directory
+    return any(entry and _resolved_path_entry(entry) == target for entry in raw_path.split(os.pathsep))
+
+
+def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
+    """The shell, the rc files a new terminal reads, where to add the PATH line, and rc files it skips."""
+    default_shell = "/bin/zsh" if sys.platform == "darwin" else "/bin/bash"
+    shell = Path(os.environ.get("SHELL") or default_shell).name
+    home = Path.home()
+    if shell == "zsh":
+        zdotdir_env = os.environ.get("ZDOTDIR", "").strip()
+        if zdotdir_env:
+            zdir = _expand_user_path(zdotdir_env, home)
+            return shell, [zdir / ".zprofile", zdir / ".zshrc"], f"{zdotdir_env.rstrip('/')}/.zprofile", []
+        return shell, [home / ".zprofile", home / ".zshrc"], "~/.zprofile", []
+    if shell == "fish":
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if os.path.isabs(xdg_config):  # the XDG spec ignores a relative value
+            return shell, [Path(xdg_config) / "fish" / "config.fish"], f"{xdg_config.rstrip('/')}/fish/config.fish", []
+        return shell, [home / ".config" / "fish" / "config.fish"], "~/.config/fish/config.fish", []
+    *logins, bashrc = candidates = [home / ".bash_profile", home / ".bash_login", home / ".profile", home / ".bashrc"]
+    if shell != "bash":
+        preferred = "~/.bash_profile" if logins[0].is_file() and not bashrc.is_file() else "~/.bashrc"
+        return shell, candidates, preferred, []
+    # A login bash reads only the first of its login files that exists and is readable; other
+    # interactive bash shells read ~/.bashrc (bash(1), INVOCATION). The advice names both, as
+    # install.sh writes both.
+    login = next((path for path in logins if path.is_file() and os.access(path, os.R_OK)), None)
+    advice = f"~/.bashrc and ~/{login.name if login else '.profile'}"
+    return shell, [*([login] if login else []), bashrc], advice, [path for path in logins if path != login]
+
+
+def _open_quote(code: str, pos: int) -> str:
+    """The quote character still open at ``code[pos]``, or "" outside quotes."""
+    quote, escaped = "", False
+    for ch in code[:pos]:
+        if escaped:
+            escaped = False
+        elif ch == "\\" and quote != "'":
+            escaped = True
+        elif ch == quote:
+            quote = ""
+        elif not quote and ch in "\"'":
+            quote = ch
+    return quote
+
+
+def _expand_variable(text: str, i: int, variables: dict[str, str]) -> tuple[str, int]:
+    """The value of the $NAME or ${...} at ``text[i]``, and the index just past it."""
+    if text.startswith("${", i):
+        depth, j = 0, i + 1
+        while j < len(text):
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            if depth == 0:
+                break
+            j += 1
+        body = text[i + 2 : j]
+        if body.startswith("PATH:+:"):  # ${PATH:+:${PATH}} adds ":" and the old PATH when PATH is set
+            return ":" + _UNKNOWN, j + 1
+        return variables.get(body, _UNKNOWN), j + 1
+    name = re.match(r"[A-Za-z_]\w*", text[i + 1 :])
+    if name is None:
+        return "$", i + 1
+    return variables.get(name[0], _UNKNOWN), i + 1 + name.end()
+
+
+def _shell_words(text: str, stops: str, variables: dict[str, str]) -> list[tuple[str, str]]:
+    """Each word up to the first unquoted stop character, as written and as the shell expands it:
+    quotes removed, escaped characters literal, known variables and an unquoted leading ~ replaced."""
+    words: list[tuple[str, str]] = []
+    word, begin, quote, i = "", -1, "", 0
+    while i < len(text):
+        ch = text[i]
+        if not quote and ch in stops:
+            break
+        if not quote and ch in " \t":
+            words.extend([(text[begin:i], word)] if begin >= 0 else [])
+            word, begin, i = "", -1, i + 1
+            continue
+        begin, i = (i if begin < 0 else begin), i + 1
+        # A backslash escapes any character unquoted, only $ ` " \ inside double quotes, nothing in single quotes.
+        if ch == "\\" and i < len(text) and (not quote or quote == '"' and text[i] in '$`"\\'):
+            word, i = word + text[i], i + 1
+        elif ch == quote:
+            quote = ""
+        elif not quote and ch in "\"'":
+            quote = ch
+        elif ch == "$" and quote != "'":
+            value, i = _expand_variable(text, i - 1, variables)
+            word += value
+        elif ch == "~" and not quote and (not word or word.endswith(":")) and text[i : i + 1] in ("", "/", ":"):
+            word += variables["HOME"]
+        else:
+            word += ch
+    return [*words, (text[begin:i], word)] if begin >= 0 else words
+
+
+def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]:
+    return [value for _written, value in _shell_words(text, stops, variables)]
+
+
+def _words_before(code: str, pos: int, variables: dict[str, str]) -> list[tuple[str, str]]:
+    """The words of the setter's own command that come before ``code[pos]``, reserved words dropped."""
+    masked = code[:pos]
+    while (blanked := _SUBSTITUTION.sub(lambda m: "_" * len(m[0]), masked)) != masked:
+        masked = blanked  # innermost first, so $(dirname $(pwd)) goes too
+    starts = [m.end() for m in _COMMAND_SEPARATOR.finditer(masked) if not _open_quote(code, m.start())]
+    words = _shell_words(masked[starts[-1] if starts else 0 :], "", variables)
+    while words and words[0][1] in _COMMAND_LEADERS:
+        words.pop(0)
+    return words
+
+
+# Whether a word is an assignment or a redirection is decided as written, before quotes are removed:
+# "LC_ALL"=C is a command name, not an assignment.
+def _setter_counts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
+    if _open_quote(code, found.start()):
+        return False  # inside a string: an alias body or an echo
+    before = _words_before(code, found.start(), variables)
+    while before and _ASSIGNMENT_WORD.match(before[0][0]):
+        before.pop(0)  # LC_ALL=C export PATH=...: a prefix assignment, then the builtin
+    if before and before[0][1] in _DECLARATIONS:
+        return all(_DECLARATION_ARGUMENT.fullmatch(value) for _written, value in before[1:])
+    if before:
+        return False  # an argument of another command: env PATH=..., echo export PATH=...
+    return "append" not in found.groupdict() or _assignment_lasts(code, found, variables)
+
+
+def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
+    """False for PATH=x cmd, which sets PATH for that one command only."""
+    command = _REDIRECTION_OPERATOR.sub(" ", code[found.end() :])
+    _value, *rest = _shell_words(command, ";&|", variables) or [("", "")]
+    words = iter(rest)
+    for written, _word in words:
+        redirection = _REDIRECTION.fullmatch(written)
+        if redirection and not redirection[1]:
+            next(words, None)
+        elif not redirection and not _ASSIGNMENT_WORD.match(written):
+            return False
+    return True
+
+
+def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], target: str) -> bool:
+    comment = next((m.start() for m in _COMMENT_START.finditer(line) if not _open_quote(line, m.start())), None)
+    code = line[:comment]
+    for setter, stops, colon_lists in setters:
+        for found in setter.finditer(code):
+            if not _setter_counts(code, found, variables):
+                continue
+            words = _setter_words(code[found.end() :], stops, variables)
+            entries = [entry for word in words for entry in word.split(":")] if colon_lists else words
+            if found.groupdict().get("append"):
+                entries = entries[1:]  # PATH+=x extends the last entry; only what follows a ":" is new
+            if any(entry and os.path.normpath(entry) == target for entry in entries):
+                return True
+    return False
+
+
+def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
+    variables = {"HOME": str(Path.home()), **({"PREFIX": str(link_dir.parent)} if termux else {})}
+    setters = _PATH_SETTERS.get(shell, _PATH_SETTERS["posix"])
+    target = os.path.normpath(str(link_dir))
+    for rc_path in candidates:
+        if not rc_path.is_file():
+            continue
+        try:
+            text = rc_path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        if any(_puts_dir_on_path(line, setters, variables, target) for line in text.splitlines()):
+            return rc_path
+    return None
+
+
+def _display_rc_path(rc_path: Path) -> str:
+    home = Path.home()
+    try:
+        rel = rc_path.resolve().relative_to(home.resolve())
+        return f"~/{rel.as_posix()}"
+    except (OSError, ValueError):
+        return str(rc_path)
+
+
+def _check_link_dir_on_path(
+    link_dir: Path, display: str, cmd_name: str, entry_point: Path, termux: bool, f: Finding
+) -> None:
+
+    # Startup put Hermes's own command dirs first on this PATH; a new terminal won't have them.
+    terminal_path = inherited_path()
+    if _dir_on_path(link_dir, terminal_path):
+        return
+    found = locate_command(cmd_name, LookupContext(path=terminal_path)).command
+    if found:
+        try:
+            if Path(found[0]).resolve() == entry_point.resolve():
+                return
+        except OSError:
+            pass
+    shell, candidates, rc_display, skipped = _shell_rc_targets()
+    configured = _configured_shell_rc(link_dir, shell, candidates, termux=termux)
+    if configured is not None:
+        check_info(
+            f"{display} is not on this shell's PATH yet "
+            f"(configured in {_display_rc_path(configured)}; open a new terminal or reload your shell)"
+        )
+        return
+    path_var = "$PREFIX/bin" if termux else "$HOME/.local/bin"
+    path_cmd = f'fish_add_path "{path_var}"' if shell == "fish" else f'export PATH="{path_var}:$PATH"'
+    unread = _configured_shell_rc(link_dir, shell, skipped, termux=termux)
+    hint = f"; a login {shell} skips {_display_rc_path(unread)}" if unread is not None else ""
+    check_warn(f"{display} is not on your PATH", f"(add to {rc_display}: {path_cmd}{hint})")
+    f.manual_issues.append(f"Add {display} to your PATH (in {rc_display}: {path_cmd})")
+
+
+def _bundled_launcher_target(project_root: Path) -> Path:
+
+    root = Path(project_root).resolve()
+    payload_root = root.parent
+    command_dir = payload_command_dir(root)
+    if command_dir is not None:
+        return command_dir / cli_command_name(root)
+    runtime = read_install_stamp(root).get("runtime")
+    commands = runtime.get("commands") if isinstance(runtime, dict) else None
+    rel = commands.get("hermes") if isinstance(commands, dict) else None
+    if isinstance(rel, str) and rel:
+        candidate = (payload_root / rel).resolve()
+        if not candidate.is_relative_to(payload_root):
+            raise RuntimeError("payload launcher escapes its root")
+        return candidate
+    return payload_root / "bin" / "hermes"
+
+
+def _is_owned_bundle_link(link: Path, expected: Path) -> bool:
+    try:
+        raw = os.readlink(link)
+    except OSError:
+        return False
+    if not os.path.isabs(raw):
+        return False
+    raw_path = Path(raw)
+    if (
+        raw_path.name != expected.name
+        or raw_path.parent.name != "bin"
+        or raw_path.parent.parent.name != "agent-payload"
+    ):
+        return False
+    if not link.exists():
+        return True
+    raw_resolved = link.resolve()
+    # AppImage unpacks each build beside its predecessor (<bundles>/<build>/agent-payload/bin/<cmd>).
+    return (
+        len(raw_resolved.parents) > 3
+        and len(expected.parents) > 3
+        and raw_resolved.parents[2] != expected.parents[2]
+        and raw_resolved.parents[3] == expected.parents[3]
+    )
+
+
+def _replace_symlink(link: Path, target: Path) -> None:
+    staged = link.with_name(f".{link.name}.doctor-{os.getpid()}.tmp")
+    staged.unlink(missing_ok=True)
+    staged.symlink_to(target)
+    try:
+        os.replace(staged, link)
+    except OSError:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _resolve_command_entry_point(project_root: Path, f: Finding) -> tuple[Path, str, bool, bool] | None:
+
+    if is_bundled_payload(project_root):
+        try:
+            entry = _bundled_launcher_target(project_root)
+        except (OSError, ValueError, RuntimeError) as exc:
+            check_fail("Cannot resolve bundled launcher", str(exc))
+            f.manual_issues.append("Reinstall the Hermes desktop app bundle")
+            return None
+        return entry, entry.name, True, False
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import base_venv, selected_venv
+
+    try:
+        selected = selected_venv(project_root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        check_fail("Cannot resolve selected dependencies", str(exc))
+        f.manual_issues.append(_python_repair_hint())
+        return None
+    pm_launcher = selected != base_venv(project_root) or resolve_store_python(project_root) is not None
+    entry = project_root / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    return entry, "hermes", False, pm_launcher
+
+
+def _repair_command_link(
+    link: Path, link_dir: Path, display: str, cmd_name: str, venv_bin: Path,
+    *, project_root: Path, pm_launcher: bool, verb: str, f: Finding,
+) -> None:
+    if pm_launcher:
+        from hermes_cli._launchers import stage_launcher
+
+        if stage_launcher(cmd_name, project_root, link_dir) is None:
+            check_fail("Could not publish Hermes launcher")
+            f.manual_issues.append(
+                "Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'"
+            )
+            return
+        check_ok(f"{verb} PM launcher: {display}/{cmd_name}")
+    elif verb == "Created":
+        try:
+            link.symlink_to(venv_bin)
+        except FileExistsError:
+            # Something published the command after the check; it isn't ours to replace.
+            check_warn(f"{display}/{cmd_name} appeared while doctor was creating it", "(left unchanged)")
+            f.manual_issues.append(f"Rerun '{cmd_name} doctor' to check {display}/{cmd_name}")
+            return
+        check_ok(f"{verb} symlink: {display}/{cmd_name} → {venv_bin}")
+    else:
+        _replace_symlink(link, venv_bin)
+        check_ok(f"{verb} symlink: {display}/{cmd_name} → {venv_bin}")
+    f.fixed += 1
+
+
+@doctor_check()
+def _check_command_installation(should_fix: bool, f: Finding) -> None:
+    """Check the install-owned launch contract without replacing custom commands."""
+    from hermes_cli.doctor import PROJECT_ROOT
+    if sys.platform == "win32":
+        return
+    _section("Command Installation")
+    from hermes_cli.config import detect_install_method
+
+    method = detect_install_method(PROJECT_ROOT)
+    if is_nix_install_method(method) or method in ("docker", "apt"):
+        command = shutil.which("hermes")
+        if command:
+            check_ok(f"Hermes command managed by {method} ({command})")
+        else:
+            check_warn(f"Hermes command not on PATH ({method}-managed)")
+            f.manual_issues.append(_python_repair_hint())
+        return
+    resolved = _resolve_command_entry_point(PROJECT_ROOT, f)
+    if resolved is None:
+        return
+    venv_bin, cmd_name, bundled, pm_launcher = resolved
+    if not venv_bin.is_file():
+        check_warn("Hermes entry point not found", f"({venv_bin})")
+        return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
+    check_ok(f"Hermes entry point exists ({venv_bin})")
+    prefix = os.environ.get("PREFIX", "")
+    termux = bool(prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix))
+    link_dir, display = (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
+    link, expected = link_dir / cmd_name, venv_bin.resolve()
+    verb: str | None = None
+    if link.is_symlink():
+        target = link.resolve()
+        if target == expected:
+            check_ok(f"{display}/{cmd_name} → correct target")
+        else:
+            check_warn(f"{display}/{cmd_name} points to wrong target", f"(→ {target}, expected → {expected})")
+            owned = (
+                _is_owned_bundle_link(link, expected)
+                if bundled
+                else target in {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
+            )
+            if not owned:
+                f.manual_issues.append(f"Review {display}/{cmd_name} manually; its target is user-managed and was not changed")
+            elif not should_fix:
+                f.issues.append(f"Broken symlink at {display}/{cmd_name} — run '{cmd_name} doctor --fix'")
+            else:
+                verb = "Fixed"
+    elif link.exists():
+        check_ok(f"{display}/{cmd_name} exists (non-symlink)")
+    else:
+        detail = f"({cmd_name} command may not work in a terminal)" if bundled else "(hermes command may not work outside the venv)"
+        check_fail(f"{display}/{cmd_name} not found", detail)
+        if not should_fix:
+            f.issues.append(f"Missing {display}/{cmd_name} symlink — run '{cmd_name} doctor --fix'")
+        else:
+            link_dir.mkdir(parents=True, exist_ok=True)
+            verb = "Created"
+    if verb is not None:
+        _repair_command_link(
+            link, link_dir, display, cmd_name, venv_bin,
+            project_root=PROJECT_ROOT, pm_launcher=pm_launcher, verb=verb, f=f,
+        )
+    _check_link_dir_on_path(link_dir, display, cmd_name, venv_bin, termux, f)

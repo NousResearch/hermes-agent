@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.web_tools as web_tools
+from tools import web_tools
 from agent import web_search_registry as registry
 from plugins.web import keyless_mcp
 from plugins.web.exa.provider import ExaWebSearchProvider
@@ -25,7 +25,7 @@ from plugins.web.parallel.provider import ParallelWebSearchProvider
 def _no_web_env(monkeypatch):
     """Blank every web credential and neutralize config lookups."""
     for var in (
-        "EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY",
+        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY", "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL", "TOOL_GATEWAY_USER_TOKEN",
     ):
@@ -88,6 +88,88 @@ class TestParseMcpBody:
     def test_garbage_raises(self):
         with pytest.raises(keyless_mcp.KeylessMCPError):
             keyless_mcp._parse_mcp_body("<html>nope</html>")
+
+    def test_cjk_sse_body_survives_charset_less_event_stream(self):
+        """Exa answers ``text/event-stream`` without a charset; ``requests`` then decodes ``.text`` as
+        ISO-8859-1, and the U+0085 inside CJK UTF-8 sequences split the ``data:`` line under
+        ``splitlines()`` — a valid CJK result surfaced as "Unrecognized MCP response shape"."""
+        import requests
+
+        title = "光伏发电站组件清洗与性能监测规范"
+        payload = {"result": {"content": [{"type": "text", "text": f"Title: {title}\nURL: https://x.example"}]}}
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "text/event-stream"
+        response.encoding = "ISO-8859-1"  # what the adapter picks for text/* without a charset
+        response._content = f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+        assert "\x85" in response.text  # the vendor body really does decode to mojibake via .text
+        with patch.object(requests, "post", return_value=response):
+            text = keyless_mcp.mcp_call(keyless_mcp.EXA_MCP_URL, "web_search_exa", {"query": title})
+        assert title in text
+
+    def test_parsed_envelope_without_text_names_the_condition(self):
+        body = json.dumps({"result": {"content": []}})
+        with pytest.raises(keyless_mcp.KeylessMCPError, match="no text content"):
+            keyless_mcp._parse_mcp_body(body)
+
+    @pytest.mark.parametrize("terminator", ["\r", "\r\n"])
+    def test_sse_frames_split_on_every_spec_line_terminator(self, terminator):
+        """SSE permits CR, LF and CRLF as line terminators; splitting on ``\\n`` alone lost bare-CR frames."""
+        payload = json.dumps({"result": {"content": [{"type": "text", "text": "Title: hello"}]}})
+        body = f"event: message{terminator}data: {payload}{terminator}{terminator}"
+        assert keyless_mcp._parse_mcp_body(body) == "Title: hello"
+
+    def test_declared_charset_wins_over_utf8_default(self):
+        import requests
+
+        title = "你好"
+        payload = json.dumps({"result": {"content": [{"type": "text", "text": f"Title: {title}"}]}}, ensure_ascii=False)
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "text/event-stream; charset=gbk"
+        response.encoding = "gbk"
+        response._content = f"event: message\ndata: {payload}\n\n".encode("gbk")
+        with patch.object(requests, "post", return_value=response):
+            assert keyless_mcp.mcp_call(keyless_mcp.EXA_MCP_URL, "web_search_exa", {"query": title}) == f"Title: {title}"
+
+    @pytest.mark.parametrize("call", ["mcp", "keenable"])
+    def test_non_ascii_error_body_without_charset_is_decoded_as_utf8(self, call):
+        import requests
+
+        response = requests.Response()
+        response.status_code = 429
+        response.headers["Content-Type"] = "text/plain"
+        response.encoding = "ISO-8859-1"  # what the adapter picks for text/* without a charset
+        response._content = "请求过多".encode()
+        with patch.object(requests, "post", return_value=response), patch.object(requests, "get", return_value=response):
+            with pytest.raises(keyless_mcp.KeylessMCPError, match="请求过多"):
+                if call == "mcp":
+                    keyless_mcp.mcp_call(keyless_mcp.EXA_MCP_URL, "web_search_exa", {"query": "q"})
+                else:
+                    keyless_mcp._keenable_request("get", "/v1/search/public")
+
+    def test_keenable_error_keeps_status_and_reason(self):
+        import requests
+
+        response = requests.Response()
+        response.status_code = 403
+        response.headers["Content-Type"] = "text/plain; charset=utf-8"
+        response._content = b"anonymous access disabled"
+        with patch.object(requests, "post", return_value=response):
+            with pytest.raises(keyless_mcp.KeylessMCPError, match="^HTTP 403: anonymous access disabled$"):
+                keyless_mcp._keenable_request("post", "/v1/search/public", json={"query": "q"})
+
+    def test_keyless_firecrawl_error_keeps_status_and_reason(self, monkeypatch):
+        import httpx
+
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        def _forbidden(url, **_kwargs):
+            return httpx.Response(403, text="your IP address looks suspicious\n", request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _forbidden)
+        with pytest.raises(httpx.HTTPStatusError, match="^HTTP 403: your IP address looks suspicious$"):
+            firecrawl_provider._KeylessFirecrawlClient().search(query="q", limit=1)
 
 
 class TestExaTextParsing:
@@ -256,7 +338,7 @@ class TestProviderRouting:
         )
         assert keyless_mcp.provider_tier("exa") == "free"
         assert keyless_mcp.provider_tier("parallel") == "auto"  # invalid → auto
-        assert keyless_mcp.provider_tier("tavily") == "auto"    # unset → auto
+        assert keyless_mcp.provider_tier("keenable") == "auto"  # unset → auto
 
     @pytest.mark.asyncio
     async def test_parallel_keyless_extract(self, monkeypatch):
@@ -289,7 +371,7 @@ class TestResolutionOrder:
 
     def test_keyless_ring_rotates_and_covers_all_vendors(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
-        # The ring order always contains all five vendors, starting at the
+        # The ring order always contains all four vendors, starting at the
         # current cursor and wrapping.
         order = registry._keyless_preference()
         assert sorted(order) == sorted(keyless_mcp._KEYLESS_RING)
@@ -299,9 +381,18 @@ class TestResolutionOrder:
         starts = [keyless_mcp._ring_order("exa")[0] for _ in range(len(keyless_mcp._KEYLESS_RING))]
         assert sorted(starts) == sorted(keyless_mcp._KEYLESS_RING)  # full cycle
         # Pinned dispatch starts at the pinned vendor every time.
-        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: name == "tavily")
-        assert keyless_mcp._ring_order("tavily")[0] == "tavily"
-        assert keyless_mcp._ring_order("tavily")[0] == "tavily"
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: name == "keenable")
+        assert keyless_mcp._ring_order("keenable")[0] == "keenable"
+        assert keyless_mcp._ring_order("keenable")[0] == "keenable"
+
+    def test_tavily_is_not_a_ring_member(self):
+        """Tavily is opt-in keyless; zero-config rotation must not include it."""
+        from plugins.web import keyless_mcp
+
+        assert "tavily" not in keyless_mcp._KEYLESS_RING
+        assert "tavily" not in keyless_mcp._KEYLESS_SEARCHERS
+        assert "tavily" not in keyless_mcp._KEYLESS_EXTRACTORS
+        assert "tavily" not in registry._KEYLESS_PREFERENCE
 
     def test_registry_keyless_disabled_returns_none(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
@@ -336,9 +427,9 @@ class TestResolutionOrder:
     def test_get_backend_key_beats_keyless(self, monkeypatch):
         monkeypatch.setattr(
             web_tools, "_env_value",
-            lambda name: "sk-x" if name == "TAVILY_API_KEY" else "",
+            lambda name: "sk-x" if name == "EXA_API_KEY" else "",
         )
-        assert web_tools._get_backend() == "tavily"
+        assert web_tools._get_backend() == "exa"
 
     def test_get_backend_keyless_disabled(self, monkeypatch):
         monkeypatch.setattr(
@@ -441,6 +532,36 @@ class TestKeylessFailover:
         """Pin *name* so the ring starts there deterministically."""
         monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == name)
 
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("free MCP rate limit", True),
+            ("Client error '403 Forbidden'", True),
+            ("HTTP status 401: unauthorized", True),
+            ("status code=403", True),
+            ("HTTP 2403", False),
+            ("error 4031", False),
+            ("FORBIDDEN", False),
+            ("extract failed for 'forbidden kingdom trailer': connection timeout", False),
+            ("HTTP 400: malformed request", False),
+            ("HTTP 402: free credits exhausted", True),
+            ("HTTP 503: upstream unavailable", True),
+            ("HTTP 404: not found", False),
+            ("Keyless Firecrawl search failed: HTTP 403: your IP address looks suspicious", True),
+            # A terminal error that echoes the query is judged by the status it starts with.
+            ("HTTP 400: invalid query 'http 503'", False),
+            ("HTTP 422: query contains 'status=500'", False),
+            ("search failed for 'HTTP 503 error codes': timeout", False),
+            ("error: 500 results max exceeded", False),
+            ("Keyless Exa search failed: HTTP 400: invalid query 'http 403'", False),
+            ("", False),
+        ],
+    )
+    def test_search_failover_eligibility_requires_structured_status(
+        self, message, expected
+    ):
+        assert keyless_mcp._is_search_failover_eligible(message) is expected
+
     def test_search_fails_over_on_rate_limit(self, monkeypatch):
         self._pin(monkeypatch, "exa")
         monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", lambda q, l: self._throttled("Exa"))
@@ -448,6 +569,27 @@ class TestKeylessFailover:
         out = keyless_mcp.search_with_failover("exa", "q", 3)
         assert out["success"] is True
         assert out["data"]["served_by"] == "parallel"
+
+    def test_search_fails_over_on_anonymous_provider_forbidden(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            "firecrawl",
+            lambda q, l: {
+                "success": False,
+                "error": "Keyless Firecrawl search failed: Client error '403 Forbidden'",
+            },
+        )
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            "keenable",
+            lambda q, l: self._ok("keenable"),
+        )
+
+        out = keyless_mcp.search_with_failover("firecrawl", "q")
+
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "keenable"
 
     def test_search_no_failover_on_non_throttle_error(self, monkeypatch):
         self._pin(monkeypatch, "exa")
@@ -473,12 +615,12 @@ class TestKeylessFailover:
             )
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is False
-        assert "all keyless vendors throttled" in out["error"]
+        assert "all keyless vendors unavailable" in out["error"]
 
     def test_search_walks_ring_past_multiple_throttles(self, monkeypatch):
-        # exa -> parallel -> tavily all throttled; firecrawl serves.
+        # exa -> parallel all throttled; firecrawl serves.
         self._pin(monkeypatch, "exa")
-        for vendor in ("exa", "parallel", "tavily"):
+        for vendor in ("exa", "parallel"):
             monkeypatch.setitem(
                 keyless_mcp._KEYLESS_SEARCHERS, vendor,
                 lambda q, l, v=vendor: self._throttled(v),
@@ -504,7 +646,7 @@ class TestKeylessFailover:
             keyless_mcp._KEYLESS_SEARCHERS, "exa",
             lambda q, l: called.append(1) or self._ok("exa"),
         )
-        for vendor in ("parallel", "tavily", "firecrawl", "keenable"):
+        for vendor in ("parallel", "firecrawl", "keenable"):
             monkeypatch.setitem(
                 keyless_mcp._KEYLESS_SEARCHERS, vendor,
                 lambda q, l, v=vendor: self._throttled(v),
@@ -527,6 +669,31 @@ class TestKeylessFailover:
         monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "parallel", lambda urls: good)
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == good
+
+    def test_extract_all_forbidden_stays_on_primary(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        forbidden = [
+            {"url": url, "title": "", "content": "", "error": "HTTP 403"}
+            for url in ("https://a", "https://b")
+        ]
+        called = []
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_EXTRACTORS,
+            "firecrawl",
+            lambda urls: forbidden,
+        )
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_EXTRACTORS,
+            "keenable",
+            lambda urls: called.append(1) or [],
+        )
+
+        out = keyless_mcp.extract_with_failover(
+            "firecrawl", ["https://a", "https://b"]
+        )
+
+        assert out == forbidden
+        assert not called
 
     def test_extract_partial_failure_stays_on_primary(self, monkeypatch):
         self._pin(monkeypatch, "exa")

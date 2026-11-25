@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { afterEach, test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
 import {
   isWslBridgeActive,
@@ -8,8 +8,16 @@ import {
   resolveLocalReadPath,
   resolvePickerDefaultPath,
   setWslBridgeActive,
+  shellDriveToNativePath,
   wslPosixToWindowsAccessible
 } from './wsl-path-bridge'
+
+// Pin a registered distribution so these tests do not depend on the host's
+// WSL install; the no-WSL cases live in wsl-path-bridge-availability.test.ts.
+vi.mock('node:child_process', () => ({
+  execFileSync: (exe: string, args: string[] = []) =>
+    exe === 'reg.exe' ? `${args[1]}\\{distribution-guid}\n    DistributionName    REG_SZ    Ubuntu\n` : 'Ubuntu\n'
+}))
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -39,13 +47,22 @@ test('parseDefaultDistro strips the default-marker and blank lines', () => {
 
 // ── wslPosixToWindowsAccessible ──────────────────────────────────────
 
-test('wslPosixToWindowsAccessible maps a drvfs mount to its Windows drive', () => {
-  assert.equal(wslPosixToWindowsAccessible('/mnt/c/Users/alex', 'Ubuntu'), 'C:\\Users\\alex')
-  assert.equal(wslPosixToWindowsAccessible('/mnt/d', 'Ubuntu'), 'D:\\')
-})
+test('wslPosixToWindowsAccessible resolves a distro only for paths that need a UNC share', () => {
+  let distroProbes = 0
 
-test('wslPosixToWindowsAccessible maps an in-distro POSIX path to a UNC share', () => {
-  assert.equal(wslPosixToWindowsAccessible('/home/alex/proj', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj')
+  const resolveDistro = () => {
+    distroProbes += 1
+
+    return 'Ubuntu'
+  }
+
+  assert.equal(wslPosixToWindowsAccessible('/mnt/c/Users/alex', undefined, resolveDistro), 'C:\\Users\\alex')
+  assert.equal(distroProbes, 0)
+  assert.equal(
+    wslPosixToWindowsAccessible('/home/alex/proj', undefined, resolveDistro),
+    '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj'
+  )
+  assert.equal(distroProbes, 1)
 })
 
 test('wslPosixToWindowsAccessible leaves non-absolute / already-Windows paths alone', () => {
@@ -100,26 +117,56 @@ test('setWslBridgeActive(true) restores picker bridging', () => {
   assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
 })
 
-test('toggling the bridge is idempotent and does not corrupt cached state', () => {
-  // Toggle twice each way.
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
+test('shellDriveToNativePath maps Git Bash/Cygwin/drvfs drive paths only when the native file exists', () => {
+  const existing = new Set(['C:/Users/alex/notes.txt', 'D:/x', 'C:/'])
+  const exists = (path: string) => existing.has(path)
 
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-
-  // Bridging still works after the toggles.
-  assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
+  assert.equal(shellDriveToNativePath('/c/Users/alex/notes.txt', exists), 'C:/Users/alex/notes.txt')
+  assert.equal(shellDriveToNativePath('/C/Users/alex/notes.txt', exists), 'C:/Users/alex/notes.txt')
+  assert.equal(shellDriveToNativePath('/cygdrive/d/x', exists), 'D:/x')
+  assert.equal(shellDriveToNativePath('/mnt/c/Users/alex/notes.txt', exists), 'C:/Users/alex/notes.txt')
+  assert.equal(shellDriveToNativePath('/c', exists), 'C:/')
+  // A real single-letter WSL directory with no native twin stays on the WSL bridge.
+  assert.equal(shellDriveToNativePath('/e/projects', exists), null)
+  // Not drive spellings at all.
+  assert.equal(shellDriveToNativePath('/home/alex/proj', exists), null)
+  assert.equal(shellDriveToNativePath('/mnt/data/x', exists), null)
+  assert.equal(shellDriveToNativePath('C:\\Users\\alex', exists), null)
 })
 
-// ── state isolation: every test sees a clean active bridge ────────────
+test('shellDriveToNativePath accepts the /E:/ drive spelling instead of bridging it to WSL', () => {
+  const existing = new Set(['E:/Users/alex/notes.txt', 'E:/', 'E:/Users/x.txt'])
+  const exists = (path: string) => existing.has(path)
 
-test('state isolation: bridge is active after a previous test toggled it off', () => {
-  // This test relies on afterEach resetting the bridge.
-  // If isolation is broken, isWslBridgeActive() would be false here.
-  assert.equal(isWslBridgeActive(), true)
+  // `/E:/...` (drive letter, colon, slash) used to miss the spelling above, so
+  // the path fell through to the WSL bridge and became
+  // `\\wsl.localhost\<distro>\E:\Users\...` — a stat that can never succeed.
+  assert.equal(shellDriveToNativePath('/E:/Users/alex/notes.txt', exists), 'E:/Users/alex/notes.txt')
+  assert.equal(shellDriveToNativePath('/e:/Users/alex/notes.txt', exists), 'E:/Users/alex/notes.txt')
+  // Bare drive root, with and without the trailing slash.
+  assert.equal(shellDriveToNativePath('/E:', exists), 'E:/')
+  assert.equal(shellDriveToNativePath('/E:/', exists), 'E:/')
+  // A colon without a separator is a POSIX filename, not a drive path.
+  assert.equal(shellDriveToNativePath('/E:Users/alex/notes.txt', exists), null)
+  // Repeated separators still collapse into a single one.
+  assert.equal(shellDriveToNativePath('/E://Users/x.txt', exists), 'E:/Users/x.txt')
+  // Still gated by existence: no native twin means the path stays on the bridge.
+  assert.equal(shellDriveToNativePath('/Z:/nope/x.txt', exists), null)
+})
+
+test('shellDriveToNativePath keeps a colon behind /mnt/ or /cygdrive/ on the POSIX side', () => {
+  // The colon form is a drive spelling only directly after the letter.
+  // `/mnt/c:/notes.md` is a POSIX path whose directory is literally `c:`;
+  // reading it as `C:/notes.md` silently opens an unrelated Windows file
+  // whenever that twin exists, including on a remote profile.
+  const existing = new Set(['C:/notes.md', 'C:/'])
+  const exists = (path: string) => existing.has(path)
+
+  assert.equal(shellDriveToNativePath('/mnt/c:/notes.md', exists), null)
+  assert.equal(shellDriveToNativePath('/cygdrive/c:/notes.md', exists), null)
+  assert.equal(shellDriveToNativePath('/mnt/c:', exists), null)
+
+  // The prefix-less colon form and the slash spelling still resolve.
+  assert.equal(shellDriveToNativePath('/c:/notes.md', exists), 'C:/notes.md')
+  assert.equal(shellDriveToNativePath('/mnt/c/notes.md', exists), 'C:/notes.md')
 })

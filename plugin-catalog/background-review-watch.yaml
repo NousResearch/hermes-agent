@@ -1,0 +1,42 @@
+# Nous Hermes plugin catalog entry — background-review-watch
+#
+# OWNER-SUBMITTED (rule 5): the PR author (vectorforge22) owns the repo.
+# Exact-SHA pin (40-hex) at a commit that passed `hermes plugins validate`
+# locally (manifest, loadable desktop/plugin.js, security scan SAFE, no core
+# override, desktop surface inside the SDK). No self-updating code: the plugin
+# is a single static ESM file that never fetches, downloads, or replaces
+# itself (rule 3).
+#
+# To submit: fork NousResearch/hermes-agent, add this file at
+# `plugin-catalog/background-review-watch.yaml`, and open a PR with the description in
+# `PR-description.md`.
+name: background-review-watch
+repo: https://github.com/vectorforge22/background-review-watch
+sha: "75c6f45741021529e19f87bbf2803ea1b608aa5e"   # unreleased, 2026-10-19 (v0.5.0 renamed to background-review-watch + screenshots)
+description: >-
+  Status-bar chips for the background self-improvement review and batch
+  context compaction: review running/done/stale with live elapsed time, a
+  turn-countdown fill bar to the next nudge, an always-visible compaction chip
+  (compacting/done/failed/stale with committed reduction or failure class),
+  reply-guard recovery and review-overlap diagnostics, and a Settings page that
+  tunes both orphan ceilings. Disclosure — renderer-only; polls filtered
+  read-only tails of agent.log via host.logs to parse lifecycle markers;
+  listens for review.summary/message.start/message.complete events; stores
+  three small plugin-storage records (settings + last compaction + last
+  review); no network calls beyond the local gateway, no credential access, no
+  self-update.
+maintainer: vectorforge22
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+version: "0.5.0"
+docs_url: https://github.com/vectorforge22/background-review-watch
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/vectorforge22/background-review-watch/75c6f45741021529e19f87bbf2803ea1b608aa5e/docs/screenshots/status-bar-idle.png
+  - https://raw.githubusercontent.com/vectorforge22/background-review-watch/75c6f45741021529e19f87bbf2803ea1b608aa5e/docs/screenshots/review-running.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

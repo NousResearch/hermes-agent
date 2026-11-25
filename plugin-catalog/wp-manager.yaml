@@ -1,0 +1,44 @@
+name: wp-manager
+title: "WP Website Manager"
+repo: https://github.com/danieljwonder/wp-manager
+sha: 78b783bd5e210b5501bd8de302169fe7b909bfaa
+version: "0.1.4"
+description: >-
+  Look after a fleet of WordPress sites from Hermes: scan every site for plugin, theme, core and
+  translation updates, install them behind Hermes's approval prompt with an automatic health check
+  afterwards, and draft or edit posts and pages from chat (publishing asks first). Includes a
+  WordPress page in Hermes Desktop and pairs with the "Website Manager: WP Connector for Hermes"
+  WordPress plugin shipped in the repo. Takes no backups.
+  Disclosure — talks only to the WordPress sites you add (REST API, WordPress Application
+  Passwords; plain http refused unless opted in per site; no cross-host redirects with credentials).
+  Passwords resolve through Hermes secrets, or through the 1Password CLI you configure as op_binary,
+  which wp-manager runs as a subprocess (argument list, no shell) to read op:// references, list
+  vault names and, only when you choose it, create a new Login item (password passed on stdin).
+  Stores site addresses, usernames and credential references (never passwords) plus an action log
+  in its own folder under HERMES_HOME. Never reads or writes the Hermes .env. No telemetry.
+maintainer: danieljwonder
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/danieljwonder/wp-manager#readme
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/sites.png
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/site-detail.png
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/add-site.png
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/approval.png
+capabilities:
+  provides_tools:
+    - wp_sites
+    - wp_site_add
+    - wp_site_remove
+    - wp_updates_scan
+    - wp_update_apply
+    - wp_health_check
+    - wp_content_list
+    - wp_content_get
+    - wp_content_save
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

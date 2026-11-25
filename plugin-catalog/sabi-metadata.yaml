@@ -1,0 +1,15 @@
+name: sabi-metadata
+repo: https://github.com/vizuh/sabi
+sha: b59bd21b89fca091bf9ebcfb3082a4191e511da7
+description: Fail-closed attribution middleware for Sabi's local adaptive routing lane (sabi-code). Adds opaque session/turn headers on loopback only; ignores all other models. Verified on Hermes 0.21.3.
+maintainer: Atroci
+tier: community
+category: models
+subdir: packages/adapters/hermes/plugin
+docs_url: https://github.com/vizuh/sabi/blob/main/docs/adapters/hermes.md
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: [llm_request]
+  requires_env: [SABI_HERMES_BASE_URL]

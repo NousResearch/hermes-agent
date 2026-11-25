@@ -7,7 +7,6 @@ from gateway.config import PlatformConfig
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _DYNAMIC_ROUTES_FILENAME,
-    _INSECURE_NO_AUTH,
 )
 
 
@@ -26,11 +25,6 @@ def _isolate(tmp_path, monkeypatch):
 
 
 class TestDynamicRouteLoading:
-    def test_no_dynamic_file(self):
-        adapter = _make_adapter(routes={"static": {"secret": "s"}})
-        adapter._reload_dynamic_routes()
-        assert "static" in adapter._routes
-        assert len(adapter._dynamic_routes) == 0
 
     def test_loads_dynamic_routes(self, tmp_path):
         subs = {"my-hook": {"secret": "dynamic-secret", "prompt": "test", "events": []}}

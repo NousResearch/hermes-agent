@@ -5,6 +5,9 @@ export interface CompletionEntry {
   text: string
   display?: unknown
   meta?: unknown
+  /** From `complete.slash`: registry command vs skill. The popover groups on
+   *  this instead of re-deriving kind from the desktop command table. */
+  kind?: string
   /** Optional section label (e.g. "Commands", "Skills"). The popover renders a
    *  header whenever this changes between consecutive items, so the fetcher must
    *  emit entries already grouped contiguously. */
@@ -33,7 +36,7 @@ export function useLiveCompletionAdapter(options: {
   /** Bump to declare the held answer stale. Without it a popover left open on
    *  an unchanged query would keep serving what it fetched before the source
    *  changed, because the adapter de-dupes on the query alone. */
-  epoch?: number
+  epoch?: number | string
   toItem: (entry: CompletionEntry, index: number) => Unstable_TriggerItem
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
   const { enabled, debounceMs = 60, epoch = 0, fetcher, isCached, toItem } = options

@@ -36,6 +36,9 @@ ALLOWLIST = {
     # Canonical loader owners.
     "hermes_cli/config.py",
     "gateway/config.py",
+    # load_gateway_config()'s config.yaml phase lives here (extracted from
+    # gateway/config.py); same owner, same managed-overlay contract.
+    "gateway/config_loader.py",
     # _load_gateway_config()'s fallback path for tests that monkeypatch
     # gateway.run._hermes_home (delegates to read_raw_config otherwise).
     "gateway/run.py",
@@ -44,6 +47,10 @@ ALLOWLIST = {
     "hermes_cli/managed_scope.py",
     # Parse-health probe: intentionally answers "does the raw file parse?".
     "gateway/readiness.py",
+    # _early_interface_from_config(): the pre-argparse TUI decision runs before
+    # hermes_cli.config is importable; it reads one display key best-effort and
+    # defaults to the classic REPL on any error.
+    "hermes_cli/main.py",
 }
 
 # Directories that never count (tests may build fixture configs freely).

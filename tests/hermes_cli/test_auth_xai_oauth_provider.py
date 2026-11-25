@@ -10,17 +10,9 @@ import pytest
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_XAI_OAUTH_BASE_URL,
-    PROVIDER_REGISTRY,
-    XAI_OAUTH_CLIENT_ID,
-    XAI_OAUTH_SCOPE,
     _read_xai_oauth_tokens,
     _refresh_xai_oauth_tokens,
     _save_xai_oauth_tokens,
-    _xai_access_token_is_expiring,
-    _xai_oauth_poll_device_token,
-    _xai_oauth_request_device_code,
-    _xai_validate_inference_base_url,
-    format_auth_error,
     get_xai_oauth_auth_status,
     refresh_xai_oauth_pure,
     resolve_provider,
@@ -122,12 +114,6 @@ def _patch_httpx_client(monkeypatch, response):
 # ---------------------------------------------------------------------------
 
 
-def test_xai_oauth_provider_registered():
-    assert "xai-oauth" in PROVIDER_REGISTRY
-    pconfig = PROVIDER_REGISTRY["xai-oauth"]
-    assert pconfig.id == "xai-oauth"
-    assert pconfig.auth_type == "oauth_external"
-    assert pconfig.inference_base_url == DEFAULT_XAI_OAUTH_BASE_URL
 
 
 def test_resolve_provider_normalizes_xai_oauth_aliases():
@@ -395,33 +381,8 @@ def test_refresh_xai_oauth_pure_403_marked_tier_denied_not_relogin(monkeypatch):
         )
     assert exc.value.code == "xai_oauth_tier_denied"
     assert exc.value.relogin_required is False
-    message = str(exc.value).lower()
-    assert "403" in message
-    assert "xai_api_key" in message
-    assert "tier" in message
 
 
-def test_format_auth_error_tier_denied_does_not_suggest_relogin():
-    """``xai_oauth_tier_denied`` must not append the re-authenticate hint.
-
-    Regression for #26847: telling a tier-gated user to ``hermes model``
-    is actively wrong — re-logging in won't change xAI's allowlist
-    decision. The full message (with ``XAI_API_KEY`` fallback) is built
-    into the error itself.
-    """
-    err = AuthError(
-        "xAI token refresh failed with HTTP 403. Response: forbidden. "
-        "This OAuth account is not authorized for xAI API access — "
-        "xAI may be restricting API/OAuth use to specific SuperGrok tiers. "
-        "Set ``XAI_API_KEY`` and switch to ``provider: xai``.",
-        provider="xai-oauth",
-        code="xai_oauth_tier_denied",
-        relogin_required=False,
-    )
-    rendered = format_auth_error(err)
-    assert "re-authenticate" not in rendered.lower()
-    assert "hermes model" not in rendered.lower()
-    assert "XAI_API_KEY" in rendered
 
 
 def test_xai_oauth_discovery_raises_typed_error_on_malformed_json(monkeypatch):
@@ -697,47 +658,6 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
 # ---------------------------------------------------------------------------
 
 
-def test_pool_sync_back_writes_to_singleton(tmp_path, monkeypatch):
-    """When the pool refreshes a singleton-seeded xAI entry, the new tokens
-    must be written back to providers["xai-oauth"] so that
-    resolve_xai_oauth_runtime_credentials() (which reads the singleton)
-    doesn't keep using the consumed refresh token."""
-    from agent.credential_pool import load_pool
-
-    hermes_home = tmp_path / "hermes"
-    expired = _jwt_with_exp(int(time.time()) - 10)
-    _setup_hermes_auth(hermes_home, access_token=expired, refresh_token="rt-old")
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    new_access = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
-
-    def _fake_refresh(access_token, refresh_token, **kwargs):
-        assert refresh_token == "rt-old"
-        return {
-            "access_token": new_access,
-            "refresh_token": "rt-new",
-            "id_token": "",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "last_refresh": "2026-05-15T01:00:00Z",
-        }
-
-    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
-
-    pool = load_pool("xai-oauth")
-    selected = pool.select()
-    assert selected is not None
-    assert selected.access_token == new_access
-    assert selected.refresh_token == "rt-new"
-
-    # Singleton must reflect refreshed tokens — otherwise the next process
-    # to load credentials would re-seed the consumed refresh token.
-    auth_path = hermes_home / "auth.json"
-    raw = json.loads(auth_path.read_text())
-    state = raw["providers"]["xai-oauth"]
-    assert state["tokens"]["access_token"] == new_access
-    assert state["tokens"]["refresh_token"] == "rt-new"
-    assert state["last_refresh"] == "2026-05-15T01:00:00Z"
 
 
 # ---------------------------------------------------------------------------

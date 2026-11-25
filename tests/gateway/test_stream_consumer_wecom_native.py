@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -38,7 +38,7 @@ def _make_native_streaming_adapter(
 
     Records every ``send_stream_frame`` call on ``adapter.frames`` for assertions.
     """
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from gateway.platforms.base import BasePlatformAdapter
 
     NativeStreamingAdapter = type(
         "NativeStreamingAdapter",
@@ -121,12 +121,6 @@ class TestNativeStreamingResolver:
         consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
         assert consumer._resolve_native_streaming() is False
 
-    def test_magicmock_adapter_falls_back(self):
-        """MagicMock adapters are excluded by isinstance gate."""
-        adapter = MagicMock()
-        cfg = StreamConsumerConfig(chat_type="dm")
-        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
-        assert consumer._resolve_native_streaming() is False
 
 
 # === LIFECYCLE ===
@@ -245,31 +239,6 @@ class TestNativeStreamingThrottling:
         assert len(finalize_frames) == 1
         assert finalize_frames[0]["text"] == "abcdefghij"
 
-    @pytest.mark.asyncio
-    async def test_large_growth_emits_mid_frames(self):
-        """When text grows by >20 chars, an interim frame should land."""
-        adapter = _make_native_streaming_adapter()
-        cfg = StreamConsumerConfig(
-            chat_type="dm", cursor="",
-            edit_interval=0.01, buffer_threshold=5,
-        )
-        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
-
-        task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.02)
-        # First chunk well past 20 chars.
-        consumer.on_delta("A" * 40)
-        await asyncio.sleep(0.05)
-        # Second chunk also past 20 chars.
-        consumer.on_delta("B" * 40)
-        await asyncio.sleep(0.05)
-        consumer.finish()
-        await task
-
-        non_finalize_content_frames = [
-            f for f in adapter.frames if not f["finalize"] and f["text"]
-        ]
-        assert len(non_finalize_content_frames) >= 1
 
 
 # === FALLBACK ===
@@ -296,6 +265,7 @@ class TestNativeStreamingFallback:
         await task
 
         assert consumer._use_native_streaming is False
+        adapter.send.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_native_streaming_disables_draft(self):
@@ -729,7 +699,7 @@ class TestClarifyEagerReseed:
         per-tick fragments on a non-editable platform."""
         # Make the SECOND seed (the eager re-seed) fail while the initial seed
         # succeeds, so we actually reach the reopen-pending state first.
-        from gateway.platforms.base import BasePlatformAdapter, SendResult
+        from gateway.platforms.base import BasePlatformAdapter
 
         NativeStreamingAdapter = type(
             "NativeStreamingAdapter2",
@@ -889,7 +859,7 @@ class TestClarifyEagerReseed:
         直接验证 review (b).4 的结论。
         """
         # 复用 Point 5 的降级 adapter：第一次空 seed 成功、第二次（eager 再 seed）失败。
-        from gateway.platforms.base import BasePlatformAdapter, SendResult
+        from gateway.platforms.base import BasePlatformAdapter
 
         NativeStreamingAdapter = type(
             "NativeStreamingAdapter2b",

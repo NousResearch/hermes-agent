@@ -50,16 +50,12 @@ def _make_runner():
     runner._fallback_model = None
     runner._service_tier = None
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
-    runner._pending_approvals = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []
@@ -104,11 +100,14 @@ fallback_providers:
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
-    def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None):
+    def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None,
+                                      target_model=None):
         if requested in {None, "", "openai-codex"}:
             from hermes_cli.auth import AuthError
             raise AuthError("No Codex credentials stored. Run `hermes auth` to authenticate.")
         assert requested == "openrouter"
+        # The fallback rung is resolved against the model it will send, not the primary default.
+        assert target_model == "minimax/minimax-m2.7"
         return {
             "api_key": "sk-openrouter",
             "base_url": "https://openrouter.ai/api/v1",
@@ -119,7 +118,7 @@ fallback_providers:
             "credential_pool": None,
         }
 
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
 

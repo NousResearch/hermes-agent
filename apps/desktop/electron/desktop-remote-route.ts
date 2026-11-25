@@ -27,6 +27,8 @@ export type DesktopRemoteRoute =
       connectionId?: string
       headers?: Record<string, unknown>
       kind: 'cloud' | 'remote'
+      /** A desktop plugin's launcher on this computer serves this profile route. */
+      launcher?: { plugin: string }
       org?: string
       source: RouteSource
       token?: unknown
@@ -49,6 +51,47 @@ export interface DesktopRemoteRouteInput {
 
 function withConnectionId<T extends object>(route: T, connectionId?: string): T & { connectionId?: string } {
   return connectionId ? { ...route, connectionId } : route
+}
+
+/**
+ * Pool key used by v1 settings/profile SSH (`sshConnections`).
+ *
+ * Bootstrap stores the tunnel under sshScopeKey(profile or null).
+ * resolveDesktopRemoteRoute may also stamp a registry connectionId when
+ * the host matches a v2 row. That id is identity, not the pool key.
+ * Looking up backendScopeKey(connectionId, profile) misses the live tunnel.
+ */
+export function v1SshTerminalPoolKey(route: { source: string }, profile?: null | string): string {
+  if (route.source === 'profile') {
+    return connectionScopeKey(profile) || ''
+  }
+
+  return ''
+}
+
+/** The route of a per-profile URL or cloud entry. A plugin's launcher route is never a registered source. */
+function profileOverrideRoute(
+  registry: ConnectionRegistry,
+  profileConfig: null | Record<string, any>,
+  override: NonNullable<ReturnType<typeof profileRemoteOverride>>
+): DesktopRemoteRoute {
+  const kind = profileConfig?.mode === 'cloud' ? 'cloud' : 'remote'
+  const authMode = override.authMode === 'oauth' ? 'oauth' : 'token'
+  const route = { ...profileConfig, kind } as StoredRoute
+
+  return withConnectionId(
+    {
+      authMode,
+      headers: override.headers,
+      kind,
+      ...(override.launcher ? { launcher: override.launcher } : {}),
+      org: kind === 'cloud' ? String(profileConfig?.org || '').trim() || undefined : undefined,
+      source: 'profile' as const,
+      token: override.token,
+      url: override.url
+    },
+    override.launcher ? undefined : matchingConnectionId(registry, route, 'unique')
+  )
 }
 
 /**
@@ -84,22 +127,7 @@ export function resolveDesktopRemoteRoute({
   const override = profileRemoteOverride(config, profile)
 
   if (override) {
-    const kind = profileConfig?.mode === 'cloud' ? 'cloud' : 'remote'
-    const authMode = override.authMode === 'oauth' ? 'oauth' : 'token'
-    const route = { ...profileConfig, kind } as StoredRoute
-
-    return withConnectionId(
-      {
-        authMode,
-        headers: override.headers,
-        kind,
-        org: kind === 'cloud' ? String(profileConfig?.org || '').trim() || undefined : undefined,
-        source: 'profile' as const,
-        token: override.token,
-        url: override.url
-      },
-      matchingConnectionId(registry, route, 'unique')
-    )
+    return profileOverrideRoute(registry, profileConfig, override)
   }
 
   const envUrl = String(env.url || '').trim()
@@ -209,4 +237,17 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
     token: entry.token,
     url
   }
+}
+
+/**
+ * Boot target when the user asked to launch the registry primary. Returns null
+ * for last-used mode and for a local primary — those keep the local spawn.
+ * Ignores legacy connection.json mode, which must not override this choice.
+ */
+export function registryPrimaryBootRoute(registry: ConnectionRegistry): DesktopRemoteRoute | null {
+  if (registry?.launchMode !== 'primary') {
+    return null
+  }
+
+  return resolveRegistryPrimaryRoute(registry)
 }

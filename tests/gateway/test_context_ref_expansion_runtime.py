@@ -25,7 +25,7 @@ import pytest
 import gateway.run as gateway_run
 from agent.context_references import ContextReferenceResult
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -39,7 +39,6 @@ def _make_runner() -> GatewayRunner:
     # Attrs touched by _resolve_session_agent_runtime on a bare test runner
     # (mirrors tests/gateway/test_empty_model_recovery.py).
     runner._session_model_overrides = {}
-    runner._last_resolved_model = {}
     runner._service_tier = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
@@ -190,3 +189,28 @@ async def test_at_reference_ignores_global_context_for_runtime_route_override(mo
         event=MessageEvent(text="@file:note", source=source), source=source, history=[]
     )
     assert captured["config_context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_oversized_file_reference_reaches_gateway_as_tool_readable_path(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner()
+    source = _source()
+    _patch_runtime_resolution(monkeypatch)
+
+    payload = tmp_path / "large.txt"
+    payload.write_text("FULL-CONTENT-MARKER\n" + ("x" * 300_000), encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+    result = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text=f"Inspect @file:{payload.name}", source=source),
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert str(payload) in result
+    assert "too large to inline safely" in result
+    assert "FULL-CONTENT-MARKER" not in result
+    assert "context injection refused" not in result

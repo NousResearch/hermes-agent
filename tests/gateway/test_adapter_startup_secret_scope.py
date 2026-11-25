@@ -33,7 +33,6 @@ MIGRATED_ADAPTER_MODULES = [
     ("plugins.platforms.teams.adapter", "TEAMS_CLIENT_SECRET"),
     ("plugins.platforms.mattermost.adapter", "MATTERMOST_TOKEN"),
     ("plugins.platforms.ntfy.adapter", "NTFY_TOKEN"),
-    ("plugins.platforms.homeassistant.adapter", "HASS_TOKEN"),
     ("plugins.platforms.sms.adapter", "TWILIO_AUTH_TOKEN"),
     ("plugins.platforms.dingtalk.adapter", "DINGTALK_CLIENT_SECRET"),
     ("plugins.platforms.feishu.adapter", "FEISHU_APP_SECRET"),
@@ -41,7 +40,7 @@ MIGRATED_ADAPTER_MODULES = [
     ("plugins.platforms.photon.adapter", "PHOTON_PROJECT_SECRET"),
     ("plugins.platforms.photon.auth", "PHOTON_PROJECT_SECRET"),
     ("plugins.platforms.buzz.adapter", "BUZZ_PRIVATE_KEY"),
-    ("gateway.platforms.bluebubbles", "BLUEBUBBLES_PASSWORD"),
+    ("plugins.platforms.bluebubbles.adapter", "BLUEBUBBLES_PASSWORD"),
     ("gateway.platforms.api_server", "API_SERVER_KEY"),
 ]
 
@@ -66,9 +65,6 @@ def _helper(module_name):
     return helper
 
 
-@pytest.mark.parametrize(("module_name", "var"), MIGRATED_ADAPTER_MODULES, ids=MODULE_IDS)
-def test_helper_exists(module_name, var):
-    _helper(module_name)
 
 
 @pytest.mark.parametrize(("module_name", "var"), MIGRATED_ADAPTER_MODULES, ids=MODULE_IDS)

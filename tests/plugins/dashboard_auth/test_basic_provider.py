@@ -9,6 +9,7 @@ import path as a package) and exercises the provider behaviour + the
 from __future__ import annotations
 
 import secrets
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -80,8 +81,6 @@ class TestProvider:
     def test_protocol_compliant(self, basic):
         assert assert_protocol_compliance(basic.BasicAuthProvider) is None
 
-    def test_supports_password_true(self, basic):
-        assert basic.BasicAuthProvider.supports_password is True
 
     def test_login_mints_session(self, basic):
         p = self._make(basic)
@@ -119,15 +118,24 @@ class TestProvider:
         assert p.verify_session(access_token=r.access_token) is not None
 
 
+    def test_sessions_minted_in_one_second_get_their_own_tokens(self, basic, monkeypatch):
+        # A listener that drops a session's tokens (the Webapp's sign-out) must not see them come
+        # back from a later login or refresh, even one in the same second.
+        monkeypatch.setattr(basic, "time", SimpleNamespace(time=lambda: 1_700_000_000))
+        p = self._make(basic)
+        first = p.complete_password_login(username="admin", password="hunter2")
+        second = p.complete_password_login(username="admin", password="hunter2")
+        renewed = p.refresh_session(refresh_token=first.refresh_token)
+        sessions = (first, second, renewed)
+        assert len({s.access_token for s in sessions}) == len({s.refresh_token for s in sessions}) == 3
+        assert all(p.verify_session(access_token=s.access_token) is not None for s in sessions)
+
     def test_cross_secret_token_does_not_verify(self, basic):
         p1 = self._make(basic)
         p2 = self._make(basic)  # different random secret
         s = p1.complete_password_login(username="admin", password="hunter2")
         assert p2.verify_session(access_token=s.access_token) is None
 
-    def test_revoke_is_silent(self, basic):
-        p = self._make(basic)
-        p.revoke_session(refresh_token="anything")  # must not raise
 
     def test_oauth_methods_raise_not_implemented(self, basic):
         p = self._make(basic)
@@ -161,7 +169,7 @@ class TestProvider:
 
 class TestRegister:
     def test_skips_when_no_username(self, basic, monkeypatch):
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", dict)
         ctx = MagicMock()
         basic.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
@@ -171,7 +179,7 @@ class TestRegister:
     def test_registers_with_env_plaintext_password(self, basic, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", dict)
         ctx = MagicMock()
         basic.register(ctx)
         ctx.register_dashboard_auth_provider.assert_called_once()
@@ -207,7 +215,7 @@ class TestRegister:
         # Two providers built from the SAME explicit secret accept each
         # other's tokens (the restart-/multi-worker-survival contract).
         shared = secrets.token_bytes(32).hex()
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", dict)
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_SECRET", shared)

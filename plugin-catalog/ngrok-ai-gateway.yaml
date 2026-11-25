@@ -1,0 +1,27 @@
+name: ngrok-ai-gateway
+repo: https://github.com/ngrok/hermes-ngrok
+sha: "27baaa0e85e09581f05084fc318a0755774162e1"
+subdir: model-providers/ngrok
+title: ngrok AI Gateway
+description: >-
+  The ngrok AI Gateway as a Hermes model provider (`--provider ngrok`, or ngrok AI Gateway in
+  `hermes model`): one access key for all your model providers, with failover. The model list
+  comes live from your gateway, and gateway errors (unrouted model, access-policy and upstream-key
+  failures, out of credit) map onto Hermes' fallback instead of a generic error. Disclosure —
+  registers one model provider at import and nothing else (no tools, hooks, commands or threads);
+  chat requests and the model list go to https://gateway.ngrok.ai/v1 (or NGROK_AI_GATEWAY_BASE_URL)
+  through Hermes' own client with NGROK_AI_GATEWAY_KEY, which Hermes reads; the plugin itself opens
+  no connections, reads and writes no files and starts no processes.
+maintainer: ngrok
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://ngrok.com/docs/ai-gateway/overview
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - NGROK_AI_GATEWAY_KEY

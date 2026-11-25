@@ -1,0 +1,29 @@
+name: lifeboat
+version: "0.1.0"
+repo: https://github.com/superskie/lifeboat
+sha: 14d60292b15161c0838a5d1f5779cfda93ddea24
+description: "Rescue what a sweeper bot left behind in a drained EVM wallet: claims, unstakes and transfers in one EIP-7702 transaction paid by a fresh operator, sent only after you approve the exact text. Disclosure — moves funds on-chain: signs EIP-7702 delegations with the private key of the already-drained wallet (LIFEBOAT_VICTIM_KEY, read through the Hermes secret scope) and sends transactions from fresh operator wallets whose keys it generates and stores sealed under its plugin data directory; sending is off until LIFEBOAT_ENABLE_EXECUTE=1, every send needs a per-transaction Hermes approval prompt, and it refuses to send in yolo mode, with approvals off or in unattended runs (cron, -q, webhook, API); assets go only to LIFEBOAT_SAFE_ADDRESS; sends the wallet address to the public RPC of each supported chain (scan with no chain list queries all of them; override per chain with the `rpc` plugin setting) and to each chain's public Blockscout API for the balance scan and sweep history; reads Hermes' private approval-mode functions to detect unattended runs (fails closed); no telemetry, no background threads."
+maintainer: superskie
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/superskie/lifeboat#readme
+platforms: []
+known_issues:
+  - "Runs only for a wallet with a sweep on record (gas that arrived and left again within five minutes, at least twice). There is no switch to turn this off."
+  - "After a rescue the wallet stays delegated to the batch contract and the leaked key still controls it. Never use that wallet again."
+  - "On seven chains the explorer cannot be read by scripts, so the scan lists only the native balance there and you name the tokens yourself."
+capabilities:
+  provides_tools:
+    - lifeboat_scan
+    - lifeboat_plan
+    - lifeboat_simulate
+    - lifeboat_status
+    - lifeboat_execute
+    - lifeboat_sweep_back
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - LIFEBOAT_VICTIM_KEY
+    - LIFEBOAT_SAFE_ADDRESS

@@ -27,6 +27,8 @@ export interface RendererLoadErrorDetails {
   errorCode?: number | string | undefined
   /** Human description of the failure, e.g. the renderer bundle is torn. */
   errorDescription?: string
+  /** Page heading; defaults to the load-failure title. A terminated-renderer notice supplies its own. */
+  title?: string
   /** The URL that failed to load, when known. */
   url?: string
   /** Module files index.html declares but that are missing on disk. */
@@ -102,7 +104,7 @@ export function buildRendererLoadErrorPage(details: RendererLoadErrorDetails = {
   const code =
     details.errorCode === undefined || details.errorCode === null ? '' : ` (${escapeHtml(details.errorCode)})`
 
-  const title = 'Hermes couldn\u2019t start the desktop UI'
+  const title = escapeHtml(details.title || 'Hermes couldn\u2019t start the desktop UI')
   const description = escapeHtml(details.errorDescription || 'The desktop renderer failed to load.')
   const url = details.url ? `<p><code>${escapeHtml(details.url)}</code></p>` : ''
   const repair = details.repairHint ? `<p>Repair with: <code>hermes desktop --force-build</code></p>` : ''

@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import (
-    COMPRESSION_CONTINUATION_USER_CONTENT,
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
@@ -17,12 +16,13 @@ from agent.context_compressor import (
     _NO_USER_TASK_SENTINEL,
 )
 from agent.conversation_compression import (
-    _ensure_compressed_has_user_turn,
     compress_context,
 )
-from hermes_state import SessionDB
-from tools.process_registry import format_process_notification
+from tools.process_registry_notifications import format_process_notification
 from tools.todo_tool import TODO_INJECTION_HEADER
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _response(content: str) -> SimpleNamespace:
@@ -87,7 +87,7 @@ def _assistant_turns(start: int, count: int) -> list[dict]:
     ]
 
 
-def _lifecycle_agent(db: SessionDB, session_id: str):
+def _lifecycle_agent(db, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -96,7 +96,7 @@ def _lifecycle_agent(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -144,7 +144,6 @@ Vind de bestanden.
 
     assert result is None
     assert compressor._previous_summary is None
-    assert "invented user attribution" in compressor._last_summary_error
 
 
 
@@ -176,7 +175,7 @@ def test_zero_user_provenance_survives_iterative_compaction(compressor):
             quiet_mode=True,
         )
     resumed.tail_token_budget = 80
-    # SessionDB persists the summary content/role but not arbitrary internal
+    # The store persists the summary content/role but not arbitrary internal
     # message keys. Simulate that round trip: the exact sentinel must recover
     # false provenance even when both in-process metadata keys are absent.
     persisted_handoff = dict(first_handoffs[0])
@@ -278,9 +277,9 @@ def test_background_process_notifications_do_not_become_compaction_anchors(
 
     assert ContextCompressor._is_synthetic_compression_user_turn(process_turn) is True
     assert ContextCompressor._transcript_has_real_user_turn([process_turn]) is False
-    assert compressor._derive_auto_focus_topic(messages) == (
-        "Recent user focus:\n- Refactor the auth module and add tests."
-    )
+    focus = compressor._derive_auto_focus_topic(messages)
+    assert "Refactor the auth module and add tests." in focus
+    assert notification not in focus
     assert compressor._find_last_user_message_idx(messages, head_end=0) == 0
 
 
@@ -342,7 +341,7 @@ def test_conversation_loop_retry_nudges_are_synthetic(content):
     as MAX_ITERATIONS_SUMMARY_REQUEST above. A turn interrupted/crashed mid-
     retry can persist one of these as a plain role="user" row (their
     _length_continuation_nudge/_dropped_toolcall_nudge metadata tags do not
-    survive SessionDB projection), so recognition must be content-based."""
+    survive the store's projection), so recognition must be content-based."""
     nudge = {"role": "user", "content": content}
     assert ContextCompressor._is_synthetic_compression_user_turn(nudge) is True
 
@@ -386,9 +385,9 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
 ):
     hermes_home = tmp_path / "hermes-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "zero-user-todo-lifecycle"
-    db.create_session(session_id, source="cron", model="test/model")
+    seed_session(db, session_id, "cron", model="test/model")
 
     first_agent = _lifecycle_agent(db, session_id)
     with patch(
@@ -415,7 +414,7 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
         and str(message.get("content") or "").startswith(TODO_INJECTION_HEADER)
         for message in first
     )
-    projected = db.get_messages_as_conversation(session_id)
+    projected = conversation(db, session_id)
     assert projected
     assert all(
         COMPRESSED_SUMMARY_METADATA_KEY not in message

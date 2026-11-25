@@ -1,6 +1,6 @@
 """Container-restart survives per-profile gateway registrations.
 
-The s6 dynamic scandir at /run/service/ lives on tmpfs and is wiped
+The s6 gateway scandir at /run/hermes-service/ lives on tmpfs and is wiped
 on every container restart. Phase 4 Task 4.0's container_boot module
 + cont-init.d/02-reconcile-profiles regenerate the service slots from
 $HERMES_HOME/profiles/<name>/gateway_state.json on every boot and
@@ -17,18 +17,18 @@ the conftest module docstring.
 from __future__ import annotations
 
 import subprocess
-import time
 
 import pytest
 
-from tests.docker.conftest import docker_exec, docker_exec_sh, wait_for_path, wait_for_log, wait_for_docker_logs, poll_container
+from tests.docker.conftest import docker_exec, docker_exec_sh, wait_for_path, wait_for_log
 
 
 def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
         ["docker", *args],
         capture_output=True, text=True, timeout=kw.pop("timeout", 60),
         **kw,
+    
     )
 
 
@@ -96,11 +96,11 @@ def test_stopped_gateway_stays_stopped_after_restart(restart_container: str) -> 
 
     # Slot exists.
     assert wait_for_path(
-        container, "/run/service/gateway-writer", kind="d", deadline_s=10.0,
+        container, "/run/hermes-service/gateway-writer", kind="d", deadline_s=10.0,
     )
 
     # Down marker present.
-    r = docker_exec_sh(container, "test -f /run/service/gateway-writer/down")
+    r = docker_exec_sh(container, "test -f /run/hermes-service/gateway-writer/down")
     assert r.returncode == 0, "down marker missing despite prior_state=stopped"
 
 

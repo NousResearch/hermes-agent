@@ -28,8 +28,8 @@ type HyprlandDispatchSyntax = 'legacy' | 'lua'
 
 export type HyprlandRequestFn = (socketPath: string, command: string) => Promise<null | string>
 
-const DEFAULT_ATTEMPTS = 8
-const DEFAULT_DELAY_MS = 50
+const DEFAULT_ATTEMPTS = 24
+const DEFAULT_DELAY_MS = 100
 
 let cachedSyntax: null | HyprlandDispatchSyntax = null
 

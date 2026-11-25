@@ -73,5 +73,3 @@ def test_init_cached_agent_preserves_max_iterations_on_interrupt_depth():
     assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
     # ...and max_iterations untouched.
     assert agent.max_iterations == 200
-
-

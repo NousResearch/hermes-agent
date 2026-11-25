@@ -15,10 +15,6 @@ from hermes_cli.config import DEFAULT_CONFIG
 
 
 class TestDestructiveSlashConfirmDefault:
-    def test_default_config_has_the_key(self):
-        approvals = DEFAULT_CONFIG.get("approvals")
-        assert isinstance(approvals, dict)
-        assert "destructive_slash_confirm" in approvals
 
     def test_default_is_true(self):
         # New installs confirm by default — destructive commands must not
@@ -32,7 +28,7 @@ class TestUserConfigMerge:
     user didn't override)."""
 
     def test_existing_user_config_without_key_gets_default(self, tmp_path, monkeypatch):
-        import yaml
+        import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir()

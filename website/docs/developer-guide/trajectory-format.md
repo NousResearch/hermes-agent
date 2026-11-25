@@ -3,7 +3,7 @@
 Hermes Agent saves conversation trajectories in ShareGPT-compatible JSONL format
 for use as training data, debugging artifacts, and reinforcement learning datasets.
 
-Source files: `agent/trajectory.py`, `run_agent.py` (search for `_save_trajectory`), `batch_runner.py`
+Source files: `agent/trajectory.py`, `agent/session_persistence.py` (search for `_save_trajectory`), `batch_runner.py`
 
 
 ## File Naming Convention
@@ -61,7 +61,7 @@ Each line in the file is a self-contained JSON object. There are two variants:
 ```
 
 The `tool_stats` and `tool_error_counts` dictionaries are normalized to include
-ALL possible tools (from `model_tools.TOOL_TO_TOOLSET_MAP`) with zero defaults,
+ALL possible tools (from `model_tools.get_all_tool_names()`) with zero defaults,
 ensuring consistent schema across entries for HuggingFace dataset loading.
 
 

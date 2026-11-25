@@ -14,6 +14,7 @@ same contract.
 import types
 
 import pytest
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 @pytest.fixture
@@ -117,7 +118,7 @@ class TestApprovalsSaveBroadcast:
 
         profile_dir = tmp_path / "profiles" / "other"
         profile_dir.mkdir(parents=True)
-        monkeypatch.setattr(web_server, "_resolve_profile_dir", lambda name: profile_dir)
+        monkeypatch.setattr(_web_server_profiles, "_resolve_profile_dir", lambda name: profile_dir)
 
         resp = client.put(
             "/api/config",

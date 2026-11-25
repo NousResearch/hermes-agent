@@ -19,6 +19,7 @@ from tools.environments.local import (
 
 
 class TestResolveShellInitFiles:
+    @pytest.mark.platforms("linux")
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"
         bashrc.write_text('export MARKER=seen\n')
@@ -33,6 +34,7 @@ class TestResolveShellInitFiles:
 
         assert resolved == [str(bashrc)]
 
+    @pytest.mark.platforms("linux")
     def test_auto_sources_profile_when_present(self, tmp_path, monkeypatch):
         """~/.profile is where ``n`` / ``nvm`` installers typically write
         their PATH export on Debian/Ubuntu, and it has no interactivity
@@ -51,6 +53,7 @@ class TestResolveShellInitFiles:
         assert resolved == [str(profile)]
 
 
+    @pytest.mark.platforms("linux")
     def test_auto_sources_profile_before_bashrc(self, tmp_path, monkeypatch):
         """Both files present: profile runs first so PATH exports in
         profile take effect even if bashrc short-circuits on the

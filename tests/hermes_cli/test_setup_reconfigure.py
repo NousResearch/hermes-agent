@@ -63,7 +63,7 @@ def _enter_existing_install_patches(stack, **extra):
         ("hermes_cli.setup.get_env_value", {"return_value": None}),
         ("hermes_cli.auth.get_active_provider", {"return_value": "openrouter"}),
         ("hermes_cli.setup._print_setup_summary", {}),
-        ("hermes_cli.setup._offer_openclaw_migration", {"return_value": False}),
+        ("hermes_cli.setup.offer_agent_import", {"return_value": ""}),
     ]:
         stack.enter_context(patch(target, **kwargs))
 
@@ -83,7 +83,7 @@ def _enter_fresh_install_patches(stack, **extra):
         ("hermes_cli.setup.save_config", {}),
         ("hermes_cli.auth.get_active_provider", {"return_value": None}),
         ("hermes_cli.setup.get_env_value", {"return_value": None}),
-        ("hermes_cli.setup._offer_openclaw_migration", {"return_value": False}),
+        ("hermes_cli.setup.offer_agent_import", {"return_value": ""}),
     ]:
         stack.enter_context(patch(target, **kwargs))
 
@@ -176,8 +176,10 @@ class TestFreshInstall:
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
+                rows=("hermes_cli.setup_quick.first_run_power_rows",
+                      {"return_value": [("portal", "Sign in"), ("own", "Own key")]}),
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
-                first="hermes_cli.setup._run_first_time_quick_setup",
+                first="hermes_cli.setup_quick._run_first_time_quick_setup",
             )
             from hermes_cli.setup import run_setup_wizard
             from hermes_cli import setup as setup_mod
@@ -198,8 +200,10 @@ class TestFreshInstall:
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
-                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
-                blank="hermes_cli.setup._run_blank_slate_setup",
+                rows=("hermes_cli.setup_quick.first_run_power_rows",
+                      {"return_value": [("portal", "Sign in"), ("own", "Own key")]}),
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 3}),  # Blank Slate, after Full
+                blank="hermes_cli.setup_quick._run_blank_slate_setup",
             )
             from hermes_cli import setup as setup_mod
 

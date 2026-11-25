@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
@@ -20,7 +20,7 @@ def _context(
     *, name: str = "fixture-plugin", key: str = "", namespace: str = ""
 ) -> PluginContext:
     return PluginContext(
-        PluginManifest(name=name, key=key, skill_namespace=namespace),
+        PluginManifest(name=name, key=key, data_namespace=namespace),
         PluginManager(),
     )
 

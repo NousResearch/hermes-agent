@@ -1,7 +1,7 @@
 name: mechacut
 title: mechacut
 repo: https://github.com/mechacut/plugin
-sha: ed2679907596db5c7e6a3020e4128e49b4ec92a5
+sha: 0a84ae6a1dea910b4957a6e6da45e1d46510db4a
 version: "1.0.0"
 description: "The mechacut.studio contract for agents, as two portable skills: the operating skill (a live surface of deterministic transforms — exact math, dates, money, units, text, listed and counted at mechacut.studio/agent/manifest; keyless free tier, sha256 on every response, 400s that name the field and the expectation, the one-operation-at-a-time calc protocol built for weak models) and the network skill (propose a verified tool CONTRACT via /api/v1/agent/propose with ELIGIBLE/SUSPECT-DUPLICATE/DUPLICATE-OF verdicts, tracked in the public registry at /proposals — bench results, named refusals, first external proposer credited). Portable Agent Plugins v1 package (plugin.json + skills/), skills only, no plugin code, no MCP server bundled. Disclosure — the skills instruct plain HTTPS calls to mechacut.studio (ordinary requests — Hermes does not prompt before each one; the skills state what leaves the machine); the free tier is keyless by doctrine (30/min, nothing stored server-side); paid routes use x402 USDC on Base and the skill instructs the agent to ASK THE HUMAN before paying. Revenue split for accepted external proposals (50/50) is decided and the splitter factory is live on Base, but NO per-tool clone is registered yet — today nothing splits; monetization requires the proposer's own Base account (EIP-55 format verified, responsibility stays with the owner). Said in the README, the SKILL-KIT and /PAYOUTS: built and proven, not yet feeding."
 maintainer: C.V.

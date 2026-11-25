@@ -314,7 +314,7 @@ jobs:
                   body: JSON.stringify({ workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId }),
                   signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
                 });
-                if (res.status >= 400 && res.status < 500) {
+                if (res.status >= 400 && res.status < 500 && res.status !== 429) {
                   core.warning(`artifact listing answered HTTP ${res.status}; deploying without waiting`);
                   return;
                 }

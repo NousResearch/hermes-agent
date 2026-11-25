@@ -282,6 +282,34 @@ MAX_ITERATIONS_SUMMARY_REQUEST = (
 )
 _BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
 
+# ---- untyped synthetic user rows -----------------------------------------------------------------
+# Rows persisted before display typing (or by a writer that never typed them) carry their kind only in
+# their opening text. Every read projection that hides them shares these detectors.
+
+# Completion prompts the agent injects as role=user rows; the session timeline never lists them as turns.
+SYNTHETIC_PROMPT_RE = re.compile(
+    r"^\s*(?:\[IMPORTANT: Background process |\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE\b|"
+    r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
+    r"A background subagent you dispatched earlier has finished\.)",
+    re.IGNORECASE,
+)
+# Opening of every Hermes-authored ``[System note: …]`` row (crash-recovery and gateway notes).
+SYSTEM_NOTE_PREFIX = "[System note:"
+# Opening of the crash-recovery note the TUI synthesizes; matched (not just built) for rows persisted
+# before display typing existed and for the messaging gateway's twin note.
+AUTO_CONTINUE_NOTE_PREFIX = SYSTEM_NOTE_PREFIX + " Your previous turn was interrupted mid-run"
+
+
+def is_display_hidden_marker(role: str | None, text: str) -> bool:
+    """Gateway notices (model-switch, personality) persist as role=user ``[System: …]`` rows so strict providers
+    accept them mid-history; they must never render as a user bubble. Filtering in this one projection hides
+    them everywhere (raw marker stays in ``session["history"]``) and keeps the desktop's user ordinals stable.
+
+    It also removes the stored marker from the payload the desktop reconciles against, so it can no longer
+    shift user-message ordinals and duplicate the optimistic prompt (#67603).
+    """
+    return role == "user" and text.lstrip().startswith("[System:")
+
 
 # Explicit end boundary: weak models otherwise read quoted headers as fresh
 # user input or replay an assistant-role summary as their own output.

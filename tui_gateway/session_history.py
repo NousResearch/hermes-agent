@@ -7,6 +7,9 @@ import re
 
 from .method_ctx import bind_module
 from agent.prompt_builder import STEER_DISPLAY_KIND
+# Aliased so bind_module publishes them onto server.py (a plain-name function import is skipped).
+from session_rules.turns import AUTO_CONTINUE_NOTE_PREFIX as _AUTO_CONTINUE_NOTE_PREFIX
+from session_rules.turns import is_display_hidden_marker as _is_display_hidden_marker
 
 # Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
 # ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
@@ -225,17 +228,6 @@ def _is_text_only_busy_payload(content: Any) -> bool:
     return isinstance(content, (str, int, float)) or (isinstance(content, dict) and _history_text_only_part(content))
 
 
-def _is_display_hidden_marker(role: str | None, text: str) -> bool:
-    """Gateway notices (model-switch, personality) persist as role=user ``[System: …]`` rows so strict providers
-    accept them mid-history; they must never render as a user bubble. Filtering in this one projection hides
-    them everywhere (raw marker stays in ``session["history"]``) and keeps the desktop's user ordinals stable.
-
-    It also removes the stored marker from the payload the desktop reconciles against, so it can no longer
-    shift user-message ordinals and duplicate the optimistic prompt (#67603).
-    """
-    return role == "user" and text.lstrip().startswith("[System:")
-
-
 def _skill_scaffold_projection(content_text: str) -> str:
     """The invocation a slash-skill-expanded turn came from, else "" — UIs render ``/work fix the leak``."""
     return describe_skill_invocation(content_text, separator=" ") or ""
@@ -254,11 +246,6 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
     except Exception:  # a skill that no longer resolves must not break the rewind
         logger.debug("skill re-expansion failed for replay", exc_info=True)
         return text
-
-
-# Opening of the crash-recovery note synthesized by _auto_continue_note; matched (not just built) for
-# rows persisted before display typing existed and for the messaging gateway's twin note.
-_AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted mid-run"
 
 
 def _legacy_display_kind(role: str, text: str) -> str | None:

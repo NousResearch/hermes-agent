@@ -243,6 +243,48 @@ def test_hidden_scaffolds_and_compaction_never_project(activity_store):
     assert [m["content"] for m in response.json()["messages"]] == ["public answer"]
 
 
+_LEGACY_SYNTHETIC_ROWS = (
+    ("user", "[IMPORTANT: Background process proc_1 completed (exit code 0).\nCommand: echo PRIVATE-BG-CMD\n"
+             "Output:\nPRIVATE-BG-OUTPUT]"),
+    ("user", "[ASYNC DELEGATION COMPLETE — d1]\nPRIVATE-DELEGATION-RESULT"),
+    ("user", "A background subagent you dispatched earlier has finished. PRIVATE-SUBAGENT"),
+    ("user", "[System: The active model for this chat has changed to PRIVATE-MODEL.]"),
+    ("user", "[System note: Your previous turn was interrupted mid-run — the app stopped. "
+             "The interrupted request was:]\n\nPRIVATE-AUTO-CONTINUE"),
+    ("user", "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted. PRIVATE-LEGACY-SUMMARY"),
+    ("user", "[CONTEXT SUMMARY]: PRIVATE-OLDEST-SUMMARY"),
+    ("user", "[Your active task list was preserved across context compression]\n- PRIVATE-TODO"),
+    ("assistant", "[CONTEXT COMPACTION — REFERENCE ONLY] PRIVATE-ASSISTANT-SUMMARY"),
+)
+
+
+def _append_legacy_untyped(store, path, rows):
+    for role, content in rows:
+        store.messages.append("session-root", NewMessage(role, content))
+    # Rows written before display typing / the _compressed_summary column carry neither.
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE messages SET display_kind = NULL, _compressed_summary = 0")
+
+
+def test_legacy_untyped_synthetic_rows_never_project(activity_store):
+    store, path = activity_store
+    _append_legacy_untyped(store, path, (("user", "public question"), *_LEGACY_SYNTHETIC_ROWS,
+                                         ("assistant", "public answer")))
+    response = client().get("/api/sessions/session-root/activity")
+    assert response.status_code == 200
+    assert "PRIVATE" not in response.text
+    assert [(m["role"], m["content"]) for m in response.json()["messages"]] == [
+        ("user", "public question"), ("assistant", "public answer")]
+
+
+def test_store_activity_read_excludes_legacy_untyped_synthetic_rows(activity_store):
+    store, path = activity_store
+    _append_legacy_untyped(store, path, (*_LEGACY_SYNTHETIC_ROWS, ("user", "public question")))
+    with open_persistence_reader(path) as reader:
+        rows = reader.messages.read_activity("session-root", limit=200)
+    assert [(row.role, row.content) for row in rows] == [("user", "public question")]
+
+
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
 @pytest.mark.parametrize("query", ["?unexpected=secret", "?profile=default&profile=other", "?limit=1"])
 def test_discovery_query_is_closed(method, query):

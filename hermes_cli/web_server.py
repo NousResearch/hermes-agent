@@ -322,7 +322,7 @@ _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
-    if _file_tickets.redeem(request):
+    if getattr(request.state, "file_ticket_authority", None) is not None or _file_tickets.redeem(request):
         return True
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
@@ -334,10 +334,12 @@ def _require_token(request: Request) -> None:
     """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
 
     Loopback mode (``auth_required`` False): validate the SPA-injected
-    ``_SESSION_TOKEN``. Gated mode: the token is NOT injected (cookie auth), and
-    ``gated_auth_middleware`` already 401'd anything without a verified
-    ``request.state.session`` — requiring the absent token here would make every
-    ``_require_token`` endpoint unreachable behind the gate, so defer to it.
+    ``_SESSION_TOKEN`` or, on a loopback Webapp, a verified cookie
+    ``request.state.session``. Gated mode: the token is NOT injected (cookie
+    auth), and ``gated_auth_middleware`` already 401'd anything without a
+    verified ``request.state.session`` — requiring the absent token here would
+    make every ``_require_token`` endpoint unreachable behind the gate, so
+    defer to it.
     A verified native owner (``authenticate_native_http``) is the same-user
     principal the outer seams already accepted; local Desktop runs with no
     static token, so that principal must satisfy route-local policy too.
@@ -350,7 +352,7 @@ def _require_token(request: Request) -> None:
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None
     else:
-        ok = _has_valid_session_token(request)
+        ok = getattr(request.state, "session", None) is not None or _has_valid_session_token(request)
     if not ok:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -432,6 +434,7 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     if plugin_name and (
         getattr(request.state, "token_authenticated", False)
         or getattr(request.state, "native_http_principal", None)
+        or getattr(request.state, "session", None) is not None
         or getattr(request.app.state, "auth_required", False)
         or _has_valid_session_token(request)
         or _has_valid_query_token(request, path)
@@ -450,27 +453,19 @@ app.add_middleware(PluginApiWebSocketGate)
 
 
 @app.middleware("http")
-async def _dashboard_auth_gate(request: Request, call_next):
-    """OAuth gate — active only when start_server flags ``auth_required``; pass-through on loopback.
-
-    Registered between host_header and auth_middleware: host check → cookie auth → token auth.
-    """
-    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
-    return await gated_auth_middleware(request, call_next)
-
-
-@app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list.
 
-    Skipped for requests the token-auth seam already authenticated
-    (``token_authenticated``) and when the OAuth gate is active — cookie auth is
-    then authoritative and the loopback-only token path must not override it.
+    Skipped for requests the token-auth seam or cookie gate already authenticated
+    (``token_authenticated``, ``native_http_principal``, ``session``) and when the OAuth
+    gate is active — cookie auth is then authoritative and the loopback-only token path
+    must not override it.
     """
     path = request.url.path
     if (
         not getattr(request.state, "token_authenticated", False)
         and not getattr(request.state, "native_http_principal", None)
+        and getattr(request.state, "session", None) is None
         and not getattr(request.app.state, "auth_required", False)
         and path.startswith("/api/")
         and path not in _PUBLIC_API_PATHS
@@ -480,6 +475,18 @@ async def auth_middleware(request: Request, call_next):
     ):
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _dashboard_auth_gate(request: Request, call_next):
+    """OAuth/cookie gate — registered AFTER auth_middleware so it runs BEFORE it (Starlette LIFO).
+
+    Enforces session cookies/bearers when ``auth_required`` is True, and verifies Webapp browser
+    sign-in cookies on loopback Webapp listeners while leaving unauthenticated loopback requests
+    to ``auth_middleware``.
+    """
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+    return await gated_auth_middleware(request, call_next)
 
 
 @app.middleware("http")

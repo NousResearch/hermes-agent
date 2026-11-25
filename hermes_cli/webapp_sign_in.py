@@ -66,9 +66,9 @@ def binding(token: str) -> str:
 
 
 def applies(request: Request) -> bool:
-    """Whether *request* reaches the gateway's Webapp behind the sign-in gate."""
+    """Whether *request* reaches the gateway's Webapp (gated or loopback)."""
     state = request.app.state
-    return getattr(state, "ui_surface", None) == "webapp" and bool(getattr(state, "auth_required", False))
+    return getattr(state, "ui_surface", None) == "webapp"
 
 
 def check(request: Request) -> bool:

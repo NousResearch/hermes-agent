@@ -199,16 +199,17 @@ def peek_session(request: Request):
     checks (Webapp sign-in binding, bearers only a native app was given) and none of its side
     effects: no refresh, no cookie writes, no audit records, no 401. A public route uses it to
     decide how much to show; an expired or unverifiable session reads as signed out."""
+    auth_required = bool(getattr(request.app.state, "auth_required", False))
     bearer = _extract_bearer(request)
     if bearer:
-        if not webapp_sign_in.access_token_works_alone(request, bearer):
+        if not auth_required or not webapp_sign_in.access_token_works_alone(request, bearer):
             return None
         access_token, provider_hint = bearer, None
     else:
         gateway = webapp_sign_in.cookie_gateway(request)
         access_token, _rt = read_session_cookies(request, gateway)
         if not access_token and not _rt:
-            return _session_token_header_session(request)
+            return _session_token_header_session(request) if auth_required else None
         if not access_token or (webapp_sign_in.applies(request) and not webapp_sign_in.check(request)):
             return None
         provider_hint = read_session_provider(request, gateway)
@@ -278,11 +279,113 @@ async def _serve_bearer(request: Request, call_next: Callable[[Request], Awaitab
     return _unauth_response(request, reason="invalid_or_expired_session")
 
 
+async def _authenticate_cookie_session(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+    *,
+    gateway: str,
+    at: str | None,
+    rt: str | None,
+    provider_hint: str | None,
+    strict: bool,
+) -> Response:
+    """Verify (or transparently refresh) session cookies and attach ``request.state.session``.
+
+    When *strict* is True (gated mode or ``/api/*`` on loopback Webapp), invalid/revoked cookies
+    return the structured 401/redirect response (and 503 on provider outage). When *strict* is
+    False (HTML loads on loopback Webapp), invalid/revoked cookies fall through unauthenticated
+    (clearing dead cookies when expired) so a launch-link tab is never trapped behind ``/login``.
+    """
+    if webapp_sign_in.applies(request) and not webapp_sign_in.check(request):
+        if strict:
+            # A login on the gateway's Webapp holds only while the browser credential it was bound
+            # to is in use; signing out replaced it. The cookies stay and open nothing until it signs
+            # in again.
+            return _unauth_response(request, reason="signed_out")
+        return await call_next(request)
+    # An absent AT with a present RT is the COMMON expiry case (the AT cookie's Max-Age tracks
+    # the token TTL, so the browser evicts it first) — skip straight to refresh.
+    session = None
+    if at:
+        try:
+            session = _verify_access_token(request, access_token=at, provider_hint=provider_hint)
+        except ProviderError as e:
+            return unreachable_response(str(e)) if strict else await call_next(request)
+    if session is None:
+        # Rotate via the refresh token before forcing re-login; on success the request is
+        # served transparently with the rotated cookies re-set.
+        try:
+            refreshed = await run_in_threadpool(
+                _attempt_refresh, request, refresh_token=rt, provider_hint=provider_hint)
+        except ProviderError as e:
+            # Uncertain (provider unreachable), not rejected: keep the cookies.
+            return unreachable_response(str(e)) if strict else await call_next(request)
+        if refreshed is None:
+            if strict:
+                return _session_expired_response(request)
+            response = await call_next(request)
+            clear_session_cookies(response, prefix=prefix_from_request(request), gateway=gateway)
+            return response
+        return await _serve_refreshed(request, call_next, *refreshed)
+
+    request.state.session = session
+    response = await call_next(request)
+    if not provider_hint and session.provider:
+        set_session_provider_cookie(
+            response, provider=session.provider, use_https=detect_https(request),
+            prefix=prefix_from_request(request), gateway=gateway)
+    return response
+
+
+async def _loopback_webapp_cookie_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Honor verified browser sign-in cookies on a loopback Webapp listener.
+
+    The gateway-hosted loopback Webapp withholds ``_SESSION_TOKEN`` from HTML, so a browser that
+    signed in via ``/login`` presents only its session cookies. Verify those cookies with the same
+    Webapp sign-in binding and own-origin CSRF guard as gated mode while leaving unauthenticated
+    requests, native grants, and launch-link session-token holders to ``auth_middleware``.
+    """
+    from hermes_cli.web_server import _has_valid_query_token, _has_valid_session_token
+    from hermes_cli.web_server_surface import private_launch
+
+    if not private_launch(request.app.state):
+        return await call_next(request)
+    path = request.url.path
+    if (
+        getattr(request.state, "token_authenticated", False)
+        or getattr(request.state, "native_http_principal", None)
+        or _has_valid_session_token(request)
+        or _has_valid_query_token(request, path)
+    ):
+        return await call_next(request)
+    cookie_logout = path == "/auth/logout"
+    if _path_is_public(path) and not cookie_logout:
+        return await call_next(request)
+    gateway = webapp_sign_in.cookie_gateway(request)
+    at, rt = read_session_cookies(request, gateway)
+    if not at and not rt:
+        return await call_next(request)
+    refusal = _cookie_write_refusal(
+        request, own_origin=True, other_page=False, has_cookies=True)
+    if refusal is not None:
+        return refusal
+    if cookie_logout:
+        return await call_next(request)
+    return await _authenticate_cookie_session(
+        request, call_next, gateway=gateway, at=at, rt=rt,
+        provider_hint=read_session_provider(request, gateway),
+        strict=path.startswith("/api/"),
+    )
+
+
 async def gated_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-    """Engaged only when ``app.state.auth_required is True``."""
+    """Enforce cookie/bearer auth when ``app.state.auth_required is True``, and verify Webapp
+    sign-in cookies on a loopback Webapp listener."""
     if not getattr(request.app.state, "auth_required", False):
-        return await call_next(request)
+        return await _loopback_webapp_cookie_middleware(request, call_next)
     # Already authenticated by the token-auth seam (service caller on a registered token
     # route): not a cookie session, must not bounce to /login.
     if (getattr(request.state, "token_authenticated", False)
@@ -326,38 +429,10 @@ async def gated_auth_middleware(
         # No session at all: try the silent portal bounce before /login.
         auto = _auto_sso_response(request)
         return auto if auto is not None else _unauth_response(request, reason="no_cookie")
-    if webapp_sign_in.applies(request) and not webapp_sign_in.check(request):
-        # A login on the gateway's Webapp holds only while the browser credential it was bound to is
-        # in use; signing out replaced it. The cookies stay and open nothing until it signs in again.
-        return _unauth_response(request, reason="signed_out")
-    # An absent AT with a present RT is the COMMON expiry case (the AT cookie's Max-Age tracks
-    # the token TTL, so the browser evicts it first) — skip straight to refresh.
-    session = None
-    if at:
-        try:
-            session = _verify_access_token(request, access_token=at, provider_hint=provider_hint)
-        except ProviderError as e:
-            return unreachable_response(str(e))
-    if session is None:
-        # Rotate via the refresh token before forcing re-login; on success the request is
-        # served transparently with the rotated cookies re-set.
-        try:
-            refreshed = await run_in_threadpool(
-                _attempt_refresh, request, refresh_token=_rt, provider_hint=provider_hint)
-        except ProviderError as e:
-            # Uncertain (provider unreachable), not rejected: keep the cookies.
-            return unreachable_response(str(e))
-        if refreshed is None:
-            return _session_expired_response(request)
-        return await _serve_refreshed(request, call_next, *refreshed)
-
-    request.state.session = session
-    response = await call_next(request)
-    if not provider_hint and session.provider:
-        set_session_provider_cookie(
-            response, provider=session.provider, use_https=detect_https(request),
-            prefix=prefix_from_request(request), gateway=gateway)
-    return response
+    return await _authenticate_cookie_session(
+        request, call_next, gateway=gateway, at=at, rt=_rt,
+        provider_hint=provider_hint, strict=True,
+    )
 
 
 def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | None = None):

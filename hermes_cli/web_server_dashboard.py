@@ -209,6 +209,10 @@ def mount_spa(application: FastAPI):
                 return _bundle_unavailable(request, stale, 503)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(application.state, "auth_required", False))
+        # A loopback Webapp browser that signed in via /login holds verified session cookies
+        # (request.state.session) rather than the launch-link sessionStorage token; telling the
+        # SPA auth is active makes it use same-origin cookies while _SESSION_TOKEN stays withheld.
+        cookie_session = getattr(request.state, "session", None) is not None
         # Only a host that records its surface (the gateway's Webapp) names it to the page.
         surface = getattr(application.state, "ui_surface", None)
         surface_js = "" if surface is None else f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
@@ -234,7 +238,7 @@ def mount_spa(application: FastAPI):
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
-            f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
+            f"window.__HERMES_AUTH_REQUIRED__={'true' if (gated or cookie_session) else 'false'};"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
             f"{surface_js}"
             f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"

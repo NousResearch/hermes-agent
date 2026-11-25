@@ -343,32 +343,25 @@ interface InstalledCopyBlock {
   newer: boolean
 }
 
-// Electron replaces whichever of /Applications or ~/Applications it picks, so every installed copy must be
-// confirmed no newer than this one. A copy whose version can't be read or compared is never replaced.
+// Electron's bundle mover only ever writes /Applications/<bundle name> (NSLocalDomainMask); a copy in
+// ~/Applications is never touched. That copy may be replaced only when its version reads as no newer than
+// this one; a version that can't be read or compared refuses the move.
 function installedCopyBlockingMove(
   bundlePath: string,
   runningVersion: string,
-  homeDir: string,
   readBundleVersion: (targetBundle: string) => string | null,
   exists: (file: string) => boolean
 ): InstalledCopyBlock | null {
-  const bundleName = path.posix.basename(path.posix.resolve(bundlePath))
-  const candidates = [path.posix.join('/Applications', bundleName)]
+  const destination = path.posix.join('/Applications', path.posix.basename(path.posix.resolve(bundlePath)))
 
-  if (homeDir) {
-    candidates.push(path.posix.join(path.posix.resolve(homeDir), 'Applications', bundleName))
+  if (!exists(destination)) {
+    return null
   }
 
-  for (const candidate of candidates.filter(candidate => exists(candidate))) {
-    const existingVersion = readBundleVersion(candidate)
-    const comparison = existingVersion ? compareBundleVersions(runningVersion, existingVersion) : null
+  const existingVersion = readBundleVersion(destination)
+  const comparison = existingVersion ? compareBundleVersions(runningVersion, existingVersion) : null
 
-    if (comparison === null || comparison < 0) {
-      return { existingVersion, newer: comparison !== null }
-    }
-  }
-
-  return null
+  return comparison === null || comparison < 0 ? { existingVersion, newer: comparison !== null } : null
 }
 
 function buildMovePromptOptions(
@@ -432,24 +425,19 @@ async function reportInstalledCopyConflict(
 }
 
 async function attemptMoveToApplications(
-  deps: Pick<
-    MacApplicationsGuardDeps,
-    'app' | 'appName' | 'dialog' | 'exists' | 'homeDir' | 'log' | 'readBundleVersion'
-  >,
+  deps: Pick<MacApplicationsGuardDeps, 'app' | 'appName' | 'dialog' | 'exists' | 'log' | 'readBundleVersion'>,
   bundlePath: string,
   location: MacUnsafeBundleLocation
 ): Promise<MacApplicationsGuardResult> {
   const readBundleVersion = deps.readBundleVersion ?? (target => readBundleShortVersion(target))
   const exists = deps.exists ?? fs.existsSync
-  const homeDir = deps.homeDir ?? os.homedir()
   let conflict: 'exists' | 'existsAndRunning' | null = null
   let blocked: InstalledCopyBlock | null = null
 
   try {
     const runningVersion = readBundleVersion(bundlePath) ?? deps.app.getVersion()
 
-    const checkInstalled = () =>
-      installedCopyBlockingMove(bundlePath, runningVersion, homeDir, readBundleVersion, exists)
+    const checkInstalled = () => installedCopyBlockingMove(bundlePath, runningVersion, readBundleVersion, exists)
 
     // Electron calls conflictHandler only when it can trash the installed copy itself. When /Applications or
     // that copy needs admin rights, it deletes and copies through an admin prompt without asking, so check first.

@@ -181,8 +181,11 @@ def _move_workspace(task_id, path):
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if not os.path.isdir(resolved):
         raise FileNotFoundError(f"folder does not exist: {resolved}")
-    from gateway.session_policy import active_policy
-    policy = active_policy()  # the calling turn's own frozen policy (a delegated child inherits it)
+    from gateway.config import Platform
+    from gateway.session_local_recovery import local_adapter_map
+    # The chat's current folder, as its last committed move published it; a background child's own
+    # context still holds the turn it was spawned in.
+    policy = local_adapter_map(authority)[Platform.LOCAL].policies.get(live.source.chat_id)
     if policy is not None and os.path.realpath(policy.cwd) == os.path.realpath(resolved):
         live.pending_workspace = None  # already there: an earlier call's pending move is taken back
         return True

@@ -174,15 +174,19 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
             runner._restart_task_started = runner._restart_requested = False
             # Drop the failed restart's plan too: a later plain stop would otherwise exit 75 and be relaunched.
             runner._restart_detached = runner._restart_via_service = False
-            if getattr(runner, "_restart_command_source", None) is not None:  # a /restart's requester:
-                runner._restart_command_source = None  # the next restart is not theirs, nor is its notice
-                (get_hermes_home() / ".restart_notify.json").unlink(missing_ok=True)
+            chat_restart = getattr(runner, "_restart_command_source", None) is not None
+            runner._restart_command_source = None  # a /restart's requester: the next restart is not theirs
             runner._restart_force_event = None
             budgets = runner.__dict__.pop("_budgets_before_force", None)
             if budgets is not None:  # the force expected a stop that never came: drain as before it
                 runner._restart_drain_timeout, runner._cron_drain_timeout = budgets
             if not getattr(runner, "_external_drain_active", False):  # an operator's drain still holds
                 runner._scale_to_zero_status(runner._serving_state(), "restart failure: status restore failed")
+            if chat_restart:  # nor is its notice; best-effort, after the recovery (a read-only home)
+                try:
+                    (get_hermes_home() / ".restart_notify.json").unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove the failed /restart's notice", exc_info=True)
 
     async def _restart_when_idle() -> None:
         idle = await await_idle(runner)

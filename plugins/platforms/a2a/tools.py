@@ -37,12 +37,29 @@ def _peer_from_entry(entry: dict, **extra: Any) -> dict:
             "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)), **extra}
 
 
+def _local_profile_url(agent: str) -> Optional[str]:
+    """URL of a profile this gateway serves over A2A (``/p/<profile>/`` on the shared listener), so a
+    served profile calls another by name with no ``a2a_agents`` entry. Never the calling profile: its
+    own session is busy with this very turn, so the call could only time out."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.profiles import current_profile_name
+        if agent == current_profile_name("default"):
+            return None
+        from plugins.platforms.a2a import listeners
+        return listeners.local_url(agent)
+    return None
+
+
 def _resolve_peer(agent: str) -> Optional[dict]:
-    """Peer name -> {url, auth, timeout, capabilities, tenant}, or treat ``agent`` as a URL."""
+    """Peer name -> {url, auth, timeout, capabilities, tenant}, or treat ``agent`` as a URL. A name not
+    under ``a2a_agents`` falls back to a profile served by this gateway's A2A listener."""
     if agent.startswith(("http://", "https://")):
         return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
     entry = _configured_peers().get(agent)
-    return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or [], tenant=entry.get("tenant", "")) if entry else None
+    if entry:
+        return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or [], tenant=entry.get("tenant", ""))
+    url = _local_profile_url(agent)
+    return {"url": url, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": [], "tenant": ""} if url else None
 
 
 def _auth_header(auth: dict) -> dict:
@@ -179,7 +196,8 @@ def a2a_call(args: dict, **_: Any) -> str:
         return "Error: both 'agent' and 'message' are required."
     peer = _resolve_peer(agent)
     if not peer or not peer.get("url"):
-        return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
+        return (f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml, name a profile "
+                "this gateway serves over A2A, or pass a full http(s):// URL.")
     try:
         reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
     except urllib.error.HTTPError as e:
@@ -303,7 +321,7 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                  "Send a natural-language task to a remote A2A agent and return its reply. The agent is a peer "
                  "(any A2A-compliant framework), not a sub-agent you control. Pass 'context_id' from a previous "
                  "reply to continue a multi-turn exchange.",
-                 {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
+                 {"agent": _str("Configured peer name (from a2a_agents), a profile this gateway serves, or a full http(s):// URL."),
                   "message": _str("The task / message to send the peer, in natural language."),
                   "context_id": _str("Optional: context id from a prior reply, to continue the conversation.")},
                  ["agent", "message"]),

@@ -157,6 +157,7 @@ plugins/platforms/a2a/
 ├── plugin.yaml      # manifest (kind: platform)
 ├── __init__.py      # register(): platform adapter + client tools
 ├── adapter.py       # inbound A2A v1.0 server (stdlib http.server)
+├── listeners.py     # process-wide listener registry (multiplex: /p/<profile>/ mounts)
 ├── tools.py         # outbound client tools
 ├── protocol.py      # Agent Card, JSON-RPC framing, task store, persistence
 ├── security.py      # auth/identity, injection filters, redaction, audit

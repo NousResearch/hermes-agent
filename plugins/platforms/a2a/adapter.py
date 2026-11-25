@@ -30,6 +30,13 @@ from gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret 
 
 from . import protocol, security
 
+# ONE listener registry per process: every profile home imports its own copy of this plugin
+# (hermes_plugins.platforms__a2a__home_<hash>), so it is reached by its canonical name.
+try:
+    from plugins.platforms.a2a import listeners as _listeners
+except ImportError:  # pragma: no cover - plugin loaded from outside the source tree
+    from . import listeners as _listeners
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
@@ -138,6 +145,13 @@ def _http_server_class(host: str) -> type:
     return _ThreadingHTTPServerV6 if ":" in host else ThreadingHTTPServer
 
 
+def _make_http_server(host: str, port: int) -> ThreadingHTTPServer:
+    """Bind the stdlib listener (raises OSError when the port is taken); serving starts in listeners.mount."""
+    server = _http_server_class(host)((host, port), A2ARequestHandler)
+    server.daemon_threads = True
+    return server
+
+
 def _daemon_thread(target, name: str) -> threading.Thread:
     t = threading.Thread(target=target, name=name, daemon=True)
     t.start()
@@ -151,18 +165,35 @@ def _safe_context_slug(value: str, max_len: int = 96) -> str:
 
 
 class A2ARequestHandler(BaseHTTPRequestHandler):
-    """HTTP handler for the A2A JSON-RPC surface; all state lives on ``self.server.adapter``."""
+    """HTTP handler for the A2A JSON-RPC surface; all state lives on the adapter mounted at the
+    request's path (``listeners.resolve``), or on ``self.server.adapter`` for a bare test server."""
+
+    _a2a_adapter: Optional[A2AAdapter] = None
+    _a2a_path: Optional[str] = None
 
     @property
     def adapter(self) -> A2AAdapter:
-        return self.server.adapter  # type: ignore[attr-defined]
+        """The adapter mounted at this request's path (``/p/<profile>/`` or the root)."""
+        return self._a2a_adapter or self.server.adapter  # type: ignore[attr-defined]
+
+    @property
+    def routed_path(self) -> str:
+        """The request path as the routed adapter sees it (``/p/<profile>`` stripped)."""
+        return self._a2a_path if self._a2a_path is not None else self.path
 
     def parse_request(self) -> bool:
-        """Without a token, refuse any request whose ``Host`` is not a loopback name, before a route
-        runs: a page on a hostname re-resolved to 127.0.0.1 (DNS rebinding) is same-origin to this
-        listener and could otherwise read its served-agent list and Agent Card."""
+        """Pick the mounted adapter, then, without a token, refuse any request whose ``Host`` is not a
+        loopback name, before a route runs: a page on a hostname re-resolved to 127.0.0.1 (DNS
+        rebinding) is same-origin to this listener and could otherwise read its served-agent list and
+        Agent Card. A ``/p/<profile>/`` path with no such mount is a 404, never another profile."""
         if not super().parse_request():
             return False
+        listener = getattr(self.server, "a2a_listener", None)
+        if listener is not None:
+            self._a2a_adapter, self._a2a_path = _listeners.resolve(listener, self.path)
+            if self._a2a_adapter is None:
+                self._json(404, {"error": "not found"})
+                return False
         adapter = self.adapter
         if adapter._security_context.localhost_only() and not security.is_loopback_host_header(
                 self.headers.get("Host"), adapter._public_url):
@@ -209,14 +240,14 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         adapter = self.adapter
-        route = adapter._route_for_path(self.path)
+        route = adapter._route_for_path(self.routed_path)
         agent = route["agent"]
         subpath = route["subpath"].rstrip("/") or "/"
         public_url = self._request_public_url() or None
         if subpath in ("/.well-known/agent.json", "/.well-known/agent-card.json"):
             return self._json(200, adapter._build_card(public_url, agent=agent))
         if subpath == "/metrics":
-            return self._json(200, protocol.metrics.snapshot())
+            return self._json(200, adapter._metrics.snapshot())
         if subpath not in ("/", "/health"):
             return self._json(404, {"error": "not found"})
         payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name}
@@ -224,6 +255,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         sec = adapter._security_context
         if sec.localhost_only() or sec.authenticate(self.headers.get("Authorization"), self._client_ip()) is not None:
             payload["served_agents"] = adapter._served_agent_summary(public_url=public_url)
+            if not adapter._mount_slug and (profiles := adapter._co_mounted_profiles(public_url)):
+                payload["profiles"] = profiles
         self._json(200, payload)
 
     def do_POST(self):
@@ -246,7 +279,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         req_id, method = req.get("id"), str(req.get("method", ""))
         params = req["params"] if req.get("params") is not None else {}
         version = (self.headers.get("A2A-Version") or "").strip()
-        route = adapter._route_for_request(self.path, params) if isinstance(params, dict) else {}
+        route = adapter._route_for_request(self.routed_path, params) if isinstance(params, dict) else {}
         handler_name, is_v1 = _METHODS.get(method, ("", False))
         # Ordered, lazily-evaluated checks -> (http status, error code, message); first failure wins
         # (the rate limiter must not be consulted for requests rejected before it).
@@ -261,7 +294,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         for failed, http, code, msg in checks:
             if failed():
                 if code == protocol.ERR_RATE_LIMITED:
-                    protocol.metrics.rate_limit_triggers += 1
+                    adapter._metrics.rate_limit_triggers += 1
                 return self._error(http, req_id, code, msg)
         agent = route["agent"]
         if handler_name == "_rpc_message_send":
@@ -288,6 +321,10 @@ class A2AAdapter(BasePlatformAdapter):
         self._security_context = security.A2ASecurityContext.capture()
         _port_env = _get_scoped_secret("A2A_PORT")
         self.port = int(_port_env or extra.get("port", _DEFAULT_PORT))
+        # An explicit port is an operator's own listener; only the default port is shared under multiplex.
+        self._port_explicit = bool(_port_env) or extra.get("port") is not None
+        self._mount_slug = ""  # "" = listener root; "<profile>" = /p/<profile>/ (set in connect)
+        self._listener: Optional[_listeners.Listener] = None
         self.host = self._security_context.resolve_bind_host()
         self.agent_name = _default_agent_name()
         configured_toolsets = list(extra.get("advertised_toolsets") or []) or _get_scoped_secret("A2A_ADVERTISED_TOOLSETS", "").split(",")
@@ -335,20 +372,28 @@ class A2AAdapter(BasePlatformAdapter):
     async def connect(self, **_kwargs) -> bool:
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.
         self._loop = asyncio.get_running_loop()
+        # A multiplexed secondary on the default port joins the process's listener at /p/<profile>/
+        # instead of fighting the default profile for the port (one gateway, one A2A port).
+        self._mount_slug = self._shared_mount_slug()
         try:
-            self._httpd = _http_server_class(self.host)((self.host, self.port), A2ARequestHandler)
+            self._listener = _listeners.mount(self.host, self.port, self._mount_slug, self, _make_http_server)
         except OSError as e:
             logger.error("A2A: could not bind %s:%s — %s", self.host, self.port, e)
             self._set_fatal_error("bind_failed", f"A2A bind failed: {e}", retryable=True)
             return False
-        self._httpd.daemon_threads = True
-        self._httpd.adapter = self  # type: ignore[attr-defined]
-        self._server_thread = _daemon_thread(self._httpd.serve_forever, "a2a-http")
+        self._httpd, self._server_thread = self._listener.server, self._listener.thread
         self._watchdog_stop.clear()  # disconnect sets it; reset for reconnection
         self._watchdog_thread = _daemon_thread(self._watchdog_loop, "a2a-watchdog")
         self._mark_connected()
-        logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
-                    "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
+        mode = "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)"
+        if self._mount_slug:
+            url = self._base_url(self._public_url or None)
+            logger.info("A2A: profile %r served on the shared A2A listener at %s (%s) as %r; %d routed agent(s)",
+                        self._mount_slug, url, mode, self.agent_name, len(self._agents))
+            self._write_runtime_status_safe("shared_ingress", ingress_url=url)
+        else:
+            logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)",
+                        self.host, self.port, mode, self.agent_name, len(self._agents))
         sec = self._security_context
         if sec.unusable_peer_tokens:
             logger.error("A2A: A2A_PEER_TOKENS is set but has no name:token pair (expected \"alice:tok1,bob:tok2\"); %s",
@@ -363,11 +408,9 @@ class A2AAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._mark_disconnected()
         self._watchdog_stop.set()
-        if self._httpd is not None:
-            with contextlib.suppress(Exception):
-                self._httpd.shutdown()
-                self._httpd.server_close()
-            self._httpd = None
+        listener, self._listener, self._httpd = self._listener, None, None
+        with contextlib.suppress(Exception):
+            _listeners.unmount(listener, self._mount_slug, self)  # the last mount out closes the socket
         # Fail any in-flight replies so blocked HTTP threads don't hang.
         with self._pending_lock:
             for tid in list(self._pending):
@@ -375,6 +418,27 @@ class A2AAdapter(BasePlatformAdapter):
             self._pending.clear()
             self._pending_order.clear()
             self._active_tasks.clear()
+
+    def _shared_mount_slug(self) -> str:
+        """``""`` serves the listener root; ``"<profile>"`` serves a multiplexed secondary at
+        ``/p/<profile>/`` on the listener the process already has for this host:port. The runner marks a
+        secondary with its owner profile before connect; an explicit A2A_PORT / extra.port keeps its
+        own listener's root, as before."""
+        profile = getattr(self, "_shared_listener_profile", None) or getattr(self, "_owner_profile", None)
+        if not profile or profile == "default" or self._port_explicit:
+            return ""
+        return str(profile)
+
+    @property
+    def _metrics(self) -> protocol.Metrics:
+        """This profile's metrics (each profile home imports its own copy of ``protocol``)."""
+        return protocol.metrics
+
+    def _co_mounted_profiles(self, public_url: Optional[str] = None) -> list[dict]:
+        """``[{profile, url}]`` for every secondary served at ``/p/<profile>/`` beside this root mount."""
+        base = self._base_url(public_url)
+        return [{"profile": p, "url": _join_url(base, _listeners.mount_prefix(p))}
+                for p in _listeners.profiles(self._listener)]
 
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
@@ -413,7 +477,7 @@ class A2AAdapter(BasePlatformAdapter):
             "slug": "", "path": "", "tenant": "", "profile": self._active_profile, "local": True,
             "name": self.agent_name, "description": default_desc, "advertised_toolsets": self._advertised_toolsets,
         }}
-        reserved = {"health", "metrics", ".well-known"}
+        reserved = {"health", "metrics", ".well-known", _listeners.PREFIX}
         tenants: dict[str, str] = {}
         items = raw.items() if isinstance(raw, dict) else enumerate(raw or []) if isinstance(raw, list) else []
         for key, val in items:
@@ -448,8 +512,11 @@ class A2AAdapter(BasePlatformAdapter):
         return agents
 
     def _base_url(self, public_url: Optional[str]) -> str:
+        """This adapter's base URL: the listener's public (or bind) base, plus ``/p/<profile>/`` when
+        it is a mount on a shared listener."""
         host = f"[{self.host}]" if ":" in self.host else self.host  # IPv6 literal
-        return (public_url or "").strip() or f"http://{host}:{self.port}/"
+        base = (public_url or "").strip() or f"http://{host}:{self.port}/"
+        return _join_url(base, _listeners.mount_prefix(self._mount_slug)) if self._mount_slug else base
 
     def _served_agent_summary(self, public_url: Optional[str] = None) -> list[dict]:
         base = self._base_url(public_url)

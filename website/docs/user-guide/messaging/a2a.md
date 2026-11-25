@@ -77,6 +77,18 @@ Inbound tasks are injected into a **live gateway session** — the same agent, m
 
 Interoperability is verified against the official Python `a2a-sdk` (card resolution, `SendMessage`, streaming).
 
+### Many profiles, one gateway (multiplex)
+
+A multiplexed gateway (`gateway.multiplex_profiles`) builds an A2A adapter for every served profile that enables the platform, but they share one port. The profile that connects first binds it (normally the default profile, at the root path); every other profile on that port is mounted on the same listener at `/p/<profile>/`, like the shared-ingress paths of the other port-binding platforms:
+
+```
+http://127.0.0.1:9900/.well-known/agent-card.json             # default profile
+http://127.0.0.1:9900/p/research/.well-known/agent-card.json  # profile "research"
+curl -X POST http://127.0.0.1:9900/p/research/ ...            # JSON-RPC to "research"
+```
+
+Each mount answers with its own profile's live session and authenticates with that profile's own tokens; the profiles share only the socket. A `/p/<name>/` path with no such profile is a 404 and never reaches another profile. `GET /` on the root (from loopback, or with a valid token) lists the mounted profiles under `profiles`, and each mount's URL is written to the gateway runtime status as `ingress_url`. A profile that sets its own `A2A_PORT` (or `platforms.a2a.extra.port`) still binds that port on its own, as before. Inside the gateway, `a2a_call` also accepts a served profile's name as `agent`, with no `a2a_agents` entry.
+
 ## Forwarded profile sessions after the ownership cutover
 
 Forwarding to another local profile now submits to that profile's gateway owner;
@@ -124,7 +136,7 @@ Secure by default; every widening step is explicit:
 | `A2A_PEER_TOKENS` | _(unset)_ | Per-peer credentials `name:token,…` (preferred) |
 | `A2A_BEARER_TOKEN` | _(unset)_ | Shared token; identity falls back to caller IP |
 | `A2A_HOST` | `127.0.0.1` | Bind host — only widens when a token is set. IPv6 literals such as `::1` or `::` work too, bare or bracketed (`[::1]`) |
-| `A2A_PORT` | `9900` | Inbound port |
+| `A2A_PORT` | `9900` | Inbound port. Under multiplex, profiles without their own value share the default port at `/p/<profile>/` |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies / k8s) |
 | `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities |
